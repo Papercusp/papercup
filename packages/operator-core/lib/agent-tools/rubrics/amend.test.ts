@@ -105,7 +105,7 @@ const criterion = {
 
 describe('rubrics:amend complete acceptance criteria input', () => {
   it('stays within the shared P-011 prompt-weight budget', () => {
-    expect(promptWeight(amendTool)).toBeLessThanOrEqual(BUDGET);
+    expect(promptWeight(amendTool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 
   it('keeps the complete tool schema JSON-Schema-representable', () => {
