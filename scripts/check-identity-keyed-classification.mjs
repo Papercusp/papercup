@@ -81,6 +81,13 @@ export const OPERATOR_CORE_REL = 'packages/operator-core';
  */
 export const TEST_REUSE_SKIP_LIST_ENV = 'PC_TEST_REUSE_SKIP_LIST';
 
+/**
+ * The lane selector the gate exports per operator-core lane leg (PC_TEST_LANE=pure|stateful);
+ * libs/test-config/src/vitest-config.ts turns it into a lane-split `exclude`. Local literal for
+ * the same reason as above, pinned by identity-keyed-classification-gate.test.ts.
+ */
+export const TEST_LANE_ENV = 'PC_TEST_LANE';
+
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 /**
@@ -127,6 +134,11 @@ export function buildCensusChildEnv(base, schemaAbs) {
   // found" and BOTH branches report a false verdict. The nested run always targets
   // exactly one file and must always run it.
   delete env[TEST_REUSE_SKIP_LIST_ENV];
+  // WI-10004340 (verify 05c11967, repairHead 636fbe98): the same leak through the lane
+  // selector. Under the gate's lane-stateful leg the child inherited PC_TEST_LANE=stateful,
+  // the lane split excluded the census file (a pure-lane file), and the check reported
+  // `unclassified` on a fully classified schema.
+  delete env[TEST_LANE_ENV];
   if (schemaAbs) {
     env.IDENTITY_KEYED_SCHEMA_PATH = schemaAbs;
     env.PAPERCUSP_MUTATION_PROBE = '1';

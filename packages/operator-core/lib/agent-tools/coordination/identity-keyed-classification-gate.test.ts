@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 // @ts-expect-error — plain-JS repo guard, intentionally not typed
-import { checkIdentityKeyedClassification, buildCensusChildEnv, CENSUS_TEST_REL, TEST_REUSE_SKIP_LIST_ENV } from '../../../../../scripts/check-identity-keyed-classification.mjs';
+import { checkIdentityKeyedClassification, buildCensusChildEnv, CENSUS_TEST_REL, TEST_REUSE_SKIP_LIST_ENV, TEST_LANE_ENV } from '../../../../../scripts/check-identity-keyed-classification.mjs';
 import { resolveTestRunSource } from '../../testing-run-source';
 import {
   PC_TEST_REUSE_SKIP_LIST_ENV,
@@ -104,10 +104,15 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
   // rename cannot silently re-open the leak.
   it('never hands the gate reuse skip list to the nested census run', () => {
     expect(TEST_REUSE_SKIP_LIST_ENV).toBe(PC_TEST_REUSE_SKIP_LIST_ENV);
-    const gateEnv = { [PC_TEST_REUSE_SKIP_LIST_ENV]: '/tmp/pcv/reuse-skip-x.json', KEEP: 'y' };
+    // Verify 05c11967 (repairHead 636fbe98): the lane selector leaks the same way. The
+    // gate's lane-stateful leg exports PC_TEST_LANE=stateful, whose lane split excludes the
+    // census file, so the nested run reported `unclassified` on the real schema.
+    expect(TEST_LANE_ENV).toBe('PC_TEST_LANE');
+    const gateEnv = { [PC_TEST_REUSE_SKIP_LIST_ENV]: '/tmp/pcv/reuse-skip-x.json', [TEST_LANE_ENV]: 'stateful', KEEP: 'y' };
     for (const schemaAbs of [null, '/tmp/candidate-generated.ts']) {
       const child = buildCensusChildEnv(gateEnv, schemaAbs);
       expect(child[PC_TEST_REUSE_SKIP_LIST_ENV]).toBeUndefined();
+      expect(child[TEST_LANE_ENV]).toBeUndefined();
       expect(child.KEEP).toBe('y');
     }
     // The caller's env is copied, never mutated.
@@ -133,7 +138,10 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
         }),
       );
       const prior = process.env[PC_TEST_REUSE_SKIP_LIST_ENV];
+      const priorLane = process.env[TEST_LANE_ENV];
       process.env[PC_TEST_REUSE_SKIP_LIST_ENV] = listPath;
+      // The gate's lane-stateful leg exports this too; its lane split excludes the census file.
+      process.env[TEST_LANE_ENV] = 'stateful';
       try {
         const verdict = checkIdentityKeyedClassification({});
         expect(verdict.code, verdict.output?.slice(-1500)).toBe('classified');
@@ -141,6 +149,8 @@ describe('identity-keyed classification pre-promotion gate (EI-20012634773877104
       } finally {
         if (prior === undefined) delete process.env[PC_TEST_REUSE_SKIP_LIST_ENV];
         else process.env[PC_TEST_REUSE_SKIP_LIST_ENV] = prior;
+        if (priorLane === undefined) delete process.env[TEST_LANE_ENV];
+        else process.env[TEST_LANE_ENV] = priorLane;
         rmSync(dir, { recursive: true, force: true });
       }
     },
