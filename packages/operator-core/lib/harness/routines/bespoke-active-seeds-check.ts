@@ -166,6 +166,14 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   },
   { name: 'precompute-derived-reads', seedScript: 'seed-precompute-derived-reads-routine.ts' },
   { name: 'project-history-refresh', seedScript: 'seed-project-history-refresh-routine.ts' },
+  // Found missing by this registry's own guard test, red on the frozen green-checkpoint
+  // candidate e8ff0cf8 (gate held as WI-10002394): the psu-pty host-events ingest landed as
+  // an active-by-default seed script without this row, so the derived set held 58 scripts
+  // while this registry held 57. Same "seed script the guard cannot see" omission the
+  // acceptance-drain-sweep and bulk-run-watchdog entries above/below already record —
+  // which is the argument for deriving the set rather than hand-maintaining it. Scope is
+  // the default operator-home: the script resolves its slug via operatorHomeHarnessSlug().
+  { name: 'psu-pty-host-events-ingest', seedScript: 'seed-psu-pty-host-events-ingest-routine.ts' },
   {
     name: 'scout-signal-accumulator-sweep',
     seedScript: 'seed-heavy-maintenance-sweep-routines.ts',
