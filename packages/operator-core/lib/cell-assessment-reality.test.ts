@@ -1330,7 +1330,9 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
         ).toBe(true);
       }
     },
-    20_000,
+    // A path walk, not a latency check: the live coverage handler measured ~5s idle
+    // and 29.5s under gate load (verify 079f459e, 8c666117), past the old 20s clock.
+    60_000,
   );
 
   it.each(HOST_MEMORY_CELLS.map((c) => [c.cell, c] as const))(
