@@ -210,6 +210,7 @@ export default defineTool({
     notWhen:
       'For standard rubric criteria, key, or rating changes use rubrics:propose. Complete `criteria` is acceptance-only and must preserve stored keys unless removal is explicitly allowed.',
     chaining:
+      "Posting the full preview approval JSON once and pointing the reviewer at its immutable thread post avoids hash transcription. " +
       "rubrics:get → rubrics:amend. Started BAR: amend { dryRun:true } → requester posts preview.approval once as a work_items:comment and sends its post id to the outside-lineage reviewer → reviewer posts `approve thread-post:<preview-post-id>` on any existing writable thread, preferably an item they already hold → apply with amend { approvalRef:'thread-post:<reviewer post id>' }. Both posts are immutable and resolved by workspace/id. The server checks the referenced preview against the applied delta. A work-item payload needs payloadTier:'full', which some reviewer views cannot read; a thread post is visible on every surface. Do not create a counter-sign work-item for approval.",
     seeAlso: [
       'rubrics:propose (whole-document revision)',
