@@ -16,7 +16,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, rmSync, writeFileSync, readdirSync, truncateSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 
 import {
   existsTriState,
@@ -157,9 +157,26 @@ describe('probeGitObjectStore — against real repositories', () => {
   });
 
   it('reports unknown, never corrupt, when the git call times out', async () => {
-    // A 1ms budget cannot complete a real git process.
-    const r = await probeGitObjectStore(healthyRepo('timeout'), 1);
-    expect(r.state).toBe('unknown');
+    // A tiny budget against REAL git is a race, not a timeout: on a loaded box the timer can
+    // fire only after git has already exited, so execFile reports success and the probe says
+    // `readable` (gate red at repairHead 69b1f61f, 2026-10-02). A git that cannot finish makes
+    // the timeout the only possible outcome, so this asserts the classification, not the race.
+    const repo = healthyRepo('timeout');
+    // Calibration: with real git the same repo is readable, so `unknown` below is the timeout.
+    expect((await probeGitObjectStore(repo)).state).toBe('readable');
+
+    const bin = scratch('slow-git-bin');
+    writeFileSync(join(bin, 'git'), '#!/bin/sh\nexec sleep 30\n');
+    chmodSync(join(bin, 'git'), 0o755);
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${bin}${delimiter}${prevPath ?? ''}`;
+    try {
+      const r = await probeGitObjectStore(repo, 200);
+      expect(r.state).toBe('unknown');
+      expect(r.error).toMatch(/timed out after 200ms/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
   });
 });
 
