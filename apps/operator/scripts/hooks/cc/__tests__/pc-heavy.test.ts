@@ -1837,7 +1837,15 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       if (gate) killGroup(gate);
       if (later) killGroup(later);
     }
-  }, 30_000);
+    // HARNESS budget only, not the property. The property is pinned above by the
+    // gate's 1s PC_HEAVY_TIMEOUT_SEC, the 1.3s survival check and the exact
+    // ordering. This case runs three pc-heavy wrappers and five landmark waits in
+    // series, and each untilStderr waits up to 30s by itself. Under gate load
+    // (~180 on 128 cores), a 30s case cap cut the run off with a bare
+    // "Test timed out in 30000ms" before any landmark could report its stderr.
+    // The cap must stay above one landmark budget so a real hang fails with a
+    // diagnostic (WI-10005367).
+  }, 120_000);
 
   it('still throttles an ordinary sweep when GREEN_CHECKPOINT is unset', () => {
     // The other half of the invariant above: the exemption must be keyed to the release
