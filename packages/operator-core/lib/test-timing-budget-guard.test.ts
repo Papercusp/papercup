@@ -22,7 +22,7 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: tsc reports TS7016 at the module-SPECIFIER line, so on a multi-line import the @ts-ignore lands on `import {` and suppresses nothing.
-import { findNestedChildBudgetInversions, findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
+import { findNestedChildBudgetInversions, findWallClockBudgets, hasTightLiteralBudget, TIGHT_BUDGET_FLOOR_MS, BASELINE, SPAWN_SYNC_EXPLICIT_BASELINE } from '../../../scripts/check-test-timing-budgets.mjs';
 
 describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () => {
   it('FLAGS a tight literal budget on a direct elapsed assertion', () => {
@@ -102,6 +102,7 @@ describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () =
     // direction and a rise means someone grandfathered instead of fixing.
     expect((BASELINE as Set<string>).size).toBe(8);
     expect((BASELINE as Set<string>).has('packages/operator-core/lib/release-checkpoint-launch.test.ts')).toBe(true);
+    expect((SPAWN_SYNC_EXPLICIT_BASELINE as Set<string>).size).toBe(10);
   });
 
   it('FLAGS a child-process timeout that outlives the implicit Vitest parent', () => {
@@ -154,6 +155,40 @@ describe('wall-clock timing-budget guard predicate (EI-20290625014691548)', () =
     const src = `
       it('uses the helper default', () => {
         runGuardScript('node', [], { cwd: REPO_ROOT });
+      });
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([]);
+  });
+
+  it('FLAGS a direct spawnSync timeout that outlives its explicit Vitest parent', () => {
+    const src = `
+      it('runs the real CLI', () => {
+        spawnSync('node', ['scripts/validate.mjs'], { timeout: 120_000 });
+      }, 30_000);
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([
+      expect.objectContaining({
+        childCall: 'spawnSync',
+        childTimeoutMs: 120_000,
+        parentTimeoutMs: 30_000,
+        parentSource: 'explicit',
+      }),
+    ]);
+  });
+
+  it('does NOT flag spawnSync when its Vitest parent has completion headroom', () => {
+    const src = `
+      test('runs the real CLI', () => {
+        spawnSync('node', ['scripts/validate.mjs'], { timeout: 120_000 });
+      }, 150_000);
+    `;
+    expect(findNestedChildBudgetInversions(src)).toEqual([]);
+  });
+
+  it('documents the legacy bound: implicit-parent spawnSync sites are not inferred', () => {
+    const src = `
+      it('runs the real CLI', () => {
+        spawnSync('node', ['scripts/validate.mjs'], { timeout: 120_000 });
       });
     `;
     expect(findNestedChildBudgetInversions(src)).toEqual([]);

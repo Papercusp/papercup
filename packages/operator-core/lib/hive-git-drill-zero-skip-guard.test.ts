@@ -81,6 +81,8 @@ const validatorPath = join(
   'pot-git',
   'physical-drill-evidence.ts',
 );
+const VALIDATOR_CLI_TIMEOUT_MS = 120_000;
+const VALIDATOR_TEST_TIMEOUT_MS = VALIDATOR_CLI_TIMEOUT_MS + 30_000;
 const physicalRunId = 'physical-run-2026-08-13T120000Z';
 let physicalPhaseGBaseline: PhysicalPhaseGInput;
 
@@ -1687,6 +1689,7 @@ esac
   });
 
   it('executes the real validator CLI against an attested evidence file', () => {
+    expect(VALIDATOR_CLI_TIMEOUT_MS).toBeLessThan(VALIDATOR_TEST_TIMEOUT_MS);
     const evidencePath = join(evidenceDir, 'accepted-evidence.json');
     const trustPath = join(evidenceDir, 'accepted-trust.json');
     const fixture = physicalFixture();
@@ -1697,7 +1700,7 @@ esac
       [validatorPath, evidencePath, trustPath],
       {
         encoding: 'utf8',
-        timeout: 120_000,
+        timeout: VALIDATOR_CLI_TIMEOUT_MS,
         killSignal: 'SIGKILL',
       },
     );
@@ -1706,7 +1709,7 @@ esac
       ok: true,
       schemaVersion: 'hive-git-physical-evidence/v1',
     });
-  }, 30_000);
+  }, VALIDATOR_TEST_TIMEOUT_MS);
 
   it('rejects a manifest changed after either physical device attested it', () => {
     const fixture = physicalFixture();
