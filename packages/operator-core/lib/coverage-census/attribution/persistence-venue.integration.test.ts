@@ -47,6 +47,9 @@ await Promise.all([
 
 const WORKSPACE = 'papercusp-workspace';
 const HARNESS = 'papercusp';
+// A harness slug with no work items, so the readiness read's cost does not scale with
+// the live workspace population.
+const READINESS_PROBE_HARNESS = 'coverage-attribution-venue-readiness-probe';
 const TEST_FILE = toWorkspaceRel(fileURLToPath(import.meta.url));
 const EXPECTED_SURFACES = ['GET /health', 'facts:list'] as const;
 const CHANGE_QUEUE_SURFACES = [
@@ -221,7 +224,14 @@ describe('persistent coverage-attribution venue', () => {
         ],
       });
 
-      const queryArgs = encodeURIComponent(JSON.stringify({ harnessSlug: HARNESS, limit: 1 }));
+      // The surface under test is the rest-query ROUTE, not the size of the live
+      // workspace. Scoping the readiness read to the live harness made this a latency
+      // test of an O(workspace) projection (~83k items) under gate load, and it red
+      // on the 10s resolver timeout (WI-10003692, WI-10004340). Evidence scope still
+      // comes from PAPERCUSP_TEST_RUN_HARNESS, so attribution is unchanged.
+      const queryArgs = encodeURIComponent(
+        JSON.stringify({ harnessSlug: READINESS_PROBE_HARNESS, limit: 1 }),
+      );
       readiness = await app.request(
         `http://localhost/zero-harness/rest-query?name=workItemAdmission.runs&args=${queryArgs}`,
       );
