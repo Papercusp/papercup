@@ -71,6 +71,7 @@ import type { Writable } from 'node:stream';
 import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { readProcessCgroupPath } from '../../task-manager/cgroup-read';
+import { createTextCollector } from '../../child-output';
 import { promisify } from 'node:util';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -169,7 +170,7 @@ async function prepareStagingRestartHandoff(lockPath: string, restartCmd: string
 
   return await new Promise<StagingRestartHandoff>((resolve) => {
     let settled = false;
-    let received = '';
+    const received = createTextCollector(readyStream);
     const cleanup = (keepStartPipe: boolean) => {
       clearTimeout(timeout);
       readyStream.removeAllListeners('data');
@@ -198,9 +199,9 @@ async function prepareStagingRestartHandoff(lockPath: string, restartCmd: string
       stopChildGroup();
     }, STAGING_SYNC_LOCK_HANDOFF_TIMEOUT_MS);
 
-    readyStream.on('data', (chunk: Buffer | string) => {
-      received += chunk.toString();
-      if (!received.includes(STAGING_SYNC_LOCK_HANDOFF_READY)) return;
+    readyStream.on('data', () => {
+      // peek(), not text(): text() flushes the decoder and corrupts a character split across chunks.
+      if (!received.peek().includes(STAGING_SYNC_LOCK_HANDOFF_READY)) return;
       finish({
         acquired: true,
         start: () => {

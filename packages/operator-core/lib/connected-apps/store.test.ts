@@ -22,7 +22,10 @@ vi.mock('@papercusp/db-org', async (orig) => {
     const query = strings.reduce((text, part, i) => text + part + (i < values.length ? String(values[i]) : ''), '');
     return Promise.resolve(h.rowsFor(query));
   };
-  const sql = Object.assign(tag, { unsafe: (text: string) => text }) as unknown as Sql;
+  const sql: Sql = Object.assign(tag, {
+    unsafe: (text: string) => text,
+    begin: <T>(cb: (tx: Sql) => Promise<T>) => cb(sql),
+  }) as unknown as Sql;
   return {
     ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql }),
