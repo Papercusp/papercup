@@ -26,6 +26,8 @@ import { spawnSync } from 'node:child_process';
 import {
   scriptUsesPassWithNoTests,
   hasMatchingTestFilesOnDisk,
+  listMatchingTestFilesOnDisk,
+  reuseSkipCoversRun,
   emptySuiteGuardArgs,
   // The .mjs helper has no declaration file; the diagnostic lands on the
   // `from` line of this multi-line import, so the directive must be the
@@ -157,6 +159,90 @@ describe('emptySuiteGuardArgs — the composed per-run decision', () => {
         script: 'test:integration',
       }),
     ).toEqual(['--no-passWithNoTests']);
+  });
+});
+
+/**
+ * P-008 per-file pass reuse excludes every proven file via a skip list and arms
+ * only --passWithNoTests scripts, so an all-reused run is EMPTY BY DESIGN.
+ * Gate candidate 599dbeeb went red on exactly that: @papercusp/plugin-sdk had
+ * 5 of 5 files reused, the guard still appended --no-passWithNoTests, and vitest
+ * exited 1 with "No test files found" on both passes.
+ */
+describe('emptySuiteGuardArgs — a run the pass-reuse skip list deliberately empties (P-008)', () => {
+  const scriptText = 'vitest run --passWithNoTests';
+  function workspaceWith(files: string[]): string {
+    const dir = makeTmpDir();
+    for (const f of files) {
+      mkdirSync(dirname(join(dir, f)), { recursive: true });
+      writeFileSync(join(dir, f), '// fixture');
+    }
+    return dir;
+  }
+
+  it('stands down when every on-disk test file is reused — the 599dbeeb plugin-sdk shape', () => {
+    const files = ['src/a.test.ts', 'src/b.test.ts', 'src/c.test.ts', 'src/d.test.ts', 'src/e.test.ts'];
+    const dir = workspaceWith(files);
+    expect(emptySuiteGuardArgs({ scriptText, wsAbsDir: dir, script: 'test', reuseSkipped: files })).toEqual([]);
+  });
+
+  it('keeps the guard when any on-disk test file is not reused', () => {
+    const dir = workspaceWith(['src/a.test.ts', 'src/b.test.ts']);
+    expect(
+      emptySuiteGuardArgs({ scriptText, wsAbsDir: dir, script: 'test', reuseSkipped: ['src/a.test.ts'] }),
+    ).toEqual(['--no-passWithNoTests']);
+  });
+
+  it('keeps the guard for an empty skip list', () => {
+    const dir = workspaceWith(['src/a.test.ts']);
+    expect(emptySuiteGuardArgs({ scriptText, wsAbsDir: dir, script: 'test', reuseSkipped: [] })).toEqual([
+      '--no-passWithNoTests',
+    ]);
+  });
+
+  it('judges a narrowed run by its related selection, not the whole workspace', () => {
+    const dir = workspaceWith(['src/a.test.ts', 'src/b.test.ts']);
+    expect(
+      emptySuiteGuardArgs({
+        scriptText,
+        wsAbsDir: dir,
+        script: 'test',
+        reuseSkipped: ['src/a.test.ts'],
+        selectedFiles: ['src/a.test.ts'],
+      }),
+    ).toEqual([]);
+    expect(
+      emptySuiteGuardArgs({
+        scriptText,
+        wsAbsDir: dir,
+        script: 'test',
+        reuseSkipped: ['src/a.test.ts'],
+        selectedFiles: ['src/a.test.ts', 'src/b.test.ts'],
+      }),
+    ).toEqual(['--no-passWithNoTests']);
+  });
+
+  it('matches paths regardless of a leading ./ or backslash separators', () => {
+    const dir = workspaceWith(['src/a.test.ts']);
+    expect(reuseSkipCoversRun({ wsAbsDir: dir, script: 'test', reuseSkipped: ['./src\\a.test.ts'] })).toBe(true);
+  });
+
+  it('the census is workspace-relative and applies the probe\'s own exclusions', () => {
+    const dir = workspaceWith([
+      'src/a.test.ts',
+      'b.spec.ts',
+      'src/only.integration.test.ts',
+      'src/only.browser.test.ts',
+      'node_modules/dep/x.test.ts',
+    ]);
+    expect([...(listMatchingTestFilesOnDisk(dir, 'test') ?? [])].sort()).toEqual(['b.spec.ts', 'src/a.test.ts']);
+  });
+
+  it('a failed census is unknown (null), so it can never read as full coverage', () => {
+    expect(listMatchingTestFilesOnDisk('/no/such/dir/at/all', 'test')).toBeNull();
+    expect(
+      reuseSkipCoversRun({ wsAbsDir: '/no/such/dir/at/all', script: 'test', reuseSkipped: ['src/a.test.ts'] }),
+    ).toBe(false);
   });
 });
 

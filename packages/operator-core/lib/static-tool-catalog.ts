@@ -349,24 +349,64 @@ function importedStringObjectConstants(
     if (!bindings || !ts.isNamedImports(bindings) || bindings.elements.length === 0) continue;
     const target = resolveGraphImport(statement.moduleSpecifier.text, file, repoRoot, packages);
     if (!target) continue;
-    let exported = cache.get(target);
-    if (!exported) {
-      const targetSource = ts.createSourceFile(
-        target,
-        readFileSync(target, 'utf8'),
-        ts.ScriptTarget.Latest,
-        true,
-        scriptKind(target),
-      );
-      exported = stringObjectConstants(targetSource, true);
-      cache.set(target, exported);
-    }
+    const exported = exportedStringObjectConstants(target, repoRoot, packages, cache);
     for (const element of bindings.elements) {
       const entries = exported.get((element.propertyName ?? element.name).text);
       if (entries) imported.set(element.name.text, entries);
     }
   }
   return imported;
+}
+
+/**
+ * The string-object constants a module EXPORTS, including ones it re-exports
+ * (`export { X } from './y'`, `export * from './y'`). Without the re-export hop, moving a
+ * tool-name object into its own module behind a barrel silently drops every tool that names
+ * itself through it from the derived catalog.
+ */
+function exportedStringObjectConstants(
+  target: string,
+  repoRoot: string,
+  packages: Parameters<typeof resolveGraphImport>[3],
+  cache: Map<string, Map<string, Map<string, string>>>,
+): Map<string, Map<string, string>> {
+  const cached = cache.get(target);
+  if (cached) return cached;
+  const exported = new Map<string, Map<string, string>>();
+  // Seeded before the walk so a re-export cycle terminates instead of recursing.
+  cache.set(target, exported);
+  const targetSource = ts.createSourceFile(
+    target,
+    readFileSync(target, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKind(target),
+  );
+  for (const [name, entries] of stringObjectConstants(targetSource, true)) exported.set(name, entries);
+  for (const statement of targetSource.statements) {
+    if (
+      !ts.isExportDeclaration(statement) ||
+      statement.isTypeOnly ||
+      !statement.moduleSpecifier ||
+      !ts.isStringLiteralLike(statement.moduleSpecifier)
+    ) {
+      continue;
+    }
+    const source = resolveGraphImport(statement.moduleSpecifier.text, target, repoRoot, packages);
+    if (!source) continue;
+    const reexported = exportedStringObjectConstants(source, repoRoot, packages, cache);
+    const clause = statement.exportClause;
+    if (!clause) {
+      for (const [name, entries] of reexported) if (!exported.has(name)) exported.set(name, entries);
+    } else if (ts.isNamedExports(clause)) {
+      for (const element of clause.elements) {
+        if (element.isTypeOnly) continue;
+        const entries = reexported.get((element.propertyName ?? element.name).text);
+        if (entries) exported.set(element.name.text, entries);
+      }
+    }
+  }
+  return exported;
 }
 
 function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {

@@ -24,10 +24,20 @@ import { isWebhookPath } from '@papercusp/operator-core/lib/external-triggers/we
 /** The OAuth route verbs a remote client uses (routes/connected-apps/oauth.ts). */
 const OAUTH_VERBS = ['protected-resource', 'authorization-server', 'register', 'authorize', 'continue', 'token'] as const;
 
+/**
+ * WI-10004269 — the two RFC 8628 device-grant endpoints an app calls from wherever it runs
+ * (D-004: a local server offers device-code sign-in with no portal account; D-018: both are
+ * own-auth public). `device/code` only opens a PENDING grant, and `device/token` needs the
+ * secret device_code. The approval page and the decision route stay loopback-only and are
+ * NOT listed here, so a grant can be approved only by the person at the machine.
+ */
+export const DEVICE_GRANT_PATHS = ['/api/connected-apps/device/code', '/api/connected-apps/device/token'] as const;
+
 export const EXTERNAL_INGRESS_SERVED_PATHS: ReadonlySet<string> = new Set([
   ...Object.keys(MCP_OAUTH_WELL_KNOWN),
   ...OAUTH_VERBS.map((verb) => `${MCP_OAUTH_BASE}/${verb}`),
   MCP_RESOURCE_PATH,
+  ...DEVICE_GRANT_PATHS,
 ]);
 
 /**

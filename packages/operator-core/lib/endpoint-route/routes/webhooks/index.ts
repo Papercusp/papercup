@@ -68,7 +68,11 @@ export function createWebhookRoutes(deps: WebhookRouteDependencies): ReadonlyArr
 const routes: ReadonlyArray<AnyRoute> = createWebhookRoutes({
   deliver: (request) =>
     handleWebhookDelivery(request, {
-      sql: getOrgPg().sql,
+      // Lazy: a request refused on its body alone (size, not a JSON object, not a source id)
+      // never opens the database pool, so unauthenticated junk costs no connection.
+      get sql() {
+        return getOrgPg().sql;
+      },
       remoteAccessEnabled: async (workspaceId) => (await getRemoteAccess(workspaceId)).enabled,
     }),
 });

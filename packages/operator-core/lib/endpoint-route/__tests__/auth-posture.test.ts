@@ -440,6 +440,12 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     // after the owner consented, bound to the client, redirect URI and PKCE verifier.
     'POST /connected-apps/oauth/register',
     'POST /connected-apps/oauth/token',
+    // Signed webhook ingress (P-017, D-032). An outside provider POSTs here through
+    // the user's tunnel or the portal relay, so loopback would break it. The handler
+    // authenticates every delivery itself: it refuses 401 unless papercusp-signature
+    // carries a fresh HMAC-SHA256 of the body under the source's signing key, and
+    // 403 while the Remote access switch is off (handleWebhookDelivery, webhook.ts).
+    'POST /hooks/:sourceId',
   ]);
 
   it('every mutating HTTP route declares a non-public tier unless owner-allowlisted', () => {

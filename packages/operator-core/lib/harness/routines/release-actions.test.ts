@@ -163,9 +163,14 @@ vi.mock('../../dev-data', async (orig) => ({
 // logs via a raw `console.error` (not caught by notifyAttention's try/catch before it fires),
 // tripping vitest-fail-on-console. Stub the module boundary like every other test that exercises
 // a dispatch path (deploy.test.ts, green-stall-watchdog.test.ts, ...).
+// notifyAttentionOnce too: the replay-safe variant is reached both by release-actions.ts itself
+// and, statically at import, through register-system-actions → connected-apps/alert-sweep. A
+// hand-listed factory that omits it fails the whole file at collection.
 const notifyAttention = vi.fn(async (..._a: unknown[]) => {});
+const notifyAttentionOnce = vi.fn(async (..._a: unknown[]) => {});
 vi.mock('../../attention-notify', () => ({
   notifyAttention: (...a: unknown[]) => notifyAttention(...a),
+  notifyAttentionOnce: (...a: unknown[]) => notifyAttentionOnce(...a),
 }));
 
 // WI-2141541: the green-checkpoint action calls admitCheckpointMemory({ requestG }) before it

@@ -96,6 +96,10 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'GET /hosted/cli/workspaces',
   'POST /hosted/cli/workspaces/:workspaceId/terminal',
   'POST /hosted/cli/logout',
+  // EAA P-008 (D-031): a local install links to the portal relay by the same device grant.
+  'POST /hosted/relay/device/code',
+  'POST /hosted/relay/device/token',
+  'POST /hosted/relay/unlink',
   'GET /hosted/auth/sign-in',
   'GET /hosted/auth/callback',
   'POST /hosted/auth/logout',
