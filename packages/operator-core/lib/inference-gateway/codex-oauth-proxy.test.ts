@@ -31,6 +31,9 @@ import {
   type CodexAuth,
   CODEX_OAUTH_TOKEN_URL,
 } from './codex-oauth-proxy';
+import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
+/** Managed Codex default id (the model-less fallback), derived so a deliberate default bump cannot strand these assertions. */
+const DEFAULT_CODEX_ID = CODEX_SAFE_DEFAULT_MODEL.split(':')[0];
 
 /** Build a signature-less JWT whose payload carries `exp` (seconds). */
 function jwt(expSec: number): string {
@@ -221,7 +224,7 @@ describe('normalizeCodexChatGptResponsesBody', () => {
       expect(result.inputNormalized).toBe(false);
       expect(JSON.parse(result.body.toString('utf8'))).toEqual({
         input: [{ role: 'user', content: [] }],
-        model: 'gpt-5.6-sol',
+        model: DEFAULT_CODEX_ID,
         reasoning: { effort: 'xhigh' },
         store: false,
       });
@@ -233,7 +236,7 @@ describe('normalizeCodexChatGptResponsesBody', () => {
     const normalized = normalizeCodexChatGptResponsesBody(list);
     expect(normalized.inputNormalized).toBe(false);
     expect(JSON.parse(normalized.body.toString('utf8'))).toMatchObject({
-      model: 'gpt-5.6-sol',
+      model: DEFAULT_CODEX_ID,
       reasoning: { effort: 'xhigh' },
       input: [{ role: 'user', content: [] }],
       store: false,
@@ -251,7 +254,7 @@ describe('normalizeCodexChatGptResponsesBody', () => {
     const body = Buffer.from(JSON.stringify({ input: [{ role: 'user', content: [] }], reasoning: { effort: 'high' }, store: false }));
     const normalized = normalizeCodexChatGptResponsesBody(body);
     expect(JSON.parse(normalized.body.toString('utf8'))).toMatchObject({
-      model: 'gpt-5.6-sol',
+      model: DEFAULT_CODEX_ID,
       reasoning: { effort: 'high' },
       store: false,
     });

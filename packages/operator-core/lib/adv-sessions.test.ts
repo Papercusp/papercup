@@ -270,8 +270,19 @@ describe('fallbackCodexLaunchSpecFromAdvSession', () => {
       autoMode: false,
       drainMode: false,
       loopArmed: false,
+      headless: false,
       fleet: null,
     });
+  });
+
+  it('marks the record headless only when the recorded launch argv carried --headless', () => {
+    expect(
+      fallbackCodexLaunchSpecFromAdvSession(row({ launchArgv: ['--fleet=x', '--headless'] } as Partial<AdvSessionRow>), 'su-current')
+        ?.headless,
+    ).toBe(true);
+    expect(
+      fallbackCodexLaunchSpecFromAdvSession(row({ launchArgv: ['--fleet=x'] } as Partial<AdvSessionRow>), 'su-current')?.headless,
+    ).toBe(false);
   });
 
   it('preserves a recorded concrete harness when one exists', () => {

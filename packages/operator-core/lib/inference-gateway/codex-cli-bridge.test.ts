@@ -20,6 +20,9 @@ import {
   runCodexCliCompletion,
 } from './codex-cli-bridge';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
+import { CODEX_SAFE_DEFAULT_MODEL } from '../model-context-budget.mjs';
+/** Managed Codex default id (the model-less fallback), derived so a deliberate default bump cannot strand these assertions. */
+const DEFAULT_CODEX_ID = CODEX_SAFE_DEFAULT_MODEL.split(':')[0];
 
 // Spy-wrapped, NOT stubbed: the real resolver still runs by default, so this
 // file keeps testing the production path. Only the fallback case below pins a
@@ -73,8 +76,8 @@ describe('parseBridgeModel', () => {
     expect(parseBridgeModel('gpt-5.4:turbo')).toEqual({ id: 'gpt-5.4:turbo', effort: 'medium' });
   });
   it('empty/undefined falls back to Sol at xhigh', () => {
-    expect(parseBridgeModel(undefined)).toEqual({ id: 'gpt-5.6-sol', effort: 'xhigh' });
-    expect(parseBridgeModel('  ')).toEqual({ id: 'gpt-5.6-sol', effort: 'xhigh' });
+    expect(parseBridgeModel(undefined)).toEqual({ id: DEFAULT_CODEX_ID, effort: 'xhigh' });
+    expect(parseBridgeModel('  ')).toEqual({ id: DEFAULT_CODEX_ID, effort: 'xhigh' });
   });
 
   it('rejects the retired Spark model before a bridge process is spawned', () => {
