@@ -15,6 +15,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
+import { createTextCollector } from '../child-output';
 import { GLOBAL_PLUGINS_DIR } from '../plugin-catalog';
 import { grantCapabilities } from '../plugin-grants';
 import { resolveCupboardBaseUrl } from './base-url';
@@ -36,11 +37,12 @@ export function gitCloneShallow(url: string, dest: string): Promise<void> {
     const child = spawn('git', ['clone', '--depth', '1', '--', url, dest], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let err = '';
-    child.stderr.on('data', (d) => (err += d.toString()));
+    const err = createTextCollector(child.stderr);
     child.on('error', reject);
     child.on('close', (code) =>
-      code === 0 ? resolve() : reject(new Error(`git clone failed (exit ${code}): ${err.slice(0, 300)}`)),
+      code === 0
+        ? resolve()
+        : reject(new Error(`git clone failed (exit ${code}): ${err.text().slice(0, 300)}`)),
     );
   });
 }
@@ -51,14 +53,13 @@ function gitRun(args: string[], label: string, cwd?: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', args, { stdio: ['ignore', 'pipe', 'pipe'], ...(cwd ? { cwd } : {}) });
     const out: Buffer[] = [];
-    let err = '';
+    const err = createTextCollector(child.stderr);
     child.stdout.on('data', (d: Buffer) => out.push(d));
-    child.stderr.on('data', (d) => (err += d.toString()));
     child.on('error', reject);
     child.on('close', (code) =>
       code === 0
         ? resolve(Buffer.concat(out))
-        : reject(new Error(`${label} failed (exit ${code}): ${err.slice(0, 300)}`)),
+        : reject(new Error(`${label} failed (exit ${code}): ${err.text().slice(0, 300)}`)),
     );
   });
 }
