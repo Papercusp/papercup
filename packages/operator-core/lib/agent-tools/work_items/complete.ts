@@ -703,7 +703,17 @@ function issuesNotCoveredByPreflight(issues: readonly z.core.$ZodIssue[], prefli
     list.flatMap((issue): z.core.$ZodIssue[] => {
       if (isCovered(issue.path)) return [];
       if (issue.code === 'invalid_union' && Array.isArray(issue.errors)) {
-        return [{ ...issue, errors: issue.errors.map((branch) => filter(branch)) } as z.core.$ZodIssue];
+        const filtered = {
+          ...issue,
+          errors: issue.errors.map((branch) => filter(branch)),
+        } as z.core.$ZodIssue;
+        // formatIssues preserves a union's contract-specific message and expands
+        // only the generic "Invalid input" form. Keep the guidance and add a
+        // generic-message copy so its shared issueLeaves selector exposes the
+        // matching branch's remaining field errors alongside the preflight issue.
+        return issue.message === 'Invalid input'
+          ? [filtered]
+          : [filtered, { ...filtered, message: 'Invalid input' } as z.core.$ZodIssue];
       }
       return [issue];
     });

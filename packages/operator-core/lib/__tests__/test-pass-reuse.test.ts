@@ -249,7 +249,8 @@ describe('P-001 (gate-test-reuse-yield-2026-10-01): nested vitest configs are pe
   it('every nested vitest config imports only what a proof or a global rule covers', () => {
     const configs = execFileSync('git', ['ls-files', '--recurse-submodules'], { cwd: REPO, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
       .split('\n')
-      .filter((f) => /\/vitest\.[^/]*config[^/]*\.[cm]?[jt]s$/.test(f) && existsSync(`${REPO}/${f}`));
+      .filter((f) => existsSync(`${REPO}/${f}`)) // drop index-lagged deletions before the reads below
+      .filter((f) => /\/vitest\.[^/]*config[^/]*\.[cm]?[jt]s$/.test(f));
     const counts: Record<SpecClass, number> = { builtin: 0, relative: 0, 'test-config': 0, npm: 0, workspace: 0, unresolved: 0 };
     const violations: string[] = [];
     const SPEC_RE = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)(['"])([^'"]+)\1/gm;
