@@ -85,8 +85,10 @@ describe('poolPressure — live probe, fail-soft, correct band per outcome', () 
 
   it('a TIMEOUT (probe never settles) ⇒ critical even with a tiny test budget', async () => {
     // runProbe never resolves; timeoutMs=20 fires; measured elapsed is small but the
-    // timeout path forces ≥ CRITICAL_PROBE_MS so it classifies critical.
-    const band = await poolPressure(() => new Promise(() => {}), Date.now, 20);
+    // timeout path forces ≥ CRITICAL_PROBE_MS so it classifies critical. The loop-lag
+    // read is pinned to null: a monitor another test left live in this worker would
+    // otherwise discount real scheduler delay and make this case load-dependent.
+    const band = await poolPressure(() => new Promise(() => {}), Date.now, 20, () => null);
     expect(band).toBe('critical');
     expect(lastPoolProbeMs()).toBeGreaterThanOrEqual(CRITICAL_PROBE_MS);
   });
@@ -361,6 +363,28 @@ describe('probePoolLatencyMs — TIMEOUT attribution (pool starvation vs schedul
     const ms = await probePoolLatencyMs(neverSettles, clockOf([0, 100, 100]), 20, () => null);
     expect(ms).toBeGreaterThanOrEqual(CRITICAL_PROBE_MS);
     expect(classifyPoolPressure(ms)).toBe('critical');
+  });
+
+  it('a timeout whose wall-clock reads SHORT of the budget still FORCES critical (WI-10003256)', async () => {
+    // libuv arms setTimeout from the loop's cached time, so after a synchronous burst
+    // setTimeout(20) fires with Date.now() only 19ms (or less) past start. Measured on
+    // the real module with no loop monitor: 3 of 20 timeouts classified 'ok' this way,
+    // and the gate's stateful lane went red on it. The fired timer — not the lagging
+    // wall-clock — is the authority that the budget elapsed.
+    const ms = await probePoolLatencyMs(neverSettles, clockOf([0, 19, 19]), 20, () => null);
+    expect(ms).toBeGreaterThanOrEqual(CRITICAL_PROBE_MS);
+    expect(classifyPoolPressure(ms)).toBe('critical');
+    expect(lastPoolProbeRawMs()).toBe(20);
+  });
+
+  it('the budget floor does NOT defeat loop-delay attribution on a short-reading timeout', async () => {
+    // Same 19ms under-read, but a 15ms loop delay explains it: the floored raw (20)
+    // net of the delay is 5ms, below the budget, so it stays a scheduler artifact.
+    const ms = await probePoolLatencyMs(neverSettles, clockOf([0, 19, 19]), 20, () =>
+      lagWith(15),
+    );
+    expect(ms).toBe(5);
+    expect(classifyPoolPressure(ms)).toBe('ok');
   });
 
   it('PRE-FIX CONTROL: the old forcing rule fires on the same scheduler artifact', () => {
