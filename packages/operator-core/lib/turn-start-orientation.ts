@@ -1393,7 +1393,14 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
   orientationClass<OrientationAnnouncedGate[]>({
     id: 'announcedGates',
     watermarkTokens: ['gates'],
-    applicableSinks: TURN_START,
+    // P-027: the leader brief ALREADY rendered announced gates, but from an
+    // undeclared read — so this table under-reported which surfaces carry the
+    // class, which is exactly what P-024's (class x sink) matrix flagged.
+    // Declaring it here makes `readLeaderAnnouncedGates` consume the
+    // declaration (D-053: a structured sink consumes by `id`, not by
+    // `segments[].render`), so withdrawing the sink is a ONE-LINE change here
+    // and turns the leader field off with no second edit.
+    applicableSinks: TURN_START_AND_LEADER_BRIEF,
     populate: (state) => state.announcedGates,
     segments: [
       {
@@ -1598,8 +1605,24 @@ export interface OrientationDeps {
   ownerDirectives?: (workspaceId: string) => Promise<OrientationOwnerDirective[]>;
   historyUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationHistoryUpdate[]>;
   effortUpdates: (ownerId: string, workspaceId: string) => Promise<OrientationEffortUpdate[]>;
-  /** P-010: unverified carried claims + open external blockers, each with its probe. */
-  openChecks: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
+  /**
+   * P-010: unverified carried claims + open external blockers, each with its probe.
+   *
+   * ⚠ OPTIONAL, AND THAT IS A RECORDED GAP — NOT A DESIGN CHOICE. `defaultOrientationDeps()`
+   * does not implement this yet, so in production this class is DECLARED, registered,
+   * watermarked and rendered-if-populated, but NOTHING POPULATES IT. That is precisely the
+   * 0-renders-in-334-turns failure this plan exists to detect, one level up: the coverage
+   * guard proves the RENDER path works (it supplies the state itself) and cannot see a
+   * missing RESOLVER.
+   *
+   * It was `required` and unimplemented, which left the COMMITTED tree type-broken and
+   * would have red-pinned the fleet gate. Made optional by su-c03852cb to unbreak the
+   * build WITHOUT inventing su-6b1151ea's reader design while that session was MCP-dark.
+   * The real fix is to implement it in `defaultOrientationDeps` (loop:checkpoint `checks`
+   * + open `work_items:set_blocker` rows) and make this REQUIRED again. Tracked — do not
+   * quietly accept the optionality as finished.
+   */
+  openChecks?: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -1688,7 +1711,10 @@ export async function resolveOrientationState(
     // above: an empty list reads as "nothing left to falsify", which is the exact
     // false reassurance this class exists to deny. A read failure must stay silent
     // and preserve the prior token, never assert the all-clear.
-    d.openChecks(ownerId, workspaceId).catch(() => undefined),
+    // An ABSENT reader and a FAILED read are the same thing to this class, and both
+    // must resolve `undefined` rather than `[]` — see the dep's doc comment. `[]`
+    // would assert "nothing left to falsify", the false all-clear this class denies.
+    d.openChecks ? d.openChecks(ownerId, workspaceId).catch(() => undefined) : Promise.resolve(undefined),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
     d.announcedGates(ownerId, workspaceId).catch(() => [] as OrientationAnnouncedGate[]),
     // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
@@ -1977,7 +2003,7 @@ export function defaultOrientationDeps(): OrientationDeps {
     announcedGates: async (ownerId, workspaceId) => {
       const [
         { listActiveAnnouncements, countActiveAwaitsByPrefixes },
-        { announcementVisibleTo },
+        { selectVisibleAnnouncements },
         { getSessionBrief },
         { fetchPresenceFleet },
         { resolveAnnouncementOwnership },
@@ -1985,25 +2011,30 @@ export function defaultOrientationDeps(): OrientationDeps {
       ] =
         await Promise.all([
           import('./events/await/store'),
-          import('./events/await/announce-key'),
+          import('./events/await/announced-gate-view'),
           import('./session-brief'),
           import('./agent-tools/coordination/presence-fleet'),
           import('./agent-tools/events/status'),
           import('./bounded-timeout'),
         ]);
+      // The scope is not known until the brief and fleet membership resolve, so
+      // the announcement read stays CONCURRENT with them and the scoping is
+      // applied after. P-027 / D-063: the scoping itself is the shared unit
+      // (`selectVisibleAnnouncements`), used by the leader-brief sink too, so
+      // the two sinks cannot drift on what a reader may see. `unfiredOnly: true`
+      // is this sink's own choice — a fired gate is not something to await, and
+      // an always-present row is the signal decay P-017/D-003 ruled against.
       const [announcements, brief, memberships] = await Promise.all([
         listActiveAnnouncements({ unfiredOnly: true, limit: 50 }),
         getSessionBrief({ ownerId }),
         fetchPresenceFleet([ownerId]),
       ]);
       const fleet = memberships.get(ownerId)?.fleetSlug ?? null;
-      const visible = announcements.filter((announcement) =>
-        announcementVisibleTo(announcement, {
-          fleetSlug: fleet,
-          planSlug: brief?.currentPlanSlug ?? null,
-          harnessSlug: brief?.harnessSlug ?? null,
-        }),
-      );
+      const visible = selectVisibleAnnouncements(announcements, {
+        fleetSlug: fleet,
+        planSlug: brief?.currentPlanSlug ?? null,
+        harnessSlug: brief?.harnessSlug ?? null,
+      });
       // Metadata is advisory and independently bounded. A failure omits only
       // the affected optional fields; it must not erase the gate directory.
       const [countsResult, ownershipResult] = await Promise.all([
