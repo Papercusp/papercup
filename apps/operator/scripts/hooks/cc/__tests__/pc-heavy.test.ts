@@ -3849,11 +3849,17 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
       cwd: dir,
       detached: true,
     });
-    await new Promise((r) => setTimeout(r, 700));
+    // Event-driven, not two fixed 700ms sleeps (WI-10005207): under gate-suite
+    // load the trap's sweep had not finished inside the second sleep, so the
+    // count read 2 on a correct script. Positive control first — the leader is
+    // genuinely mid-run with its temps open — so the zero below is not vacuous.
+    const doomedExited = new Promise<void>((r) => doomed.once('exit', () => r()));
+    await waitFor('leader has its .part capture temps open mid-run', () => partCount() > 0);
     process.kill(-(doomed.pid as number), 'SIGTERM'); // SIGTERM so the trap runs
-    await new Promise((r) => setTimeout(r, 700));
+    await doomedExited;
+    await waitFor('EXIT trap swept the .part temps', () => partCount() === 0, 10_000);
     expect(partCount()).toBe(0);
-  }, 20_000);
+  }, 45_000);
 });
 
 describe('pc-heavy.sh — per-caller freshness barrier (EI-19340233074452707)', () => {
