@@ -77,6 +77,11 @@ const NESTED_RUN_INHERITED_CONTAMINATION = [
 async function runMain(argv: string[]): Promise<{ code: number; out: string; err: string }> {
   const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  // The router also writes diagnostics on console.warn (e.g. the unscoped
+  // focused-run notice when PAPERCUSP_TEST_RUN_HARNESS is unset). Capture every
+  // channel the real CLI uses, or vitest-fail-on-console reds this file whenever
+  // a new warn-level diagnostic is added to the router.
+  const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const saved = new Map<string, string | undefined>(
     NESTED_RUN_INHERITED_CONTAMINATION.map((key) => [key, process.env[key]]),
   );
@@ -86,7 +91,7 @@ async function runMain(argv: string[]): Promise<{ code: number; out: string; err
     return {
       code,
       out: logSpy.mock.calls.map((call) => String(call[0])).join('\n'),
-      err: errorSpy.mock.calls.map((call) => String(call[0])).join('\n'),
+      err: [...errorSpy.mock.calls, ...warnSpy.mock.calls].map((call) => String(call[0])).join('\n'),
     };
   } finally {
     for (const [key, value] of saved) {
@@ -95,6 +100,7 @@ async function runMain(argv: string[]): Promise<{ code: number; out: string; err
     }
     errorSpy.mockRestore();
     logSpy.mockRestore();
+    warnSpy.mockRestore();
   }
 }
 
