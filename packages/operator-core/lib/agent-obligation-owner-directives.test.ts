@@ -181,6 +181,11 @@ function readerDeps(
     ownerDirectives,
     goalSubject: async () => null,
     planSlugs: async () => [],
+    // `waitingOn` is NOT goal-gated (P-011), so it runs even on this no-goal
+    // fixture. Leaving it un-injected reached the REAL provider, which opens a
+    // live Postgres pool and rejects unhandled — every assertion below still
+    // passed, so the suite read green while the run exited non-zero.
+    waitingOn: async () => [],
   };
 }
 
