@@ -254,7 +254,10 @@ async function main(): Promise<void> {
       `[lint:launch-prose-budget] projection-gate: OVER ceiling — ${headroom.over.map((r) => r.surface).join(', ')}. ` +
         'Trim prose or raise that surface ceiling in scripts/launch-prose-budget-baseline.json WITH a note.',
     );
-    process.exit(1);
+    // The headroom lines above go to a piped stdout; process.exit() would truncate them
+    // (EI-20055889379250637). Set the code and let the program end naturally.
+    process.exitCode = 1;
+    return;
   }
 
   if (asJson) {

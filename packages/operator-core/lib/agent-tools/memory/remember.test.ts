@@ -47,6 +47,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 // journaling, never touch the store) is covered in remember-paused.test.ts.
 // Without this the pause lookup would issue its own getOrgPg().sql read and
 // pollute the anchor-writer tests' exact `sql` call counts.
+// The post-write view invalidation publishes a pg_notify through the same mocked
+// org `sql` the anchor-writer assertions below count; it is not under test here.
+vi.mock('../../memory/invalidate-user-memory-views', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../memory/invalidate-user-memory-views')>()),
+  invalidateUserMemoryViews: vi.fn(async () => {}),
+}));
+
 vi.mock('../../memory/memory-pause', () => ({
   isMemoryPaused: vi.fn(async () => false),
   MEMORY_PAUSED_REFUSAL: { ok: false, reason: 'memory_paused' },

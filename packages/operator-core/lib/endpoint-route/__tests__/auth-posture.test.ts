@@ -446,6 +446,13 @@ describe('auth-tier Wave 1 — no public mutating routes (standing gate)', () =>
     // carries a fresh HMAC-SHA256 of the body under the source's signing key, and
     // 403 while the Remote access switch is off (handleWebhookDelivery, webhook.ts).
     'POST /hooks/:sourceId',
+    // Human-work market (routes/harness/work-items.ts postHumanWork). A person outside this
+    // machine claims, submits, and gets graded/paid on an offered task over cors:true, so
+    // loopback would break it. The handler authenticates every call itself: a mandatory human
+    // session cookie (getSessionUser, else 401 human_session_required), a workspace match
+    // (403 human_workspace_required), and an origin + JSON content-type check (403
+    // human_request_origin_required). Neither a loopback caller nor an agent bearer is a human.
+    'POST /harness/:slug/work-items/:id/human-work',
   ]);
 
   it('every mutating HTTP route declares a non-public tier unless owner-allowlisted', () => {

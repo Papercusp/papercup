@@ -69,7 +69,7 @@ function expectedTokens(lines: string[]): number {
 }
 
 describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)', () => {
-  it('does NOT count prompt_snapshot lines, which dominate a real su transcript', () => {
+  it('does NOT count prompt_snapshot lines, which dominate a real su transcript', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 60; i++) lines.push(ordinaryLine(i));
     for (let i = 0; i < 3; i++) lines.push(snapshotLine(i));
@@ -78,7 +78,7 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
     const size = fs.statSync(p).size;
     expect(size).toBeGreaterThan(BOUNDARY_SCAN_MIN); // the fixture reaches the scan path
 
-    const got = tokensFromFileSize(p);
+    const got = await tokensFromFileSize(p);
     expect(got).toBe(expectedTokens(lines));
 
     // Falsifiability control: without the discount this is what the gauge reported.
@@ -88,7 +88,7 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
     expect(got!).toBeLessThan(wholeFile / 5);
   });
 
-  it('leaves a transcript with no prompt_snapshot lines byte-identical to whole-file/4', () => {
+  it('leaves a transcript with no prompt_snapshot lines byte-identical to whole-file/4', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 160; i++) lines.push(ordinaryLine(i));
 
@@ -96,10 +96,10 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
     const size = fs.statSync(p).size;
     expect(size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
 
-    expect(tokensFromFileSize(p)).toBe(Math.floor(size / 4));
+    expect(await tokensFromFileSize(p)).toBe(Math.floor(size / 4));
   });
 
-  it('does not discount a toolUseResult inside a snapshot line twice (no under-count)', () => {
+  it('does not discount a toolUseResult inside a snapshot line twice (no under-count)', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 60; i++) lines.push(ordinaryLine(i));
     // A snapshot whose serialised body happens to carry the EI-12848 key. Discounting
@@ -109,10 +109,10 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
 
     const p = writeTranscript(lines);
     expect(fs.statSync(p).size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
-    expect(tokensFromFileSize(p)).toBe(expectedTokens(lines));
+    expect(await tokensFromFileSize(p)).toBe(expectedTokens(lines));
   });
 
-  it('discounts a line carrying several snapshot markers exactly once', () => {
+  it('discounts a line carrying several snapshot markers exactly once', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 60; i++) lines.push(ordinaryLine(i));
     // Two raw markers on one physical line — a naive per-hit accumulator would
@@ -121,10 +121,10 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
 
     const p = writeTranscript(lines);
     expect(fs.statSync(p).size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
-    expect(tokensFromFileSize(p)).toBe(expectedTokens(lines));
+    expect(await tokensFromFileSize(p)).toBe(expectedTokens(lines));
   });
 
-  it('still counts a line that merely MENTIONS the marker in escaped string content', () => {
+  it('still counts a line that merely MENTIONS the marker in escaped string content', async () => {
     const lines: string[] = [];
     // 160 lines: this fixture has no big snapshot line to carry it over the scan
     // minimum, so the ordinary lines must clear it alone — below it the stat-only
@@ -146,7 +146,7 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
     expect(size).toBeGreaterThan(BOUNDARY_SCAN_MIN);
     // No line is discounted: JSON.stringify escaped the quotes, so the raw byte form
     // never appears and the whole file counts.
-    expect(tokensFromFileSize(p)).toBe(Math.floor(size / 4));
+    expect(await tokensFromFileSize(p)).toBe(Math.floor(size / 4));
   });
 });
 
@@ -170,7 +170,7 @@ describe('tokensFromFileSize — prompt_snapshot discount (EI-23747373965813124)
 describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', () => {
   afterEach(() => resetContextAnchorsForTests());
 
-  it('a snapshot appended BETWEEN reads does not step the gauge (the reported symptom)', () => {
+  it('a snapshot appended BETWEEN reads does not step the gauge (the reported symptom)', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 160; i++) lines.push(ordinaryLine(i));
     const p = writeTranscript(lines);
@@ -178,7 +178,7 @@ describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', (
 
     expect(seedContextAnchorForTests('anchor-step', p)).toBe(true);
     const before = currentContextTokensSyncForOwner('anchor-step');
-    expect(before).toBe(tokensFromFileSize(p));
+    expect(before).toBe(await tokensFromFileSize(p));
 
     // The live shape: one turn appends one whole system-prompt snapshot.
     const snap = snapshotLine(0, 200_000);
@@ -186,7 +186,7 @@ describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', (
     const after = currentContextTokensSyncForOwner('anchor-step');
 
     // Only the snapshot's trailing newline is real growth, so the reading must not move.
-    expect(after).toBe(tokensFromFileSize(p));
+    expect(after).toBe(await tokensFromFileSize(p));
     expect(after! - before!).toBeLessThanOrEqual(1);
 
     // Falsifiability control: before this fix the anchor added the whole line, i.e.
@@ -194,7 +194,7 @@ describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', (
     expect(after!).toBeLessThan(before! + 1_000);
   });
 
-  it('a snapshot present AT SEED time is discounted too (seedAnchorFromFile branch)', () => {
+  it('a snapshot present AT SEED time is discounted too (seedAnchorFromFile branch)', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 60; i++) lines.push(ordinaryLine(i));
     for (let i = 0; i < 3; i++) lines.push(snapshotLine(i));
@@ -205,12 +205,12 @@ describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', (
     expect(seedContextAnchorForTests('anchor-seed', p)).toBe(true);
     const got = currentContextTokensSyncForOwner('anchor-seed');
     expect(got).toBe(expectedTokens(lines));
-    expect(got).toBe(tokensFromFileSize(p));
+    expect(got).toBe(await tokensFromFileSize(p));
     // Snapshots are ~83% of this fixture — a regression is a >5x over-report, not rounding.
     expect(got!).toBeLessThan(Math.floor(size / 4) / 5);
   });
 
-  it('a snapshot after a compaction marker is discounted (advanceAnchor marker branch)', () => {
+  it('a snapshot after a compaction marker is discounted (advanceAnchor marker branch)', async () => {
     const lines: string[] = [];
     for (let i = 0; i < 160; i++) lines.push(ordinaryLine(i));
     const p = writeTranscript(lines);
@@ -228,7 +228,7 @@ describe('anchored reads — prompt_snapshot discount (EI-23760035638533818)', (
     );
 
     const after = currentContextTokensSyncForOwner('anchor-marker');
-    expect(after).toBe(tokensFromFileSize(p));
+    expect(after).toBe(await tokensFromFileSize(p));
     // Post-compaction the real context is one small turn, NOT one system prompt.
     expect(after!).toBeLessThan(5_000);
   });

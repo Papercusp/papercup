@@ -113,6 +113,12 @@ export const ALLOWLIST = new Map([
   // these two should come off the list.
   ['packages/operator-core/lib/agent-tools/testing/run.ts', 'detached ONLY to lead a process group so a timeout group-kills vitest; the child is awaited and dies with the call'],
   ['packages/operator-core/lib/agent-tools/build/typecheck.ts', 'detached ONLY to lead a process group so a timeout group-kills tsc; the child is awaited and dies with the call'],
+  // Same category-(2) shape, verified first-hand (WI-10004340): each spawn site is inside
+  // `await new Promise((resolve) => …)` that resolves on the child's `close`, and `detached`
+  // exists only so the timeout can `process.kill(-child.pid, 'SIGTERM')` the whole replay /
+  // record CLI group. Nothing outlives the awaiting call.
+  ['scripts/agent-capacity/load-driver.ts', 'detached ONLY to lead a process group so the replay timeout group-kills the CLI; the child is awaited (Promise resolves on close) and dies with the call'],
+  ['scripts/agent-capacity/record-session.ts', 'detached ONLY to lead a process group so the record timeout group-kills the CLI; the child is awaited (Promise resolves on close) and dies with the call'],
   ['libs/generic/deployment-driver/src/workspace-host-agent-authentication.ts', 'detached ONLY to lead the awaited agent probe process group; timeout and output-limit paths kill runuser plus its descendants, closing inherited pipes before the host initializer exits (EI-22527750869820737)'],
   // Surfaced for the FIRST time by the AST trigger: `detached: detach` at :9289, where
   // `const detach = opts.killProcessGroupOnTimeout === true`. The literal-text predicate
