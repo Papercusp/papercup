@@ -73,9 +73,9 @@ describe('bodyFromSearchParams', () => {
     ).toEqual({ status: 'active', includeArchived: true, includeLegacy: false });
   });
 
-  it('exposes exactly the four known boolean keys', () => {
+  it('exposes exactly the five known boolean keys', () => {
     expect([...PLANS_BOOLEAN_KEYS].sort()).toEqual(
-      ['actionable', 'includeArchived', 'includeLegacy', 'needsHuman'],
+      ['actionable', 'includeArchived', 'includeHistory', 'includeLegacy', 'needsHuman'],
     );
   });
 });
