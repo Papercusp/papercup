@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RunReport, Scenario, ScenarioVariant } from '@papercusp/testing-shell/llm';
 
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 import { SU_PLAYBOOK_FRAMING } from '../llm-testing/targets/su';
 import { extractAblatableRules } from './rules';
 import type { InsertAblationRunInput } from './store';
@@ -112,9 +113,9 @@ describe('runAblationCycle', () => {
     expect(calls).toHaveLength(4); // 2 scenarios × 2 arms
     for (const call of calls) {
       expect(call).toMatchObject({
-        sutModel: 'gpt-5.6-sol:xhigh',
-        judgeModel: 'gpt-5.6-sol:xhigh',
-        simModel: 'gpt-5.6-sol:xhigh',
+        sutModel: LEARNING_MODEL_SPEC,
+        judgeModel: LEARNING_MODEL_SPEC,
+        simModel: LEARNING_MODEL_SPEC,
       });
     }
     const baseline = calls[0]!.variant!;

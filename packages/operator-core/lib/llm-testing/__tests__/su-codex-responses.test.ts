@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PASS_THROUGH } from '@papercusp/testing-shell/llm';
 
-import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
+import { LEARNING_MODEL_ID, LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 import { buildCatalog } from '../targets/su-catalog';
 import { SuTarget } from '../targets/su';
 
@@ -183,7 +183,7 @@ describe('SuTarget Codex Responses tool loop', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(bodies[0]).toMatchObject({
-      model: 'gpt-5.6-sol',
+      model: LEARNING_MODEL_ID,
       reasoning: { effort: 'xhigh' },
       store: false,
       stream: true,

@@ -147,7 +147,11 @@ describe('physical drill bg-host fence (WI-10004352)', () => {
         'if bg_host_fence_acquire "drill run-5"; then echo GOT; else echo "REFUSED rc=$?"; fi',
         'bg_host_fence_release',
       ].join('\n'),
-      { FENCE_REFUSE_N: '1000', BG_HOST_FENCE_WAIT_SEC: '1', BG_HOST_FENCE_POLL_SEC: '0.3' },
+      // The fence's deadline is bash's whole-second SECONDS counter, and the first attempt
+      // runs two node processes (args JSON + the stubbed call). Under load a 1s wait could
+      // expire before any retry, leaving 1 attempt where this case asserts >=2. Give it
+      // several whole seconds of slack. The loop still exits on its own deadline.
+      { FENCE_REFUSE_N: '1000', BG_HOST_FENCE_WAIT_SEC: '4', BG_HOST_FENCE_POLL_SEC: '0.3' },
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('REFUSED rc=1');

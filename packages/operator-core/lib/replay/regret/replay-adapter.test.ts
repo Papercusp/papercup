@@ -18,6 +18,7 @@ import {
   governedRegretRunner,
   mapDivergenceTurnToReplayIndex,
 } from './replay-adapter';
+import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 
 const CANDIDATE: CandidateChange = {
   id: 'stop-retry-ladder',
@@ -142,7 +143,7 @@ const priceReq = {
 
 describe('governedRegretRunner.priceFinding', () => {
   it('pins replay continuations to the canonical learning model', () => {
-    expect(DEFAULT_REGRET_REPLAY_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(DEFAULT_REGRET_REPLAY_MODEL).toBe(LEARNING_MODEL_SPEC);
   });
 
   it('prices candidates vs the baseline echo: improvement = Δcomposite / 10', async () => {
