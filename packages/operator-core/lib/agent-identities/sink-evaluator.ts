@@ -12,10 +12,13 @@
  *     (PORTABLE-P-010's falsifier);
  *   - the per-turn host ceiling caps the sum across every sink invocation of
  *     one turn, so N sinks cannot multiply it either;
- *   - per-session and per-host concurrency are bounded by semaphores; a host
- *     slot is released only when the provider's promise SETTLES, so work that
- *     ignores its abort signal stays counted against the admission cap until it
- *     actually stops, instead of becoming an unbounded orphan;
+ *   - each session may have at most `perSessionConcurrency` provider calls in
+ *     flight, and a slot is released only when the provider's promise SETTLES,
+ *     so work that ignores its abort signal stays counted against its session's
+ *     admission cap until it actually stops, instead of becoming an unbounded
+ *     orphan. There is deliberately no host-wide capacity figure here (D-017):
+ *     host in-flight is at most that policy times the live sessions, and
+ *     launched sessions are the units the resource Governor already admits;
  *   - nothing queued or nested begins after the deadline;
  *   - a result is fenced to its session, turn, invocation and attachment
  *     revision, so a late or superseded result reaches neither this turn's
@@ -45,16 +48,14 @@ export interface SinkHostLimits {
   readonly sinkBudget: SinkBudget;
   /** Ceiling across every sink invocation of one (session, turn). */
   readonly turnCeiling: SinkBudget;
+  /** Hard admission cap for one session's in-flight provider calls, cooperative or not. */
   readonly perSessionConcurrency: number;
-  /** Hard admission cap for in-flight provider calls on this host, cooperative or not. */
-  readonly perHostConcurrency: number;
 }
 
 export const DEFAULT_SINK_HOST_LIMITS: SinkHostLimits = Object.freeze({
   sinkBudget: Object.freeze({ tokens: 400, wallClockMs: 750 }),
   turnCeiling: Object.freeze({ tokens: 800, wallClockMs: 1_500 }),
   perSessionConcurrency: 2,
-  perHostConcurrency: 16,
 });
 
 /** What a provider is handed for one call. */
@@ -192,7 +193,6 @@ const TURN_LEDGER_MAX = 2_048;
 const TURN_LEDGER_TTL_MS = 30 * 60_000;
 
 const state = pinModuleState('@papercusp/operator-core.agent-identities.sink-evaluator', () => ({
-  host: new Semaphore(DEFAULT_SINK_HOST_LIMITS.perHostConcurrency),
   sessions: new Map<string, Semaphore>(),
   turns: new Map<string, TurnLedgerEntry>(),
 }));
@@ -222,13 +222,16 @@ function turnLedger(sessionId: string, turnId: string, now: number): TurnLedgerE
   return entry;
 }
 
-/** Live host admission state — non-cooperative work stays visible here until it settles. */
-export function sinkHostStatus(): { hostInFlight: number; hostLimit: number; sessionsInFlight: Record<string, number> } {
+/** Live admission state — non-cooperative work stays visible here until it settles. */
+export function sinkHostStatus(): { hostInFlight: number; sessionsInFlight: Record<string, number> } {
   const sessionsInFlight: Record<string, number> = {};
+  let hostInFlight = 0;
   for (const [sessionId, semaphore] of state.sessions) {
-    if (semaphore.inFlight) sessionsInFlight[sessionId] = semaphore.inFlight;
+    if (!semaphore.inFlight) continue;
+    sessionsInFlight[sessionId] = semaphore.inFlight;
+    hostInFlight += semaphore.inFlight;
   }
-  return { hostInFlight: state.host.inFlight, hostLimit: state.host.limit, sessionsInFlight };
+  return { hostInFlight, sessionsInFlight };
 }
 
 /** Test seam: drop the turn ledger and idle semaphores (never resets in-flight work). */
@@ -306,7 +309,6 @@ export async function evaluateSinkInvocation(input: EvaluateSinkInvocationInput)
   const budgetMs = Math.min(limits.sinkBudget.wallClockMs, turnMsLeft);
   const deadlineAt = start + budgetMs;
 
-  state.host.limit = limits.perHostConcurrency;
   const session = sessionSemaphore(sessionId, limits.perSessionConcurrency);
   const controller = new AbortController();
   const abort = (reason: SinkOmissionReason) => {
@@ -338,14 +340,9 @@ export async function evaluateSinkInvocation(input: EvaluateSinkInvocationInput)
       omit(contribution, 0, 'budget-exhausted');
       return;
     }
-    // Admission: session first, then the host cap. A waiter that is still
-    // queued at the deadline gives up — nothing queued begins after it.
+    // Admission: a waiter still queued at the deadline gives up — nothing
+    // queued begins after it.
     if (!(await session.acquire(controller.signal))) {
-      omit(contribution, allowance, controller.signal.reason === 'detached' ? 'detached' : 'queued-past-deadline');
-      return;
-    }
-    if (!(await state.host.acquire(controller.signal))) {
-      session.release();
       omit(contribution, allowance, controller.signal.reason === 'detached' ? 'detached' : 'queued-past-deadline');
       return;
     }
@@ -372,7 +369,6 @@ export async function evaluateSinkInvocation(input: EvaluateSinkInvocationInput)
       // Released only when the provider's own promise settles: work that ignored
       // its signal keeps occupying the admission cap until it actually stops.
       unsettled -= 1;
-      state.host.release();
       session.release();
     }
     // Late-result fence: a result that settles after the deadline, or against

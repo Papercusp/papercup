@@ -25,7 +25,6 @@ const LIMITS: SinkHostLimits = {
   sinkBudget: { tokens: 400, wallClockMs: 2_000 },
   turnCeiling: { tokens: 10_000, wallClockMs: 60_000 },
   perSessionConcurrency: 2,
-  perHostConcurrency: 16,
 };
 
 let seq = 0;
@@ -121,8 +120,9 @@ describe('PORTABLE-P-010 aggregate sink budget', () => {
     expect(result.peakSessionInFlight).toBeLessThanOrEqual(2);
   });
 
-  it('a provider that ignores its abort keeps its host admission slot until it settles', async () => {
-    const limits = { ...LIMITS, sinkBudget: { tokens: 400, wallClockMs: 80 }, perHostConcurrency: 1 };
+  it('a provider that ignores its abort keeps its session admission slot until it settles', async () => {
+    const limits = { ...LIMITS, sinkBudget: { tokens: 400, wallClockMs: 80 }, perSessionConcurrency: 1 };
+    const sessionId = `sess-orphan-${++seq}`;
     let observedAbort = false;
     let release!: () => void;
     const settled = new Promise<void>((resolve) => { release = resolve; });
@@ -135,24 +135,31 @@ describe('PORTABLE-P-010 aggregate sink budget', () => {
       },
     };
     const started = Date.now();
-    const first = await evaluateSinkInvocation({ invocation: invocation(), limits,
+    const first = await evaluateSinkInvocation({ invocation: invocation({ sessionId, turnId: 'turn-1' }), limits,
       currentAttachmentRevision: () => 'rev-1', contributions: [stubborn] });
     expect(Date.now() - started).toBeLessThan(1_000);
     expect(observedAbort).toBe(true);
     expect(first.omissions.map((o) => o.reason)).toEqual(['deadline']);
     expect(first.unsettledAtReturn).toBe(1);
-    expect(sinkHostStatus().hostInFlight).toBe(1);
+    expect(sinkHostStatus()).toMatchObject({ hostInFlight: 1, sessionsInFlight: { [sessionId]: 1 } });
 
-    // The orphan still counts: another session's invocation cannot be admitted.
-    const secondRan: string[] = [];
-    const second = await evaluateSinkInvocation({ invocation: invocation(), limits,
-      currentAttachmentRevision: () => 'rev-1', contributions: [filling('other', 50, secondRan)] });
-    expect(secondRan).toEqual([]);
-    expect(second.omissions.map((o) => o.reason)).toEqual(['queued-past-deadline']);
+    // The orphan still counts: the same session's next turn cannot be admitted.
+    const nextTurnRan: string[] = [];
+    const nextTurn = await evaluateSinkInvocation({ invocation: invocation({ sessionId, turnId: 'turn-2' }), limits,
+      currentAttachmentRevision: () => 'rev-1', contributions: [filling('next', 50, nextTurnRan)] });
+    expect(nextTurnRan).toEqual([]);
+    expect(nextTurn.omissions.map((o) => o.reason)).toEqual(['queued-past-deadline']);
+
+    // No hidden host-wide cap: one session's orphan never starves another session.
+    const otherRan: string[] = [];
+    const other = await evaluateSinkInvocation({ invocation: invocation(), limits,
+      currentAttachmentRevision: () => 'rev-1', contributions: [filling('other', 50, otherRan)] });
+    expect(otherRan).toEqual(['other']);
+    expect(other.deliveries.map((d) => d.identityId)).toEqual(['other']);
 
     release();
     await sleep(10);
-    expect(sinkHostStatus().hostInFlight).toBe(0);
+    expect(sinkHostStatus()).toEqual({ hostInFlight: 0, sessionsInFlight: {} });
   });
 
   it('no nested dispatch begins after the deadline, and the late result is fenced out', async () => {
