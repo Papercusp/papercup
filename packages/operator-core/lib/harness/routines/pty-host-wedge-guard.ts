@@ -892,7 +892,17 @@ export async function sweepWedgedPtyHosts(
         return recordWedgeEpisode(input, {
           listIssues: (filter) => issues.listIssues(filter as Parameters<typeof issues.listIssues>[0]),
           createIssue: (createInput) =>
-            issues.createIssue(createInput as Parameters<typeof issues.createIssue>[0]),
+            issues.createIssue({
+              ...createInput,
+              // Forwarded EXPLICITLY rather than left to the blanket cast below. This is
+              // a work-item filing seam, and `work_items.admission` has no column
+              // default: anything that fails to arrive here mints NULL, which reads as
+              // "pre-gate legacy, admitted" and is immediately claimable. Naming the
+              // field keeps that decision visible at the seam instead of depending on a
+              // spread nobody re-reads — `recordWedgeEpisode` chooses the value (it
+              // files born-pending); this wiring only carries it faithfully.
+              admission: createInput.admission ?? null,
+            } as Parameters<typeof issues.createIssue>[0]),
           commentIssue: (id, body, authorId) => issues.commentIssue(id, body, authorId),
           mergeIssuePayload: (id, patch) => issues.mergeIssuePayload(id, patch),
         });

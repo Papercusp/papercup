@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { HostedSessionCookieCodec, type CreateHostedSessionInput, type HostedSession } from '../auth/hosted-session';
 import { createFakeHostedIdentityProvider, FAKE_HOSTED_IDENTITY_NOW_MS } from '../auth/hosted/fake-provider';
 import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
@@ -230,10 +230,37 @@ describe('hosted control plane integration', () => {
     // 404'd in production while its unit tests stayed green.
     const { app } = hostedControlPlane();
 
-    for (const { method, path } of HOSTED_AUTH_ROUTES) {
-      const res = await app.request(`/api${path}`, { method });
-      expect(res.status).not.toBe(404);
+    // Sweeping every route bare-handed necessarily drives GET /hosted/auth/callback
+    // with no `state`, and that path's recovery redirect deliberately warns — it is
+    // the SOLE observability seam for state_required (see routes/hosted-auth/index.ts,
+    // whose comment says to keep it). vitest-fail-on-console otherwise reads that
+    // working seam as a test failure.
+    //
+    // ASSERTED rather than merely silenced: a bare mockImplementation would also stay
+    // green if someone deleted the warn, which is precisely the observability
+    // regression the seam exists to prevent.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let warnCalls: readonly unknown[][] = [];
+    try {
+      for (const { method, path } of HOSTED_AUTH_ROUTES) {
+        const res = await app.request(`/api${path}`, { method });
+        expect(res.status).not.toBe(404);
+      }
+      warnCalls = warn.mock.calls.map((call) => [...call]);
+    } finally {
+      // Restore before the assertion below, so a failure here cannot leave the spy
+      // installed and cascade into every later test in the file.
+      warn.mockRestore();
     }
+
+    expect(
+      warnCalls.some(
+        ([first]) =>
+          typeof first === 'string' &&
+          first.includes('[hosted-auth] callback recovery redirect code=state_required'),
+      ),
+      'the hosted-auth state_required observability seam did not fire',
+    ).toBe(true);
   });
 
   it('answers unauthenticated hosted requests through the HOSTED stack', async () => {
