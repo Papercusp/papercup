@@ -5,7 +5,7 @@
  * peers and any append whose after-witness pass failed. Idempotent.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 
 const text = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -21,7 +21,7 @@ export default defineTool({
   },
   args: z.object({
     stream: z.enum(['plan-admission', 'money-journal']).default('plan-admission'),
-    pot: z.string().min(1).max(200).optional().describe("plan-admission: the pot's home slug."),
+    pot: entityRef('pot', { soft: true, max: 200, describe: "plan-admission: the pot's home slug." }).optional(),
   }),
   async handler(args, ctx) {
     const [{ activeWorkspaceId }, chain, { ledgerChainSource }] = await Promise.all([

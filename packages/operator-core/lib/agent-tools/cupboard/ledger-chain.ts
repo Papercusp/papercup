@@ -5,7 +5,7 @@
  * are verified through the Worker's operator routes (/admin/ledger-chain/*).
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 
 const text = (payload: Record<string, unknown>) => ({ data: payload });
 
@@ -23,7 +23,7 @@ export default defineTool({
   args: z.object({
     op: z.enum(['verify', 'export']),
     stream: z.enum(['plan-admission', 'money-journal']).default('plan-admission'),
-    pot: z.string().min(1).max(200).optional().describe("plan-admission: the pot's home slug."),
+    pot: entityRef('pot', { soft: true, max: 200, describe: "plan-admission: the pot's home slug." }).optional(),
     expectedHead: z
       .object({ seq: z.number().int().min(0), entryHash: z.string().regex(/^[0-9a-f]{64}$/) })
       .optional()
