@@ -60,7 +60,20 @@ import {
  * half of this guard only fires under `lint:tsc`. A green run of this file says
  * nothing about it.
  */
-const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
+/**
+ * Fields of OrientationState that MODIFY another class's rendering and token
+ * rather than forming a class of their own, so they have no registry entry.
+ * `heldReadFailed` folds into the `held` class: its line (order 150) renders the
+ * "unavailable" variant and `fingerprintOrientation` folds it into the `held`
+ * token (`'!unavailable'`). Keep this list explicit — every OTHER new field still
+ * fails `lint:tsc` here until it is declared.
+ */
+type OrientationStateModifierField = 'heldReadFailed';
+
+const EVERY_ORIENTATION_STATE_FIELD: Record<
+  Exclude<keyof OrientationState, OrientationStateModifierField>,
+  true
+> = {
   held: true,
   planDecisions: true,
   lockTransitions: true,

@@ -54,7 +54,9 @@ function opts(transcriptPath: string): BuildCarryDocOpts {
       ownerId: OWNER, loop: null, heldItems: [], directives: [], directivesTotalOpen: 0,
       walls: [], facts: [], awaits: [], fleet: null,
     }),
-    buildAutomaticRecoveryFn: async () => null,
+    // The seam is typed Promise<AutomaticCompactionRecovery>; buildCarryDoc maps a
+    // REJECTION to `automaticRecovery: null`, so reject rather than resolve null.
+    buildAutomaticRecoveryFn: () => Promise.reject(new Error('fixture: no automatic recovery')),
     getModesFn: async () => [],
     getPlanItemsFn: async () => [],
     getAsksFn: async () => [],
