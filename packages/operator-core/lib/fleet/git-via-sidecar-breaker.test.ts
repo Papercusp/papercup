@@ -20,7 +20,10 @@ const { spawnSpy, callSpy } = vi.hoisted(() => ({
 }));
 
 vi.mock('./spawner-sidecar-spawn', () => ({ spawnSpawnerSidecar: spawnSpy }));
-vi.mock('./spawner-ipc-client', () => ({ getSpawnerIpcClient: () => ({ call: callSpy }) }));
+vi.mock('./spawner-ipc-client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./spawner-ipc-client')>()),
+  getSpawnerIpcClient: () => ({ call: callSpy }),
+}));
 
 import {
   SIDECAR_BREAKER_COOLDOWN_MS,
