@@ -29,7 +29,7 @@ describe("P-015 R-7 live identity-switch verifier", () => {
     expect(ok.status, ok.stderr).toBe(0);
     const resolved = preflight({ R7_OWNER: "su-x" });
     expect(resolved.status, resolved.stderr).toBe(0);
-    expect(script).toContain("getHarnessAdminUrl()");
+    expect(script).toContain("resolveScriptPgUrl()");
   });
 
   it("seeds and deletes nothing, and never posts a synthetic host acknowledgement", () => {

@@ -89,7 +89,7 @@ import {
   managedSetInterval,
   type ManagedHandle,
 } from "@papercusp/scheduled-registry";
-import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
+import { gateVerdictTargetFromEnv, type GateVerdictTarget } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { gateFireIdFromEnv } from "@papercusp/operator-core/lib/release/gate-fire-ledger";
 import { routineFireIdentityFromEnv } from "@papercusp/operator-core/lib/release/in-flight-candidate";
 import type { WriteFrozenCandidateRepairQueueOptions } from "@papercusp/operator-core/lib/harness/routines/release-actions";
@@ -101,7 +101,14 @@ import {
   type DependencyPrebuildState,
   type DependencyPrebuildTarget,
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
-import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
+import {
+  CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
+  CHECKPOINT_SCHEDULED_RUN_ENV,
+  checkpointPidIdentity,
+  recordStoredQualificationRunnerProgress,
+  reserveStoredQualificationRunner,
+  type StoredQualificationMutation,
+} from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 import type { CheckpointVerdict } from "@papercusp/operator-core/lib/harness/routines/release-actions";
 import {
@@ -1113,6 +1120,8 @@ export interface CheckpointDeps {
     payload: unknown;
     cancelSiblingKeysFor?: string[];
   }): Promise<void>;
+  /** Production defers green/red wakes until the exact terminal result is durable. */
+  flushTerminalEvents?(result: CheckpointResult, recorded: boolean): Promise<void>;
   /** EI-13992/WI-41490: apply pending migrations from the exact prepared candidate to
    *  the live dev PG the suite is about to run against, BEFORE dependency materialization
    *  and again before runGreen — breaks the
@@ -1763,7 +1772,7 @@ export async function emitInconclusiveCheckpointVerdict(
 export interface CheckpointRunLock {
   acquired: boolean;
   lockDir: string;
-  owner?: { pid?: number; startedAt?: string; detail?: string };
+  owner?: { pid?: number; startedAt?: string; pidIdentity?: string | null; hardDeadlineAt?: string; detail?: string };
   release(): void;
 }
 
@@ -2098,30 +2107,18 @@ function defaultPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
+  } catch (error) {
+    // EPERM proves the process exists; its identity probe below remains fail-closed.
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
     return false;
   }
 }
 
-/** A checkpoint run is bounded by the routine's suite timeout
- *  (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in
- *  packages/operator-core/lib/release/green-checkpoint-schedule.ts — 115m), so a
- *  lock held longer than THIS is DEFINITIVELY stale and is reclaimed even if its recorded
- *  pid still looks alive. Without this, a run that hung past its timeout / crashed without
- *  releasing / left a lock whose pid got RECYCLED to an unrelated live process wedged
- *  the gate forever — the dead-pid check alone never reclaims a recycled-pid lock. This
- *  is the silent multi-hour fleet-deploy freeze (green-checkpoint-stale-lock-2026-06-26).
- *  INVARIANT: keep this STRICTLY GREATER than the suite timeout AND SELF_WATCHDOG_MS, so a
- *  run is killed by the timeout (or, parent-dead, by its own watchdog) and releases its lock
- *  before the lock is reclaimable — else an overlapping hourly fire spawns a 2nd concurrent
- *  suite and OOMs the box. Raised 45m→65m in lock-step with the 25m→55m timeout bump
- *  (green-checkpoint-timeout-vs-forks-2026-06-27), then 65m→190m with the 55m→120m bump
- *  (EI-7553: under full-fleet load the multi-pass suite measured 60–90m, so the 55m/65m pair
- *  killed healthy runs pre-verdict; 190m sits above BOTH the 115m timeout and the 180m
- *  self-watchdog, making the full chain coherent for the first time:
- *  timeout 115m < self-watchdog 180m < stale-reclaim 190m). The dead-pid check still
- *  reclaims a crashed run's lock immediately; THIS threshold only gates the recycled-pid
- *  case, so the longer window costs nothing in the common crash path. */
+/** Review deadline for a run-lock owner, above the suite and self-watchdog bounds.
+ * An expired deadline is an escalation signal, never proof that a live process is safe to
+ * overlap. Reclaim requires a dead PID or a changed boot/start identity. This removes the
+ * age-only overlap risk while still recovering the recycled-PID freeze that motivated the
+ * earlier threshold. */
 export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
 
 /** WI-7069: how long the stretch from CANDIDATE SELECTION to SUITE START may take before the
@@ -3013,9 +3010,10 @@ export function acquireCheckpointRunLock(
   opts: {
     pid?: number;
     isPidAlive?: (pid: number) => boolean;
-    /** Reclaim a held lock older than this even if its pid looks alive. Default
-     *  CHECKPOINT_LOCK_STALE_MS. Injected for tests. */
+    /** Owner review deadline; age alone never authorizes reclaim. */
     staleAfterMs?: number;
+    /** Stable boot/start identity probe. Null means unknown, never dead. */
+    getPidIdentity?: (pid: number) => string | null;
     /** Clock seam — used for BOTH the lock's recorded `startedAt` and the over-age
      *  check, so they share one timeline (injected in tests). */
     now?: () => number;
@@ -3023,6 +3021,7 @@ export function acquireCheckpointRunLock(
 ): CheckpointRunLock {
   const pid = opts.pid ?? process.pid;
   const isPidAlive = opts.isPidAlive ?? defaultPidAlive;
+  const getPidIdentity = opts.getPidIdentity ?? checkpointPidIdentity;
   const now = opts.now ?? (() => Date.now());
   const staleAfterMs = opts.staleAfterMs ?? CHECKPOINT_LOCK_STALE_MS;
   const token = randomUUID();
@@ -3031,11 +3030,14 @@ export function acquireCheckpointRunLock(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(lockDir);
+      const startedAtMs = now();
       writeFileSync(
         path.join(lockDir, "owner.json"),
         JSON.stringify({
           pid,
-          startedAt: new Date(now()).toISOString(),
+          startedAt: new Date(startedAtMs).toISOString(),
+          hardDeadlineAt: new Date(startedAtMs + staleAfterMs).toISOString(),
+          pidIdentity: getPidIdentity(pid),
           token,
         }),
       );
@@ -3056,7 +3058,7 @@ export function acquireCheckpointRunLock(
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code !== "EEXIST") throw e;
-      let owner: { pid?: number; startedAt?: string; detail?: string } = {};
+      let owner: { pid?: number; startedAt?: string; hardDeadlineAt?: string; pidIdentity?: string | null; detail?: string } = {};
       try {
         owner = JSON.parse(
           readFileSync(path.join(lockDir, "owner.json"), "utf8"),
@@ -3064,13 +3066,31 @@ export function acquireCheckpointRunLock(
       } catch {
         owner = { detail: "owner metadata unreadable" };
       }
-      // Hold the lock for a LIVE owner — unless it has outlived the max run age, in
-      // which case it is reclaimed regardless of apparent pid liveness (hung-past-timeout,
-      // crashed-without-release, or recycled-pid — see CHECKPOINT_LOCK_STALE_MS).
-      const ageMs = owner.startedAt ? now() - Date.parse(owner.startedAt) : NaN;
-      const overAge = Number.isFinite(ageMs) && ageMs > staleAfterMs;
-      if (typeof owner.pid === "number" && isPidAlive(owner.pid) && !overAge) {
-        return { acquired: false, lockDir, owner, release: () => {} };
+      if (typeof owner.pid !== "number") {
+        return { acquired: false, lockDir, owner: { ...owner, detail: "lock owner identity unreadable; liveness unknown" }, release: () => {} };
+      }
+      let alive: boolean;
+      try {
+        alive = isPidAlive(owner.pid);
+      } catch {
+        return { acquired: false, lockDir, owner: { ...owner, detail: "owner liveness probe failed" }, release: () => {} };
+      }
+      if (alive) {
+        const observedIdentity = getPidIdentity(owner.pid);
+        if (!owner.pidIdentity || !observedIdentity) {
+          return { acquired: false, lockDir, owner: { ...owner, detail: "live PID identity unknown; reclaim requires proof" }, release: () => {} };
+        }
+        if (owner.pidIdentity === observedIdentity) {
+          const deadline = owner.hardDeadlineAt ? Date.parse(owner.hardDeadlineAt) : NaN;
+          const overdue = Number.isFinite(deadline) && now() > deadline;
+          return {
+            acquired: false,
+            lockDir,
+            owner: { ...owner, ...(overdue ? { detail: "live owner exceeded hard deadline; preserve single flight and escalate" } : {}) },
+            release: () => {},
+          };
+        }
+        // The PID was recycled: the original owner is gone even though the number is live.
       }
       rmSync(lockDir, { recursive: true, force: true });
     }
@@ -3081,6 +3101,109 @@ export function acquireCheckpointRunLock(
     lockDir,
     owner: { detail: "could not acquire after stale lock cleanup" },
     release: () => {},
+  };
+}
+
+export function checkpointRunLockSkipSummary(lock: CheckpointRunLock): string {
+  const pid = lock.owner?.pid ? ` (pid ${lock.owner.pid})` : "";
+  const detail = lock.owner?.detail ? `; ${lock.owner.detail}` : "";
+  return `green-checkpoint skipped: another checkpoint process owns the run lock${pid}${detail}`;
+}
+
+/** Attach the CLI to the wrapper's pre-spawn reservation only on scheduled launches. */
+export async function activateScheduledCheckpointRunner(
+  input: {
+    scheduled: boolean;
+    target: GateVerdictTarget | null;
+    attemptId: string | undefined;
+    gateFireId: string | undefined;
+    runId: string;
+    candidate: string | null;
+    pid: number;
+  },
+  reserve: typeof reserveStoredQualificationRunner = reserveStoredQualificationRunner,
+): Promise<StoredQualificationMutation | { status: 'not-scheduled' | 'missing-identity' }> {
+  if (!input.scheduled) return { status: 'not-scheduled' };
+  if (!input.target || !input.attemptId || !input.gateFireId) return { status: 'missing-identity' };
+  return reserve(input.target, {
+    attemptId: input.attemptId,
+    runnerId: input.gateFireId,
+    runId: input.runId,
+    candidate: input.candidate,
+    pid: input.pid,
+    pidIdentity: checkpointPidIdentity(input.pid),
+    leaseDurationMs: SELF_WATCHDOG_MS,
+    started: true,
+    evidenceRefs: [`checkpoint-run:${input.runId}`],
+  });
+}
+
+export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint: () => string = randomUUID): string {
+  const token = value?.trim();
+  return token && token !== '1' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(token)
+    ? token
+    : mint();
+}
+
+/** Keep the exact scheduled runner visibly alive through quiet suite phases. */
+export function startScheduledQualificationProgress(
+  input: {
+    target: GateVerdictTarget | null;
+    attemptId: string | undefined;
+    gateFireId: string | undefined;
+    runId: string;
+    pid: number;
+  },
+  record: typeof recordStoredQualificationRunnerProgress = recordStoredQualificationRunnerProgress,
+  intervalMs = 60_000,
+): { note(detail?: string): void; stop(): Promise<void> } {
+  if (!input.target || !input.attemptId || !input.gateFireId) {
+    return { note: () => {}, stop: async () => {} };
+  }
+  const target = input.target;
+  const attemptId = input.attemptId;
+  const runnerId = input.gateFireId;
+  const pidIdentity = checkpointPidIdentity(input.pid);
+  let phase: 'materializing' | 'suite' | 'isolating' | 'delivering' = 'materializing';
+  let stopped = false;
+  let pending: Promise<void> = Promise.resolve();
+  let lastReportedAtMs = Date.now(); // activation already wrote the first progress clock
+  const report = (force = false) => {
+    if (stopped || !pidIdentity) return;
+    const nowMs = Date.now();
+    if (!force && nowMs - lastReportedAtMs < intervalMs) return;
+    lastReportedAtMs = nowMs;
+    const phaseAtReport = phase;
+    pending = pending.then(async () => {
+      const result = await record(target, {
+        attemptId, runnerId, runId: input.runId, pidIdentity, phase: phaseAtReport, nowMs,
+      });
+      if (result.status !== 'updated' && result.status !== 'idempotent' && result.status !== 'terminal') {
+        console.warn(`${orchestratorStdoutTag()} scheduled runner progress refused: ${result.status}`);
+      }
+    }).catch((error) => {
+      console.warn(`${orchestratorStdoutTag()} scheduled runner progress failed: ${error instanceof Error ? error.message : error}`);
+    });
+  };
+  const timer = setInterval(() => report(true), intervalMs);
+  timer.unref();
+  return {
+    note(detail) {
+      if (detail?.startsWith('phase:')) {
+        const next = detail.slice('phase:'.length);
+        if (next === 'materializing' || next === 'suite' || next === 'isolating' || next === 'delivering') {
+          phase = next;
+          report(true);
+          return;
+        }
+      }
+      report();
+    },
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      await pending;
+    },
   };
 }
 
@@ -3224,6 +3347,7 @@ export async function emitTerminalCheckpointResult(
     writeHuman(result: CheckpointResult): void;
     writeMarker(line: string): void;
     emitInconclusive(result: CheckpointResult): Promise<void>;
+    emitTerminalEvents?(result: CheckpointResult, recorded: boolean): Promise<void>;
     retire(result: CheckpointResult): Promise<void>;
   },
 ): Promise<void> {
@@ -3233,6 +3357,7 @@ export async function emitTerminalCheckpointResult(
   deps.writeMarker(
     `${GREEN_CHECKPOINT_RESULT_MARKER} ${JSON.stringify(terminal)}`,
   );
+  await deps.emitTerminalEvents?.(terminal, recorded);
   if (
     terminal.green === null &&
     terminal.candidateSource !== "pinned" &&
@@ -3241,6 +3366,58 @@ export async function emitTerminalCheckpointResult(
     await deps.emitInconclusive(terminal);
   }
   await deps.retire(terminal);
+}
+
+type CheckpointEvent = Parameters<NonNullable<CheckpointDeps['emitEvent']>>[0];
+
+/** The production emitter buffers verdict wakes until the producer records its result. */
+export function createCheckpointTerminalEventBuffer(
+  emit: (event: CheckpointEvent) => Promise<void>,
+  warn: (message: string) => void,
+): {
+  emit(event: CheckpointEvent): Promise<void>;
+  flush(result: CheckpointResult, recorded: boolean): Promise<void>;
+} {
+  const pending = new Map<string, CheckpointEvent>();
+  return {
+    async emit(event) {
+      if (event.key === 'release:green' || event.key.startsWith('release:green:') ||
+          event.key === 'green-checkpoint:red' || event.key.startsWith('green-checkpoint:red:')) {
+        const payload = event.payload as Record<string, unknown> | null;
+        const sha = typeof payload?.sha === 'string' ? payload.sha : '';
+        const runId = typeof payload?.runId === 'string' ? payload.runId : '';
+        pending.set(`${event.key}:${sha}:${runId}`, event);
+        return;
+      }
+      await emit(event);
+    },
+    async flush(result, recorded) {
+      const events = [...pending.values()];
+      pending.clear();
+      if (!recorded) {
+        if (events.length) warn(`withheld ${events.length} terminal wake(s): exact checkpoint result was not recorded`);
+        return;
+      }
+      const validShas = new Set([
+        result.candidate,
+        result.advancedTo,
+        result.repairQueue?.repairHead,
+      ].filter((sha): sha is string => typeof sha === 'string' && sha.length > 0));
+      for (const event of events) {
+        const payload = event.payload as Record<string, unknown> | null;
+        if (!payload || typeof payload.sha !== 'string' || !validShas.has(payload.sha) ||
+            (result.runId && payload.runId !== result.runId)) {
+          warn(`withheld ${event.key}: terminal event identity does not match recorded result`);
+          continue;
+        }
+        try {
+          await emit(event);
+        } catch (error) {
+          warn(`${event.key} emit failed after terminal record: ${error instanceof Error ? error.message : error}`);
+        }
+      }
+    },
+  };
 }
 
 /** What a captured fixture marker is rewritten to before the suite log is persisted. */
@@ -17314,6 +17491,13 @@ export function realCheckpointDeps(
     );
   };
   const repairTarget = gateVerdictTargetFromEnv();
+  const terminalEvents = createCheckpointTerminalEventBuffer(
+    async ({ key, summary, payload, cancelSiblingKeysFor }) => {
+      const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
+      await emitAwaitedEvent({ key, summary, payload, source: 'green-checkpoint', cancelSiblingKeysFor });
+    },
+    (message) => console.warn(`${orchestratorStdoutTag()} ${message}`),
+  );
   // P-008: did ANY branch record a disposition on this tick? The terminal handler writes a
   // derived one only when this is still false, so a branch-recorded disposition (which
   // carries the measured sentence a projection cannot reconstruct) always wins. One
@@ -18093,17 +18277,8 @@ export function realCheckpointDeps(
     // full-advance one raced the process teardown and never woke a `release:green:<pipeline>`
     // awaiter. Awaiting couples the emit's fireAwaitsForKey/insertDeliveries to the caller's
     // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
-    async emitEvent({ key, summary, payload, cancelSiblingKeysFor }) {
-      const { emitAwaitedEvent } =
-        await import("@papercusp/operator-core/lib/events/await/engine");
-      await emitAwaitedEvent({
-        key,
-        summary,
-        payload,
-        source: "green-checkpoint",
-        cancelSiblingKeysFor,
-      });
-    },
+    emitEvent: terminalEvents.emit,
+    flushTerminalEvents: terminalEvents.flush,
     // EI-13992: real wiring for the migration-currency preflight (see
     // CheckpointDeps.ensureMigrationsCurrent doc) — applies to the SAME dev PG
     // db-boot-migrate targets at operator boot, just without its once-per-process
@@ -18682,6 +18857,7 @@ export function realCheckpointDeps(
           cfg.integrationRoot,
         );
         writeCheckpointRunPhase(_phaseLockDir, "isolating");
+        notifyProgress("phase:isolating");
         // EI-20669541349219660: persist the parsed failing-file list BEFORE isolation
         // begins. A run killed mid-absorption previously lost this list with the process,
         // so its emergency red carried failingTests:[] and the next run re-derived the
@@ -18749,6 +18925,7 @@ export function realCheckpointDeps(
         // try/finally: if absorption throws, the run dies and its pid with it, and
         // pc-heavy gates on the lock owner's LIVE pid before it ever reads the phase.
         writeCheckpointRunPhase(_phaseLockDir, "suite");
+        notifyProgress("phase:suite");
 
         if (suiteAbsorbed) {
           // EI-20669541349219660: the red was PROVEN load-flake — update the marker so a
@@ -20242,7 +20419,10 @@ if (require.main === module) {
     }
   };
 
+  let stopQualificationProgress: (() => Promise<void>) | undefined;
+  let flushTerminalEvents: CheckpointDeps['flushTerminalEvents'];
   const emitResult = async (r: CheckpointResult): Promise<void> => {
+    await stopQualificationProgress?.();
     // The pretty result goes to STDERR (human-readable); STDOUT carries ONLY the
     // single marker line. CRITICAL for cross-version compat: the routine that invokes
     // this CLI runs from the integration tree, so a DEPLOYED (older) green-checkpoint
@@ -20260,6 +20440,9 @@ if (require.main === module) {
       writeMarker: (line) => console.log(line),
       // AWAITED (not fire-and-forget): every caller exits immediately after emitResult.
       emitInconclusive: emitInconclusiveVerdict,
+      emitTerminalEvents: async (result, recorded) => {
+        await flushTerminalEvents?.(result, recorded);
+      },
       // Retire here because every terminal path funnels through this seam. Best-effort cleanup
       // preserves the prior contract: a marker that cannot be cleared ages out by freshness.
       retire: async (result) => {
@@ -20331,7 +20514,8 @@ if (require.main === module) {
   // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
   // own event payload independently) — so every event this process could possibly emit
   // carries the SAME run identity.
-  const runId = randomUUID();
+  const scheduledRunToken = process.env[CHECKPOINT_SCHEDULED_RUN_ENV]?.trim();
+  const runId = checkpointRunIdFromScheduledEnv(scheduledRunToken);
   const gateFireId = gateFireIdFromEnv();
   let resolvedCandidateForRun: string | null = null;
 
@@ -20411,7 +20595,7 @@ if (require.main === module) {
             // own reason keeps it OUT of the green set so trackGateStall counts it and the
             // held-gate alarm fires. (green-checkpoint-stale-lock-2026-06-26.)
             reason: "skipped-locked",
-            summary: `green-checkpoint skipped: another checkpoint process is already running${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ""}`,
+            summary: checkpointRunLockSkipSummary(lock),
           });
           process.exit(0);
         })
@@ -20424,6 +20608,28 @@ if (require.main === module) {
           process.exit(1);
         });
     } else {
+      const activation = await activateScheduledCheckpointRunner({
+        scheduled: Boolean(scheduledRunToken),
+        target: gateVerdictTargetFromEnv(),
+        attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
+        gateFireId,
+        runId,
+        candidate: resolvedCandidateForRun,
+        pid: process.pid,
+      });
+      if (activation.status !== 'not-scheduled' && activation.status !== 'updated' && activation.status !== 'idempotent') {
+        lock.release();
+        await emitCrashResult(new Error(`scheduled qualification runner activation refused: ${activation.status}`));
+        process.exit(1);
+      }
+      const qualificationProgress = startScheduledQualificationProgress({
+        target: scheduledRunToken ? gateVerdictTargetFromEnv() : null,
+        attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
+        gateFireId,
+        runId,
+        pid: process.pid,
+      });
+      stopQualificationProgress = qualificationProgress.stop;
       // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
       // canceled on every normal exit path below, so it only ever fires when this run
       // misses its configured deadline (see armSelfWatchdog's doc comment).
@@ -20664,11 +20870,15 @@ if (require.main === module) {
         undefined,
         runId,
         undefined,
-        watchdog.progress,
+        (detail) => {
+          watchdog.progress();
+          qualificationProgress.note(detail);
+        },
         undefined,
         prewarmedDependencyGeneration,
         gateFireId,
       );
+      flushTerminalEvents = checkpointDeps.flushTerminalEvents;
       runGreenCheckpoint(cfg, checkpointDeps, {
         candidate: candidateArg,
         candidateHint: prewarmedDependencyGeneration.candidate,
