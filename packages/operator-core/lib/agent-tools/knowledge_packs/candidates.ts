@@ -13,7 +13,7 @@
  * an id to act on ahead of the automated review.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 
@@ -42,7 +42,7 @@ export default defineTool({
       .describe('Filter by status. Default pending (the review queue).'),
     limit: z.number().int().min(1).max(500).optional(),
     identityId: z.string().min(1).max(120).optional().describe('Only reviewed learning candidates for this identity in the calling workspace.'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { soft: true, max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
