@@ -143,6 +143,7 @@ export default defineTool({
       kill_criterion: z.unknown().optional(),
       budget_cents: z.unknown().optional(),
       tripwires: z.unknown().optional(),
+      tripwire_advisories: z.unknown().optional(),
       workspace_id: z.unknown().optional(),
       mode_subject_stamped: z.unknown().optional(),
       mode_subject_advisory: z.unknown().optional(),

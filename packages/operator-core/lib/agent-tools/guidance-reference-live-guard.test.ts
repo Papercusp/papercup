@@ -28,6 +28,9 @@ const NON_TOOL_REFERENCES = new Set([
   // Event KEY (events:await rendezvous), not a tool call — same precedent as
   // 'work-item:done' above; referenced by fleet/bench.ts's description.
   'work-item:claimable',
+  // Credential-ref VALUE (inference-gateway/credential-store.ts), not a tool call;
+  // accounts:register's description lists it beside apikey:env:NAME / apikey:file:<path>.
+  'apikey:credentials',
 ]);
 /** Common `key:value` data literals that share the tool-token grammar. */
 const STRUCTURED_VALUES = new Set(['true', 'false', 'null', 'undefined', 'shared', 'exclusive']);
