@@ -87,7 +87,8 @@ const ROOT = new URL('..', import.meta.url).pathname;
  */
 export const ALLOWLIST = new Map([
   ['packages/operator-core/lib/harness/git-sync/run-git-sync.ts', 'detached ONLY for group cancellation of referenced, awaited local Git; processGroupLifetime proves helper exit before resolution and lease release (EI-24141765530574665)'],
-  ['packages/operator-core/lib/fleet/sidecar-exec-process.ts', 'governed execution owns the referenced command; detached ONLY for group cancellation, and processGroupLifetime proves helper exit before admission settlement (EI-24143584172308161)'],
+  ['packages/operator-core/lib/sync/pot-git/storage.ts', 'runGitLocal: detached ONLY for group cancellation of referenced, awaited local Git; processGroupLifetime waitForExit proves the group exited before the promise settles (same shape as run-git-sync.ts; WI-10003582)'],
+  ['packages/operator-core/lib/fleet/sidecar-exec-process.ts','governed execution owns the referenced command; detached ONLY for group cancellation, and processGroupLifetime proves helper exit before admission settlement (EI-24143584172308161)'],
   // ── detached ONLY for process-group kill of an AWAITED child ─────────────
   //
   // A third category the original guard did not anticipate, and its false-positive
