@@ -61,6 +61,7 @@ const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   specificationRevision: 'a'.repeat(64),
   stateRevision: input.stateRevision ?? 'b'.repeat(64),
   compositionSource: 'compatibility' as const,
+  resourceArtifacts: [],
 }));
 const writeSuCodexHomeMock = vi.fn((opts: any) => ({
   codexHome: `/fake/su-codex-homes/session-${opts.sessionKey}`,
@@ -110,6 +111,14 @@ vi.mock('./role-launch-spec', async (importOriginal) => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
   compileLaunchSpecificationArtifact: (...args: unknown[]) =>
     compileLaunchSpecificationArtifactMock(...(args as [any])),
+}));
+vi.mock('./modes/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./modes/store')>()),
+  reconcileImpliedModes: vi.fn(async () => []),
+}));
+vi.mock('./task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./task-manager/store')>()),
+  bindLiveAgentSessionTasksToNativeSession: vi.fn(async () => []),
 }));
 vi.mock('./role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
@@ -170,6 +179,7 @@ async function bootstrap(agent: string): Promise<any> {
     body: JSON.stringify({ agent, harness_slug: null, plan_slug: null, cwd: '/home/me/work' }),
   });
   const res = await post.handler(req, CTX);
+  if (res.status !== 200) throw new Error(`bootstrap-su returned ${res.status}: ${await res.clone().text()}`);
   return res.json();
 }
 

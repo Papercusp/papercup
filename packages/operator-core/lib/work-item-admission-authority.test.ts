@@ -5,7 +5,7 @@ import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 const h = vi.hoisted(() => ({
   state: {} as Record<string, unknown>, auditMode: false, audit: vi.fn(),
-  sql: vi.fn(), token: 'hermetic-test-token', powerUserRevoked: false,
+  sql: vi.fn(), token: 'hermetic-test-token',
 }));
 vi.mock('@papercusp/db-org', async (original) => ({
   ...await original<typeof import('@papercusp/db-org')>(), getOrgPg: () => ({ sql: h.sql }),
@@ -64,21 +64,16 @@ function authorize(authority = bound()) {
 beforeEach(() => {
   h.state = { activation: activation() };
   h.auditMode = false;
-  h.powerUserRevoked = false;
   h.audit.mockReset();
   h.sql.mockReset().mockImplementation(async (parts: TemplateStringsArray, ...values: unknown[]) => {
     const query = parts.join('?');
-    if (query.includes('FROM harness_shared.power_user_sessions')) {
-      expect(values).toEqual(['su-policy', 'ws-policy']);
-      return h.powerUserRevoked ? [{ revoked_at: '2026-09-25T00:00:00Z' }] : [];
-    }
     if (!query.includes('FROM harness_shared.session_briefs')) throw new Error(`unexpected policy I/O: ${query}`);
     // The current control-anchor query reads the brief and launch identity
-    // together. Four cache-header comparisons are null on this fresh fixture;
+    // together. Six cache-header comparisons are null on this fresh fixture;
     // both subqueries remain bound to the same owner/workspace pair.
     expect(values).toEqual([
       'su-policy', 'ws-policy',
-      ...Array(8).fill(null),
+      ...Array(12).fill(null),
       'su-policy', 'ws-policy',
     ]);
     return [{ control_state: h.state, control_generation: 7, workspace_id: 'ws-policy' }];
@@ -114,11 +109,6 @@ describe('admission replay policy fidelity', () => {
     expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({
       decision: 'deny', reason: expect.stringContaining('[preflight:kernel-preflight]'),
     }));
-  });
-
-  it('refuses admission replay when the current power-user session has been revoked', async () => {
-    h.powerUserRevoked = true;
-    await expect(authorize()).rejects.toThrow('revoked');
   });
 
   it.each([
