@@ -17,6 +17,8 @@ import { resolveAgentIdentity, type AgentIdentity } from '../identity';
 import { getConversation, getConsultStates, getThreadPost } from '../conversations';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 
+type ParsedRef = { kind: 'conversation' } | { kind: 'invalid-post' } | { kind: 'post'; postId: number };
+
 export default defineTool({
   name: 'conversations:get',
   description:
@@ -62,13 +64,13 @@ export default defineTool({
     // per-id inside the bulk loop (up to 100 ids ⇒ up to 100 round-trips).
     // Fail-soft inside getConsultStates: on error this is an empty map and the
     // read degrades to its previous shape.
-    const parsedRefs = new Map(
-      ids.map((id) => {
-        if (!id.startsWith('thread-post:')) return [id, { kind: 'conversation' as const }] as const;
+    const parsedRefs = new Map<string, ParsedRef>(
+      ids.map((id): [string, ParsedRef] => {
+        if (!id.startsWith('thread-post:')) return [id, { kind: 'conversation' }];
         const match = /^thread-post:([1-9][0-9]*)$/.exec(id);
-        if (!match) return [id, { kind: 'invalid-post' as const }] as const;
+        if (!match) return [id, { kind: 'invalid-post' }];
         const postId = Number(match[1]);
-        return [id, Number.isSafeInteger(postId) ? { kind: 'post' as const, postId } : { kind: 'invalid-post' as const }] as const;
+        return [id, Number.isSafeInteger(postId) ? { kind: 'post', postId } : { kind: 'invalid-post' }];
       }),
     );
     const conversationIds = ids.filter((id) => parsedRefs.get(id)?.kind === 'conversation');

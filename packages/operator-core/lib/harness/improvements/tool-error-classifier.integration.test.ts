@@ -153,7 +153,7 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
       dispatchedTool: 'dev:session_detail',
       childFailureRefs: ['dev:session_detail'],
     };
-    const insert = async (status: 'ok' | 'error', metadata?: Record<string, unknown>) => {
+    const insert = async (status: 'ok' | 'error', metadata?: typeof wrapperMetadata) => {
       await sql`
         INSERT INTO harness_shared.tool_invocations
           (workspace_id, harness_slug, plugin_name, tool_name, role, spawn_id, window_key,
@@ -161,7 +161,7 @@ describe('the FULL collectToolErrorSignals query embeds the generated fragments 
         VALUES (
           '*', '', '', ${tool}, 'su', '', '', ${status},
           ${status === 'error' ? 'handler_error' : null},
-          ${status === 'error' ? message : null}, now(), ${metadata ?? null}
+          ${status === 'error' ? message : null}, now(), ${metadata ? sql.json(metadata) : null}
         )`;
     };
 

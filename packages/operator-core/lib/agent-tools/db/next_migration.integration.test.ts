@@ -86,6 +86,7 @@ async function allocate(args: AllocateArgs = {}): Promise<{
   arm_path?: string;
   arm_command?: string;
   requested_from_harness?: string;
+  note?: string;
   error?: string;
 }> {
   // These calls intentionally exercise the allocator's repeated-number

@@ -42,10 +42,10 @@ function line(bytes: number, fill = 'x'): string {
 }
 
 describe('anchored incremental context reads (WI-4154)', () => {
-  it('seed matches the full-scan estimator on a plain transcript', () => {
+  it('seed matches the full-scan estimator on a plain transcript', async () => {
     fs.writeFileSync(file, line(400_000));
     expect(seedContextAnchorForTests('o1', file)).toBe(true);
-    expect(currentContextTokensSyncForOwner('o1')).toBe(tokensFromFileSize(file));
+    expect(currentContextTokensSyncForOwner('o1')).toBe(await tokensFromFileSize(file));
     expect(currentContextTokensSyncForOwner('o1')).toBe(100_000);
   });
 
@@ -57,7 +57,7 @@ describe('anchored incremental context reads (WI-4154)', () => {
     expect(currentContextTokensSyncForOwner('o2')).toBe(110_000);
   });
 
-  it('a compaction landing between reads corrects the VERY NEXT read (the WI-4154 class)', () => {
+  it('a compaction landing between reads corrects the VERY NEXT read (the WI-4154 class)', async () => {
     fs.writeFileSync(file, line(1_400_000)); // pre-compaction: 350k tokens — alarm territory
     seedContextAnchorForTests('o3', file);
     expect(currentContextTokensSyncForOwner('o3')).toBe(350_000);
@@ -65,20 +65,20 @@ describe('anchored incremental context reads (WI-4154)', () => {
     const after = currentContextTokensSyncForOwner('o3');
     // Counting restarts at the marker substring (full-scan semantics).
     expect(after).toBe(Math.floor((MARKER_TAIL + 60_000) / 4));
-    expect(after).toBe(tokensFromFileSize(file));
+    expect(after).toBe(await tokensFromFileSize(file));
   });
 
-  it('multiple compactions: the LAST marker wins, matching the full scan', () => {
+  it('multiple compactions: the LAST marker wins, matching the full scan', async () => {
     fs.writeFileSync(file, line(600_000) + MARKER_LINE + line(300_000));
     seedContextAnchorForTests('o4', file);
     fs.appendFileSync(file, MARKER_LINE + line(20_000));
-    expect(currentContextTokensSyncForOwner('o4')).toBe(tokensFromFileSize(file));
+    expect(currentContextTokensSyncForOwner('o4')).toBe(await tokensFromFileSize(file));
     expect(currentContextTokensSyncForOwner('o4')).toBe(
       Math.floor((MARKER_TAIL + 20_000) / 4),
     );
   });
 
-  it('EI-10434: a marker OUTSIDE the scan window seeds a BOUNDED estimate matching the full-scan estimator, not the raw whole-file size', () => {
+  it('EI-10434: a marker OUTSIDE the scan window seeds a BOUNDED estimate matching the full-scan estimator, not the raw whole-file size', async () => {
     const MB = 1024 * 1024;
     // The marker sits at the very start; well over BOUNDARY_SCAN_CAP (8MB) of
     // content follows with no further marker, so the last-8MB scan window can
@@ -88,35 +88,35 @@ describe('anchored incremental context reads (WI-4154)', () => {
     fs.writeFileSync(file, MARKER_LINE + 'a'.repeat(12 * MB));
     seedContextAnchorForTests('o-huge', file);
     const anchored = currentContextTokensSyncForOwner('o-huge');
-    const fullScan = tokensFromFileSize(file);
+    const fullScan = await tokensFromFileSize(file);
     expect(anchored).toBe(fullScan);
     // Bounded by the scan cap (8MB/4), never the raw ~12MB file's ≈3M-token
     // whole-file reading.
     expect(anchored).toBeLessThanOrEqual((8 * MB) / 4);
   });
 
-  it('discounts an appended image payload to the vision cap (WI-3176 parity)', () => {
+  it('discounts an appended image payload to the vision cap (WI-3176 parity)', async () => {
     fs.writeFileSync(file, line(400_000));
     seedContextAnchorForTests('o5', file);
     const imageLine = `{"data":"${'A'.repeat(200_000)}"}\n`;
     fs.appendFileSync(file, imageLine);
     const got = currentContextTokensSyncForOwner('o5');
-    expect(got).toBe(tokensFromFileSize(file));
+    expect(got).toBe(await tokensFromFileSize(file));
     // 100k base + line overhead/4 + 1600 (capped image), NOT +50k raw.
     expect(got).toBeLessThan(103_000);
     expect(got).toBeGreaterThanOrEqual(101_600);
   });
 
-  it('a partial line (no newline yet) counts raw and settles once its newline lands', () => {
+  it('a partial line (no newline yet) counts raw and settles once its newline lands', async () => {
     fs.writeFileSync(file, line(400_000));
     seedContextAnchorForTests('o6', file);
     fs.appendFileSync(file, '{"t":"partial'); // 13 bytes, unterminated
     expect(currentContextTokensSyncForOwner('o6')).toBe(Math.floor((400_000 + 13) / 4));
     fs.appendFileSync(file, '"}\n' + line(4_000));
-    expect(currentContextTokensSyncForOwner('o6')).toBe(tokensFromFileSize(file));
+    expect(currentContextTokensSyncForOwner('o6')).toBe(await tokensFromFileSize(file));
   });
 
-  it('a marker inside a still-partial line is honored once the line completes', () => {
+  it('a marker inside a still-partial line is honored once the line completes', async () => {
     fs.writeFileSync(file, line(1_000_000));
     seedContextAnchorForTests('o7', file);
     const partial = MARKER_LINE.slice(0, MARKER_LINE.length - 1); // marker text, no newline
@@ -126,7 +126,7 @@ describe('anchored incremental context reads (WI-4154)', () => {
       Math.floor((1_000_000 + partial.length) / 4),
     );
     fs.appendFileSync(file, '\n');
-    expect(currentContextTokensSyncForOwner('o7')).toBe(tokensFromFileSize(file));
+    expect(currentContextTokensSyncForOwner('o7')).toBe(await tokensFromFileSize(file));
     expect(currentContextTokensSyncForOwner('o7')).toBe(Math.floor(MARKER_TAIL / 4));
   });
 
@@ -201,13 +201,13 @@ describe('toolUseResult double-write discount (EI-12848)', () => {
     return { text, discountBytes: nlIdx - (keyIdx + 1) };
   }
 
-  it('tokensFromFileSize drops the out-of-context toolUseResult duplicate', () => {
+  it('tokensFromFileSize drops the out-of-context toolUseResult duplicate', async () => {
     // ≥256KB so the scan path (not the stat-only fast path) runs; no compaction
     // marker, so the whole file is counted from offset 0.
     const { text, discountBytes } = dupToolLine(240_000);
     fs.writeFileSync(file, text);
     const size = fs.statSync(file).size;
-    const est = tokensFromFileSize(file);
+    const est = await tokensFromFileSize(file);
     // Only the in-context bytes remain; the toolUseResult copy is gone.
     expect(est).toBe(Math.floor((size - discountBytes) / 4));
     // The buggy raw reading (whole file / 4) is ~one payload higher — the false
@@ -215,26 +215,26 @@ describe('toolUseResult double-write discount (EI-12848)', () => {
     expect(Math.floor(size / 4) - (est as number)).toBeGreaterThan(240_000 / 4 - 100);
   });
 
-  it('the anchor path matches the full-scan estimator on a double-write line', () => {
+  it('the anchor path matches the full-scan estimator on a double-write line', async () => {
     const { text } = dupToolLine(240_000);
     fs.writeFileSync(file, text);
     seedContextAnchorForTests('tur-anchor', file);
-    expect(currentContextTokensSyncForOwner('tur-anchor')).toBe(tokensFromFileSize(file));
+    expect(currentContextTokensSyncForOwner('tur-anchor')).toBe(await tokensFromFileSize(file));
   });
 
-  it('an appended toolUseResult turn is discounted on the very next read', () => {
+  it('an appended toolUseResult turn is discounted on the very next read', async () => {
     fs.writeFileSync(file, line(400_000)); // 100k tokens of prior context
     seedContextAnchorForTests('tur-inc', file);
     expect(currentContextTokensSyncForOwner('tur-inc')).toBe(100_000);
     const { text, discountBytes } = dupToolLine(300_000); // ~600KB line, half out-of-context
     fs.appendFileSync(file, text);
     const got = currentContextTokensSyncForOwner('tur-inc') as number;
-    expect(got).toBe(tokensFromFileSize(file));
+    expect(got).toBe(await tokensFromFileSize(file));
     // The ~300KB toolUseResult copy (≈75k tokens) is NOT added to the estimate.
     expect(got).toBeLessThan(100_000 + Math.ceil((text.length - discountBytes) / 4) + 10);
   });
 
-  it('does NOT discount an escaped `toolUseResult` mention the session merely READ (WI-4608 safety)', () => {
+  it('does NOT discount an escaped `toolUseResult` mention the session merely READ (WI-4608 safety)', async () => {
     // The phrase appears as DATA inside an assistant text block — JSON-escaped, so
     // the real top-level `,"toolUseResult":` key form never occurs. Nothing to drop.
     const quoted = 'z'.repeat(300_000);
@@ -244,11 +244,11 @@ describe('toolUseResult double-write discount (EI-12848)', () => {
     fs.writeFileSync(file, text);
     const size = fs.statSync(file).size;
     // No discount — counted whole (the escaped mention is real in-context bytes).
-    expect(tokensFromFileSize(file)).toBe(Math.floor(size / 4));
+    expect(await tokensFromFileSize(file)).toBe(Math.floor(size / 4));
     expect(text.includes(',"toolUseResult":')).toBe(false);
   });
 
-  it('an image inside toolUseResult is not DOUBLE-discounted (image path unchanged)', () => {
+  it('an image inside toolUseResult is not DOUBLE-discounted (image path unchanged)', async () => {
     // A toolUseResult carrying a base64 image: the image path keeps ~1600 tok for it
     // (conservative), and the text discount excludes those image bytes — never both.
     // ≥256KB so the scan path (not the stat-only fast path) runs.
@@ -257,7 +257,7 @@ describe('toolUseResult double-write discount (EI-12848)', () => {
       `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"ok"}]},` +
       `"timestamp":"t","toolUseResult":{"type":"image","base64":"${img}"},"cwd":"/x"}\n`;
     fs.writeFileSync(file, text);
-    const est = tokensFromFileSize(file) as number;
+    const est = (await tokensFromFileSize(file)) as number;
     // Never negative / never over-discounted below zero, and small (the whole line
     // is out-of-context except the tiny in-context text block + image cap).
     expect(est).toBeGreaterThanOrEqual(0);

@@ -59,7 +59,7 @@ const h = vi.hoisted(() => {
     cp: vi.fn(async () => {}),
     mkdir: vi.fn(async () => {}),
     chmod: vi.fn(async () => {}),
-    rm: vi.fn(async () => {}),
+    rm: vi.fn(async (_path: string, _opts?: { recursive?: boolean; force?: boolean }) => {}),
     readFile: vi.fn(async (path: string) => {
       if (path.endsWith('/auth.json')) {
         return JSON.stringify({
