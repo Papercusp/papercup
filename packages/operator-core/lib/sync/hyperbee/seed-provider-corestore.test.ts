@@ -827,6 +827,35 @@ describe('seed projection — literal matching mirrors the release gate; private
     expect(redactSeedValue({ [handle]: 'walled', keep: 1 }, [handle])).toEqual({ '[build-identity]': 'walled', keep: 1 });
   });
 
+  it('EI-23523718191785410: REDACTS encoded bytes that are valid UTF-8 but NOT JSON (structural row)', () => {
+    // The 0.0.20 cut's survivor shape: a git author token (`build-git-name@<id>`) — plain
+    // text, not JSON. The DETECTOR judges these bytes as text (decodeEncodedJson returns
+    // `{ text }` with NO `json`), so a CONTENT row carrying them is dropped. A STRUCTURAL
+    // row skips that drop BY DESIGN, which makes redaction its only compensating control —
+    // so the redactor must cover exactly the ground the detector does. It previously bailed
+    // to `return value` when JSON.parse threw, and the row was counted `carried`, i.e. clean.
+    const { transform, stats } = seedSnapshotValueTransform([handle]);
+    const bytes = new TextEncoder().encode(`build-git-name@${handle}`);
+    expect(valueCarriesSeedIdentity(bytes, [handle])).toBe(true);
+
+    const out = transform(bytes, ctx('hive-members', '42'));
+    expect(out).not.toBe(DROP_SNAPSHOT_ROW);
+    // The post-condition that matters: whatever came back no longer carries the literal.
+    expect(valueCarriesSeedIdentity(out, [handle])).toBe(false);
+    expect(new TextDecoder().decode(out as Uint8Array)).toBe('build-git-name@[build-identity]');
+    expect(stats).toMatchObject({ redactedInPlace: 1, carried: 0 });
+  });
+
+  it('leaves NON-UTF-8 opaque binary byte-identical (the redactor does not over-reach)', () => {
+    const { transform, stats } = seedSnapshotValueTransform([handle]);
+    const opaque = Buffer.from([0xff, 0x00, 0x91, 0x02]);
+    expect(transform(opaque, ctx('hive-members', '42'))).toBe(opaque);
+    // ...and valid-UTF-8 text with NO literal is likewise carried by reference.
+    const clean = new TextEncoder().encode('build-git-name@nobody');
+    expect(transform(clean, ctx('hive-members', '43'))).toBe(clean);
+    expect(stats).toMatchObject({ redactedInPlace: 0, carried: 2 });
+  });
+
   it('drops a row carrying an external-integration ingest envelope in ANY table, with NO literal hit', () => {
     const { transform, stats } = seedSnapshotValueTransform([]);
     const envelope = {

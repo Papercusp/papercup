@@ -227,26 +227,36 @@ export function valueCarriesSeedIdentity(value: unknown, literals: readonly stri
   return false;
 }
 
+/**
+ * Redact encoded bytes, covering EXACTLY the ground {@link valueCarriesSeedIdentity} judges.
+ *
+ * That coverage comes from the SHARED decoder on purpose, never a second `JSON.parse` here:
+ * {@link decodeEncodedJson} returns `json` as OPTIONAL precisely so valid UTF-8 that is not
+ * JSON is still judged AS TEXT. This function used to re-implement the decode and bail to
+ * `return value` when its own `JSON.parse` threw, so the two halves of ONE safety property
+ * disagreed about what "carries identity" means — the detector said yes, the redactor
+ * declined, and the row was then counted `carried`, i.e. clean. A STRUCTURAL row skips the
+ * identity DROP by design, which makes this redaction its ONLY compensating control, so it
+ * may not cover less. The gap shipped a `build-git-name@<id>` git author token into the
+ * 0.0.20 seed and the staging gate refused it ~2.5h into the cut (EI-23523718191785410).
+ */
 function redactEncodedJson(value: Uint8Array | ArrayBuffer, literals: readonly string[]): unknown {
-  const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
-  let text: string;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch {
-    return value;
+  const decoded = decodeEncodedJson(value);
+  // Opaque binary (ciphertext, non-UTF-8): the detector cannot read it either, so the
+  // bytes stay byte-for-byte unchanged.
+  if (!decoded) return value;
+
+  if (!('json' in decoded)) {
+    // Valid UTF-8 that is not JSON — text, and judged as text. Redact it as text and
+    // re-encode, so the value keeps the BYTE shape it arrived in.
+    const redactedText = redactString(decoded.text, literals);
+    return redactedText === decoded.text ? value : new TextEncoder().encode(redactedText);
   }
 
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(text) as unknown;
-  } catch {
-    return value;
-  }
-
-  const redacted = redactSeedValue(decoded, literals);
+  const redacted = redactSeedValue(decoded.json, literals);
   // Preserve the original bytes when no sensitive value was found. This keeps opaque
   // and already-sanitized encoded values byte-for-byte unchanged.
-  return redacted === decoded ? value : redacted;
+  return redacted === decoded.json ? value : redacted;
 }
 
 export function redactSeedValue(value: unknown, literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS): unknown {
@@ -356,6 +366,20 @@ export function seedSnapshotValueTransform(
       return DROP_SNAPSHOT_ROW;
     }
     const redacted = redactSeedValue(value, literals);
+    // POST-CONDITION, not a belt-and-braces extra. Skipping the DROP above for a structural
+    // row is sound ONLY because redaction covers the same ground the detector does. When it
+    // does not, the row ships build identity, and the failure surfaces as a whole-seed
+    // refusal at the staging gate hours later with no indication of WHICH row caused it —
+    // the 0.0.20 cut burned ~2.5h that way (EI-23523718191785410). Fail here, naming the row.
+    // Never DROP instead: a structural row is load-bearing, and silently omitting one would
+    // ship a seed that passes the gate and breaks a joiner.
+    if (structural && valueCarriesSeedIdentity(redacted, literals)) {
+      throw new Error(
+        `[seed:corestore] redaction declined on structural row ${table}/${hbKey}: the value STILL ` +
+          `carries a build-identity literal after redactSeedValue. The redactor covers less than ` +
+          `valueCarriesSeedIdentity judges — close that asymmetry (see redactEncodedJson).`,
+      );
+    }
     if (redacted !== value) stats.redactedInPlace += 1;
     else stats.carried += 1;
     return redacted;
