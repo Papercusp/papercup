@@ -1133,6 +1133,29 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
     expect(cond()).toBe(true);
   };
 
+  /**
+   * Block until the server's own FIFO backlog holds at least `depth` WAITING
+   * units (`/healthz` reports the real backlog, excluding the active unit — see
+   * the queue-depth guard earlier in this file).
+   *
+   * A `postKind(...)` call returns a pending `fetch`; the unit is only queued
+   * once the server has received and parsed that request. So a test whose
+   * subject is QUEUE ORDER must wait on the queue itself — having called
+   * `fetch` is not the same as the work being schedulable, and treating it as
+   * such measures HTTP arrival timing instead of the scheduler.
+   */
+  const waitForQueueDepth = async (depth: number): Promise<void> => {
+    type Health = { queue: { depth: number } };
+    const deadline = Date.now() + 2_000;
+    let observed = -1;
+    while (Date.now() < deadline) {
+      observed = ((await (await fetch(`${baseUrl}/healthz`)).json()) as Health).queue.depth;
+      if (observed >= depth) return;
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(observed).toBeGreaterThanOrEqual(depth);
+  };
+
   const boot = async (
     concurrency?: number,
     governedOperation?: typeof runGovernedOperation,
@@ -1231,6 +1254,20 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
     const interactive = Array.from({ length: EMBED_SIDECAR_PRIORITY_BURST_MAX + 1 }, (_, i) =>
       postKind('query', [`interactive-${i}`]),
     );
+    // Priority is a property of the QUEUE, so every interactive unit has to be
+    // enqueued BEFORE the only slot frees. Releasing `background-active` while
+    // those POSTs are still in flight leaves `background-waiting` as the sole
+    // queued unit — the scheduler then correctly starts it, and the first
+    // assertion in the loop below reads `background-waiting` instead of
+    // `interactive-0`. That is a race in this test, not in the scheduler: it
+    // passed locally in ~5s and failed only in the loaded gate (~65s wall, p95
+    // event-loop lag 199ms vs 21ms) on a byte-identical commit that had already
+    // passed the same suite minutes earlier.
+    //
+    // Waiting on the server's own backlog (rather than a sleep) keeps that
+    // deterministic under any load. Depth counts WAITING units: the queued
+    // `background-waiting` plus all `BURST_MAX + 1` interactive units.
+    await waitForQueueDepth(EMBED_SIDECAR_PRIORITY_BURST_MAX + 2);
     gated.release.get('background-active')!();
 
     for (let i = 0; i < EMBED_SIDECAR_PRIORITY_BURST_MAX; i++) {
