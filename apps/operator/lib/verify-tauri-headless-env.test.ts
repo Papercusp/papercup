@@ -59,12 +59,15 @@ describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', 
     // verifier must override it or remote-auth-policy fails closed before the
     // desktop starts (eight supervised crash-loop attempts in the live repro).
     expect(launchTemplate).toContain('PAPERCUSP_BIND_HOST=127.0.0.1');
-    expect(devWrapper).toContain('if [ -n "${PAPERCUSP_BIND_HOST:-}" ]; then');
+    // The wrapper preserves explicit caller values through one loop; the bind
+    // host must stay in its key list, and only a non-empty value is carried.
+    expect(devWrapper).toMatch(/for DEV_CALLER_KEY in [^;\n]*\bPAPERCUSP_BIND_HOST\b[^;\n]*; do/);
+    expect(devWrapper).toContain('if [ -n "${!DEV_CALLER_KEY:-}" ]; then');
     // The override must be spliced into the SAME `env` invocation that sets the
     // operator port, so it wins over the sourced .env.local. Other plain
     // VAR=value assignments may sit between them (e.g. MALLOC_ARENA_MAX=2).
     expect(devWrapper).toMatch(
-      /env \$\{DEV_BIND_OVERRIDE\}(?:[A-Z_][A-Z0-9_]*=\S+ )*PAPERCUSP_HONO_PORT=\$PORT/,
+      /env \$\{DEV_CALLER_OVERRIDES\}(?:[A-Z_][A-Z0-9_]*=\S+ )*PAPERCUSP_HONO_PORT=\$PORT/,
     );
   });
 });

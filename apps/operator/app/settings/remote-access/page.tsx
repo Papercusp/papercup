@@ -24,7 +24,9 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
+import { Checkbox } from '@/app/harness/Checkbox';
 import { ConfirmModal } from '@/app/harness/ConfirmModal';
+import { RadioGroup } from '@/app/harness/RadioGroup';
 import { Select } from '@/app/harness/Select';
 import { StepOwnTunnel, type OwnTunnelStatusView } from '@/app/_components/SetupWizard/StepOwnTunnel';
 
@@ -514,12 +516,7 @@ export function PortalRelayCard(props: {
         <div data-testid="portal-relay-notice">
           <p className="pc-settings-note">{relay.notice.text}</p>
           <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input
-              type="checkbox"
-              data-testid="portal-relay-understand"
-              checked={understood}
-              onChange={(e) => setUnderstood(e.target.checked)}
-            />
+            <Checkbox dataTestId="portal-relay-understand" checked={understood} onChange={setUnderstood} />
             I understand
           </label>
           <button
@@ -890,6 +887,11 @@ function SignInApprovals({ workspaceId, onBack, onClose }: { workspaceId: string
   );
 }
 
+const KEY_KINDS: ReadonlyArray<{ value: 'app' | 'service'; text: string }> = [
+  { value: 'app', text: 'App key — acts for you' },
+  { value: 'service', text: 'Service key — belongs to the workspace, needs a spending cap' },
+];
+
 function CreateKeyForm(props: { workspaceId: string; onBack: () => void; onClose: () => void; onIssued: (k: IssuedKey) => void }) {
   const { workspaceId, onBack, onClose, onIssued } = props;
   const [label, setLabel] = useState('');
@@ -926,15 +928,13 @@ function CreateKeyForm(props: { workspaceId: string; onBack: () => void; onClose
           <span className="pc-settings-hint">Name</span>
           <input data-field="label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="e.g. nightly report" style={{ width: '100%' }} />
         </label>
-        <div className="pc-settings-radio-group" role="radiogroup" aria-label="Key type">
-          <label>
-            <input type="radio" checked={kind === 'app'} onChange={() => setKind('app')} /> App key — acts for you
-          </label>
-          <label>
-            <input type="radio" checked={kind === 'service'} onChange={() => setKind('service')} /> Service key — belongs to the
-            workspace, needs a spending cap
-          </label>
-        </div>
+        <RadioGroup label="Key type" className="pc-settings-radio-group" value={kind} options={KEY_KINDS} onChange={setKind}>
+          {(option, selected) => (
+            <>
+              <span aria-hidden="true">{selected ? '◉' : '○'}</span> {option.text}
+            </>
+          )}
+        </RadioGroup>
         <label>
           <span className="pc-settings-hint">Tools it may call — one per line (`group:verb` or `group:*`).</span>
           <textarea data-field="tools" value={tools} onChange={(e) => setTools(e.target.value)} rows={3} style={{ width: '100%', fontFamily: 'ui-monospace, monospace' }} />
