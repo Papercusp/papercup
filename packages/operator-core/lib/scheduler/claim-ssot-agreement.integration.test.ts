@@ -66,7 +66,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FLAG_DEFAULTS, type FlagKey } from '@papercusp/flags';
 import { DEFAULT_CLAIM_SPEC } from './claim-spec';
-import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import { applyEventSubstrateMigrationsForTest, createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -324,7 +324,10 @@ beforeAll(async () => {
   // emitter records every fire in migration 632's unconditional latch; install
   // that runtime dependency here so the canonical race test exercises the same
   // path as production instead of producing a fail-soft missing-table warning.
-  await db.sql.unsafe(readMigration('632-event-key-fire-latch.sql')).simple();
+  // The full audited event substrate (event_awaits + latch + wake deliveries + predicate watches),
+  // not just 632: a claim emit also reads event_awaits, and a fixture missing it turns the
+  // fail-soft warning into a vitest-fail-on-console red (WI-10004700).
+  await applyEventSubstrateMigrationsForTest(db.sql, { label: 'claim-ssot-agreement.integration.test.ts' });
   // The terminal-plan floor reads the real normalized plan-item index (migration 675), not a
   // retyped test-only table. The fixture seeds only the rows needed by the regression below.
   await db.sql.unsafe(readMigration('675-normalize-plan-items-decisions.sql')).simple();
