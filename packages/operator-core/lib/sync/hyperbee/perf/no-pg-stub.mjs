@@ -141,6 +141,7 @@ export const RoutineRow = stub('RoutineRow');
 // — so a throwing binding kills the child mid-evaluation instead of at a Postgres call.
 // The derived shapes are consumed by `z.infer<...>`, which tsx erases, so undefined is inert.
 export const schemaOf = () => ({ insert: undefined, select: undefined, update: undefined });
+export const SerializableRetryExhaustedError = stub('SerializableRetryExhaustedError');
 export const SerializableRetryOptions = stub('SerializableRetryOptions');
 // THE ONE DELIBERATE NO-OP, and the reason it is not "softening the stub" (WI-2141194 #9).
 //
