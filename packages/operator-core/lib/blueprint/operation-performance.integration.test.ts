@@ -13,6 +13,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { installDeterministicEmbedder, type InstalledDeterministicEmbedder } from '../../test/_deterministic-embedder';
 import { runPairedBenchmark, type BenchmarkArm } from '../../test/_paired-operation-benchmark';
 import { projectBlueprintToPg } from './project-to-pg';
+import { createTextCollector } from '../child-output';
 import { P013_HARNESS, P013_WORKSPACE, runP013WorkloadA,
   type P013Arm, type P013Sample } from './operation-performance-driver';
 
@@ -164,9 +165,8 @@ afterAll(async () => {
     try {
       const stream = await container.logs({ tail: 2_000 });
       const text = await new Promise<string>((resolve) => {
-        let out = '';
-        const finish = () => { stream.destroy(); resolve(out); };
-        stream.on('data', (chunk) => { out += String(chunk); });
+        const out = createTextCollector(stream);
+        const finish = () => { stream.destroy(); resolve(out.text()); };
         stream.once('end', finish);
         stream.once('error', finish);
         setTimeout(finish, 3_000);
