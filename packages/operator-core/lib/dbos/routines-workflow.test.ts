@@ -386,6 +386,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
       'routines-loop',
       'routines-triggers',
       'routines-release',
+      'routines-deploy',
     ]);
   });
 
