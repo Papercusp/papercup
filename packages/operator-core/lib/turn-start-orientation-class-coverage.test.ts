@@ -44,12 +44,16 @@ import {
   type AgentObligation,
   type AgentObligationFamily,
 } from './agent-obligations';
-import { ownerDirectiveObligations } from './agent-obligation-providers';
+import { ownerDirectiveObligations, waitingOnObligations } from './agent-obligation-providers';
 import {
   projectAgentTurnStartObligationBrief,
   type AgentObligationBrief,
 } from './agent-obligation-reader';
-import { renderOrientationLines, type OrientationState } from './turn-start-orientation';
+import {
+  projectOrientationRows,
+  renderOrientationLines,
+  type OrientationState,
+} from './turn-start-orientation';
 // P-024 — the sink axis. The registry is imported through its sink-NEUTRAL seam
 // (see orientation-class-registry.ts): this guard is no longer a turn-start-only
 // instrument, so reaching into the turn-start sink's own module for the shared
@@ -58,7 +62,10 @@ import {
   ORIENTATION_CLASS_REGISTRY,
   type RegisteredOrientationClass,
 } from './orientation-class-registry';
-import { readLeaderNeverDropFacts } from './agent-tools/fleet/leader-brief';
+import { readLeaderNeverDropFacts, readLeaderAnnouncedGates } from './agent-tools/fleet/leader-brief';
+// P-029: the carry-document sink's REAL consumer, so its cell is probed
+// end-to-end rather than by re-reading the declaration it is supposed to obey.
+import { readCarryNeverDropFacts } from './carry-brief';
 import type { AgentFact } from './agent-facts/store';
 
 const ORIENTATION_SOURCE = fileURLToPath(new URL('./turn-start-orientation.ts', import.meta.url));
@@ -198,6 +205,15 @@ const BASELINE: OrientationState = {
   inboxRecent: [],
   openAsks: null,
   announcedGates: [],
+  // `[]` — READABLE and empty, the quiet shape. `null` would also render
+  // nothing, but it means UNREADABLE, so using it here would make the baseline
+  // silent for the wrong reason and hide a genuinely broken reader.
+  modes: [],
+  // `null` — UNREADABLE, which is the only quiet shape this class HAS: there is
+  // no empty AuthorityVerdict (three required strings), and a blank-valued one
+  // would render `- authority: exec  · mission  · …` on a cursorless baseline.
+  // The probe below is what proves the class still reaches the prompt.
+  authorityVerdict: null,
   loopArmed: true,
   loopFireWithheld: false,
   improvementTriage: null,
@@ -257,6 +273,39 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
     patch: { announcedGates: [{ event: 'fleet:demo:phase1-green' }] },
     marker: /announced gates:/,
   },
+  authorityVerdict: {
+    // Against a null committed cursor there is no previous verdict to diff, so
+    // all three decisions render (D-073 ruling 3). The changed-only transition
+    // shape is pinned separately; this probe only has to prove the class
+    // reaches the rendered prompt at all.
+    patch: {
+      authorityVerdict: {
+        executionAuthorization: 'act-with-disclosure',
+        mission: 'execute-fleet-plan-only',
+        ideation: 'direct-improvements-only',
+      },
+    },
+    marker: /authority: exec act-with-disclosure/,
+  },
+  modes: {
+    // Against a null committed cursor every row is NEW, so this renders. The
+    // three attribution shapes are pinned individually in turn-start-orientation.test.ts;
+    // this probe only has to prove the class reaches the rendered prompt at all.
+    patch: {
+      modes: [
+        {
+          axisKey: 'autonomy',
+          mode: 'auto',
+          reason: 'owner said run autonomously',
+          setBy: 'su-c03852cb',
+          setBySelf: false,
+          ownerDirected: true,
+          impliedBy: null,
+        },
+      ],
+    },
+    marker: /mode auto ON — owner-directed/,
+  },
   loopArmed: {
     patch: { loopArmed: false },
     marker: /engine loop: not armed/,
@@ -293,6 +342,25 @@ const CLASS_PROBES: Record<string, ClassProbe> = {
       },
     },
     marker: /carry blind window:/,
+  },
+  // P-010 (WI-10002221, su-6b1151ea): registered here by su-c03852cb because the
+  // class landed without its per-sink classification while that session was
+  // MCP-dark, which reds this guard for the whole fleet. The author is welcome
+  // to re-word the omission reason below — the CLASSIFICATION is what the
+  // matrix requires, not any particular wording.
+  openChecks: {
+    patch: {
+      openChecks: [
+        {
+          id: 'coverage-probe-1',
+          claim: 'a carried claim that has not been re-verified',
+          recheck: 'run the recorded probe',
+          pointer: 'loop:status',
+          kind: 'check',
+        },
+      ],
+    },
+    marker: /🔎 \? UNVERIFIED/,
   },
 };
 
@@ -470,6 +538,38 @@ const FAMILY_PROBES: Record<string, FamilyProbe> = {
         },
       }),
     marker: /owner directive .*#17|#17/,
+  },
+  // P-011: the real provider, on real row shapes. The probe carries BOTH row
+  // kinds because they render through different branches, and uses an `expire`
+  // await deliberately — that is the row whose absence from the prompt is
+  // unrecoverable (it lapses with no turn, so nothing else ever mentions it).
+  'waiting-on': {
+    build: () =>
+      waitingOnObligations({
+        workspaceId: 'papercusp-workspace',
+        ownerId: 'su-coverage-probe',
+        observedAt: FAMILY_OBSERVED_AT,
+        sourceGeneration: 'coverage-probe',
+        read: {
+          status: 'known',
+          value: [
+            {
+              kind: 'event-await',
+              key: 'gate:coverage-probe',
+              timeoutAt: '2026-09-21T16:00:00.000Z',
+              onTimeout: 'expire',
+            },
+            {
+              kind: 'lock-queue',
+              path: 'packages/operator-core/lib/coverage-probe.ts',
+              holder: 'su-probe-holder',
+              holderIntent: 'coverage probe holder intent',
+              holderExpiresAt: '2026-09-21T16:05:00.000Z',
+            },
+          ],
+        },
+      }),
+    marker: /gate:coverage-probe/,
   },
 };
 
@@ -838,6 +938,73 @@ const leaderBriefNeverDropProbe: CellProbe = async () => {
 };
 
 /**
+ * The carry-brief cell probe for `neverDropFacts` (P-029), driven through the
+ * REAL consumer (`readCarryNeverDropFacts`) with only the fact store stubbed.
+ *
+ * End-to-end for the same reason as the leader-brief probe above: a probe that
+ * re-read `applicableSinks` would pass against a consumer that ignores the
+ * registry entirely, which is the precise failure this sink was registered to
+ * make impossible.
+ *
+ * ⚠ IT ALSO ASSERTS THE SELECTOR SET, which is the substantive part of P-029.
+ * The document already folded owner-scoped facts before this item; what it
+ * lacked was the WORKSPACE leg, so a consumer that quietly dropped back to
+ * owner-only would still return facts and still look like it worked. The stub
+ * therefore captures the selectors it is called with and the cell fails unless
+ * a `workspace` selector is among them.
+ */
+const carryBriefNeverDropProbe: CellProbe = async () => {
+  let seenSelectors: readonly { scope: string }[] = [];
+  const out = await readCarryNeverDropFacts(
+    { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+    {
+      fold: (async (selectors: readonly { scope: string }[]) => {
+        seenSelectors = selectors;
+        return [neverDropFactProbe('dead-end:coverage-probe')];
+      }) as never,
+    },
+  );
+  const foldedWorkspaceScope = seenSelectors.some((selector) => selector.scope === 'workspace');
+  return {
+    reached: out !== undefined && out.length > 0 && foldedWorkspaceScope,
+    detail: JSON.stringify({ out, selectors: seenSelectors, foldedWorkspaceScope }),
+  };
+};
+
+/**
+ * The leader-brief cell probe for `announcedGates` (P-027), driven through the
+ * REAL consumer with only the announcement store and the waiter count stubbed.
+ *
+ * The announcement is scoped to the probe's own fleet, so it exercises the
+ * shared `selectVisibleAnnouncements` scoping rather than a bare pass-through:
+ * a scoping regression that stopped matching `fleet` would empty this and the
+ * cell would fail.
+ */
+const leaderBriefAnnouncedGatesProbe: CellProbe = async () => {
+  const out = await readLeaderAnnouncedGates(
+    { fleetSlug: 'coverage-probe-fleet', planSlug: null, harnessSlug: null },
+    {
+      listAnnouncements: async () =>
+        [
+          {
+            id: 1,
+            eventKey: 'fleet:coverage-probe:green',
+            logicalGateKey: null,
+            note: 'coverage probe gate',
+            scopeKind: 'fleet',
+            scopeRef: 'coverage-probe-fleet',
+            subscriberId: 'su-coverage-probe',
+            firedAt: null,
+            firedReason: null,
+          },
+        ] as never,
+      listAwaits: async () => [] as never,
+    },
+  );
+  return { reached: Array.isArray(out) && out.length > 0, detail: JSON.stringify(out) };
+};
+
+/**
  * THE PER-SINK COVERAGE REGISTRY (P-024).
  *
  * One entry per declared `OrientationSink`. For a `consuming` sink every
@@ -845,7 +1012,154 @@ const leaderBriefNeverDropProbe: CellProbe = async () => {
  * class omitted from a sink is a RECORDED DECISION rather than a gap that
  * nothing notices — the matrix generalisation of `DELIBERATELY_UNRENDERED`.
  */
+/**
+ * The `agent-orders` cell probe (P-018), driven through the REAL shared
+ * projection at the REAL sink.
+ *
+ * Mirrors {@link linesAddedBy} exactly — same BASELINE, same patch, same
+ * marker — but projects at `'agent-orders'` instead of rendering turn-start.
+ * That parallel is the point: a class whose rows differ between the two sinks
+ * fails HERE, which is the P-018 guarantee stated as a coverage cell rather
+ * than as a comment.
+ *
+ * Deliberately NOT an assertion about `applicableSinks`. Re-reading the
+ * declaration would pass against a consumer that ignores the registry — the
+ * same trap `leaderBriefNeverDropProbe` above documents.
+ */
+function agentOrdersProbe(name: string): CellProbe {
+  return () => {
+    const probe = CLASS_PROBES[name];
+    if (!probe) return { reached: false, detail: `no CLASS_PROBES entry for ${name}` };
+    const baseline = projectOrientationRows(BASELINE, 'agent-orders', null).map((r) => r.text);
+    const populated = projectOrientationRows(
+      { ...BASELINE, ...probe.patch },
+      'agent-orders',
+      null,
+    ).map((r) => r.text);
+    const added = populated.filter((line) => !baseline.includes(line));
+    return { reached: added.some((line) => probe.marker.test(line)), detail: JSON.stringify(added) };
+  };
+}
+
+/** `obligations` renders from a built agenda rather than a flat patch, so its
+ *  probe mirrors {@link linesAddedByFamily} instead of {@link linesAddedBy}. */
+const agentOrdersObligationsProbe: CellProbe = () => {
+  const baseline = projectOrientationRows(BASELINE, 'agent-orders', null).map((r) => r.text);
+  const populated = projectOrientationRows(
+    { ...BASELINE, obligations: OBLIGATION_BRIEF },
+    'agent-orders',
+    null,
+  ).map((r) => r.text);
+  const added = populated.filter((line) => !baseline.includes(line));
+  return { reached: added.length > 0, detail: JSON.stringify(added) };
+};
+
+/** One reason shared by every class this sink does not claim. The Orders rail
+ *  answers "what standing obligation, and what changed, was this agent told
+ *  about" — see TURN_START_AND_AGENT_ORDERS. A class outside that question is
+ *  omitted for the same structural reason, stated per class below so
+ *  withdrawing any single one stays a visible edit. */
+const AGENT_ORDERS_NOT_AN_OBLIGATION = (what: string, why: string): SinkOmission => ({
+  kind: 'not-applicable',
+  reason:
+    `${what} ${why} The HUD popup may still render it as OBSERVER DETAIL from its own ` +
+    'sources (liveness, locks, the dossier rail) — this omission is about the shared ' +
+    'obligation object, not about what the screen is allowed to show.',
+});
+
 const SINK_COVERAGE: Record<string, SinkCoverage> = {
+  'agent-orders': {
+    status: 'consuming',
+    scope:
+      "The HUD conversation popup's Orders rail (SessionChatModal → agentOrders.byOwner → getAgentOrders). " +
+      'It answers ONE question for an observer: what standing obligation, and what changed, was this agent ' +
+      'told about? Narrower than turn-start on purpose — the popup renders MORE overall, but its obligation ' +
+      'section must be the rows turn-start rendered, character for character (P-018). A class belongs here ' +
+      'only if it is part of that question; observer embellishment stays outside the shared object.',
+    probes: {
+      ownerDirectives: agentOrdersProbe('ownerDirectives'),
+      openChecks: agentOrdersProbe('openChecks'),
+      unansweredDirected: agentOrdersProbe('unansweredDirected'),
+      neverDropFacts: agentOrdersProbe('neverDropFacts'),
+      obligations: agentOrdersObligationsProbe,
+    },
+    silent: {},
+    omitted: {
+      toolSurface: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'An MCP-registration alarm about the reader\'s OWN session.',
+        'It is an instrument fault, not something the agent was told to do, and the popup shows session ' +
+          'health from live presence rather than from a turn-start warning.',
+      ),
+      carryBlindWindow: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        "A warning about the reader's own carry gap.",
+        'It describes a property of the delivery channel, not an obligation standing against the agent.',
+      ),
+      historyUpdates: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Post-claim history movement on items the reader holds.',
+        'A delta about work state rather than about what the agent was told; the popup already renders ' +
+          'held-item state from the carry brief, where it is richer.',
+      ),
+      effortUpdates: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Post-claim plan/goal revisions.',
+        'Same reading as historyUpdates — a work-state delta, and the popup carries plan context separately.',
+      ),
+      unansweredStale: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        "The reader's stale-sender backlog.",
+        'A nudge about correspondence hygiene, not a standing obligation; `unansweredDirected` is the ' +
+          'obligation half and IS claimed.',
+      ),
+      openAsks: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Asks the reader has OUTSTANDING against others.',
+        'The direction is inverted: these are obligations the agent placed on someone else, so they do not ' +
+          'answer what this agent was told.',
+      ),
+      modes: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'The reader\'s active modes.',
+        'The popup renders modes from `getAgentOrders.modes` WITH attribution the registry line does not ' +
+          'carry (who set it, whether the owner directed it) — a strictly richer read from the mode ' +
+          'registry itself, so importing the line would add a second, poorer copy.',
+      ),
+      authorityVerdict: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'The reader\'s effective execution-authorization / mission / ideation verdict.',
+        'It is DERIVED from the mode registry and the fleet route, not an instruction anyone placed on this ' +
+          'agent — so it answers "what does that posture COMPUTE to", not "what was this agent told". The ' +
+          'rail already renders the modes it derives from, with attribution this line does not carry, so ' +
+          'importing the verdict would add a poorer second copy of its own input (same argument as `modes`).',
+      ),
+      loopArmed: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Whether the reader has a wake source armed.',
+        'The popup reads loop state live from the carry brief (`carry.loopActive`, `loopIntervalSec`), ' +
+          'which is current rather than as-of-last-turn.',
+      ),
+      loopFireWithheld: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'A withheld loop fire.',
+        'Scheduler mechanics about the reader\'s own loop, not an instruction it received.',
+      ),
+      held: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        "The reader's held work-items and checkpoints.",
+        'The popup renders these from `carry.heldItems` with checkpoint ages and staleness verdicts the ' +
+          'turn-start line deliberately compresses away; that richer read is the dossier\'s job.',
+      ),
+      executableFrontier: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'What the reader could work on NEXT.',
+        'A suggestion, not an obligation — nobody told the agent to take it.',
+      ),
+      announcedGates: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Gates declared in the reader\'s scope.',
+        'An availability signal about what it MAY await, not a standing instruction.',
+      ),
+      inboxRecent: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'Recent inbox excerpts.',
+        'The popup IS a conversation view — it renders the real messages beside this rail, so an excerpt ' +
+          'line would restate on screen what the screen already shows in full.',
+      ),
+      improvementTriage: AGENT_ORDERS_NOT_AN_OBLIGATION(
+        'The withdrawn improvement-triage line.',
+        'DELIBERATELY_UNRENDERED at turn-start since P-017 (signal decay: it rendered every turn and was ' +
+          'acted on by nobody), so there is no row for this sink to share.',
+      ),
+    },
+  },
   'turn-start': {
     status: 'consuming',
     scope:
@@ -872,7 +1186,16 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
       'block it never sees (EI-18725816532600240), so a safety class whose absence is unrecoverable is ' +
       'worth carrying here anyway. Every `not-applicable` below is judged against that standard, not ' +
       'against "the leader can get it elsewhere" alone.',
-    probes: { neverDropFacts: leaderBriefNeverDropProbe },
+    probes: {
+      neverDropFacts: leaderBriefNeverDropProbe,
+      // P-027: announced gates now reach this sink FROM THE DECLARATION. Before
+      // P-027 this cell sat in `omitted` as kind 'second-derivation' with
+      // collapsedBy: 'P-027' — the entry below is what that promise being kept
+      // looks like, and moving it here is forced by the matrix rather than
+      // optional (a claimed cell with no probe fails `classifies EVERY declared
+      // class`). That coupling is the instrument working.
+      announcedGates: leaderBriefAnnouncedGatesProbe,
+    },
     silent: {},
     omitted: {
       held: {
@@ -884,15 +1207,6 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'of whether ONE assembler can serve both subjects — note leader-brief.ts already documents using ' +
           '"the same canonical held-item checkpoint reader as carry" — but that is an assembler question, ' +
           'not an `applicableSinks` change, and this entry deliberately does not pre-decide it.',
-      },
-      announcedGates: {
-        kind: 'second-derivation',
-        collapsedBy: 'P-027',
-        reason:
-          'MEASURED present at this sink from its OWN bounded read (leader-brief.ts `const announcedGates = ' +
-          'await boundedLeaderBriefRead(...)`), separate from the turn-start derivation of the same truth. ' +
-          'Two derivations of one value is the drift-prone shape the derived-truth ladder names, and it is ' +
-          'why this cell is DEBT rather than a finished decision.',
       },
       obligations: {
         kind: 'other-shared-mechanism',
@@ -936,6 +1250,24 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
       openAsks: {
         kind: 'not-applicable',
         reason: "The reader's own outstanding asks. Fleet-scoped blocking is carried by the member rows instead.",
+      },
+      modes: {
+        kind: 'not-applicable',
+        reason:
+          "DIFFERENT SUBJECT, not a missing copy. This class populates from the READER's own mode registry " +
+          '(`getModes(ownerId)`), so on a leader brief it would report the leader\'s own posture — which their ' +
+          'own turn-start block already delivers. The fleet-scoped question a leader actually acts on is a ' +
+          "MEMBER's posture, which is per-member data and belongs on the member rows, not on this class.",
+      },
+      authorityVerdict: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, for the same reason as `modes` directly above — and one hop stronger, because ' +
+          "this class is DERIVED from that one. It resolves from the READER's own control-anchor state, so on " +
+          "a leader brief it would report the LEADER's own execution-authorization/mission/ideation verdict, " +
+          'which their own turn-start block already delivers. The fleet-scoped question a leader acts on is ' +
+          "whether a MEMBER's authority differs from what the leader believes they granted — per-member data " +
+          'that belongs on the member rows, not on this reader-scoped class.',
       },
       loopArmed: {
         kind: 'not-applicable',
@@ -984,22 +1316,233 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
         kind: 'not-applicable',
         reason: "Post-claim revisions to the READER's own plan/goal. Same reasoning as `historyUpdates`.",
       },
+      openChecks: {
+        kind: 'not-applicable',
+        reason:
+          "P-010's unverified-claims / open-blocker rows, and they are self-scoped by construction: they come " +
+          "from the READER's own loop carry-note and its own held work-items, so a leader cannot act on another " +
+          "agent's carried claims from this payload. The fleet-scoped equivalent a leader DOES act on is already " +
+          'carried per member (claimHealth, stalled, intentStale). Recorded by su-c03852cb while the authoring ' +
+          'session was MCP-dark; su-6b1151ea should revisit if P-010 intended a leader-facing reading.',
+      },
     },
   },
 
   'carry-brief': {
-    status: 'pending',
-    registeredBy: 'P-029',
-    reason:
-      'The carry document is a third brief with NO sink identity yet: it is named in `OrientationSink` but ' +
-      'claimed by zero registry entries, so nothing can assert what it does or does not carry. P-029 ' +
-      'registers it and DECIDES, per class, what a successor needs at a cut.\n\n' +
-      'This is recorded ONCE as a pending sink rather than as 17 per-class omissions on purpose. Writing 17 ' +
-      'placeholder reasons today would pre-decide P-029\'s deliverable in the very table P-029 must then ' +
-      'rewrite, and every one of them would say the same thing. The guard instead asserts that a pending ' +
-      'sink claims ZERO classes, so this sink cannot be half-registered in silence — and the moment P-029 ' +
-      'flips it to `consuming`, the matrix immediately demands a per-class decision for all 17. That ' +
-      'forcing function IS the deliverable of this item.',
+    status: 'consuming',
+    scope:
+      'The CARRY DOCUMENT, assembled at a compaction/respawn cut and read by the COLDEST reader in the ' +
+      'system: a successor process that rebuilds from this document alone, with no memory of the turns ' +
+      'that produced it. That single property decides every cell below, and it cuts BOTH ways.\n\n' +
+      'It ARGUES FOR a class when the successor cannot re-derive it — the antidote must be present where ' +
+      'the poison is strongest (EI-18725816532600240). It ARGUES AGAINST a class that is LIVE SESSION ' +
+      'STATE, and that is the majority verdict here: this document is built at the cut and read minutes ' +
+      'later by a session whose OWN turn-start block re-derives that state authoritatively at wake. ' +
+      'Embedding a build-time snapshot would not merely be redundant, it would be a STALE ASSERTION ' +
+      'competing with a live one — and a successor cannot tell which of two disagreeing sources it should ' +
+      'believe. So "the successor gets it from its own turn-start" is a sufficient reason to omit here in ' +
+      'a way it is NOT for the leader brief (a cold leader may never see a turn-start block).\n\n' +
+      '⚠ A THIRD, sharper test applies to this sink alone: TEMPORAL REACHABILITY. The document is ' +
+      'assembled AT the snapshot, so a class measuring anything about the cut itself, or about the window ' +
+      'between the snapshot and the cut, has no value to read at build time (see `carryBlindWindow`).',
+    probes: {
+      // The one claimed class. P-029 registered this sink BY giving it a real
+      // consumer — `readCarryNeverDropFacts` in carry-brief.ts — rather than by
+      // adding a row here, per the registry's "declaration and consumption land
+      // in the SAME change" rule.
+      neverDropFacts: carryBriefNeverDropProbe,
+    },
+    silent: {},
+    omitted: {
+      // ── Reaches this sink already, from the SAME canonical derivation ──────
+      held: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'readHeldWorkItems (carry-brief.ts) — turn-start imports it for its own `held` dep',
+        reason:
+          'Already ONE assembler, and this module is its HOME: turn-start\'s `held` dep dynamically imports ' +
+          '`readHeldWorkItems` from carry-brief.ts rather than assembling its own. So the class reaches this ' +
+          'sink from the single canonical read, not a copy, and no collapse is owed. P-028 measured this ' +
+          'directly and found the item text\'s "three independent assemblers" premise already false.',
+      },
+      ownerDirectives: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'listOpenOwnerDirectives (owner-directives.ts), rendered via renderOwnerDirectivesBlock',
+        reason:
+          'Both sinks call the SAME reader: turn-start\'s `ownerDirectives` dep and carry-brief\'s ' +
+          '`directivesPromise` each import `listOpenOwnerDirectives` from owner-directives.ts, differing only ' +
+          'in row budget. Not drift-prone, so no collapse is owed. The carry read is workspace-scoped on ' +
+          'purpose — a directive must survive the recording session\'s death, which is exactly this sink\'s case.',
+      },
+      openChecks: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'splitCarryNoteChecks (carry-note.ts) — the same parser turn-start\'s openChecks dep uses',
+        reason:
+          'The carried-claims half reaches this document from the SAME canonical parser: turn-start\'s ' +
+          '`openChecks` dep calls `carryNote.splitCarryNoteChecks`, and carry-brief populates `checks` from ' +
+          'that identical function. ⚠ SCOPE NOTE, deliberately recorded rather than glossed: turn-start\'s ' +
+          'class ALSO folds a second half (open `work_items:set_blocker` rows) that this document does not ' +
+          'carry; those reach the successor through its own turn-start block and through each held item\'s ' +
+          're-injected checkpoint. So this entry covers the carry-note half only, and says so.',
+      },
+
+      // ── Reaches this sink from a SEPARATE derivation — DEBT, owned ─────────
+      loopArmed: {
+        kind: 'second-derivation',
+        collapsedBy: 'WI-10002403',
+        reason:
+          'The class DOES reach this sink, from a DIFFERENT reader than turn-start uses — measured, not ' +
+          'assumed: turn-start\'s `loopArmed` dep calls `activeLoopOwners()` (adv-roster), while carry-brief\'s ' +
+          '`loopPromise` calls `getLoopStatus(ownerId)` and consumes `loop.active` for the "armed loop @<harness>" ' +
+          'pointer and the "the loop is not armed" stale-note warning. Two readers of one truth is drift-prone ' +
+          'by the derived-truth ladder, and the disagreement is asymmetric-and-bad in both directions: a false ' +
+          'ARMED in this document asserts a wake guarantee that does not exist and the successor silently halts; ' +
+          'a false NOT-ARMED in turn-start trains agents to ignore the highest-priority warning it emits. ' +
+          'Recorded as DEBT rather than not-applicable precisely because the class is not absent here.',
+      },
+
+      // ── LIVE SESSION STATE: the successor's own turn-start re-derives it ───
+      // Each measured absent from carry-brief.ts (0 occurrences; positive
+      // control on the same instrument: neverDropFacts 16, facts 91, heldItems
+      // 36, loop 89 — so these zeros are measurements, not a broken grep).
+      toolSurface: {
+        kind: 'not-applicable',
+        reason:
+          'Measures whether THIS session\'s MCP tool list loaded empty — a property of a live process, and the ' +
+          'successor is a DIFFERENT process whose tool surface is its own. The predecessor\'s value is not ' +
+          'merely stale here, it is about someone else. Its only remedy (restart the session) is also something ' +
+          'the successor has already done by existing.',
+      },
+      unansweredDirected: {
+        kind: 'not-applicable',
+        reason:
+          'A directed message awaiting an answer is live inbox state that the successor\'s own turn-start block ' +
+          'derives authoritatively at wake — including messages that arrived AFTER this cut, which this document ' +
+          'cannot know about. A build-time snapshot would compete with that live read while being strictly ' +
+          'older. The document instead carries the narrower `postNoteInbox` delta, which is a different subject.',
+      },
+      unansweredStale: {
+        kind: 'not-applicable',
+        reason:
+          'Same family and same reasoning as `unansweredDirected`: staleness is measured against NOW, so a value ' +
+          'computed at the cut is wrong by construction by the time the successor reads it. Age-derived classes ' +
+          'are the worst possible fit for a document whose defining property is that it is read later.',
+      },
+      openAsks: {
+        kind: 'not-applicable',
+        reason:
+          'Open asks awaiting a human are live state re-derived by the successor\'s turn-start, and their status ' +
+          'can change between the cut and the read. ⚠ Recorded with a caveat rather than silently: the OWNER-' +
+          'FACING half of this (a question this session promised to answer) is genuinely carry-worthy, and it ' +
+          'already reaches the document through the loop carry-note\'s own `left` / owner-facing-threads ' +
+          'discipline — a prose carrier, not this class. If that proves insufficient, the fix is to claim this ' +
+          'class here deliberately, not to widen the note.',
+      },
+      modes: {
+        kind: 'other-shared-mechanism',
+        mechanism: 'the carry document\'s control-anchor state block + its `## Session mode` section',
+        reason:
+          'The carry document ALREADY carries active modes verbatim — the control-anchor state block ' +
+          '(`control generation N: {"modes":[…]}`) and the `## Session mode` section both render them, and a ' +
+          'successor re-reads that state rather than inheriting a cursor. Registering this class here would ' +
+          'add a THIRD copy of the same posture. ⚠ And the TRANSITION half is not merely redundant but ' +
+          'temporally unavailable: the diff is against the committed cursor of the turn the line renders on, ' +
+          'and a carry document is assembled for a session that has taken no turn — so there is no prior ' +
+          'cursor to diff against. Same shape as `carryBlindWindow` under D-069. What a successor needs is ' +
+          'the CURRENT posture, which it already gets.',
+      },
+      authorityVerdict: {
+        kind: 'other-shared-mechanism',
+        mechanism: "the carry document's `## Effective instruction precedence` block",
+        reason:
+          'MEASURED, not inferred: the carry document already renders this verdict VERBATIM as its own ' +
+          '`⟦INSTRUCTION-PRECEDENCE⟧` payload, carrying all three decisions plus their suppressed ' +
+          'alternatives and provenance — strictly richer than this one-line class. Registering it here would ' +
+          'add a second, poorer copy. ⚠ And the TRANSITION half is temporally unavailable for exactly the ' +
+          'reason `modes` records directly above: the line diffs against the committed cursor of the turn it ' +
+          'renders on, and a carry document is assembled for a session that has taken no turn, so there is no ' +
+          'prior cursor to diff against. Same shape as `carryBlindWindow` under D-069 and `modes` under D-071.',
+      },
+      inboxRecent: {
+        kind: 'not-applicable',
+        reason:
+          'DIFFERENT SUBJECT, not a missing copy. This class is the recent-inbox VIEW; the document carries ' +
+          '`postNoteInbox`, a bounded delta of pending interrupts arriving strictly AFTER the carry note was ' +
+          'written. That delta exists to tell a successor "your note may already be superseded", which the ' +
+          'recent-inbox view does not answer. Both read `readInbox`, but for different questions and windows.',
+      },
+      loopFireWithheld: {
+        kind: 'not-applicable',
+        reason:
+          'A per-fire condition of the engine loop, evaluated when a fire is withheld and re-derived at the ' +
+          'successor\'s next wake. It describes the scheduler\'s decision about a fire that has already ' +
+          'happened or been skipped, so carrying it past a cut informs no decision the successor can still make.',
+      },
+      obligations: {
+        kind: 'not-applicable',
+        reason:
+          'The obligation agenda is a live evaluation with its own sink vocabulary ' +
+          '(projectAgentObligationBrief), re-projected for the successor at its own turn-start and reachable ' +
+          'on demand via coord:orient. Measured absent from carry-brief.ts (0 occurrences). Recorded as ' +
+          'not-applicable rather than shared-mechanism precisely BECAUSE it does not reach this sink at all ' +
+          'today — naming a mechanism that does not run here would be the guess this kind exists to forbid.',
+      },
+      executableFrontier: {
+        kind: 'not-applicable',
+        reason:
+          'The claimable/next-executable queue is the most volatile state in the system — peers claim from it ' +
+          'continuously — so a snapshot taken at the cut is very likely wrong when read, and wrong in the ' +
+          'specific direction that causes harm: it would point a successor at work another agent already holds, ' +
+          'producing a claim conflict the document itself caused.',
+      },
+      announcedGates: {
+        kind: 'not-applicable',
+        reason:
+          'Gate announcements are live and LATCHING: a gate can fire between the cut and the read, so a carried ' +
+          'list can name a gate that has already opened. The successor\'s own ARMED AWAITS — which genuinely ' +
+          'survive the boundary and will wake it — are carried by this document separately and are the ' +
+          'actionable half; the announcement view is re-derived at turn-start and via events:catalog.',
+      },
+      historyUpdates: {
+        kind: 'not-applicable',
+        reason:
+          'A per-turn delta describing changes since the reader\'s last turn-start cursor. The successor has no ' +
+          'such cursor continuity across a respawn — its first turn-start establishes a fresh one — so the ' +
+          'class has no meaningful value to carry across the very boundary that resets its baseline.',
+      },
+      effortUpdates: {
+        kind: 'not-applicable',
+        reason:
+          'Same cursor-delta property as `historyUpdates`: it reports movement since a watermark the successor ' +
+          'does not inherit. Recorded as its own entry rather than folded into that one so withdrawing either ' +
+          'decision stays a visible, separate edit.',
+      },
+      improvementTriage: {
+        kind: 'not-applicable',
+        reason:
+          'Its turn-start LINE was withdrawn outright by P-017 (it sits in DELIBERATELY_UNRENDERED for the sink ' +
+          'that does claim it), so there is no rendered signal for this document to carry. Claiming it here ' +
+          'would re-introduce for the coldest reader a line the system already decided was not worth its budget ' +
+          'for the warmest one.',
+      },
+
+      // ── TEMPORALLY UNREACHABLE at this sink ───────────────────────────────
+      carryBlindWindow: {
+        kind: 'not-applicable',
+        reason:
+          'TEMPORALLY IMPOSSIBLE here, which INVERTS P-029\'s own item text (it names this class an "obvious ' +
+          'candidate" for this sink). The class counts tool calls between the carry SNAPSHOT and the CUT; this ' +
+          'document is ASSEMBLED at the snapshot, with the cut still in the future, so at build time the count ' +
+          'is necessarily 0 and its endpoint does not exist yet. A consumer wired here would return null on ' +
+          'every single call — and a null-returning dependency reads as broken plumbing to whoever audits it ' +
+          'next, so the omission would look like a bug to fix rather than a category error. Recorded ' +
+          'not-applicable (finished, nothing owed) and NOT second-derivation: labelling it debt would promise a ' +
+          'collapse that can never happen. Full measurement in plan decision D-069. ⚠ Do not "collapse" this ' +
+          'with carry-brief.ts\'s "CARRY-NOTE SUPERSEDED" warning — that measures a DIFFERENT subject (loop ' +
+          'carry-NOTE write time vs later session activity, EI-22436560948423011), and merging them would ' +
+          'destroy one of two real signals. The blind window is instead stated to the successor as PROSE in ' +
+          'the document\'s own header, which is the truthful carrier for something that cannot be measured yet.',
+      },
+    },
   },
 };
 
@@ -1243,18 +1786,80 @@ describe('P-024 — orientation class × sink coverage matrix', () => {
     expect(out, 'withdrawing the sink must turn the field off, with no second edit in the consumer').toBeUndefined();
   });
 
-  it('detects a PENDING sink that silently gained a claim (permanent falsifiability control)', () => {
-    // Drives the zero-claim assertion with a synthetic registry, so the control
-    // does not depend on carry-brief actually being empty today.
-    const halfRegistered = ORIENTATION_CLASS_REGISTRY.map((entry) =>
+  it('the carry-brief probe really can return false (control: it reads the declaration)', async () => {
+    // P-029's counterpart to the leader-brief control above, and the reason the
+    // live carry-brief cell's green means anything: drive the REAL consumer with
+    // the carry-brief sink withdrawn from the registry row. A consumer that
+    // hardcoded the class instead of reading `applicableSinks` turns this red.
+    const withdrawn = ORIENTATION_CLASS_REGISTRY.map((entry) =>
       entry.id === 'neverDropFacts'
-        ? { ...entry, applicableSinks: [...entry.applicableSinks, 'carry-brief' as const] }
+        ? { ...entry, applicableSinks: entry.applicableSinks.filter((sink) => sink !== 'carry-brief') }
         : entry,
     );
-    expect(classesClaimedBy('carry-brief', halfRegistered)).toEqual(['neverDropFacts']);
-    // …and that it reads empty against the real registry, so the control above
-    // is measuring a difference rather than always-true.
-    expect(classesClaimedBy('carry-brief')).toEqual([]);
+    const out = await readCarryNeverDropFacts(
+      { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+      { fold: (async () => [neverDropFactProbe('dead-end:coverage-probe')]) as never, registry: withdrawn },
+    );
+    expect(out, 'withdrawing the sink must turn the section off, with no second edit in carry-brief').toBeUndefined();
+  });
+
+  it('carry-brief folds never-drop facts at WORKSPACE scope, not owner-only (control: the P-029 gap)', async () => {
+    // THE SUBSTANTIVE REGRESSION GUARD. The carry document already folded
+    // OWNER-scoped facts before P-029; what it lacked was the WORKSPACE leg, so
+    // a consumer that quietly dropped back to owner-only would still return
+    // facts and still look like it worked — the live cell would stay green while
+    // the exact gap P-029 closed had reopened. Assert the selector set itself.
+    const seen: { scope: string; scopeRef?: string | null }[] = [];
+    await readCarryNeverDropFacts(
+      { ownerId: 'su-coverage-probe', workspaceId: 'papercusp-workspace' },
+      {
+        fold: (async (selectors: readonly { scope: string; scopeRef?: string | null }[]) => {
+          seen.push(...selectors);
+          return [neverDropFactProbe('dead-end:coverage-probe')];
+        }) as never,
+      },
+    );
+    expect(
+      seen.map((selector) => selector.scope).sort(),
+      'a workspace-scoped guard rail must reach the coldest reader in the system (EI-18725816532600240)',
+    ).toEqual(['owner', 'workspace']);
+  });
+
+  it('detects a PENDING sink that silently gained a claim (permanent falsifiability control)', () => {
+    // ⚠ REBUILT ON A SYNTHETIC SINK NAME (P-029), and the reason is the point.
+    //
+    // This control previously asserted that the REAL 'carry-brief' sink claimed
+    // ZERO classes. That made it die the moment carry-brief was legitimately
+    // registered — i.e. exactly when the mechanism it guards did its job. A
+    // control that a CORRECT change turns red is a control that the next author
+    // deletes or weakens rather than repairs, so its lifetime was capped at the
+    // first success of the thing it protects. It is now anchored to a sink name
+    // no registry row will ever claim, so it survives every future sink
+    // graduating from `pending` to `consuming`.
+    const SYNTHETIC_PENDING_SINK = 'probe-only-never-registered-sink';
+
+    // Half 1 — reads EMPTY for a sink nothing claims. True by construction
+    // rather than by the current state of the tree, so it cannot rot; it is
+    // what makes half 2 a measured DIFFERENCE instead of an always-true.
+    expect(classesClaimedBy(SYNTHETIC_PENDING_SINK)).toEqual([]);
+
+    // Half 2 — and DETECTS the claim the instant a registry row adds that sink.
+    const halfRegistered = ORIENTATION_CLASS_REGISTRY.map((entry) =>
+      entry.id === 'neverDropFacts'
+        ? { ...entry, applicableSinks: [...entry.applicableSinks, SYNTHETIC_PENDING_SINK as never] }
+        : entry,
+    );
+    expect(classesClaimedBy(SYNTHETIC_PENDING_SINK, halfRegistered)).toEqual(['neverDropFacts']);
+
+    // Half 3 — THE VACUITY GUARD, new with P-029. `keeps a PENDING sink claimed
+    // by exactly zero classes` iterates SINK_COVERAGE and skips every non-pending
+    // entry; with all three sinks now registered it iterates NOTHING and passes
+    // vacuously. A vacuous invariant is indistinguishable from a working one, so
+    // this asserts the underlying detector still discriminates: the zero-claim
+    // expectation MUST fail against a sink that has gained a claim. If that ever
+    // stops throwing, the pending-sink invariant has become permanently unable
+    // to fail and the next `pending` sink would be registered in silence.
+    expect(() => expect(classesClaimedBy(SYNTHETIC_PENDING_SINK, halfRegistered)).toEqual([])).toThrow();
   });
 
   it('carries the parsed-source note into a matrix failure', () => {

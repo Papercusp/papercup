@@ -143,7 +143,12 @@ import {
   listVerifiedWaitTakeoversForSubscribers,
   type VerifiedWaitTakeoverAlert,
 } from '../../events/await/store';
-import { announcementVisibleTo } from '../../events/await/announce-key';
+// P-027 / D-063: the announced-gate read + visibility-scope pairing now lives in
+// ONE place shared with the turn-start sink. `announcementVisibleTo` is applied
+// inside it, so this file no longer imports the predicate directly — that is the
+// point: two hand-written copies of "list then scope" could diverge silently,
+// each still rendering a plausible-but-differently-scoped gate list.
+import { readVisibleAnnouncements } from '../../events/await/announced-gate-view';
 import type { TimeoutBehavior } from '../../events/await/types';
 import type { FilterNode } from '../../scheduler/claim-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -563,19 +568,41 @@ export async function readLeaderAnnouncedGates(
   deps: {
     listAnnouncements?: typeof listActiveAnnouncements;
     listAwaits?: typeof listActiveAwaitsForKey;
+    registry?: readonly RegisteredOrientationClass[];
   } = {},
 ): Promise<LeaderBriefAnnouncedGate[] | undefined> {
+  // P-027: applicability is DECLARED in the shared orientation class registry,
+  // not assumed here. Same consumption shape as `readLeaderNeverDropFacts`
+  // (D-053): a STRUCTURED sink reads the declaration through
+  // `RegisteredOrientationClass.id` and emits its own field, rather than
+  // through `segments[].render` — pushing a rendered line into this JSON would
+  // be the "second copy of the line" the registry exists to prevent. Reading
+  // the declaration is what makes withdrawing the sink a ONE-LINE change in the
+  // registry with no second edit here.
+  const registry = deps.registry ?? ORIENTATION_CLASS_REGISTRY;
+  const declared = registry.some(
+    (entry) => entry.id === 'announcedGates' && entry.applicableSinks.includes('leader-brief'),
+  );
+  if (!declared) return undefined;
   const listAnnouncements = deps.listAnnouncements ?? listActiveAnnouncements;
   const listAwaits = deps.listAwaits ?? listActiveAwaitsForKey;
   const probe = await withBoundedTimeout(
     async () => {
-      const announcements = await listAnnouncements({ unfiredOnly: false, limit: 100 });
-      const visible = announcements.filter((announcement) =>
-        announcementVisibleTo(announcement, {
-          fleetSlug: input.fleetSlug,
-          planSlug: input.planSlug ?? null,
-          harnessSlug: input.harnessSlug ?? null,
-        }),
+      // P-027 / D-063: the read + visibility-scope pairing is shared with the
+      // turn-start sink. `unfiredOnly: false` is this sink's own choice and is
+      // the substantive difference — a leader cockpit must show FIRED latches,
+      // which a per-turn block deliberately must not carry.
+      const visible = await readVisibleAnnouncements(
+        {
+          scope: {
+            fleetSlug: input.fleetSlug,
+            planSlug: input.planSlug ?? null,
+            harnessSlug: input.harnessSlug ?? null,
+          },
+          unfiredOnly: false,
+          limit: 100,
+        },
+        { listAnnouncements },
       );
       return Promise.all(
         visible.map(async (announcement) => ({
@@ -736,8 +763,11 @@ export interface LeaderBriefMember {
   /** P-013: of YOUR directives to this member that named a required side effect
    *  (`coord:send { expectEffect }`), how many the LEDGER shows were carried out.
    *  Absent when you sent none — never a zeroed block (see decorateDirectiveActuation).
-   *  Distinct from `unanswered`: that is what they SAID, this is what happened. */
-  directives?: DirectiveActuationSummary;
+   *  Distinct from `unanswered`: that is what they SAID, this is what happened.
+   *  P-030: named `directiveActuation`, NOT `directives` — the root
+   *  `ownerDirectives` projection on this same payload carries the owner's turns,
+   *  and one field name spanning both concepts is actively misleading. */
+  directiveActuation?: DirectiveActuationSummary;
   /** Active non-inbox-wake events:await keys — a deliberately-benched member.
    *  EI-18732218464905145: a composed (`spec`) registration renders as ONE
    *  `ComposedParkEntry` (its any/all/k-of-n mode + its OWN deadline), never as
@@ -837,9 +867,10 @@ export interface LeaderBriefMember {
 /**
  * P-026 / D-016: the owner's pending/open turns are a leader obligation, not
  * the member-directed actuation ledger below. Keep this root projection
- * deliberately separate from `members[].directives`, whose meaning is
+ * deliberately separate from `members[].directiveActuation`, whose meaning is
  * DirectiveActuationSummary (what the leader asked members to do and what was
- * observed). The action surface only carries `recoveryRef`; `targetRef` is
+ * observed). P-030 renamed that member field off `directives` precisely so the
+ * two can no longer be confused by name alone. The action surface only carries `recoveryRef`; `targetRef` is
  * diagnostic provenance for provider rows and is not an owner-facing call.
  */
 export interface LeaderBriefOwnerDirective {
@@ -2927,7 +2958,8 @@ export type DecoratedAgent = AgentAssignment & {
   coordHook?: CoordDeafState | null;
   coordLastReadAgoSec?: number | null;
   unanswered?: UnansweredDirectedSummary;
-  directives?: DirectiveActuationSummary;
+  /** P-030: the leader→member actuation ledger. Deliberately NOT `directives`. */
+  directiveActuation?: DirectiveActuationSummary;
   monitorState?: MonitorState | null;
   nextFireAt?: string | null;
   loopMode?: 'work' | 'monitor' | null;
@@ -3384,7 +3416,7 @@ export function projectMember(
     contextPressureAgeSec: a.contextPressureAgeSec ?? null,
     ...(a.coordHook ? { coordHook: a.coordHook } : {}),
     ...(a.unanswered ? { unanswered: a.unanswered } : {}),
-    ...(a.directives ? { directives: a.directives } : {}),
+    ...(a.directiveActuation ? { directiveActuation: a.directiveActuation } : {}),
     ...(() => {
       // EI-18732218464905145: prefer the composed-collapsed view when one was
       // resolved; fall back to the raw flat list (unresolved / non-composed /
@@ -3698,9 +3730,9 @@ export interface LeaderBriefCaller {
   agentIdentity?: AgentIdentity;
   /**
    * The owner the brief is computed FOR. This is NOT bookkeeping: it scopes
-   * `directives` (P-013 — the ledger's verdict on YOUR directives to each
-   * member), so a viewer passes the VIEWED LEADER's ownerId to see what that
-   * leader sees, not its own.
+   * `directiveActuation` (P-013 — the ledger's verdict on YOUR directives to
+   * each member), so a viewer passes the VIEWED LEADER's ownerId to see what
+   * that leader sees, not its own.
    */
   ownerId?: string;
   /** The caller's workspace, or null. Normalized through
@@ -5058,8 +5090,8 @@ export async function buildLeaderBrief(
       ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
       ...(agentObligations ? { agentObligations } : {}),
       // P-026 / D-016: owner turns are a distinct leader obligation. Do not
-      // fold this into members[].directives, which is the DirectiveActuation
-      // Summary for leader→member effects.
+      // fold this into members[].directiveActuation, which is the
+      // DirectiveActuationSummary for leader→member effects (P-030).
       ...(ownerDirectives ? { ownerDirectives } : {}),
       // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
       // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and

@@ -55,6 +55,7 @@ import type { Sql } from 'postgres';
 import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
+import { FEATURE_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import type { AgentObligationBrief } from './agent-obligation-reader';
 import type { OwnerDirectiveRow } from './owner-directives';
 
@@ -117,6 +118,22 @@ export interface OrientationOpenCheck {
    *  it is surfaced ahead of the plain PREDICTED rows. */
   contested?: boolean;
 }
+
+/**
+ * How many work-items the `openChecks` resolver will scan for open external
+ * blockers. Bounded because this runs inside the 2.5s orientation wall on EVERY
+ * turn; an owner holding more than this many items has a lane problem the block
+ * cannot fix by rendering more rows.
+ */
+export const OPEN_CHECKS_BLOCKER_SCAN_LIMIT = 25;
+
+/**
+ * Hard cap on resolved rows. The renderer already shows 2 and summarizes the
+ * tail, so this exists to bound the WATERMARK (the fingerprint hashes the rows,
+ * not the rendered lines) — an unbounded row set would make the dedup key churn
+ * on rows nobody ever sees.
+ */
+export const OPEN_CHECKS_MAX_ROWS = 20;
 
 /** Post-claim discussion changes that the holder has not necessarily seen yet. */
 export interface OrientationHistoryUpdate {
@@ -298,6 +315,61 @@ export interface OrientationToolSurface {
   windowMinutes: number;
 }
 
+/**
+ * One ACTIVE mode row, reduced to the fields the attribution line needs
+ * (P-012). Deliberately NOT the full `ModeRow`: `setAt` is excluded because a
+ * time-derived component would re-emit the line every turn and defeat the very
+ * diff this class exists to be — the same rule `openAsks` and `frontier`
+ * already follow above.
+ */
+export interface OrientationModeState {
+  /** The axis this mode occupies; part of the identity because axes are exclusive. */
+  axisKey: string;
+  mode: string;
+  reason: string;
+  /** The actor that set it — the "setting actor" the acceptance bar requires. */
+  setBy: string;
+  /**
+   * Whether `setBy` IS this agent. Resolved in the deps layer, which knows the
+   * ownerId, because a segment's render signature is (value, state, committed)
+   * and carries no identity — so the self-vs-peer split cannot be decided at
+   * render time. Collapsing a peer-set mode into "self-set" would attribute a
+   * flip the agent never made to the agent itself.
+   */
+  setBySelf: boolean;
+  ownerDirected: boolean;
+  /** The SOURCE mode when an implication cascade inserted this row, else null. */
+  impliedBy: string | null;
+}
+
+/**
+ * The three INSTRUCTION-PRECEDENCE decisions that define this agent's authority
+ * (P-013), reduced to the values the transition line needs.
+ *
+ * ⚠ DELIBERATELY NOT `InstructionPrecedenceTrace.watermark` (D-073). The item
+ * text said to diff on that watermark; measured, it is strictly WIDER than the
+ * verdict it would gate — `stableRuntimeContext` hashes `scope.items` and
+ * `loop.intervalSec`, both of which move on every plan-item claim/release and
+ * every loop re-arm, while all three decision values stay byte-identical. A
+ * watermark-keyed line therefore reappears verbatim on a turn where the agent's
+ * authority did not change — the same defect D-071 diagnosed for `modes`,
+ * reached by a different route. The trace stays an implementation detail of the
+ * resolver and is NOT carried here, so a later author cannot key on it and
+ * silently reintroduce this.
+ *
+ * Each field is the decision's `effective.value`, or the literal `'conflict'`
+ * when `status === 'conflict'`. A conflicting authority is the single most
+ * action-worthy state this class has and must never encode as empty.
+ */
+export interface OrientationAuthorityVerdict {
+  /** `execution-authorization`: act-with-disclosure / confirm-before-execution / … */
+  executionAuthorization: string;
+  /** `mission`: the effective mission constraint. */
+  mission: string;
+  /** `ideation`: invent-and-implement / invent-and-propose / direct-improvements-only. */
+  ideation: string;
+}
+
 export interface OrientationState {
   /** Non-terminal work-items assigned to this agent. */
   held: OrientationHeldItem[];
@@ -332,6 +404,20 @@ export interface OrientationState {
   openAsks: OrientationOpenAsk | null;
   /** Declared-but-unfired gates visible to the caller's fleet/plan/harness. */
   announcedGates: OrientationAnnouncedGate[];
+  /** Active modes with their attribution; null means unreadable, `[]` means
+   *  genuinely none. The distinction is load-bearing — see
+   *  `fingerprintOrientation`, which preserves the committed token on null so a
+   *  transient read failure cannot erase the cursor and fake a fresh transition
+   *  on recovery. */
+  modes: OrientationModeState[] | null;
+  /**
+   * P-013: the effective authority verdict; `null` means UNREADABLE, never
+   * "no authority". The distinction is load-bearing for the same reason it is
+   * on `modes` — `fingerprintOrientation` preserves the committed token on
+   * null so a transient control-state read failure cannot erase the cursor and
+   * fake a fresh transition on recovery.
+   */
+  authorityVerdict: OrientationAuthorityVerdict | null;
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
   /** Whether the armed loop's most recent fire was withheld before delivery. */
@@ -528,6 +614,19 @@ function undischargedObligationsOnly(state: OrientationState): OrientationState 
     inboxRecent: [],
     openAsks: null,
     announcedGates: [],
+    // `[]`, not null: the QUIET value. Empty renders no transition line, which
+    // is right for an obligations-only re-emit — the modes have not changed, so
+    // repeating their attribution would be the signal decay this projection
+    // exists to avoid. null would mean "unreadable", which is a different and
+    // untrue claim on a turn where we simply did not look.
+    modes: [],
+    // `null` is the QUIET value HERE, and — unlike `modes` above — it carries no
+    // "unreadable" claim, because this projection is RENDER-ONLY: composeOrientationBlock
+    // fingerprints the FULL state before building it, so nothing in here reaches a cursor.
+    // There is no empty AuthorityVerdict to use instead (the type is three required
+    // strings, and a blank-valued one would render `- authority: exec  …` on a first
+    // turn), so null — which renders unconditionally nothing — is the honest choice.
+    authorityVerdict: null,
     loopArmed: true,
     loopFireWithheld: false,
     improvementTriage: null,
@@ -552,6 +651,21 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     state.openAsks === null &&
     state.inboxRecent.length === 0 &&
     state.announcedGates.length === 0 &&
+    // A mode row holds the block OPEN, exactly like `loopArmed` beside it.
+    // Without this conjunct an agent whose only signal is its posture (a fresh
+    // AUTO session holding nothing, with an empty inbox) is judged "nothing
+    // worth saying" and returns '' BEFORE the watermark is ever consulted — so
+    // the transition line could never render at all. Holding the block open is
+    // safe: `orientationUnchanged` still suppresses it on every later turn.
+    (state.modes?.length ?? 0) === 0 &&
+    // Same rule as the mode row above (P-013): a READABLE authority verdict holds
+    // the block open. Without this conjunct an agent whose only signal is its
+    // authority — the common shape on a first turn: nothing held, empty inbox, no
+    // mode set, so the verdict is the generic confirm-first posture — returns ''
+    // BEFORE the watermark is consulted, and the line could never render at all.
+    // Holding it open is safe: `orientationUnchanged` suppresses every later turn,
+    // and composeOrientationBlock still emits '' when no line survives.
+    state.authorityVerdict === null &&
     !state.loopArmed &&
     !state.loopFireWithheld &&
     // improvementTriage is NOT a conjunct here (P-017): it no longer renders,
@@ -729,6 +843,33 @@ export function fingerprintOrientation(
       .map(encodeAnnouncedGate)
       .sort()
       .join('|'),
+    // IDENTITY, never `setAt` (P-012 / D-071): a time-derived component would
+    // re-emit every turn purely because time passed — the trap `openAsks` and
+    // `frontier` are already commented against in this same function.
+    //
+    // UNKNOWN preserves the last known token, exactly like `frontier` below. A
+    // transient failure to read the mode store must not erase the cursor, or
+    // the next successful read would re-render an unchanged posture as if it
+    // were a fresh transition.
+    modes: state.modes
+      ? encodeModeStates(state.modes)
+      : typeof committed?.modes === 'string'
+        ? committed.modes
+        : '',
+    // P-013 / D-073: keyed on the three DECISION VALUES, never on the
+    // InstructionPrecedenceTrace watermark. That watermark hashes `scope.items`
+    // and `loop.intervalSec`, so it moves on every plan-item claim/release and
+    // every loop re-arm while the verdict text is byte-identical — a strictly
+    // wider key than the thing it would gate, which re-emits an unchanged line.
+    //
+    // UNKNOWN preserves the last known token, exactly like `modes` above: a
+    // transient control-state read failure must not erase the cursor and make an
+    // unchanged authority look like a fresh transition on the next good read.
+    authority: state.authorityVerdict
+      ? encodeAuthorityVerdict(state.authorityVerdict)
+      : typeof committed?.authority === 'string'
+        ? committed.authority
+        : '',
     loop: state.loopArmed ? 1 : 0,
     loopWithheld: state.loopFireWithheld ? 1 : 0,
     // `triage` is deliberately ABSENT from the watermark (P-017). It stopped
@@ -798,6 +939,22 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     a.gates === b.gates &&
     a.loop === b.loop &&
     a.loopWithheld === b.loopWithheld &&
+    // REQUIRED, and the single easiest line in this change to omit: writing the
+    // `modes` token in fingerprintOrientation does NOTHING unless it is
+    // compared HERE. Drop this and a mode transition never makes the block
+    // eligible to emit on its own — the line then appears only when some
+    // unrelated token happens to change, which is precisely the one-shot-with-
+    // no-visible-symptom failure the comments above describe three times over.
+    (a.modes ?? '') === (b.modes ?? '') &&
+    // REQUIRED for exactly the reason the `modes` line above is (P-013 / D-071
+    // ruling 1): the `authority` token written in fingerprintOrientation is INERT
+    // unless it is compared HERE. Drop this and an authority TRANSITION — the
+    // owner flipping AUTO on, a fleet route changing the mission, the mode
+    // registry going unreadable and the verdict falling to `conflict` — never
+    // makes the block eligible to emit on its own. The line would then appear
+    // only when some unrelated token happened to change, i.e. a one-shot with no
+    // visible symptom, on the class describing what the agent is ALLOWED TO DO.
+    (a.authority ?? '') === (b.authority ?? '') &&
     (a.obligations ?? '') === (b.obligations ?? '') &&
     // REQUIRED, and easy to omit: fingerprintOrientation writing a `facts` token
     // does nothing on its own — this whitelist is what decides re-emission. Without
@@ -838,6 +995,128 @@ function renderExecutableFrontierLine(
     `- frontier: ${previous.planSlug}@${previous.executableWidth} -> ` +
     `${frontier.planSlug}@${frontier.executableWidth} executable.`
   );
+}
+
+/**
+ * The attribution IDENTITY of one mode row — the unit the P-012 diff is keyed
+ * on. Excludes `setAt` deliberately (see {@link OrientationModeState}) and
+ * `reason` incidentally: a reason is free text, and a watermark component that
+ * can grow without bound is a cursor that can outgrow the row it describes.
+ */
+function encodeModeState(row: OrientationModeState): string {
+  return [row.axisKey, row.mode, row.setBy, row.ownerDirected ? '1' : '0', row.impliedBy ?? ''].join(':');
+}
+
+function encodeModeStates(rows: readonly OrientationModeState[]): string {
+  return rows.map(encodeModeState).sort().join('|');
+}
+
+/**
+ * P-012 / D-071: the lines for modes that are NEW SINCE the committed cursor.
+ *
+ * This comparison — NOT the `modes` watermark token — is what satisfies "does
+ * not render again while the mode is unchanged". `composeOrientationBlock` is
+ * all-or-nothing by design: when ANY token changes, every class re-renders. So
+ * a mode line gated only on its own token would reappear verbatim on the next
+ * turn an unrelated inbox message arrived. `renderExecutableFrontierLine`
+ * above solves the identical problem the identical way.
+ */
+function renderModeTransitionLines(
+  modes: OrientationModeState[] | null,
+  committed: CursorState | null,
+): string[] {
+  // null is UNREADABLE, not "no modes": say nothing rather than assert a
+  // posture we could not read.
+  if (!modes || modes.length === 0) return [];
+  const encoded = typeof committed?.modes === 'string' ? committed.modes : '';
+  const previous = new Set(encoded ? encoded.split('|') : []);
+  return modes
+    .filter((row) => !previous.has(encodeModeState(row)))
+    .map((row) => {
+      const reason = row.reason.replace(/\s+/g, ' ').trim();
+      const suffix = reason ? ` (reason: ${compactHeadline(reason)})` : '';
+      // MOST SPECIFIC FIRST. An implied row still carries a `setBy`, and may
+      // also carry `ownerDirected` inherited from the directive that triggered
+      // the cascade — so testing either of those first would render a derived
+      // posture as a decision the actor took directly, and the "implied by"
+      // shape the item explicitly names could never appear.
+      if (row.impliedBy) return `- mode ${row.mode} ON — implied by ${row.impliedBy}${suffix}.`;
+      if (row.ownerDirected) return `- mode ${row.mode} ON — owner-directed${suffix}.`;
+      if (row.setBySelf) return `- mode ${row.mode} ON — self-set${suffix}.`;
+      return `- mode ${row.mode} ON — set by ${compactActor(row.setBy)}${suffix}.`;
+    });
+}
+
+/**
+ * The three authority decisions, in the order a reader needs them, each with the
+ * short label the line renders. Declared ONCE so the encoding, the change
+ * detection and the rendered text cannot drift into describing different sets.
+ */
+const AUTHORITY_DECISIONS: ReadonlyArray<readonly [keyof OrientationAuthorityVerdict, string]> = [
+  ['executionAuthorization', 'exec'],
+  ['mission', 'mission'],
+  ['ideation', 'ideation'],
+];
+
+/**
+ * P-013 / D-073: the verdict's diff key is its three VALUES — `exec:mission:ideation`.
+ *
+ * Deliberately not `InstructionPrecedenceTrace.watermark`, which also hashes
+ * `scope.items` and `loop.intervalSec` and therefore moves on turns where the
+ * agent's authority did not change. Every value is a closed-set kebab literal
+ * from `buildInstructionPrecedenceTrace` (or the literal `conflict`), so `:`
+ * cannot appear inside one and stays an unambiguous separator.
+ */
+function encodeAuthorityVerdict(verdict: OrientationAuthorityVerdict): string {
+  return AUTHORITY_DECISIONS.map(([key]) => verdict[key]).join(':');
+}
+
+/**
+ * Recover the PREVIOUS verdict from the committed cursor, or null when there is
+ * none. A malformed or legacy token also yields null, which renders the full
+ * verdict rather than a bogus transition — loud and correct beats a silently
+ * fabricated `-> `.
+ */
+function decodeAuthorityVerdict(token: unknown): OrientationAuthorityVerdict | null {
+  if (typeof token !== 'string' || token === '') return null;
+  const parts = token.split(':');
+  if (parts.length !== AUTHORITY_DECISIONS.length) return null;
+  return { executionAuthorization: parts[0]!, mission: parts[1]!, ideation: parts[2]! };
+}
+
+/**
+ * P-013 / D-071 ruling 1: the line for an authority verdict that is NEW SINCE
+ * the committed cursor.
+ *
+ * This comparison — NOT the `authority` watermark token — is what satisfies
+ * "unchanged verdict renders nothing". `composeOrientationBlock` is
+ * all-or-nothing by design: when ANY token changes, every class re-renders, so a
+ * verdict gated only on its own token would reappear verbatim on the next turn
+ * an unrelated inbox message arrived. `renderModeTransitionLines` and
+ * `renderExecutableFrontierLine` above solve the identical problem identically.
+ *
+ * Only the CHANGED decisions render on a transition (D-073 ruling 3). Spelling
+ * all three on every change costs ~110 chars against a block that STOPS at the
+ * first line that does not fit, so the unchanged two would evict a line below
+ * them; all three render only when there is no prior cursor to diff against.
+ */
+function renderAuthorityVerdictLine(
+  verdict: OrientationAuthorityVerdict | null,
+  committed: CursorState | null,
+): string[] {
+  // null is UNREADABLE, not "no authority": say nothing rather than assert a
+  // mandate we could not read. Asserting the generic confirm-first default from
+  // a failed read would be a false statement about what the agent may do.
+  if (!verdict) return [];
+  const previous = decodeAuthorityVerdict(committed?.authority);
+  if (!previous) {
+    return [`- authority: ${AUTHORITY_DECISIONS.map(([key, label]) => `${label} ${verdict[key]}`).join(' · ')}.`];
+  }
+  const changed = AUTHORITY_DECISIONS.filter(([key]) => previous[key] !== verdict[key]);
+  if (changed.length === 0) return [];
+  return [
+    `- authority: ${changed.map(([key, label]) => `${label} ${previous[key]} -> ${verdict[key]}`).join(' · ')}.`,
+  ];
 }
 
 function compactIds(ids: string[], cap: number): string {
@@ -897,9 +1176,12 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
  * its own budget. Turn-start keeps its cursor/watermark semantics via
  * `watermarkTokens`; leader-brief is read-on-demand and uses none.
  *
- * REGISTERED CONSUMERS TODAY: `turn-start` (every class) and `leader-brief`
- * (`neverDropFacts` only, via P-025's `readLeaderNeverDropFacts`). `carry-brief`
- * is still named but claimed by no entry — registering it is P-029's lane.
+ * REGISTERED CONSUMERS TODAY: `turn-start` (every class), `leader-brief`
+ * (`neverDropFacts` via P-025's `readLeaderNeverDropFacts`, `announcedGates` via
+ * P-027) and `carry-brief` (`neverDropFacts` via P-029's
+ * `readCarryNeverDropFacts` in carry-brief.ts). All three sinks are now claimed
+ * by at least one entry, so `SINK_COVERAGE` in the class-coverage guard carries
+ * a per-class decision for each — there is no longer a `pending` column.
  *
  * The rule that governs adding one has NOT changed: an `applicableSinks` naming
  * a surface which does not consume the registry would be a false declaration,
@@ -914,7 +1196,26 @@ function renderCheckpointLine(item: OrientationHeldItem): string | null {
  * reading `applicableSinks` as "renders it as a line" would have made the
  * leader-brief and carry-brief sinks permanently unimplementable.
  */
-export type OrientationSink = 'turn-start' | 'leader-brief' | 'carry-brief';
+/**
+ * A surface that renders orientation classes FROM THIS DECLARATION.
+ *
+ * `agent-orders` is the HUD conversation popup's Orders rail (P-018). It is
+ * named for its data path, not its pixels: the popup is `SessionChatModal`,
+ * addressed entirely through the `hudsession` URL param, and its Orders rail
+ * reads the `agentOrders.byOwner` sync query → `getAgentOrders`
+ * (`adv-agent-orders.ts`). That is the observer's answer to "what was this
+ * agent told", and before P-018 it was built by a SECOND builder
+ * (`buildCarryBrief`, shaped inline in `getAgentOrders`) that shared no code
+ * with the block the agent actually received. Two builders, two answers.
+ *
+ * Unlike `leader-brief` and `carry-brief` — structured payloads that consume a
+ * class through `RegisteredOrientationClass.id` (D-053) — this sink consumes
+ * `segments[].render`, the SAME call turn-start makes, and carries the rendered
+ * row verbatim. That is deliberate and is what P-018's acceptance test asserts:
+ * one fixture must produce the same ROWS on both surfaces, not merely rows
+ * derived from the same declaration.
+ */
+export type OrientationSink = 'turn-start' | 'leader-brief' | 'carry-brief' | 'agent-orders';
 
 /**
  * One ordered emission of a class.
@@ -935,6 +1236,41 @@ export interface OrientationClassSegment<T> {
   readonly order: number;
   /** PURE: the lines this segment contributes; `[]` when it has nothing to say. */
   readonly render: (value: T, state: OrientationState, committed: CursorState | null) => string[];
+}
+
+/**
+ * P-019: the hard per-class row ceiling, and the verb that recovers what it evicts.
+ *
+ * WHY A CEILING AT ALL, given the composer already has a character budget: the
+ * outer budget in {@link composeOrientationBlock} BREAKS on the first line that
+ * does not fit, so a chatty class does not truncate ITSELF — it evicts every
+ * class ordered after it. Two classes are genuinely unbounded without this:
+ * `obligations` spreads whatever its provider returns (it TRUSTS the reader's
+ * `maxEntries`, it does not enforce it), and `announcedGates` emits one warning
+ * line per gate with no cap. Either one, given a runaway provider, silently
+ * starves `neverDropFacts` — the guard-rail class whose whole contract is that
+ * it is never dropped. A per-class ceiling is what makes the emission order in
+ * this registry SAFE, which is why P-019 pairs the two.
+ *
+ * REQUIRED, never optional. An optional ceiling reproduces exactly the defect it
+ * exists to prevent: the next class lands unbounded because nobody thought about
+ * it, and nothing fails. Required makes that omission a COMPILE error instead
+ * (the same rule D-073 ruling 5 applied to `OrientationDeps`).
+ *
+ * The ceiling counts rows across ALL of a class's segments, because "per class"
+ * is the unit P-019 names and the unit a reader experiences — `held` contributes
+ * four segments that are one paragraph to the agent reading them.
+ */
+export interface OrientationRowCeiling {
+  /** Max rows this class may contribute, summed over its segments. */
+  readonly maxRows: number;
+  /**
+   * The verb a reader runs to recover rows the ceiling evicted, rendered into
+   * the `+N omitted` disclosure. Required even for a class that cannot reach
+   * its ceiling today: the disclosure must never be the first place someone
+   * discovers that recovery was never worked out.
+   */
+  readonly recoveryVerb: string;
 }
 
 /**
@@ -962,6 +1298,8 @@ export interface OrientationClassEntry<T> {
   readonly populate: (state: OrientationState) => T;
   /** RENDERING: ordered segments; see {@link OrientationClassSegment}. */
   readonly segments: readonly OrientationClassSegment<T>[];
+  /** P-019: the hard row ceiling for this class. REQUIRED — see {@link OrientationRowCeiling}. */
+  readonly rowCeiling: OrientationRowCeiling;
   /**
    * Set when the class is declared but deliberately renders NOTHING, carrying
    * the reason. A dropped class is a decision, not a coverage gap.
@@ -974,6 +1312,8 @@ export interface RegisteredOrientationClass {
   readonly id: keyof OrientationState;
   readonly watermarkTokens: readonly string[];
   readonly applicableSinks: readonly OrientationSink[];
+  /** P-019: see {@link OrientationRowCeiling}. Required, so a new class cannot land unbounded. */
+  readonly rowCeiling: OrientationRowCeiling;
   readonly unrenderedReason?: string;
   readonly segments: readonly {
     readonly order: number;
@@ -991,6 +1331,7 @@ function orientationClass<T>(entry: OrientationClassEntry<T>): RegisteredOrienta
     id: entry.id,
     watermarkTokens: entry.watermarkTokens,
     applicableSinks: entry.applicableSinks,
+    rowCeiling: entry.rowCeiling,
     ...(entry.unrenderedReason === undefined ? {} : { unrenderedReason: entry.unrenderedReason }),
     segments: entry.segments.map((segment) => ({
       order: segment.order,
@@ -1001,6 +1342,29 @@ function orientationClass<T>(entry: OrientationClassEntry<T>): RegisteredOrienta
 }
 
 const TURN_START: readonly OrientationSink[] = ['turn-start'];
+
+/**
+ * P-018: the OBLIGATION + DELTA classes, which the HUD conversation popup's
+ * Orders rail renders from this same declaration.
+ *
+ * ⚠ This is deliberately NOT every turn-start class. The popup is an OBSERVER
+ * surface and may legitimately render MORE than the agent was told (liveness,
+ * locks, a dossier) — but the question P-018 makes single-answered is narrower:
+ * "what standing obligation, and what changed, was this agent told about?" So
+ * exactly the classes that answer THAT carry this sink, and an operator-only
+ * embellishment stays outside the shared object rather than being smuggled into
+ * it. Adding a class here is a decision about what counts as an obligation, not
+ * a formatting choice.
+ *
+ * The membership traces to P-019's eviction order — owner directives > walls >
+ * waiting-on > directed messages — plus the obligation agenda itself:
+ *   - `ownerDirectives`     → owner directives (verbatim, undischarged)
+ *   - `neverDropFacts`      → walls / dead-ends / guard-rails
+ *   - `openChecks`          → waiting-on (open external blockers + carried claims)
+ *   - `unansweredDirected`  → directed messages awaiting this agent's answer
+ *   - `obligations`         → the bounded obligation agenda (`AgentObligationBrief`)
+ */
+const TURN_START_AND_AGENT_ORDERS: readonly OrientationSink[] = ['turn-start', 'agent-orders'];
 
 /**
  * P-025: classes the LEADER BRIEF also renders from this declaration.
@@ -1020,6 +1384,54 @@ const TURN_START: readonly OrientationSink[] = ['turn-start'];
 const TURN_START_AND_LEADER_BRIEF: readonly OrientationSink[] = ['turn-start', 'leader-brief'];
 
 /**
+ * P-029: classes the CARRY DOCUMENT also renders from this declaration —
+ * currently `neverDropFacts` alone.
+ *
+ * A separate const rather than widening {@link TURN_START_AND_LEADER_BRIEF},
+ * because that one is shared with `announcedGates`: extending it in place would
+ * silently hand the carry document a class P-029 never decided on, and the
+ * whole point of this table is that each cell is a decision. Adding a second
+ * class to this sink should be its own edit with its own recorded reason.
+ *
+ * Consumer: `readCarryNeverDropFacts` in `carry-brief.ts`, which reads this very
+ * table for applicability — so withdrawing the sink here turns the section off
+ * with no second edit there. Like the leader brief (D-053) the carry document is
+ * a STRUCTURED payload rendered by its own renderer, so it consumes the class
+ * through `RegisteredOrientationClass.id` rather than `segments[].render`.
+ *
+ * ⚠ WHY THIS SINK NEEDS THE CLASS AT ALL, given it already carries `facts`: the
+ * carry document's general fact fold is OWNER-SCOPED ONLY, while this class is
+ * folded at WORKSPACE + owner. A fleet-wide guard rail is asserted at workspace
+ * scope in practice, so it reached turn-start and the leader brief and never the
+ * carry document — whose reader is the COLDEST in the system and rebuilds from
+ * the document alone. The gap was the missing SELECTOR, not the projection,
+ * which is why "carry-brief already carries facts" reads like coverage and is not.
+ */
+const TURN_START_LEADER_BRIEF_AND_CARRY: readonly OrientationSink[] = [
+  'turn-start',
+  'leader-brief',
+  'carry-brief',
+];
+
+/**
+ * P-018: `neverDropFacts` on every sink above PLUS the HUD Orders rail.
+ *
+ * A separate const rather than pushing `'agent-orders'` into
+ * {@link TURN_START_LEADER_BRIEF_AND_CARRY}, for the reason that const itself
+ * gives: each cell of this table is a decision, and widening a shared const in
+ * place hands the sink to whichever other classes happen to reference it. Here
+ * that is not hypothetical — walls are the class the observer most needs
+ * (P-019 ranks them second only to owner directives), and the leader brief and
+ * carry document have their own, different reasons for carrying them.
+ */
+const TURN_START_LEADER_BRIEF_CARRY_AND_AGENT_ORDERS: readonly OrientationSink[] = [
+  'turn-start',
+  'leader-brief',
+  'carry-brief',
+  'agent-orders',
+];
+
+/**
  * THE SHARED CLASS REGISTRY (P-023; mechanism per D-015).
  *
  * Every orientation state category is declared here exactly once, and every
@@ -1036,6 +1448,7 @@ const TURN_START_AND_LEADER_BRIEF: readonly OrientationSink[] = ['turn-start', '
 export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] = [
   orientationClass<OrientationToolSurface | null>({
     id: 'toolSurface',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'agent_tools:list' },
     watermarkTokens: ['toolSurface'],
     applicableSinks: TURN_START,
     populate: (state) => state.toolSurface,
@@ -1061,8 +1474,10 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOwnerDirective[]>({
     id: 'ownerDirectives',
+    // 2 verbatim directives + the class's own "+N more" line.
+    rowCeiling: { maxRows: 3, recoveryVerb: 'orders:list { open: true }' },
     watermarkTokens: ['ownerDirectives'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.ownerDirectives ?? [],
     segments: [
       {
@@ -1087,6 +1502,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<CarryBlindWindow | null>({
     id: 'carryBlindWindow',
+    rowCeiling: { maxRows: 1, recoveryVerb: "sessions:search { session:'self' }" },
     watermarkTokens: ['carryBlind'],
     applicableSinks: TURN_START,
     populate: (state) => state.carryBlindWindow,
@@ -1106,8 +1522,10 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOpenCheck[] | undefined>({
     id: 'openChecks',
+    // 2 claim/blocker rows + the class's own "+N more" line.
+    rowCeiling: { maxRows: 3, recoveryVerb: 'loop:status / work_items:get' },
     watermarkTokens: ['openChecks'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.openChecks,
     segments: [
       {
@@ -1155,6 +1573,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationHistoryUpdate[] | undefined>({
     id: 'historyUpdates',
+    rowCeiling: { maxRows: 2, recoveryVerb: 'work_items:get' },
     watermarkTokens: ['historyUpdates'],
     applicableSinks: TURN_START,
     populate: (state) => state.historyUpdates,
@@ -1174,6 +1593,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationEffortUpdate[] | undefined>({
     id: 'effortUpdates',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'plans:get' },
     watermarkTokens: ['effortUpdates'],
     applicableSinks: TURN_START,
     populate: (state) => state.effortUpdates,
@@ -1192,8 +1612,9 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<number>({
     id: 'unansweredDirected',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox { unanswered: true }' },
     watermarkTokens: ['unanswered'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.unansweredDirected,
     segments: [
       {
@@ -1208,6 +1629,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<number>({
     id: 'unansweredStale',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox { unanswered: true }' },
     watermarkTokens: ['unansweredStale'],
     applicableSinks: TURN_START,
     populate: (state) => state.unansweredStale,
@@ -1227,6 +1649,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationOpenAsk | null>({
     id: 'openAsks',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox' },
     watermarkTokens: ['openAsks'],
     applicableSinks: TURN_START,
     populate: (state) => state.openAsks,
@@ -1245,8 +1668,44 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
     ],
   }),
 
+  orientationClass<{ authorityVerdict: OrientationAuthorityVerdict | null }>({
+    id: 'authorityVerdict',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'mode:get' },
+    watermarkTokens: ['authority'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ authorityVerdict: state.authorityVerdict }),
+    segments: [
+      {
+        // Just ABOVE the mode attribution line. The verdict is what the agent
+        // may DO; the mode row below is WHY. A reader who sees only the first
+        // line of a budget-clipped block should get the mandate, not its cause.
+        order: 84,
+        render: ({ authorityVerdict }, _state, committed) => renderAuthorityVerdictLine(authorityVerdict, committed),
+      },
+    ],
+  }),
+
+  orientationClass<{ modes: OrientationModeState[] | null }>({
+    id: 'modes',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'mode:get' },
+    watermarkTokens: ['modes'],
+    applicableSinks: TURN_START,
+    populate: (state) => ({ modes: state.modes }),
+    segments: [
+      {
+        // Just ABOVE the loop warning: posture is the frame the reader needs
+        // before the lines that depend on it, and a transition is rare enough
+        // to earn a high slot on the turns it does appear.
+        order: 85,
+        render: ({ modes }, _state, committed) => renderModeTransitionLines(modes, committed),
+      },
+    ],
+  }),
+
   orientationClass<{ armed: boolean; withheld: boolean }>({
     id: 'loopArmed',
+    // two segments (armed line + the wake-source warning).
+    rowCeiling: { maxRows: 2, recoveryVerb: 'loop:status' },
     watermarkTokens: ['loop'],
     applicableSinks: TURN_START,
     populate: (state) => ({ armed: state.loopArmed, withheld: state.loopFireWithheld }),
@@ -1274,6 +1733,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationHeldItem[]>({
     id: 'held',
+    // four segments: stale/missing/held/checkpoint.
+    rowCeiling: { maxRows: 4, recoveryVerb: 'work_items:get' },
     watermarkTokens: ['held'],
     applicableSinks: TURN_START,
     populate: (state) => state.held,
@@ -1319,8 +1780,12 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<AgentObligationBrief | null | undefined>({
     id: 'obligations',
+    // detailRef line + the provider's projected actions. The reader's own
+    // maxEntries is 3, but it is the PROVIDER's number and this class only
+    // spreads whatever it returns - this ceiling is what actually enforces it.
+    rowCeiling: { maxRows: 4, recoveryVerb: 'orders:list { open: true }' },
     watermarkTokens: ['obligations'],
-    applicableSinks: TURN_START,
+    applicableSinks: TURN_START_AND_AGENT_ORDERS,
     populate: (state) => state.obligations,
     segments: [
       {
@@ -1352,13 +1817,21 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<string[]>({
     id: 'neverDropFacts',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'facts:list' },
     watermarkTokens: ['facts'],
     // P-025: also declared for the leader-brief sink, which genuinely selects it
     // (see TURN_START_AND_LEADER_BRIEF above). A fleet leader has the widest
     // blast radius on the pot and previously received NO wall / dead-end /
     // guard-rail facts at all — the "antidote absent where the poison is
     // strongest" failure EI-18725816532600240 established for cold wakes.
-    applicableSinks: TURN_START_AND_LEADER_BRIEF,
+    //
+    // P-029: and ALSO for the carry document, which is that same failure one
+    // sink further out — its reader is the coldest of the three (it rebuilds
+    // from the document alone) and its own fact fold is owner-scoped, so
+    // workspace-scoped rails never reached it. See
+    // TURN_START_LEADER_BRIEF_AND_CARRY above; consumer is
+    // `readCarryNeverDropFacts` in carry-brief.ts.
+    applicableSinks: TURN_START_LEADER_BRIEF_CARRY_AND_AGENT_ORDERS,
     populate: (state) => state.neverDropFacts,
     segments: [
       {
@@ -1376,6 +1849,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationExecutableFrontier | null>({
     id: 'executableFrontier',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'plans:items { actionable: true }' },
     watermarkTokens: ['frontier'],
     applicableSinks: TURN_START,
     populate: (state) => state.executableFrontier,
@@ -1392,6 +1866,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationAnnouncedGate[]>({
     id: 'announcedGates',
+    // one line per gate WARNING (uncapped in the renderer) + the gate list.
+    rowCeiling: { maxRows: 3, recoveryVerb: 'events:catalog' },
     watermarkTokens: ['gates'],
     // P-027: the leader brief ALREADY rendered announced gates, but from an
     // undeclared read — so this table under-reported which surfaces carry the
@@ -1425,6 +1901,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationInboxEntry[]>({
     id: 'inboxRecent',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'coord:inbox' },
     watermarkTokens: ['inbox'],
     applicableSinks: TURN_START,
     populate: (state) => state.inboxRecent,
@@ -1441,6 +1918,7 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<boolean>({
     id: 'loopFireWithheld',
+    rowCeiling: { maxRows: 1, recoveryVerb: 'loop:status' },
     watermarkTokens: ['loopWithheld'],
     applicableSinks: TURN_START,
     populate: (state) => state.loopFireWithheld,
@@ -1452,6 +1930,8 @@ export const ORIENTATION_CLASS_REGISTRY: readonly RegisteredOrientationClass[] =
 
   orientationClass<OrientationImprovementTriage | null>({
     id: 'improvementTriage',
+    // P-017 withdrew the line; the class renders nothing by decision.
+    rowCeiling: { maxRows: 0, recoveryVerb: 'improvements:capture' },
     watermarkTokens: [],
     applicableSinks: TURN_START,
     populate: (state) => state.improvementTriage,
@@ -1495,11 +1975,171 @@ export function selectOrientationSegments(
  * {@link ORIENTATION_CLASS_REGISTRY}, which is where it is asserted.
  */
 export function renderOrientationLines(state: OrientationState, committed: CursorState | null = null): string[] {
-  const lines: string[] = [];
-  for (const segment of selectOrientationSegments('turn-start')) {
-    lines.push(...segment.render(state, committed));
+  return projectOrientationRows(state, 'turn-start', committed).map((row) => row.text);
+}
+
+/**
+ * ONE rendered obligation/delta row, carrying the class that produced it.
+ *
+ * `text` is the line VERBATIM — the exact string turn-start emits, not a
+ * re-spelling for the screen. That identity is the point of P-018: an observer
+ * reading the HUD Orders rail is reading what the agent was told, character for
+ * character, so a report of "the popup says X but the agent saw Y" cannot be a
+ * rendering artifact.
+ *
+ * `classId` and `order` ride along because a consumer that groups or evicts
+ * needs them: P-019's per-class ceilings and eviction order are applied to THIS
+ * row list, and a bare `string[]` gives a bounder nothing to bound BY.
+ */
+export interface OrientationRow {
+  /** The registry class that emitted this row (`keyof OrientationState`). */
+  readonly classId: keyof OrientationState;
+  /** The class segment's emission order — ascending, the shared priority rule. */
+  readonly order: number;
+  /** The rendered line, verbatim. */
+  readonly text: string;
+}
+
+/**
+ * PURE: THE SHARED OBLIGATION + DELTA PROJECTION (P-018).
+ *
+ * Every surface that answers "what was this agent told" renders from this one
+ * call — turn-start through {@link renderOrientationLines}, the HUD Orders rail
+ * through `getAgentOrders` — so the question has a single answer by
+ * construction rather than by two builders agreeing.
+ *
+ * ⚠ The SINK is what differs between callers, never the projection. A sink that
+ * wants fewer classes withdraws itself from `applicableSinks`; it does not get
+ * its own row builder. That is the whole mechanism: the moment a surface
+ * post-processes these rows into different text, the guarantee is gone and the
+ * P-018 equality test is what fails.
+ */
+export function projectOrientationRows(
+  state: OrientationState,
+  sink: OrientationSink,
+  committed: CursorState | null = null,
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): OrientationRow[] {
+  const rows: OrientationRow[] = [];
+  for (const { classId, order, render } of selectOrientationClassSegments(sink, registry)) {
+    for (const text of render(state, committed)) {
+      rows.push({ classId, order, text });
+    }
   }
-  return lines;
+  return boundOrientationRows(rows, registry);
+}
+
+/**
+ * PURE: enforce each class's {@link OrientationRowCeiling} on a projected row list,
+ * disclosing what it evicted (P-019).
+ *
+ * Applied INSIDE {@link projectOrientationRows} rather than at each sink, so every
+ * surface is bounded by construction and the P-018 "same rows everywhere" equality
+ * still holds — a sink that bounded itself would be the second row builder that
+ * registry exists to prevent.
+ *
+ * EVICTION ORDER is the registry's own ascending `order`, NOT a second ranking.
+ * P-019's parenthetical (owner directives > walls > waiting-on > directed msgs)
+ * reads as a rival cross-class order, and implementing it literally would have put
+ * `neverDropFacts` second while the registry deliberately places it at 130, after
+ * the obligation recovery route that must fit first (see that class's comment).
+ * Two contradictory priority rules in one file is the defect, not the fix. What the
+ * parenthetical was actually reaching for — walls must not be starved by a chattier
+ * class — is delivered by the ceiling itself: once `obligations` and `announcedGates`
+ * cannot run away, the classes ordered after them stop being collateral. See D-076.
+ *
+ * WITHIN a class the leading rows are kept, which is each renderer's own priority
+ * order (openChecks sorts contested-first; ownerDirectives emits newest-first) — the
+ * bounder cannot re-derive recency from a rendered string and does not pretend to.
+ */
+export function boundOrientationRows(
+  rows: readonly OrientationRow[],
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): OrientationRow[] {
+  const ceilings = new Map(registry.map((entry) => [entry.id, entry.rowCeiling] as const));
+  const kept: OrientationRow[] = [];
+  const seen = new Map<keyof OrientationState, number>();
+  const evicted = new Map<keyof OrientationState, { count: number; order: number }>();
+
+  for (const row of rows) {
+    const ceiling = ceilings.get(row.classId);
+    // An unregistered class is left ALONE rather than silently dropped: this is a
+    // bounder, and a row it cannot find a ceiling for is a registry gap for the
+    // coverage test to report, not content for this function to delete.
+    if (!ceiling) {
+      kept.push(row);
+      continue;
+    }
+    const count = seen.get(row.classId) ?? 0;
+    if (count >= ceiling.maxRows) {
+      const prior = evicted.get(row.classId);
+      evicted.set(row.classId, { count: (prior?.count ?? 0) + 1, order: prior?.order ?? row.order });
+      continue;
+    }
+    seen.set(row.classId, count + 1);
+    kept.push(row);
+  }
+
+  if (evicted.size === 0) return kept;
+
+  const out = [...kept];
+  for (const [classId, info] of evicted) {
+    const ceiling = ceilings.get(classId);
+    if (!ceiling) continue;
+    const disclosure: OrientationRow = {
+      classId,
+      order: info.order,
+      text: `- ${classId}: +${info.count} omitted — ${ceiling.recoveryVerb}`,
+    };
+    // Anchor the disclosure to its OWN class so it inherits that class's priority
+    // under the outer character budget: a recovery route that outlives the rows it
+    // describes, or one that drifts to the tail and is trimmed, are both useless.
+    let lastIndex = -1;
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      if (out[i].classId === classId) {
+        lastIndex = i;
+        break;
+      }
+    }
+    if (lastIndex >= 0) {
+      out.splice(lastIndex + 1, 0, disclosure);
+      continue;
+    }
+    // maxRows: 0 — nothing of the class survived to anchor to, so fall back to the
+    // order slot its first row would have occupied.
+    const insertAt = out.findIndex((row) => row.order > info.order);
+    out.splice(insertAt < 0 ? out.length : insertAt, 0, disclosure);
+  }
+  return out;
+}
+
+/**
+ * PURE: {@link selectOrientationSegments} with the emitting class preserved.
+ *
+ * The public `selectOrientationSegments` flattens the class away, which is
+ * correct for a caller that only concatenates lines and fatal for one that must
+ * bound or evict per class (P-019). Both sort by the SAME `order`, so the two
+ * views cannot disagree about emission sequence.
+ */
+function selectOrientationClassSegments(
+  sink: OrientationSink,
+  registry: readonly RegisteredOrientationClass[] = ORIENTATION_CLASS_REGISTRY,
+): readonly {
+  readonly classId: keyof OrientationState;
+  readonly order: number;
+  readonly render: (state: OrientationState, committed: CursorState | null) => string[];
+}[] {
+  return registry
+    .filter((entry) => entry.applicableSinks.includes(sink))
+    .flatMap((entry) =>
+      entry.segments.map((segment) => ({
+        classId: entry.id,
+        order: segment.order,
+        render: segment.render,
+      })),
+    )
+    .slice()
+    .sort((a, b) => a.order - b.order);
 }
 
 
@@ -1608,21 +2248,15 @@ export interface OrientationDeps {
   /**
    * P-010: unverified carried claims + open external blockers, each with its probe.
    *
-   * ⚠ OPTIONAL, AND THAT IS A RECORDED GAP — NOT A DESIGN CHOICE. `defaultOrientationDeps()`
-   * does not implement this yet, so in production this class is DECLARED, registered,
-   * watermarked and rendered-if-populated, but NOTHING POPULATES IT. That is precisely the
-   * 0-renders-in-334-turns failure this plan exists to detect, one level up: the coverage
-   * guard proves the RENDER path works (it supplies the state itself) and cannot see a
-   * missing RESOLVER.
-   *
-   * It was `required` and unimplemented, which left the COMMITTED tree type-broken and
-   * would have red-pinned the fleet gate. Made optional by su-c03852cb to unbreak the
-   * build WITHOUT inventing su-6b1151ea's reader design while that session was MCP-dark.
-   * The real fix is to implement it in `defaultOrientationDeps` (loop:checkpoint `checks`
-   * + open `work_items:set_blocker` rows) and make this REQUIRED again. Tracked — do not
-   * quietly accept the optionality as finished.
+   * REQUIRED, and deliberately so. It briefly shipped OPTIONAL — the class was
+   * declared, registered, watermarked and rendered while `defaultOrientationDeps()`
+   * implemented no reader, so production populated NOTHING. An optional dep is
+   * exactly what let that pass for finished: the P-001 coverage guard supplies the
+   * state itself, so it proves the RENDER path and is structurally blind to a
+   * missing RESOLVER (EI-23953846527835643). Keeping this required means a future
+   * reader-less landing fails to typecheck instead of rendering silence forever.
    */
-  openChecks?: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
+  openChecks: (ownerId: string, workspaceId: string) => Promise<OrientationOpenCheck[]>;
   inbox: (ownerId: string) => Promise<{
     count: number;
     newest: OrientationInboxEntry[];
@@ -1635,6 +2269,22 @@ export interface OrientationDeps {
    *  answered; null for none/unreadable — same fail-soft contract as every
    *  other source here. */
   openAsks: (ownerId: string) => Promise<OrientationOpenAsk | null>;
+  /** Active modes with attribution; null for unreadable (never `[]`, which
+   *  means genuinely none). */
+  modes: (ownerId: string, workspaceId: string) => Promise<OrientationModeState[] | null>;
+  /**
+   * P-013: the effective authority verdict; null for unreadable (never a
+   * fabricated confirm-first default, which would be a false statement about
+   * what this agent may do).
+   *
+   * REQUIRED, and deliberately so — the same rule `openChecks` above carries.
+   * The resolver-coverage guard enumerates `keyof OrientationDeps`, so a
+   * required dep makes a reader-less landing a COMPILE error instead of the
+   * P-010 trap: declared, registered, watermarked and rendered while production
+   * populates nothing, with the render-coverage guard staying green because it
+   * supplies the state itself (EI-23953846527835643).
+   */
+  authorityVerdict: (ownerId: string, workspaceId: string) => Promise<OrientationAuthorityVerdict | null>;
   loopArmed: (ownerId: string) => Promise<boolean>;
   loopFireWithheld: (ownerId: string) => Promise<boolean>;
   /** Existing improvement triage/ranking path, reduced to one bounded row. */
@@ -1692,6 +2342,8 @@ export async function resolveOrientationState(
     inbox,
     announcedGates,
     openAsks,
+    modes,
+    authorityVerdict,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -1720,6 +2372,15 @@ export async function resolveOrientationState(
     // Fail-soft to null, same rule as toolSurface below: "cannot tell" must
     // render as silence, never as a false "nothing outstanding".
     d.openAsks(ownerId).catch(() => null as OrientationOpenAsk | null),
+    // Fail-soft to NULL, not `[]`: "could not read" must stay distinguishable
+    // from "no modes set", or the fingerprint erases the cursor and fakes a
+    // fresh transition on recovery.
+    d.modes(ownerId, workspaceId).catch(() => null as OrientationModeState[] | null),
+    // Fail-soft to NULL, and it matters more here than anywhere else in this set:
+    // a fabricated verdict is a false statement about what the agent is ALLOWED
+    // to do. "Could not read" must stay distinguishable from a real verdict, or
+    // the fingerprint erases the cursor and fakes a fresh transition on recovery.
+    d.authorityVerdict(ownerId, workspaceId).catch(() => null as OrientationAuthorityVerdict | null),
     d.loopArmed(ownerId).catch(() => false),
     d.loopFireWithheld(ownerId).catch(() => false),
     d.improvementTriage(workspaceId).catch(() => null),
@@ -1755,6 +2416,8 @@ export async function resolveOrientationState(
     inboxRecent: inbox.newest,
     announcedGates,
     openAsks,
+    modes,
+    authorityVerdict,
     loopArmed,
     loopFireWithheld,
     improvementTriage,
@@ -1800,8 +2463,8 @@ export function defaultOrientationDeps(): OrientationDeps {
            WHERE workspace_id = ${ws}
              AND taken_by = ${ownerId}
              AND taken_at IS NOT NULL
-             AND ((item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
-               OR (item_kind IN ('feature', 'chunk') AND status NOT IN ('passed', 'deprecated', 'done', 'resolved', 'closed')))
+             AND ((item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
+               OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[]))))
            ORDER BY feature_id DESC
            LIMIT 6
         ), ancestry AS (
@@ -1873,8 +2536,8 @@ export function defaultOrientationDeps(): OrientationDeps {
            WHERE workspace_id = ${ws}
              AND taken_by = ${ownerId}
              AND taken_at IS NOT NULL
-             AND ((item_kind IN ('bug', 'change', 'task') AND status NOT IN ('done', 'resolved', 'deprecated', 'closed'))
-               OR (item_kind IN ('feature', 'chunk') AND status NOT IN ('passed', 'deprecated', 'done', 'resolved', 'closed')))
+             AND ((item_kind IN ('bug', 'change', 'task') AND NOT (status = ANY(${[...ISSUE_TERMINAL_STATES]}::text[])))
+               OR (item_kind IN ('feature', 'chunk') AND NOT (status = ANY(${[...FEATURE_TERMINAL_STATES]}::text[]))))
            ORDER BY feature_id DESC
            LIMIT 6
         ), relevant_threads AS (
@@ -1966,6 +2629,115 @@ export function defaultOrientationDeps(): OrientationDeps {
           checkpointStale: Boolean(r.checkpoint?.trim()) && isStaleHeldCheckpoint(r, nowMs),
         }))
         .filter((r) => Boolean(r.id));
+    },
+    /**
+     * P-010 (WI-10002221): the two "do not inherit this claim" sources, each
+     * carrying the probe that settles it.
+     *
+     * RESCUE NOTE — why this reads as an afterthought and is not one. The class
+     * landed DECLARED, registered, watermarked and rendered-if-populated, with no
+     * resolver at all, so in production it populated nothing: the exact
+     * 0-renders-in-334-turns failure this plan exists to prevent, reproduced one
+     * level up inside the machinery built to detect it. The P-001 coverage guard
+     * is structurally blind to it because the guard SUPPLIES the state itself, so
+     * only a resolver-side check can see a missing reader (EI-23953846527835643).
+     *
+     * Both halves REUSE the canonical readers their owning surfaces already use —
+     * `getLoopStatus` + `getLoopCarryNoteWithMeta` + `splitCarryNoteChecks` for the
+     * carry-note rows, `activeExternalBlockers` for the payload rows — so this sink
+     * cannot disagree with the carry document about what is carried, nor with the
+     * blocked-items card about why something is blocked.
+     *
+     * Each half is caught INDEPENDENTLY: this file's contract is that a slow or
+     * broken source degrades its own line and never the block (see
+     * `resolveOrientationState`), and one unreadable half must not silently
+     * suppress the other.
+     */
+    openChecks: async (ownerId, workspaceId) => {
+      const out: OrientationOpenCheck[] = [];
+      // HALF 1 — carried claims that are NOT settled. A row holding `verified`
+      // evidence with no contradiction is done with; everything else is either
+      // PREDICTED (no evidence attached) or CONTESTED (evidence that disagrees
+      // with its own claim). Both are conclusions a successor will otherwise act
+      // on while they are wrong, which is the whole point of the class.
+      try {
+        const [{ getLoopStatus }, carryNote] = await Promise.all([
+          import('./harness/routines/loop'),
+          import('./carry-note'),
+        ]);
+        const loop = await getLoopStatus(ownerId);
+        if (loop) {
+          const meta = await carryNote.getLoopCarryNoteWithMeta({ harness: loop.harnessSlug, ownerId });
+          // `readFailed` is NOT "no rows" — a failed read must render silence
+          // rather than a manufactured all-clear.
+          if (!meta.readFailed && meta.note) {
+            for (const row of carryNote.splitCarryNoteChecks(meta.note).checks) {
+              const contested = Boolean(row.contested);
+              if (row.verified && !contested) continue;
+              const claim = (row.claim ?? '').trim();
+              if (!claim) continue;
+              const recheck = row.recheck?.trim();
+              out.push({
+                id: carryNote.carryRowKey(row),
+                claim,
+                ...(recheck ? { recheck } : {}),
+                pointer: 'loop:status',
+                kind: 'check',
+                ...(contested ? { contested: true } : {}),
+              });
+            }
+          }
+        }
+      } catch {
+        // Fail-soft by design: say less, never throw into the turn.
+      }
+      // HALF 2 — open external blockers on items this owner HOLDS. Deliberately
+      // NOT keyed on `status='blocked'`: `work_items:set_blocker` records an
+      // active blocker without necessarily parking the item, so keying on the
+      // status would miss exactly the rows that are still nominally in progress
+      // while actually waiting on something external.
+      try {
+        const [{ getOrgPg }, { resolveConcreteWorkspaceId }, { activeExternalBlockers }, { ALL_TERMINAL_STATUSES }] =
+          await Promise.all([
+            import('@papercusp/db-org'),
+            import('./workspace-registry'),
+            import('./external-blockers'),
+            import('./work-item-blocking'),
+          ]);
+        const { sql } = getOrgPg();
+        const ws = resolveConcreteWorkspaceId(workspaceId);
+        const terminal = [...ALL_TERMINAL_STATUSES];
+        const rows = await sql<
+          Array<{ feature_id: string; harness_slug: string | null; payload: unknown }>
+        >`
+          SELECT feature_id, harness_slug, payload
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${ws}
+             AND taken_by = ${ownerId}
+             AND NOT (status = ANY(${terminal}::text[]))
+           ORDER BY updated_ts DESC NULLS LAST
+           LIMIT ${OPEN_CHECKS_BLOCKER_SCAN_LIMIT}`;
+        for (const row of rows) {
+          for (const blocker of activeExternalBlockers(row.payload)) {
+            const summary = blocker.summary.trim();
+            if (!summary) continue;
+            const nextVerb = blocker.nextVerb?.trim();
+            out.push({
+              // Blocker refs are unique only WITHIN an item, so the identity is
+              // item-qualified; otherwise two items waiting on the same gate
+              // would collapse into one row and one of them would go unseen.
+              id: `blocker:${row.feature_id}:${blocker.ref}`,
+              claim: summary,
+              ...(nextVerb ? { recheck: nextVerb } : {}),
+              pointer: `work_items:get ${row.feature_id}`,
+              kind: 'blocker',
+            });
+          }
+        }
+      } catch {
+        // Fail-soft, independently of HALF 1.
+      }
+      return out.slice(0, OPEN_CHECKS_MAX_ROWS);
     },
     // The SAME primitive fleet:assignments / leader-brief count with, so this
     // number can never disagree with the one a leader sees.
@@ -2082,6 +2854,63 @@ export function defaultOrientationDeps(): OrientationDeps {
               }
             : {}),
         }));
+    },
+    // P-012: reuse the mode store's own reader rather than re-querying
+    // agent_modes here — the registry is already the single source for posture,
+    // and a second query would be a second truth to keep in step.
+    modes: async (ownerId, workspaceId) => {
+      const { getModes } = await import('./modes/store');
+      const rows = await getModes(workspaceId, ownerId);
+      return rows.map((row) => ({
+        axisKey: row.axisKey,
+        mode: row.mode,
+        reason: row.reason,
+        setBy: row.setBy,
+        // Resolved HERE because render has no identity (see OrientationModeState).
+        setBySelf: row.setBy === ownerId,
+        ownerDirected: row.ownerDirected,
+        impliedBy: row.impliedBy?.mode ?? null,
+      }));
+    },
+    // P-013: REUSE, not a second truth. `buildControlAnchorState` already
+    // assembles this owner's modes + route + scope + loop from the authoritative
+    // stores, and `buildInstructionPrecedenceTrace` is PURE given that state — it
+    // costs one function call and no IO of its own. `adv-agent-orders.ts` already
+    // performs exactly this pairing for the HUD Orders rail; this is the same
+    // composition at a second sink, so the two surfaces cannot disagree about
+    // what the agent's authority is.
+    authorityVerdict: async (ownerId, workspaceId) => {
+      const [{ buildControlAnchorState }, { buildInstructionPrecedenceTrace }] = await Promise.all([
+        import('./agent-tools/coordination/control-anchor'),
+        import('./instruction-lint'),
+      ]);
+      const control = await buildControlAnchorState(ownerId, workspaceId);
+      const trace = buildInstructionPrecedenceTrace({
+        // The trace's `source` is a closed union of the surfaces that build one.
+        // We derive ours from the control-anchor state, so we declare it honestly
+        // rather than widening the union for one more reader.
+        source: 'control-anchor',
+        ownerId,
+        modes: control.modes,
+        route: control.route,
+        scope: control.scope,
+        loop: control.loop,
+      });
+      const byKey = new Map(trace.decisions.map((decision) => [decision.key, decision]));
+      // `conflict` is a VALUE, never an omission: an unreadable mode registry
+      // resolves execution-authorization to a conflict, and that is the single
+      // most action-worthy state this class has. A decision genuinely absent
+      // from the trace yields '' — say nothing about it rather than assert one.
+      const valueOf = (key: string): string => {
+        const decision = byKey.get(key);
+        if (!decision) return '';
+        return decision.status === 'conflict' ? 'conflict' : (decision.effective?.value ?? 'conflict');
+      };
+      return {
+        executionAuthorization: valueOf('execution-authorization'),
+        mission: valueOf('mission'),
+        ideation: valueOf('ideation'),
+      };
     },
     loopArmed: async (ownerId) => {
       const { activeLoopOwners } = await import('./adv-roster');
