@@ -134,7 +134,7 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(rendered).toContain("approvalRef:'thread-post:");
     expect(rendered).toContain('approve thread-post:<preview-post-id>');
     expect(rendered).toContain('immutable');
-    expect(rendered).toContain('avoids hash transcription');
+    expect(rendered).toContain('no hash transcription');
     expect(rendered).not.toContain('point the reviewer at THAT thread post');
   });
 
@@ -479,7 +479,7 @@ describe('rubrics:amend routed review (P-006, RR-P-006-amend-opens-routed-review
 
 describe('rubrics:amend receipts (RSR-P-008-C)', () => {
   const statusBody = async (args: unknown) =>
-    JSON.parse(((await amendStatusTool.handler(args as never, {} as never)) as ToolOutput).content[0]!.text);
+    ((await amendStatusTool.handler(args as never, {} as never)) as { data: Record<string, unknown> }).data;
   const amendArgs = { rubricRef: 'acceptance-example', criteria: [criterion], reason: 'Refresh the procedure.' };
   const deferred = <T>() => {
     let resolve!: (value: T) => void;
@@ -556,7 +556,7 @@ describe('rubrics:amend receipts (RSR-P-008-C)', () => {
     // independently of either module's process-local state.
     vi.resetModules();
     const workerB = (await import('./amend-status')).default;
-    const status = JSON.parse(((await workerB.handler({ rubricRef: 'acceptance-example', idempotencyKey: 'shared-key' } as never, {} as never)) as ToolOutput).content[0]!.text);
+    const status = ((await workerB.handler({ rubricRef: 'acceptance-example', idempotencyKey: 'shared-key' } as never, {} as never)) as { data: Record<string, unknown> }).data;
     expect(status).toMatchObject({ state: 'running', source: 'receipt' });
 
     const retry = await body({ ...amendArgs, idempotencyKey: 'shared-key' });

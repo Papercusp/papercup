@@ -50,9 +50,9 @@ const run = async (
   ctx: unknown = { principal: { workspaceId: 'ws-test' }, harnessSlug: '*' },
 ): Promise<Out> => {
   const res = (await (get as unknown as { handler: (a: unknown, c: unknown) => Promise<unknown> }).handler(args, ctx)) as {
-    content: Array<{ text: string }>;
+    data: unknown;
   };
-  return JSON.parse(res.content[0]!.text) as Out;
+  return res.data as Out;
 };
 const entry = (id: string, scope: string, extra: Partial<MemoryEntry> = {}): MemoryEntry =>
   ({ id, scope, text: `text of ${id}`, kind: 'project', ...extra }) as MemoryEntry;
