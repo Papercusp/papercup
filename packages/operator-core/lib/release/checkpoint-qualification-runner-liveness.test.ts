@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   beginQualificationTransaction,
+  checkpointPidIdentity,
+  configureRunnerLivenessProber,
+  probeRunnerLiveness,
+  QUALIFICATION_LAUNCH_GRACE_MS,
   QUALIFICATION_OWNER_ABANDONED_MS,
   reserveQualificationRunner,
   type CheckpointQualificationTransaction,
@@ -43,6 +47,51 @@ const runningWithRunner = (unit: string | null): CheckpointQualificationTransact
 
 // Well inside the 3h lease: without a liveness term every case below would be a `conflict`.
 const DURING_LEASE = 1_000 + 60_000;
+
+it('keeps a not-yet-created named scope single-flight, then recovers its dead reservation', () => {
+  const begun = beginQualificationTransaction(null, { attemptId: 'scheduled-attempt', nowMs: 1_000 }).transaction;
+  const reserved = reserveQualificationRunner(begun, {
+    attemptId: 'scheduled-attempt', runnerId: 'fire-1', unit: 'papercusp-checkpoint-fire-1.scope',
+    leaseDurationMs: LEASE_MS, started: false, nowMs: 1_000,
+  }).transaction;
+  const runner = reserved.currentPhysicalRunner!;
+  configureRunnerLivenessProber(() => 'dead');
+  try {
+    const duringLaunch = 1_000 + QUALIFICATION_LAUNCH_GRACE_MS - 1;
+    expect(probeRunnerLiveness(runner, duringLaunch)).toBe('unknown');
+    expect(reserveQualificationRunner(reserved, {
+      attemptId: 'scheduled-attempt', runnerId: 'fire-2', leaseDurationMs: LEASE_MS,
+      incumbentLiveness: 'dead', nowMs: duringLaunch,
+    }).status).toBe('conflict');
+    expect(beginQualificationTransaction(reserved, {
+      attemptId: 'successor-attempt', incumbentLiveness: 'dead', nowMs: duringLaunch,
+    }).status).toBe('conflict');
+
+    const afterLaunch = 1_000 + QUALIFICATION_LAUNCH_GRACE_MS;
+    expect(probeRunnerLiveness(runner, afterLaunch)).toBe('dead');
+    const reclaimed = reserveQualificationRunner(reserved, {
+      attemptId: 'scheduled-attempt', runnerId: 'fire-2', leaseDurationMs: LEASE_MS,
+      incumbentLiveness: 'dead', nowMs: afterLaunch,
+    });
+    expect(reclaimed.status).toBe('updated');
+    expect(reclaimed.transaction.consumedPhysicalRuns?.at(-1)?.outcome).toEqual({
+      kind: 'pre-suite-no-verdict', reason: 'runner-vanished',
+    });
+  } finally {
+    configureRunnerLivenessProber(null);
+  }
+});
+
+it('proves a scheduled CLI runner by PID boot/start identity, including recycled and unknown cases', () => {
+  configureRunnerLivenessProber(null);
+  const identity = checkpointPidIdentity(process.pid);
+  expect(identity).toMatch(/^[0-9a-f-]+:\d+$/);
+  const current = runningWithRunner(null).currentPhysicalRunner!;
+  const runner = { ...current, pid: process.pid, pidIdentity: identity };
+  expect(probeRunnerLiveness(runner)).toBe('live');
+  expect(probeRunnerLiveness({ ...runner, pidIdentity: `${identity}-recycled` })).toBe('dead');
+  expect(probeRunnerLiveness({ ...runner, pidIdentity: null })).toBe('unknown');
+});
 
 describe('reserveQualificationRunner — a lease is not proof of life', () => {
   it('RECLAIMS a lease whose runner was proved dead, even though the lease has hours left', () => {
@@ -109,7 +158,7 @@ describe('reserveQualificationRunner — a lease is not proof of life', () => {
     }).status).toBe('conflict');
   });
 
-  it('still honours an EXPIRED lease regardless of liveness', () => {
+  it('does not treat an expired lease as proof that an unknown runner is dead', () => {
     const current = runningWithRunner('unit.service');
     expect(reserveQualificationRunner(current, {
       attemptId: 'attempt-1',
@@ -117,7 +166,7 @@ describe('reserveQualificationRunner — a lease is not proof of life', () => {
       leaseDurationMs: LEASE_MS,
       incumbentLiveness: 'unknown',
       nowMs: 1_000 + LEASE_MS + 1,
-    }).status).toBe('updated');
+    }).status).toBe('conflict');
   });
 });
 

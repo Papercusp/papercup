@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import {
   assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
+  classifyScheduledQualificationJoin,
   cancelQualificationTransaction,
   classifyQualificationVerdict,
   describeQualificationSettleConflict,
   parseCheckpointQualificationTransaction,
   projectCheckpointQualificationState,
+  QUALIFICATION_PROGRESS_STALE_MS,
+  recordQualificationRunnerProgress,
+  recordQualificationScheduledFire,
   qualificationIntentMatches,
   reserveQualificationRunner,
+  recoverQualificationScheduledTerminal,
   settleQualificationTransaction,
   waitQualificationTransaction,
 } from './checkpoint-qualification-transaction';
@@ -33,6 +38,112 @@ const begin = () =>
   }).transaction;
 
 describe('logical checkpoint qualification transaction', () => {
+  it('keeps scheduler fires separate from suite progress and a terminal verdict', () => {
+    const ready = begin();
+    const scheduled = recordQualificationScheduledFire(ready, 200);
+    expect(scheduled).toMatchObject({ status: 'updated', transaction: { lastScheduledAtMs: 200, updatedAtMs: 100 } });
+    const joined = recordQualificationScheduledFire(scheduled.transaction, 300);
+    expect(joined).toMatchObject({ status: 'updated', transaction: { lastScheduledAtMs: 300, updatedAtMs: 100 } });
+    expect(projectCheckpointQualificationState(joined.transaction, 400).agesMs).toEqual({
+      attempt: 300,
+      scheduled: 100,
+      started: null,
+      progress: null,
+      terminal: null,
+    });
+
+    const running = reserveQualificationRunner(joined.transaction, {
+      attemptId: 'attempt-1', runnerId: 'runner-1', candidate: 'candidate-1',
+      leaseDurationMs: 1_000, nowMs: 500,
+    }).transaction;
+    const fireDuringRun = recordQualificationScheduledFire(running, 600).transaction;
+    expect(projectCheckpointQualificationState(fireDuringRun, 700).agesMs).toMatchObject({
+      scheduled: 100, started: 200, progress: 200, terminal: null,
+    });
+    const terminal = settleQualificationTransaction(fireDuringRun, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', reason: 'not-green', green: false, nowMs: 800,
+    }).transaction;
+    expect(projectCheckpointQualificationState(terminal, 900).agesMs).toMatchObject({
+      scheduled: 300, started: 400, progress: 400, terminal: 100,
+    });
+    expect(recordQualificationScheduledFire(terminal, 1_000).status).toBe('terminal');
+  });
+  it('joins a live physical runner even past its lease and fails closed on unknown liveness', () => {
+    const ready = begin();
+    expect(classifyScheduledQualificationJoin(ready, 'unknown')).toBe('launch');
+    const running = reserveQualificationRunner(ready, {
+      attemptId: 'attempt-1', runnerId: 'runner-1', candidate: 'candidate-1',
+      leaseDurationMs: 1, nowMs: 200,
+    }).transaction;
+    expect(classifyScheduledQualificationJoin(running, 'live')).toBe('join');
+    expect(classifyScheduledQualificationJoin(running, 'unknown')).toBe('unknown-liveness');
+    expect(classifyScheduledQualificationJoin(running, 'dead')).toBe('launch');
+  });
+  it('only accepts progress from the exact activated runner and keeps scheduler time independent', () => {
+    const reserved = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'fire-1', leaseDurationMs: 1_000_000,
+      started: false, nowMs: 200,
+    }).transaction;
+    const running = reserveQualificationRunner(reserved, {
+      attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'run-1',
+      pid: 123, pidIdentity: 'boot:1', leaseDurationMs: 1_000_000,
+      started: true, nowMs: 300,
+    }).transaction;
+    const scheduled = recordQualificationScheduledFire(running, 400).transaction;
+    expect(scheduled.lastProgressAtMs).toBe(300);
+    const input = { attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'run-1', pidIdentity: 'boot:1', phase: 'suite' as const, nowMs: 500 };
+    expect(recordQualificationRunnerProgress(scheduled, { ...input, runnerId: 'fire-2' }).status).toBe('conflict');
+    expect(recordQualificationRunnerProgress(scheduled, { ...input, pidIdentity: 'boot:2' }).status).toBe('conflict');
+    const progress = recordQualificationRunnerProgress(scheduled, input);
+    expect(progress).toMatchObject({ status: 'updated', transaction: {
+      lastScheduledAtMs: 400, lastProgressAtMs: 500,
+      currentPhysicalRunner: { heartbeatAtMs: 500, phase: 'suite', leaseExpiresAtMs: 1_000_300 },
+    } });
+    expect(projectCheckpointQualificationState(progress.transaction, 550, 'live')).toMatchObject({
+      lease: { holder: 'fire-1', acquiredAtMs: 200, expiresAtMs: 1_000_300, expired: false },
+      runnerHealth: { state: 'progressing', liveness: 'live', phase: 'suite', progressAgeMs: 50 },
+      clocks: { lastScheduledAtMs: 400, lastStartedAtMs: 300, lastProgressAtMs: 500, lastTerminalVerdictAtMs: null },
+      agesMs: { scheduled: 150, started: 250, progress: 50, terminal: null },
+    });
+    const staleAt = 500 + QUALIFICATION_PROGRESS_STALE_MS + 1;
+    const anotherFire = recordQualificationScheduledFire(progress.transaction, staleAt).transaction;
+    expect(projectCheckpointQualificationState(anotherFire, staleAt, 'live')).toMatchObject({
+      runnerHealth: { state: 'stalled', liveness: 'live', phase: 'suite' },
+      agesMs: { scheduled: 0, progress: QUALIFICATION_PROGRESS_STALE_MS + 1 },
+      safeNextAction: { code: 'inspect-runner-liveness' },
+    });
+    expect(recordQualificationRunnerProgress(progress.transaction, { ...input, nowMs: 450 }).status).toBe('idempotent');
+    const terminal = settleQualificationTransaction(progress.transaction, {
+      attemptId: 'attempt-1', runId: 'run-1', reason: 'not-green', green: false, nowMs: 600,
+    }).transaction;
+    expect(recordQualificationRunnerProgress(terminal, { ...input, nowMs: 700 }).status).toBe('terminal');
+    expect(settleQualificationTransaction(terminal, {
+      attemptId: 'attempt-1', runId: 'run-other', reason: 'advanced', green: true, nowMs: 700,
+    }).status).toBe('conflict');
+    expect(settleQualificationTransaction(terminal, {
+      attemptId: 'attempt-1', runId: 'run-1', reason: 'not-green', green: false, nowMs: 700,
+    }).status).toBe('terminal');
+  });
+  it('projects owner, phase, heartbeat, and deadline from the persisted runner fields', () => {
+    const running = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'runner-1', runId: 'run-1', candidate: 'candidate-1',
+      pid: 123, pidIdentity: 'boot:1', leaseDurationMs: 1_000, started: true, nowMs: 200,
+    }).transaction;
+    const runner = running.currentPhysicalRunner!;
+    const project = (changes: Partial<typeof runner>) =>
+      projectCheckpointQualificationState({ ...running, currentPhysicalRunner: { ...runner, ...changes } }, 300, 'live');
+
+    expect(project({})).toMatchObject({
+      lease: { holder: 'runner-1', expiresAtMs: 1_200, expired: false },
+      runnerHealth: { phase: 'materializing', progressAgeMs: 100 },
+    });
+    expect(project({ id: 'runner-2' }).lease?.holder).toBe('runner-2');
+    expect(project({ phase: 'suite' }).runnerHealth.phase).toBe('suite');
+    expect(project({ heartbeatAtMs: 250 }).runnerHealth.progressAgeMs).toBe(50);
+    expect(project({ leaseExpiresAtMs: 250 })).toMatchObject({
+      lease: { expired: true }, safeNextAction: { code: 'inspect-runner-liveness' },
+    });
+  });
   it('creates one normalized durable identity and reuses the same attempt idempotently', () => {
     const current = begin();
     expect(current).toMatchObject({
@@ -98,7 +209,45 @@ describe('logical checkpoint qualification transaction', () => {
       green: true,
       nowMs: 300,
     });
-    expect(duplicateFromOtherRun).toMatchObject({ status: 'terminal', transaction: first.transaction });
+    expect(duplicateFromOtherRun).toMatchObject({ status: 'conflict', transaction: first.transaction });
+    expect(settleQualificationTransaction(first.transaction, {
+      attemptId: 'attempt-1', candidate: 'candidate-1', runId: 'run-1',
+      reason: 'advanced', green: true, nowMs: 300,
+    }).status).toBe('conflict');
+  });
+
+  it('recovers a mismatched pre-suite terminal only for its exact unitless scheduled runner, including replay', () => {
+    const reserved = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'fire-1', candidate: 'candidate-1',
+      evidenceRefs: ['gate-fire:fire-1'], leaseDurationMs: 1_000, started: false, nowMs: 150,
+    }).transaction;
+    const proof = {
+      attemptId: 'attempt-1', runnerId: 'fire-1', runId: 'wrapper-1',
+      reason: 'skipped-locked', finishedAtMs: 200,
+      evidenceRefs: ['checkpoint-terminal:wrapper-1', 'gate-fire:fire-1'], nowMs: 210,
+    };
+    expect(settleQualificationTransaction(reserved, {
+      attemptId: 'attempt-1', reason: 'skipped-locked', candidate: 'candidate-2', nowMs: 200,
+    }).status).toBe('conflict');
+    for (const changed of [
+      { runnerId: 'fire-other' }, { attemptId: 'attempt-other' }, { reason: 'not-green' },
+      { finishedAtMs: 149 }, { evidenceRefs: ['gate-fire:fire-1'] },
+    ]) {
+      expect(recoverQualificationScheduledTerminal(reserved, { ...proof, ...changed }).status).toBe('conflict');
+    }
+    expect(recoverQualificationScheduledTerminal({
+      ...reserved, currentPhysicalRunner: { ...reserved.currentPhysicalRunner!, pid: 123 },
+    }, proof).status).toBe('conflict');
+    const recovered = recoverQualificationScheduledTerminal(reserved, proof);
+    expect(recovered).toMatchObject({
+      status: 'updated', transaction: {
+        phase: 'terminal', candidate: 'candidate-1', currentPhysicalRunner: null,
+        outcome: { kind: 'code-inconclusive', reason: 'orphaned-reservation-after-skipped-locked' },
+      },
+    });
+    expect(recovered.transaction.consumedPhysicalRuns).toHaveLength(1);
+    expect(recoverQualificationScheduledTerminal(recovered.transaction, proof).status).toBe('terminal');
+    expect(recoverQualificationScheduledTerminal(recovered.transaction, { ...proof, runId: 'other' }).status).toBe('conflict');
   });
 
   it('WI-10002454: names every identity behind a settle conflict, and nothing when identities agree', () => {
@@ -236,7 +385,7 @@ describe('logical checkpoint qualification transaction', () => {
     ).toBe('conflict');
   });
 
-  it('expires a mortal physical runner while preserving the logical attempt and run history', () => {
+  it('requires proven death before reclaiming even an expired physical runner', () => {
     const running = reserveQualificationRunner(begin(), {
       attemptId: 'attempt-1',
       runnerId: 'physical-1',
@@ -250,13 +399,22 @@ describe('logical checkpoint qualification transaction', () => {
     });
     expect(projectCheckpointQualificationState(running, 301)).toMatchObject({
       lease: { holder: 'physical-1', expired: true },
+      safeNextAction: { code: 'inspect-runner-liveness' },
+    });
+    expect(projectCheckpointQualificationState(running, 301, 'dead')).toMatchObject({
+      runnerHealth: { state: 'dead', liveness: 'dead' },
       safeNextAction: { code: 'recover-expired-runner' },
     });
 
+    const unproven = reserveQualificationRunner(running, {
+      attemptId: 'attempt-1', runnerId: 'physical-2', leaseDurationMs: 200, nowMs: 301,
+    });
+    expect(unproven.status).toBe('conflict');
     const replacement = reserveQualificationRunner(running, {
       attemptId: 'attempt-1',
       runnerId: 'physical-2',
       leaseDurationMs: 200,
+      incumbentLiveness: 'dead',
       nowMs: 301,
     });
     expect(replacement).toMatchObject({
@@ -265,10 +423,41 @@ describe('logical checkpoint qualification transaction', () => {
         attemptId: 'attempt-1',
         currentPhysicalRunner: { id: 'physical-2', leaseExpiresAtMs: 501 },
         consumedPhysicalRuns: [
-          { id: 'physical-1', outcome: { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' } },
+          { id: 'physical-1', outcome: { kind: 'pre-suite-no-verdict', reason: 'runner-vanished' } },
         ],
       },
     });
+  });
+
+  it('attaches the scheduled CLI process to its pre-spawn reservation without a second runner', () => {
+    const placeholder = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', leaseDurationMs: 1_000,
+      started: false, nowMs: 200,
+    }).transaction;
+    expect(placeholder).toMatchObject({
+      currentPhysicalRunner: { id: 'gate-fire-1', phase: 'launching' },
+    });
+    expect(placeholder.lastStartedAtMs).toBeUndefined();
+    const attached = reserveQualificationRunner(placeholder, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', runId: 'cli-run-1',
+      candidate: 'candidate-1', pid: 123, pidIdentity: 'boot-a:100',
+      leaseDurationMs: 2_000, started: true, nowMs: 300,
+    });
+    expect(attached).toMatchObject({
+      status: 'updated', transaction: {
+        runId: 'cli-run-1', lastStartedAtMs: 300,
+        currentPhysicalRunner: { id: 'gate-fire-1', pid: 123, pidIdentity: 'boot-a:100', phase: 'materializing' },
+        consumedPhysicalRuns: [],
+      },
+    });
+    expect(reserveQualificationRunner(attached.transaction, {
+      attemptId: 'attempt-1', runnerId: 'other-fire', leaseDurationMs: 1_000,
+      incumbentLiveness: 'live', nowMs: 2_301,
+    }).status).toBe('conflict');
+    expect(reserveQualificationRunner(attached.transaction, {
+      attemptId: 'attempt-1', runnerId: 'gate-fire-1', runId: 'another-cli-run',
+      leaseDurationMs: 1_000, started: true, nowMs: 400,
+    }).status).toBe('conflict');
   });
 
   it('lets a live physical-run lease outrank a stale eligibility action', () => {
@@ -389,6 +578,10 @@ describe('logical checkpoint qualification transaction', () => {
   });
 
   it('retries only the explicit pre-suite no-verdict allowlist and makes red/code outcomes terminal', () => {
+    expect(classifyQualificationVerdict({ reason: 'skipped-locked', green: null })).toEqual({
+      kind: 'pre-suite-no-verdict',
+      reason: 'skipped-locked',
+    });
     expect(classifyQualificationVerdict({ reason: 'migrations-pending', green: null })).toEqual({
       kind: 'pre-suite-no-verdict',
       reason: 'migrations-pending',
