@@ -105,6 +105,7 @@ import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
   CHECKPOINT_SCHEDULED_RUN_ENV,
   checkpointPidIdentity,
+  readStoredQualification,
   recordStoredQualificationRunnerProgress,
   reserveStoredQualificationRunner,
   type StoredQualificationMutation,
@@ -3139,6 +3140,34 @@ export async function activateScheduledCheckpointRunner(
     started: true,
     evidenceRefs: [`checkpoint-run:${input.runId}`],
   });
+}
+
+/**
+ * WI-10002602 — the candidate a SCHEDULED run must judge when it joined an existing attempt.
+ *
+ * The scheduled launcher (release-actions) reuses a non-terminal logical attempt and starts this
+ * CLI with no `--candidate`. Preflight then resolved the integration-branch tip, while the attempt
+ * stayed pinned to its own candidate (the repair head a manual run reserved, or the candidate an
+ * earlier fire recorded before a pre-suite no-verdict). `activateScheduledCheckpointRunner` refused
+ * that mismatch with `conflict`, the run crashed before any verdict, and every later fire re-joined
+ * the same attempt, so the gate stayed wedged. A joined attempt's pinned candidate is therefore the
+ * only candidate this run can activate against. Returns null (resolve as before) for a manual run,
+ * an explicit `--candidate`, a fresh attempt with no candidate yet, or an unreadable row.
+ */
+export async function scheduledAttemptPinnedCandidate(
+  input: {
+    scheduled: boolean;
+    candidateArg: string | null | undefined;
+    target: GateVerdictTarget | null;
+    attemptId: string | undefined;
+  },
+  read: typeof readStoredQualification = readStoredQualification,
+): Promise<string | null> {
+  if (!input.scheduled || input.candidateArg || !input.target || !input.attemptId) return null;
+  const stored = await read(input.target).catch(() => null);
+  if (!stored || stored.status !== 'present') return null;
+  if (stored.transaction.attemptId !== input.attemptId) return null;
+  return stored.transaction.candidate?.trim() || null;
 }
 
 export function checkpointRunIdFromScheduledEnv(value: string | undefined, mint: () => string = randomUUID): string {
@@ -20564,9 +20593,22 @@ if (require.main === module) {
     let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
     let lock: CheckpointRunLock;
     try {
+      const pinnedCandidate = await scheduledAttemptPinnedCandidate({
+        scheduled: Boolean(scheduledRunToken),
+        candidateArg,
+        target: gateVerdictTargetFromEnv(),
+        attemptId: process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim(),
+      });
+      if (pinnedCandidate) {
+        console.log(
+          `${orchestratorStdoutTag()} scheduled fire joined logical attempt ` +
+            `${process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim()}; judging its pinned candidate ` +
+            `${pinnedCandidate.slice(0, 12)} instead of ${cfg.integrationBranch} tip (WI-10002602)`,
+        );
+      }
       const preflight = await beginCheckpointPreflight(
         cfg,
-        candidateArg ?? cfg.integrationBranch,
+        candidateArg ?? pinnedCandidate ?? cfg.integrationBranch,
       );
       resolvedCandidateForRun = preflight.candidate;
       prewarmedDependencyGeneration = preflight.prewarmedDependencyGeneration;

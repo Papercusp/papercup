@@ -1125,8 +1125,20 @@ export function settleQualificationTransaction(
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
   const candidate = input.candidate?.trim() || null;
+  const verifiedRepairHead = input.repairHead?.trim() || null;
   const runId = input.runId?.trim() || null;
-  if (current.candidate && candidate && current.candidate !== candidate) {
+  // A repair-head verification is RESERVED against the head it verifies (the launcher pins
+  // queue.repairHead as the run's candidate), but its verdict names the FROZEN candidate as
+  // `candidate` and the verified head as `repairHead`. Both name the same judged code, so a
+  // stored candidate equal to the verdict's repair head is the same identity. Comparing only
+  // `candidate` returned conflict for every repair-head verdict: the verdict was discarded and
+  // the attempt stayed non-terminal, which wedged every later scheduled fire (WI-10002602).
+  if (
+    current.candidate &&
+    candidate &&
+    current.candidate !== candidate &&
+    current.candidate !== verifiedRepairHead
+  ) {
     return { status: 'conflict', transaction: current };
   }
   if (current.runId && runId && current.runId !== runId) {
