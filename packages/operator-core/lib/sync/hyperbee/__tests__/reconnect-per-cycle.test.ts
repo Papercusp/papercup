@@ -21,7 +21,7 @@
  *   (c) watermark cursors are monotonic + the merge caught up (no fork/reset).
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import Corestore from 'corestore';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -179,6 +179,19 @@ async function drainUntil(peers: Peer[], pred: () => boolean, maxPasses = 40): P
 
 describe('Brief F / Scenario 1 — per-cycle reconnect: no missed ops + presence recovery', () => {
   it('across many sever/reconnect cycles, every disconnect-window op is delivered AND the heartbeat resumes — each cycle', async () => {
+    // A read stall is a legitimate, retried outcome of one merge pass: on a loaded box a
+    // block can take longer than getTimeoutMs to cross the pipe, the cursor is HELD and the
+    // next drainUntil pass re-reads it (read-merge.ts, WI-2141796). read-merge announces
+    // that with a `read stall` warn and a later `late read` warn, which vitest-fail-on-console
+    // would turn into a red under gate load (measured: test_runs 20236074 at 9f0a0776, 1 fail
+    // in 30 ci runs). Allow exactly those two read-merge warns; any other warn still fails.
+    const unexpectedWarns: string[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      const msg = args.map(String).join(' ');
+      if (!/^\[read-merge\] .*(?:read stall \(\d+×\)|late read: )/.test(msg)) unexpectedWarns.push(msg);
+    });
+    cleanups.push(() => warnSpy.mockRestore());
+
     const A = new Peer('A');
     const B = new Peer('B');
     const peers = [A, B];
@@ -247,6 +260,7 @@ describe('Brief F / Scenario 1 — per-cycle reconnect: no missed ops + presence
     const beforeIdle = A.applied.length + B.applied.length;
     for (const p of peers) await p.merge();
     expect(A.applied.length + B.applied.length).toBe(beforeIdle);
+    expect(unexpectedWarns).toEqual([]);
 
     cable.sever();
   }, 60_000);
