@@ -36,6 +36,7 @@ import factsAssert from '../facts/assert';
 import agentReview from '../improvements/agent-review';
 import captureTool from '../improvements/capture';
 import rubricsPropose from '../rubrics/propose';
+import './invoke';
 import { COORD_SEND_MAX_CHUNK_PARTS, DEFAULT_INBOX_BODY_CAP } from '../coordination/tools/inbox-content-bounds';
 import { chunkContentBudget } from '../coordination/tools/send-chunking';
 import { scorecardEmitArgs } from '../scorecards/emit';
@@ -1411,11 +1412,20 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
-  it('preserves every required testing:run recovery key in compact discovery', () => {
+  it('preserves every required testing:run recovery key in compact discovery', async () => {
     const { corpus, schemaByTool } = buildCorpus();
-    const compact = compactSchemaForResult(schemaByTool.get('testing:run')) ?? '';
+    const schema = schemaByTool.get('testing:run') as
+      | { properties?: Record<string, { required?: string[] }> }
+      | undefined;
+    const recoverySchema = schema?.properties?.recoverEvidence;
+    const compact = compactSchemaForResult(schema) ?? '';
     const recoveryStart = compact.indexOf('recoverEvidence?:object{');
     const recovery = recoveryStart < 0 ? '' : compact.slice(recoveryStart, recoveryStart + 320);
+
+    // The registry boundary must hand compaction the validator's required-key
+    // contract unchanged; otherwise the renderer cannot distinguish a required
+    // key from optional metadata when it has to shorten a nested object.
+    expect(recoverySchema?.required).toEqual(expect.arrayContaining(['workItemId', 'originRunId', 'runId']));
 
     // originRunId is required by the recovery validator. Hiding it behind a
     // tail marker makes a schema-following caller fail only after dispatch.
@@ -1423,8 +1433,17 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(recovery).toContain('runId:string');
     expect(recovery).toContain('workItemId:string');
 
-    const hit = corpus.find((candidate) => candidate.tool === 'testing:run');
+    const corpusHit = corpus.find((candidate) => candidate.tool === 'testing:run');
+    expect(corpusHit?.argSchema).toContain('originRunId');
+    expect(corpusHit?.argSchema).toContain('workItemId');
+
+    // Exercise the public response path as well as the pure projection helper:
+    // the compact returned schema must retain each required key with its type.
+    const out = await callHandler({ query: 'testing:run', limit: 1 });
+    const hit = out.hits.find((candidate) => candidate.tool === 'testing:run');
     expect(hit?.argSchema).toContain('originRunId:string');
+    expect(hit?.argSchema).toContain('runId:string');
+    expect(hit?.argSchema).toContain('workItemId:string');
   });
 
   it('preserves record entry fields in the live scorecards:evaluate discovery schema', async () => {
@@ -1542,6 +1561,18 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
     expect(out.howToCall).toContain('tools:invoke');
     expect(out.howToCall).toContain('does NOT guarantee');
     expect(out.howToCall).not.toContain('call the one you want directly');
+  });
+
+  it('does not recommend dispatching a tools:invoke hit through itself', async () => {
+    const activated = await callHandler({ query: 'tools:invoke' }, { activateTools: () => true });
+    const inactive = await callHandler({ query: 'tools:invoke' });
+
+    for (const out of [activated, inactive]) {
+      expect(out.hits.some((hit) => hit.tool === 'tools:invoke')).toBe(true);
+      expect(out.howToCall).toContain('tools:invoke hit is the dispatcher itself');
+      expect(out.howToCall).toContain('do NOT pass name:"tools:invoke" through it');
+      expect(out.howToCall).not.toContain('name:"<exact tool name from hits>"');
+    }
   });
 
   it('never breaks discovery when activation throws — hits still returned', async () => {
