@@ -21,6 +21,7 @@ import {
   toReportSummary,
   zReportKind,
   zReportSubjectKind,
+  zReportWire,
 } from './_shared';
 
 export default defineTool({
@@ -49,6 +50,13 @@ export default defineTool({
       'no such report exists, only that none is visible to you.',
     seeAlso: ['reports:search (rank by relevance)', 'reports:get (read one)', 'reports:publish (add one)'],
   },
+  // Rows are the wire record (body omitted by construction — `toReportSummary` IS
+  // `toReportWire`, which never carries `bodyMd`).
+  result: z.object({
+    ok: z.literal(true),
+    count: z.number().int().nonnegative(),
+    reports: z.array(zReportWire),
+  }),
   capability: 'reports:read',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

@@ -27,6 +27,7 @@ import {
   toRefusal,
   toReportWire,
   zReportKind,
+  zReportWire,
   zReportSubject,
   zReportVisibility,
 } from './_shared';
@@ -55,8 +56,9 @@ export default defineTool({
       'Correcting one: reports:get { id } → reports:publish { supersedes: id } → reports:list shows only ' +
       'the new one, with the history behind it.',
     returns:
-      '{ ok:true, report_id, path, lineage_id, supersedes_report_id, kind, visibility, subject, origin, ' +
-      'body_bytes, published_at, event_emitted }. Refusals are structured { ok:false, error, message }: ' +
+      '{ ok:true, report_id, workspace_id, title, summary, kind, subject, origin, visibility, ' +
+      'supersedes_report_id, lineage_id, source, tags, published_at, updated_at, retired_at, path, ' +
+      'body_bytes, event_emitted }. Refusals are structured { ok:false, error, message }: ' +
       '`body_too_large` also carries { bytes, limitBytes, overageBytes } so you know how much to cut; ' +
       '`supersedes_not_found` means the id you are replacing does not exist in this workspace (nothing ' +
       'was published — fix the id rather than dropping `supersedes`, which would orphan the history); ' +
@@ -69,6 +71,10 @@ export default defineTool({
       'reports:retire (soft-retire one you authored)',
     ],
   },
+  // The success envelope is the wire record spread flat, plus `ok` and the
+  // best-effort `event_emitted`. Refusals are returned as a separate structured
+  // shape and are described in `returns` prose rather than unioned in here.
+  result: zReportWire.extend({ ok: z.literal(true), event_emitted: z.boolean() }),
   capability: 'reports:write',
   requirePrincipal: false,
   // Any agent session may publish — the library is the fleet's shared output surface.

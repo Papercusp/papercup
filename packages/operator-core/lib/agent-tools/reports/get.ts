@@ -17,7 +17,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getReport, listReportLineage } from '../../report-library';
-import { mergeIds, runBulk, bulkContent } from '../_bulk';
+import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
 import { resolveViewer, resolveWorkspaceId, toReportFull, toReportSummary } from './_shared';
 
 export default defineTool({
@@ -46,6 +46,10 @@ export default defineTool({
       'visible to you: the visibility matrix withholds existence too.',
     seeAlso: ['reports:list (browse)', 'reports:search (full text)', 'reports:publish (supersede one)'],
   },
+  // The envelope is `_bulk`'s to describe, not this tool's. Per-item stays OPEN because
+  // a result carries `report` OR `error`, and `lineage:true` adds a third key — a closed
+  // per-item schema would assert a shape the producer does not promise.
+  result: bulkEnvelopeSchema(),
   capability: 'reports:read',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

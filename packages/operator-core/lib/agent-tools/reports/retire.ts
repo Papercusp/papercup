@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { getReport, retireReport } from '../../report-library';
-import { mergeIds, runBulk, bulkContent } from '../_bulk';
+import { mergeIds, runBulk, bulkContent, bulkEnvelopeSchema } from '../_bulk';
 import { invalidateReportsSync, resolveViewer, resolveWorkspaceId, toReportSummary } from './_shared';
 
 export default defineTool({
@@ -47,6 +47,9 @@ export default defineTool({
       'you can see it but did not write it — ask its author, or supersede it instead.',
     seeAlso: ['reports:publish (supersede — the usual alternative)', 'reports:get (a retired report still resolves)'],
   },
+  // Envelope described by `_bulk`; per-item stays OPEN (`report` on success, `error`
+  // — not_found or not_author — on failure).
+  result: bulkEnvelopeSchema(),
   capability: 'reports:write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

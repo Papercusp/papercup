@@ -12,7 +12,9 @@
  */
 import { z } from 'zod';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolvePotHomeSlug } from '../../pot/wake';
 import { trackDetached } from '../../detached-imports';
 import {
   REPORT_KINDS,
@@ -105,7 +107,14 @@ export function resolveOwnerId(ctx: ReportsCtx): string | null {
  */
 export function stampOrigin(ctx: ReportsCtx): ReportOrigin {
   return {
-    harnessSlug: ctx.harnessSlug ?? null,
+    // NOT `ctx.harnessSlug ?? null`: under operator/superuser scope that field is
+    // the `'*'` wildcard, which is TRUTHY but is not a registered harness — so the
+    // nullish fallback lets `'*'` win and stamps provenance with a harness that does
+    // not exist. Because origin is the axis a reader trusts, that failure is silent:
+    // the report publishes fine and simply belongs to nobody. resolveConcreteHarnessSlug
+    // returns null for the wildcard, so a non-harness-scoped publish is honestly
+    // unattributed rather than attributed to a phantom.
+    harnessSlug: resolveConcreteHarnessSlug(null, ctx),
     authorOwnerId: resolveOwnerId(ctx),
     authorSessionRef: ctx.runId ?? ctx.uiClientId ?? null,
   };
@@ -125,7 +134,12 @@ export function resolveViewer(ctx: ReportsCtx): ReportViewer {
   return {
     isOwner: false,
     ownerId: resolveOwnerId(ctx),
-    potSlug: ctx.harnessSlug ?? null,
+    // Same wildcard trap as stampOrigin, but on the READ side, where it is worse: a
+    // `'*'` potSlug matches no pot, so the `pot`-visibility branch of the R-7 matrix
+    // silently returns nothing and reads as "this pot has no reports" rather than as a
+    // scope error. resolvePotHomeSlug skips `*`/`all`, falls through to the env home,
+    // and canonicalises.
+    potSlug: resolvePotHomeSlug(null, ctx.harnessSlug),
   };
 }
 
@@ -148,7 +162,48 @@ export function reportUiPath(reportId: string): string {
  * `body_bytes` is carried on every row precisely BECAUSE the body is not: it is how
  * a caller tells a stub from a 400KB audit before paying to fetch it.
  */
-export function toReportWire(report: ReportRecord) {
+/**
+ * The wire projection as a runtime schema, so every `reports:*` verb can state its
+ * response STRUCTURALLY (`result:` → the derived `outputJsonSchema`) instead of only
+ * describing it in `guidance.returns` prose — the direction
+ * guidance-output-schema-live-guard enforces.
+ *
+ * This is deliberately the CANONICAL shape, with `toReportWire` typed by
+ * `z.infer<typeof zReportWire>` below, rather than a hand-written second copy of the
+ * mapper's return. A schema transcribed alongside the mapper would be exactly the
+ * code-describing-metadata drift the derived-truth ladder forbids: the two would agree
+ * on the day they were written and silently diverge on the first field added. Typing
+ * the producer by the schema makes divergence a COMPILE error instead.
+ */
+export const zReportWire = z.object({
+  report_id: z.string(),
+  workspace_id: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  kind: zReportKind,
+  subject: z.object({
+    kind: zReportSubjectKind,
+    ref: z.string().nullable(),
+    label: z.string().nullable(),
+  }),
+  origin: z.object({
+    harness_slug: z.string().nullable(),
+    author_owner_id: z.string().nullable(),
+    author_session_ref: z.string().nullable(),
+  }),
+  visibility: zReportVisibility,
+  supersedes_report_id: z.string().nullable(),
+  lineage_id: z.string(),
+  source: z.string(),
+  tags: z.array(z.string()),
+  published_at: z.string(),
+  updated_at: z.string(),
+  retired_at: z.string().nullable(),
+  path: z.string(),
+  body_bytes: z.number().int().nonnegative(),
+});
+
+export function toReportWire(report: ReportRecord): z.infer<typeof zReportWire> {
   return {
     report_id: report.reportId,
     workspace_id: report.workspaceId,
