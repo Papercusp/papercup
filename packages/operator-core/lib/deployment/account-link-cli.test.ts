@@ -78,6 +78,21 @@ const h = vi.hoisted(() => {
 
 vi.mock('@lydell/node-pty', () => ({ spawn: h.spawn }));
 vi.mock('node:fs/promises', () => ({ readFile: h.readFile, writeFile: h.writeFile, cp: h.cp, mkdir: h.mkdir, chmod: h.chmod, rm: h.rm }));
+// resolveCliBin probes the well-known install dirs (~/.local/bin, ~/.bun/bin, /usr/local/bin,
+// linuxbrew) BEFORE the shared-resolver seam. A test that asserts the seam is therefore at the
+// mercy of whether THIS host happens to have a real `codex` installed in one of them — it passed
+// on a box without one and failed on a box with one (the 2026-09-17 green-checkpoint red, where
+// /home/<user>/.local/bin/codex won and the injected resolver was never reached). Mocking only
+// homedir() would fix the home-relative half and leave /usr/local/bin armed for the next host,
+// so route accessSync through a swappable slot instead: real behaviour by default (the PATH-entry
+// test writes an actual file and must find it), overridden to "nothing exists anywhere" by the
+// test that needs a deterministically empty filesystem.
+const fsProbe = vi.hoisted(() => ({ accessSync: null as ((...a: unknown[]) => void) | null }));
+vi.mock('node:fs', async (orig) => {
+  const actual = await orig<typeof import('node:fs')>();
+  const real = actual.accessSync as (...a: unknown[]) => void;
+  return { ...actual, accessSync: (...a: unknown[]) => (fsProbe.accessSync ?? real)(...a) };
+});
 vi.mock('../papercusp-root', () => ({ papercuspPath: (...p: string[]) => '/tmp/test/' + p.join('/') }));
 vi.mock('./account-pool', () => ({
   registerAccount: h.registerAccount,
@@ -266,11 +281,21 @@ describe('resolveCliBin — CLI binary resolution for stripped-PATH operator hos
   });
 
   it('uses the shared agent resolver when the operator PATH omits the canonical Codex shim', () => {
-    const sharedResolver = vi.fn(() => '/home/test/.papercusp/bin/codex');
-    expect(resolveCliBin('codex', { PATH: '/does-not-exist-xyz' }, sharedResolver)).toBe(
-      '/home/test/.papercusp/bin/codex',
-    );
-    expect(sharedResolver).toHaveBeenCalledWith('codex');
+    // Hermetic on ANY host: every well-known install dir is probed before this seam, so the
+    // assertion is only about the seam once the filesystem is forced to miss. See the node:fs
+    // mock above for why homedir()-only isolation is insufficient.
+    fsProbe.accessSync = () => {
+      throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+    };
+    try {
+      const sharedResolver = vi.fn(() => '/home/test/.papercusp/bin/codex');
+      expect(resolveCliBin('codex', { PATH: '/does-not-exist-xyz' }, sharedResolver)).toBe(
+        '/home/test/.papercusp/bin/codex',
+      );
+      expect(sharedResolver).toHaveBeenCalledWith('codex');
+    } finally {
+      fsProbe.accessSync = null;
+    }
   });
 
   it('falls back past a claude-less PATH instead of failing (well-known dirs, else the bare name)', () => {
