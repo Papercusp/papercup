@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const probe = vi.hoisted(() => ({
   clock: 0, unchangedPath: '', unchangedSize: 0, failInsert: false,
+  failOwners: false,
   queries: [] as string[],
 }));
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   const sql = Object.assign((strings: TemplateStringsArray | unknown[], ...values: unknown[]) => {
     if (!('raw' in strings)) return { rows: strings };
     const query = strings.join('?');
@@ -17,6 +19,13 @@ vi.mock('@papercusp/db-org', () => {
     if (query.includes('INSERT INTO harness_shared.session_turns ')) {
       if (probe.failInsert) return Promise.reject(new Error('injected turn insert failure'));
       return Promise.resolve(Object.assign([], { count: 1 }));
+    }
+    if (query.includes('UPDATE harness_shared.session_turns AS turns')) {
+      if (probe.failOwners) return Promise.reject(new Error('injected owner backfill failure'));
+      return Promise.resolve(Object.assign([], { count: 3 }));
+    }
+    if (query.includes('UPDATE harness_shared.adv_sessions AS sessions')) {
+      return Promise.resolve([{ id: 4242 }]);
     }
     if (query.includes('FROM harness_shared.session_ingest_state') &&
         query.includes('last_inference_id') && !query.includes('LIMIT')) {
@@ -30,7 +39,7 @@ vi.mock('@papercusp/db-org', () => {
     }
     return Promise.resolve([]);
   }, { array: (values: unknown[]) => values });
-  return { getOrgPg: () => ({ sql }) };
+  return { ...actual, getOrgPg: () => ({ sql }) };
 });
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: async () => { probe.clock += 2; return true; },
@@ -65,6 +74,7 @@ beforeEach(async () => {
   const day = join(home, 'sessions', '2026', '09', '30');
   await mkdir(day, { recursive: true });
   await writeFile(join(home, 'config.toml'), 'model = "gpt-6.1-sol"\n');
+  await writeFile(join(home, 'papercusp-diagnostics.json'), '{"lockOwnerSid":"phase-owner"}');
   const line = JSON.stringify({ type: 'response_item', timestamp: '2026-09-30T00:00:00Z',
     payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'measure this useful turn' }] },
   }) + '\n';
@@ -78,6 +88,7 @@ beforeEach(async () => {
   probe.clock = 0;
   probe.queries = [];
   probe.failInsert = false;
+  probe.failOwners = false;
   vi.spyOn(performance, 'now').mockImplementation(() => probe.clock);
 });
 
@@ -99,8 +110,35 @@ describe('ingestion phase attribution', () => {
     expect(stats.phaseMs).toMatchObject({ setup: 5, discovery: 10, metadata: 3, decode: 11, state: 7 });
     expect(stats.phaseMs!.writes).toBeGreaterThanOrEqual(21);
     expect(stats.phaseMs!.metadataBackfill).toBeGreaterThan(0);
+    expect(stats.metadataBackfills).toEqual([
+      { sourceKind: 'codex', operation: 'sessionOwners', requested: 2, updated: 3,
+        startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
+      { sourceKind: 'codex', operation: 'codexAdvSessions', requested: 1, updated: 1,
+        startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
+    ]);
     expect(Object.values(stats.phaseMs!).reduce((sum, ms) => sum + ms, 0)).toBe(stats.durationMs);
     expect(probe.queries.filter((q) => q.includes('INSERT INTO harness_shared.session_ingest_state'))).toHaveLength(1);
+  });
+
+  it('reports an owner repair failure without losing successful ingestion or preventing the next repair', async () => {
+    probe.failOwners = true;
+    const failed = await runSessionIngestOnce();
+    expect(failed.errors).toBe(1);
+    expect(failed.turnsInserted).toBe(1);
+    expect(failed.filesIngested).toBe(1);
+    expect(failed.errorSample).toContain('codex owner backfill: injected owner backfill failure');
+    expect(failed.metadataBackfills).toEqual([
+      { sourceKind: 'codex', operation: 'sessionOwners', requested: 2,
+        startedAtMs: expect.any(Number), durationMs: 7, status: 'failed' },
+      { sourceKind: 'codex', operation: 'codexAdvSessions', requested: 1, updated: 1,
+        startedAtMs: expect.any(Number), durationMs: 7, status: 'completed' },
+    ]);
+    expect(sessionIngestLogLine(failed)).toContain(`metadataBackfills=${JSON.stringify(failed.metadataBackfills)}`);
+    probe.failOwners = false;
+    const retried = await runSessionIngestOnce();
+    expect(retried.skipped).toBeUndefined();
+    expect(retried.errors).toBe(0);
+    expect(retried.metadataBackfills?.[0]).toMatchObject({ updated: 3, status: 'completed' });
   });
 
   it('retains failed-write time while preserving the failed file offset and releasing the sweep latch', async () => {
@@ -121,6 +159,7 @@ describe('ingestion phase attribution', () => {
     const stats = await runSessionIngestOnce();
     const empty = { ...stats, turnsInserted: 0, partsInserted: 0, errors: 0, filesIngested: 0, durationMs: 5000 };
     expect(sessionIngestLogLine(empty)).toContain(`phases=${JSON.stringify(stats.phaseMs)}`);
+    expect(sessionIngestLogLine(empty)).toContain(`metadataBackfills=${JSON.stringify(stats.metadataBackfills)}`);
     expect(sessionIngestLogLine({ ...empty, durationMs: 4999 })).toBeNull();
     expect(sessionIngestLogLine({ ...empty, durationMs: 1, partsInserted: 1 })).toContain('+1 part(s)');
     expect(sessionIngestLogLine({ ...empty, skipped: 'already_running' })).toBeNull();
