@@ -37,6 +37,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createServer, connect, type Server, type Socket } from 'node:net';
+import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // apps/operator/lib/release → apps/operator/bin/release/sync-staging-checkout.sh
 const SCRIPT_PATH = join(__dirname, '../../bin/release/sync-staging-checkout.sh');
@@ -255,22 +256,24 @@ describe('staging schema preparation before cutover (EI-24180022773715880)', () 
       'echo restart-requested',
     ].join('\n')], { env: { ...process.env, SYNC_SCRIPT: SCRIPT_PATH, STAGING_ROOT: root,
       UNIT: 'fixture.service', TRACE_FILE: join(root, 'trace'), FIXTURE_RESULT: 'wait' } });
-    let output = '';
+    const output = createTextCollector(child.stdout);
     const closed = new Promise<number | null>((resolve) => child.on('close', resolve));
     const waiting = new Promise<void>((resolve, reject) => {
-      child.stdout.on('data', (data) => {
-        output += String(data);
-        if (output.includes('fixture-rendezvous-waiting')) resolve();
+      child.stdout.on('data', () => {
+        if (output.peek().includes('fixture-rendezvous-waiting')) resolve();
       });
       child.on('error', reject);
-      child.on('exit', () => { if (!output.includes('fixture-rendezvous-waiting')) reject(new Error(output)); });
+      child.on('close', () => {
+        if (!output.peek().includes('fixture-rendezvous-waiting')) reject(new Error(output.text()));
+      });
     });
     try {
       await waiting;
-      expect(output).not.toContain('restart-requested');
+      expect(output.peek()).not.toContain('restart-requested');
       writeFileSync(join(root, 'release-backup'), 'released');
       expect(await closed).toBe(0);
-      expect(output.indexOf('target schema prepared:')).toBeLessThan(output.indexOf('restart-requested'));
+      const finalOutput = output.text();
+      expect(finalOutput.indexOf('target schema prepared:')).toBeLessThan(finalOutput.indexOf('restart-requested'));
     } finally {
       child.kill('SIGKILL');
     }
