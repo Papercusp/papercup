@@ -379,7 +379,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   });
 
   it('refuses a second auditor without the active dispatch lease before filing a card', async () => {
-    getIssue.mockResolvedValue(gradedCardWithReservation() as never);
+    getIssue.mockResolvedValue(gradedCardWithReservation());
 
     const res = await emitScorecard(auditArgs, { createdBy: 'su-second-auditor', ctxHarness: 'papercusp' });
 
@@ -390,7 +390,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   });
 
   it('settles only when the emitter presents the exact active dispatch lease', async () => {
-    getIssue.mockResolvedValue(gradedCardWithReservation() as never);
+    getIssue.mockResolvedValue(gradedCardWithReservation());
 
     const res = await emitScorecard(
       { ...auditArgs, gradingAuditReservation: activeReservation },
@@ -405,7 +405,7 @@ describe('scorecards:emit grading audit path (P-013)', () => {
   });
 
   it('refuses a prior cascade answerer before filing when the consult moved to another auditor', async () => {
-    getIssue.mockResolvedValue(gradedCardWithReservation() as never);
+    getIssue.mockResolvedValue(gradedCardWithReservation());
     isCurrentSourceAuditResponder.mockResolvedValue(false);
 
     const res = await emitScorecard(

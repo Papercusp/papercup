@@ -26,6 +26,7 @@ export const rubricsAmendStatusArgs = z
 
 export default defineTool({
   name: 'rubrics:amend-status',
+  // @not-a-cell This keyed receipt and Decision lookup has one read door; no other resolver derives its per-key status.
   profile: 'engineer',
   description:
     'Poll a rubrics:amend receipt: running, committed (apply result), previewed (dry-run result), failed, or not_found. A missing dry-run receipt is safe to regenerate because dryRun does not write.',

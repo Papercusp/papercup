@@ -734,7 +734,7 @@ describe('the surviving-awaits receipt (EI-21349668185386229)', () => {
       { id: 187551, eventKey: 'member:ready', expiresTs: null, rootId: 407, nodeId: 902 },
       { id: 187552, eventKey: 'ordinary:ready', expiresTs: '2026-09-20T14:20:35.167Z', rootId: null, nodeId: null },
     ]);
-    listActiveComposedRootsMock.mockResolvedValue([{ id: 407 }] as never);
+    listActiveComposedRootsMock.mockResolvedValue([{ id: 407 }]);
 
     const got = await run({});
 
