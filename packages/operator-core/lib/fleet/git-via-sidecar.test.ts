@@ -147,9 +147,16 @@ describe('isSidecarInfrastructureFault (WI-10002709)', () => {
 
 describe('spawner-sidecar process progress guard', () => {
   it('drains already-written progress before judging an idle deadline after a parent-loop stall', async () => {
+    // Load-robust by construction (gate red at repair head 6bf86578, 2026-09-27):
+    // the child keeps reporting well past the 450ms stall, so the in-stall count
+    // does not depend on how promptly a loaded parent reads 'ready'; and it exits
+    // from its FINAL write's callback, so a CPU-starved loop-drain teardown can
+    // never leave a quiet gap longer than the 150ms idle deadline — the guard
+    // would then correctly kill a silent child, which is not this property.
     const script = [
-      "const send = phase => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n');",
-      "send('ready'); let n = 0; const timer = setInterval(() => { send('progress'); if (++n === 10) clearInterval(timer); }, 40);",
+      "const send = (phase, done) => process.stderr.write(JSON.stringify({ phase, at: Date.now() }) + '\\n', done);",
+      "send('ready'); let n = 0; const timer = setInterval(() => { if (++n < 25) return void send('progress');",
+      "clearInterval(timer); send('progress', () => process.exit(0)); }, 40);",
     ].join(' ');
     let queuedBlock = false;
     let blockedFrom = 0;
@@ -232,7 +239,9 @@ describe('spawner-sidecar process progress guard', () => {
 
   it('refreshes the idle deadline on child output while retaining the absolute hard ceiling', async () => {
     const script =
-      "process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === 8) clearInterval(t); }, 100);";
+      // Exit from the final write's callback: a loaded child's natural teardown
+      // after its last byte must not race the idle deadline (see above).
+      "process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { const last = ++n === 8; if (last) clearInterval(t); process.stderr.write('progress\\n', last ? () => process.exit(0) : undefined); }, 100);";
     const started = Date.now();
     const res = await execProcess(
       {
