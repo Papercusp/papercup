@@ -440,10 +440,8 @@ wakes spinning). Arm it as the LAST thing before you end your turn. *(Behind the
 `loops_disabled` until it's flipped on.)* This replaces `/loop` for su/interactive
 loops ONLY — it is **NOT** the autonomous Blender loop, which is a separate
 system; never `loop:arm` from an
-autonomous-fleet agent. ⚠ The mug/cup/kettle half of that loop is **RETIRED**
-permanently (the gate flag was DELETED), so `kettle:declare-wake` was deleted
-outright and `pot:declare-wake` REFUSES — the `pot/wake` MODULE survives (D-003
-keeps the shared pot substrate), which is not the same thing as its verb working.
+autonomous-fleet agent. ⚠ Its mug/cup/kettle half is **RETIRED**: `kettle:declare-wake`
+is deleted and `pot:declare-wake` REFUSES (the `pot/wake` module survives; its verb does not).
 
 **Then CLOSE YOURSELF — `session:end` (WI-6638).** Ending your loop does not end your
 session: the CLI returns to its prompt and sits there, holding a real process and an
@@ -472,9 +470,7 @@ stamp before acting: a fleet **leader** draining ITS members
 (`fleet-leader(<slug>)→fleet-members`) is the live case, and is not a pot-wide
 pause. Pull live fleet state on demand with `pot:get-steering`; a fleet
 is paused only by an explicit `fleet:*` / owner action, never as a side-effect of a
-pot pause you happened to read. ⚠ The other stamp source — `pot-mug(<pot>)→pot-wide`
-— came from the **RETIRED** Mug placement loop and is no longer emitted at
-all; treat any occurrence as stale data, never a live signal.
+pot pause you happened to read.
 
 ## Modes — official state, offers, and the new-project intake
 

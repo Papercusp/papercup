@@ -2355,8 +2355,27 @@ describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReu
     alarms: [],
     offReasons: [],
     headline: 'per-file reuse: 7 of 10 candidate file(s) reused, at least 30s test time saved, no alarms',
+    // WI-10003603: the pass-proof recorder's outcome. The read-side parse always emits this key
+    // (null when the round reported none), so a full record carries it explicitly.
+    recorder: null,
     ...over,
   });
+  const recorder = {
+    tasks: 3,
+    written: 3,
+    rows: 412,
+    retired: 1,
+    notPersisted: 0,
+    nothingToRecord: 0,
+    failed: 0,
+    timedOut: 0,
+    noReport: 0,
+    malformed: 0,
+    invocations: 1,
+    verdict: 'recorded',
+    alarm: false,
+    alarms: [],
+  };
   const track = (status: string, testPassReuse?: unknown) =>
     trackGateStall(ctx, status, undefined, undefined, null, undefined, null, undefined, { testPassReuse });
 
@@ -2366,6 +2385,17 @@ describe('P-013 (gate-file-level-test-reuse-2026-09-27): gate_health.testPassReu
   ])('⭐ stores the round record on %s', async (_label, status) => {
     await track(status, reuse());
     expect(lastGateHealthWrite()?.testPassReuse).toEqual(reuse());
+  });
+
+  it('⭐ stores the recorder outcome with the round record (WI-10003603)', async () => {
+    await track('not-green', reuse({ recorder }));
+    expect(lastGateHealthWrite()?.testPassReuse).toEqual(reuse({ recorder }));
+  });
+
+  it('a record that omits the recorder is stored with recorder:null, never a guessed outcome', async () => {
+    const { recorder: _omit, ...legacy } = reuse();
+    await track('advanced', legacy);
+    expect(lastGateHealthWrite()?.testPassReuse).toEqual(reuse({ recorder: null }));
   });
 
   it('⭐ a round that reported nothing keeps the previous record, labelled with its own sha', async () => {

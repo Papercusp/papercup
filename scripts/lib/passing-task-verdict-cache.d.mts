@@ -3,6 +3,8 @@ export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION: string;
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS: number;
 export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP: string;
 export const PC_HEAVY_VOLATILE_IDENTITY_ENV: readonly string[];
+/** WI-10003603: per-invocation transport paths affected-tests stamps into a task's child env; never a task input. */
+export const AFFECTED_TESTS_TRANSPORT_IDENTITY_ENV: readonly string[];
 export const PASSING_TASK_SHARED_ROOT_INPUTS: readonly string[];
 export const PASSING_TASK_SHARED_RUNTIME_INPUTS: readonly string[];
 export const PASSING_TASK_SHARED_MODULE_INPUTS: readonly string[];
