@@ -94,7 +94,9 @@ describe('ingestion phase attribution', () => {
     expect(stats.filesScanned).toBe(2);
     expect(stats.filesIngested).toBe(1);
     expect(stats.turnsInserted).toBe(1);
-    expect(stats.phaseMs).toMatchObject({ setup: 5, discovery: 10, metadata: 6, decode: 11, state: 7 });
+    // The two distinct rollouts share one managed home: only the selected
+    // rollout contributes config metadata, at the real reader's injected cost.
+    expect(stats.phaseMs).toMatchObject({ setup: 5, discovery: 10, metadata: 3, decode: 11, state: 7 });
     expect(stats.phaseMs!.writes).toBeGreaterThanOrEqual(21);
     expect(stats.phaseMs!.metadataBackfill).toBeGreaterThan(0);
     expect(Object.values(stats.phaseMs!).reduce((sum, ms) => sum + ms, 0)).toBe(stats.durationMs);
