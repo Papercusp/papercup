@@ -1906,14 +1906,26 @@ describe('resumeCommandFor', () => {
 
   it('claude: re-arms the native-scheduler lockout on every wake as ONE `=` token before the positional prompt', () => {
     const r = resumeCommandFor({ agent: 'claude', sessionId: 'sid-1', ompThreadId: null }, 'WAKE');
-    const denyIdx = r!.args.findIndex((a) => a.startsWith('--disallowedTools='));
+    // The policy emits ONE `--disallowedTools=` token PER restriction and claude
+    // unions them, so the scheduler lockout must be located by CONTENT. A
+    // positional `findIndex` silently retargets onto whichever restriction the
+    // policy happens to order FIRST: when managed-capability-policy centralised
+    // the set (2026-09-18) `no-subagent-fanout` landed ahead of
+    // `no-native-scheduler`, so this asserted against `Task,Agent,Workflow` and
+    // reported a missing lockout that was in fact fully armed.
+    const denyIdx = r!.args.findIndex(
+      (a) => a.startsWith('--disallowedTools=') && a.includes('ScheduleWakeup'),
+    );
     expect(denyIdx).toBeGreaterThan(-1);
     // The single-token form is load-bearing: the variadic space form would
     // consume the trailing wake text as deny rules (D-002,
-    // native-scheduler-lockout-2026-06-09).
+    // native-scheduler-lockout-2026-06-09). That holds for EVERY emitted deny
+    // token, not just the scheduler one — any space form would eat the prompt.
     expect(r!.args[denyIdx]).toContain('ScheduleWakeup');
     expect(r!.args[denyIdx]).toContain('CronCreate');
-    expect(/\s/.test(r!.args[denyIdx])).toBe(false);
+    for (const denyToken of r!.args.filter((a) => a.startsWith('--disallowedTools='))) {
+      expect(/\s/.test(denyToken)).toBe(false);
+    }
     expect(denyIdx).toBeLessThan(r!.args.length - 1); // wake text still trails
     expect(r!.args[r!.args.length - 1]).toBe('WAKE');
   });
