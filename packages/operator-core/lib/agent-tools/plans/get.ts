@@ -191,7 +191,7 @@ const argsSchema = z
       .boolean()
       .optional()
       .describe(
-        'Include live issue, feature, test, rubric and audit decorations (default true). A body-first UI read may set false, then request the full snapshot after the document paints.',
+        'Live issue/feature/test/rubric/audit decorations (default true); false = fast body-first read.',
       ),
     includeRaw: z
       .boolean()

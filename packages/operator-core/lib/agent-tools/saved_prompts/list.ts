@@ -44,8 +44,6 @@ export default defineTool({
     // Prefer the principal's workspace when present, else the active one.
     const ws = ctx.principal?.workspaceId ?? activeWorkspaceId();
     const prompts = await listSavedPrompts(getOrgPg().sql, ws, scope);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, scope, prompts }) }],
-    };
+    return { data: { ok: true, scope, prompts } };
   },
 });

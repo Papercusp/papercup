@@ -326,6 +326,13 @@ for (const file of TOOL_FILES) {
 // and the migration reads as a no-op. Hit on the first attempt here — 438 stayed 438 across two
 // correct migrations until the comments were reworded. This file is safe to quote it in only
 // because the walk excludes `.test.` paths.
+//
+// 2026-09-26 (WI-10003256, su-6abe2c81): red at 437 vs 436 on frozen candidate cc83bd6e —
+// the zero headroom above was eaten by tool files added since 09-22 with the legacy shape
+// (orders/{capture,clear,reopen,summarize}.ts, consult/routing-health.ts,
+// rubrics/amend-status.ts). MIGRATED TWO to `{ data }`: system-health/unack.ts and
+// saved_prompts/list.ts (single occurrence, no isError, tool name absent from every
+// *.test.ts). Real count 437 → 435; ceiling STAYS 436, leaving one slot.
 const BASELINE = 436;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {
