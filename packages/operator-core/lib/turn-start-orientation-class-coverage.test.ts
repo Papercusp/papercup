@@ -183,6 +183,13 @@ const DELIBERATELY_UNRENDERED: Record<string, string> = {
     'signal-decay case. The field and its provider REMAIN on OrientationState so the full ' +
     'coord:orient payload still serves it on demand; only the unconditional per-turn line is ' +
     'gone. This entry is what makes that a recorded DECISION rather than a coverage gap.',
+  obligationsWithheldBy:
+    'R-4 / D-032 (WI-10003799): a MODIFIER of `obligations`, not a class of its own (folded into it via ' +
+    'FIELDS_RENDERED_BY_CLASS). It is set only when a goal experiment arm withholds the per-turn agenda, ' +
+    'and then `obligations` is null, so the per-turn block renders nothing for either field. Its one ' +
+    'consumer is the su.mode-goal receipt, which reads it to stamp the omission reason experiment-arm ' +
+    'instead of ineligible. Rendering a per-turn line for it would defeat the arm, whose whole point is ' +
+    'that the agent does NOT see the agenda.',
 };
 
 interface ClassProbe {
@@ -482,6 +489,9 @@ const UNRENDERED_PROBES: Record<string, Partial<OrientationState>> = {
       top: { id: 'EI-23817792409764138', title: 'live SMTP rejection contradicts cached OK', lane: 'human' },
     },
   },
+  // The only value the field can take. Populated alone over the quiet baseline, so any
+  // line it adds is attributable to it and trips the silence requirement.
+  obligationsWithheldBy: { obligationsWithheldBy: 'experiment-arm' },
 };
 
 /**
@@ -1190,7 +1200,12 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
       neverDropFacts: agentOrdersProbe('neverDropFacts'),
       obligations: agentOrdersObligationsProbe,
     },
-    silent: {},
+    silent: {
+      obligationsWithheldBy:
+        'Folded into `obligations`, so it is claimed here, but it never adds a row: an arm-withheld agenda ' +
+        'is `obligations: null`, which is what an empty agenda looks like on this rail too. The popup must ' +
+        'show exactly the rows turn-start rendered, and turn-start renders none (DELIBERATELY_UNRENDERED).',
+    },
     omitted: {
       toolSurface: AGENT_ORDERS_NOT_AN_OBLIGATION(
         'An MCP-registration alarm about the reader\'s OWN session.',
@@ -1458,6 +1473,13 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
         reason:
           'Withdrawn from the per-turn block entirely (P-017 / D-003, signal decay). Registering it on a ' +
           'SECOND sink would re-introduce exactly the always-present row that decision removed.',
+      },
+      obligationsWithheldBy: {
+        kind: 'not-applicable',
+        reason:
+          'A modifier of `obligations` (FIELDS_RENDERED_BY_CLASS), which this sink does not claim. It only ' +
+          'distinguishes an experiment-arm-withheld agenda from an empty one on the su.mode-goal receipt; a ' +
+          'leader has nothing to act on in that distinction.',
       },
       executableFrontier: {
         kind: 'not-applicable',
@@ -1737,6 +1759,12 @@ const SINK_COVERAGE: Record<string, SinkCoverage> = {
           'would re-introduce for the coldest reader a line the system already decided was not worth its budget ' +
           'for the warmest one.',
       },
+      obligationsWithheldBy: {
+        kind: 'not-applicable',
+        reason:
+          'A modifier of `obligations` (FIELDS_RENDERED_BY_CLASS), which this document does not claim. It is ' +
+          'recomputed from the goal binding on every turn, so a successor reads it fresh rather than inheriting it.',
+      },
 
       // ── TEMPORALLY UNREACHABLE at this sink ───────────────────────────────
       carryBlindWindow: {
@@ -1777,6 +1805,10 @@ const FIELDS_RENDERED_BY_CLASS: Record<string, string> = {
   // The `held` class's order-150 segment renders "held work-items: unavailable" from it, and
   // the `held` watermark token encodes it ('!unavailable'), so it travels with `held`.
   heldReadFailed: 'held',
+  // R-4 / D-032: set only beside `obligations: null` when a goal experiment arm withholds the
+  // agenda; the su.mode-goal receipt reads it to stamp the omission reason. It travels with
+  // `obligations` and is recorded silent (DELIBERATELY_UNRENDERED) on every sink that claims it.
+  obligationsWithheldBy: 'obligations',
 };
 
 /**

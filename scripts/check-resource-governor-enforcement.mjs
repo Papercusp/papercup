@@ -484,6 +484,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed upstream disposition for apps/operator/lib/release/deploy-deps.ts: this release/checkpoint operation is launched under the surrounding durable scheduler/operation, which owns admission, cancellation, and release; adding a second local receipt would double-count the same work.",
   },
   {
+    path: "apps/operator/lib/release/desktop-perf-gate.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for apps/operator/lib/release/desktop-perf-gate.ts: its only start is `readNewestCommitAtMs`, one awaited `git log -n 64 --format=%ct <ref>` metadata read (15s timeout) that the post-suite desktop-perf gate issues once per green-checkpoint verdict to age the measured build against main (WI-10003815). It returns a single number, retains nothing, starts no resident queue, and sits behind an injectable IO seam that tests fake. The gate that calls it is fail-soft, so a failed read degrades the verdict to unknown rather than blocking; release/control metadata must stay runnable while productive capacity is pressured.",
+  },
+  {
     path: "apps/operator/lib/release/git-ops.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1238,6 +1245,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     disposition: "bypass",
     reason:
       "P-016 reviewed bypass disposition for scripts/lib/cargo-result.mjs: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
+  },
+  {
+    path: "scripts/lib/declaration-export-parity.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/lib/declaration-export-parity.ts: its only start is `ignoredUntrackedPaths`, one synchronous `git ls-files --others --ignored --exclude-standard --directory -z` metadata read per guard invocation (30s timeout, 64 MiB buffer, stdin ignored). It is awaited to completion, retains nothing between calls, starts no resident queue, and fails OPEN to an empty set so a git failure makes the parity guard walk more declarations, never fewer (EI-24553552437295746). A CI/guard metadata read must stay runnable while productive capacity is pressured.",
   },
   {
     path: "scripts/lib/doc-projection.ts",
