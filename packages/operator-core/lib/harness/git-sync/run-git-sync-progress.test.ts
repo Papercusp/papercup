@@ -7,13 +7,15 @@ import { tmpdir } from 'node:os';
 const fixture = vi.hoisted(() => ({ script: '', output: '', onOutput: () => {}, child: null as ChildProcess | null }));
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
+  const { createTextCollector } = await import('../../child-output');
   return {
     ...actual,
     // Exercise the real local runner and OS pipes without contacting a remote.
     spawn: (_command: string, _args: string[], options: SpawnOptions) => {
       const child = actual.spawn(process.execPath, ['-e', fixture.script], options);
       fixture.child = child;
-      child.stderr?.on('data', (chunk) => { fixture.output += String(chunk); fixture.onOutput(); });
+      const output = createTextCollector(child.stderr);
+      child.stderr?.on('data', () => { fixture.output = output.peek(); fixture.onOutput(); });
       return child;
     },
   };
