@@ -32,6 +32,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createTextCollector } from './child-output';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
@@ -818,18 +819,18 @@ describe('P-020 completion event intent', () => {
       env: { ...process.env, P020_DATABASE_URL: db.url, P020_ITEM_ID: item.id },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let stderr = '';
-    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    const stderr = createTextCollector(child.stderr);
+    const stdout = createTextCollector(child.stdout);
     const exited = once(child, 'exit');
     try {
       await new Promise<void>((done, fail) => {
-        const timeout = setTimeout(() => fail(new Error('producer did not commit: ' + stderr)), 15_000);
-        child.stdout.on('data', (chunk) => {
-          if (String(chunk).includes('COMMITTED')) { clearTimeout(timeout); done(); }
+        const timeout = setTimeout(() => fail(new Error('producer did not commit: ' + stderr.peek())), 15_000);
+        child.stdout.on('data', () => {
+          if (stdout.peek().includes('COMMITTED')) { clearTimeout(timeout); done(); }
         });
         child.once('exit', (code) => {
           clearTimeout(timeout);
-          fail(new Error(`producer exited before marker (${code}): ${stderr}`));
+          fail(new Error(`producer exited before marker (${code}): ${stderr.peek()}`));
         });
       });
     } finally {
