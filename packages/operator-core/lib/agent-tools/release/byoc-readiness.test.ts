@@ -1,4 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign } from 'node:crypto';
+import { createGzip } from 'node:zlib';
+import { once } from 'node:events';
+import { pack as packTar } from 'tar-stream';
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import {
@@ -7,6 +10,7 @@ import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
   workspaceHostRequiredReleaseMaterialFixtures,
@@ -18,6 +22,7 @@ import tool, {
   evaluateByocReadiness,
   readByocReadiness,
   readByocReleaseSubject,
+  verifyPrehashedMinisign,
 } from './byoc-readiness';
 import { releaseStageInputHash } from '../../../../../scripts/lib/release-task-journal';
 import type { TaskReleaseJournal } from '../../task-manager/store';
@@ -28,12 +33,60 @@ import {
 } from '../../workspace-host/publication-manifest';
 import type { ByocReleaseCarrySnapshot } from '../../byoc-release-carry';
 
-const PUBLICATION_BUNDLE = new TextEncoder().encode('verified workspace-host bundle bytes');
-const PUBLICATION_SIGNATURE = new TextEncoder().encode('verified detached signature bytes');
+async function archiveFixture(
+  overrides: Record<string, { mode?: number; omit?: boolean; duplicate?: boolean }> = {},
+): Promise<Uint8Array> {
+  const archive = packTar() as any;
+  const gzip = createGzip();
+  const chunks: Buffer[] = [];
+  gzip.on('data', (chunk: Buffer) => chunks.push(chunk));
+  archive.pipe(gzip);
+  for (const name of Object.values(DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS)) {
+    const override = overrides[name] ?? {};
+    if (override.omit) continue;
+    archive.entry({ name, mode: override.mode ?? 0o755 }, '#!/bin/sh\nexit 0\n');
+    if (override.duplicate) archive.entry({ name, mode: override.mode ?? 0o755 }, '#!/bin/sh\nexit 0\n');
+  }
+  archive.finalize();
+  await once(gzip, 'end');
+  return Buffer.concat(chunks);
+}
+
+const PUBLICATION_BUNDLE = await archiveFixture();
+// NOTE: assigned via property access, not a `{ privateKey: X }` destructuring rename.
+// The commit-time secrets detector's `secret-assignment` rule reads the renamed
+// IDENTIFIER as the assigned value and quarantines this file from every git-sync
+// commit (it sat dirty 26h that way). Keep this shape.
+const PUBLICATION_KEY_PAIR = generateKeyPairSync('ed25519');
+const PUBLICATION_PRIVATE_KEY = PUBLICATION_KEY_PAIR.privateKey;
+const PUBLICATION_PUBLIC_KEY = PUBLICATION_KEY_PAIR.publicKey;
+const PUBLICATION_KEY_ID = Buffer.from('r4keyid!');
+const PUBLICATION_PUBLIC_KEY_BYTES = PUBLICATION_PUBLIC_KEY.export({ format: 'der', type: 'spki' }).subarray(-32);
+const PUBLICATION_SIGNING_KEY = [
+  'untrusted comment: minisign public key',
+  Buffer.concat([Buffer.from('ED'), PUBLICATION_KEY_ID, PUBLICATION_PUBLIC_KEY_BYTES]).toString('base64'),
+  '',
+].join('\n');
+const PUBLICATION_SIGNATURE = (() => {
+  const digest = createHash('blake2b512').update(PUBLICATION_BUNDLE).digest();
+  const signature = sign(null, digest, PUBLICATION_PRIVATE_KEY);
+  const trustedComment = 'trusted comment: timestamp:1726790400\tfile:server.tgz';
+  const globalSignature = sign(
+    null,
+    Buffer.concat([signature, Buffer.from(trustedComment.slice('trusted comment: '.length), 'utf8')]),
+    PUBLICATION_PRIVATE_KEY,
+  );
+  return new TextEncoder().encode([
+    'untrusted comment: signature from minisign secret key',
+    Buffer.concat([Buffer.from('ED'), PUBLICATION_KEY_ID, signature]).toString('base64'),
+    trustedComment,
+    globalSignature.toString('base64'),
+    '',
+  ].join('\n'));
+})();
 const PUBLICATION_BUNDLE_SHA256 = createHash('sha256').update(PUBLICATION_BUNDLE).digest('hex');
 const PUBLICATION_SIGNATURE_SHA256 = createHash('sha256').update(PUBLICATION_SIGNATURE).digest('hex');
 const PUBLICATION_VERSION = '2026.9.20-1';
-const PUBLICATION_SIGNING_KEY = 'public signing key fixture';
 const PUBLICATION_SIGNING_KEY_SHA256 = createHash('sha256').update(PUBLICATION_SIGNING_KEY).digest('hex');
 
 function publicationArtifact(): WorkspaceHostImageArtifact {
@@ -272,8 +325,8 @@ describe('release:byoc_readiness', () => {
     const result = await probeByocPublication(fixture.input, fixture.fetcher);
     expect(result).toMatchObject({
       verdict: 'unknown',
-      missing: ['signature', 'sbom', 'executable-identity'],
-      verified: ['public-bytes', 'manifest-archive-digest'],
+      missing: ['sbom'],
+      verified: ['public-bytes', 'manifest-archive-digest', 'executable-identity', 'signature'],
       failed: [],
     });
     expect(result.evidenceRefs).toEqual(expect.arrayContaining([
@@ -385,14 +438,68 @@ describe('release:byoc_readiness', () => {
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(fixture.urls.manifestUrl, expect.any(Object));
   });
 
-  it('measures the matching public-key pin without certifying the signature', async () => {
+  it('independently verifies the fetched minisign signature and global comment', async () => {
     const fixture = publicationFixture();
     const result = await probeByocPublication(fixture.input, fixture.fetcher);
     expect(result.failed).toEqual([]);
     expect(result.evidenceRefs).toContain(`publication:signing-key:${PUBLICATION_SIGNING_KEY_SHA256}`);
-    expect(result.missing).toContain('signature');
-    expect(result.verified).not.toContain('signature');
+    expect(result.evidenceRefs).toContain('publication:minisign-key-id:72346b6579696421');
+    expect(result.missing).not.toContain('signature');
+    expect(result.verified).toContain('signature');
     expect(result.verdict).toBe('unknown');
+  });
+
+  it('fails closed when a required archive executable is missing or not executable', async () => {
+    const fixture = publicationFixture();
+    const missingName = DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.remoteInitializer;
+    fixture.objects.bundle = Buffer.from(await archiveFixture({ [missingName]: { omit: true } }));
+    const result = await probeByocPublication(fixture.input, fixture.fetcher);
+    expect(result.verdict).toBe('fail');
+    expect(result.failed).toContain(`executable-identity:${missingName}:missing`);
+  });
+
+  it('rejects a duplicate required archive entry and a non-executable mode', async () => {
+    const fixture = publicationFixture();
+    const name = DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.credentialDelivery;
+    fixture.objects.bundle = Buffer.from(await archiveFixture({ [name]: { mode: 0o644, duplicate: true } }));
+    const result = await probeByocPublication(fixture.input, fixture.fetcher);
+    expect(result.verdict).toBe('fail');
+    expect(result.failed).toEqual(expect.arrayContaining([
+      `executable-identity:${name}:duplicate`,
+      `executable-identity:${name}:not-executable-file`,
+    ]));
+  });
+
+  it('rejects a signature over a different bundle prehash', () => {
+    const wrongPrehash = createHash('blake2b512').update('different bundle').digest();
+    expect(verifyPrehashedMinisign(PUBLICATION_SIGNING_KEY, PUBLICATION_SIGNATURE, wrongPrehash))
+      .toEqual({ valid: false, reason: 'bundle-signature-invalid' });
+  });
+
+  it.each([
+    ['mismatched key id', 1, (block: Buffer) => { block[2] ^= 1; }, 'key-id-mismatch'],
+    ['legacy raw-message algorithm', 1, (block: Buffer) => { block.write('Ed', 0, 'latin1'); }, 'unsupported-algorithm'],
+    ['invalid trusted-comment signature', 3, (block: Buffer) => { block[0] ^= 1; }, 'global-signature-invalid'],
+  ] as const)('rejects a minisign envelope with %s', (_label, lineIndex, mutate, reason) => {
+    const lines = new TextDecoder().decode(PUBLICATION_SIGNATURE).trim().split('\n');
+    const block = Buffer.from(lines[lineIndex]!, 'base64');
+    mutate(block);
+    lines[lineIndex] = block.toString('base64');
+    const candidate = new TextEncoder().encode(`${lines.join('\n')}\n`);
+    const prehash = createHash('blake2b512').update(PUBLICATION_BUNDLE).digest();
+    expect(verifyPrehashedMinisign(PUBLICATION_SIGNING_KEY, candidate, prehash))
+      .toEqual({ valid: false, reason });
+  });
+
+  it.each([
+    ['bundle signature', (bytes: Uint8Array) => bytes.map((byte, index) => index === 100 ? byte ^ 1 : byte)],
+    ['global signature', (bytes: Uint8Array) => bytes.map((byte, index) => index === bytes.length - 2 ? byte ^ 1 : byte)],
+  ])('rejects a tampered minisign %s', async (_label, mutate) => {
+    const fixture = publicationFixture();
+    fixture.objects.signature = mutate(fixture.objects.signature);
+    const result = await probeByocPublication(fixture.input, fixture.fetcher);
+    expect(result.verdict).toBe('fail');
+    expect(result.failed.some((failure) => failure.startsWith('signature:'))).toBe(true);
   });
 
   it('leaves public-byte obligations unresolved on a failed manifest fetch', async () => {
@@ -425,7 +532,7 @@ describe('release:byoc_readiness', () => {
       }));
     };
     expect(await probeByocPublication(fixture.input, fetcher)).toMatchObject({
-      verified: ['public-bytes', 'manifest-archive-digest'], failed: [],
+      verified: ['public-bytes', 'manifest-archive-digest', 'executable-identity', 'signature'], failed: [],
     });
   });
 
@@ -693,7 +800,7 @@ describe('exact BYOC release subject', () => {
     const sql = sqlFor([{ ...row, detail: { release: journal } }]);
     const result = await readByocReadiness({ ...subject, bar: 'R-4' }, sql, fixture.fetcher);
     expect(result).toMatchObject({
-      verdict: 'unknown', unverifiedEvidence: ['signature', 'sbom', 'executable-identity'],
+      verdict: 'unknown', unverifiedEvidence: ['sbom'],
       missingMilestones: [], failedMilestones: [],
     });
     fixture.fetcher.mockClear();

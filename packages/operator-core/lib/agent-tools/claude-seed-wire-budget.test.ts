@@ -234,7 +234,39 @@ describe('Claude seed wire budget (EI-23319364088969722)', () => {
       'the compact tier resolved to ZERO names — the three-way admission collapsed back to ' +
         'full/deferred, and the budget below is being met by a seed that is not the one resolved.',
     ).toBeGreaterThan(0);
-    expect(compact.size).toBeLessThan(names.length);
+    // ⚠ NOT `compact.size < names.length` (WI-10002322, 2026-09-22). That encoded a PRE-D-002
+    // premise — that some advertised tool always stays FULL — which the ratified delivery policy
+    // falsified: deterministic-tool-definition-delivery-2026-09-21 D-004 holds a floor at the
+    // CHEAPER tier rather than dropping it, and D-010 measures that floor at 93,769 B of D-009's
+    // 100,000 B budget ("restoring the same 20 names at FULL would have cost 163,601 B and been
+    // genuinely unaffordable"). So a `counts.full: 0` map is the policy's CORRECT output, and the
+    // old assertion reds the gate on a fully compliant seed.
+    //
+    // The INTENT survives, because it is the only detector for it: catch the compact tier
+    // OVER-MATCHING and silently stripping prose the policy ranked as worth keeping. Cross-check
+    // the resolver against the generated artifact's own tier map instead of assuming an
+    // affordable FULL tier — derived truth, so this cannot drift from the generator that decides
+    // it, and it still fails loudly in BOTH directions.
+    const artifactTiers = (CLAUDE_TOOL_DELIVERY as { tiers: Record<string, string> }).tiers;
+    const overCompacted = names.filter((n) => compact.has(n) && artifactTiers[n] !== 'compact');
+    expect(
+      overCompacted,
+      overCompacted.length
+        ? `resolver compacted name(s) the artifact does NOT mark compact: ${overCompacted.join(', ')}. ` +
+          `The compact tier is over-matching and is stripping prose the delivery policy ranked FULL.`
+        : undefined,
+    ).toEqual([]);
+    const underCompacted = names.filter((n) => !compact.has(n) && artifactTiers[n] === 'compact');
+    expect(
+      underCompacted,
+      underCompacted.length
+        ? `artifact marks these compact but the resolver did not: ${underCompacted.join(', ')}`
+        : undefined,
+    ).toEqual([]);
+    expect(
+      names.length - compact.size,
+      'FULL-tier count among advertised names disagrees with the generated artifact',
+    ).toBe(names.filter((n) => artifactTiers[n] === 'full').length);
 
     expect(
       total,

@@ -104,15 +104,36 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
   const preambleText = read(join(harnessDir, 'blueprints/base/prompts/agent-base-preamble.md'));
   const preambleLines = lineSet(preambleText);
   const preambleBytes = bytes(preambleText);
+  /**
+   * The tiles the FROZEN fixture actually carries.
+   *
+   * `su.base.md` is PINNED (this dir's README forbids hand-editing it, and
+   * `su-render-baseline.test.ts` refuses a fixture whose hash no longer matches
+   * `baseline.json`), while `SU_TILES` tracks the LIVE su.md and legitimately gains anchors —
+   * it gained `## Owner directives — durable capture and resolution` on 2026-09-21T17:17Z,
+   * which red this file: a FROZEN subject was being validated with a LIVE invariant, so every
+   * future su.md section would red it again. Scoping the tiling to the fixture keeps the pin —
+   * and the P-018 comparability every Part B move is scored against (R12/R17) — intact,
+   * instead of re-pinning a baseline that is still being measured against.
+   *
+   * This loses NO coverage. The live-su.md tiling invariant (every tile anchor present, every
+   * heading classified, tiles in order) is asserted against the REAL harness file by
+   * `orchestrator/src/blueprint/su-identities.test.ts`, which passes no override — that is
+   * where a genuinely un-tiled new section must fail, and it still does.
+   *
+   * Membership is exact-equality on whole lines, matching the tiler's own `l === t.anchor`.
+   */
+  const fixtureLines = new Set(baseText.split('\n'));
+  const fixtureTiles = SU_TILES.filter((t) => fixtureLines.has(t.anchor));
 
   it('the test-only engineer + collaboration-stance + member + leader union accounts for every source byte, but a live binding rejects its exclusive-slot conflict', () => {
     // D-031 reconciles the original byte-equivalence wording with D-021's intentional
     // seal/order change: this is a COVERAGE/ACCOUNTING fixture, never a legal live stack.
     // Every part is derived from the SAME pinned input — never mix this historical fixture
     // with today's chain-resolved identity files (their live drift has its own golden).
-    const located = locateSuTiles(baseText);
+    const located = locateSuTiles(baseText, fixtureTiles);
     const coverageParts = [
-      ...SU_PART_DOCUMENTS.map((doc) => ({ id: doc.id, text: extractSuPart(baseText, doc.id) })),
+      ...SU_PART_DOCUMENTS.map((doc) => ({ id: doc.id, text: extractSuPart(baseText, doc.id, fixtureTiles) })),
       {
         id: 'client-seam',
         text: located
@@ -167,13 +188,54 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
       `[su-posture-render] P-020 measurement against the P-018 fixture baseline (tier full, Claude overlay, stub guide)`,
       `baseline (fixture su.md as-is, both postures inline, pre-seal): ${bytes(baseline).toLocaleString('en-US')} B; kernel base text agent-base-preamble.md rendered by the seal: ${preambleBytes.toLocaleString('en-US')} B`,
     ];
+    // Render every variant BEFORE asserting: assertion (1) below is a claim about what the
+    // additions have in COMMON across postures, so it cannot be decided one variant at a time.
+    const composedByVariant = {} as Record<Variant, ReturnType<typeof composeSuStackSource>>;
     const rendered = {} as Record<Variant, string>;
+    const renderedLines = {} as Record<Variant, Set<string>>;
     for (const variant of VARIANTS) {
       const posture = variant === 'default' ? null : variant;
-      const composed = composeSuStackSource({ suText: baseText, harnessDir, posture });
-      const text = await splice(composed.text);
-      rendered[variant] = text;
-      dump(`rendered.${variant}.md`, text);
+      const composed = composeSuStackSource({ suText: baseText, harnessDir, posture, tiles: fixtureTiles });
+      composedByVariant[variant] = composed;
+      rendered[variant] = await splice(composed.text);
+      renderedLines[variant] = lineSet(rendered[variant]);
+      dump(`rendered.${variant}.md`, rendered[variant]);
+    }
+
+    /**
+     * Additions that are POSTURE-INDEPENDENT: present in EVERY variant render and absent from
+     * the frozen baseline.
+     *
+     * This assertion used to admit exactly two additions BY NAME — the seal and the kernel base
+     * text `agent-base-preamble.md` — because those were the only live documents the pre-seal
+     * fixture predated. That is a hand-maintained list against a GROWING subject: the stack's
+     * live non-posture documents legitimately gain sections, and each one reds this file. One
+     * did, on 2026-09-21T17:17Z, when `su-collaborator/prompts/collaboration-stance.md` gained
+     * `## Owner directives — durable capture and resolution`. Measured via `suStackDocuments`:
+     * that document renders byte-identically in all three variants (18,414 B for default, member
+     * and leader alike), so it is not posture craft at all. Same defect class as the
+     * `fixtureTiles` note above — a FROZEN subject validated with a LIVE invariant.
+     *
+     * So derive the admission from the property the original comment already relied on —
+     * "neither is posture text, and both are identical across the two posture renders" — rather
+     * than re-listing documents as they appear. A line common to default AND member AND leader
+     * cannot be posture craft, which is the only leak this assertion exists to catch.
+     *
+     * This loses no leak coverage. A leaked posture line appears in exactly ONE variant, so it is
+     * never posture-independent and still fails below; the fixture inlines BOTH postures, so a
+     * posture document's own lines are expected in the baseline anyway. The bound posture is
+     * independently pinned anchor-by-anchor in (2) and by bytes in (3).
+     */
+    const postureIndependentAdditions = new Set(
+      [...renderedLines.default].filter(
+        (l) => !baselineLines.has(l) && POSTURES.every((p) => renderedLines[p].has(l)),
+      ),
+    );
+
+    for (const variant of VARIANTS) {
+      const posture = variant === 'default' ? null : variant;
+      const composed = composedByVariant[variant];
+      const text = rendered[variant];
       const postureDoc = composed.order.find((entry) => entry.slot === 'fleet-posture') ?? null;
       expect(postureDoc?.id ?? null).toBe(
         posture === null ? null : posture === 'member' ? 'su.fleet-member' : 'su.fleet-leader',
@@ -182,17 +244,26 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
         ? bytes(read(join(harnessDir, 'blueprints', postureDoc.id, 'prompts', 'fleet-posture.md')))
         : 0;
 
-      // (1) STRICT SUBSET at the line level — the only admitted additions are the KERNEL's: the
-      // seal statement (P-003) and the kernel base text `agent-base-preamble.md` (D-018 / P-032:
-      // rendered on every tier since the seal; the pre-seal fixture never carried it). Neither is
-      // posture text, and both are identical across the two posture renders.
-      const kernelAdditions = new Set([...lineSet(composed.seal), ...preambleLines]);
-      const extra = [...lineSet(text)].filter((l) => !baselineLines.has(l) && !kernelAdditions.has(l));
+      // (1) STRICT SUBSET at the line level. Admitted additions are exactly three, and each is
+      // provably not posture craft: this variant's OWN seal statement (P-003 — posture-DEPENDENT,
+      // because the seal names the bound posture document, which is why it stays per-variant),
+      // the kernel base text `agent-base-preamble.md` (D-018 / P-032, rendered on every tier since
+      // the seal; the pre-seal fixture never carried it), and the posture-independent additions
+      // derived above. Anything left over is either posture craft leaking across a variant
+      // boundary or render output no document accounts for — both genuine findings.
+      const admittedAdditions = new Set([
+        ...lineSet(composed.seal),
+        ...preambleLines,
+        ...postureIndependentAdditions,
+      ]);
+      const extra = [...renderedLines[variant]].filter(
+        (l) => !baselineLines.has(l) && !admittedAdditions.has(l),
+      );
       expect(
         extra.slice(0, 12),
         `${variant}: ${extra.length} line(s) in the variant render that the baseline never had (first 12 shown)`,
       ).toEqual([]);
-      const missing = [...baselineLines].filter((l) => !lineSet(text).has(l));
+      const missing = [...baselineLines].filter((l) => !renderedLines[variant].has(l));
       expect(missing.length, `${variant}: a STRICT subset drops at least one posture's lines`).toBeGreaterThan(0);
 
       // (2) Only the bound posture renders; the interactive default carries neither.
@@ -227,8 +298,8 @@ describe('P-013 / P-020 — identity variants against the P-018 baseline (pinned
   it('renders every variant deterministically (two composes + splices are byte-identical)', async () => {
     for (const variant of VARIANTS) {
       const posture = variant === 'default' ? null : variant;
-      const a = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture }).text);
-      const b = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture }).text);
+      const a = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture, tiles: fixtureTiles }).text);
+      const b = await splice(composeSuStackSource({ suText: baseText, harnessDir, posture, tiles: fixtureTiles }).text);
       expect(a).toBe(b);
     }
   });

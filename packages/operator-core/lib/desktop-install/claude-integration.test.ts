@@ -47,6 +47,13 @@ describe('buildClaudeMcpEntry', () => {
         // su-context-size-variants: the ?tools= trim lever — empty default (full catalog) until
         // psu exports PAPERCUSP_TOOLS = CORE spine for a --context-size=trimmed claude.
         '&tools=${PAPERCUSP_TOOLS:-}' +
+        // deterministic-tool-definition-delivery-2026-09-21: the SECOND axis of the same
+        // decision. ?tools= says WHICH tools are advertised; tools_compact says HOW MUCH of
+        // each one ships (prose stripped, shape kept). psu exports PAPERCUSP_TOOLS_COMPACT
+        // from the GENERATED delivery artifact, so neither list is hand-maintained.
+        // Unset/empty ⇒ nothing is compacted. Env-expanded like the rest — asserted here
+        // because the builder emits it unconditionally, between ?tools= and ?ctx_tier=.
+        '&tools_compact=${PAPERCUSP_TOOLS_COMPACT:-}' +
         // context-trimming-tiers D-004: the payload-tier lever, same env-expanded pattern.
         '&ctx_tier=${PAPERCUSP_CONTEXT_TIER:-}',
     );

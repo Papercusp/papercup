@@ -344,6 +344,8 @@ import { CORE_MCP_TOOL_NAMES } from "@papercusp/orchestrator";
 import {
   CLAUDE_TOOL_DELIVERY as CLAUDE_TOOL_DELIVERY_ARTIFACT,
   OMP_TOOL_DELIVERY as OMP_TOOL_DELIVERY_ARTIFACT,
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore -- generated .mjs data module, no type declarations.
 } from "../scripts/tool-delivery.generated.mjs";
 
 describe("interactive role picker", () => {

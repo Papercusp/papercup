@@ -53,8 +53,11 @@ export default defineTool({
     const registry = await getSubstitutionRows(activeWorkspaceId());
     const report = await readSubstitutionReport(runQuery, registry, { sinceDays: args.sinceDays });
     const grade = gradeSubstitution(report);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ ok: true, ...report, grade }) }],
-    };
+    // { data } over hand-rolled inline JSON: the framework owns wire encoding (incl.
+    // auto-TOON on the MCP transport). tool-data-shape-ratchet.test.ts counts the
+    // legacy self-serialized content shape and is shrink-only. Do NOT spell that
+    // shape's literal token in this file — the ratchet scans source, so a comment
+    // quoting it self-matches and the migration reads as a no-op.
+    return { data: { ok: true, ...report, grade } };
   },
 });

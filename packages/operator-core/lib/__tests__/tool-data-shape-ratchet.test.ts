@@ -304,6 +304,28 @@ for (const file of TOOL_FILES) {
 // assertion-by-assertion. Ceiling STAYS 436, restoring the established two slots of churn
 // headroom. The three isError offenders remain for the next migrator: `{ data }` has no isError
 // slot, so migrating them would silently drop their error signaling and needs its own design.
+// 2026-09-22 (WI-10002321, su-c0385): red at 438 vs 436 — the two slots of churn headroom the
+// 09-18 entry restored had been eaten. MIGRATED TWO to `{ data }`: agent-tools/backup/promote.ts
+// and agent-tools/activity/bash_substitution_report.ts (both the mechanical single-occurrence,
+// no-isError shape, and both with no test asserting the legacy payload). Real count 438 → 436,
+// verified by re-running the discovery walk after the batch (dropped by exactly two — the
+// trap-(1) proof that neither had its stringify outside the return). Ceiling STAYS 436.
+//
+// ⚠ HEADROOM IS ZERO, deliberately and only because this landed under a red gate: 436 == BASELINE,
+// so the NEXT tool file added with the legacy shape reds this gate for the whole fleet. Restoring
+// the customary two slots is filed as its own work-item rather than rushed here — every remaining
+// small candidate I checked (flags/list.ts, trust/list.ts) HAS a consumer test, so migrating one
+// also means repointing that test to the `{ data }` shape, which is real work and not a drive-by.
+// NOTE for the next migrator: "no `.test.ts` sibling" is NOT a safe proxy for "no consumer" —
+// both of those are covered from a `__tests__/` subdir or a differently-named sibling. Grep the
+// TOOL NAME across *.test.ts instead of looking for a sibling path.
+//
+// ⚠ AND DO NOT SPELL THE DETECTED TOKEN IN A SCANNED FILE. Migrating a tool and then explaining
+// the migration in a comment that quotes the legacy `text: JSON.stringify(` literal reintroduces
+// the match in the very file you just fixed: the walk counts SOURCE, so the count does not move
+// and the migration reads as a no-op. Hit on the first attempt here — 438 stayed 438 across two
+// correct migrations until the comments were reworded. This file is safe to quote it in only
+// because the walk excludes `.test.` paths.
 const BASELINE = 436;
 
 describe('tool {data}-shape ratchet (token-opt P-003)', () => {

@@ -87,7 +87,8 @@ dependency_generation_input_manifest() {
       find . \
         \( -type d \( -name .papercusp -o -name .git -o -name node_modules \
           -o -name 'node_modules.deploy-tmp.*' -o -name 'node_modules.deploy-old.*' \) -prune \) -o \
-        \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \) -print \) \
+        \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \
+          -o \( -name '*.patch' -a -path '*/patches/*' \) \) -print \) \
         | LC_ALL=C sort
     )
   )
@@ -103,8 +104,13 @@ dependency_generation_input_fingerprint() {
 }
 
 # Derive the same cheap dependency-input key from an immutable Git commit without
-# materialising a checkout. Only lockfiles participate in the key, so walk those
-# blobs directly and recurse through the commit's recorded submodule gitlinks.
+# materialising a checkout. Only lockfiles and patch-package patch files
+# participate in the key, so walk those blobs directly and recurse through the
+# commit's recorded submodule gitlinks. Patches are load-bearing inputs because
+# the root package.json postinstall runs `patch-package`, so a patch change
+# alters the produced node_modules closure exactly as a lockfile change does;
+# omitting them let the gate reuse a stale generation indefinitely (WI-10002299).
+# This set MUST stay identical to dependency_generation_input_manifest() above.
 # This is the producer-side seam used before the checkpoint run-lock: a moving
 # integration worktree can publish only when its live lockfiles are compatible
 # with the exact candidate fingerprint.
@@ -118,6 +124,7 @@ dependency_generation_input_manifest_ref() {
     [ "$type" = 'blob' ] || continue
     case "$rel" in
       package-lock.json|*/package-lock.json|npm-shrinkwrap.json|*/npm-shrinkwrap.json) ;;
+      patches/*.patch|*/patches/*.patch) ;;
       *) continue ;;
     esac
     case "$rel" in

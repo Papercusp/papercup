@@ -21,9 +21,13 @@ import { HOST_HANDOFF_ENV_KEYS } from '../scripts/psu-pty-host.mjs';
 // stands and a trio if it is ever lifted. Computing the expectation from the predicate here
 // keeps these assertions honest either way: it cross-checks two independent code paths (the env
 // builder against the predicate) rather than restating the env builder's own output.
+// PAPERCUSP_TOOLS_COMPACT (the delivery tier for the names in PAPERCUSP_TOOLS) is emitted
+// unconditionally for claude, independently of the deferral predicate, so it belongs in BOTH
+// arms. It was added to contextTrimmingEnv without being added here or to the pty-host
+// allowlist; the pin below caught the allowlist half, which is the half that would have hurt.
 const CLAUDE_TRIMMING_KEYS = nativeDeferralReachable()
-  ? ['ENABLE_TOOL_SEARCH', 'PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS']
-  : ['PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS'];
+  ? ['ENABLE_TOOL_SEARCH', 'PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS', 'PAPERCUSP_TOOLS_COMPACT']
+  : ['PAPERCUSP_CONTEXT_TIER', 'PAPERCUSP_TOOLS', 'PAPERCUSP_TOOLS_COMPACT'];
 
 describe('host-code handoff × context-trimming env (WI-2140943 lane 2)', () => {
   it('contextTrimmingEnv: claude gets the deferral-derived key set, every other agent only the payload tier', () => {

@@ -38,6 +38,11 @@ export default defineTool({
     await triggerSnapshotEvent(ws, 'pre_destructive', { op: 'promote_restore', restoredPath: args.restoredPath })
       .catch(() => { /* non-fatal */ });
     const result = await durablePromoteRestore(ws, args);
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    // { data } over hand-rolled inline JSON: the framework owns wire encoding (incl.
+    // auto-TOON on the MCP transport). tool-data-shape-ratchet.test.ts counts the
+    // legacy self-serialized content shape and is shrink-only. Do NOT spell that
+    // shape's literal token in this file — the ratchet scans source, so a comment
+    // quoting it self-matches and the migration reads as a no-op.
+    return { data: result };
   },
 });
