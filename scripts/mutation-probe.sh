@@ -160,9 +160,10 @@
 #                            this session owns it and extends its lease
 #       --accept-sweep-race  you consciously accept the race (an unswept
 #                            checkout, or a run short enough that you judged it)
-#   For EVERY repository, --sweep-lock-held also requires this session's exclusive
-#   git-sync:<harness> resource lock. A file-lock census cannot atomically exclude
-#   a mutation starting after git-sync reads that census. Evidence binders refuse paths carrying the
+#   The file lock is the whole fence, in every repository: git-sync re-reads the
+#   lock census AFTER staging and unstages late-locked or drifted paths before each
+#   commit (EI-24712906810240170), so no fleet-wide git-sync lease is needed
+#   (MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE=1 restores that old second fence). Evidence binders refuse paths carrying the
 #   active 'mutation probe' file-lock intent. A bare acknowledgement never opens
 #   the gate; the verified lock state is echoed into MUTATION_PROBE_RESULT.
 #
@@ -194,7 +195,8 @@
 #   2  misuse / the probe could not be run soundly (e.g. a no-op or
 #      whitespace-only mutation, a mutant that no longer PARSES, a guard run
 #      whose own output shows a known runner-MISUSE marker — e.g. "no test
-#      files found" — instead of an assertion failure, a BASELINE that exits 0
+#      files found" — or a recognized test runner exits 1 without assertion-
+#      failure evidence, a BASELINE that exits 0
 #      having selected ZERO tests (a --test name filter that matches nothing:
 #      it would otherwise make every mutant "survive"), a failing baseline, a
 #      copy-out RELOCATION that breaks the subject before any mutation is
@@ -223,9 +225,10 @@
 # PAPERCUSP_MUTATION_PHASE=mutant. PAPERCUSP_MUTATION_PROBE marks both child
 # runs so the shared test-runs reporter can keep deliberate probe outcomes out
 # of the health ledger. A baseline failure is a harness error, not a caught
-# mutant. During the mutant run, exit 1 is the guard-failed/caught convention;
-# every other nonzero exit is treated as a harness error because a shell/test
-# crash must never be reported as falsifiability evidence.
+# mutant. For a recognized test runner, exit 1 is caught only when its output
+# includes assertion-level failure evidence; a setup-hook failure can exit 1
+# while every assertion is skipped. Plain non-test guards (for example grep)
+# retain the exit-1 convention. Every other nonzero exit is a harness error.
 #
 # Bash reads a script incrementally. A peer edit while a long baseline guard is
 # running can shift the reader's offset and turn a later diagnostic string into
@@ -233,10 +236,12 @@
 # the caller's file may then change without changing this run's program.
 if [ "${MUTATION_PROBE_FROZEN_SOURCE:-}" != "$0" ]; then
   frozen_source="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-source.XXXXXX")" || exit 2
+  original_source="$(realpath -e "$0")" || exit 2
   trap 'rm -f -- "$frozen_source"' EXIT
   cp -- "$0" "$frozen_source" || exit 2
   bash -n "$frozen_source" || exit 2
   export MUTATION_PROBE_FROZEN_SOURCE="$frozen_source"
+  export MUTATION_PROBE_SOURCE_PATH="$original_source"
   exec bash "$frozen_source" "$@"
 fi
 trap 'rm -f -- "$MUTATION_PROBE_FROZEN_SOURCE"' EXIT
@@ -368,9 +373,15 @@ ptool_json() {
   # "could not ..." the caller prints, which hid a probe that could never run.
   local tool="$1" args="$2" projection="$3" result err_file rc
   local fallback_err_file fallback_result fallback_rc temp_dir
+  local workspace_scope="${PAPERCUSP_WORKSPACE_ID:-${PAPERCUSP_WORKSPACE:-}}"
+  local harness_scope="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}"
+  local -a ptool_scope=()
   command -v ptool >/dev/null 2>&1 || { log "ptool $tool: ptool is not on PATH"; return 1; }
+  [ -n "$workspace_scope" ] || { log "ptool $tool requires an explicit Papercusp workspace scope; set PAPERCUSP_WORKSPACE_ID or PAPERCUSP_WORKSPACE"; return 1; }
+  [ -n "$harness_scope" ] || { log "ptool $tool requires an explicit Papercusp harness scope; set PAPERCUSP_TEST_RUN_HARNESS or HARNESS_SLUG"; return 1; }
+  ptool_scope=(--workspace="$workspace_scope" --harness="$harness_scope")
   err_file="$(mktemp "${TMPDIR:-/tmp}/mutation-probe-ptool.XXXXXX")" || return 1
-  result="$(printf '%s' "$args" | ptool "$tool" --json - --projection "$projection" 2>"$err_file")"
+  result="$(printf '%s' "$args" | ptool "${ptool_scope[@]}" "$tool" --json - --projection "$projection" 2>"$err_file")"
   rc=$?
   if [ "$rc" -ne 0 ] &&
     mutation_probe_fallback_safe_tool "$tool" &&
@@ -380,7 +391,7 @@ ptool_json() {
     [ -n "$temp_dir" ] || temp_dir=/tmp
     fallback_err_file="$(mktemp "$temp_dir/mutation-probe-ptool-fallback.XXXXXX")" || fallback_err_file=""
     if [ -n "$fallback_err_file" ]; then
-      fallback_result="$(printf '%s' "$args" | ptool "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"
+      fallback_result="$(printf '%s' "$args" | ptool "${ptool_scope[@]}" "$tool" --url=http://127.0.0.1:3170 --json - --projection "$projection" 2>"$fallback_err_file")"
       fallback_rc=$?
       if [ "$fallback_rc" -eq 0 ] && [ -n "$fallback_result" ]; then
         log "ptool $tool timed out on local :3070/:9071; recovered once through staging :3170"
@@ -432,8 +443,18 @@ verify_sweep_fence() {
     || die "the file-lock heartbeat did not confirm ownership; refusing an unverified in-tree mutation."
   log "verified this session's live file lock for $lock_path"
 
-  # EI-24386061509279889: superproject probes need the same atomic sweep fence
-  # as submodules; a live file lock alone allowed a mutant into a real commit.
+  # EI-24712906810240170: the file lock IS the whole sweep fence, in every repository.
+  # EI-24386061509279889 once let a mutant through a live file lock: git-sync read its
+  # lock census before `git add`, so a lock taken (or a probe restored and released)
+  # between that read and the commit was invisible. That was mitigated by also
+  # requiring the fleet-wide exclusive git-sync:<harness> lease, which froze every
+  # agent's commits for the whole probe. git-sync now re-reads the census AFTER staging
+  # and unstages any late-locked or drifted path before each commit
+  # (guardStagedIndexBeforeCommit in run-git-sync.ts, superproject and submodules), so
+  # the lease is no longer required. The lock must be held BEFORE the mutation and
+  # released only AFTER the restore, which is exactly the order this script enforces.
+  # Opt back into the old double fence with MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE=1.
+  [ "${MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE:-0}" = "1" ] || return 0
   {
     harness_scope="${PAPERCUSP_TEST_RUN_HARNESS:-${HARNESS_SLUG:-${PAPERCUSP_HARNESS_SLUG:-}}}"
     [ -n "$harness_scope" ] || die "an in-tree probe requires a harness slug to verify the git-sync resource lock; use copy-out mode or set PAPERCUSP_TEST_RUN_HARNESS."
@@ -571,6 +592,22 @@ if [ "$IN_TREE" -eq 1 ] && [ "${PAPERCUSP_CAPABILITY_BASH_FOREGROUND:-}" = "1" ]
       capability:bash { run_in_background: true } and read progress with capability:bash_output instead."
 fi
 
+# An OUTER probe's --fake-destructive guard exports MUTATION_PROBE_DESTRUCTIVE_LOG
+# and puts log-only rm/unlink shims first on PATH for everything its --test runs,
+# this script included (WI-10004181). Under those shims our own finish() cannot
+# delete the admission manifest, and neither can the next probe's orphan recovery
+# (it deletes with rm too), so an in-tree run here leaves a manifest and scratch
+# dirs that nothing inside the guard can remove. Refuse before any admission state
+# or scratch dir exists. Scrubbing the shims instead is not a fix: under a
+# self-probe this script IS the mutant, and the shims are what keep its rm calls inert.
+if [ "$IN_TREE" -eq 1 ] && [ -n "${MUTATION_PROBE_DESTRUCTIVE_LOG:-}" ]; then
+  die "REFUSING --in-tree inside another probe's --fake-destructive guard (MUTATION_PROBE_DESTRUCTIVE_LOG is set).
+      That guard makes rm/unlink log-only for this process, so this probe could not remove its own admission
+      manifest or scratch state, and would leave a snapshot behind on the checkout.
+      Run in-tree probes outside any --fake-destructive guard. To probe this script itself, use the manual
+      copy-out recipe in apps/operator/lib/mutation-probe-sweep-gate.test.ts's header."
+fi
+
 # --in-tree is the ONLY mode that leaves a deliberately-wrong state in the
 # tracked tree, and the sweep race is the one hazard this script cannot close
 # for you: git-sync commits the WHOLE working tree on a short cadence, so a
@@ -597,22 +634,14 @@ if [ "$IN_TREE" -eq 1 ] && [ -z "$SWEEP_ACK" ]; then
 
       git-sync excludes actively file-locked paths from its staging pathspecs,
       so unrelated files and probes on disjoint paths keep moving. The probe
-      verifies the current-session lock and heartbeats it to 1200 seconds. For
-      a submodule, also hold the exclusive per-harness git-sync resource:
-
-          locks:acquire_resource { resource: 'git-sync:<harness>',
-                                   mode: 'exclusive', ttl_sec: 1200 }
-
-      Keep the resource lock alive for the entire probe and release both locks
-      after the restored file is verified:
+      verifies the current-session lock and heartbeats it to 1200 seconds.
+      git-sync also re-checks locks after staging, so a lock taken mid-tick
+      still holds the mutant back (EI-24712906810240170); no git-sync resource
+      lease is needed, in the superproject or a submodule. Release the lock
+      only after the restored file is verified:
 
           locks:heartbeat { lock_id: '<returned lock_id>', ttl_sec: 1200 }
           locks:release  { lock_id: '<returned lock_id>' }
-
-      A file lock alone is insufficient for an in-tree submodule probe because
-      the git-sync tick can publish a nested-repo commit under its per-harness
-      lease. The probe refuses that case unless both fences are held by this
-      session.
 
       OR --accept-sweep-race, if this checkout is not swept (a scratch repo, a
       fork) or you have judged the exposure yourself. Either choice is recorded
@@ -671,7 +700,15 @@ if [ "$IN_TREE" -eq 1 ]; then
   PROBE_MANIFEST="$ADMISSION_DIR/original.manifest"
   exec {PROBE_ADMISSION_FD}>"$ADMISSION_DIR/admission.lock"
   flock -x "$PROBE_ADMISSION_FD" || die "cannot acquire mutation admission lock"
-  [ ! -e "$PROBE_MANIFEST" ] || die "another mutation probe has an active or orphaned snapshot: $PROBE_MANIFEST"
+  source "$(dirname -- "$MUTATION_PROBE_SOURCE_PATH")/mutation-probe-admission.sh"
+  if [ -e "$PROBE_MANIFEST" ]; then
+    probe_admission_read_manifest "$ADMISSION_ROOT" "$PROBE_MANIFEST" ||
+      die "another mutation probe has an invalid snapshot manifest: $PROBE_MANIFEST"
+    probe_admission_owner_alive &&
+      die "another mutation probe has an active snapshot: $PROBE_MANIFEST"
+    probe_admission_recover_orphan "$ADMISSION_ROOT" "$PROBE_MANIFEST" ||
+      die "could not safely recover orphaned mutation-probe snapshot: $PROBE_MANIFEST"
+  fi
 fi
 BASE="$SCRATCH/$(basename "$FILE").orig"
 cp "$FILE" "$BASE" || die "could not snapshot $FILE"
@@ -770,6 +807,10 @@ finish() {
   fi
   if [ -n "$PROBE_ADMISSION_FD" ]; then
     flock -x "$PROBE_ADMISSION_FD" || exit 3
+    # Recorded BEFORE the manifest goes, so the subject is never uncovered while
+    # the lock lingers (EI-24720263797874266).
+    probe_admission_record_restored "$ADMISSION_ROOT" "$ADMISSION_DIR" "$FILE" "$BASE" ||
+      log "note: could not record the verified restore of $FILE; the testing:run fence stays conservative while its lock lingers"
     rm -f -- "$PROBE_MANIFEST"
     flock -u "$PROBE_ADMISSION_FD"
   fi
@@ -1156,6 +1197,45 @@ detect_runner_misuse() {
   grep -Eo "$RUNNER_MISUSE_ERE" "$1" 2>/dev/null | sort -u | head -3 | tr '\n' ' '
 }
 
+# A known test runner can exit 1 before any assertion runs. Its process status
+# alone cannot distinguish a failed assertion from a setup-hook timeout that
+# leaves the suite skipped. The Papercusp test:file reporter emits one
+# TEST_FILE_ASSERTION_FAILURE line per measured assertion failure. Direct
+# Vitest output has a `Tests N failed` count. Require one of those for a
+# recognized test run; keep ordinary shell guards (grep, node scripts, etc.)
+# on their established exit-code contract.
+#
+# Return 0 and print the evidence kind when an assertion failure is measured;
+# return 1 and print why the known test run is inconclusive when it is not;
+# return 2 when the output is not a recognized test-run format.
+detect_assertion_failure_evidence() {
+  local result_line summary
+  if grep -Fq 'TEST_FILE_ASSERTION_FAILURE file=' "$1" 2>/dev/null; then
+    printf '%s' 'test-file-assertion-failure'
+    return 0
+  fi
+
+  result_line="$(grep -E '^[[:space:]]*TEST_FILE_RESULT[[:space:]]' "$1" 2>/dev/null | tail -1)"
+  if [ -n "$result_line" ]; then
+    printf '%s' 'no-assertion-failure-evidence'
+    return 1
+  fi
+
+  summary="$(sed -r 's/\x1B\[[0-9;]*[a-zA-Z]//g' "$1" 2>/dev/null \
+            | grep -E '^[[:space:]]*Tests[[:space:]]+[0-9]+[[:space:]]+(passed|failed|skipped|todo|pending)([[:space:]]|$)' \
+            | tail -1)"
+  if [ -n "$summary" ]; then
+    if printf '%s' "$summary" | grep -Eq '(^|[[:space:]|])[1-9][0-9]*[[:space:]]+failed([[:space:]|]|$)'; then
+      printf '%s' 'vitest-failed-tests'
+      return 0
+    fi
+    printf '%s' 'no-vitest-test-failures'
+    return 1
+  fi
+
+  return 2
+}
+
 # EI-20451290782193791 (measured 2026-08-14, reproduced 2026-09-05): the
 # sibling hole in the detector above. That one only ever runs where the guard
 # exited NONZERO, because a runner that cannot COLLECT fails. A runner that
@@ -1335,6 +1415,21 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
 
       Inspect the captured guard output above for the exact runner message."
   fi
+  HISTORICAL_ASSERTION_EVIDENCE='exit-code-only'
+  if [ "$HISTORICAL_RC" -eq 1 ]; then
+    if HISTORICAL_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$HISTORICAL_GUARD_LOG")"; then
+      :
+    else
+      HISTORICAL_ASSERTION_EVIDENCE_RC=$?
+      if [ "$HISTORICAL_ASSERTION_EVIDENCE_RC" -eq 1 ]; then
+        log "the historical test run exited 1 without assertion-level failure evidence: ${HISTORICAL_ASSERTION_EVIDENCE}"
+        printf 'MUTATION_PROBE_RESULT mode=historical verdict=inconclusive expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s assertion_evidence=%s\n' \
+          "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$HISTORICAL_ASSERTION_EVIDENCE"
+        die "the historical guard exited 1, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the historical mutation was caught. Inspect the captured historical guard output and rerun only after the assertions execute."
+      fi
+      HISTORICAL_ASSERTION_EVIDENCE='exit-code-only'
+    fi
+  fi
   if [ "$HISTORICAL_RC" -eq 1 ]; then
     VERDICT="caught"
     log "VERDICT: HISTORICAL SOURCE CAUGHT (guard exited $HISTORICAL_RC) — the guard is falsifiable against the selected before-fix source ✓"
@@ -1346,8 +1441,8 @@ if [ "$HISTORICAL_MODE" -eq 1 ]; then
     log "VERDICT: HARNESS ERROR (historical guard exited $HISTORICAL_RC) — no falsifiability verdict is sound"
   fi
 
-  printf 'MUTATION_PROBE_RESULT mode=historical verdict=%s expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s absence_control=%s positive_controls=%d destructive_primitives=%s\n' \
-    "$VERDICT" "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$MUST_BE_ABSENT" "${#POSITIVE_CONTROLS[@]}" "${HISTORICAL_DESTRUCTIVE_HITS// /,}"
+  printf 'MUTATION_PROBE_RESULT mode=historical verdict=%s expected=%s target=%s current_exit=%d historical_exit=%d calibration_current=%d calibration_historical=%d against_commit=%s absence_control=%s positive_controls=%d destructive_primitives=%s assertion_evidence=%s\n' \
+    "$VERDICT" "$EXPECT" "$TARGET_MODE" "$CURRENT_RC" "$HISTORICAL_RC" "$CALIBRATION_CURRENT_RC" "$CALIBRATION_HISTORICAL_RC" "$HISTORICAL_SHA" "$MUST_BE_ABSENT" "${#POSITIVE_CONTROLS[@]}" "${HISTORICAL_DESTRUCTIVE_HITS// /,}" "$HISTORICAL_ASSERTION_EVIDENCE"
 
   [ "$VERDICT" = "harness-error" ] && exit 2
   [ "$VERDICT" = "$EXPECT" ] || exit 1
@@ -1436,7 +1531,7 @@ if [ "$IN_TREE" = "1" ]; then
   if [ "$SWEEP_ACK" = "lock-held" ]; then
     log "⚠️  Sweep: you declared a file lock on $(sweep_lock_path) HELD — git-sync will exclude that path."
     log "⚠️  The lock owner and path will be verified immediately before mutation."
-    log "⚠️  Every repository additionally requires the exclusive git-sync resource lock."
+    log "⚠️  git-sync re-checks locks after staging, so the file lock alone fences the sweep."
   else
     log "⚠️  Sweep: race ACCEPTED — nothing is holding git-sync off. If a tick lands"
     log "⚠️  during this run, the mutant is committed to the shared tree."
@@ -1777,6 +1872,22 @@ if [ "$TEST_RC" -eq 1 ] && [ -n "$MUTANT_MISUSE_HITS" ]; then
       Inspect the captured guard output above for the exact runner message."
 fi
 
+MUTANT_ASSERTION_EVIDENCE='exit-code-only'
+if [ "$TEST_RC" -eq 1 ]; then
+  if MUTANT_ASSERTION_EVIDENCE="$(detect_assertion_failure_evidence "$MUTANT_LOG")"; then
+    :
+  else
+    MUTANT_ASSERTION_EVIDENCE_RC=$?
+    if [ "$MUTANT_ASSERTION_EVIDENCE_RC" -eq 1 ]; then
+      log "the mutant test run exited 1 without assertion-level failure evidence: ${MUTANT_ASSERTION_EVIDENCE}"
+      printf 'MUTATION_PROBE_RESULT verdict=inconclusive expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s\n' \
+        "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE"
+      die "the mutant guard exited 1, but a recognized test runner supplied no assertion-level failure evidence. A hook/setup error or skipped suite is not proof that the mutation was caught. Inspect the captured guard output and rerun only after the assertions execute."
+    fi
+    MUTANT_ASSERTION_EVIDENCE='exit-code-only'
+  fi
+fi
+
 # A passing copy-out test does not prove it ever imported the mutant. The repo
 # mirror symlinks test files/configs; Node/Vite can realpath a symlinked test
 # before resolving its relative imports, sending them back to the real tree.
@@ -1827,8 +1938,8 @@ fi
 # as evidence. 'ok' means the mutant was confirmed to still be a loadable
 # program, so a caught verdict is about the assertions; 'unchecked*' means no
 # checker applied to this subject and the caught verdict carries that caveat.
-printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s\n' \
-  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE"
+printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s assertion_evidence=%s\n' \
+  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE" "$MUTANT_ASSERTION_EVIDENCE"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
 [ "$VERDICT" = "$EXPECT" ] || exit 1

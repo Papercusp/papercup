@@ -16,24 +16,25 @@
  * script itself prescribes (CLAUDE.md § "Proving a guard is falsifiable").
  *
  * FALSIFIABILITY: the subject path is overridable via MUTATION_PROBE_SCRIPT, so
- * this suite can be pointed at a mutated COPY of the script:
+ * this suite can be pointed at a mutated COPY of the script. Probe it by hand:
  *
- *   scripts/mutation-probe.sh \
- *     --file scripts/mutation-probe.sh \
- *     --fake-destructive \
- *     --mutate 's/^if \[ "\$IN_TREE" -eq 1 \] && \[ -z "\$SWEEP_ACK" \]; then/if false; then/' \
- *     --test 'MUTATION_PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/mutation-probe-sweep-gate.test.ts'
+ *   t="$(mktemp -d)" &&
+ *   cp scripts/mutation-probe.sh scripts/mutation-probe-admission.sh "$t/" &&
+ *   perl -pi -e 's/^if \[ "\$IN_TREE" -eq 1 \] && \[ -z "\$SWEEP_ACK" \]; then/if false; then/' "$t/mutation-probe.sh" &&
+ *   ! cmp -s scripts/mutation-probe.sh "$t/mutation-probe.sh" &&
+ *   MUTATION_PROBE_SCRIPT="$t/mutation-probe.sh" npm run test:file -- apps/operator/lib/mutation-probe-sweep-gate.test.ts
  *
- * That run mutates a copy in a scratch dir; the tracked script is never dirty.
+ * The `cmp` step refuses a mutation that changed nothing. The tracked script is
+ * never dirty. Copy mutation-probe-admission.sh too: the script sources it from
+ * its own directory for every --in-tree run.
  *
- * `--fake-destructive` is REQUIRED here and is easy to omit: probing the probe
- * makes the probe its own SUBJECT, and the script's source contains the very
- * destructive primitives it scans for (rm, rmdir, shred, mkfs, `dd of=`,
- * `find -delete` — its own detection list and cleanup). The tier-0 gate
- * therefore refuses the run outright, with a message about executing deletion
- * code that reads as alarming rather than as "you are probing this script".
- * The flag only PATH-shims those executables for the guard runs; this suite
- * deletes via node's fs, so nothing here depends on them.
+ * Do NOT wrap this in `scripts/mutation-probe.sh --fake-destructive` (WI-10004181).
+ * That guard makes rm/unlink log-only for its whole --test tree, so the in-tree
+ * cases' own probes could not remove their admission manifests or scratch dirs.
+ * The probe refuses --in-tree under that guard, so the BASELINE fails and no
+ * verdict is possible. The hand recipe runs the mutant with real deletion,
+ * confined to this suite's throwaway dirs under os.tmpdir(): check that your
+ * mutation does not touch a cleanup (rm/unlink) line before you run it.
  *
  * READ WHICH TESTS FAIL, not just the verdict line. A genuine catch here fails
  * a PROPER SUBSET — mutating the sweep gate fails only the sweep cases,
@@ -43,7 +44,18 @@
  * exists to prevent (EI-21430792829614962).
  */
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -128,6 +140,8 @@ function runLockedProbe(
     ...process.env,
     PATH: fakeBin + ':' + (process.env.PATH ?? ''),
     PAPERCUSP_SID: 'mutation-probe-test-session',
+    PAPERCUSP_WORKSPACE_ID: '',
+    PAPERCUSP_WORKSPACE: 'probe-workspace',
     PAPERCUSP_TEST_RUN_HARNESS: 'probe-harness',
     MUTATION_PROBE_WINDOW_MAX_SEC: '600',
     MUTATION_PROBE_LOCK_MODE: mode,
@@ -202,7 +216,9 @@ beforeAll(() => {
     'process.stdin.on("data", (chunk) => input += chunk);',
     'process.stdin.on("end", () => {',
     '  const argv = process.argv.slice(2);',
-    '  const tool = argv[0];',
+    '  const workspace = argv.find((arg) => arg.startsWith("--workspace="))?.slice("--workspace=".length) ?? "";',
+    '  const harness = argv.find((arg) => arg.startsWith("--harness="))?.slice("--harness=".length) ?? "";',
+    '  const tool = argv.find((arg) => !arg.startsWith("--") && arg.includes(":"));',
     '  const args = input ? JSON.parse(input) : {};',
     '  const mode = process.env.MUTATION_PROBE_LOCK_MODE;',
     "  const projectionAt = argv.indexOf('--projection');",
@@ -210,7 +226,16 @@ beforeAll(() => {
     '  const explicitUrl = argv.find((arg) => arg.startsWith("--url="));',
     '  const targetUrl = explicitUrl ? explicitUrl.slice("--url=".length) : (process.env.PAPERCUSP_HONO_PORT ? "http://127.0.0.1:" + process.env.PAPERCUSP_HONO_PORT : (process.env.PAPERCUSP_OPERATOR_URL || "http://127.0.0.1:3070"));',
     '  if (process.env.MUTATION_PROBE_LOCK_LOG) {',
-    '    fs.appendFileSync(process.env.MUTATION_PROBE_LOCK_LOG, JSON.stringify({ tool, args, projection: projectionRaw, targetUrl }) + "\\n");',
+    '    fs.appendFileSync(process.env.MUTATION_PROBE_LOCK_LOG, JSON.stringify({ tool, args, projection: projectionRaw, targetUrl, workspace, harness }) + "\\n");',
+    '  }',
+    // Mirror the auth boundary: a fleet member must scope each call explicitly;
+    // relying on a stale session claim can produce harness_scope_stale.
+    '  const expectedWorkspace = process.env.PAPERCUSP_WORKSPACE_ID || process.env.PAPERCUSP_WORKSPACE || "";',
+    '  const expectedHarness = process.env.PAPERCUSP_TEST_RUN_HARNESS || process.env.HARNESS_SLUG || process.env.PAPERCUSP_HARNESS_SLUG || "";',
+    '  if (!workspace || !harness || workspace !== expectedWorkspace || harness !== expectedHarness) {',
+    '    process.stderr.write("mcp_auth_failed: harness_scope_stale: ptool requires explicit matching --workspace and --harness");',
+    '    process.exitCode = 1;',
+    '    return;',
     '  }',
     // Mirror the real dispatch contract (WI-10002758): a projection must name
     // pick or pipe. The fake used to ignore --projection, so a probe sending
@@ -320,6 +345,34 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
 
+  it("REFUSES --in-tree inside an outer probe's --fake-destructive guard, before any admission state (WI-10004181)", () => {
+    // An outer --fake-destructive probe exports MUTATION_PROBE_DESTRUCTIVE_LOG and log-only
+    // rm/unlink shims to everything its --test runs. An in-tree run under them cannot delete
+    // its own admission manifest or scratch dir, and orphan recovery deletes with rm too, so
+    // nothing inside the guard could clean up. The probe must refuse before it creates any state.
+    const admissionDir = join(
+      '/tmp',
+      `papercusp-mutation-probe-${process.getuid?.() ?? 0}-${createHash('sha256').update(realpathSync(scratch)).digest('hex')}`,
+    );
+    const probeDirs = () => readdirSync(scratch).filter((name) => name.startsWith('mutation-probe.')).length;
+    const before = probeDirs();
+    const { status, out } = runProbe(
+      ['--file', subject, '--mutate', 's/GOOD/BAD/', '--test', 'grep -q GOOD {}', '--in-tree', '--accept-sweep-race'],
+      {
+        MUTATION_PROBE_DESTRUCTIVE_LOG: join(scratch, 'outer-destructive-calls.log'),
+        PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
+      },
+    );
+
+    expect(status).toBe(2);
+    expect(out).toContain("REFUSING --in-tree inside another probe's --fake-destructive guard");
+    expect(out).not.toContain('mutant applied:');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=');
+    expect(existsSync(join(admissionDir, 'original.manifest'))).toBe(false);
+    expect(probeDirs()).toBe(before);
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
   it('REFUSES --in-tree with no acknowledgement, and hands over the exact lock incantation', () => {
     const { status, out } = runProbe([
       '--file', subject,
@@ -335,7 +388,10 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     // from the repo it is standing in, not copied from a doc that can drift.
     expect(out).toContain("paths: ['subject.txt']");
     expect(out).toContain('locks:acquire');
-    expect(out).toContain('locks:acquire_resource');
+    // EI-24712906810240170: the file lock alone is the fence; the refusal must not send
+    // agents to take the fleet-wide git-sync lease, which froze every commit.
+    expect(out).not.toContain('locks:acquire_resource');
+    expect(out).toContain('re-checks locks after staging');
     expect(out).toContain("intent: 'mutation probe'");
     expect(out).toContain('locks:heartbeat');
     expect(out).toContain('locks:release');
@@ -489,13 +545,33 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(out).toContain('target=in-tree:lock-held');
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
     const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
-    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat', 'locks:list']);
+    // No locks:list: the git-sync lease is not consulted unless opted in (EI-24712906810240170).
+    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
     expect(calls[1].args).toMatchObject({ paths: ['subject.txt'], coordination_domain: scratch });
     expect(calls[2].args).toMatchObject({ ttl_sec: 1200, coordination_domain: scratch });
     // Every call must send a projection the real dispatch accepts (WI-10002758).
     for (const call of calls) {
       const projection = JSON.parse(call.projection);
       expect(Array.isArray(projection.pick) && projection.pick.length > 0, `${call.tool} projection ${call.projection}`).toBe(true);
+    }
+  });
+
+  it('passes explicit workspace and harness scope to every sweep-fence ptool call', () => {
+    const { code, out } = runLockedProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', 'grep -q GOOD {}',
+      '--in-tree',
+      '--sweep-lock-held',
+    ]);
+
+    expect(code).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    const calls = readFileSync(lockLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    expect(calls.map((call) => call.tool)).toEqual(['coord:presence', 'locks:queue', 'locks:heartbeat']);
+    for (const call of calls) {
+      expect(call.workspace, call.tool).toBe('probe-workspace');
+      expect(call.harness, call.tool).toBe('probe-harness');
     }
   });
 
@@ -509,7 +585,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
       '--test', 'grep -q GOOD {}',
       '--in-tree',
       '--sweep-lock-held',
-    ], 'resource-short');
+    ], 'resource-short', { MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE: '1' });
 
     expect(code).toBe(2);
     expect(out).toMatch(/lock is held but expires in 2[67]\ds/);
@@ -539,32 +615,38 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
     expect(readFileSync(subject, 'utf8')).toBe(GOOD);
   });
 
-  it.each(['superproject', 'submodule'] as const)('requires an exclusive harness git-sync lock when probing a %s', (kind) => {
+  // EI-24712906810240170: git-sync re-checks file locks after staging, so the file lock
+  // alone fences the sweep in the superproject AND a submodule. The fleet-wide lease is
+  // required only when explicitly opted back in.
+  it.each(['superproject', 'submodule'] as const)('needs only the file lock for a %s probe; the git-sync lease is opt-in', (kind) => {
     const nestedSubject = kind === 'submodule' ? join(scratch, 'nested', 'subject.txt') : subject;
-    const refused = runLockedProbe([
+    const probeArgs = [
       '--file', nestedSubject,
       '--mutate', 's/GOOD/BAD/',
       '--test', 'grep -q GOOD {}',
       '--in-tree',
       '--sweep-lock-held',
-    ], 'no-resource');
+    ];
 
+    // Default: no lease held anywhere, and the probe still runs on the file lock alone.
+    const fileLockOnly = runLockedProbe(probeArgs, 'no-resource');
+    expect(fileLockOnly.code).toBe(0);
+    expect(fileLockOnly.out).not.toContain("must hold an exclusive 'git-sync:probe-harness' lock");
+    expect(readFileSync(lockLog, 'utf8')).not.toContain('locks:list');
+    expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
+
+    // Opted in: the old double fence still refuses without the lease...
+    const refused = runLockedProbe(probeArgs, 'no-resource', { MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE: '1' });
     expect(refused.code).toBe(2);
     expect(refused.out).toContain("must hold an exclusive 'git-sync:probe-harness' lock");
     expect(refused.out).toContain('none is held by probe-owner');
     expect(refused.out).not.toContain('mutant applied:');
     expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
 
-    const accepted = runLockedProbe([
-      '--file', nestedSubject,
-      '--mutate', 's/GOOD/BAD/',
-      '--test', 'grep -q GOOD {}',
-      '--in-tree',
-      '--sweep-lock-held',
-    ]);
-
-    expect(accepted.code).toBe(0);
-    expect(accepted.out).toContain("verified this session's exclusive git-sync:probe-harness lock");
+    // ...and accepts with it.
+    const withLease = runLockedProbe(probeArgs, 'all', { MUTATION_PROBE_REQUIRE_GIT_SYNC_LEASE: '1' });
+    expect(withLease.code).toBe(0);
+    expect(withLease.out).toContain("verified this session's exclusive git-sync:probe-harness lock");
     expect(readFileSync(nestedSubject, 'utf8')).toBe(GOOD);
   });
 
@@ -616,6 +698,61 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
  * verdict. Asserting only the refusal would pass equally against a script
  * that had started refusing everything.
  */
+describe('mutation-probe.sh assertion-evidence gate', () => {
+  const setupFailure = [
+    // The reporter count below includes the failed setup hook, though no assertion ran.
+    'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "FAIL setup hook: Hook timed out in 120000ms\\n"; printf "Tests 2 skipped (2)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed skippedTests=2\\n"; else printf "Tests 1 passed (1)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=0\\n"; fi',
+    'test -f "{}" && [ "$PAPERCUSP_MUTATION_PHASE" != mutant ]',
+  ].join('; ');
+
+  it('does not report a setup-hook timeout with skipped tests as caught', () => {
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', setupFailure,
+    ]);
+
+    expect(status).toBe(2);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=inconclusive');
+    expect(out).toContain('assertion_evidence=no-assertion-failure-evidence');
+    expect(out).not.toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('still reports a Papercusp test:file assertion failure as caught', () => {
+    const assertionFailure = [
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "TEST_FILE_ASSERTION_FAILURE file=\\\"guard.test.ts\\\" name=\\\"guard rejects mutation\\\" message=\\\"expected failure\\\"\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=failed skippedTests=0\\n"; else printf "Tests 1 passed (1)\\n"; printf "TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed skippedTests=0\\n"; fi',
+      'test -f "{}" && [ "$PAPERCUSP_MUTATION_PHASE" != mutant ]',
+    ].join('; ');
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', assertionFailure,
+    ]);
+
+    expect(status).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).toContain('assertion_evidence=test-file-assertion-failure');
+    expect(readFileSync(subject, 'utf8')).toBe(GOOD);
+  });
+
+  it('still recognizes a direct Vitest failed-test summary', () => {
+    const vitestFailure = [
+      'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then printf "Tests 1 failed (1)\\n"; else printf "Tests 1 passed (1)\\n"; fi',
+      'test -f "{}" && [ "$PAPERCUSP_MUTATION_PHASE" != mutant ]',
+    ].join('; ');
+    const { status, out } = runProbe([
+      '--file', subject,
+      '--mutate', 's/GOOD/BAD/',
+      '--test', vitestFailure,
+    ]);
+
+    expect(status).toBe(0);
+    expect(out).toContain('MUTATION_PROBE_RESULT verdict=caught');
+    expect(out).toContain('assertion_evidence=vitest-failed-tests');
+  });
+});
+
 describe('mutation-probe.sh unparseable-mutant gate', () => {
   it('REFUSES a mutant that no longer parses, instead of scoring it as caught', () => {
     // The exact shape from the field report: the pattern matches the function
