@@ -6759,6 +6759,37 @@ export function resolveWorkspaceTestInvocation(
   };
 }
 
+const NODE_TEST_IMPORT_RE = /(?:\bfrom\s*|\brequire\(\s*|\bimport\(\s*)["']node:test["']/;
+
+/** Is `file` a `node:test` file inside a STANDALONE package? Its own import says which
+ *  runner owns it; an unreadable file is not one (the caller's vitest path stays the default). */
+export function isStandaloneNodeTestFile(
+  rootDir: string,
+  workspace: string,
+  file: string,
+): boolean {
+  if (!/\.test\.[cm]?js$/.test(file)) return false;
+  const { cwd } = resolveWorkspaceTestInvocation(rootDir, workspace, []);
+  if (cwd === rootDir) return false;
+  try {
+    return NODE_TEST_IMPORT_RE.test(readFileSync(path.join(cwd, file), "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+/** A file the rescue paths must run ALONE through its own runner, never the package script. */
+export function needsOwnFileRunner(
+  rootDir: string,
+  workspace: string,
+  file: string,
+): boolean {
+  return (
+    /\.selftest\.sh$/.test(file) ||
+    isStandaloneNodeTestFile(rootDir, workspace, file)
+  );
+}
+
 /**
  * Resolve ONE named failing file through the runner that actually owns its format.
  *
@@ -6768,6 +6799,12 @@ export function resolveWorkspaceTestInvocation(
  * test script. On the desktop package that costs the whole composite suite and then times
  * out, manufacturing an inconclusive isolation verdict. Bash self-tests are executable
  * units with an explicit, hermetic contract, so re-run them directly from the package cwd.
+ *
+ * WI-10003242: the same holds for a standalone package's `node:test` files (every
+ * papercusp-desktop `test/*.test.js`). Its `npm run test` is a composite script whose trailing
+ * args select nothing, so a named-file rescue ran the whole ~5.5-min composite under the 5-min
+ * isolation bound and could never pass — a frozen repair signature naming one of them could
+ * never be discharged. They go to `node --test <file>` from the package cwd.
  */
 export function resolveWorkspaceFileTestInvocation(
   rootDir: string,
@@ -6775,6 +6812,13 @@ export function resolveWorkspaceFileTestInvocation(
   file: string,
   vitestArgs: readonly string[],
 ): WorkspaceTestInvocation {
+  if (isStandaloneNodeTestFile(rootDir, workspace, file)) {
+    return {
+      cmd: "node",
+      args: ["--test", file],
+      cwd: resolveWorkspaceTestInvocation(rootDir, workspace, []).cwd,
+    };
+  }
   if (/\.selftest\.sh$/.test(file)) {
     const workspaceInvocation = resolveWorkspaceTestInvocation(
       rootDir,
@@ -17379,8 +17423,12 @@ export function realCheckpointDeps(
       // it is what contention is, and scoring it as one was the category error. A genuine
       // co-execution DEADLOCK is unaffected: it blows 60s exactly as it blew 5s, and
       // CONCURRENT_CONFIRM_TIMEOUT_MS still bounds the whole run.
-      const bashFiles = files.filter((file) => /\.selftest\.sh$/.test(file));
-      const vitestFiles = files.filter((file) => !/\.selftest\.sh$/.test(file));
+      const bashFiles = files.filter((file) =>
+        needsOwnFileRunner(cfg.checkpointRoot, workspace, file),
+      );
+      const vitestFiles = files.filter(
+        (file) => !needsOwnFileRunner(cfg.checkpointRoot, workspace, file),
+      );
       for (const file of bashFiles) {
         const invocation = resolveWorkspaceFileTestInvocation(
           cfg.checkpointRoot,
@@ -19430,10 +19478,10 @@ export function realCheckpointDeps(
       const perWorkspace: TargetedFileOutcome[] = [];
       for (const [workspace, wsFiles] of byWorkspace) {
         const bashFiles = wsFiles.filter((file) =>
-          /\.selftest\.sh$/.test(file),
+          needsOwnFileRunner(cfg.checkpointRoot, workspace, file),
         );
         const vitestFiles = wsFiles.filter(
-          (file) => !/\.selftest\.sh$/.test(file),
+          (file) => !needsOwnFileRunner(cfg.checkpointRoot, workspace, file),
         );
         const invocations: WorkspaceTestInvocation[] = [];
         if (vitestFiles.length > 0) {

@@ -62,6 +62,7 @@ import {
   writeCheckpointRunPhase,
   resolveWorkspaceFileTestInvocation,
   resolveWorkspaceTestInvocation,
+  isStandaloneNodeTestFile,
   CONCURRENT_CONFIRM_TIMEOUT_MS,
   ISOLATION_RUN_TIMEOUT_MS,
   RESCUE_TEST_TIMEOUT_MS,
@@ -3920,6 +3921,76 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
     expect(
       calls.some((call) => call.cmd === "npm" && call.args.includes(file)),
     ).toBe(false);
+  });
+
+  // WI-10003242: the desktop package's `npm run test` is a composite whose trailing args select
+  // nothing, so a named node:test file routed through it ran the whole ~5.5-min suite under the
+  // 5-min isolation bound and a frozen repair signature naming it could never be discharged.
+  it("routes a standalone node:test file through node --test, never the package script", async () => {
+    const standaloneCfg = releaseConfig({
+      integrationRoot: "/int",
+      releaseRoot: "/int",
+      checkpointRoot: standaloneTree,
+      releaseRef: "ready",
+      integrationBranch: "main",
+      checkpointLogDir: tmpLogDir,
+    });
+    const file = "test/provenance-sidecar-record.test.js";
+    const vitestFile = "test/vitest-owned.test.js";
+    mkdirSync(join(standaloneTree, "papercusp-desktop", "test"), { recursive: true });
+    writeFileSync(
+      join(standaloneTree, "papercusp-desktop", file),
+      "const test = require('node:test');\ntest('x', () => {});\n",
+    );
+    writeFileSync(
+      join(standaloneTree, "papercusp-desktop", vitestFile),
+      "import { it } from 'vitest';\nit('x', () => {});\n",
+    );
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(standaloneCfg, exec);
+
+    expect(isStandaloneNodeTestFile(standaloneTree, "@papercusp/desktop", file)).toBe(true);
+    expect(isStandaloneNodeTestFile(standaloneTree, "@papercusp/desktop", vitestFile)).toBe(false);
+    // A workspace test run from the repo root is never a standalone node:test file.
+    expect(isStandaloneNodeTestFile(standaloneTree, "@papercusp/web", file)).toBe(false);
+    expect(
+      resolveWorkspaceFileTestInvocation(
+        standaloneTree,
+        "@papercusp/desktop",
+        file,
+        ["--no-file-parallelism", "--testTimeout=60000"],
+      ),
+    ).toEqual({
+      cmd: "node",
+      args: ["--test", file],
+      cwd: join(standaloneTree, "papercusp-desktop"),
+    });
+
+    await deps.isolationRun?.({ workspace: "@papercusp/desktop", file });
+    await deps.concurrentRun?.({
+      workspace: "@papercusp/desktop",
+      files: [file, vitestFile],
+    });
+    await deps.runTestsAtRef?.("deadbeef", [
+      { workspace: "@papercusp/desktop", file },
+      { workspace: "@papercusp/desktop", file: vitestFile },
+    ]);
+
+    const nodeRuns = calls.filter(
+      (call) => call.cmd === "node" && call.args.includes(file),
+    );
+    expect(nodeRuns).toHaveLength(3);
+    for (const run of nodeRuns) {
+      expect(run.args).toEqual(["--test", file]);
+      expect(run.opts?.cwd).toBe(join(standaloneTree, "papercusp-desktop"));
+    }
+    expect(
+      calls.some((call) => call.cmd === "npm" && call.args.includes(file)),
+    ).toBe(false);
+    // The vitest-owned sibling still rides the package script in both multi-file paths.
+    expect(
+      calls.filter((call) => call.cmd === "npm" && call.args.includes(vitestFile)),
+    ).toHaveLength(2);
   });
 });
 
