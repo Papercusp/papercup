@@ -48,15 +48,40 @@ const PC_HEAVY = process.env.PROBE_SCRIPT || join(ROOT, 'scripts', 'pc-heavy.sh'
 
 const ADMISSION_ID = 'test-scarcity-admission';
 
+/**
+ * WI-10004029: STARTUP and DECISION are budgeted separately, because only one of them is under test.
+ *
+ * Before the controller writes its first record, pc-heavy runs its whole admission path: a
+ * self-copy, a load-adaptive slot count, a git-state coalescing fingerprint of the cwd, the setsid
+ * launch, and hundreds of short forks (sed/awk/date/head). Traced 2026-09-30 at load ~114 outside
+ * any test lane, that path took ~2.5s before the first record; the freeze landed ~0.1s after it.
+ * Inside the gate's stateful lane the same path competes with the whole lane, and the old single
+ * 20s budget covered startup AND the freeze decision together. Two gate samples at sha 7652f8c9
+ * failed on two different cases, each on a freeze-engaged wait, while the file passed standalone
+ * (testing:runs 20153210 and the 1fxzuva lane re-run). The startup cost under the lane is inferred,
+ * not measured, which is why the timed-out wait now quotes the record state and pc-heavy's stderr.
+ *
+ * So each case first waits for the admission RECORD (startup, generous, not asserted), and only then
+ * applies the tight budget to the transition the case is actually about. A controller that records
+ * its admission but never decides still fails on the 20s decision budget, so the tight bound keeps
+ * its teeth.
+ */
+const STARTUP_BUDGET_MS = 90_000;
+const DECISION_BUDGET_MS = 20_000;
+const CASE_TIMEOUT_MS = STARTUP_BUDGET_MS + DECISION_BUDGET_MS * 2 + 10_000;
+
 let dir = '';
 let psiFile = '';
 let memAvailFile = '';
 const spawned: ChildProcess[] = [];
+/** pc-heavy's own stderr (PC_HEAVY_ADMISSION / PC_HEAVY_RESULT lines), quoted by a timed-out wait. */
+let childStderr = '';
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'pcheavy-scarcity-'));
   psiFile = join(dir, 'psi-sample');
   memAvailFile = join(dir, 'memavail-gib');
+  childStderr = '';
 });
 
 afterEach(async () => {
@@ -103,17 +128,26 @@ afterEach(async () => {
  * simultaneously a flake risk under fleet contention (too short) and wasted time otherwise (too
  * long). A timeout is a real failure, never a silent fall-through.
  */
-async function waitFor(label: string, predicate: () => boolean, timeoutMs = 20_000): Promise<void> {
+async function waitFor(label: string, predicate: () => boolean, timeoutMs = DECISION_BUDGET_MS): Promise<void> {
   const started = Date.now();
   for (;;) {
     if (predicate()) return;
     if (Date.now() - started >= timeoutMs) {
+      // Quote the controller's own narration: a bare timeout cannot say whether pc-heavy never
+      // started, recorded its admission and then skipped, or never reached a decision at all.
       throw new Error(
-        `waitFor(${JSON.stringify(label)}) timed out after ${timeoutMs}ms — the state never arrived.`,
+        `waitFor(${JSON.stringify(label)}) timed out after ${timeoutMs}ms — the state never arrived.` +
+          ` record state=${readRecordField('state') ?? '<no record>'}` +
+          ` pc-heavy stderr tail: ${JSON.stringify(childStderr.slice(-1500))}`,
       );
     }
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+/** Startup is not under test: wait for the admission record under its own, generous budget. */
+async function awaitAdmissionRecorded(): Promise<void> {
+  await waitFor('admission recorded (startup)', () => readRecordField('state') !== null, STARTUP_BUDGET_MS);
 }
 
 /** Hold for `ms`, failing the moment `predicate` becomes true. The negative analogue of waitFor. */
@@ -157,12 +191,23 @@ function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     PC_HEAVY_MEM_PSI_MIN_VICTIM_MIB: '0',
     PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: 'max',
     PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '100',
+    // Coalescing keys a run on `git status --untracked-files=all` + `git diff --binary HEAD` of
+    // the cwd's worktree, so with it on, this suite's startup cost depends on how dirty the
+    // enclosing checkout is. The suite asserts the PSI decision, never coalescing.
+    PC_HEAVY_COALESCE: '0',
     ...extra,
   };
 }
 
 function startAdmission(extra: Record<string, string> = {}): ChildProcess {
-  const child = spawn('bash', [PC_HEAVY, 'sleep', '30'], { env: baseEnv(extra) });
+  // cwd: the private temp dir, which is not a git worktree. Nothing the subject does may depend on
+  // the state of whichever checkout the test happens to run from.
+  const child = spawn('bash', [PC_HEAVY, 'sleep', '30'], { env: baseEnv(extra), cwd: dir });
+  child.stdout?.resume();
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk: string) => {
+    childStderr = (childStderr + chunk).slice(-8_000);
+  });
   spawned.push(child);
   return child;
 }
@@ -181,7 +226,7 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     writeFileSync(memAvailFile, '4096\n');
 
     startAdmission();
-    await waitFor('admission recorded', () => readRecordField('state') !== null);
+    await awaitAdmissionRecorded();
 
     // Hold across several 1s samples. Asserting the ABSENCE of a transition needs real elapsed
     // sampling time, not a single reading taken before the controller has looked even once.
@@ -194,7 +239,7 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     expect(readRecordField('state')).toBe('active');
     // Not merely "not frozen right now" — never frozen at all across the whole window.
     expect(Number(readRecordField('frozen_episodes') ?? '0')).toBe(0);
-  }, 30_000);
+  }, CASE_TIMEOUT_MS);
 
   it('DOES still freeze when memory is genuinely scarce — calibration for the case above', async () => {
     // Identical PSI. The ONLY difference from the previous case is the MemAvailable reading, which
@@ -204,6 +249,7 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     writeFileSync(memAvailFile, '1\n'); // 1 GiB, well under the 8 GiB floor
 
     startAdmission();
+    await awaitAdmissionRecorded();
     await waitFor('freeze engaged (state=frozen persisted)', () => readRecordField('state') === 'frozen');
 
     // state=frozen IS the calibration signal. Deliberately NOT asserting
@@ -213,7 +259,7 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     // sibling accounting suite reads it only after waiting for state=active, and
     // asserting it here instead would fail against perfectly correct behaviour.
     expect(readRecordField('state')).toBe('frozen');
-  }, 30_000);
+  }, CASE_TIMEOUT_MS);
 
   // host-memory-reduction-2026-09-27 P-009: the floor scales with RAM. On the 251 GiB tower the
   // worst thrash (memory PSI full avg10 50%) still showed 13 GiB MemAvailable — above a fixed
@@ -224,23 +270,24 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     writeFileSync(memAvailFile, '13\n');
 
     startAdmission({ PC_HEAVY_MEMTOTAL_GIB_OVERRIDE: '251' });
+    await awaitAdmissionRecorded();
     await waitFor('freeze engaged (state=frozen persisted)', () => readRecordField('state') === 'frozen');
     expect(readRecordField('state')).toBe('frozen');
-  }, 30_000);
+  }, CASE_TIMEOUT_MS);
 
   it('still declines the same host at 65 GiB MemAvailable — the EI-21924870233271057 churn case', async () => {
     writeFileSync(psiFile, '10\n');
     writeFileSync(memAvailFile, '65\n');
 
     startAdmission({ PC_HEAVY_MEMTOTAL_GIB_OVERRIDE: '251' });
-    await waitFor('admission recorded', () => readRecordField('state') !== null);
+    await awaitAdmissionRecorded();
     await stayFalse(
       'froze a 251 GiB host with 65 GiB available',
       () => readRecordField('state') === 'frozen',
       5_000,
     );
     expect(Number(readRecordField('frozen_episodes') ?? '0')).toBe(0);
-  }, 30_000);
+  }, CASE_TIMEOUT_MS);
 
   it('thaws an already-frozen root once memory becomes ample, WITHOUT waiting for PSI to recover', async () => {
     // Start scarce so the freeze is elected...
@@ -248,6 +295,7 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     writeFileSync(memAvailFile, '1\n');
 
     startAdmission();
+    await awaitAdmissionRecorded();
     await waitFor('freeze engaged', () => readRecordField('state') === 'frozen');
 
     // ...then make memory ample while PSI stays PINNED above the recovery threshold (2). The PSI
@@ -266,7 +314,7 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     // would leave `scripts/test-files.mjs` unable to tell a freeze-induced timeout from a real one.
     expect(Number(readRecordField('frozen_episodes') ?? '0')).toBeGreaterThanOrEqual(1);
     expect(Number(readRecordField('frozen_total_ms') ?? '0')).toBeGreaterThan(0);
-  }, 40_000);
+  }, CASE_TIMEOUT_MS);
 
   it('PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB=0 disables the gate and restores freeze-on-PSI-alone', async () => {
     // The documented escape hatch, and the setting every freeze/thaw suite relies on. If this
@@ -276,10 +324,11 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     writeFileSync(memAvailFile, '4096\n'); // ample: would decline the freeze at the default floor
 
     startAdmission({ PC_HEAVY_MEM_PSI_MIN_AVAIL_GIB: '0' });
+    await awaitAdmissionRecorded();
     await waitFor('freeze engaged with the gate disabled', () => readRecordField('state') === 'frozen');
 
     expect(readRecordField('state')).toBe('frozen');
-  }, 30_000);
+  }, CASE_TIMEOUT_MS);
 
   it('FAILS OPEN — an unreadable MemAvailable restores the previous always-freeze behaviour', async () => {
     // A guard that silently disables itself when its input goes missing is worse than no guard:
@@ -289,11 +338,12 @@ describe('pc-heavy PSI freeze requires real memory scarcity (EI-2192487023327105
     // Deliberately do NOT create memAvailFile — the read fails, and scarcity must be assumed.
 
     startAdmission();
+    await awaitAdmissionRecorded();
     await waitFor(
       'freeze engaged despite an unreadable MemAvailable (fail-open)',
       () => readRecordField('state') === 'frozen',
     );
 
     expect(readRecordField('state')).toBe('frozen');
-  }, 30_000);
+  }, CASE_TIMEOUT_MS);
 });

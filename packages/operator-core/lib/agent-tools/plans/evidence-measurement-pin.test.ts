@@ -8,7 +8,19 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+// The measure path calls refuseMutationProbePaths, which reads the LIVE lock-store queue from
+// shared Postgres. This suite is about the git pin, so the lock store is stubbed; the refusal
+// itself is covered by spec-evidence-store-mutation-probe.test.ts. Left live, one slow shared-PG
+// read cancels every case here with "statement timeout" (gate red at repair head 7652f8c9,
+// 2026-09-30, WI-10004029).
+vi.mock('../locks/su-lock-store', () => ({
+  ensureBootstrap: vi.fn(async () => undefined),
+  getTxPool: vi.fn(() => ({})),
+  readQueue: vi.fn(async () => ({ active_locks: [], waiting: [], completed: [] })),
+}));
+
 import {
   buildMeasurementPin,
   diffMeasuredFiles,
