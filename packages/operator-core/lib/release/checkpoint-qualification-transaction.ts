@@ -8,9 +8,12 @@
  * physical runner, blockers, and evidence machine-readable across processes.
  */
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import type { GateVerdictTarget } from './gate-verdict-target';
 import { boundedOrgTxn } from '../pg-bounded-txn';
+import { appendPipelineEvent } from '../harness/git-sync/pipeline-events';
 import {
   frozenRepairHeadAwaitsVerification,
   parseFrozenCandidateRepairQueue,
@@ -25,6 +28,21 @@ export const CHECKPOINT_QUALIFICATION_METADATA_KEY = 'qualificationTransaction';
 export const CHECKPOINT_QUALIFICATION_SCHEMA_VERSION = 1 as const;
 /** Transported into a detached checkpoint so its verdict settles the exact logical attempt. */
 export const CHECKPOINT_QUALIFICATION_ATTEMPT_ENV = 'PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID';
+/** The scheduled wrapper reserves this attempt before spawn; the CLI activates that same runner. */
+export const CHECKPOINT_SCHEDULED_RUN_ENV = 'PAPERCUSP_CHECKPOINT_SCHEDULED_RUN';
+
+export function checkpointPidIdentity(pid: number): string | null {
+  try {
+    const bootId = readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim();
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commandEnd = stat.lastIndexOf(')');
+    if (!bootId || commandEnd < 0) return null;
+    const startTicks = stat.slice(commandEnd + 2).trim().split(/\s+/)[19];
+    return startTicks && /^\d+$/.test(startTicks) ? `${bootId}:${startTicks}` : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * What a caller has PROVED about a runner's process. 'unknown' is not a soft 'dead': every
@@ -43,8 +61,25 @@ export type RunnerLivenessProber = (runner: QualificationPhysicalRunner) => Runn
  * that ceiling cannot still have a living owner, whatever it claims.
  */
 export const QUALIFICATION_OWNER_ABANDONED_MS = 3 * 60 * 60 * 1_000;
+/** Three missed one-minute runner heartbeats warrant investigation, never a second runner. */
+export const QUALIFICATION_PROGRESS_STALE_MS = 3 * 60_000;
+/** An admitted scheduler fire may be probed before systemd has created its named scope. */
+export const QUALIFICATION_LAUNCH_GRACE_MS = 60_000;
+
+function launchReservationInGrace(runner: QualificationPhysicalRunner | null | undefined, nowMs: number): boolean {
+  return !!runner && runner.phase === 'launching' && nowMs - runner.reservedAtMs < QUALIFICATION_LAUNCH_GRACE_MS;
+}
 
 const systemdRunnerLiveness: RunnerLivenessProber = (runner) => {
+  if (runner.pid != null) {
+    try {
+      process.kill(runner.pid, 0);
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === 'ESRCH' ? 'dead' : 'unknown';
+    }
+    const observed = checkpointPidIdentity(runner.pid);
+    return !observed || !runner.pidIdentity ? 'unknown' : observed === runner.pidIdentity ? 'live' : 'dead';
+  }
   const unit = runner.unit?.trim();
   // Rows written before `unit` existed cannot be falsified — say so rather than guessing.
   if (!unit) return 'unknown';
@@ -79,8 +114,12 @@ export function configureRunnerLivenessProber(prober: RunnerLivenessProber | nul
   runnerLivenessProber = prober ?? systemdRunnerLiveness;
 }
 
-export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined): RunnerLiveness {
-  return runner ? runnerLivenessProber(runner) : 'unknown';
+export function probeRunnerLiveness(runner: QualificationPhysicalRunner | null | undefined, nowMs = Date.now()): RunnerLiveness {
+  if (!runner) return 'unknown';
+  const observed = runnerLivenessProber(runner);
+  // A scope name is reserved in the DB before systemd-run creates it. Its temporary absence
+  // cannot authorize a second physical run during that launch interval.
+  return observed === 'dead' && launchReservationInGrace(runner, nowMs) ? 'unknown' : observed;
 }
 
 export const PRE_SUITE_NO_VERDICT_REASONS = [
@@ -141,6 +180,10 @@ export interface QualificationPhysicalRunner {
    * this field existed have none, and those must keep their pre-existing (lease-only) behaviour.
    */
   unit?: string | null;
+  pid?: number | null;
+  pidIdentity?: string | null;
+  heartbeatAtMs?: number;
+  phase?: 'launching' | 'materializing' | 'suite' | 'isolating' | 'delivering';
 }
 
 export interface QualificationPhysicalRun extends QualificationPhysicalRunner {
@@ -154,6 +197,7 @@ export type QualificationSafeNextAction =
   | { code: 'await-blocker-events'; reason: string; waitEvents: string[] }
   | { code: 'await-current-run'; reason: string; waitEvents: string[] }
   | { code: 'recover-expired-runner'; reason: string; waitEvents: string[] }
+  | { code: 'inspect-runner-liveness'; reason: string; waitEvents: string[] }
   | { code: 'repair-code'; reason: string; waitEvents: string[] }
   | { code: 'inspect-terminal-evidence'; reason: string; waitEvents: string[] }
   | { code: 'read-release-control'; reason: string; waitEvents: string[] };
@@ -171,8 +215,27 @@ export interface CheckpointQualificationState {
     expiresAtMs: number;
     expired: boolean;
   } | null;
+  runnerHealth: {
+    state: 'none' | 'progressing' | 'stalled' | 'dead';
+    liveness: RunnerLiveness;
+    phase: QualificationPhysicalRunner['phase'] | null;
+    progressAgeMs: number | null;
+  };
   blockers: QualificationBlocker[];
   phaseDurationsMs: Partial<Record<QualificationPhase, number>>;
+  clocks: {
+    lastScheduledAtMs: number | null;
+    lastStartedAtMs: number | null;
+    lastProgressAtMs: number | null;
+    lastTerminalVerdictAtMs: number | null;
+  };
+  agesMs: {
+    attempt: number | null;
+    scheduled: number | null;
+    started: number | null;
+    progress: number | null;
+    terminal: number | null;
+  };
   consumedPhysicalRuns: QualificationPhysicalRun[];
   eligibilitySnapshot: CheckpointEligibilitySnapshot | null;
   safeNextAction: QualificationSafeNextAction;
@@ -184,6 +247,11 @@ export interface CheckpointQualificationTransaction {
   attemptId: string;
   createdAtMs: number;
   updatedAtMs: number;
+  /** A scheduler tick is not evidence that a suite started or progressed. */
+  lastScheduledAtMs?: number;
+  lastStartedAtMs?: number;
+  lastProgressAtMs?: number;
+  lastTerminalVerdictAtMs?: number;
   requiredAncestorSha: string | null;
   candidatePolicy: {
     kind: 'quiet-cut';
@@ -192,6 +260,8 @@ export interface CheckpointQualificationTransaction {
   candidate: string | null;
   /** Exact repair-head identity selected for this attempt, when a frozen queue supplied one. */
   repairHead: string | null;
+  /** A newly admitted head waiting for its own successor verification attempt. */
+  pendingRepairHead?: string | null;
   /** Physical run identity that currently owns (or produced) this logical attempt. */
   runId: string | null;
   phase: QualificationPhase;
@@ -294,7 +364,8 @@ function isAbandonedQualification(
   nowMs: number,
 ): boolean {
   if (!current || isTerminalQualificationOutcome(current.outcome)) return false;
-  if (current.currentPhysicalRunner) return incumbentLiveness === 'dead';
+  if (current.currentPhysicalRunner)
+    return incumbentLiveness === 'dead' && !launchReservationInGrace(current.currentPhysicalRunner, nowMs);
   return nowMs - current.updatedAtMs > QUALIFICATION_OWNER_ABANDONED_MS;
 }
 
@@ -324,6 +395,8 @@ function isPhysicalRun(value: unknown): value is QualificationPhysicalRun {
     Number.isFinite(run.reservedAtMs) &&
     Number.isFinite(run.leaseExpiresAtMs) &&
     Number.isFinite(run.endedAtMs) &&
+    (run.pid == null || (Number.isInteger(run.pid) && run.pid > 0)) &&
+    (run.pidIdentity == null || typeof run.pidIdentity === 'string') &&
     Array.isArray(run.evidenceRefs) &&
     run.evidenceRefs.every((ref) => typeof ref === 'string') &&
     isQualificationOutcome(run.outcome)
@@ -374,8 +447,19 @@ export function qualificationPhaseDurations(
   };
 }
 
-export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.now()): CheckpointQualificationState {
+export function projectCheckpointQualificationState(
+  raw: unknown,
+  nowMs = Date.now(),
+  runnerLiveness: RunnerLiveness = 'unknown',
+): CheckpointQualificationState {
   const owner = { kind: 'routine' as const, id: 'system:green-checkpoint' as const };
+  const emptyClocks = {
+    lastScheduledAtMs: null,
+    lastStartedAtMs: null,
+    lastProgressAtMs: null,
+    lastTerminalVerdictAtMs: null,
+  };
+  const emptyAges = { attempt: null, scheduled: null, started: null, progress: null, terminal: null };
   if (raw == null) {
     return {
       status: 'none',
@@ -385,8 +469,11 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       outcome: null,
       owner,
       lease: null,
+      runnerHealth: { state: 'none', liveness: 'unknown', phase: null, progressAgeMs: null },
       blockers: [],
       phaseDurationsMs: {},
+      clocks: emptyClocks,
+      agesMs: emptyAges,
       consumedPhysicalRuns: [],
       unknown: null,
       eligibilitySnapshot: null,
@@ -408,8 +495,11 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       outcome: null,
       owner,
       lease: null,
+      runnerHealth: { state: 'none', liveness: 'unknown', phase: null, progressAgeMs: null },
       blockers: [],
       phaseDurationsMs: {},
+      clocks: emptyClocks,
+      agesMs: emptyAges,
       consumedPhysicalRuns: [],
       eligibilitySnapshot: null,
       safeNextAction: {
@@ -421,6 +511,8 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
     };
   }
   const runner = transaction.currentPhysicalRunner;
+  const age = (at: number | undefined): number | null =>
+    at === undefined ? null : Math.max(0, nowMs - at);
   const lease = runner
     ? {
         holder: runner.id,
@@ -429,6 +521,16 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
         expired: nowMs >= (runner.leaseExpiresAtMs ?? runner.reservedAtMs),
       }
     : null;
+  const progressAgeMs = runner
+    ? Math.max(0, nowMs - (runner.heartbeatAtMs ?? transaction.lastProgressAtMs ?? runner.reservedAtMs))
+    : null;
+  const runnerHealth: CheckpointQualificationState['runnerHealth'] = {
+    state: !runner ? 'none' : runnerLiveness === 'dead' ? 'dead'
+      : progressAgeMs != null && progressAgeMs > QUALIFICATION_PROGRESS_STALE_MS ? 'stalled' : 'progressing',
+    liveness: runner ? runnerLiveness : 'unknown',
+    phase: runner?.phase ?? null,
+    progressAgeMs,
+  };
   const waitEvents = uniqueStrings(transaction.blockers.flatMap((blocker) => blocker.clearEvents));
   let safeNextAction: QualificationSafeNextAction;
   if (transaction.outcome.kind === 'green') {
@@ -449,10 +551,16 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
       reason: 'the terminal code outcome is inconclusive; inspect evidence before a successor',
       waitEvents: [],
     };
-  } else if (runner && lease?.expired) {
+  } else if (runner && runnerLiveness === 'dead') {
     safeNextAction = {
       code: 'recover-expired-runner',
-      reason: 'the physical-run lease expired without a terminal result',
+      reason: 'the exact physical runner was proved dead without a terminal result',
+      waitEvents: [],
+    };
+  } else if (runner && (lease?.expired || runnerHealth.state === 'stalled')) {
+    safeNextAction = {
+      code: 'inspect-runner-liveness',
+      reason: 'the runner missed progress or its deadline; preserve single flight until exact process liveness is proved',
       waitEvents: [],
     };
   } else if (runner) {
@@ -483,8 +591,22 @@ export function projectCheckpointQualificationState(raw: unknown, nowMs = Date.n
     outcome: transaction.outcome,
     owner,
     lease,
+    runnerHealth,
     blockers: transaction.blockers,
     phaseDurationsMs: qualificationPhaseDurations(transaction, nowMs),
+    clocks: {
+      lastScheduledAtMs: transaction.lastScheduledAtMs ?? null,
+      lastStartedAtMs: transaction.lastStartedAtMs ?? null,
+      lastProgressAtMs: transaction.lastProgressAtMs ?? null,
+      lastTerminalVerdictAtMs: transaction.lastTerminalVerdictAtMs ?? null,
+    },
+    agesMs: {
+      attempt: age(transaction.createdAtMs),
+      scheduled: age(transaction.lastScheduledAtMs),
+      started: age(transaction.lastStartedAtMs),
+      progress: age(transaction.lastProgressAtMs),
+      terminal: age(transaction.lastTerminalVerdictAtMs),
+    },
     consumedPhysicalRuns: transaction.consumedPhysicalRuns ?? [],
     eligibilitySnapshot: transaction.eligibilitySnapshot ?? null,
     safeNextAction,
@@ -553,7 +675,11 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
     !Array.isArray(row.blockers) ||
     !Array.isArray(row.evidenceRefs) ||
     (row.repairHead != null && (typeof row.repairHead !== 'string' || !row.repairHead.trim())) ||
+    (row.pendingRepairHead != null && (typeof row.pendingRepairHead !== 'string' || !row.pendingRepairHead.trim())) ||
     (row.runId != null && (typeof row.runId !== 'string' || !row.runId.trim())) ||
+    [row.lastScheduledAtMs, row.lastStartedAtMs, row.lastProgressAtMs, row.lastTerminalVerdictAtMs].some(
+      (at) => at != null && (!Number.isFinite(at) || at < 0),
+    ) ||
     (row.phaseEnteredAtMs != null && !Number.isFinite(row.phaseEnteredAtMs)) ||
     (row.phaseDurationsMs != null &&
       (typeof row.phaseDurationsMs !== 'object' ||
@@ -593,6 +719,9 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
       !Number.isFinite(row.currentPhysicalRunner.reservedAtMs) ||
       (row.currentPhysicalRunner.leaseExpiresAtMs != null &&
         !Number.isFinite(row.currentPhysicalRunner.leaseExpiresAtMs)) ||
+      (row.currentPhysicalRunner.pid != null &&
+        (!Number.isInteger(row.currentPhysicalRunner.pid) || row.currentPhysicalRunner.pid <= 0)) ||
+      (row.currentPhysicalRunner.pidIdentity != null && typeof row.currentPhysicalRunner.pidIdentity !== 'string') ||
       !Array.isArray(row.currentPhysicalRunner.evidenceRefs) ||
       row.currentPhysicalRunner.evidenceRefs.some((ref) => typeof ref !== 'string'))
   )
@@ -625,6 +754,7 @@ export function parseCheckpointQualificationTransaction(value: unknown): Checkpo
   return {
     ...(row as CheckpointQualificationTransaction),
     repairHead: typeof row.repairHead === 'string' ? row.repairHead.trim() : null,
+    pendingRepairHead: typeof row.pendingRepairHead === 'string' ? row.pendingRepairHead.trim() : null,
     runId: typeof row.runId === 'string' ? row.runId.trim() : null,
     phaseEnteredAtMs,
     phaseDurationsMs,
@@ -655,6 +785,7 @@ export function beginQualificationTransaction(
           },
           candidate: input.candidate?.trim() || current.candidate,
           repairHead: input.repairHead?.trim() || current.repairHead,
+          pendingRepairHead: null,
           runId: input.runId?.trim() || current.runId,
           phase: 'ready',
           phaseEnteredAtMs: nowMs,
@@ -686,6 +817,7 @@ export function beginQualificationTransaction(
     },
     candidate: input.candidate?.trim() || null,
     repairHead: input.repairHead?.trim() || null,
+    pendingRepairHead: null,
     runId: input.runId?.trim() || null,
     phase: 'ready',
     phaseEnteredAtMs: nowMs,
@@ -700,6 +832,34 @@ export function beginQualificationTransaction(
     eligibilitySnapshot: null,
   };
   return { status: 'updated', transaction };
+}
+
+/** A colliding scheduler fire joins the active attempt without manufacturing progress. */
+export function recordQualificationScheduledFire(
+  current: CheckpointQualificationTransaction,
+  nowMs = Date.now(),
+): QualificationTransition {
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (current.lastScheduledAtMs !== undefined && current.lastScheduledAtMs >= nowMs) {
+    return { status: 'idempotent', transaction: current };
+  }
+  return {
+    status: 'updated',
+    transaction: { ...current, lastScheduledAtMs: nowMs },
+  };
+}
+
+/** A scheduler collision is not another run. Unknown owner life fails closed. */
+export function classifyScheduledQualificationJoin(
+  current: CheckpointQualificationTransaction,
+  runnerLiveness: RunnerLiveness,
+): 'launch' | 'join' | 'unknown-liveness' {
+  if (current.phase !== 'running' || !current.currentPhysicalRunner || isTerminalQualificationOutcome(current.outcome)) {
+    return 'launch';
+  }
+  if (runnerLiveness === 'live') return 'join';
+  if (runnerLiveness === 'unknown') return 'unknown-liveness';
+  return 'launch';
 }
 
 export function recordQualificationEligibilitySnapshot(
@@ -801,6 +961,10 @@ export function reserveQualificationRunner(
     evidenceRefs?: readonly string[];
     leaseDurationMs: number;
     unit?: string | null;
+    pid?: number | null;
+    pidIdentity?: string | null;
+    /** false reserves the scheduled launch; true attaches the real CLI process. */
+    started?: boolean;
     /**
      * What the caller PROVED about the incumbent runner's process. Default 'unknown' keeps the
      * historical lease-only behaviour, so this can never loosen the lock on its own.
@@ -812,33 +976,56 @@ export function reserveQualificationRunner(
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const nowMs = input.nowMs ?? Date.now();
-  /**
-   * A lease is evidence of INTENT, never of life. Until this carried a liveness term, a runner that
-   * died without settling (crash, OOM, `systemd` stop, an aborted pre-suite phase) kept the whole
-   * gate wedged for the remainder of its 3h lease, and every scheduled fire in that window returned
-   * `conflict` and was skipped — which surfaces as `writer-starved`, i.e. a gate that looks red but
-   * has in fact rendered no verdict at all. Only a PROVEN-dead incumbent is reclaimed; 'unknown'
-   * (no unit recorded, or an unreadable probe) still waits the lease out, so the failure mode of a
-   * broken probe is the old behaviour rather than two runners on one candidate.
-   */
-  const liveRunner =
-    current.currentPhysicalRunner &&
-    nowMs < (current.currentPhysicalRunner.leaseExpiresAtMs ?? current.currentPhysicalRunner.reservedAtMs) &&
-    input.incumbentLiveness !== 'dead';
-  if (liveRunner && current.currentPhysicalRunner!.id !== input.runnerId) {
+  const incumbent = current.currentPhysicalRunner;
+  if (incumbent?.id === input.runnerId) {
+    if (
+      (current.candidate && input.candidate && current.candidate !== input.candidate.trim()) ||
+      (current.repairHead && input.repairHead && current.repairHead !== input.repairHead.trim()) ||
+      (current.runId && input.runId && current.runId !== input.runId.trim()) ||
+      (incumbent.pidIdentity && input.pidIdentity && incumbent.pidIdentity !== input.pidIdentity)
+    ) return { status: 'conflict', transaction: current };
+    if (input.started !== true && input.pid == null && !input.unit) {
+      return { status: 'idempotent', transaction: current };
+    }
+    const evidenceRefs = uniqueStrings([...incumbent.evidenceRefs, ...(input.evidenceRefs ?? [])]);
+    return {
+      status: 'updated',
+      transaction: {
+        ...current,
+        updatedAtMs: nowMs,
+        candidate: input.candidate?.trim() || current.candidate,
+        repairHead: input.repairHead?.trim() || current.repairHead,
+        runId: input.runId?.trim() || current.runId,
+        lastStartedAtMs: input.started === true ? nowMs : current.lastStartedAtMs,
+        lastProgressAtMs: input.started === true ? nowMs : current.lastProgressAtMs,
+        currentPhysicalRunner: {
+          ...incumbent,
+          candidate: input.candidate?.trim() || incumbent.candidate,
+          leaseExpiresAtMs: nowMs + Math.max(1, input.leaseDurationMs),
+          evidenceRefs,
+          unit: input.unit?.trim() || incumbent.unit,
+          pid: input.pid ?? incumbent.pid,
+          pidIdentity: input.pidIdentity ?? incumbent.pidIdentity,
+          heartbeatAtMs: nowMs,
+          phase: input.started === true ? 'materializing' : incumbent.phase,
+        },
+        evidenceRefs: uniqueStrings([...current.evidenceRefs, ...evidenceRefs]),
+      },
+    };
+  }
+  // A lease timeout alone cannot prove death. Unknown or live ownership keeps single flight.
+  if (incumbent && (input.incumbentLiveness !== 'dead' || launchReservationInGrace(incumbent, nowMs))) {
     return { status: 'conflict', transaction: current };
   }
-  if (liveRunner && current.currentPhysicalRunner?.id === input.runnerId)
-    return { status: 'idempotent', transaction: current };
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
   // Keep the two displacement causes distinct in the history: a lease that ran out is a runner that
   // overran, a reclaimed one is a runner that DIED. Collapsing them would hide exactly the signal
   // that makes a recurring vanish diagnosable.
   const displacedOutcome: QualificationOutcome = {
     kind: 'pre-suite-no-verdict',
-    reason: input.incumbentLiveness === 'dead' ? 'runner-vanished' : 'deadline-exceeded',
+    reason: 'runner-vanished',
   };
-  const expiredRuns = current.currentPhysicalRunner
+  const expiredRuns = incumbent
     ? consumedRunner(current, displacedOutcome, nowMs)
     : (current.consumedPhysicalRuns ?? []);
   return {
@@ -850,6 +1037,7 @@ export function reserveQualificationRunner(
       repairHead: input.repairHead?.trim() || current.repairHead,
       runId: input.runId?.trim() || current.runId,
       phase: 'running',
+      ...(input.started === false ? {} : { lastStartedAtMs: nowMs, lastProgressAtMs: nowMs }),
       phaseEnteredAtMs:
         current.phase === 'running' && !current.currentPhysicalRunner
           ? (current.phaseEnteredAtMs ?? current.updatedAtMs)
@@ -864,9 +1052,48 @@ export function reserveQualificationRunner(
         leaseExpiresAtMs: nowMs + Math.max(1, input.leaseDurationMs),
         evidenceRefs,
         unit: input.unit?.trim() || null,
+        pid: input.pid ?? null,
+        pidIdentity: input.pidIdentity ?? null,
+        heartbeatAtMs: nowMs,
+        phase: input.started === false ? 'launching' : 'materializing',
       },
       consumedPhysicalRuns: expiredRuns,
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...evidenceRefs]),
+    },
+  };
+}
+
+/** Progress belongs to the exact active runner. A scheduler tick cannot call this transition. */
+export function recordQualificationRunnerProgress(
+  current: CheckpointQualificationTransaction,
+  input: {
+    attemptId: string;
+    runnerId: string;
+    runId: string;
+    phase: NonNullable<QualificationPhysicalRunner['phase']>;
+    pidIdentity?: string | null;
+    nowMs?: number;
+  },
+): QualificationTransition {
+  const runner = current.currentPhysicalRunner;
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (current.attemptId !== input.attemptId || current.phase !== 'running' ||
+      !runner || runner.id !== input.runnerId || !current.runId || current.runId !== input.runId ||
+      !runner.pidIdentity || !input.pidIdentity || runner.pidIdentity !== input.pidIdentity) {
+    return { status: 'conflict', transaction: current };
+  }
+  const nowMs = input.nowMs ?? Date.now();
+  if (nowMs < (runner.heartbeatAtMs ?? 0) ||
+      (nowMs === runner.heartbeatAtMs && input.phase === runner.phase)) {
+    return { status: 'idempotent', transaction: current };
+  }
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: nowMs,
+      lastProgressAtMs: nowMs,
+      currentPhysicalRunner: { ...runner, heartbeatAtMs: nowMs, phase: input.phase },
     },
   };
 }
@@ -897,7 +1124,6 @@ export function settleQualificationTransaction(
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
-  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const candidate = input.candidate?.trim() || null;
   const runId = input.runId?.trim() || null;
   if (current.candidate && candidate && current.candidate !== candidate) {
@@ -907,6 +1133,16 @@ export function settleQualificationTransaction(
     return { status: 'conflict', transaction: current };
   }
   const outcome = classifyQualificationVerdict(input);
+  // Only the identical outcome is a replay. A changed run, candidate, or verdict may
+  // never turn a terminal red into a green wake under the same logical attempt.
+  if (isTerminalQualificationOutcome(current.outcome)) {
+    return {
+      status: current.outcome.kind === outcome.kind &&
+        'reason' in current.outcome && 'reason' in outcome && current.outcome.reason === outcome.reason
+        ? 'terminal' : 'conflict',
+      transaction: current,
+    };
+  }
   if (outcome.kind === 'pre-suite-no-verdict') {
     return waitQualificationTransaction(current, {
       attemptId: input.attemptId,
@@ -925,6 +1161,7 @@ export function settleQualificationTransaction(
       ...current,
       updatedAtMs: nowMs,
       phase: 'terminal',
+      lastTerminalVerdictAtMs: nowMs,
       phaseEnteredAtMs: nowMs,
       phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
       outcome,
@@ -935,6 +1172,59 @@ export function settleQualificationTransaction(
       currentPhysicalRunner: null,
       consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
+    },
+  };
+}
+
+/** Recover only the exact unstarted scheduled runner proved finished by its terminal marker. */
+export function recoverQualificationScheduledTerminal(
+  current: CheckpointQualificationTransaction,
+  input: {
+    attemptId: string;
+    runnerId: string;
+    runId: string;
+    reason: string;
+    finishedAtMs: number;
+    evidenceRefs: readonly string[];
+    nowMs?: number;
+  },
+): QualificationTransition {
+  const terminalRef = `checkpoint-terminal:${input.runId}`;
+  if (current.attemptId !== input.attemptId || !input.evidenceRefs.includes(terminalRef)) {
+    return { status: 'conflict', transaction: current };
+  }
+  const outcome = classifyQualificationVerdict({ reason: input.reason });
+  if (outcome.kind !== 'pre-suite-no-verdict') return { status: 'conflict', transaction: current };
+  const recoveredReason = `orphaned-reservation-after-${outcome.reason}`;
+  if (isTerminalQualificationOutcome(current.outcome)) {
+    return current.outcome.kind === 'code-inconclusive' &&
+      current.outcome.reason === recoveredReason && current.evidenceRefs.includes(terminalRef)
+      ? { status: 'terminal', transaction: current }
+      : { status: 'conflict', transaction: current };
+  }
+  const runner = current.currentPhysicalRunner;
+  if (current.phase !== 'running' || !runner || runner.id !== input.runnerId ||
+      runner.pid != null || runner.unit || runner.phase !== 'launching' ||
+      !runner.evidenceRefs.includes(`gate-fire:${input.runnerId}`) ||
+      !Number.isFinite(input.finishedAtMs) || input.finishedAtMs < runner.reservedAtMs) {
+    return { status: 'conflict', transaction: current };
+  }
+  const nowMs = input.nowMs ?? Date.now();
+  const recoveredOutcome: QualificationOutcome = { kind: 'code-inconclusive', reason: recoveredReason };
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: nowMs,
+      phase: 'terminal',
+      lastTerminalVerdictAtMs: nowMs,
+      phaseEnteredAtMs: nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
+      outcome: recoveredOutcome,
+      blockers: [],
+      currentPhysicalRunner: null,
+      consumedPhysicalRuns: consumedRunner(current, recoveredOutcome, nowMs),
+      evidenceRefs: uniqueStrings([...current.evidenceRefs, ...input.evidenceRefs]),
     },
   };
 }
@@ -994,6 +1284,7 @@ export function cancelQualificationTransaction(
       ...current,
       updatedAtMs: nowMs,
       phase: 'terminal',
+      lastTerminalVerdictAtMs: nowMs,
       phaseEnteredAtMs: nowMs,
       phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
       outcome,
@@ -1030,7 +1321,7 @@ export type StoredQualificationCancellation =
   | { status: 'stop-failed'; transaction: CheckpointQualificationTransaction; error: string };
 
 /**
- * A terminal logical attempt may leave its pre-suite frozen candidate behind. Retire it
+ * A terminal or provably abandoned logical attempt may leave its frozen queue behind. Retire it
  * only for an explicitly distinct successor and only while the queue is still the exact,
  * unstarted row created by that predecessor. Any legacy, mismatched, dispatched, repaired,
  * or otherwise advanced queue stays authoritative and blocks the successor fail-closed.
@@ -1150,6 +1441,8 @@ type StoredQualificationMutationOptions = {
    * context so the successor's attempt id can be derived from the queue it will verify.
    */
   successorInput?: BeginQualificationInput | ((context: StoredQualificationRowContext) => BeginQualificationInput);
+  /** A terminal pipeline result committed with the exact qualification transition. */
+  terminalEvent?: { status: string; detail: Record<string, unknown> };
 };
 
 async function mutateStoredQualification(
@@ -1177,15 +1470,29 @@ async function mutateStoredQualification(
         return { status: 'unreadable' as const, error: 'qualification transaction metadata is malformed' };
       }
       const rowContext: StoredQualificationRowContext = { rawRepairQueue: metadata.repair_queue ?? null };
+      const queueHead = frozenRepairQueueVerificationTarget(rowContext.rawRepairQueue);
+      if (current?.pendingRepairHead && queueHead && current.pendingRepairHead !== queueHead) {
+        return { status: 'conflict' as const, transaction: current };
+      }
       const transition = change(current, rowContext);
       if (transition.status !== 'updated') return transition;
+      const persistTerminalEvent = async (): Promise<void> => {
+        if (!options.terminalEvent || !isTerminalQualificationOutcome(transition.transaction.outcome)) return;
+        await appendPipelineEvent({
+          workspaceId: target.workspaceId,
+          installSlug: target.installSlug,
+          kind: 'green_checkpoint',
+          ...options.terminalEvent,
+        }, tx as unknown as Sql, { required: true });
+      };
       const successorInput =
         typeof options.successorInput === 'function' ? options.successorInput(rowContext) : options.successorInput;
+      // A distinct successor may replace a proved-dead nonterminal runner as well as a
+      // terminal attempt. Both inherit the predecessor's queue, so both must reconcile and
+      // re-stamp its owner in the same row write. Leaving the abandoned queue's old id in
+      // place makes a later gate self-heal fail its handoff guard despite a matching CAS.
       const predecessor =
-        successorInput &&
-        current &&
-        isTerminalQualificationOutcome(current.outcome) &&
-        current.attemptId !== transition.transaction.attemptId
+        successorInput && current && current.attemptId !== transition.transaction.attemptId
           ? current
           : null;
       const reconciliation =
@@ -1232,6 +1539,7 @@ async function mutateStoredQualification(
             },
           };
         }
+        await persistTerminalEvent();
         return { ...transition, repairQueueReconciliation: reconciliation };
       }
       if (reconciliation?.status === 'preserved') {
@@ -1270,6 +1578,7 @@ async function mutateStoredQualification(
             },
           };
         }
+        await persistTerminalEvent();
         return { ...transition, repairQueueReconciliation: reconciliation };
       }
       await tx`
@@ -1284,6 +1593,7 @@ async function mutateStoredQualification(
          WHERE workspace_id = ${target.workspaceId}
            AND install_slug = ${target.installSlug}
            AND target_role = 'system:green-checkpoint'`;
+      await persistTerminalEvent();
       return reconciliation ? { ...transition, repairQueueReconciliation: reconciliation } : transition;
     });
   } catch (error) {
@@ -1341,6 +1651,20 @@ export function beginStoredQualification(
   );
 }
 
+export function recordStoredQualificationScheduledFire(
+  target: GateVerdictTarget,
+  attemptId: string,
+  nowMs = Date.now(),
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current) =>
+    current && current.attemptId === attemptId
+      ? recordQualificationScheduledFire(current, nowMs)
+      : current
+        ? { status: 'conflict', transaction: current }
+        : { status: 'unreadable', error: 'missing attempt' },
+  );
+}
+
 export function waitStoredQualification(
   target: GateVerdictTarget,
   input: Parameters<typeof waitQualificationTransaction>[1],
@@ -1360,6 +1684,16 @@ export function reserveStoredQualificationRunner(
           ...input,
           incumbentLiveness: input.incumbentLiveness ?? probeRunnerLiveness(current.currentPhysicalRunner),
         })
+      : { status: 'unreadable', error: 'missing attempt' },
+  );
+}
+
+export function recordStoredQualificationRunnerProgress(
+  target: GateVerdictTarget,
+  input: Parameters<typeof recordQualificationRunnerProgress>[1],
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current) =>
+    current ? recordQualificationRunnerProgress(current, input)
       : { status: 'unreadable', error: 'missing attempt' },
   );
 }
@@ -1411,6 +1745,8 @@ export function recordStoredQualificationVerdict(
     runId?: string | null;
     evidenceRefs?: readonly string[];
     nowMs?: number;
+    /** Present for a recordable terminal verdict; included in the same DB transaction. */
+    terminalEvent?: { status: string; detail: Record<string, unknown> };
   },
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) => {
@@ -1419,7 +1755,17 @@ export function recordStoredQualificationVerdict(
       ...input,
       attemptId: input.attemptId ?? current.attemptId,
     });
-  });
+  }, { terminalEvent: input.terminalEvent });
+}
+
+export function recordStoredQualificationScheduledTerminalRecovery(
+  target: GateVerdictTarget,
+  input: Parameters<typeof recoverQualificationScheduledTerminal>[1],
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current) =>
+    current ? recoverQualificationScheduledTerminal(current, input)
+      : { status: 'unreadable', error: 'missing attempt' },
+  );
 }
 
 /**
