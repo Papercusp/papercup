@@ -55,6 +55,7 @@ const compileLaunchSpecificationArtifactMock = vi.fn(async (input: any) => ({
   specificationRevision: 'a'.repeat(64),
   stateRevision: input.stateRevision ?? 'b'.repeat(64),
   compositionSource: 'compatibility' as const,
+  resourceArtifacts: [],
 }));
 // writeSuCodexHome RECEIVES the bearer (that's the legitimate server-side
 // sink). It returns only file paths — never echoes the token back out.
@@ -116,6 +117,14 @@ vi.mock('./role-launch-spec', async (importOriginal) => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
   compileLaunchSpecificationArtifact: (...args: unknown[]) =>
     compileLaunchSpecificationArtifactMock(...(args as [any])),
+}));
+vi.mock('./modes/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./modes/store')>()),
+  reconcileImpliedModes: vi.fn(async () => []),
+}));
+vi.mock('./task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./task-manager/store')>()),
+  bindLiveAgentSessionTasksToNativeSession: vi.fn(async () => []),
 }));
 vi.mock('./role-codex-home', () => ({
   writeSuCodexHome: (...args: unknown[]) => writeSuCodexHomeMock(...(args as [any])),
@@ -180,7 +189,9 @@ async function callPost(body: unknown): Promise<Response> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return post.handler(req, CTX);
+  const res = await post.handler(req, CTX);
+  if (res.status !== 200) throw new Error(`bootstrap-su returned ${res.status}: ${await res.clone().text()}`);
+  return res;
 }
 
 beforeEach(() => {
