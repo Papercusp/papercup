@@ -78,6 +78,7 @@ const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
   neverDropFacts: true,
   toolSurface: true,
   carryBlindWindow: true,
+  openChecks: true,
 };
 
 /** The optional fields are omitted on purpose — `undefined` is a real input. */
@@ -177,6 +178,10 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     [10, 'toolSurface'],
     [20, 'ownerDirectives'],
     [30, 'carryBlindWindow'],
+    // P-010 (WI-10002221): deliberately at 35, directly after carryBlindWindow —
+    // it shares that class's decay property and worsens it, because a carried
+    // FALSE claim is acted on at the agent's first action of the turn.
+    [35, 'openChecks'],
     [40, 'historyUpdates'],
     [50, 'effortUpdates'],
     [60, 'unansweredDirected'],
