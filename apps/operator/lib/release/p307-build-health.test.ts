@@ -182,12 +182,17 @@ kill "$monitor" 2>/dev/null || true
 wait "$monitor" 2>/dev/null || true
 kill "$pid" 2>/dev/null || true
 wait "$pid" 2>/dev/null || true
+# The monitor has already reported, so the advancer's job is done; stop it
+# rather than waiting out its ~4s loop, which under gate load pushed the whole
+# harness past its deadline (WI-10003582: status null at 13.7s).
+kill "$advancer" 2>/dev/null || true
 wait "$advancer" 2>/dev/null || true
 test "$(awk '$1 == "rchar:" {print $2}' "$proc/$((pid + 1))/io")" -gt 1
 grep -q 'reason=process_io_unavailable' "$TMP/monitor.out"
 ! grep -q 'status=STALLED' "$TMP/monitor.out"
 `,
       root,
+      30_000,
     );
 
     expectSuccessfulHarness(result);
