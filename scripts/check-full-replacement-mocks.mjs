@@ -227,7 +227,7 @@ export function analyzeMockCalls(text, fileName) {
     const factory = scan.slice(comma + 1, close);
     // A factory that takes a parameter receives vitest's importOriginal; one that calls
     // vi.importActual/importOriginal itself is equally immune. Everything else enumerates.
-    const takesParam = /^\s*(?:async\s*)?\(\s*[A-Za-z_$]/.test(factory);
+    const takesParam = /^\s*(?:async\s*)?(?:\(\s*[A-Za-z_$]|[A-Za-z_$][\w$]*\s*=>)/.test(factory);
     const usesImportActual = /\bimportActual\b|\bimportOriginal\b/.test(factory);
     out.push({
       spec,
@@ -744,6 +744,12 @@ export const SELF_TESTS = [
     name: 'silent for the import-actual spread (the prescribed fix)',
     path: FIXTURE_PATH,
     text: `vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), a: 1 }));`,
+    expect: 0,
+  },
+  {
+    name: 'silent for an unparenthesized import-actual callback',
+    path: FIXTURE_PATH,
+    text: `vi.mock('../../adv-sessions', async orig => ({ ...(await orig<typeof import('../../adv-sessions')>()), a: 1 }));`,
     expect: 0,
   },
   {

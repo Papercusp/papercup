@@ -68,7 +68,8 @@ vi.mock('./spawner-sidecar-spawn', () => ({
   spawnSpawnerSidecar: async () => {},
 }));
 
-vi.mock('./spawner-ipc-client', () => ({
+vi.mock('./spawner-ipc-client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./spawner-ipc-client')>()),
   getSpawnerIpcClient: () => ({
     call: async (_method: string, params: unknown) => {
       if (rpcOverride) return rpcOverride(params);
