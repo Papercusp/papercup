@@ -6,7 +6,10 @@ const { getWorkItem, readAcceptedBlueprintDirectWorkItem, getIdentitySource, sql
   getIdentitySource: vi.fn(),
   sqlMock: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMock }),
+}));
 vi.mock('../work-items', () => ({ getWorkItem }));
 vi.mock('./operation-admission', () => ({ readAcceptedBlueprintDirectWorkItem }));
 vi.mock('../agent-identities/source', () => ({ getIdentitySource }));
