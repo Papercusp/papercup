@@ -36,5 +36,11 @@ export function createRequire(_from?: string | URL): RequireLike {
   return req;
 }
 
+// The mutation-probe gate uses this only on the server. Keep its import
+// linkable in the SPA while failing loudly if that server path runs there.
+export function isBuiltin(_id: string): never {
+  throw new Error('[node:module shim] isBuiltin() is unavailable in the browser bundle');
+}
+
 // Some consumers `import module from 'node:module'` and reach `.createRequire`.
-export default { createRequire };
+export default { createRequire, isBuiltin };
