@@ -372,8 +372,11 @@ describe('default git probes never block the event loop (WI-10002704)', () => {
     ]);
   });
 
-  it('hands the event loop back while git runs: a 400ms git must not stall the caller', async () => {
-    const slowGit = fakeGit('slow-git', 'sleep 0.4\nexec git "$@"');
+  it('hands the event loop back while git runs: a slow git must not stall the caller', async () => {
+    const SLOW_GIT_DELAY_MS = 1_000;
+    const MAX_CALL_BLOCK_MS = 500;
+    expect(MAX_CALL_BLOCK_MS).toBeLessThan(SLOW_GIT_DELAY_MS);
+    const slowGit = fakeGit('slow-git', `sleep ${SLOW_GIT_DELAY_MS / 1_000}\nexec git "$@"`);
     let ticks = 0;
     const timer = setInterval(() => {
       ticks += 1;
@@ -386,9 +389,9 @@ describe('default git probes never block the event loop (WI-10002704)', () => {
       const dirty = isDirtyManyViaGit(repo, ['a.ts'], { gitBinary: slowGit });
       const dirtyBlockedMs = performance.now() - t0;
       const [commitsResult, dirtyResult] = await Promise.all([commits, dirty]);
-      // A synchronous spawn would hold the caller for the whole 400ms and starve the timer.
-      expect(commitsBlockedMs).toBeLessThan(200);
-      expect(dirtyBlockedMs).toBeLessThan(200);
+      // A synchronous spawn would hold the caller for the whole git delay and starve the timer.
+      expect(commitsBlockedMs).toBeLessThan(MAX_CALL_BLOCK_MS);
+      expect(dirtyBlockedMs).toBeLessThan(MAX_CALL_BLOCK_MS);
       expect(ticks).toBeGreaterThanOrEqual(5);
       expect(commitsResult.get('a.ts')).toBe(1_700_000_200);
       expect(dirtyResult.get('a.ts')).toBe(false);

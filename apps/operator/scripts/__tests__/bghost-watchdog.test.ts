@@ -267,7 +267,11 @@ describe('committed bg-host hot-path activation (EI-18133447445064828)', () => {
     expect(logArgs).toContain(
       ':(glob)packages/operator-core/lib/events/**/*.ts',
     );
+    expect(logArgs).toContain(':(glob)packages/operator-core/lib/red-queen/**/*.ts');
+    expect(logArgs).toContain('packages/operator-core/lib/release/routine-engine-liveness.ts');
     expect(statusArgs).toContain('--untracked-files=all');
+    expect(statusArgs).toContain('packages/operator-core/lib/red-queen');
+    expect(statusArgs).toContain('packages/operator-core/lib/release/routine-engine-liveness.ts');
     expect(statusArgs).not.toContain(':(exclude,glob)**/*.test.ts');
   });
 
