@@ -59,6 +59,12 @@ import { _resetDisplayPoolForTests } from '../deployment/display-allocator';
 import { governorForBackend, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 const node = (script: string) => ({ command: execPath, args: ['-e', script], env: process.env });
+// The first-turn guard arms at spawn, so a case asserting it CLEARS races the child's own
+// startup against the guard. WI-10003853 measured 1028ms of spawn cost under gate load, and a
+// 200ms guard lost that race at repairHead cef7d918 (WI-10004340). Cases that must NOT trip
+// the guard use this window; cases that must trip it keep a short one (a slow start only
+// makes those fire more surely).
+const SPAWN_SAFE_FIRST_TURN_MS = 3_000;
 
 beforeEach(() => {
   // P-005 failLog / spawn-error log → console.error; silence (fail-on-console).
@@ -233,11 +239,11 @@ describe('spawnInvokeOnce', () => {
       'release-fixer',
       [],
       {},
-      { timeoutMs: 1_000, firstTurnTimeoutMs: 200 },
+      { timeoutMs: SPAWN_SAFE_FIRST_TURN_MS * 3, firstTurnTimeoutMs: SPAWN_SAFE_FIRST_TURN_MS },
     );
     expect(r.exitCode).toBe(0);
     expect(r.firstTurnTimedOut).toBe(false);
-  });
+  }, 20_000);
 
   it('release-fixer first-turn guard clears on the stderr activity marker (production shape)', async () => {
     // WI-85288 regression. The test above disarms the guard via STDOUT, which is a
@@ -253,27 +259,29 @@ describe('spawnInvokeOnce', () => {
     // stderr surfacing (orchestrator-runner.ts:862), and vitest-fail-on-console is
     // active — same spy+assert idiom the other stderr-bearing cases in this file use.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const start = Date.now();
+    // Outlive the guard so a still-armed timer would kill this and fail. The exit is pinned to
+    // an absolute instant past the guard, so a slow child start cannot shorten the window.
+    const exitAt = start + SPAWN_SAFE_FIRST_TURN_MS + 300;
     H.cmd = node(
       'process.stdout.write("[2026-08-27T12:23:25.000Z] prompt-budget role=release-fixer total=63586\\n");' +
         `process.stderr.write(${JSON.stringify(`${OUTER_ACTIVITY_ECHO_MARKER}\n`)});` +
-        // Outlive the 200ms guard so a still-armed timer would kill this and fail.
-        'setTimeout(() => process.exit(0), 500)',
+        `setTimeout(() => process.exit(0), Math.max(0, ${exitAt} - Date.now()))`,
     );
-    const start = Date.now();
     const r = await spawnInvokeOnce(
       process.cwd(),
       'release-fixer',
       [],
       {},
-      { timeoutMs: 2_000, firstTurnTimeoutMs: 200 },
+      { timeoutMs: SPAWN_SAFE_FIRST_TURN_MS * 3, firstTurnTimeoutMs: SPAWN_SAFE_FIRST_TURN_MS },
     );
     expect(r.firstTurnTimedOut).toBe(false);
     expect(r.timedOut).toBe(false);
     expect(r.exitCode).toBe(0);
-    expect(Date.now() - start).toBeGreaterThan(400); // it really outlived the guard
+    expect(Date.now() - start).toBeGreaterThan(SPAWN_SAFE_FIRST_TURN_MS); // it really outlived the guard
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
-  }, 10_000);
+  }, 20_000);
 
   it('resolves (never rejects) with exitCode 1 on a spawn error (bad command)', async () => {
     H.cmd = { command: 'papercusp-no-such-binary-zzz', args: [], env: process.env };

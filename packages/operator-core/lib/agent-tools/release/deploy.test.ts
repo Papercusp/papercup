@@ -73,6 +73,14 @@ vi.mock('../../harness/git-sync/pipeline-events', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../harness/git-sync/pipeline-events')>()),
   recentPipelineEvents: vi.fn(),
 }));
+// WI-10004340: diagnosticVintage.processSha falls back to getBuildInfo(), which shells out to
+// `git rev-parse` with a 2s timeout. The gate's loaded checkout resolved null there ('unknown'),
+// while the shared tree resolved a real sha ('stale'). Pin the process identity so the vintage
+// assertions measure the tool, not the host running them.
+vi.mock('../../build-info', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../build-info')>()),
+  getBuildInfo: () => ({ sha: 'process0sha', version: '0.0.0-test' }),
+}));
 
 import { readDeployStatus, launchDetachedDeploy } from '../../release-deploy-launch';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';

@@ -386,10 +386,12 @@ describe('end-to-end — submodule content is materialised, not silently empty (
     // unrelated lint. `run.status` distinguishes a genuine lint finding (exit 1, via
     // `summarize()`) from a setup/environment failure in THIS tool (exit 2) — only
     // the latter would mean the fix regressed.
+    // The real extraction initialises every submodule, so its cost tracks host load, not
+    // this test's subject: 11–44s normally, >60s at load ~130 on the gate (WI-10004340).
     const run = spawnSync('node', [scriptPath, 'lint:no-owner-name-tags', '--keep'], {
       cwd: repoRoot,
       encoding: 'utf8',
-      timeout: 60_000,
+      timeout: 150_000,
       killSignal: 'SIGKILL',
     });
     expect(run.status).not.toBe(2);
@@ -412,5 +414,5 @@ describe('end-to-end — submodule content is materialised, not silently empty (
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
     }
-  }, 60_000);
+  }, 180_000);
 });
