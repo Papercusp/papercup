@@ -133,6 +133,57 @@ describe('rubrics:amend complete acceptance criteria input', () => {
     expect(rendered).not.toContain('point the reviewer at THAT thread post');
   });
 
+  it('documents the live plan mapping prerequisite and structured refusal for changed BARs', () => {
+    const rendered = JSON.stringify({ description: amendTool.description, guidance: amendTool.guidance });
+
+    expect(rendered).toContain('subject plan');
+    expect(rendered).toContain('`## Requirements`');
+    expect(rendered).toContain('`### Bar-to-work map for this plan`');
+    expect(rendered).toContain('non-dropped P-NNN item');
+    expect(rendered).toContain('acceptance_bar_amendment_no_live_discharge_mapping');
+    expect(rendered).toContain('{ ok:false, code, error, next }');
+  });
+
+  it('returns the expected missing-map dry-run refusal as a result instead of a tool error', async () => {
+    const error = new Error("acceptance_bar_amendment_no_live_discharge_mapping: BAR 'R-9' has no live mapped plan item");
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(error);
+
+    const result = await body({ rubricRef: 'acceptance-example', dryRun: true, criteria: [{
+      ...criterion,
+      key: 'r-9',
+      barKey: 'R-9',
+      title: 'New outcome',
+    }] });
+
+    expect(result).toMatchObject({
+      ok: false,
+      dryRun: true,
+      code: 'acceptance_bar_amendment_no_live_discharge_mapping',
+      error: error.message,
+      next: expect.stringContaining('Bar-to-work map for this plan'),
+    });
+  });
+
+  it('returns the same expected missing-map refusal for an apply without swallowing unrelated errors', async () => {
+    const error = new Error("acceptance_bar_amendment_no_live_discharge_mapping: BAR 'R-9' has no live mapped plan item");
+    rubricsMocks.amendRubric.mockRejectedValueOnce(error);
+
+    const result = await body({
+      rubricRef: 'acceptance-example',
+      idempotencyKey: 'unmapped-r9-apply',
+      criteria: [{ ...criterion, key: 'r-9', barKey: 'R-9', title: 'New outcome' }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'acceptance_bar_amendment_no_live_discharge_mapping',
+      error: error.message,
+    });
+
+    rubricsMocks.previewAcceptanceBarAmendment.mockRejectedValueOnce(new Error('unexpected database failure'));
+    await expect(body({ rubricRef: 'acceptance-example', dryRun: true })).rejects.toThrow('unexpected database failure');
+  });
+
   it('accepts a full criterion set with structured checks', () => {
     const parsed = rubricsAmendArgs.safeParse({
       rubricRef: 'acceptance-example',
