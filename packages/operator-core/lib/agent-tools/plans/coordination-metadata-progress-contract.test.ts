@@ -29,6 +29,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...await importOriginal<typeof import('@papercusp/db-org')>(),
   getOrgPg: io.database,
 }));
+// A transitive git-pipeline-stats import now refreshes release config at module
+// load. This renderer fixture does not exercise that config read.
+vi.mock('../../operator-state-pg', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../operator-state-pg')>(),
+  readOperatorState: async () => null,
+}));
 // The sessions module transitively imports search/embed-backfill, which boots
 // the memory settings cache. That unrelated boot reader is not part of these
 // schema/renderer fixtures. Stub its explicit seam, not the no-database guard.

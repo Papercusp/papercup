@@ -804,6 +804,11 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // The property-based prefilter therefore sees a guard-shaped exposure, but masking would
     // not affect any analyzed text. Keep the exposure declared rather than adding a no-op import.
     'check-host-bundle-builds.mjs',
+    // This test reads package.json to assert the postinstall command, then
+    // regex-matches diagnostics from its fixture run. It never matches JS/TS
+    // source text; masking that source would be a no-op. The quoted .mjs import
+    // and readFileSync make the property prefilter classify it as a source guard.
+    'check-installed-patch-postimages.test.mjs',
     // check-js-syntax.mjs does not text-match code tokens against source at all. Its offenders
     // come from `node --check` EXIT CODES and an eslint scope graph — two real parsers — so no
     // comment, string literal or prose can mint a phantom offender here. The property prefilter

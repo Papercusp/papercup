@@ -1561,13 +1561,6 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/p2p-witness-manifest.mjs: every detected start is execFileSync('git', ['-C', repoRoot, ...]) cheap plumbing metadata reads that print and exit, synchronous and awaited; the manifest builder spawns no worker, creates no independent resident queue, and must remain runnable so manifest generation is not itself gated behind admission.",
   },
   {
-    path: "packages/operator-core/lib/sync/hyperbee/read-merge.ts",
-    code: "unbounded-resident-queue",
-    disposition: "semantic",
-    reason:
-      "P-016 reviewed semantic disposition for packages/operator-core/lib/sync/hyperbee/read-merge.ts: its MergeCursor Maps (positions, winners, applyThrows, readThrows, readStalls, lateReadResults) are finite per-merge correlation state keyed by the active logs and positions being merged, not a resident resource queue; entries are consumed, evicted, or bounded by the caller's in-flight merge workload and start no independent resident work.",
-  },
-  {
     path: "scripts/lib/release-task-journal.mts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
@@ -1609,6 +1602,41 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
     reason:
       "P-016 reviewed bypass disposition for scripts/project-doc-parts.mjs: verifyDocClaims() makes exactly one synchronous spawnSync('npx', ['vitest','run',...,'lib/doc-claims/']) to run the doc-claims guards against the corpus this projection just wrote — the only moment that corpus exists on disk before git-sync sweeps it into the gate's candidate. It is not a cheap metadata read (~40s), but it cannot materially increase residency: spawnSync is awaited by construction, exactly one child exists and it must exit before the projection continues, and the child is handed PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY=1 so it provably cannot recurse into a second verify. It runs only when a human or a release script projects doc parts (a handful of times a day), never on a scheduled or serving path, and starts no detached worker, network request, or resident queue. Two deliberate escape hatches (--no-verify, PAPERCUSP_SKIP_DOC_CLAIMS_VERIFY=1) let a mid-repair or non-interactive caller skip the start entirely.",
   },
+  {
+    path: "apps/operator/lib/release/green-checkpoint.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for green-checkpoint.ts: createCheckpointTerminalEventBuffer's pending Map holds only terminal wake events from one qualification result, keyed by event/sha/runId; flush copies and clears it after the durable result is recorded or withholds it on failure. It is per-run notification correlation state, not resident work or an independently draining queue.",
+  },
+  {
+    path: "packages/operator-core/lib/sync/hyperbee/snapshot-fold-offload.ts",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for snapshot-fold-offload.ts: SnapshotFoldWorker.open obtains the process-wide acquireSnapshotFoldSlot lease before new Worker, permits one fold worker at a time, sets a per-worker V8 heap limit, and releases the exact slot on failed start, close, or exit. The worker is parent-owned by one in-flight pot compaction; it creates no independent scheduled work.",
+  },
+  {
+    path: "packages/operator-core/lib/sync/hyperbee/snapshot-fold-offload.ts",
+    code: "unbounded-resident-queue",
+    disposition: "semantic",
+    reason:
+      "P-016 reviewed semantic disposition for snapshot-fold-offload.ts: pending maps request IDs to reply promises inside the single leased worker; each reply or send failure deletes its entry, and close/worker failure rejects and clears all entries. It is active-call correlation, not a resident work backlog.",
+  },
+  {
+    path: "scripts/check-installed-patch-postimages.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for check-installed-patch-postimages.mjs: runGit performs synchronous, awaited local Git metadata and hash reads over the finite tracked patch list during postinstall, each with a 30-second timeout and 32 MiB output bound. It starts no detached worker or resident queue and must run before the installed patch set is trusted.",
+  },
+  {
+    path: "scripts/verify-identities-r7.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for verify-identities-r7.mjs: this operator-invoked acceptance journey awaits each Tauri command before the next UI step, bounds UI/poll commands to 45 seconds, liveness to 15 seconds, and its Git identity read to 5 seconds. It neither detaches children nor retains a resident queue after the journey ends.",
+  },
 ]);
 export const P016_DISPOSITION_REGISTRY = new Map(
   P016_REVIEWED_DISPOSITIONS.map(({ path, code, disposition, reason }) => [
@@ -1642,6 +1670,14 @@ export const BYPASS_REGISTRY = new Map([
   // Governing them would add an admission round-trip per call to operations whose
   // whole cost is less than the admission record they would write.
   [
+    "packages/operator-core/lib/agent-tools/plans/evidence-measurement-pin.ts::resource-start-outside-admission",
+    {
+      disposition: "bypass",
+      reason:
+        "defaultGitRunner awaits one local git plumbing read for a pinned measurement, with a 5-second timeout and 1 MiB output bound; it starts no resident worker or queue",
+    },
+  ],
+  [
     "packages/operator-core/lib/agent-tools/plans/audit.ts::resource-start-outside-admission",
     {
       disposition: "bypass",
@@ -1663,14 +1699,6 @@ export const BYPASS_REGISTRY = new Map([
       disposition: "bypass",
       reason:
         "git config user.email — cheap metadata read, awaited, exits immediately",
-    },
-  ],
-  [
-    "packages/operator-core/lib/agent-tools/work_items/completion-freshness.ts::resource-start-outside-admission",
-    {
-      disposition: "bypass",
-      reason:
-        "git ls-tree — cheap metadata read over one commit, awaited, exits immediately",
     },
   ],
   [

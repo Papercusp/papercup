@@ -47,7 +47,8 @@ export async function refreshReleaseCheckpointConfig(): Promise<void> {
     /* keep last/empty — const defaults apply; never throw on the config path */
   }
 }
-void refreshReleaseCheckpointConfig();
+/** The first override read; async callers can await it before using the sync cache. */
+export const releaseCheckpointConfigReady = refreshReleaseCheckpointConfig();
 
 export async function readReleaseCheckpointOverride(): Promise<Partial<ReleaseCheckpointConfig>> {
   return (await readOperatorState<Partial<ReleaseCheckpointConfig>>('operator_release_checkpoint_config')) ?? {};

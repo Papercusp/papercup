@@ -13,6 +13,7 @@ import {
   startRun,
   getRun,
   getRunAsync,
+  TestingRunSnapshotUnavailableError,
   cancelRun,
   listRuns,
   persistRunSnapshot,
@@ -208,12 +209,12 @@ describe('durable detached snapshots', () => {
     expect(values).toContain(JSON.stringify(snapshot.command));
   });
 
-  it('does not let a failed snapshot query escape the status reader', async () => {
+  it('reports a failed snapshot query as unavailable instead of an absent run', async () => {
     const sql = vi.fn(async () => {
       throw new Error('db unavailable');
     }) as unknown as Sql;
 
-    await expect(getRunAsync('unavailable-run', sql)).resolves.toBeNull();
+    await expect(getRunAsync('unavailable-run', sql)).rejects.toBeInstanceOf(TestingRunSnapshotUnavailableError);
   });
 });
 

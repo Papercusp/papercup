@@ -2914,10 +2914,19 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       scheduleCheckpointEligibilityWait: scheduleSpy,
     });
     const { default: tool } = await import('./checkpoint-run');
-    const started = Date.now();
     const b = parse((await tool.handler({ paths: [MINE], waitForEligibility: true }, MAKE_CTX())) as never);
 
-    expect(Date.now() - started).toBeLessThan(1000);
+    // A busy runner can spend over a second in the mocked authority and
+    // metadata path without sleeping. Inspect the exact refusal branch to
+    // guard the regression this case names: a request-side delay fallback.
+    const source = readFileSync(new URL('./checkpoint-run.ts', import.meta.url), 'utf8');
+    const branchStart = source.indexOf('if (preflight.refuse && args.waitForEligibility)');
+    const branchEnd = source.indexOf('    recordMetadata({', branchStart);
+    expect(branchStart).toBeGreaterThanOrEqual(0);
+    expect(branchEnd).toBeGreaterThan(branchStart);
+    const branch = source.slice(branchStart, branchEnd);
+    expect(branch).toContain('scheduleCheckpointEligibilityWait');
+    expect(branch).not.toMatch(/\b(?:setTimeout|sleep|delay)\s*\(/);
     expect(scheduleSpy).toHaveBeenCalledTimes(1);
     expect(launchSpy).not.toHaveBeenCalled();
     expect(b).toMatchObject({

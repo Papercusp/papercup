@@ -161,7 +161,7 @@ describe('D-104 — the refusal stays ACTIONABLE, not merely correct', () => {
     // only the accepted array/member shape. The runtime behavior is pinned in the
     // coord:send schema tests; this source guard prevents the old union from returning.
     const strictPipeline =
-      /messageBodyArg\s*=\s*shapeTaughtArray\(\s*['"]body['"]\s*,\s*messageSectionSchema\s*,\s*BODY_MUST_BE_ARRAY_MESSAGE\s*,\s*20\s*,\s*1\s*,?\s*\)/;
+      /messageBodyArg\s*=\s*shapeTaughtArray\(\s*['"]body['"]\s*,\s*messageSectionSchema\s*,\s*BODY_MUST_BE_ARRAY_MESSAGE\s*,\s*20\s*,\s*1(?:\s*,\s*true)?\s*,?\s*\)/;
     const oldUnion = /messageBodyArg[\s\S]{0,120}?\.union\(\s*\[\s*z\.string\(\)/;
     expect(
       strictPipeline.test(fieldsSrc),

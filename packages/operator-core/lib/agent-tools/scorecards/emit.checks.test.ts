@@ -28,6 +28,12 @@ vi.mock('../../rubrics', async (importOriginal) => {
     getRubric: (...a: unknown[]) => getRubric(...a),
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
     readRubricPlanRevision: (...a: unknown[]) => readRubricPlanRevision(...a),
+    // The real identity helper closes over the real getRubric, bypassing this suite's mock.
+    getRubricEvidenceIdentity: async (rubricId: string) => ({
+      revision: await getRubricPlanRevision(rubricId),
+      criteriaHash: null,
+      meaningRevision: null,
+    }),
   };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
@@ -91,6 +97,7 @@ type EvaluateCargoChecks = typeof evaluateCriterionCargoChecks;
 
 const CHECKED_RUBRIC = {
   rubricId: 'ar-checked-plan',
+  revision: 3,
   workspaceId: 'ws-test',
   kind: 'acceptance',
   subjectPlan: 'checked-plan-2026-08-17',

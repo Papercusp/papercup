@@ -161,6 +161,7 @@ describe('the live gate is actually scanning', () => {
     expect(scan.exemptions.map((e) => e.name).sort()).toEqual([
       'loop:status',
       'processes:list',
+      'rubrics:amend-status',
       'state:read',
       'testing:run-status',
       'triggers:status',

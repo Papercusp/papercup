@@ -13,6 +13,8 @@ function runGit(repoRoot, args) {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+      maxBuffer: 32 * 1024 * 1024,
     });
   } catch (error) {
     const stderr = error.stderr ? String(error.stderr).trim() : '';

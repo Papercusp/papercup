@@ -12,6 +12,12 @@ vi.mock('../../rubrics', async (importOriginal) => {
     ...real,
     getRubric: (...a: unknown[]) => getRubric(...a),
     getRubricPlanRevision: (...a: unknown[]) => getRubricPlanRevision(...a),
+    // The real identity helper closes over the real getRubric, bypassing this suite's mock.
+    getRubricEvidenceIdentity: async (rubricId: string) => ({
+      revision: await getRubricPlanRevision(rubricId),
+      criteriaHash: null,
+      meaningRevision: null,
+    }),
   };
 });
 vi.mock('../../scorecards', async (importOriginal) => {
@@ -35,6 +41,7 @@ import type { ObservationRatings } from '../../harness/improvements/observation-
 
 const RUBRIC = {
   rubricId: 'goal-mode-e2e',
+  revision: 33,
   workspaceId: 'ws',
   kind: 'standard',
   characteristic: 'goal-mode',
