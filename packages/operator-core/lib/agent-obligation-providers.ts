@@ -25,6 +25,7 @@ export const PLAN_PLACEMENT_OBLIGATION_REVISION = 'goal-plan-placement-v3';
 export const OWNER_REPORT_OBLIGATION_REVISION = 'goal-owner-report-v1';
 export const INDEPENDENT_VERIFICATION_OBLIGATION_REVISION = 'plan-independent-verification-v1';
 export const OWNER_DIRECTIVE_OBLIGATION_REVISION = 'owner-directive-disposition-v1';
+export const WAITING_ON_OBLIGATION_REVISION = 'waiting-on-progress-v1';
 
 interface ProviderBase {
   workspaceId: string;
@@ -604,13 +605,17 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
  * hand-maintain). Adding a code here is a deliberate ownership decision, which is
  * exactly the moment it should be made.
  *
- * - `grader`    — waiting on an INDEPENDENT GRADER. Yields `status:'due'` plus a
- *                 `delegate` action, i.e. it may recruit/wake a peer.
+ * - `grader`    — waiting on an INDEPENDENT GRADER. `status:'due'` plus a `delegate`
+ *                 action: the ONLY class that may recruit/wake a peer.
  * - `author`    — waiting on the plan's OWN author. Upstream (`causalRank: 0`), so
- *                 it outranks any downstream symptom. NEVER recruits a peer.
+ *                 it outranks any downstream symptom. ALSO `status:'due'` (D-009
+ *                 ruling 3) — the author can start it this second, and rendering it
+ *                 `[BLOCKED]` told the one agent who could act that it could not.
+ *                 Its action is `repair`, so it still NEVER recruits a peer.
  * - `unmeasured`— the gate could not MEASURE the plan (a read/lineage failure). Not
  *                 a repair anyone owns; it needs a retry or a fixed instrument, and
- *                 must not be dressed up as either party's work.
+ *                 must not be dressed up as either party's work — so it stays
+ *                 `blocked` and takes an `inspect` action, never `repair`.
  * - `not-here`  — deliberately handled EARLIER in this provider and never reaching
  *                 classification (see `gradeable` for `plan_items_unfinished`).
  *
@@ -621,10 +626,15 @@ export function ownerReportObligation(input: OwnerReportProviderInput): AgentObl
  * ("These repairs are the plan author's alone — do not recruit or wake a peer for
  * them."). Widening it here would make that rendered sentence a lie.
  */
-const GATE_CODE_OWNERSHIP: Record<
-  PlanAcceptanceGateCode,
-  'grader' | 'author' | 'unmeasured' | 'not-here'
-> = {
+export type PlanAcceptanceGateCodeOwnership = 'grader' | 'author' | 'unmeasured' | 'not-here';
+
+/**
+ * Exported so the guard test can DERIVE the full code population from this Record's
+ * own keys (`Object.keys`) instead of hand-listing the union a second time — a
+ * hand-listed copy is exactly the drift this Record was introduced to kill, and a
+ * test carrying one would silently stop covering the next code anyone adds.
+ */
+export const GATE_CODE_OWNERSHIP: Record<PlanAcceptanceGateCode, PlanAcceptanceGateCodeOwnership> = {
   // --- waiting on an independent grader -------------------------------------
   acceptance_ungraded: 'grader',
   self_graded_only: 'grader',
@@ -751,18 +761,42 @@ export function independentVerificationObligation(input: IndependentVerification
     });
   }
   const code = gate.code;
-  const graderGap = Boolean(code && GATE_CODE_OWNERSHIP[code] === 'grader');
-  const authorRepair = Boolean(code && GATE_CODE_OWNERSHIP[code] === 'author');
+  const ownership = code ? GATE_CODE_OWNERSHIP[code] : undefined;
+  /**
+   * D-009 ruling 3 — the TWO independent questions one `graderGap` boolean used to
+   * conflate. They are not the same question, and collapsing them forced a false
+   * choice: either an author-owned stall renders `[BLOCKED]` (telling the one agent
+   * who CAN act that it cannot), or contract codes get reclassified as grader gaps
+   * and a malformed rubric starts spawning graders. Split, both stay true.
+   *
+   * - `isDelegable`  — may this recruit/wake a LINEAGE-INDEPENDENT PEER? `grader` only.
+   *                    This is the safety-bearing half; widening it is what
+   *                    `acceptance-bar-lifecycle-evaluator.ts` promises never happens.
+   * - `isActionable` — can SOMEONE act on this right now? Strictly wider: author
+   *                    repair qualifies, because the plan's own author can start it
+   *                    this second. This is the visibility half, and it recruits
+   *                    nobody.
+   *
+   * `unmeasured` satisfies NEITHER: a failed measurement is not work, so it stays
+   * `blocked` and takes an `inspect` action rather than being dressed up as a repair
+   * the author owes (the pre-split code told them to "repair" a gate read that never
+   * happened).
+   */
+  const isDelegable = ownership === 'grader';
+  const authorRepair = ownership === 'author';
+  const isActionable = isDelegable || authorRepair;
   return defineAgentObligation({
     ...common,
-    title: graderGap
+    title: isDelegable
       ? `Plan ${input.planSlug} needs an independent grader`
-      : `Plan ${input.planSlug} cannot yet be independently certified`,
+      : authorRepair
+        ? `Plan ${input.planSlug} needs author repair before independent certification`
+        : `Plan ${input.planSlug} cannot yet be independently certified`,
     // A plan can cycle back to the same refusal code/rubric after a revision.
     // Include the canonical source generation so a fired old episode never
     // suppresses the new revision's material-change watch.
     episode: `${code ?? 'gate-unknown'}:${gate.rubricId ?? 'no-rubric'}:${input.sourceGeneration}`,
-    status: graderGap ? 'due' : 'blocked',
+    status: isActionable ? 'due' : 'blocked',
     reason: gate.message ?? `plan acceptance gate refused with ${code ?? 'an unknown code'}`,
     // Author-owned audit/rubric/spec repair is a prerequisite to asking an
     // independent grader to act. Keep it in the upstream tier so a downstream
@@ -770,18 +804,31 @@ export function independentVerificationObligation(input: IndependentVerification
     causalRank: authorRepair ? 0 : 2,
     applicableDemand: 1,
     evidence: [evidence(evidenceRef, input.observedAt, input.sourceGeneration, code ?? 'gate-refused')],
-    action: graderGap
+    // ⛔ `isDelegable` — NOT `isActionable` — gates this branch. It is the single
+    // line that decides whether a refusal may recruit a stranger, and the whole
+    // point of the split is that making author work visible never widens it.
+    action: isDelegable
       ? {
           kind: 'delegate',
           summary: `route ${input.planSlug} to a lineage-independent acceptance grader`,
           targetRef: input.planSlug,
         }
-      : {
-          kind: 'repair',
-          summary: `repair ${code ?? 'the unreadable acceptance prerequisite'} before requesting a grader`,
-          targetRef: input.planSlug,
-          continuesCurrentWork: code === 'plan_items_unfinished',
-        },
+      : ownership === 'author' || ownership === 'not-here'
+        ? {
+            kind: 'repair',
+            summary: `repair ${code ?? 'the unreadable acceptance prerequisite'} before requesting a grader`,
+            targetRef: input.planSlug,
+            continuesCurrentWork: code === 'plan_items_unfinished',
+          }
+        : {
+            // `unmeasured` (or a code the gate did not report): the gate never
+            // READ the plan, so there is no repair to name and nobody to route to.
+            kind: 'inspect',
+            summary: `re-read the acceptance gate for ${input.planSlug}: ${
+              code ?? 'the refusal'
+            } is a failed measurement, not a repair either party owns`,
+            targetRef: 'evaluatePlanAcceptanceGate',
+          },
     ...(reviewAgeMs == null ? {} : { ageMs: reviewAgeMs }),
   });
 }
@@ -995,12 +1042,241 @@ export function ownerDirectiveObligations(input: OwnerDirectivesProviderInput): 
   });
 }
 
+/**
+ * ONE thing this session is parked on: an awaited event, or a lock ticket it is
+ * queued behind. Row facts only — no observation clock, so an unchanged wait
+ * keeps an unchanged `sourceGeneration` across warm turns.
+ */
+export type WaitingOnObligationRow =
+  | {
+      kind: 'event-await';
+      /**
+       * The awaited key, VERBATIM. Never abbreviated and never re-typed: a
+       * hand-retyped key does not rendezvous, so the waiter sleeps forever —
+       * which is precisely the failure this row exists to keep visible.
+       */
+      key: string;
+      /** ISO deadline, or null when the row carries no effective deadline. */
+      timeoutAt: string | null;
+      /**
+       * What happens at the deadline WITHOUT the event. `expire` is the
+       * dangerous one: the await lapses SILENTLY and no turn is ever scheduled,
+       * so a forgotten `expire` row is a session that simply stops.
+       */
+      onTimeout: 'wake' | 'expire';
+    }
+  | {
+      kind: 'lock-queue';
+      /** The path this session is queued for. */
+      path: string;
+      /** The owner holding it — who to coordinate with, not merely that someone does. */
+      holder: string;
+      /** The holder's declared intent, or null when it declared none. */
+      holderIntent: string | null;
+      /** ISO expiry of the holder's lock; null when unknown. */
+      holderExpiresAt: string | null;
+    };
+
+export interface WaitingOnProviderInput extends ProviderBase {
+  read: ProviderRead<WaitingOnObligationRow[]>;
+}
+
+const WAITING_ON_COMMON_SOURCE = 'waiting-on:listActiveAwaits+readQueue';
+
+function waitingOnCommon(input: WaitingOnProviderInput) {
+  return {
+    ruleId: 'waiting-on-progress',
+    ruleRevision: WAITING_ON_OBLIGATION_REVISION,
+    family: 'waiting-on' as const,
+    scope: { workspaceId: input.workspaceId, ownerId: input.ownerId },
+    responsibleOwnerId: input.ownerId,
+    /**
+     * `2` — the DOWNSTREAM tier, deliberately BELOW an owner directive (0) and
+     * below every repair-shaped duty. This row cannot be discharged by acting on
+     * it: the agent can only VERIFY the thing it waits on is progressing. Ranking
+     * a memory aid above a repair would spend the sink's first row on the one
+     * entry that changes nothing.
+     */
+    causalRank: 2,
+    sourceGeneration: input.sourceGeneration,
+  };
+}
+
+/** Truncate a holder intent to a row-sized excerpt; the recovery verb carries the rest. */
+function waitingOnIntentExcerpt(intent: string | null): string | null {
+  if (!intent) return null;
+  const flat = intent.replace(/\s+/g, ' ').trim();
+  if (flat.length === 0) return null;
+  return flat.length > 48 ? `${flat.slice(0, 47)}…` : flat;
+}
+
+/**
+ * What this session is WAITING ON → class-B obligation rows (P-011 of plan
+ * `turn-start-memory-two-class-2026-09-21`).
+ *
+ * ⚠ EMPTY FOR MOST AGENTS, AND THAT IS THE DESIGN. An agent that is parked on
+ * nothing pays one `not-applicable` row that renders no line at all, exactly like
+ * the owner-directive provider's empty case. The cost is paid only by the
+ * sessions where "waiting is work" actually needs remembering.
+ *
+ * ONE OBLIGATION PER WAIT, not one aggregate: a count ("2 waits outstanding") is
+ * the shape an agent can acknowledge without ever checking whether EITHER of
+ * them is still progressing — and the two halves have different recovery verbs
+ * (`events:status` vs `locks:queue`), so a merged row could not carry both.
+ *
+ * The rows stay actionable (`blocked`) until the wait resolves, which is what
+ * makes them re-inject every turn under the P-002 discharge contract instead of
+ * clearing on delivery. That is the whole point: a wait has no local artifact —
+ * no held item, no checkpoint, no diff — so it is the obligation a compaction
+ * drops without leaving any trace that it existed.
+ */
+export function waitingOnObligations(input: WaitingOnProviderInput): AgentObligation[] {
+  const common = waitingOnCommon(input);
+  if (input.read.status === 'unknown') {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'Waiting-on state is unavailable',
+        episode: `unknown:${input.sourceGeneration}`,
+        status: 'unknown',
+        priority: 'normal',
+        authority: policyAuthority(WAITING_ON_COMMON_SOURCE, WAITING_ON_OBLIGATION_REVISION),
+        reason: input.read.failure.detail,
+        applicableDemand: 0,
+        evidence: [],
+        action: { kind: 'inspect', summary: input.read.failure.retry, targetRef: 'events:status' },
+        clearsWhen: {
+          id: 'waiting-on-readable',
+          summary: 'the await and lock-queue reads succeed again',
+          evidenceKind: 'state',
+          sourceRef: WAITING_ON_COMMON_SOURCE,
+        },
+        measurementFailure: input.read.failure,
+      }),
+    ];
+  }
+  const rows = input.read.value;
+  if (rows.length === 0) {
+    return [
+      defineAgentObligation({
+        ...common,
+        title: 'This session is not waiting on anything',
+        episode: `none:${input.sourceGeneration}`,
+        status: 'not-applicable',
+        priority: 'low',
+        authority: policyAuthority(WAITING_ON_COMMON_SOURCE, WAITING_ON_OBLIGATION_REVISION),
+        reason: 'no active await and no queued lock ticket for this owner',
+        applicableDemand: 0,
+        evidence: [
+          evidence(
+            `waiting-on:${input.ownerId}`,
+            input.observedAt,
+            input.sourceGeneration,
+            'no active await, no queued lock ticket',
+          ),
+        ],
+        clearsWhen: {
+          id: 'waiting-on-empty',
+          summary: 'this session parks on no event and no lock',
+          evidenceKind: 'state',
+          sourceRef: WAITING_ON_COMMON_SOURCE,
+        },
+      }),
+    ];
+  }
+  return rows.map((row) =>
+    row.kind === 'event-await'
+      ? defineAgentObligation({
+          ...common,
+          // The key goes in the TITLE because the title is the only field that
+          // renders at BOTH detail levels — `reason` is dropped at the narrow
+          // `action` detail, which is exactly the turn-start sink where telling
+          // two parked awaits apart matters most.
+          title: `Awaiting ${row.key}${row.onTimeout === 'expire' ? ' (expires SILENTLY)' : ''}`,
+          // The KEY alone is the episode: the same parked await must produce the
+          // same obligation id on every turn, or a warm-turn dedup would read a
+          // re-render as a brand-new obligation and the row would churn.
+          episode: `await:${row.key}`,
+          status: 'blocked',
+          // `expire` outranks `wake`: at the deadline a `wake` row still gets a
+          // turn, while an `expire` row lapses with no turn at all — nothing
+          // else in this session will ever mention it again.
+          priority: row.onTimeout === 'expire' ? 'high' : 'normal',
+          authority: policyAuthority(`event-await:${row.key}`, WAITING_ON_OBLIGATION_REVISION),
+          reason:
+            `parked on ${row.key}` +
+            (row.timeoutAt ? `, deadline ${row.timeoutAt}` : ', no deadline') +
+            `, on_timeout=${row.onTimeout}`,
+          applicableDemand: 1,
+          evidence: [
+            evidence(
+              `event-await:${row.key}`,
+              input.observedAt,
+              input.sourceGeneration,
+              `active await, on_timeout=${row.onTimeout}${row.timeoutAt ? `, deadline ${row.timeoutAt}` : ', no deadline'}`,
+            ),
+          ],
+          action: {
+            kind: 'inspect',
+            // Waiting is work: the duty is to CONFIRM the emitter is progressing,
+            // not to keep sleeping. `events:status` is the recovery verb.
+            summary: 'confirm the emitter is progressing: events:status',
+            tool: 'events:status',
+            targetRef: 'events:status',
+          },
+          clearsWhen: {
+            id: `await-resolved:${row.key}`,
+            summary: 'the await fires, times out, or is cancelled',
+            evidenceKind: 'state',
+            sourceRef: `event-await:${row.key}`,
+          },
+          ...(row.timeoutAt ? { dueAt: row.timeoutAt } : {}),
+        })
+      : defineAgentObligation({
+          ...common,
+          title: `Queued on ${row.path} — held by ${row.holder}`,
+          episode: `lock:${row.path}`,
+          status: 'blocked',
+          priority: 'normal',
+          authority: policyAuthority(`lock-queue:${row.path}`, WAITING_ON_OBLIGATION_REVISION),
+          reason:
+            `queued behind ${row.holder} on ${row.path}` +
+            (waitingOnIntentExcerpt(row.holderIntent) ? ` ("${waitingOnIntentExcerpt(row.holderIntent)}")` : '') +
+            (row.holderExpiresAt ? `, holder expires ${row.holderExpiresAt}` : ''),
+          applicableDemand: 1,
+          evidence: [
+            evidence(
+              `lock-queue:${row.path}`,
+              input.observedAt,
+              input.sourceGeneration,
+              `held by ${row.holder}${waitingOnIntentExcerpt(row.holderIntent) ? `: ${waitingOnIntentExcerpt(row.holderIntent)}` : ''}`,
+            ),
+          ],
+          action: {
+            kind: 'inspect',
+            summary: 'holder, intent and expiry: locks:queue',
+            tool: 'locks:queue',
+            args: { paths: [row.path] },
+            targetRef: 'locks:queue',
+          },
+          clearsWhen: {
+            id: `lock-granted:${row.path}`,
+            summary: 'the ticket is granted, or leaves the queue',
+            evidenceKind: 'state',
+            sourceRef: `lock-queue:${row.path}`,
+          },
+          ...(row.holderExpiresAt ? { dueAt: row.holderExpiresAt } : {}),
+        }),
+  );
+}
+
 export function buildAgentObligationAgenda(
   inputs: {
     planPlacement?: PlanPlacementProviderInput;
     ownerReport?: OwnerReportProviderInput;
     independentVerification?: IndependentVerificationProviderInput[];
     ownerDirectives?: OwnerDirectivesProviderInput;
+    waitingOn?: WaitingOnProviderInput;
   },
   evaluatedAt: string,
 ): AgentObligationAgenda {
@@ -1009,6 +1285,7 @@ export function buildAgentObligationAgenda(
     ...(inputs.ownerReport ? [ownerReportObligation(inputs.ownerReport)] : []),
     ...(inputs.independentVerification ?? []).map(independentVerificationObligation),
     ...(inputs.ownerDirectives ? ownerDirectiveObligations(inputs.ownerDirectives) : []),
+    ...(inputs.waitingOn ? waitingOnObligations(inputs.waitingOn) : []),
   ];
   return evaluateAgentObligations(obligations, evaluatedAt);
 }

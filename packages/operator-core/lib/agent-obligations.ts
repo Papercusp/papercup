@@ -30,7 +30,17 @@ export type AgentObligationFamily =
   | 'owner-report'
   | 'independent-verification'
   /** An owner turn awaiting promote/dismiss (pending) or disposition (open). */
-  | 'owner-directive';
+  | 'owner-directive'
+  /**
+   * An event this session is parked on, or a lock it is queued behind (P-011).
+   *
+   * "Waiting is itself work": the base contract makes the WAITER responsible for
+   * verifying that the thing it waits on is actually progressing. A wait is the
+   * one obligation with no local artifact — no held item, no checkpoint, no diff
+   * — so it is exactly the one a compaction drops without trace, leaving a
+   * session parked on a key nobody will ever fire.
+   */
+  | 'waiting-on';
 export type AgentObligationStatus = 'due' | 'in-progress' | 'blocked' | 'satisfied' | 'not-applicable' | 'unknown';
 export type AgentObligationPriority = 'critical' | 'high' | 'normal' | 'low';
 export type AgentObligationFreshness = 'current' | 'stale' | 'unknown';

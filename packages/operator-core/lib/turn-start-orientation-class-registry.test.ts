@@ -70,6 +70,7 @@ const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
   inboxRecent: true,
   openAsks: true,
   announcedGates: true,
+  modes: true,
   loopArmed: true,
   loopFireWithheld: true,
   improvementTriage: true,
@@ -79,6 +80,7 @@ const EVERY_ORIENTATION_STATE_FIELD: Record<keyof OrientationState, true> = {
   toolSurface: true,
   carryBlindWindow: true,
   openChecks: true,
+  authorityVerdict: true,
 };
 
 /** The optional fields are omitted on purpose — `undefined` is a real input. */
@@ -89,6 +91,11 @@ const MINIMAL_STATE: OrientationState = {
   inboxRecent: [],
   openAsks: null,
   announcedGates: [],
+  // `[]` is "no modes set", which is a READABLE state — distinct from `null`
+  // (unreadable), which must stay silent rather than assert a posture.
+  modes: [],
+  // null is UNREADABLE — the silent value, same rationale as `modes: []` above.
+  authorityVerdict: null,
   loopArmed: false,
   loopFireWithheld: false,
   improvementTriage: null,
@@ -98,7 +105,24 @@ const MINIMAL_STATE: OrientationState = {
   carryBlindWindow: null,
 };
 
-const ALL_SINKS: readonly OrientationSink[] = ['turn-start', 'leader-brief', 'carry-brief'];
+/**
+ * PINNED to the compiler, not hand-maintained: `Record<OrientationSink, true>`
+ * fails `lint:tsc` the moment a sink is added to the union and not listed here,
+ * so this cannot silently fall behind `OrientationSink` the way a bare string
+ * array did — that drift is exactly what made the "unknown sink agent-orders"
+ * red below, and a 4th string would have left the 5th sink free to repeat it.
+ * Same derive-or-pin pattern as EVERY_ORIENTATION_STATE_FIELD above.
+ */
+const EVERY_ORIENTATION_SINK: Record<OrientationSink, true> = {
+  'turn-start': true,
+  'leader-brief': true,
+  'carry-brief': true,
+  'agent-orders': true,
+};
+
+const ALL_SINKS: readonly OrientationSink[] = Object.keys(
+  EVERY_ORIENTATION_SINK,
+) as OrientationSink[];
 
 /** Every (order, class id) pair the turn-start sink emits, in emitted sequence. */
 function emittedOrderOfTurnStart(): [number, string][] {
@@ -187,6 +211,13 @@ describe('emitted priority order — the contract the coverage guard cannot asse
     [60, 'unansweredDirected'],
     [70, 'unansweredStale'],
     [80, 'openAsks'],
+    // P-013 / D-073: the verdict is what the agent may DO; the mode row at 85
+    // is WHY. A reader who sees only the first line of a budget-clipped block
+    // must get the mandate, not its cause — so the verdict sits ABOVE modes.
+    [84, 'authorityVerdict'],
+    // P-012 / D-071: posture is the frame the lines below depend on, so a mode
+    // TRANSITION renders just above the wake-source warning.
+    [85, 'modes'],
     [90, 'loopArmed'],
     [100, 'held'],
     [110, 'held'],
@@ -327,10 +358,14 @@ describe('selectOrientationSegments — the sink mechanism, falsifiably', () => 
     order: number,
     sinks: readonly OrientationSink[],
     line: string,
+    // P-019: non-binding by DEFAULT so the sink tests below keep measuring the
+    // sink mechanism alone; the ceiling tests pass a real number explicitly.
+    maxRows = Number.MAX_SAFE_INTEGER,
   ): RegisteredOrientationClass => ({
     id,
     watermarkTokens: [],
     applicableSinks: sinks,
+    rowCeiling: { maxRows, recoveryVerb: 'synthetic:recover' },
     segments: [{ order, render: () => [line] }],
   });
 
