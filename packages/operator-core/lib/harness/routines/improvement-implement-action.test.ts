@@ -52,6 +52,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { buildLaunchSpawnRequest } from '../../blueprint/launch-blueprint';
 import type { ImprovementCandidate } from '../improvements/policy';
 import type { ScoredItem } from '../improvements/digest';
+import { LEARNING_MODEL_SPEC } from '../../learning/model-policy';
 import type { RecordDispatchInput, FireResultUpdate } from '../improvements/dispatch-ledger';
 
 const ctx = { installSlug: 'papercup', workspaceId: 'ws-1', triggerConfig: {}, payloadTemplate: null };
@@ -361,7 +362,7 @@ describe('system:improvement-implement — defaultFire idempotencyKey (EI-181177
       bodyExtra?: { spawnModel?: string; improvementDispatch?: { itemId?: string } };
     };
     expect(input.bodyExtra).toMatchObject({
-      spawnModel: 'gpt-5.6-sol:xhigh',
+      spawnModel: LEARNING_MODEL_SPEC,
       improvementDispatch: { itemId: 'EI-SOL' },
     });
   });
