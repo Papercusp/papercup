@@ -3188,8 +3188,12 @@ export function startScheduledQualificationProgress(
       console.warn(`${orchestratorStdoutTag()} scheduled runner progress failed: ${error instanceof Error ? error.message : error}`);
     });
   };
-  const timer = setInterval(() => report(true), intervalMs);
-  timer.unref();
+  const timer = managedSetInterval(
+    "green-checkpoint-scheduled-qualification-progress:" + attemptId + ":" + runnerId,
+    intervalMs,
+    () => report(true),
+    { category: "watchdog", classification: "must-sample", allowInTest: true },
+  );
   return {
     note(detail) {
       if (detail?.startsWith('phase:')) {
@@ -3204,7 +3208,7 @@ export function startScheduledQualificationProgress(
     },
     async stop() {
       stopped = true;
-      clearInterval(timer);
+      timer.stop();
       await pending;
     },
   };
