@@ -283,25 +283,37 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
     expect(res.stderr).toMatch(/could not open a handoff file/);
   });
 
+  // The idle clock is armed at spawn (sidecar-exec-process.ts armIdleTimer), so a
+  // child's `node` boot counts against the FIRST idle window. Under the gate's
+  // parallel stateful lane a boot of 300ms+ is ordinary, which is how a 300ms
+  // window reddened repair head aa948759 (WI-10004029). The windows below keep
+  // the property each test names (writes span several idle windows; a stop is
+  // detected; the hard deadline wins) while leaving >1s of boot headroom.
+  const IDLE_MS = 1_500;
+
   it('recognizes binary stdout-file progress across idle deadlines without piping its bytes', async () => {
     const { execProcess } = await import('./sidecar-exec-process');
     const { readFile } = await import('node:fs/promises');
     const dir = mkdtempSync(join(tmpdir(), 'fd-progress-'));
     const outPath = join(dir, 'out');
     const chunk = Buffer.from([0, 255, 128, 195, 169, 10]);
+    const writes = 12;
+    const intervalMs = 300;
+    // 12 x 300ms spans 2.4 idle windows, so only observed file growth keeps it alive.
+    expect(writes * intervalMs).toBeGreaterThan(2 * IDLE_MS);
     const onOutputActivity = vi.fn();
     try {
       const result = await execProcess({
         command: process.execPath,
-        args: ['-e', `const b=Buffer.from('${chunk.toString('base64')}','base64'); let n=0; const t=setInterval(()=>{require('node:fs').writeSync(1,b); if(++n===8) clearInterval(t);},80);`],
+        args: ['-e', `const b=Buffer.from('${chunk.toString('base64')}','base64'); let n=0; const t=setInterval(()=>{require('node:fs').writeSync(1,b); if(++n===${writes}) clearInterval(t);},${intervalMs});`],
         stdoutPath: outPath,
-        idleTimeoutMs: 300,
-        timeoutMs: 3000,
+        idleTimeoutMs: IDLE_MS,
+        timeoutMs: 20_000,
       }, { ...executionDeps, onOutputActivity });
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toBe('');
-      expect(result.stdoutBytes).toBe(chunk.length * 8);
-      expect(await readFile(outPath)).toEqual(Buffer.concat(Array.from({ length: 8 }, () => chunk)));
+      expect(result.stdoutBytes).toBe(chunk.length * writes);
+      expect(await readFile(outPath)).toEqual(Buffer.concat(Array.from({ length: writes }, () => chunk)));
       expect(onOutputActivity).toHaveBeenCalled();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -316,13 +328,13 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
         command: process.execPath,
         args: ['-e', "require('node:fs').writeSync(1, 'once'); setInterval(()=>{},1000);"],
         stdoutPath: join(dir, 'out'),
-        idleTimeoutMs: 300,
-        timeoutMs: 3000,
+        idleTimeoutMs: IDLE_MS,
+        timeoutMs: 20_000,
       }, executionDeps);
       expect(result.code).toBe(-1);
       expect(result.stdoutBytes).toBe(4);
-      expect(result.stderr).toContain('made no output progress for 300ms');
-      expect(result.stderr).not.toContain('timed out after 3000ms');
+      expect(result.stderr).toContain(`made no output progress for ${IDLE_MS}ms`);
+      expect(result.stderr).not.toContain('timed out after 20000ms');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -336,12 +348,12 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
         command: process.execPath,
         args: ['-e', "setInterval(()=>require('node:fs').writeSync(1,'progress'),40);"],
         stdoutPath: join(dir, 'out'),
-        idleTimeoutMs: 300,
-        timeoutMs: 800,
+        idleTimeoutMs: IDLE_MS,
+        timeoutMs: 2 * IDLE_MS,
       }, executionDeps);
       expect(result.code).toBe(-1);
       expect(result.stdoutBytes).toBeGreaterThan(0);
-      expect(result.stderr).toContain('timed out after 800ms');
+      expect(result.stderr).toContain(`timed out after ${2 * IDLE_MS}ms`);
       expect(result.stderr).not.toContain('no output progress');
     } finally {
       rmSync(dir, { recursive: true, force: true });
