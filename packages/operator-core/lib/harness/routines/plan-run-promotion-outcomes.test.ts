@@ -44,7 +44,11 @@ function seededSql() {
     appHarnessSlug: 'p013-app',
     execution: null,
   };
-  return { begin: async () => prepared } as unknown as Parameters<typeof runScheduledPlanFire>[0];
+  // A refused fire also records the failure on the run row (WI-10004731) through two
+  // tagged-template statements; plan-run-action-fire-failure.test.ts owns that
+  // write, so here they resolve as no-ops and only the classification is asserted.
+  const sql = Object.assign(async () => [], { begin: async () => prepared });
+  return sql as unknown as Parameters<typeof runScheduledPlanFire>[0];
 }
 
 const NO_EDGES = {
