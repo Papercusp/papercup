@@ -411,6 +411,35 @@ dependency_generation_read_field() {
   sed -n "s/^${key}=//p" "$file" | head -1
 }
 
+# Wall clock in nanoseconds, used ONLY to ORDER generations (`created_ns=`).
+# `created=` stays whole seconds for every existing reader. With seconds alone,
+# two publications inside the same second tie and retention falls through to
+# the identity tie-break — a content hash, i.e. a coin flip — so RETAIN_COUNT=1
+# could keep the OLDER generation (WI-10003601). `date +%N` is GNU-only; where it
+# is missing the value degrades to seconds*1e9, which only loses the sub-second
+# tie-break and is never worse than the seconds-only ordering it replaces.
+dependency_generation_now_ns() {
+  local ns
+  ns="$(date +%s%N 2>/dev/null || true)"
+  case "$ns" in ''|*[!0-9]*) ns="$(date +%s)000000000" ;; esac
+  printf '%s\n' "$ns"
+}
+
+# Retention/predecessor ORDER key for one generation marker, in nanoseconds:
+# `created_ns` when the marker carries it, otherwise the legacy whole-second
+# `created` scaled to the same unit, so legacy and new markers compare correctly.
+dependency_generation_created_order_ns() {
+  local marker="$1" ns created
+  ns="$(dependency_generation_read_field "$marker" created_ns)"
+  case "$ns" in ''|*[!0-9]*) ns='' ;; esac
+  if [ -z "$ns" ]; then
+    created="$(dependency_generation_read_field "$marker" created)"
+    case "$created" in ''|*[!0-9]*) created=0 ;; esac
+    ns="$((10#$created * 1000000000))"
+  fi
+  printf '%s\n' "$((10#$ns))"
+}
+
 # A reusable tree manifest is deliberately stricter than the historical source
 # diagnostic. Every record names exactly one safe product-owned node_modules
 # path, is globally sorted/unique, carries one sha256 fingerprint, and resolves
@@ -1040,8 +1069,7 @@ dependency_generation_find_reusable_predecessor() {
           = "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" ] || continue
       [ "$(dependency_generation_read_field "$marker" scope)" \
           = "$DEPENDENCY_GENERATION_SCOPE_MODE" ] || continue
-      created="$(dependency_generation_read_field "$marker" created)"
-      case "$created" in ''|*[!0-9]*) created=0 ;; esac
+      created="$(dependency_generation_created_order_ns "$marker")"
       printf '%020d %s\n' "$created" "$identity"
     done | sort -k1,1nr -k2,2r
   )
@@ -1247,8 +1275,7 @@ dependency_generation_quarantine_unretained_locked() {
       [ -d "$generation" ] || continue
       identity="$(basename "$generation")"
       [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || continue
-      created="$(dependency_generation_read_field "$generation/.papercusp-dependency-generation" created)"
-      case "$created" in ''|*[!0-9]*) created=0 ;; esac
+      created="$(dependency_generation_created_order_ns "$generation/.papercusp-dependency-generation")"
       printf '%020d %s\n' "$created" "$identity"
     done | sort -k1,1nr -k2,2r
   )
@@ -1442,7 +1469,7 @@ dependency_generation_ensure() {
   local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
   local source_before='' source_after='' identity generation build tree nm rel snapshot marker
   local quarantine before_manifest='' after_manifest='' tree_manifest='' tree_manifest_digest=''
-  local publication_token=''
+  local publication_token='' created_ns=''
   local incumbent_token_before incumbent_token_after incumbent_token
   local current_incumbent_token publish_replacement publish_rc
   local total_started_ms phase_started_ms tree_total=0 tree_reused=0 tree_copied=0 tree_removed=0
@@ -1695,9 +1722,10 @@ dependency_generation_ensure() {
   dependency_generation_log "fingerprinted immutable copied dependency snapshot: snapshot=$snapshot"
   marker="$build/.papercusp-dependency-generation"
   {
-    printf 'schema=1\nidentity=%s\nsource=%s\nclosure=%s\nsnapshot=%s\ncreated=%s\n' \
+    created_ns="$(dependency_generation_now_ns)"
+    printf 'schema=1\nidentity=%s\nsource=%s\nclosure=%s\nsnapshot=%s\ncreated=%s\ncreated_ns=%s\n' \
       "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
-      "$snapshot" "$(date +%s)"
+      "$snapshot" "${created_ns%?????????}" "$created_ns"
     if [ -n "$tree_manifest_digest" ]; then
       printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npublication_schema=2\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
         "$tree_manifest_digest" "$predecessor_identity" \

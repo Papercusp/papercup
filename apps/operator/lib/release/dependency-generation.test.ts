@@ -1601,6 +1601,64 @@ describe('immutable dependency generation', () => {
     expect(oldInput.stderr).not.toContain('invalid publication token');
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  // WI-10003601. Retention ranks generations by publication time, but `created=`
+  // is whole seconds: two publications inside one second TIED, and the identity
+  // tie-break (a content hash, which varies with the temp path) decided which one
+  // RETAIN_COUNT kept. The WI-2144343 case above failed whenever the OLDER identity
+  // sorted higher. Built by hand so the tie and the hash order are both fixed —
+  // the older generation carries the lexically GREATER identity, exactly the
+  // order the seconds-only ranking got wrong — plus a legacy seconds-only marker
+  // that is the newest, so the mixed-unit comparison is exercised too.
+  it('keeps the NEWER of two generations published inside the same second (WI-10003601)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'dependency-generation-rank-'));
+    roots.push(root);
+    const older = `v1-${'f'.repeat(64)}`;
+    const newer = `v1-${'0'.repeat(64)}`;
+    const legacyNewest = `v1-${'e'.repeat(64)}`;
+    const marker = (identity: string, fields: string) => {
+      mkdirSync(join(root, identity), { recursive: true });
+      writeFileSync(
+        join(root, identity, '.papercusp-dependency-generation'),
+        `schema=1\nidentity=${identity}\n${fields}`,
+      );
+    };
+    marker(older, 'created=1790000001\ncreated_ns=1790000001100000000\n');
+    marker(newer, 'created=1790000001\ncreated_ns=1790000001900000000\n');
+    marker(legacyNewest, 'created=1790000002\n');
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'set -uo pipefail',
+          'source "$SCRIPT"',
+          'DEPENDENCY_GENERATION_RETAIN_COUNT=2 dependency_generation_quarantine_unretained_locked "$DG_ROOT"',
+        ].join('\n'),
+      ],
+      { encoding: 'utf8', env: { ...process.env, SCRIPT, DG_ROOT: root } },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(root, legacyNewest))).toBe(true);
+    expect(existsSync(join(root, newer))).toBe(true);
+    expect(existsSync(join(root, older))).toBe(false);
+    expect(result.stderr).toContain(`quarantined unretained generation ${older}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('stamps created_ns on a published generation, consistent with created (WI-10003601)', () => {
+    const integration = makeIntegration();
+    const published = publish(integration);
+    expect(published.status, published.stderr).toBe(0);
+    const text = readFileSync(
+      join(publishedPath(published.stdout), '.papercusp-dependency-generation'),
+      'utf8',
+    );
+    const created = text.match(/^created=(\d+)$/m)?.[1];
+    const createdNs = text.match(/^created_ns=(\d+)$/m)?.[1];
+    expect(created, text).toMatch(/^\d{10}$/);
+    expect(createdNs, text).toMatch(/^\d{19}$/);
+    expect(createdNs!.slice(0, -9)).toBe(created);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   // WI-888766. The sibling case above has guarded `.prune-*` collection for a long
   // time while `.invalid-*` leaked permanently, which is precisely why the leak
   // survived: the only other `.invalid-` assertion in this file checks that the
