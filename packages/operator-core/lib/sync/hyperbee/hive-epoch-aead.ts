@@ -1,3 +1,7 @@
+/// <reference path="./sodium-native.d.ts" />
+// ^ The ambient `sodium-native` typings travel WITH this file. Without the reference, any
+//   program that reaches this module transitively but does not include the sibling d.ts
+//   (packages/agent-mcp's tsc leg) reports TS7016 on the `import('sodium-native')` below.
 /**
  * The hive-epoch op AEAD framing, with no keychain or identity imports, so a worker
  * thread can open an envelope without dragging in the device-key stack.
