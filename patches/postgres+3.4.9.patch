@@ -575,10 +575,10 @@ index c7fba3d..0dce660 100644
      onparameter     : o.onparameter,
      socket          : o.socket,
 diff --git a/node_modules/postgres/types/index.d.ts b/node_modules/postgres/types/index.d.ts
-index 13c3432..fc7d0de 100644
+index 13c3432..32a4d44 100644
 --- a/node_modules/postgres/types/index.d.ts
 +++ b/node_modules/postgres/types/index.d.ts
-@@ -74,8 +74,12 @@ interface BaseOptions<T extends Record<string, postgres.PostgresType>> {
+@@ -74,8 +74,23 @@ interface BaseOptions<T extends Record<string, postgres.PostgresType>> {
    onnotice: (notice: postgres.Notice) => void;
    /** (key; value) when a server param change */
    onparameter: (key: string, value: any) => void;
@@ -586,6 +586,17 @@ index 13c3432..fc7d0de 100644
 -  debug: boolean | ((connection: number, query: string, parameters: any[], paramTypes: any[]) => void);
 +  /** Papercusp patch: capture local diagnostic context at query construction. */
 +  onquerycontext: (() => unknown) | undefined;
++  /**
++   * Papercusp patch: custom socket factory. Supported at RUNTIME — `src/index.js` passes
++   * `socket: o.socket` straight through to the connection — but absent from upstream's
++   * types. Because `Options<T> extends Partial<BaseOptions<T>>`, an undeclared key makes
++   * an object literal fail the excess-property check, so BOTH object overloads are
++   * discarded and tsc reports against the LAST overload instead: "Argument of type
++   * '{ ... socket: ... }' is not assignable to parameter of type 'string'". That error
++   * names the string overload and reads like a wrong-argument bug, which is why it is
++   * easy to misread as a broken call site rather than a missing declaration.
++   */
++  socket: ((options: unknown) => unknown) | undefined;
 +  /** Is called with (connection; query; parameters; paramTypes; queryId) */
 +  debug: boolean | ((connection: number, query: string, parameters: any[], paramTypes: any[], queryId: number) => void);
 +  /** Papercusp patch: terminal ReadyForQuery diagnostics (fail-soft). */
@@ -593,7 +604,7 @@ index 13c3432..fc7d0de 100644
    /** Transform hooks */
    transform: {
      /** Transforms outcoming undefined values */
-@@ -198,6 +202,20 @@ type Return<T, K extends readonly any[]> =
+@@ -198,6 +213,20 @@ type Return<T, K extends readonly any[]> =
    postgres.Helper<T, K>
  
  declare namespace postgres {
