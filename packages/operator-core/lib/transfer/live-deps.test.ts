@@ -6,6 +6,7 @@ import {
   TRANSFER_DISTILL_MODEL,
   TRANSFER_STUDENT_MODEL,
 } from './live-deps';
+import { LEARNING_MODEL_SPEC } from '../learning/model-policy';
 
 const result = {
   text: '[]',
@@ -25,9 +26,9 @@ describe('provider-neutral transfer learning LLMs', () => {
       text: '[]',
       costUsd: 0.25,
     });
-    expect(TRANSFER_DISTILL_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(TRANSFER_DISTILL_MODEL).toBe(LEARNING_MODEL_SPEC);
     expect(call).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'gpt-5.6-sol:xhigh',
+      model: LEARNING_MODEL_SPEC,
       maxTokens: 128,
       system: 'system prompt',
       messages: [{ role: 'user', content: 'candidate' }],
@@ -45,7 +46,7 @@ describe('provider-neutral transfer learning LLMs', () => {
       outputTokens: 2,
       replayed: true,
     });
-    expect(TRANSFER_STUDENT_MODEL).toBe('gpt-5.6-sol:xhigh');
-    expect(call).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-sol:xhigh', maxTokens: 2_048 }));
+    expect(TRANSFER_STUDENT_MODEL).toBe(LEARNING_MODEL_SPEC);
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ model: LEARNING_MODEL_SPEC, maxTokens: 2_048 }));
   });
 });
