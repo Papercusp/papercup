@@ -3,13 +3,18 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
+import { existsSync } from 'node:fs';
+import { verifyEd25519 } from '../../identity/ed25519';
 import {
   PHASE_I_INPUT_SCHEMA,
   attemptPhysicalPhaseI,
+  ownerSocketSigner,
+  phaseIRepoKey,
   startPhaseIOwner,
   validatePhysicalPhaseI,
   type PhysicalPhaseIInput,
 } from './physical-drill-phase-i';
+import { buildPhysicalPhaseIInput } from './physical-drill-phase-i.fixture';
 
 const RUN_ID = 'p505-physical-20260930T010000Z-4242';
 const tower = generateEd25519KeypairDer();
@@ -133,5 +138,64 @@ describe('physical Phase I (P-521 F6 protected effects)', () => {
     const verdict = validatePhysicalPhaseI(input);
     expect(verdict.ok).toBe(false);
     expect(verdict.errors.join('\n')).toMatch(message);
+  });
+});
+
+describe('physical Phase I canary-owner target (WI-10004748, D-119)', () => {
+  const canary = { workspaceId: 'papercusp-workspace', potHomeSlug: 'hello-world-3-pot', repoKey: 'hello-world-3-pot:main' };
+  const build = () => buildPhysicalPhaseIInput({ runId: RUN_ID, towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64, startMs: Date.parse('2026-10-04T00:00:00.000Z'), canary });
+
+  it('owner signs through the host keychain: never mints, never writes a key file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'phase-i-canary-owner-'));
+    dirs.push(dir);
+    const hive = generateEd25519KeypairDer();
+    const owner = await startPhaseIOwner({ dir, runId: RUN_ID, pid: 900_101, signer: { hiveId: hive.pubkeyBase64, sign: signer(hive.privateKeyDer) } });
+    try {
+      expect(owner.record).toMatchObject({ hiveId: hive.pubkeyBase64, mintedKey: false, keySource: 'host-keychain' });
+      expect(existsSync(join(dir, 'owner', 'hive-key.der'))).toBe(false);
+      const bytes = Buffer.from('canary-owner-probe');
+      const signature = await ownerSocketSigner(join(dir, 'owner', 'owner.sock'))(bytes);
+      expect(verifyEd25519(bytes, hive.pubkeyBase64, signature)).toBe(true);
+    } finally {
+      await owner.close();
+    }
+  });
+
+  it('refuses the run-bound drill key as a canary repo_key', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'phase-i-canary-attempt-'));
+    dirs.push(dir);
+    await expect(attemptPhysicalPhaseI(
+      { host: 'tower', step: 'live', dir, runId: RUN_ID, deviceKey: tower.pubkeyBase64, hiveId: vm.pubkeyBase64, repoKey: phaseIRepoKey(RUN_ID) },
+      { signDevice: signer(tower.privateKeyDer) },
+    )).rejects.toThrow(/real repo_key/);
+  });
+
+  it('accepts a canary-owner run bound to the real key, repo_key and G1/G3 refs', () => {
+    const verdict = validatePhysicalPhaseI(build());
+    expect(verdict.errors).toEqual([]);
+    expect(verdict.ok).toBe(true);
+  });
+
+  const canaryMutations: Array<[string, (i: PhysicalPhaseIInput) => void, RegExp]> = [
+    ['the canary owner minted a key', (i) => { i.owner.first.mintedKey = true; }, /must never mint/],
+    ['the canary owner used a drill key file', (i) => { i.owner.restored.keySource = 'drill-minted'; }, /real hive key/],
+    ['the owner key is not the target hive', (i) => { if (i.target?.kind === 'canary-owner') i.target.hiveId = vm.pubkeyBase64; }, /not the canary hive key/],
+    ['attempts were scoped by the drill repo_key', (i) => { i.steps.live.vm.repoKey = phaseIRepoKey(i.runId); }, /not bound to this run/],
+    ['real refs moved during the outage', (i) => { if (i.target?.kind === 'canary-owner') i.target.realTargets.duringOutage.releaseRef = 'e'.repeat(40); }, /G1/],
+    ['no real advance after recovery', (i) => { if (i.target?.kind === 'canary-owner') i.target.realTargets.afterRecovery.stagingRef = i.target.realTargets.duringOutage.stagingRef; }, /G3/],
+    ['real-target snapshots are missing', (i) => { if (i.target?.kind === 'canary-owner') (i.target as { realTargets?: unknown }).realTargets = undefined; }, /real-target snapshots/],
+  ];
+  it.each(canaryMutations)('rejects canary evidence where %s', (_label, mutate, message) => {
+    const input = build();
+    mutate(input);
+    const verdict = validatePhysicalPhaseI(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(message);
+  });
+
+  it('an ephemeral run claiming a host-keychain owner is refused', () => {
+    const input = buildPhysicalPhaseIInput({ runId: RUN_ID, towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64, startMs: Date.parse('2026-10-04T00:00:00.000Z') });
+    input.owner.first.keySource = 'host-keychain';
+    expect(validatePhysicalPhaseI(input).errors.join('\n')).toMatch(/drill-minted key/);
   });
 });

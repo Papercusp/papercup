@@ -8,6 +8,7 @@ import {
 import {
   POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
   POST_GO_RELEASE_CANARY_SCHEMA,
+  postGoReleaseCanaryMinimum,
   validatePostGoReleaseCanary,
   type PostGoReleaseCanaryInput,
 } from './post-go-release-canary';
@@ -82,6 +83,7 @@ beforeAll(async () => {
   };
   phaseI = buildPhysicalPhaseIInput({
     runId: 'p502-post-go-phase-i-0001',
+    canary: { workspaceId: 'papercusp-workspace', potHomeSlug: CANARY_HIVE, repoKey: 'hello-world-3-pot:main' },
     towerDeviceKey: tower.pubkeyBase64,
     vmDeviceKey: vm.pubkeyBase64,
     startMs: Date.parse(PHASE_I_START),
@@ -92,6 +94,8 @@ function validInput(): PostGoReleaseCanaryInput {
   return {
     schemaVersion: POST_GO_RELEASE_CANARY_SCHEMA,
     candidateSha: CANDIDATE,
+    // A release with no owner ruling: the 72h default applies.
+    releaseVersion: '0.0.29-alpha',
     independentGo: {
       decision: 'GO',
       candidateSha: CANDIDATE,
@@ -126,6 +130,50 @@ function validInput(): PostGoReleaseCanaryInput {
 }
 
 describe('post-GO public-release canary readiness', () => {
+  it('refuses a Phase I that froze a disposable drill key instead of the canary owner (WI-10004748, D-119)', () => {
+    const input = validInput();
+    const ephemeral = buildPhysicalPhaseIInput({
+      runId: 'p502-post-go-phase-i-0002',
+      towerDeviceKey: input.ownerFreezeChaos.phaseI.identities.towerDeviceKey,
+      vmDeviceKey: input.ownerFreezeChaos.phaseI.identities.vmDeviceKey,
+      startMs: Date.parse(input.ownerFreezeChaos.phaseI.window.startedAt) - 1_000,
+    });
+    input.ownerFreezeChaos.phaseI = ephemeral;
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/real owning authority/);
+  });
+
+  it('refuses a canary-owner Phase I aimed at a different hive than the soak observed', () => {
+    const input = validInput();
+    const target = input.ownerFreezeChaos.phaseI.target;
+    if (target?.kind !== 'canary-owner') throw new Error('fixture must be canary-owner');
+    target.potHomeSlug = 'some-other-pot';
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/potHomeSlug = canary\.hive/);
+  });
+
+  it('refuses when the canary\'s real staging ref moved during the owner outage (G1)', () => {
+    const input = validInput();
+    const target = input.ownerFreezeChaos.phaseI.target;
+    if (target?.kind !== 'canary-owner') throw new Error('fixture must be canary-owner');
+    target.realTargets.duringOutage.stagingRef = 'f'.repeat(40);
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/G1: the canary's real protected refs moved/);
+  });
+
+  it('refuses when the restored owner made no fresh progress on the real staging ref (G3)', () => {
+    const input = validInput();
+    const target = input.ownerFreezeChaos.phaseI.target;
+    if (target?.kind !== 'canary-owner') throw new Error('fixture must be canary-owner');
+    target.realTargets.afterRecovery.stagingRef = target.realTargets.duringOutage.stagingRef;
+    const verdict = validatePostGoReleaseCanary(input);
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join('\n')).toMatch(/G3: the restored owner made no fresh progress/);
+  });
+
   it('reports the canary hive and sample count on a passing receipt', () => {
     const verdict = validatePostGoReleaseCanary(validInput());
     expect(verdict.errors).toEqual([]);
@@ -220,8 +268,75 @@ describe('post-GO public-release canary readiness', () => {
     const input = validInput();
     input.canary.finishedAt = '2026-08-13T20:00:00.001Z';
     expect(validatePostGoReleaseCanary(input).errors).toContain(
-      'owner-freeze chaos cannot execute before the 72-hour canary finishes',
+      'owner-freeze chaos cannot execute before the canary soak finishes',
     );
+  });
+
+  describe('release-scoped soak minimum (endgame D-132)', () => {
+    /** Shift the whole post-canary sequence so the soak is exactly `hours` long. */
+    function soakOf(hours: number, releaseVersion: string): PostGoReleaseCanaryInput {
+      const input = validInput();
+      input.releaseVersion = releaseVersion;
+      const shift = (72 - hours) * 3_600_000;
+      const back = (iso: string) => new Date(Date.parse(iso) - shift).toISOString();
+      input.canary.finishedAt = back(input.canary.finishedAt);
+      input.canary.observations = input.canary.observations.slice(0, hours + 1);
+      const chaos = input.ownerFreezeChaos;
+      chaos.window = { startedAt: back(chaos.window.startedAt), finishedAt: back(chaos.window.finishedAt) };
+      return input;
+    }
+
+    it('removes the 0.0.28-alpha timer without falling back to the 72h default', () => {
+      expect(postGoReleaseCanaryMinimum('0.0.28-alpha')).toEqual({
+        minimumDurationMs: 0,
+        decisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
+      });
+      for (const other of ['0.0.29-alpha', '0.0.28', '0.0.28-alpha.1', '', 'toString', undefined]) {
+        expect(postGoReleaseCanaryMinimum(other)).toEqual({
+          minimumDurationMs: POST_GO_RELEASE_CANARY_MIN_DURATION_MS,
+          decisionRef: null,
+        });
+      }
+      expect(POST_GO_RELEASE_CANARY_MIN_DURATION_MS).toBe(72 * 3_600_000);
+    });
+
+    it('rejects a 24h soak for a release without an owner ruling', () => {
+      const verdict = validatePostGoReleaseCanary(soakOf(24, '0.0.29-alpha'));
+      expect(verdict.errors).toContain('canary must run for an actual minimum of 72 hours');
+    });
+
+    it('accepts immediate 0.0.28-alpha evidence after independent GO without a timed soak', () => {
+      const input = validInput();
+      input.releaseVersion = '0.0.28-alpha';
+      input.canary.finishedAt = input.canary.startedAt;
+      input.canary.observations = input.canary.observations.slice(0, 1);
+      input.canary.alarmRail.deliveredPageAt = input.canary.startedAt;
+      const verdict = validatePostGoReleaseCanary(input);
+      expect(verdict.errors).toEqual([]);
+      expect(verdict.ok).toBe(true);
+      expect(verdict.result).toMatchObject({
+        canaryDurationMs: 0,
+        minimumDurationMs: 0,
+        minimumDurationDecisionRef: 'p2p-public-release-endgame-2026-09-01#D-132',
+      });
+    });
+
+    it('still requires independent approval when the 0.0.28-alpha timer is removed', () => {
+      const input = validInput();
+      input.releaseVersion = '0.0.28-alpha';
+      input.independentGo.reviewerOwnerId = input.independentGo.implementationOwnerId;
+      expect(validatePostGoReleaseCanary(input).errors).toContain(
+        'independent GO reviewer must differ from the implementation owner',
+      );
+    });
+
+    it('requires a well-formed releaseVersion', () => {
+      const input = validInput();
+      input.releaseVersion = 'latest';
+      expect(validatePostGoReleaseCanary(input).errors).toContain(
+        'releaseVersion must name the shipping release (e.g. 0.0.28-alpha)',
+      );
+    });
   });
 
   it('rejects narrative freeze claims when the Phase G authority evidence is invalid', () => {
