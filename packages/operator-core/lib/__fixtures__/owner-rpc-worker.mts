@@ -8,13 +8,14 @@
  * capability-PTY situation under node:cluster.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createTextCollector, type TextCollector } from '../child-output.ts';
 import {
   callOwnerProcess,
   registerOwnerRpcHandler,
   startWorkerOwnerRpc,
 } from '../cluster-owner-rpc.ts';
 
-const held = new Map<string, { child: ChildProcess; output: string }>();
+const held = new Map<string, { child: ChildProcess; output: TextCollector }>();
 let seq = 0;
 
 registerOwnerRpcHandler('fixture-echo', async (payload) => {
@@ -22,11 +23,9 @@ registerOwnerRpcHandler('fixture-echo', async (payload) => {
   if (p.op === 'open') {
     const id = `obj-${process.pid}-${++seq}`;
     const child = spawn('cat', [], { stdio: ['pipe', 'pipe', 'ignore'] });
-    const entry = { child, output: '' };
-    child.stdout!.on('data', (chunk: Buffer) => {
-      entry.output += chunk.toString('utf8');
-    });
-    held.set(id, entry);
+    // Boundary-safe capture (WI-6728 child-output guard): peek() is the
+    // non-flushing read, safe to poll while the stream is still open.
+    held.set(id, { child, output: createTextCollector(child.stdout) });
     return { id, ownerPid: process.pid };
   }
   if (p.op === 'write') {
@@ -34,10 +33,10 @@ registerOwnerRpcHandler('fixture-echo', async (payload) => {
     if (!entry) return { found: false, servedBy: process.pid };
     entry.child.stdin!.write(p.data ?? '');
     const deadline = Date.now() + 5_000;
-    while (!entry.output.includes(p.data ?? '') && Date.now() < deadline) {
+    while (!entry.output.peek().includes(p.data ?? '') && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 10));
     }
-    return { found: true, servedBy: process.pid, output: entry.output };
+    return { found: true, servedBy: process.pid, output: entry.output.peek() };
   }
   if (p.op === 'slow') {
     await new Promise((r) => setTimeout(r, p.delayMs ?? 1_000));
