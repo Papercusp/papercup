@@ -35,6 +35,6 @@ export default defineTool({
     notifySyncInvalidate('automation.catalog');
     notifySyncInvalidate('learning.loopControl');
     notifySyncInvalidate('hive.steering');
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...args }) }] };
+    return { data: { ok: true, ...args } };
   },
 });

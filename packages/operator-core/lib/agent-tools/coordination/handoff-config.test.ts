@@ -24,8 +24,14 @@ import { readCoordLivenessConfig, writeCoordLivenessConfig } from '../../coord-l
 const readM = vi.mocked(readCoordLivenessConfig);
 const writeM = vi.mocked(writeCoordLivenessConfig);
 const tool = (await import('./handoff-config')).default;
-type Out = { content: { text: string }[] };
-const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
+// Accepts EITHER shape (the 07-26 parseTextPayload pattern): this tool now returns the
+// canonical { data } envelope, but the reader stays shape-agnostic so it does not have to
+// be re-edited by the next migration in either direction.
+type Out = { data?: unknown; content?: { text: string }[] };
+const body = (o: unknown) => {
+  const r = o as Out;
+  return r.data !== undefined ? r.data : JSON.parse(r.content![0]!.text);
+};
 
 beforeEach(() => {
   vi.clearAllMocks();

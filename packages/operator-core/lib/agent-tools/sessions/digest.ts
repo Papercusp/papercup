@@ -151,7 +151,7 @@ export default defineTool({
     // gets a useful contract error instead of a raw handler_error from PG.
     const sinceNorm = normalizeWindowBound(args.since, 'since');
     if (sinceNorm.error) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: sinceNorm.error }) }] };
+      return { data: { ok: false, error: sinceNorm.error } };
     }
     args.since = sinceNorm.iso;
     // Non-null: `tx` is optional on PapercuspUnifiedToolContext (must match the
