@@ -99,7 +99,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(200)
       .optional()
       .describe(
-        'acceptance-kind only: replace the COMPLETE criterion set through the atomic BAR amendment transaction. Use this when adding a BAR or binding structured checks across the set; read rubrics:get first and resubmit every stored criterion. Alias contract: prefer structured intent/acceptance/verification sections and omit legacy top-level aliases; when both forms are supplied, corresponding values (`bar`/`model`↔`acceptance.condition`, `driftMarkers`↔`acceptance.falsifier`, and verification fields) must match after canonical normalization or validation fails with `requirement_alias_conflict`',
+        'acceptance-kind only: replace the COMPLETE criterion set atomically (adding a BAR, binding checks); read rubrics:get and resubmit every stored criterion. Prefer intent/acceptance/verification sections over legacy aliases; if both are sent (`bar`/`model`↔`acceptance.condition`, `driftMarkers`↔`acceptance.falsifier`) they must match or fail `requirement_alias_conflict`',
       ),
     criterionEvidencePlane: z
       .object({ key: z.string().min(1), evidencePlane: z.enum(['tree', 'deployed', 'live']) })
@@ -196,7 +196,7 @@ export const rubricsAmendArgs = refineEvenWithShapeIssues(
       .max(200)
       .optional()
       .describe(
-        'optional assertion of the reviewer identity; must match the approval post author. On dryRun:true it also returns approverEligibility for that identity, a diagnostic: the routed review screens every candidate itself. approvedBy equal to the caller yields { selfScreen:true, eligible:null }, which is no verdict. relatedVia:"caller" is curable with an unrelated applier (WI-10002357).',
+        'optional assertion of the reviewer identity; must match the approval post author. dryRun:true returns approverEligibility (diagnostic; the routed review screens candidates itself). approvedBy = caller yields { selfScreen:true, eligible:null }, which is no verdict. relatedVia:"caller" is curable with an unrelated applier (WI-10002357).',
       ),
     approvedAt: z
       .string()
