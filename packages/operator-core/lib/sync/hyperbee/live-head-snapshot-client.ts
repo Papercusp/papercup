@@ -36,13 +36,31 @@ export const DEFAULT_HEAD_SNAPSHOT_PROBE_TIMEOUT_MS = 1_500;
 
 /**
  * Deadline for the REAL request. Generous on purpose: the holder reads its entire own
- * log (461,475 blocks on this box as of 2026-08-03) before appending, and a cut that
- * gives up early leaves the operator still doing the work while the cut degrades to a
- * full seed — the worst of both. The caller owns this budget because the engine
- * deliberately does not impose one (a merge-pass failure re-services the request on
- * the next pass rather than rejecting).
+ * log before appending, and a cut that gives up early leaves the operator still doing
+ * the work while the cut degrades to a full seed — the worst of both. The caller owns
+ * this budget because the engine deliberately does not impose one (a merge-pass failure
+ * re-services the request on the next pass rather than rejecting), and the server route
+ * sets `timeoutSec: null` specifically so it defers to this number instead of racing it.
+ *
+ * ⚠ THIS IS A FIXED BUDGET GUARDING AN O(corpus) OPERATION, AND THE CORPUS ONLY GROWS —
+ * so it crosses its own threshold on a schedule. It already did once, and the failure
+ * does NOT present as "too slow": it presents as a total outage with a misleading error
+ * ("D-025 holder-without-boot"), pointing at the registry rather than at duration.
+ *
+ * MEASURED 2026-09-18, the real call in isolation against a healthy holder:
+ *   elapsedMs 1,101,530 (18m21s), rowCount 1,416,510, chunkCount 1,044 — HTTP 200.
+ * The budget was then 15 min (930,000 ms including retry delays), so the operation
+ * needed 1.18x what it was allowed and was killed mid-flight on all four 0.0.21 cut
+ * attempts while working correctly the entire time. The old 15 min was sized against
+ * 461,475 blocks on 2026-08-03; the corpus had roughly TRIPLED in six weeks.
+ *
+ * 45 min is ~2.4x the measured need — real headroom, not a fresh guess at the same
+ * shape. It is still a guess, and that is the actual defect: the durable fix is to SIZE
+ * THIS FROM THE CORPUS (the `probeOnly` pass is already a cheap round-trip to the holder
+ * and could return own-log length, letting the client compute a budget). Until that
+ * lands, raising this constant only reschedules the outage — do not read it as fixed.
  */
-export const DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS = 15 * 60_000;
+export const DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS = 45 * 60_000;
 
 /**
  * Gap between attempts. The failure being waited out is a process restart, so polling
