@@ -117,12 +117,19 @@ export const GOAL_OWNER_REPORT_MEASURED_FAILURE_SILENCE_MS = 5 * 3600_000;
  * steward is never nagged) and strictly BELOW the smaller measured failure
  * (both graded breaches would have been caught). The guard suite pins both
  * inequalities plus standing < outcome.
+ *
+ * Re-measured 2026-10-01: the widest gap between compliant reports that a card
+ * rated PASS is now ~48min (EI-24713260630186958: 17:41 → 18:28Z, 2026-09-30;
+ * EI-24726482110170217: 20:57:22 → 21:42:19Z), still under 1h. Gaps of 64.7min
+ * and 93.5min graded partial (EI-23736084510861849, EI-22454094933360898), and
+ * no card graded a sub-1h silence FAIL, so 1h stands.
  */
 export const GOAL_OWNER_REPORT_STANDING_MAX_SILENCE_MS = 3600_000;
 
-/** The measured healthy STANDING cadence (ms) — the max gap between the graded
- *  holder's compliant reports. The standing floor must stay strictly ABOVE it. */
-export const GOAL_OWNER_REPORT_STANDING_MEASURED_HEALTHY_CADENCE_MS = 14 * 60_000;
+/** The measured healthy STANDING cadence (ms) — the max gap between a graded
+ *  holder's compliant (PASS) reports, re-measured 2026-10-01 (was 14min). The
+ *  standing floor must stay strictly ABOVE it. */
+export const GOAL_OWNER_REPORT_STANDING_MEASURED_HEALTHY_CADENCE_MS = 48 * 60_000;
 
 /** The SMALLER measured STANDING failure silence (ms) — 1h07m; the standing
  *  floor must stay AT-OR-BELOW it so both graded breaches are caught. */
@@ -141,8 +148,17 @@ export const GOAL_OWNER_REPORT_STANDING_MEASURED_FAILURE_SILENCE_MS = 67 * 60_00
  * measurements. Same evidence drove the to-human rail widening (see the
  * instrument doc): rails first, so the tighter floor never nags a
  * compliant-by-send holder.
+ *
+ * Re-litigated 2026-10-01 (WI-10004340, was 2026-10-01): both floors stand.
+ * Standing: 32 work-on-everything-stewardship-health owner-steering-and-reporting
+ * ratings since 2026-09-01 keep the 1h floor between the widest PASS cadence
+ * (~48min) and the smallest graded FAIL silence (1h07m). The healthy-cadence
+ * constant moved up to match. Outcome: the watchdog opened zero outcome-goal
+ * escalations since 2026-09-01 (three in total, all standing), and no
+ * goal-mode-e2e card measured an outcome-goal silence near 4h, so nothing
+ * contradicts WI-39348's 2.5h-healthy / 5h-failure basis.
  */
-export const GOAL_OWNER_REPORT_REVIEW_BY = '2026-10-01';
+export const GOAL_OWNER_REPORT_REVIEW_BY = '2026-11-01';
 
 /** True when `reviewBy` (an ISO date) is strictly before `now`. Exported for the
  *  guard test so the comparison the test runs is the one shipped here. */
