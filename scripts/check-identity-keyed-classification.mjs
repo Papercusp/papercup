@@ -74,6 +74,13 @@ export const CENSUS_TEST_REL =
 export const OPERATOR_CORE_REL = 'packages/operator-core';
 
 /** Strip ANSI so output matching does not depend on vitest's colour mode. */
+/**
+ * The gate's pass-reuse skip-list channel. Local literal (not imported) so this
+ * script stays dependency-light for pull-schema.mjs; pinned equal to
+ * libs/test-config's PC_TEST_REUSE_SKIP_LIST_ENV by identity-keyed-classification-gate.test.ts.
+ */
+export const TEST_REUSE_SKIP_LIST_ENV = 'PC_TEST_REUSE_SKIP_LIST';
+
 const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 /**
@@ -113,6 +120,13 @@ const stripAnsi = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
  */
 export function buildCensusChildEnv(base, schemaAbs) {
   const env = { ...base, NO_COLOR: '1', FORCE_COLOR: '0' };
+  // WI-10004340: the gate's per-file pass-reuse skip list (PC_TEST_REUSE_SKIP_LIST,
+  // libs/test-config/src/test-pass-reuse-skip.ts) is meant for the gate's OWN vitest
+  // invocation. Inherited here, it makes the nested `vitest run` exclude the census
+  // file whenever that file holds a pass proof, so the child exits "No test files
+  // found" and BOTH branches report a false verdict. The nested run always targets
+  // exactly one file and must always run it.
+  delete env[TEST_REUSE_SKIP_LIST_ENV];
   if (schemaAbs) {
     env.IDENTITY_KEYED_SCHEMA_PATH = schemaAbs;
     env.PAPERCUSP_MUTATION_PROBE = '1';
