@@ -1770,7 +1770,14 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
       codexOAuthProxy: true,
       fetchImpl,
       requestAbsorbMs: 5_000,
-      internalRetryDeadlineMs: 1,
+      // MUST be 0, not 1 (WI-10003724). Each absorb park re-arms
+      // `retryDeadlineAt = Date.now() + internalRetryDeadlineMs`, and the ladder's rung (1)
+      // — a transient wait that KEEPS the slot — fires while `now < retryDeadlineAt`. With 1ms,
+      // a second 429 decided inside the same wall-clock millisecond takes that 1ms slot-holding
+      // wait instead of the absorb park, so the slot is never released and this test reads
+      // `false`. The gate saw exactly that: both reds ran ~1.5s SHORT (the 1500ms park never
+      // happened). 0 makes rung (1) unreachable, so the absorb is the only rung.
+      internalRetryDeadlineMs: 0,
       selfHeal: { enabled: false },
     });
     port = await gw.listen(0);
@@ -1854,9 +1861,12 @@ describe('proxyOpenAi — codex terminal-429 shaping + stall attribution (WI-203
         res.end(JSON.stringify({ id: 'absorbed', ok: true }));
       },
       [codexAcct('cdx-solo')],
-      // The 1ms slot-hold deadline spends the wait rung immediately; the still-open
+      // A 0ms slot-hold deadline spends the wait rung immediately; the still-open
       // 300ms absorb budget must park OUTSIDE the provider lane before attempt 3.
-      { requestAbsorbMs: 300, internalRetryDeadlineMs: 1 },
+      // 0, not 1: each park re-arms the deadline to now+N, so with 1ms a 429 decided
+      // inside that same millisecond takes the slot-HOLDING rung (1) instead of the
+      // park, and the /stats read below sees running=1 (the race behind WI-10003724).
+      { requestAbsorbMs: 300, internalRetryDeadlineMs: 0 },
     );
 
     const pending = postResponses({ model: 'gpt-x', input: 'absorb me' });
