@@ -7,6 +7,7 @@ import { dirname, isAbsolute, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 interface ReviewManifest {
+  schemaVersion: number;
   sourcePath: string;
   sourceSha256: string;
   answerBankPath: string;
@@ -29,7 +30,8 @@ const manifestPath = [
   resolve(process.cwd(), 'packages/operator-core/lib/interview-prep-evidence/servicenow-staff-ml-manual-review.json'),
 ].find(existsSync);
 if (!manifestPath) throw new Error('servicenow_staff_ml_review_manifest_not_found');
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as ReviewManifest;
+const manifestRaw = readFileSync(manifestPath, 'utf8');
+const manifest = JSON.parse(manifestRaw) as ReviewManifest;
 const resolveEvidencePath = (path: string): string => (isAbsolute(path) ? path : resolve(homedir(), path));
 const sourcePath = process.env.SERVICENOW_INTERVIEW_PREP_FILE ?? resolveEvidencePath(manifest.sourcePath);
 
@@ -43,11 +45,43 @@ const reviewedCollectionSlugs = [
   'servicenow-staff-ml-interview-prep',
   'twg-recruiter-screen',
 ];
+// ── Opt-in: this suite's subject is NOT in version control (WI-10001853) ──────
+// It reads the reviewed role page, the answer bank, build-standalone.sh and every
+// *-standalone.html from an interview-prep collection under $HOME. Those are personal
+// working documents that change whenever their owner studies them, so this suite can
+// never be hermetic: its result describes a machine's home directory, not this commit.
+// Left on by default it red-lights the hourly green-checkpoint for the whole fleet on
+// an edit that never touched the repo — frozen candidate 6102736d is exactly that: a
+// study-timer <script> added to the page at 2026-09-18T19:20Z broke the sha256 review
+// pin, the reciprocal-link mutant-kill and the no-<script> assertion, failing three
+// consecutive gate runs at repairHead while every tracked file was byte-identical.
+//
+// So the suite is split by what each half can actually prove. The half that reads $HOME
+// runs only when asked for, by whoever maintains the evidence. The half that reads the
+// TRACKED review record stays on for every gate run below — that part is hermetic, so
+// skipping it would forfeit real coverage for nothing. Re-pinning the digests stays
+// manual on purpose: they attest a human review recorded in
+// servicenow-staff-ml-manual-review.json, and an agent must not forge that by pasting
+// in whatever hash the file happens to have today.
+const evidenceOptIn =
+  process.env.PAPERCUSP_RUN_INTERVIEW_PREP_EVIDENCE === '1' ||
+  process.env.SERVICENOW_INTERVIEW_PREP_FILE !== undefined;
 const collectionDir = dirname(sourcePath);
-const buildScript = readFileSync(resolve(collectionDir, 'build-standalone.sh'), 'utf8');
+const buildScriptPath = resolve(collectionDir, 'build-standalone.sh');
+const skipReason: string | null = !evidenceOptIn
+  ? 'opt-in only — set PAPERCUSP_RUN_INTERVIEW_PREP_EVIDENCE=1 (untracked $HOME evidence collection)'
+  : !existsSync(sourcePath)
+    ? `reviewed source absent: ${sourcePath}`
+    : !existsSync(buildScriptPath)
+      ? `interview-prep collection absent: ${buildScriptPath}`
+      : null;
+
+// Guarded so an absent/opted-out collection SKIPS instead of throwing at import time,
+// which would fail collection for the whole file rather than reporting a skip.
+const buildScript = skipReason === null ? readFileSync(buildScriptPath, 'utf8') : '';
 const sourceBlock = buildScript.match(/SOURCES=\(([\s\S]*?)\n\)/);
-if (!sourceBlock) throw new Error('interview_prep_collection_not_declared');
-const collectionSlugs = [...sourceBlock[1].matchAll(/"([a-z0-9-]+)\.html"/g)].map((match) => match[1]);
+if (skipReason === null && !sourceBlock) throw new Error('interview_prep_collection_not_declared');
+const collectionSlugs = [...(sourceBlock?.[1] ?? '').matchAll(/"([a-z0-9-]+)\.html"/g)].map((match) => match[1]);
 const expectedCollectionTargets = collectionSlugs.map((slug) => `${slug}-standalone.html`).sort();
 
 // Shared navigation grows independently of this reviewed role document. Reconstruct ONLY
@@ -92,7 +126,54 @@ beforeAll(() => {
   document.body.innerHTML = html;
 });
 
-describe('ServiceNow Staff ML interview-prep source contract', () => {
+// Always-on half: the manual-review record IS tracked in this repo, so every property
+// below is hermetic and stays gate-enforced even when the $HOME collection is absent.
+// It also keeps this file from becoming a run that measures nothing — the test router
+// rightly refuses to read an all-skipped file as a pass (TEST_FILE_ALL_SKIPPED).
+describe('ServiceNow Staff ML interview-prep review record (tracked, always enforced)', () => {
+  const HEX64 = /^[0-9a-f]{64}$/;
+
+  it('keeps a complete, non-blanked manual review on the tracked record', () => {
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.manualReview.result).toBe('pass');
+    expect(manifest.manualReview.scope.length).toBeGreaterThanOrEqual(6);
+    expect(manifest.manualReview.falsifierCoverage.length).toBeGreaterThanOrEqual(4);
+    // A blanked/placeholder review must not pass as a reviewed one.
+    for (const claim of [...manifest.manualReview.scope, ...manifest.manualReview.falsifierCoverage]) {
+      expect(claim.trim().length).toBeGreaterThan(20);
+    }
+  });
+
+  it('pins well-formed, distinct digests rather than a collapsed copy-paste', () => {
+    const digests = [
+      manifest.sourceSha256,
+      manifest.answerBankSha256,
+      manifest.expectedDigests.meetingTimeTextSha256,
+      manifest.expectedDigests.participantsTextSha256,
+      manifest.expectedDigests.meetingUrlSha256,
+      ...manifest.expectedDigests.interviewerQuestionHeadingSha256,
+    ];
+    expect(manifest.expectedDigests.interviewerQuestionHeadingSha256.length).toBeGreaterThanOrEqual(2);
+    for (const digest of digests) expect(digest).toMatch(HEX64);
+    expect(new Set(digests).size, 'a repeated digest means two distinct facts collapsed onto one pin').toBe(
+      digests.length,
+    );
+  });
+
+  it('keeps the evidence pointers machine-portable and the tracked record digest-only', () => {
+    // Relative, so the record resolves per-machine instead of freezing one home directory.
+    expect(isAbsolute(manifest.sourcePath)).toBe(false);
+    expect(isAbsolute(manifest.answerBankPath)).toBe(false);
+    expect(manifest.sourcePath).toMatch(/\.html$/);
+    expect(manifest.answerBankPath).toMatch(/\.html$/);
+    // The privacy claim is that supplied meeting details appear ONLY as one-way digests.
+    // Assert it instead of trusting the sentence that states it.
+    expect(manifestRaw).not.toMatch(/https?:\/\//);
+    expect(manifestRaw).not.toMatch(/\b[\w.+-]+@[\w-]+\.[\w.]+\b/);
+  });
+});
+
+describe.skipIf(skipReason !== null)('ServiceNow Staff ML interview-prep source contract', () => {
   it('pins the reviewed role content while allowing maintained shared navigation to grow', () => {
     expect(sha256(reviewedSource(html))).toBe(manifest.sourceSha256);
     expect(manifest.manualReview.result).toBe('pass');
