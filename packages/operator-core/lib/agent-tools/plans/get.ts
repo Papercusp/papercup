@@ -162,7 +162,7 @@ const argsSchema = z
       .enum(['meta', 'sections', 'full'])
       .optional()
       .describe(
-        "How much to return. 'meta' = frontmatter + ## Now + counts + a section index (headings only). 'sections' (DEFAULT) = meta + structured items/decisions (items WITHOUT rawLine; long decision bodies are EXCERPTED to keep the default read bounded — each carries body_truncated + body_full_chars, and decisionBodiesTruncated flags when any were cut — use mode:'full' for complete bodies), still WITHOUT the markdown body. 'full' = everything incl. the whole markdown body as `prose`, per-item rawLine, and full decision bodies (a big blueprint can be 90KB+ — only when you actually need the prose; exact raw file bytes live behind plans:export).",
+        'Response depth: meta = frontmatter, Now, counts, section headings; sections (default) adds structured items/decisions, excerpting long decision bodies with explicit truncation flags; full adds markdown prose, item rawLine, and complete decision bodies. Use plans:export for exact raw bytes.',
       ),
     // EI-21905561475819210: several generic plan readers use `detail` as the
     // read-depth control. Keep that established spelling executable here while
