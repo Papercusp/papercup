@@ -3593,6 +3593,30 @@ describe('background-log-read-race advisory (EI-18764990059061608)', () => {
     }
   });
 
+  it('treats a Bash `&>` / `&>>` redirect as a WRITE, not a READ, of a tracked path (WI-2144525)', async () => {
+    // Deterministic form of a host-state flake: `npm run lint:tsc &> /tmp/tsc.log`
+    // in the shell-backgrounding suite drew this advisory on the gate box whenever
+    // some unrelated real process held /tmp/tsc.log open, because `&>` was not
+    // recognised as a redirect. Here a holder makes the path "still open" on purpose.
+    const log = join(logDir, 'amp-redirect.log');
+    const holder = spawnOpenHolder(log);
+    try {
+      await wait(300);
+      expectAllow(runRace(bgCmd(`npx tsc --noEmit > ${log} 2>&1`, logDir, { run_in_background: true })));
+      expectAllow(runRace(bgCmd(`npm run lint:tsc &> ${log}`, logDir)));
+      expectAllow(runRace(bgCmd(`npm run lint:tsc &>> ${log}`, logDir)));
+      expectAllow(runRace(bgCmd(`npm run lint:tsc &>${log}`, logDir)));
+      // Control: a genuine READ of the same still-open path must STILL fire, or
+      // the three silences above would pass vacuously.
+      const out = runRace(bgCmd(`cat ${log}`, logDir));
+      expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext).toContain(
+        'background-log-read-race advisory',
+      );
+    } finally {
+      holder.kill();
+    }
+  });
+
   it('still fires for a READ from a different tool_name than the one that backgrounded it', async () => {
     // Recording only happens for `run_in_background` (a Claude-Bash-only
     // concept), but the RACE is real regardless of which tool later reads the
