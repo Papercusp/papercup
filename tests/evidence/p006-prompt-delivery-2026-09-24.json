@@ -3,7 +3,7 @@
   "sourceLog": "/tmp/p006-prompt-delivery-v2.log",
   "subject": "fc794d786897159f742fe4981242689d54fa1e75 + local test changes (hashes below)",
   "profile": {
-    "host": "main-server-Precision-7865-Tower",
+    "host": "[build-host]",
     "node": "v25.9.0",
     "corpusHash": "d529b252620142c44d7fe3f6c398d9f797de3be5b7cfb7ed20dd042d8dd9e827",
     "requestsHash": "1fed1c7df792f7c8579df7e13b91ec671d30a67889dbfdf3466a9878f0354f6b",
