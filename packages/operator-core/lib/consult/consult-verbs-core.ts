@@ -146,7 +146,7 @@ export interface ConsultVerbDeps {
     conversationId: string;
     summary: string;
     body: string;
-  }) => Promise<{ woke: number }>;
+  }) => Promise<{ woke: number; confirmedDead?: boolean }>;
   /**
    * The cascade DELIVERY seam (D-002/D-011) — fork/convert a NEW answering
    * session from the next expert's transcript. Passed to every advanceCascade
@@ -477,6 +477,12 @@ export interface ConsultReplyResult {
   wake?: {
     attempted: boolean;
     woke: number;
+    /** Present after a zero-count wake attempt; records the confirmed-dead
+     * check and the outcome of the CAS-guarded cascade. */
+    reroute?: {
+      status: 'not_confirmed_dead' | 'advanced' | 'exhausted' | 'raced' | 'unchanged';
+      to: string | null;
+    };
   };
   /** Present on a cascade-advancing perspective reply (D-005): which expert's
    * transcript the next answering session was DISPATCHED from with the
@@ -622,6 +628,8 @@ export async function consultReplyCore(
   }
 
   let woke = 0;
+  let answeringOwnerId: string | null = null;
+  let responderConfirmedDead = false;
   if (willWake && deps.reach && row.responder_id) {
     // D-011: address the session that is ANSWERING, not the expert who was
     // routed. A fork answers under a new coord identity (stamped by dispatch as
@@ -630,6 +638,7 @@ export async function consultReplyCore(
     // consult while the session holding the thread never hears the follow-up.
     const answering =
       selectionFromRouting(row.routing)[row.cascade_cursor]?.answeringOwnerId ?? row.responder_id;
+    answeringOwnerId = answering;
     const r = await deps.reach({
       responder: answering,
       conversationId: req.conversationId,
@@ -641,6 +650,7 @@ export async function consultReplyCore(
         consultResponderVerbMenu({ conversationId: req.conversationId }),
     });
     woke = r.woke;
+    responderConfirmedDead = woke === 0 && r.confirmedDead === true;
   }
 
   // D-005 always-advance: the current responder's perspective advances the
@@ -648,7 +658,11 @@ export async function consultReplyCore(
   // far. The park-key emit above already served a hard-blocked requester
   // (parks on the FIRST reply); the chain continues behind it.
   let cascade: ConsultReplyResult['cascade'];
-  if (isPerspective) {
+  let requesterReroute:
+    | NonNullable<ConsultReplyResult['wake']>['reroute']
+    | undefined = willWake && woke === 0 ? { status: 'not_confirmed_dead', to: null } : undefined;
+  const confirmedDeadFollowup = role === 'requester' && responderConfirmedDead;
+  if (isPerspective || confirmedDeadFollowup) {
     const adv = await advanceCascade(
       {
         workspaceId: req.workspaceId,
@@ -662,8 +676,19 @@ export async function consultReplyCore(
         // Safe narrowing: isPerspective ⇒ role 'responder', and the kind gate
         // above already restricted req.kind to RESPONDER_REPLY_KINDS — the
         // requester-only 'question' cannot reach this branch.
-        event: makeDigestEntry(req.authorId, req.kind as CascadeEventKind, now, req.body),
-        stateOnAdvance: 'active',
+        event: isPerspective
+          ? makeDigestEntry(req.authorId, req.kind as CascadeEventKind, now, req.body)
+          : makeDigestEntry(
+              answeringOwnerId ?? row.responder_id ?? req.authorId,
+              'wake_failed',
+              now,
+              'The answering session was confirmed ended after a requester follow-up.',
+            ),
+        stateOnAdvance: isPerspective
+          ? 'active'
+          : row.state === 'awaiting_responder'
+            ? 'awaiting_responder'
+            : 'active',
         nowIso: now,
       },
       sql,
@@ -679,6 +704,14 @@ export async function consultReplyCore(
         woke: adv.woke,
         ...(adv.refilled ? { refilled: true } : {}),
       };
+      if (confirmedDeadFollowup) {
+        requesterReroute = {
+          status: adv.advanced ? 'advanced' : adv.exhausted ? 'exhausted' : 'unchanged',
+          to: adv.advanced ? adv.next?.ownerId ?? null : null,
+        };
+      }
+    } else if (confirmedDeadFollowup) {
+      requesterReroute = { status: 'raced', to: null };
     }
   }
   const cascadeNote = cascade
@@ -686,6 +719,16 @@ export async function consultReplyCore(
       ? ` Cascade advanced (D-005): an answering session was dispatched from ${cascade.advanced_to}'s transcript with the feedback so far (D-002 — forked/converted, never woken).${cascade.refilled ? ' (min-ANSWERS refill, WI-39861: the menu was extended once — answers collected < selection.min.)' : ''}`
       : ' Cascade menu exhausted — you were the last selectee.'
     : '';
+  const requesterRerouteHint =
+    requesterReroute?.status === 'advanced'
+      ? `; the consult advanced to reviewer ${requesterReroute.to}`
+      : requesterReroute?.status === 'exhausted'
+        ? '; the confirmed-ended responder had no remaining selected reviewer'
+        : requesterReroute?.status === 'raced'
+          ? '; another operation advanced the cascade first'
+          : requesterReroute?.status === 'unchanged'
+            ? '; the cascade did not advance'
+            : '';
 
   const capNow = exchangesUsed >= row.max_exchanges;
   const hint =
@@ -695,7 +738,7 @@ export async function consultReplyCore(
         : req.kind === 'answer'
           ? `Answer posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}. When the thread is settled, close it: consult:close { outcome: 'answered' }.${cascadeNote}`
           : `Posted (exchange ${exchangesUsed}/${row.max_exchanges}); the requester was signaled via ${parkKey(req.conversationId)}.${cascadeNote}`
-      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'woken' : 'pinged'}` : ''}.`;
+      : `Follow-up posted (exchange ${exchangesUsed}/${row.max_exchanges})${willWake ? `; responder ${woke > 0 ? 'woken' : responderConfirmedDead ? 'confirmed ended' : 'pinged'}` : ''}${requesterRerouteHint}.`;
 
   return {
     ok: true,
@@ -709,6 +752,7 @@ export async function consultReplyCore(
           wake: {
             attempted: willWake,
             woke,
+            ...(willWake && woke === 0 && requesterReroute ? { reroute: requesterReroute } : {}),
           },
         }
       : {}),

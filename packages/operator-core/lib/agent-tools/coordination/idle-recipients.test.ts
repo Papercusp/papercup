@@ -234,7 +234,7 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
 
   it('returns a clean empty (NOT degraded) report when there are no concrete recipients', async () => {
     const r = await reportIdleRecipients(['*', 'human'], {});
-    expect(r).toEqual({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false, aliveNotWakeable: [] });
+    expect(r).toEqual({ idle: [], live: [], dormantScheduled: [], unknown: [], degraded: false, aliveNotWakeable: [], confirmedDead: [] });
     expect(listPresence).not.toHaveBeenCalled();
   });
 });
@@ -251,7 +251,7 @@ describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclass
     sessionState,
     wakeable: false,
     liveTurn: sessionState === 'live',
-    confirmLiveness: null,
+    confirmLiveness: sessionState === null ? null : sessionState === 'draining' || sessionState === 'suspect',
     heartbeatFresh: true,
   });
 
@@ -281,7 +281,20 @@ describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclass
     const r = await reportIdleRecipients(['su-cup-1'], {});
     expect(r.idle).toEqual(['su-cup-1']);
     expect(r.aliveNotWakeable).toEqual([]);
+    expect(r.confirmedDead).toEqual(['su-cup-1']);
   });
+
+  it.each(['parked', 'draining', 'suspect', null] as const)(
+    'does not confirm %s as dead even though the recipient remains idle',
+    async (sessionState) => {
+      vi.mocked(listPresence).mockResolvedValue(presence('su-cup-1'));
+      const state = sessionState as LivenessVerdict['sessionState'];
+      vi.mocked(resolveSessionStates).mockResolvedValue(new Map([['su-cup-1', verdict(state)]]));
+      const r = await reportIdleRecipients(['su-cup-1'], {});
+      expect(r.idle).toEqual(['su-cup-1']);
+      expect(r.confirmedDead).toEqual([]);
+    },
+  );
 
   it('an oracle hiccup degrades to plain idle (never invents a false alive verdict)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -290,7 +303,20 @@ describe('reportIdleRecipients — EI-19937974676482462 aliveNotWakeable reclass
     const r = await reportIdleRecipients(['su-cup-1'], {});
     expect(r.idle).toEqual(['su-cup-1']);
     expect(r.aliveNotWakeable).toEqual([]);
+    expect(r.confirmedDead).toEqual([]);
     expect(r.degraded).toBe(false); // the OVERALL probe still succeeded — only the oracle enrichment degraded
+    warn.mockRestore();
+  });
+
+  it('does not confirm dead when the loop-schedule probe fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(listPresence).mockResolvedValue(presence('su-cup-1'));
+    vi.mocked(getLoopStatuses).mockRejectedValueOnce(new Error('loop status down'));
+    vi.mocked(resolveSessionStates).mockResolvedValue(new Map([['su-cup-1', verdict('ended')]]));
+    const r = await reportIdleRecipients(['su-cup-1'], {});
+    expect(r.idle).toEqual(['su-cup-1']);
+    expect(r.confirmedDead).toEqual([]);
+    expect(warn).toHaveBeenCalledOnce();
     warn.mockRestore();
   });
 

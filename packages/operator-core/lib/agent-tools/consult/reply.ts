@@ -13,11 +13,20 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
 import { resolveAgentIdentity } from '../coordination/identity';
+import type { IdleRecipientReport } from '../coordination/inbox-wake';
 import { COORD_REPLY_ROLES } from '../coordination/roles';
 import { hardText } from '../limits';
 import { consultPostAbortCompletionReceipt } from './abort-completion';
 
 const ok = (payload: Record<string, unknown>) => ({ data: payload });
+
+/** A follow-up may reroute only on a complete, positive ended-session verdict. */
+export function isConfirmedDeadConsultResponder(
+  report: Pick<IdleRecipientReport, 'confirmedDead' | 'degraded'> | null | undefined,
+  responder: string,
+): boolean {
+  return report?.degraded !== true && report?.confirmedDead?.includes(responder) === true;
+}
 
 /**
  * The handler writes the consult post before finishing its remaining work. If the
@@ -73,13 +82,14 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     // Heavy prod seams — imported per-call, never at registration.
-    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeConsultReachDispatcher }] =
+    const [{ getOrgPg }, { consultReplyCore }, conversations, { notifyAgents }, { makeConsultReachDispatcher }, { reportIdleRecipients }] =
       await Promise.all([
         import('@papercusp/db-org'),
         import('../../consult/consult-verbs-core'),
         import('../coordination/conversations'),
         import('../coordination/notify-agents'),
         import('../../consult/consult-dispatch'),
+        import('../coordination/inbox-wake'),
       ]);
 
     // Same partition resolver as the conversation writes (WI-1571).
@@ -116,7 +126,14 @@ export default defineTool({
             body: opts.body,
             wake: true,
           });
-          return { woke: r.woke };
+          if (r.woke !== 0) return { woke: r.woke };
+          const report = await reportIdleRecipients([opts.responder], {
+            workspaceId: identity.workspaceId ?? undefined,
+          });
+          return {
+            woke: r.woke,
+            confirmedDead: isConfirmedDeadConsultResponder(report, opts.responder),
+          };
         },
         // D-011 seam 2 of 2: a cascade advance addresses an expert who is NOT
         // in this conversation — fork/convert a fresh answering session from
