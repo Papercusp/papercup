@@ -825,6 +825,13 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // "needs a stripper" kind. A no-op stripper import would score it `shared` while masking
     // nothing, which is exactly the laundering this list exists to make visible. (WI-1309267)
     'check-js-syntax.mjs',
+    // check-licenses.mjs (license gate, 2026-09-29) never text-matches JS/TS source. Its only
+    // `readFileSync` feeds `JSON.parse` for lockfile/manifest JSON, and it reads artifact HEADER
+    // BYTES via openSync/readSync to classify binaries. Measured against its own source: the
+    // prefilter is fooled by the `.mjs'` in its `./check-lockfile-census.mjs` import and its argv
+    // basename check, and by `.test(` / `.includes(` over license ids, lockfile keys and relative
+    // PATHS. Masking would change nothing it analyses, so this is the "exposure considered" kind.
+    'check-licenses.mjs',
     // check-migration-fixture-drift.mjs was REMOVED here on 2026-08-10 (WI-37717). It scans
     // TWO surfaces and both are now masked: migration .sql text via stripSqlComments (inside
     // extractIntroducedColumns — the input is definitionally SQL, so no extension dispatch is

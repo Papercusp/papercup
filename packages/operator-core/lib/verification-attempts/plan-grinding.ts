@@ -16,6 +16,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
+import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { SLOW_ATTEMPT_MIN_MS } from './attempt-ledger';
 import { checkLoopGate, type LoopGateDeps, type LoopTrigger } from './loop-gate';
 
@@ -61,7 +62,7 @@ async function defaultListLinked(
             OR w.payload #>> '{plan_item,plan_slug}' = ${input.planSlug})
        AND (COALESCE(w.source_plan_item_ids, ARRAY[]::text[]) && ${ids}::text[]
             OR w.payload #>> '{plan_item,item_id}' = ANY(${ids}::text[]))
-       AND w.status NOT IN ('done', 'dropped', 'resolved', 'closed')
+       AND NOT (w.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
        AND w.lane IS DISTINCT FROM 'observation'
        AND EXISTS (
          SELECT 1 FROM harness_shared.task_ledger t

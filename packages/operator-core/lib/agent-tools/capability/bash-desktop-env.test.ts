@@ -22,7 +22,8 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
   capabilityExecSandboxEnabled: vi.fn(async () => false),
 }));
 
-import bashTool, { resolveBashTaskProvenance } from './bash';
+import bashTool from './bash';
+import { resolveBashTaskProvenance } from './bash-task-provenance';
 import { __resetBashJobs } from './bash-jobs';
 import {
   ensureHiveDesktop,

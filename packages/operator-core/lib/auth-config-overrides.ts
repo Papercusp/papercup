@@ -22,14 +22,17 @@
  * disabled (the resolver returns false for every role). Default ON ⇒ current behaviour. This flag is
  * read REGARDLESS of the dark override flag (the kill-switch must work even with no override set).
  *
- * The module import is PURE (no import-time getFlag/PG read) — importing it on the dispatch hot path
- * (via gate-bypass's resolver, the clamp, or exec-sandbox) never does IO; the getters are plain cache
- * reads. Refresh on (a) onFlagChange(null | the two flags), (b) local write, (c) a ~60s unref timer.
+ * The module import is PURE (no import-time getFlag/PG read, and no flag-binding ACCESS either) —
+ * importing it on the dispatch hot path (via gate-bypass's resolver, the clamp, or exec-sandbox)
+ * never does IO; the getters are plain cache reads. Refresh on (a) onFlagChange(null | the two
+ * flags), armed on first use by every reader — see ./lazy-flag-refresh — plus the explicit host-boot
+ * warm `armAuthConfigRefresh()`, (b) local write, (c) a ~60s unref timer.
  */
-import { getFlag, onFlagChange } from '@papercusp/flags/server';
+import { getFlag } from '@papercusp/flags/server';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { FLAGS } from '@papercusp/flags';
+import { FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 import { setTestingFullAccessResolver } from '@papercusp/agent-mcp';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 import { systemDistinctId } from './flag-distinct-id';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
@@ -59,6 +62,45 @@ let cached: AuthConfigOverrides = {};
 let fullAccessSet: ReadonlySet<string> | null = null;
 let safeToolsRemoveSet: ReadonlySet<string> = EMPTY_SET;
 let maskAdditions: readonly string[] = [];
+// Set by the first completed refresh. `refreshAuthConfigOverrides` is EXPORTED (and called by the
+// write path), so an arm that happens AFTER an explicit refresh must not re-seed a resolved value
+// back to the flag default.
+let resolved = false;
+
+// Armed on FIRST USE, not at import (EI-19416650993725684 / WI-6650) — the import touches no flag
+// binding, so a test that partially mocks `@papercusp/flags/server` can still collect. EVERY reader
+// arms, including the HIDDEN one: `resolveTestingFullAccess` below is installed into agent-mcp's
+// gate-bypass and reads the module vars directly, so arming only the exported getters would leave the
+// actual auth gate unarmed. Hosts additionally warm it at boot via `armAuthConfigRefresh()`
+// (host-bootstrap.ts), which restores the boot-time subscription the module-scope form used to give
+// them. Declared ABOVE the readers so no reader can hit it in its temporal dead zone.
+const armFlagRefresh = lazyFlagRefresh(refreshAuthConfigOverrides, {
+  keys: [FLAGS.AUTH_CONFIG_OVERRIDES, FLAGS.TESTING_FULL_ACCESS],
+  unpopulated: {
+    kind: 'seeded-from-flag-default',
+    serves:
+      'FLAG_DEFAULTS[AUTH_CONFIG_OVERRIDES] (false, DARK owner-authority ⇒ empty override set ⇒ every ' +
+      'surface uses its baked literal) and FLAG_DEFAULTS[TESTING_FULL_ACCESS] (true ⇒ current ' +
+      'behaviour). That is exactly what the module-scope form served before its boot reload landed. ' +
+      'The only divergence is a kill-switch flipped OFF not yet honoured on the first read in a fresh ' +
+      'process; hosts close that by arming at boot, and the ~60s timer below bounds it everywhere else.',
+  },
+  seed: () => {
+    if (resolved) return;
+    overridesEnabled = FLAG_DEFAULTS[FLAGS.AUTH_CONFIG_OVERRIDES] === true;
+    testingFullAccessEnabled = FLAG_DEFAULTS[FLAGS.TESTING_FULL_ACCESS] !== false;
+    recomputeDerived();
+  },
+});
+
+/**
+ * Explicit boot warm (host-bootstrap.ts). Idempotent — the same arm every reader calls. Exists because
+ * this cache's unpopulated state is the PERMISSIVE one for the testing-full-access kill-switch, so a
+ * long-running host should subscribe at boot rather than on its first gate-bypass check.
+ */
+export function armAuthConfigRefresh(): void {
+  armFlagRefresh();
+}
 
 function recomputeDerived(): void {
   if (!overridesEnabled) {
@@ -77,19 +119,24 @@ function recomputeDerived(): void {
 // ── hot-path getters (SYNC, zero-await) ───────────────────────────────────────
 /** Tools to subtract from SCOPED_SAFE_CROSSWORKSPACE (narrow-only). Empty when off/unset. */
 export function authSafeToolsRemoveSet(): ReadonlySet<string> {
+  armFlagRefresh();
   return safeToolsRemoveSet;
 }
 /** Extra sandbox mask dirs to union over CAPABILITY_SANDBOX_MASK_DIRS (add-only). Empty when off/unset. */
 export function authSandboxMaskAdditions(): readonly string[] {
+  armFlagRefresh();
   return maskAdditions;
 }
 /** Deny-all-egress override (undefined ⇒ defer to the env). Only honoured when the dark flag is ON. */
 export function authSandboxDenyAllEgressOverride(): boolean | undefined {
+  armFlagRefresh();
   return overridesEnabled ? cached.sandboxDenyAllEgress : undefined;
 }
 
-// The gate-bypass resolver (installed once below). Reads the live module vars each call.
+// The gate-bypass resolver (installed once below). Reads the live module vars each call — the HIDDEN
+// reader, so it arms too.
 function resolveTestingFullAccess(role: string | null | undefined): boolean | null {
+  armFlagRefresh();
   if (!testingFullAccessEnabled) return false; // kill-switch flag OFF ⇒ globally disabled
   if (fullAccessSet) return role != null && fullAccessSet.has(role); // dark override REPLACES the baked set
   return null; // fall through to the baked TESTING_FULL_ACCESS_ROLES
@@ -110,14 +157,9 @@ export async function refreshAuthConfigOverrides(): Promise<void> {
     testingFullAccessEnabled = true; // fail SAFE to current behaviour (testing-full-access on)
     cached = {};
   }
+  resolved = true;
   recomputeDerived();
 }
-// Boot + flip refresh (pure import — no import-time IO here).
-onFlagChange((key) => {
-  if (key === null || key === FLAGS.AUTH_CONFIG_OVERRIDES || key === FLAGS.TESTING_FULL_ACCESS) {
-    void refreshAuthConfigOverrides();
-  }
-});
 // P-008: visible in schedule:inventory as a 'cache' timer (per-process config memo refresh).
 managedSetInterval('config-refresh:auth-config', 60_000, () => refreshAuthConfigOverrides(), {
   category: 'cache',

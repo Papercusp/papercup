@@ -85,6 +85,12 @@ import { isWorkspaceCoordinationOn } from './workspace-brain-scope';
 // (an eager `void refreshLexiconPack()` reaching getFlag, plus the visible `onFlagChange(`),
 // so the source lint could only ever have seen half of it. This assertion sees both.
 import { activeServerPackId } from './lexicon/configure';
+// Migrated 2026-09-29 (WI-6650 residual), after a new `capability/bash` import edge reached it via
+// exec-sandbox.ts and killed COLLECTION of 20 gate files on frozen candidate 5ec99902. It was the
+// BASELINE's "examined and deferred" entry because of a HIDDEN reader: the gate-bypass resolver it
+// installs into agent-mcp reads the module vars directly, so it arms too. That hidden reader is only
+// reachable through agent-mcp, so the exported getter below is the one pinned here.
+import { authSafeToolsRemoveSet } from './auth-config-overrides';
 // EI-19416650993725684's ORIGINALLY REPORTED entry point, added 2026-08-30 — every import above is a
 // module that was itself migrated, so together they guard the CLASS; this one guards the reported
 // REPRODUCTION. The filed chain is `agent-tools/locks/configure.ts` → `txn-timeouts-config.ts`, whose
@@ -133,6 +139,7 @@ describe('the fix is IMPORTABILITY, not reader-callability (do not widen this cl
     // it pins the boundary above, and it fails if the arm is ever dropped back out of the getter
     // (which would silently un-arm the hot `term()` read path while every other signal stays green).
     expect(() => activeServerPackId()).toThrow(/onFlagChange/);
+    expect(() => authSafeToolsRemoveSet()).toThrow(/onFlagChange/);
   });
 
   it('an ASYNC reader surfaces the same arm as a REJECTION, not a throw', () => {
