@@ -61,7 +61,10 @@ const ONE_CALL = 'export function run(source){ return source.lexical(); }';
 const TWO_CALLS = 'export function run(source){ source.lexical(); return source.lexical(); }';
 /** Same file, edited, but the seam count is unchanged — the calibration control. */
 const ONE_CALL_EDITED = 'export function run(source){ /* comment */ return source.lexical(); }';
+// `probe` must be IMPORTED: the detector only treats imported or explicitly injected
+// bindings as seams (a free global is not a dependency it can reason about).
 const CONTROL_FLOW_BEFORE = `
+  import { probe } from './probe';
   export async function run(input) {
     for (const spec of input.specs) {
       const evidence = await probe({ runner: input.runner, spec });
@@ -70,6 +73,7 @@ const CONTROL_FLOW_BEFORE = `
   }
 `;
 const CONTROL_FLOW_AFTER = `
+  import { probe } from './probe';
   export async function run(input) {
     for (const spec of input.specs) {
       const evidence = await probe({ runner: input.runner, spec });
