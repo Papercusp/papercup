@@ -353,7 +353,7 @@ describe('mutation-probe.sh --in-tree sweep-race gate', () => {
 
   it.each(['3070', '9071'])('retries a local :%s transport timeout once through staging :3170', (port) => {
     const primaryUrl = 'http://127.0.0.1:' + port;
-    const endpointEnv = port === '9071'
+    const endpointEnv: Record<string, string> = port === '9071'
       ? { PAPERCUSP_HONO_PORT: port }
       : { PAPERCUSP_OPERATOR_URL: primaryUrl };
     const { code, out } = runLockedProbe(
