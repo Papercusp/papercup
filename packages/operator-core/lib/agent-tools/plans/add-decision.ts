@@ -472,6 +472,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
       deduped: true,
       filePath: result.filePath,
       ...(measurementAdvisory ? { measurementAdvisory } : {}),
+      ...(citedRuleAdvisory ? { citedRuleAdvisory } : {}),
       ...provenance,
     };
   }
@@ -525,6 +526,7 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
     ...(propagatedTo.length > 0 ? { propagated_to: propagatedTo } : {}),
     ...(unknownAffects.length > 0 ? { unknown_affects: unknownAffects } : {}),
     ...(measurementAdvisory ? { measurementAdvisory } : {}),
+    ...(citedRuleAdvisory ? { citedRuleAdvisory } : {}),
     // WI-42142: advisory provenance fields — absent on the clean common case, so a
     // decision with no directive shape and no turn ref keeps its exact prior shape.
     ...provenance,
@@ -534,8 +536,10 @@ async function addDecisionOne(rawIt: NewDecision, ctx: UnifiedToolContext): Prom
 export default defineTool({
   name: 'plans:add-decision',
   description:
-    "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; source-like paths without it return `measurementAdvisory`, and an uncovered absence premise returns advisory `absenceLint`. Returns `{ ok, results:[{ ok, slug, decisionId, ref, deduped?, propagated_to?, measurementAdvisory?, absenceLint? | error }], counts }`; correlate each result by `decisionId`, and one failure never fails the rest. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
+    "Append one or many decisions to a plan. Allocates the next D-NNN inside a lock and bumps frontmatter `updated:`; concurrent calls stay collision-free. Single: `{ slug, title, body }`; bulk: `items:[{ slug, title, body, refs?, affects? }]`. `itemRefs` aliases `refs` (refs wins). Tree-fact decisions require `Measured: <file:line or command + result>`; without it, source-like paths return `measurementAdvisory` and a ruling resting on another decision as authority returns `citedRuleAdvisory`. CITE `ref` (`<slug>#D-NNN`) anywhere the decision is quoted onward — a bare `D-NNN` is allocated per-plan, so it is not a reference: `D-001` names 904 different rulings in this harness. Exact `{ title, body }` retries dedupe against the plan's most recent decision instead of appending.",
   guidance: {
+    returns:
+      '`{ ok, results:[{ ok, slug, decisionId, ref, deduped?, propagated_to?, measurementAdvisory?, citedRuleAdvisory?, absenceLint? | error }], counts }`. Correlate each result by `decisionId`; one failure never fails the rest. Three advisories, all non-blocking: `measurementAdvisory` (names source-like paths with no `Measured:` line), `citedRuleAdvisory` (the body leans on a cited decision as authority with no `Measured:` line — a cited decision is design authority, not tree evidence; an overruling citation such as "supersedes D-003" is exempt), and `absenceLint` (an uncovered absence premise).',
     when: "A decision-shaped output: trade-off resolved, scope ratified, or a choice made. Record it so fresh agents do not relitigate. For current-tree claims, open the tree and add `Measured: <file:line or command + result>`. Design authority is not tree evidence. Use items:[…] for bulk.",
     notWhen:
       'Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.',

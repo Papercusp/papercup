@@ -5,9 +5,22 @@ import { join } from 'node:path';
 
 let fixtureRepo = '';
 let resolvedVersion = '1.0.0';
-vi.mock('./install-io', () => ({
-  gitCloneShallow: async (_url: string, dest: string) => fs.cp(fixtureRepo, dest, { recursive: true }),
-}));
+// importOriginal + spread, NOT a hand-listed factory. install-theme-io.ts imports
+// `cupboardGitDeps` from this module, and a factory listing only the exports it
+// happened to need makes every OTHER export `undefined` the moment the module under
+// test reaches for one — while still typechecking, because a vi.mock factory is not
+// checked against the real module. That is exactly what red-pinned the green gate
+// here (WI-10001674): the installer moved from calling gitCloneShallow directly to
+// cupboardGitDeps(), this mock was never updated, and every install threw
+// "cupboardGitDeps is not a function" and surfaced only as an opaque status 500.
+// Spreading `actual` means a newly-added export can never strand this file again.
+vi.mock('./install-io', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./install-io')>();
+  const cloneRepo = async (_url: string, dest: string): Promise<void> => {
+    await fs.cp(fixtureRepo, dest, { recursive: true });
+  };
+  return { ...actual, gitCloneShallow: cloneRepo, cupboardGitDeps: () => ({ ...actual.cupboardGitDeps(), cloneRepo }) };
+});
 vi.mock('./resolve-listing-by-kind', () => ({
   resolveListingByKind: async () => ({
     githubUrl: 'https://github.com/acme/themes',
