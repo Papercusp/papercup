@@ -863,8 +863,16 @@ describe("ProductionWorkspaceHostRemoteInitializerHost agent probe environment",
 
     await host.probeAgentVerification();
 
+    // `codex` twice is correct, not a duplicate (WI-10001694): its `authenticated-account` probe
+    // is `satisfiesReadiness: false`, so unlike `omp` — whose first spec IS readiness-bearing and
+    // breaks the loop on this all-exit-0 runner — it can never end the loop, and codex's
+    // live-inference probe always runs after it. Both specs exec the SAME attested vendor path,
+    // which is the property this case exists to pin: the runtime path replaces the command for
+    // EVERY spec of an agent, so a regression that reverted only the second one would show up
+    // here as a bare name in this list.
     expect(invocations.map((invocation) => invocation.command)).toEqual([
       vendor.claude,
+      vendor.codex,
       vendor.codex,
       vendor.omp,
     ]);
