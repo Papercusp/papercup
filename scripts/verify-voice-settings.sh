@@ -93,7 +93,7 @@ echo "isolated throwaway DB ✓ — engine writes cannot touch the owner's real 
 if [ "$MODE" = gemini ]; then
   # Install the diagnostic only AFTER PID/isolation controls. Never inspect an
   # unverified desktop, and never lose the original failing exit status.
-  trap 'status=$?; if [ "$status" -ne 0 ]; then "$TAT" eval --pid "$PID" "$GEMINI_DIAGNOSTIC" 2>&1 || true; fi' EXIT
+  trap 'status=$?; if [ "${status:-0}" -ne 0 ]; then "$TAT" eval --pid "$PID" "$GEMINI_DIAGNOSTIC" 2>&1 || true; fi' EXIT
   # Read the raw bridge response: the installed CLI schema strips newer fields.
   # This follows the proved PID/isolation controls, and never prints its token.
   node <<'NATIVE_HEALTH'
