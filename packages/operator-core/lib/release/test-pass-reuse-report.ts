@@ -171,6 +171,141 @@ export function parseTestPassReuse(output: string): TestPassReuseRun[] {
   return runs;
 }
 
+// ── Pass-proof recorder outcome (WI-10003603) ─────────────────────────────────────────────────
+// Per-file reuse can only ever skip what an earlier clean round RECORDED. The recorder (the
+// executed-source-map reporter) used to report only to task stderr, which the gate discards, so
+// a writer failing on every row (WI-10003597) left reuse at zero for ~8h unnoticed. affected-tests
+// now prints the lines below (formats in scripts/lib/executed-source-map.mjs):
+//   EXECUTED_SOURCE_MAP_ALARM task=<ws::script> outcome=<failed|timed-out> rows=N error=<message>
+//   EXECUTED_SOURCE_MAP_TOTAL tasks=N written=N rows=N retired=N notPersisted=N nothingToRecord=N failed=N timedOut=N noReport=N malformed=N
+
+export interface ExecutedSourceMapRecorderTotal {
+  tasks: number;
+  written: number;
+  rows: number;
+  retired: number;
+  notPersisted: number;
+  nothingToRecord: number;
+  failed: number;
+  timedOut: number;
+  noReport: number;
+  malformed: number;
+}
+
+export interface ExecutedSourceMapRecorderAlarm {
+  task: string;
+  outcome: string;
+  error: string;
+}
+
+/**
+ * `write-failing` = a database write failed or timed out; `not-persisted` = the round's run was
+ * not clean, so it recorded nothing; `unreported` = no armed task reported any outcome (the
+ * recorder is not wired); `nothing-to-record` = clean, but no recordable file ran;
+ * `recorded` = proofs landed. The first three are alarms: in the gate's own clean checkout
+ * each one means the next round has nothing to reuse.
+ */
+export type ExecutedSourceMapRecorderVerdict =
+  | 'recorded'
+  | 'nothing-to-record'
+  | 'write-failing'
+  | 'not-persisted'
+  | 'unreported';
+
+export interface ExecutedSourceMapRecorderSummary extends ExecutedSourceMapRecorderTotal {
+  /** TOTAL lines seen (one per affected-tests invocation). */
+  invocations: number;
+  verdict: ExecutedSourceMapRecorderVerdict;
+  alarm: boolean;
+  alarms: ExecutedSourceMapRecorderAlarm[];
+}
+
+const RECORDER_TOTAL_KEYS = [
+  'tasks',
+  'written',
+  'rows',
+  'retired',
+  'notPersisted',
+  'nothingToRecord',
+  'failed',
+  'timedOut',
+  'noReport',
+  'malformed',
+] as const satisfies readonly (keyof ExecutedSourceMapRecorderTotal)[];
+
+const RECORDER_LINE_RE = /^(?:\[[^\]]*\]\s*)?(EXECUTED_SOURCE_MAP_(?:TOTAL|ALARM)) (.*)$/;
+const RECORDER_ALARM_VERDICTS = new Set<ExecutedSourceMapRecorderVerdict>(['write-failing', 'not-persisted', 'unreported']);
+
+function recorderVerdict(t: ExecutedSourceMapRecorderTotal): ExecutedSourceMapRecorderVerdict {
+  if (t.failed + t.timedOut > 0) return 'write-failing';
+  if (t.tasks > 0 && t.noReport === t.tasks) return 'unreported';
+  if (t.written > 0) return 'recorded';
+  if (t.notPersisted > 0) return 'not-persisted';
+  return 'nothing-to-record';
+}
+
+/**
+ * The round's recorder outcome, summed over its affected-tests invocations. Null when the output
+ * carries no `EXECUTED_SOURCE_MAP_TOTAL` line (a runner predating the channel, or a round with no
+ * recording task) — NOT REPORTED, never "recorded nothing".
+ */
+export function summarizeExecutedSourceMapRecorder(output: string): ExecutedSourceMapRecorderSummary | null {
+  const total: ExecutedSourceMapRecorderTotal = {
+    tasks: 0,
+    written: 0,
+    rows: 0,
+    retired: 0,
+    notPersisted: 0,
+    nothingToRecord: 0,
+    failed: 0,
+    timedOut: 0,
+    noReport: 0,
+    malformed: 0,
+  };
+  let invocations = 0;
+  const alarms: ExecutedSourceMapRecorderAlarm[] = [];
+  for (const raw of output.split(/\r?\n/)) {
+    const m = RECORDER_LINE_RE.exec(raw.trimStart());
+    if (!m) continue;
+    const rest = m[2]!;
+    const f = fields(rest);
+    if (m[1] === 'EXECUTED_SOURCE_MAP_ALARM') {
+      const task = f.get('task');
+      if (!task) continue;
+      const i = rest.indexOf('error=');
+      alarms.push({
+        task,
+        outcome: f.get('outcome') ?? 'unknown',
+        error: i < 0 ? 'unknown' : rest.slice(i + 'error='.length).trim() || 'unknown',
+      });
+      continue;
+    }
+    invocations += 1;
+    for (const k of RECORDER_TOTAL_KEYS) total[k] += int(f.get(k)) ?? 0;
+  }
+  if (invocations === 0) return null;
+  const verdict = recorderVerdict(total);
+  return { ...total, invocations, verdict, alarm: RECORDER_ALARM_VERDICTS.has(verdict), alarms };
+}
+
+function recorderHeadline(r: ExecutedSourceMapRecorderSummary): string {
+  switch (r.verdict) {
+    case 'recorded':
+      return `pass proofs: ${r.rows} row(s) recorded by ${r.written} task run(s)`;
+    case 'nothing-to-record':
+      return 'pass proofs: nothing recordable this round';
+    case 'write-failing':
+      return (
+        `PASS-PROOF RECORDER FAILING: ${r.failed} write(s) failed, ${r.timedOut} timed out` +
+        (r.alarms[0] ? ` (${r.alarms[0].task}: ${r.alarms[0].error})` : '')
+      );
+    case 'not-persisted':
+      return `PASS-PROOF RECORDER persisted nothing: ${r.notPersisted} run(s) saw a dirty or sha-less checkout`;
+    case 'unreported':
+      return `PASS-PROOF RECORDER silent: none of ${r.tasks} recording task(s) reported an outcome`;
+  }
+}
+
 export interface TestPassReuseRoundSummary {
   /** Invocations seen (0 = the round printed no reuse line at all, e.g. an older runner). */
   invocations: number;
@@ -182,6 +317,8 @@ export interface TestPassReuseRoundSummary {
   alarms: TestPassReuseAlarm[];
   /** Distinct reasons reuse was off, whole-run or per task. */
   offReasons: string[];
+  /** What the pass-proof recorder did this round (WI-10003603); null = not reported. */
+  recorder: ExecutedSourceMapRecorderSummary | null;
   headline: string;
 }
 
@@ -194,7 +331,10 @@ export function formatDurationMs(ms: number): string {
 }
 
 /** One gate round's reuse effect, summed over its invocations, with a one-line headline. */
-export function summarizeTestPassReuse(runs: TestPassReuseRun[]): TestPassReuseRoundSummary {
+export function summarizeTestPassReuse(
+  runs: TestPassReuseRun[],
+  recorder: ExecutedSourceMapRecorderSummary | null = null,
+): TestPassReuseRoundSummary {
   let candidates = 0;
   let reused = 0;
   let unmeasured = 0;
@@ -235,6 +375,7 @@ export function summarizeTestPassReuse(runs: TestPassReuseRun[]): TestPassReuseR
       (alarms.length > 0 ? `, ${alarms.length} ALARM(s)` : ', no alarms') +
       (reasons.length > 0 ? `; off for some tasks: ${reasons.join(', ')}` : '');
   }
+  if (recorder) headline += `; ${recorderHeadline(recorder)}`;
   return {
     invocations: runs.length,
     candidates,
@@ -243,7 +384,34 @@ export function summarizeTestPassReuse(runs: TestPassReuseRun[]): TestPassReuseR
     unmeasured,
     alarms,
     offReasons: reasons,
+    recorder,
     headline,
+  };
+}
+
+const RECORDER_VERDICTS = new Set<string>(['recorded', 'nothing-to-record', 'write-failing', 'not-persisted', 'unreported']);
+
+/** Shape check for a persisted `recorder`; a malformed one reads as not reported (null). */
+function parseRecorderSummary(value: unknown): ExecutedSourceMapRecorderSummary | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const v = value as Record<string, unknown>;
+  if (!isCount(v.invocations) || !RECORDER_TOTAL_KEYS.every((k) => isCount(v[k]))) return null;
+  if (typeof v.verdict !== 'string' || !RECORDER_VERDICTS.has(v.verdict) || typeof v.alarm !== 'boolean') return null;
+  if (!Array.isArray(v.alarms)) return null;
+  const alarms: ExecutedSourceMapRecorderAlarm[] = [];
+  for (const a of v.alarms) {
+    if (!a || typeof a !== 'object') return null;
+    const { task, outcome, error } = a as Record<string, unknown>;
+    if (typeof task !== 'string' || typeof outcome !== 'string' || typeof error !== 'string') return null;
+    alarms.push({ task, outcome, error });
+  }
+  const totals = Object.fromEntries(RECORDER_TOTAL_KEYS.map((k) => [k, v[k] as number])) as unknown as ExecutedSourceMapRecorderTotal;
+  return {
+    ...totals,
+    invocations: v.invocations,
+    verdict: v.verdict as ExecutedSourceMapRecorderVerdict,
+    alarm: v.alarm,
+    alarms,
   };
 }
 
@@ -290,6 +458,7 @@ export function parseTestPassReuseHealth(value: unknown): TestPassReuseHealth | 
     unmeasured: v.unmeasured,
     alarms,
     offReasons: v.offReasons as string[],
+    recorder: parseRecorderSummary(v.recorder),
     headline: v.headline,
   };
 }
@@ -319,14 +488,23 @@ export function buildTestPassReuseHealth(
   if (!judgedSha || !/^[0-9a-f]{7,64}$/.test(judgedSha)) return null;
   if (!isCount(recordedAtMs)) return null;
   const runs = parseTestPassReuse(suiteOutput);
-  if (runs.length === 0) return null;
-  const summary = summarizeTestPassReuse(runs);
+  const recorder = summarizeExecutedSourceMapRecorder(suiteOutput);
+  if (runs.length === 0 && recorder === null) return null;
+  const summary = summarizeTestPassReuse(runs, recorder);
   const clip = (s: string) => s.slice(0, HEALTH_ALARM_FIELD_MAX_CHARS);
   return {
     ...summary,
     alarms: summary.alarms
       .slice(0, TEST_PASS_REUSE_HEALTH_MAX_ALARMS)
       .map((a) => ({ ws: clip(a.ws), file: clip(a.file), proof: clip(a.proof) })),
+    recorder: summary.recorder
+      ? {
+          ...summary.recorder,
+          alarms: summary.recorder.alarms
+            .slice(0, TEST_PASS_REUSE_HEALTH_MAX_ALARMS)
+            .map((a) => ({ task: clip(a.task), outcome: clip(a.outcome), error: clip(a.error) })),
+        }
+      : null,
     headline: summary.headline.slice(0, HEALTH_HEADLINE_MAX_CHARS),
     judgedSha,
     recordedAtMs,

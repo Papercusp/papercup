@@ -719,13 +719,57 @@ function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): void {
   }
 }
 
+/**
+ * EI-24498234296505540 — backoff (ms) between attempts to reach a confined job's
+ * transient `.service` unit after systemd REFUSED the request. ~25s in total, so
+ * a `daemon-reload` (measured 0.9s under gate load; >10s has been observed on
+ * this box) cannot outlast the schedule.
+ */
+export const SERVICE_UNIT_SIGNAL_RETRY_DELAYS_MS: readonly number[] = [
+  50, 100, 200, 400, 800, 1_600, 3_200, 6_400, 12_800,
+];
+
+type ServiceSignalTarget = Pick<BashJob, 'scopeUnit' | 'exitCode' | 'endedAt'>;
+
 /** A transient service is no longer in the systemd-run client's process group.
  * Signal the service unit as well as the client so in-memory kill/timeout paths
- * have the same whole-job semantics as the durable task-manager path. */
-function signalServiceUnit(scopeUnit: string | null | undefined, sig: NodeJS.Signals): void {
-  if (!scopeUnit?.endsWith('.service')) return;
+ * have the same whole-job semantics as the durable task-manager path.
+ *
+ * EI-24498234296505540 — a kill can be requested before the unit is LIVE. The
+ * client's StartTransientUnit call queues behind anything that stalls the user
+ * manager (measured: an 889ms `daemon-reload`), so for that window the unit is
+ * either not loaded yet or loaded with its start job still pending. The old
+ * `systemctl kill` lost the signal both ways and nothing re-sent it. "Not loaded"
+ * failed and the error was swallowed. A loaded unit with no processes yet
+ * returns exit 0 on systemd 255, having signalled nothing. The job still read
+ * `killed`, and the payload then ran to completion (an abort that did not abort).
+ *
+ * So the unit is STOPPED, not killed. `stop --no-block` cancels a pending start
+ * job, and on a live unit it sends SIGTERM to the whole control group, the same
+ * set `kill` reached, so a TERM trap still runs before the job is seen to end.
+ * A "not loaded" refusal is retried on the schedule above. SIGTERM retries only
+ * while the job is still running. SIGKILL retries whatever the client does,
+ * because the caller kills the client's process group alongside it: the
+ * client's exit says nothing about a unit that has not started yet.
+ */
+export function signalServiceUnit(job: ServiceSignalTarget, sig: NodeJS.Signals, attempt = 0): void {
+  const unit = job.scopeUnit;
+  if (!unit?.endsWith('.service')) return;
+  if (sig === 'SIGKILL') {
+    try {
+      execFile('systemctl', ['--user', 'kill', '--signal=SIGKILL', unit], { timeout: 15_000 }, () => {});
+    } catch {
+      /* the stop below still takes the unit down */
+    }
+  }
   try {
-    execFile('systemctl', ['--user', 'kill', `--signal=${sig}`, scopeUnit], { timeout: 15_000 }, () => {});
+    execFile('systemctl', ['--user', '--no-block', 'stop', unit], { timeout: 15_000 }, (err) => {
+      if (!err) return;
+      if (sig !== 'SIGKILL' && (job.exitCode !== null || job.endedAt !== null)) return;
+      const delay = SERVICE_UNIT_SIGNAL_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) return;
+      setTimeout(() => signalServiceUnit(job, sig, attempt + 1), delay).unref();
+    });
   } catch {
     /* the client process-group signal below remains the best effort fallback */
   }
@@ -753,7 +797,7 @@ function signalServiceUnit(scopeUnit: string | null | undefined, sig: NodeJS.Sig
  * cannot leave the job running forever.
  */
 function killJobProcessTree(job: BashJob, sig: NodeJS.Signals): void {
-  signalServiceUnit(job.scopeUnit, sig);
+  signalServiceUnit(job, sig);
   // Only a `.service` unit is separately signalable (signalServiceUnit ignores
   // anything else), so only that case may skip the process-group kill — a
   // `.scope` or unconfined job still needs it or nothing would stop it.

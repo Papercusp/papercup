@@ -79,8 +79,22 @@ export const PC_HEAVY_VOLATILE_IDENTITY_ENV = Object.freeze([
   "PC_HEAVY_PREEMPT_EXCLUSIVE",
 ]);
 
+/**
+ * WI-10003603 — per-invocation transport paths that affected-tests itself stamps into a task's
+ * child env. `PC_EXECUTED_SOURCE_MAP_RESULT` names a result file unique to this runner process
+ * (run token + task), where the executed-source-map reporter says what its flush did. It is an
+ * output channel, never a task input, and hashing it would make a frozen-repair verifier's
+ * per-run identity miss against the original gate run's proof on the path alone.
+ */
+export const AFFECTED_TESTS_TRANSPORT_IDENTITY_ENV = Object.freeze([
+  "PC_EXECUTED_SOURCE_MAP_RESULT",
+]);
+
 export function passingTaskVerdictIdentityEnvironment(environment) {
   const identityEnvironment = { ...(environment ?? {}) };
+  for (const transportName of AFFECTED_TESTS_TRANSPORT_IDENTITY_ENV) {
+    delete identityEnvironment[transportName];
+  }
   const rawProofGroup = identityEnvironment.AFFECTED_TASK_VERDICT_PROOF_GROUP;
   const proofGroup =
     typeof rawProofGroup === "string" && rawProofGroup.trim() !== ""

@@ -165,6 +165,72 @@ export function collectRecursiveDiff({ exec, repoDir, prefix, a, b, out }: {
  * @param {number} rows
  */
 export function formatExecutedMapLine(wsName: string, summary: import("./related-tests.mjs").ExecutedMapSummary | undefined, rows: number): string;
+/**
+ * The per-task result file: under the run-log root, unique per affected-tests run and task, so
+ * concurrent runs on the shared box never read each other's outcomes.
+ *
+ * @param {string} root
+ * @param {string} runToken
+ * @param {string} taskLabel
+ * @returns {string}
+ */
+export function executedMapResultPath(root: string, runToken: string, taskLabel: string): string;
+/**
+ * Remove a stale result file before the task runs, so a leftover never reads as this run's report.
+ *
+ * @param {string} filePath
+ */
+export function clearExecutedMapResult(filePath: string): void;
+/**
+ * Read one task's result file. A missing or empty file is `no-report` (the reporter never flushed:
+ * the task crashed or was killed, or its vitest config does not wire the reporter). A line that is
+ * not a well-formed result is counted as `malformed`, never guessed at.
+ *
+ * @param {string} filePath
+ * @param {{ readFile?: (p: string) => string }} [o]
+ * @returns {ExecutedMapResultRead}
+ */
+export function readExecutedMapResults(filePath: string, { readFile }?: {
+    readFile?: (p: string) => string;
+}): ExecutedMapResultRead;
+/**
+ * The per-task RESULT lines (one per flush, or one `outcome=no-report` line).
+ *
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead} read
+ * @returns {string[]}
+ */
+export function formatExecutedMapResultLines(taskLabel: string, read: ExecutedMapResultRead): string[];
+/**
+ * ALARM lines for flushes whose write did not land. `not-persisted` is NOT an alarm here: on an
+ * agent's shared dirty checkout it is the designed outcome; the gate decides whether its own clean
+ * round persisted nothing.
+ *
+ * @param {string} taskLabel
+ * @param {ExecutedMapResultRead} read
+ * @returns {string[]}
+ */
+export function formatExecutedMapAlarmLines(taskLabel: string, read: ExecutedMapResultRead): string[];
+/**
+ * @param {ExecutedMapResultRead[]} reads one per armed task
+ */
+export function summarizeExecutedMapResults(reads: ExecutedMapResultRead[]): {
+    tasks: number;
+    written: number;
+    rows: number;
+    retired: number;
+    notPersisted: number;
+    nothingToRecord: number;
+    failed: number;
+    timedOut: number;
+    noReport: number;
+    malformed: number;
+};
+/**
+ * @param {ReturnType<typeof summarizeExecutedMapResults>} s
+ * @returns {string}
+ */
+export function formatExecutedMapTotalLine(s: ReturnType<typeof summarizeExecutedMapResults>): string;
 /** Set to `0`/`false`/`off` to leave the static selection un-pruned (default: pruning ON). */
 export const EXECUTED_MAP_ENV: "AFFECTED_EXECUTED_MAP";
 /** Stamped on a spawned vitest task so the reporter records this workspace's map (default: ON). */
@@ -173,3 +239,25 @@ export const EXECUTED_MAP_RECORD_ENV: "AFFECTED_RECORD_EXECUTED_SOURCES";
 export const EXECUTED_MAP_WORKSPACE_ENV: "PC_EXECUTED_SOURCE_MAP_WORKSPACE";
 /** Optional: also write the recorded rows as JSON to this path (replay/inspection; no DB needed). */
 export const EXECUTED_MAP_OUT_ENV: "PC_EXECUTED_SOURCE_MAP_OUT";
+/**
+ * WI-10003603: the reporter APPENDS one JSON line per flush here saying what the flush did, so the
+ * runner can print the recorder's outcome into the run log the gate keeps. Must equal
+ * `PC_EXECUTED_SOURCE_MAP_RESULT_ENV` in libs/test-config/src/vitest-config.ts.
+ */
+export const EXECUTED_MAP_RESULT_ENV: "PC_EXECUTED_SOURCE_MAP_RESULT";
+/** Every outcome the reporter writes (`ExecutedSourceMapOutcome` in the reporter). */
+export const EXECUTED_MAP_RESULT_OUTCOMES: readonly string[];
+export type ExecutedMapResult = {
+    outcome: string;
+    rows: number;
+    retired: number;
+    skipped: number;
+    dirty: boolean;
+    sha: string | null;
+    error: string | null;
+};
+export type ExecutedMapResultRead = {
+    status: "reported" | "no-report";
+    results: ExecutedMapResult[];
+    malformed: number;
+};
