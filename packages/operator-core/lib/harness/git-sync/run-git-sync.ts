@@ -2076,8 +2076,6 @@ function runLsof(
   args: string[],
 ): Promise<{ code: number | null; stdout: string; stderr: string; missing?: boolean }> {
   return new Promise((resolve) => {
-    let stdout = '';
-    let stderr = '';
     let settled = false;
     const done = (v: { code: number | null; stdout: string; stderr: string; missing?: boolean }) => {
       if (!settled) {
@@ -2087,16 +2085,16 @@ function runLsof(
       }
     };
     const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Boundary-safe decoding (WI-6728): lsof prints paths, which may be non-ASCII.
+    const out = collectChildOutput(child);
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      done({ code: null, stdout, stderr: stderr || 'lsof timed out' });
+      done({ code: null, stdout: out.stdout.text(), stderr: out.stderr.text() || 'lsof timed out' });
     }, 10_000);
-    child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
     child.on('error', (e: NodeJS.ErrnoException) =>
-      done({ code: null, stdout, stderr: String(e.message), missing: e.code === 'ENOENT' }),
+      done({ code: null, stdout: out.stdout.text(), stderr: String(e.message), missing: e.code === 'ENOENT' }),
     );
-    child.on('close', (code) => done({ code, stdout, stderr }));
+    child.on('close', (code) => done({ code, stdout: out.stdout.text(), stderr: out.stderr.text() }));
   });
 }
 

@@ -318,7 +318,11 @@ const NAMED_STRIPPER_DEF = new RegExp(
 /** The two copy-pasted regexes themselves, matched as literal text — they are the defect. */
 const NAIVE_BLOCK_RE = String.raw`\/\*[\s\S]*?\*\/`;
 const NAIVE_LINE_RE = String.raw`\/\/.*$`;
-const PARSES_AST = /from\s*['"]typescript['"]|ts\.createSourceFile|@babel\/parser|\bacorn\b|ts-morph/;
+// `.createSourceFile(` is matched under ANY receiver: a guard that lazy-loads the compiler
+// (`const t = loadTypescript(); t.createSourceFile(...)`) parses an AST just as surely as one
+// spelled `ts.`, and the module-name string it required is blanked by the masking itself.
+// check-no-unenrolled-detached-spawn.mjs read as 'unmasked' on exactly that alias (2026-09-28).
+const PARSES_AST = /from\s*['"]typescript['"]|\.createSourceFile\s*\(|@babel\/parser|\bacorn\b|ts-morph/;
 const SCANS_CODE_FILES = /\.tsx?['"`]|\.mjs['"`]|\.jsx['"`]|\.cts['"`]|\.mts['"`]/;
 const TEXT_MATCHES = /\.test\s*\(|\.match(All)?\s*\(|\.includes\s*\(|\.exec\s*\(/;
 const READS_FILES = /readFileSync|execFileSync\s*\(\s*['"](rg|grep)['"]/;
@@ -752,13 +756,11 @@ describe('guards that scan UNMASKED source are visible, and the population is SH
     // readFileSync/.test pair; a JS comment stripper applied to Markdown would corrupt the
     // frontmatter it validates, so the exposure is recorded here instead.
     'check-insight-normative.mjs',
-    // check-format.mjs is a RANGE PARSER, not a source-token guard. Its only regex
-    // parses @@ hunk metadata from `git diff`; the source file itself is read solely
-    // to translate those line ranges into character offsets for Prettier. Masking
-    // comments or strings would change those offsets and format the wrong bytes.
-    // The filename/classifier shape is nevertheless guard-like, so record the
-    // exposure here instead of weakening the property-based census.
-    'check-format.mjs',
+    // check-format.mjs was REMOVED here on 2026-09-28 (WI-10003582): PARSES_AST now matches
+    // `.createSourceFile(` under any receiver, and check-format.mjs parses each file with
+    // `typescript.createSourceFile(...)`, so the census classifies it as AST-parsing rather
+    // than unmasked. The shrink-only baseline must not carry an entry the census no longer
+    // measures.
     // check-env-feature-gates.mjs was REMOVED here on 2026-08-10 (WI-37717). BOTH passes now
     // detect over stripCommentsOnly() text (the `git grep` is a fast FILE FINDER, not the
     // detector). Two latent harms, both measured reachable: (1) a comment naming an

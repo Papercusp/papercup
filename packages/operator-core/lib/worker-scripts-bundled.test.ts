@@ -204,10 +204,16 @@ describe('shared worker recipe executes in the bundled plain-node runtime', () =
         type: 'put', table: 'test', hbKey: 'row', value: { answer: 42 },
         ts: 1, schema_version: 1, author_pubkey: 'test',
       }));
-      expect(await request({ kind: 'fold', id: 2, buf: block.buffer, lengths: [block.byteLength] }))
+      expect(await request({ kind: 'fold', id: 2, buf: block.buffer.slice(0), lengths: [block.byteLength] }))
         .toMatchObject({ kind: 'folded', decodedOps: 1, keyCount: 1 });
+      // P-006 index fold: the scan keeps only positions, so the caller re-reads the
+      // winning blocks and hands them back before `finish` can serialize rows.
+      expect(await request({ kind: 'pending', id: 3 })).toEqual({ kind: 'pending', id: 3, indexes: [0] });
+      expect(await request({
+        kind: 'materialize', id: 4, buf: block.buffer.slice(0), lengths: [block.byteLength], indexes: [0], now: 2,
+      })).toMatchObject({ kind: 'materialized', remaining: 0 });
       const result = await request({
-        kind: 'finish', id: 3, now: 2, coversUpTo: 1, author_pubkey: 'test',
+        kind: 'finish', id: 5, now: 2, coversUpTo: 1, author_pubkey: 'test',
         ts: 2, schema_version: 1, excludeTables: [],
       });
       expect(result).toMatchObject({ kind: 'finished', rowCount: 1 });

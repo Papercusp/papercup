@@ -277,6 +277,16 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
   });
 });
 
+/**
+ * `runGitBounded` routes a fetch through `withGitFetchHeadroom`, which first asks git for its
+ * object store (`rev-parse --path-format=absolute --git-path objects`) and measures disk
+ * headroom there. A fake `git` that ignores that preflight gets the fetch REFUSED with
+ * "disk headroom unmeasured" (code -1) before the hang guard under test ever runs — which
+ * was misfiled as load flakiness (WI-10003550). Answer it with the fake's own real working
+ * directory so the headroom sample measures an existing path, then fall through unchanged.
+ */
+const HEADROOM_PREFLIGHT_ANSWER = 'case " $* " in *" rev-parse "*) pwd; exit 0;; esac\n';
+
 describe('WI-1416 git subprocess hang guard', () => {
   it('kills a wedged git subprocess at the ceiling and reports a recorded timeout error (fail fast, not a silent reap)', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'gitsync-hang-'));
@@ -368,7 +378,7 @@ describe('WI-1416 git subprocess hang guard', () => {
       expect(NOMINAL_TOTAL_MS).toBeLessThan(HARD_CEILING_MS);
       writeFileSync(
         fakeGit,
-        `#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt ${ITERATIONS}; do echo "progress $i" >&2; sleep ${GAP_MS / 1000}; i=$((i + 1)); done\n`,
+        `#!/bin/sh\n${HEADROOM_PREFLIGHT_ANSWER}printf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt ${ITERATIONS}; do echo "progress $i" >&2; sleep ${GAP_MS / 1000}; i=$((i + 1)); done\n`,
       );
       chmodSync(fakeGit, 0o755);
       process.env.PATH = `${bin}:${oldPath ?? ''}`;
@@ -438,7 +448,7 @@ describe('WI-1416 git subprocess hang guard', () => {
       const bin = join(cwd, 'bin');
       mkdirSync(bin);
       const fakeGit = join(bin, 'git');
-      writeFileSync(fakeGit, '#!/bin/sh\nwhile :; do echo progress >&2; sleep 0.05; done\n');
+      writeFileSync(fakeGit, `#!/bin/sh\n${HEADROOM_PREFLIGHT_ANSWER}while :; do echo progress >&2; sleep 0.05; done\n`);
       chmodSync(fakeGit, 0o755);
       process.env.PATH = `${bin}:${oldPath ?? ''}`;
       process.env.PAPERCUSP_SPAWNER_SIDECAR = '0';

@@ -935,6 +935,11 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
         linkedItems: [],
         rubricRevision: 7,
         vetting: { consultId: 'conv-vet-1', rubricRevision: 7 }, // SAME consult + revision
+        // The subject rubric's identity is part of the dedupe binding (emit.ts
+        // `subjectRubricIdentityChanged`). A prior card WITHOUT it is unrecorded, and
+        // unrecorded correctly escapes dedupe, so the control must pin the SAME
+        // subject identity the live emit computes (beforeEach: revision 7, null hash).
+        subjectRubricIdentity: { rubricRef: 'ar-some-plan', revision: 7, criteriaHash: null, meaningRevision: null },
       },
     ]);
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);

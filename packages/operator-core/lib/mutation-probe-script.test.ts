@@ -27,6 +27,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createTextCollector } from './child-output';
 
 /**
  * The subject under test, overridable by path. This is the tier-2 pattern the
@@ -135,17 +136,19 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    let output = '';
-    child.stdout.on('data', (chunk) => { output += String(chunk); });
-    child.stderr.on('data', (chunk) => { output += String(chunk); });
+    // Merged stdout+stderr capture, decoded boundary-safely (WI-6728).
+    const output = createTextCollector();
+    output.attach(child.stdout);
+    output.attach(child.stderr);
     const closed = new Promise<number>((resolve) => child.once('close', (code) => resolve(code ?? -1)));
     try {
       const deadline = Date.now() + 10_000;
       while (!existsSync(marker) && Date.now() < deadline) await sleep(25);
-      expect(existsSync(marker), output).toBe(true);
+      expect(existsSync(marker), output.peek()).toBe(true);
       writeFileSync(launched, '#!/usr/bin/env bash\ninvalid shell ) fragment\n');
-      expect(await closed, output).toBe(0);
-      expect(output).toMatch(/MUTANT CAUGHT/);
+      const code = await closed;
+      expect(code, output.text()).toBe(0);
+      expect(output.text()).toMatch(/MUTANT CAUGHT/);
       expect(read()).toBe(ORIGINAL);
     } finally {
       child.kill('SIGTERM');

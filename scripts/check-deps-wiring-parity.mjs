@@ -850,6 +850,20 @@ const DRAIN_TRANSITION_BEST_EFFORT =
   'Whether a drain-driven status change should nonetheless record a plan_revisions row is a real ' +
   'audit question, tracked separately — it is NOT settled by this row.';
 
+/**
+ * 2026-09-28 (gate red on frozen candidate ac857b4b, adjudicated by the LIVE_GATE_OPS
+ * holder, WI-10003582) — `QuarantineImportGuardDeps.isResolvableAtHead` is the relaxation
+ * that lets an importer commit while its quarantined dependency stays dirty, because the
+ * dependency still RESOLVES from HEAD. That holds for the content/deletion quarantine
+ * pass. It does not hold for the live-lock pass: a peer holding the lock may be changing
+ * the dependency's exports, so the HEAD copy can resolve and still lack the symbols the
+ * dirty importer now uses. Wiring the seam there would publish an importer against a
+ * dependency that does not yet export what it needs.
+ */
+const LIVE_LOCK_IMPORTER_NO_HEAD_FALLBACK =
+  'intentional (adjudicated 2026-09-28, WI-10003582): the live-lock importer pass must not relax on HEAD resolvability — ' +
+  'a live-locked dependency may be changing its exports, so resolving its old copy at HEAD does not satisfy the importer.';
+
 const FAIL_BASELINE = new Map([
   // Historical seed from the measured `--list` run after the WI-1745363 attribution fix:
   // 28 findings / 22 distinct rows over 7,150 files (was 44 / 33 under shape-based
@@ -973,6 +987,13 @@ const FAIL_BASELINE = new Map([
   // revision hooks on purpose, because a throw there would fail another caller's write.
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/plan-drain-transition.ts|afterWrite', DRAIN_TRANSITION_BEST_EFFORT],
   ['WithPlanLockOpts|packages/operator-core/lib/agent-tools/plans/plan-drain-transition.ts|revisionInTransaction', DRAIN_TRANSITION_BEST_EFFORT],
+
+  // run-git-sync.ts builds QuarantineImportGuardDeps twice. The content/deletion
+  // quarantine pass wires isResolvableAtHead (an old module still at HEAD is fine
+  // there); the live-lock importer pass omits it on purpose, as the comment at that
+  // call site states: a dependency held by a live lock may be changing its EXPORTS,
+  // so an old copy at HEAD cannot satisfy the importer's new symbols.
+  ['QuarantineImportGuardDeps|packages/operator-core/lib/harness/git-sync/run-git-sync.ts|isResolvableAtHead', LIVE_LOCK_IMPORTER_NO_HEAD_FALLBACK],
 ]);
 
 /**

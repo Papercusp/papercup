@@ -55,6 +55,13 @@ export const ALLOWLIST = new Set([
   // (the calibration controls that prove the predicate can FAIL). Without this the
   // guard would flag the very test that proves it works.
   'packages/operator-core/lib/drop-database-force-guard.test.ts',
+  // Test FAKES that intercept DROP statements rather than issue them: a stub psql
+  // that records what bin/reap-invalid-test-databases.sh drops (that script only
+  // drops INVALID databases, which cannot hold connections, so it deliberately
+  // omits FORCE), and a fake admin client that classifies pg-migrate's drop query.
+  // Their job is to recognise the statement text, so they must contain it.
+  'apps/operator/scripts/__tests__/invalid-db-reaper.test.ts',
+  'libs/test-config/src/baseline-schema-reuse-generation.test.ts',
 ]);
 
 /**
@@ -95,6 +102,19 @@ const DROP_RE = /\bDROP\s+DATABASE\b/i;
 const FORCE_RE = /\bWITH\s*\(\s*FORCE\s*\)/i;
 
 /**
+ * A leading test TITLE (`describe('…')` / `it(…)` / `test.each(…)(…)`) names the rule it
+ * guards — it is prose, not a statement, so a test called "a cancelled DROP DATABASE
+ * never leaks…" would otherwise trip this guard (WI-10003582). Only the title string is
+ * blanked; anything else on the line is still scanned, so an unforced statement that
+ * shares a line with a title is still reported.
+ */
+// `(?:\([^()'"`]*\))?` admits one curried table argument (`test.each(cases)("title", …)`).
+const TEST_TITLE_RE = /^(\s*(?:describe|it|test)(?:\.\w+)*(?:\([^()'"`]*\))?\(\s*)(['"`])((?:\\.|(?!\2)[^\\])*)\2/;
+export function withoutTestTitle(line) {
+  return line.replace(TEST_TITLE_RE, (_match, head, quote) => `${head}${quote}${quote}`);
+}
+
+/**
  * Find unforced `DROP DATABASE` statements. Returns [{ line, text }].
  *
  * Scans the statement's own line and the FOLLOWING line, because prettier wraps long
@@ -109,8 +129,9 @@ export function findUnforcedDrops(text) {
   const lines = stripComments(text).split('\n');
   const findings = [];
   for (let i = 0; i < lines.length; i++) {
-    if (!DROP_RE.test(lines[i])) continue;
-    const window = lines[i] + '\n' + (lines[i + 1] ?? '');
+    const line = withoutTestTitle(lines[i]);
+    if (!DROP_RE.test(line)) continue;
+    const window = line + '\n' + (lines[i + 1] ?? '');
     if (FORCE_RE.test(window)) continue;
     findings.push({ line: i + 1, text: lines[i].trim() });
   }

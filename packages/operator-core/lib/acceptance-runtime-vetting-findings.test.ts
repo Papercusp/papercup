@@ -35,6 +35,12 @@ vi.mock('./rubrics-replication-sql', () => ({
 vi.mock('./detached-imports', () => ({
   trackDetached: () => Promise.resolve({ notifySyncInvalidate: vi.fn() }),
 }));
+// rubrics:amend reserves a shared Postgres receipt (RSR-P-008-C) before it runs; that
+// store has its own integration test (amend-receipts.integration.test.ts). Here it is a
+// pass-through so the unit test measures the vetting finding, not the receipt table.
+vi.mock('./agent-tools/rubrics/amend-receipts', () => ({
+  trackAmendRun: (_key: string, _ref: string, run: () => Promise<Record<string, unknown>>) => run(),
+}));
 
 import proposeTool from './agent-tools/rubrics/propose';
 import amendTool from './agent-tools/rubrics/amend';

@@ -20,6 +20,7 @@ import { layerContentHash } from '@papercusp/orchestrator/blueprint';
 import { getOrgPg } from '@papercusp/db-org';
 import { parseBridgeModel, runCodexCliCompletion } from '../../inference-gateway/codex-cli-bridge';
 import type { BootstrapSuResult } from '../routes/agent-mcp/bootstrap-su';
+import { createTextCollector } from '../../child-output';
 
 const enabled = process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED === '1';
 const fixtureId = 'p008-native-selected-domain';
@@ -109,7 +110,7 @@ describe.runIf(enabled)('isolated selected identity native launch', () => {
       requestedModel: boot.model, activationStatus: control.control_state.activation.status,
     }));
 
-    let nativeOutput = '';
+    const nativeCollector = createTextCollector();
     const selectedModel = parseBridgeModel(boot.model ?? undefined);
     const result = await runCodexCliCompletion({
       home: boot.codexHome!, model: selectedModel.id, effort: selectedModel.effort, timeoutMs: 180_000,
@@ -124,10 +125,11 @@ describe.runIf(enabled)('isolated selected identity native launch', () => {
             PAPERCUSP_HOME: home, PAPERCUSP_OPERATOR_URL: origin, CODEX_HOME: boot.codexHome!,
           },
         });
-        child.stdout?.on('data', (chunk) => { nativeOutput += String(chunk); });
+        nativeCollector.attach(child.stdout);
         return child;
       } }),
     });
+    const nativeOutput = nativeCollector.text();
     expect(result.text).toContain(marker);
     expect(result.text).toContain(boot.envelopeEnv.PAPERCUSP_SID);
     const events = nativeOutput.trim().split('\n').map((line) => JSON.parse(line));

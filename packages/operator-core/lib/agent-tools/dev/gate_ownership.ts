@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readGateOwnership } from '../../coord/gate-ownership';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 
 export default defineTool({
   name: 'dev:gate_ownership',
@@ -21,7 +22,9 @@ export default defineTool({
   ],
   args: z.object({}),
   async handler(_args, ctx) {
-    const ownership = await readGateOwnership({ harness: ctx.harnessSlug ?? undefined });
+    // The superuser '*' sentinel names no harness; let readGateOwnership apply its
+    // own default instead of querying a nonexistent '*' gate.
+    const ownership = await readGateOwnership({ harness: resolveConcreteHarnessSlug(undefined, ctx) ?? undefined });
     return {
       data: {
         gate: { ownership },

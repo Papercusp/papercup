@@ -28,6 +28,7 @@ import {
   type ExternalBlockerCapability,
   type ExternalBlockerKind,
 } from '../../external-blockers';
+import { lookupWorkItem } from './_lookup';
 import { isStrictOwnerActionCapability } from '../../harness/improvements/agent-review-policy';
 import { stagingFirstBlockerProblem } from '../plans/staging-first-activation-guard';
 import { workItemRefBlockerProblem } from './work-item-ref-blocker-guard';
@@ -497,15 +498,19 @@ export default defineTool({
           // The payload write above already committed. Return a structured
           // partial outcome with the authoritative post-failure row so a caller
           // can recover without blindly repeating a clear that has taken effect.
-          const persisted = await getWorkItem(input.id, input.harness).catch(() => null);
+          // A failed re-read is reported as UNREADABLE, never folded into "no row" (WI-6746).
+          const lookup = await lookupWorkItem(input.id, input.harness);
+          const persisted = lookup.status === 'found' ? lookup.item : null;
           const persistedActive = persisted ? activeExternalBlockers(persisted.payload) : active;
           const persistedState = persisted?.state ?? null;
+          const stateText = persistedState ??
+            (lookup.status === 'unreadable' ? `unreadable (${lookup.error})` : 'unavailable (row not found)');
           return {
             ok: false as const,
             id: input.id,
             code: input.clear ? 'partial-clear' : 'partial-set',
             error: `typed blocker persisted, but lifecycle transition failed: ${error instanceof Error ? error.message : String(error)}. ` +
-              `Current state: ${persistedState ?? 'unavailable'}; active blockers: ${persistedActive.length}. ` +
+              `Current state: ${stateText}; active blockers: ${persistedActive.length}. ` +
               'Read work_items:get before recovery; do not repeat the clear blindly.',
             partialOutcome: {
               blockerHistoryPersisted: true,

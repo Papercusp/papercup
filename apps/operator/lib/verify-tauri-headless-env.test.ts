@@ -60,8 +60,11 @@ describe('EI-20210154033151684 — verifier launch scrubs ambient runtime env', 
     // desktop starts (eight supervised crash-loop attempts in the live repro).
     expect(launchTemplate).toContain('PAPERCUSP_BIND_HOST=127.0.0.1');
     expect(devWrapper).toContain('if [ -n "${PAPERCUSP_BIND_HOST:-}" ]; then');
-    expect(devWrapper).toContain(
-      'env ${DEV_BIND_OVERRIDE}PAPERCUSP_HONO_PORT=$PORT',
+    // The override must be spliced into the SAME `env` invocation that sets the
+    // operator port, so it wins over the sourced .env.local. Other plain
+    // VAR=value assignments may sit between them (e.g. MALLOC_ARENA_MAX=2).
+    expect(devWrapper).toMatch(
+      /env \$\{DEV_BIND_OVERRIDE\}(?:[A-Z_][A-Z0-9_]*=\S+ )*PAPERCUSP_HONO_PORT=\$PORT/,
     );
   });
 });

@@ -65,6 +65,7 @@ vi.mock("../../fleet/spawner-sidecar-spawn", () => ({
 }));
 
 import { probeAll, probeMcpHandshake } from "../../service-health";
+import { mockResolvedTyped } from "../../testing/typed-mock";
 import { getTelemetryHealth } from "../../projected-tool-deps";
 import { supervisionSnapshot } from "../../supervision/unit-reconciler";
 import { substrateSidecarSupervisionStatus } from "../../sync/hyperbee/substrate-sidecar-spawn";
@@ -213,7 +214,7 @@ describe("dev:service_health handler", () => {
   });
 
   it("does not report a stale local spawner give-up on a request-only host without the sidecar opt-in", async () => {
-    probeM.mockResolvedValue([{ name: "operator", up: true, latencyMs: 5 }] as never);
+    mockResolvedTyped(probeM, [{ name: "operator", up: true, status: 200, latencyMs: 5 }]);
     const b = body((await tool.handler({} as never, {} as never)) as Out);
 
     expect(b.supervision.find((entry: { name: string }) => entry.name === "spawner-sidecar")).toMatchObject({

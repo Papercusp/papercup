@@ -224,18 +224,81 @@ function sameFileStringConstants(sourceFile: ts.SourceFile): ReadonlyMap<string,
   return constants;
 }
 
+/** Strip `as const` / `satisfies T` / parentheses / `<T>x`: type-only wrappers never change the literal. */
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    ts.isAsExpression(current) ||
+    ts.isSatisfiesExpression(current) ||
+    ts.isParenthesizedExpression(current) ||
+    ts.isTypeAssertionExpression(current)
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+/** Name registry objects in scope: local binding → { key → literal }. */
+type StringObjectConstants = ReadonlyMap<string, ReadonlyMap<string, string>>;
+
+/**
+ * `const NAMES = { submit: 'blueprint:submit', … } as const` → NAMES → { submit → 'blueprint:submit' }.
+ * A tool family that keeps its MCP identities in one shared name registry declares
+ * `defineTool({ name: NAMES.submit })`; without resolving that property access the
+ * scan silently misses the whole family (WI-10003582: all seven blueprint:* lifecycle tools).
+ */
+function stringObjectConstants(
+  sourceFile: ts.SourceFile,
+  exportedOnly: boolean,
+): Map<string, Map<string, string>> {
+  const objects = new Map<string, Map<string, string>>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+    if (exportedOnly && !statement.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) {
+      continue;
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+      const value = unwrapExpression(declaration.initializer);
+      if (!ts.isObjectLiteralExpression(value)) continue;
+      const entries = new Map<string, string>();
+      for (const property of value.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const key =
+          ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name) ? property.name.text : undefined;
+        const initializer = unwrapExpression(property.initializer);
+        if (key && (ts.isStringLiteralLike(initializer) || ts.isNoSubstitutionTemplateLiteral(initializer))) {
+          entries.set(key, initializer.text);
+        }
+      }
+      if (entries.size > 0) objects.set(declaration.name.text, entries);
+    }
+  }
+  return objects;
+}
+
 function literalString(
   expression: ts.Expression | undefined,
   constants: ReadonlyMap<string, string>,
+  objects: StringObjectConstants = new Map(),
 ): string | undefined {
   if (!expression) return undefined;
-  if (ts.isStringLiteralLike(expression) || ts.isNoSubstitutionTemplateLiteral(expression)) return expression.text;
-  return ts.isIdentifier(expression) ? constants.get(expression.text) : undefined;
+  const value = unwrapExpression(expression);
+  if (ts.isStringLiteralLike(value) || ts.isNoSubstitutionTemplateLiteral(value)) return value.text;
+  if (ts.isIdentifier(value)) return constants.get(value.text);
+  if (ts.isPropertyAccessExpression(value) && ts.isIdentifier(value.expression)) {
+    return objects.get(value.expression.text)?.get(value.name.text);
+  }
+  return undefined;
 }
 
-function toolNamesIn(sourceFile: ts.SourceFile): string[] {
+function toolNamesIn(sourceFile: ts.SourceFile, importedObjects: StringObjectConstants = new Map()): string[] {
   const names: string[] = [];
   const constants = sameFileStringConstants(sourceFile);
+  const objects: StringObjectConstants = new Map([
+    ...importedObjects,
+    ...stringObjectConstants(sourceFile, false),
+  ]);
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
@@ -248,9 +311,9 @@ function toolNamesIn(sourceFile: ts.SourceFile): string[] {
         const mcp = expose && ts.isObjectLiteralExpression(expose) ? propertyValue(expose, 'mcp') : undefined;
         const projected =
           mcp && ts.isObjectLiteralExpression(mcp)
-            ? literalString(propertyValue(mcp, 'name'), constants)
+            ? literalString(propertyValue(mcp, 'name'), constants, objects)
             : undefined;
-        const name = projected ?? literalString(propertyValue(input, 'name'), constants);
+        const name = projected ?? literalString(propertyValue(input, 'name'), constants, objects);
         if (name) names.push(name);
       }
     }
@@ -267,6 +330,45 @@ function scriptKind(path: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
+/**
+ * Named imports that bind an EXPORTED `const X = { key: 'literal' }` name registry,
+ * resolved through the same graph resolver the scan already walks, keyed by the
+ * local binding (so `import { NAMES as N }` resolves `N.submit`).
+ */
+function importedStringObjectConstants(
+  sourceFile: ts.SourceFile,
+  file: string,
+  repoRoot: string,
+  packages: Parameters<typeof resolveGraphImport>[3],
+  cache: Map<string, Map<string, Map<string, string>>>,
+): StringObjectConstants {
+  const imported = new Map<string, ReadonlyMap<string, string>>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings) || bindings.elements.length === 0) continue;
+    const target = resolveGraphImport(statement.moduleSpecifier.text, file, repoRoot, packages);
+    if (!target) continue;
+    let exported = cache.get(target);
+    if (!exported) {
+      const targetSource = ts.createSourceFile(
+        target,
+        readFileSync(target, 'utf8'),
+        ts.ScriptTarget.Latest,
+        true,
+        scriptKind(target),
+      );
+      exported = stringObjectConstants(targetSource, true);
+      cache.set(target, exported);
+    }
+    for (const element of bindings.elements) {
+      const entries = exported.get((element.propertyName ?? element.name).text);
+      if (entries) imported.set(element.name.text, entries);
+    }
+  }
+  return imported;
+}
+
 function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
   const repoRoot = resolve(repoRootInput);
   const cached = snapshotCache.get(repoRoot);
@@ -277,6 +379,7 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
   const pending = [entrypoint];
   const visited = new Set<string>();
   const fileIndex = new Map<string, string[]>();
+  const objectConstantCache = new Map<string, Map<string, Map<string, string>>>();
   while (pending.length > 0) {
     const file = pending.pop()!;
     if (visited.has(file)) continue;
@@ -288,7 +391,8 @@ function buildToolSourceSnapshot(repoRootInput: string): ToolSourceSnapshot {
       true,
       scriptKind(file),
     );
-    for (const name of toolNamesIn(sourceFile)) {
+    const importedObjects = importedStringObjectConstants(sourceFile, file, repoRoot, packages, objectConstantCache);
+    for (const name of toolNamesIn(sourceFile, importedObjects)) {
       const existing = fileIndex.get(name);
       if (existing) existing.push(file);
       else fileIndex.set(name, [file]);

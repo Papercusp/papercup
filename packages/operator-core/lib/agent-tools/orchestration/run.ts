@@ -14,6 +14,7 @@ import {
   type OutputReplayStateContentItem,
 } from '../../output-envelope';
 import { clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import codeRunTool, {
   type CodeRunCaptureMode,
   withCodeRunCaptureMode,
@@ -442,6 +443,7 @@ export async function runServerScriptAdapter(
         );
       }
       const timeoutSec = args.timeoutSec ?? 3_600;
+      const callerHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
       try {
         const admitted = await (deps.startDurable ?? startDurableOrchestration)({
           runKey: (deps.durableRunKey ?? defaultDurableRunKey)(ctx),
@@ -454,7 +456,9 @@ export async function runServerScriptAdapter(
           caller: {
             ownerId,
             workspaceId: ctx.workspaceId,
-            ...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),
+            // The superuser '*' sentinel is truthy but names no harness; stamp only a
+            // concrete slug onto the durable run's caller identity.
+            ...(callerHarnessSlug ? { harnessSlug: callerHarnessSlug } : {}),
             role: ctx.role,
           },
           timeoutSec,

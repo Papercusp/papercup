@@ -12743,7 +12743,10 @@ async function runGreenCheckpointInner(
             (fresh) => {
               // Parse, never pass raw: the reducer THROWS on a malformed receipt, and a
               // throw here would lose the red verdict itself.
-              const receipt = fullGateSuiteRan
+              // Named `coverage`, not `receipt`: the resource-governor lint treats any bare
+              // `receipt` identifier in this file as durable-state evidence, which hides the
+              // reviewed unbounded-resident-queue disposition and turns that row stale.
+              const coverage = fullGateSuiteRan
                 ? parseFrozenRepairSelectiveCoverage(
                     { schemaVersion: 1, candidate: fresh.candidate, head: candidate },
                     fresh.candidate,
@@ -12753,7 +12756,7 @@ async function runGreenCheckpointInner(
                 repairHead: candidate,
                 ...measuredSignature,
                 nowMs: Date.now(),
-                ...(receipt ? { selectiveCoverage: receipt } : {}),
+                ...(coverage ? { selectiveCoverage: coverage } : {}),
               });
             },
             (fresh) => {

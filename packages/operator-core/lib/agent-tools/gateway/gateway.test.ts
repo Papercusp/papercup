@@ -14,6 +14,7 @@ import {
   gatewayReloadTool,
   gatewayOwnerReportTool,
   quarantineLegacyCapacityFields,
+  CANONICAL_CONFIG_FIELDS,
 } from './gateway';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 
@@ -185,7 +186,9 @@ test('P-003 DRIFT PIN: every capacity field /admin/config emits is classified ca
   // Classify each through the real function rather than a second copy of the list.
   const probe = quarantineLegacyCapacityFields(Object.fromEntries(emitted.map((k) => [k, 1])));
   const quarantined = new Set(Object.keys((probe.legacy ?? {}) as Record<string, unknown>));
-  const canonicalOk = new Set(['version', 'accounts', 'codexAccounts', 'providers', 'admissionState', 'upstreamBase', 'hotReload']);
+  // The canonical set is IMPORTED, never re-typed here: a second copy is the same drift this
+  // pin exists to catch (a field added to gateway.ts's list once went red here, WI-10003582).
+  const canonicalOk = new Set<string>(CANONICAL_CONFIG_FIELDS);
   const unclassified = emitted.filter((k) => !quarantined.has(k) && !canonicalOk.has(k));
   assert.deepEqual(
     unclassified,
