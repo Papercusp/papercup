@@ -438,16 +438,13 @@ describe('WorkItemAdmissionQueueDriver', () => {
       total: 0,
     });
 
+    // boundedOrgTxn sets both transaction-local timeouts in ONE set_config
+    // statement (WI-10003631 merged the two round trips); the values bind in order.
     const timeoutQueries = queries.filter((query) => query.text.includes('SELECT set_config'));
-    expect(timeoutQueries).toHaveLength(2);
-    expect(timeoutQueries[0]).toMatchObject({
-      text: "SELECT set_config('lock_timeout', ?, true)",
-      values: ['8000ms'],
-    });
-    expect(timeoutQueries[1]).toMatchObject({
-      text: "SELECT set_config('statement_timeout', ?, true)",
-      values: ['15000ms'],
-    });
+    expect(timeoutQueries).toHaveLength(1);
+    expect(timeoutQueries[0]!.text).toContain("set_config('lock_timeout', ?, true)");
+    expect(timeoutQueries[0]!.text).toContain("set_config('statement_timeout', ?, true)");
+    expect(timeoutQueries[0]!.values).toEqual(['8000ms', '15000ms']);
 
     // The liveness census is a read-only work_items query and intentionally has
     // no row lock. Only the three mutation branches must retain bounded
@@ -483,7 +480,7 @@ describe('WorkItemAdmissionQueueDriver', () => {
       abandoned: 0,
       total: 0,
     });
-    expect(queries).toHaveLength(3); // bounded transaction setup + one non-blocking try-lock
+    expect(queries).toHaveLength(2); // one bounded-transaction set_config + one non-blocking try-lock
     expect(queries.filter((query) => query.includes('harness_shared.work_items'))).toHaveLength(0);
   });
 

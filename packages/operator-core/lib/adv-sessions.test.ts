@@ -42,9 +42,9 @@ beforeEach(() => {
 
 describe('getLatestActiveAdvSessionByOwner', () => {
   it('maps the newest active row and binds the exact owner/workspace predicates', async () => {
-    // boundedOrgTxn applies lock_timeout + statement_timeout before the read.
+    // boundedOrgTxn applies lock_timeout + statement_timeout in ONE set_config
+    // statement before the read (WI-10003631 merged the two round trips).
     advSessionRowsMock
-      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{
       id: 28143,
