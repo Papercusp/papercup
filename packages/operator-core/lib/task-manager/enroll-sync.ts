@@ -312,7 +312,17 @@ export function finishSyncEnrolment(
       'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).';
     // Code 0 is the normal systemd-run handoff; reserve warnings for an
     // abnormal client ending while the payload is still alive.
-    if (outcome.state === 'exited' && outcome.exitCode === 0) console.info(message);
+    const cleanHandoff = outcome.state === 'exited' && outcome.exitCode === 0;
+    // A `timed_out` stop is COMMANDED, not abnormal: the deadline SIGTERMs so
+    // the job's own cleanup trap still runs (WI-6677), which necessarily leaves
+    // the scope holding processes for as long as that trap takes. Warning on
+    // the designed outcome made this a LOAD-SENSITIVE false alarm — under gate
+    // load the trap had not finished when this handler sampled the cgroup, so
+    // it fired in CI and not locally, red-pinning the suite via
+    // vitest-fail-on-console (WI-10002358). A genuine abnormal death — any
+    // non-zero/unknown code, or a `killed` state — still warns below.
+    const commandedDeadlineStop = outcome.state === 'timed_out';
+    if (cleanHandoff || commandedDeadlineStop) console.info(message);
     else console.warn(message);
   };
   const close = () => {
