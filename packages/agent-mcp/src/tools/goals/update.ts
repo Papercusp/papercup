@@ -140,7 +140,8 @@ const goalUpdateArgs = z.object({
     })
     .optional()
     .describe(
-      'REPAIR the Pot this goal is filed against (EI-21563406996333542). A goal created from a workspace-global session was written with install_slug="*", which reads healthy everywhere but makes the goal PERMANENTLY UNLAUNCHABLE — launch-su rejects the wildcard, so the holder spawn fails with "invalid harness slug". There was previously no way to fix such a row in place; this is that way. Validated against the same slug pattern the launch door enforces, so an unlaunchable value cannot be written through this door either.',
+      // Provenance EI-21563406996333542 lives here, not on the wire (argSchema bytes are paid every turn).
+      'REPAIR the Pot this goal is filed against. A goal created from a workspace-global session was written with install_slug="*", which reads healthy everywhere but makes the goal PERMANENTLY UNLAUNCHABLE — launch-su rejects the wildcard, so the holder spawn fails with "invalid harness slug". There was previously no way to fix such a row in place; this is that way. Validated against the same slug pattern the launch door enforces, so an unlaunchable value cannot be written through this door either.',
     ),
   blockedBy: z
     .array(z.string().min(1).max(200))
@@ -148,7 +149,8 @@ const goalUpdateArgs = z.object({
     .nullable()
     .optional()
     .describe(
-      'REPLACE this goal\'s blocked-by set (goal-dag-shared-substrate-2026-08-18): goal ids and/or bare WI-/EI- issue ids that must resolve before this goal is actionable. Declarative full-set — the previous set is replaced; null or [] clears it. Every ref must RESOLVE (a goal in this workspace / an existing issue) and the goal graph must stay acyclic. Edges are prerequisites between SEPARATE outcomes — phases of one outcome belong inside the goal as plans/tripwires (D-005). An achieved goal blocker satisfies; a KILLED one flags this goal premiseInvalidated instead of unblocking it.',
+      // Provenance: plan goal-dag-shared-substrate-2026-08-18 (kept off the wire).
+      'REPLACE this goal\'s blocked-by set: goal ids and/or bare WI-/EI- issue ids that must resolve before this goal is actionable. Declarative full-set — the previous set is replaced; null or [] clears it. Every ref must RESOLVE (a goal in this workspace / an existing issue) and the goal graph must stay acyclic. Edges are prerequisites between SEPARATE outcomes — phases of one outcome belong inside the goal as plans/tripwires (D-005). An achieved goal blocker satisfies; a KILLED one flags this goal premiseInvalidated instead of unblocking it.',
     ),
   drainFleet: z
     .string()
@@ -163,7 +165,8 @@ const goalUpdateArgs = z.object({
     .nullable()
     .optional()
     .describe(
-      'per-goal launch ceilings + profile ({ maxAgents, maxPerFleet, defaults, roles }) — the numbers every launch for this goal is checked against. ' +
+      // The schema itself enumerates the keys; a hand-listed subset here went stale as keys were added.
+      'per-goal launch ceilings + profile — the numbers every launch for this goal is checked against. ' +
         `Each ceiling takes a number, or "${UNLIMITED_CEILING}" for no ceiling at all; OMITTING one applies the system default ` +
         `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
         'Pass null to clear the whole document back to those defaults; omit to leave untouched. ' +
@@ -173,7 +176,8 @@ const goalUpdateArgs = z.object({
     .array(z.string())
     .optional()
     .describe(
-      'WI-10002016 — names the existing top-level launchSettings keys a REPLACING write may delete. ' +
+      // Provenance WI-10002016 (kept off the wire).
+      'Names the existing top-level launchSettings keys a REPLACING write may delete. ' +
         'launchSettings replaces the whole document, so a partial patch like { maxAgents: 6 } drops every sibling key; ' +
         'such a write is refused and names the exact keys — pass them here to confirm. ' +
         'To change one field WITHOUT touching the rest, re-send the existing keys alongside it; for holder policy use the `holder` arg, which merges.',
