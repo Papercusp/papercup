@@ -20,7 +20,7 @@ vi.mock('./exec-sandbox', async (importOriginal) => ({
 
 import bashTool from './bash';
 import bashOutputTool from './bash_output';
-import { __resetBashJobs, getJob } from './bash-jobs';
+import { __resetBashJobs, getJob, TIMEOUT_SIGTERM_GRACE_MS } from './bash-jobs';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from './foreground-transport-cap';
 
 type ToolResult = {
@@ -168,24 +168,41 @@ describe('capability:bash — start once and yield the same durable job (P-002)'
     expect(readFileSync(String(yielded.log_path), 'utf8')).toContain('LATE');
   });
 
-  it('keeps timeout as the independent execution deadline', async () => {
-    const result = await bash.handler(
-      { command: 'printf BEFORE-TIMEOUT; sleep 10', timeout: 1_000, yield_after_ms: 2_000 },
-      makeCtx({ codeMode: true }),
-    );
-    const seen = unwrapToolResult(result as never) as Record<string, unknown>;
+  // WI-10003863: the response window must leave room for the deadline's whole-tree
+  // cleanup, not just the deadline itself. The deadline marks the job `timed_out` at
+  // 1s, but the call only returns terminal once the child's `close` arrives
+  // (SIGTERM, then SIGKILL after TIMEOUT_SIGTERM_GRACE_MS). With a 2s window, a
+  // loaded gate host delivered `close` after the window and the call yielded. A
+  // window past the SIGKILL escalation makes the terminal result certain; the call
+  // still returns at `close` (about 1s on an idle host), so the test stays fast.
+  const TIMEOUT_MS = 1_000;
+  const RESPONSE_WINDOW_MS = TIMEOUT_MS + TIMEOUT_SIGTERM_GRACE_MS + 10_000;
+  it(
+    'keeps timeout as the independent execution deadline',
+    async () => {
+      const result = await bash.handler(
+        {
+          command: 'printf BEFORE-TIMEOUT; sleep 30',
+          timeout: TIMEOUT_MS,
+          yield_after_ms: RESPONSE_WINDOW_MS,
+        },
+        makeCtx({ codeMode: true }),
+      );
+      const seen = unwrapToolResult(result as never) as Record<string, unknown>;
 
-    expect(seen).toMatchObject({
-      ok: false,
-      status: 'timed_out',
-      running: false,
-      yielded: false,
-      timeout_ms: 1_000,
-      response_window_ms: 2_000,
-    });
-    expect(String(seen.output)).toContain('BEFORE-TIMEOUT');
-    expect(String(seen.log_path)).toContain('bash-');
-  });
+      expect(seen).toMatchObject({
+        ok: false,
+        status: 'timed_out',
+        running: false,
+        yielded: false,
+        timeout_ms: TIMEOUT_MS,
+        response_window_ms: RESPONSE_WINDOW_MS,
+      });
+      expect(String(seen.output)).toContain('BEFORE-TIMEOUT');
+      expect(String(seen.log_path)).toContain('bash-');
+    },
+    RESPONSE_WINDOW_MS + 10_000,
+  );
 
   it('treats caller abort as cancellation of that same whole process tree', async () => {
     const orphanMarker = join(STATE, `abort-orphan-${crypto.randomUUID()}.txt`);
