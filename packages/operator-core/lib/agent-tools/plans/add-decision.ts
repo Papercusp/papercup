@@ -32,7 +32,7 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { readPlanBySlug, VALID_PLAN_SLUG } from './source';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { emitDecisionAdded } from '../../harness/usage-emitters';
-import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
+import { runBulk, bulkContent, bulkEnvelopeSchema, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
 import {
@@ -550,6 +550,12 @@ export default defineTool({
       'plans:set-now (reference the new D-NNN in the Now)',
     ],
   },
+  // Envelope described by `_bulk`; per-item stays OPEN (`decisionId`/`ref` plus the
+  // three conditional advisories on success, `error` on failure). Required because
+  // `guidance.returns` above is authored prose: a tool that promises a shape must
+  // register it, so the response comes from a schema instead of prose becoming a
+  // second, unverifiable type system (guidance-output-schema-live-guard.test.ts).
+  result: bulkEnvelopeSchema(),
   capability: 'plans:write',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],

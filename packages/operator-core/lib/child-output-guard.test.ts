@@ -95,7 +95,6 @@ const BASELINE: Record<string, number> = {
   'libs/papercusp/packages/orchestrator/src/worker-chunk-loop.ts': 1,
   'packages/backup/src/hook.ts': 2,
   'packages/operator-core/lib/admin-test-suites.ts': 2,
-  'packages/operator-core/lib/cupboard/install-io.ts': 1,
   'packages/operator-core/lib/cupboard/resolve-repo-coords.ts': 1,
   'packages/operator-core/lib/deployment/cross-hive-cross-machine.integration.test.ts': 2,
   'packages/operator-core/lib/deployment/remote-exec.ts': 2,
