@@ -1007,7 +1007,8 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
 
   it('fails loud with no_harness when neither args.harness nor ctx.harnessSlug nor a home hive resolves', async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
-    operatorHomeM.mockReturnValueOnce(null);
+    // The home pointer always names a slug; here it names no registered pot.
+    operatorHomeM.mockReturnValueOnce('unregistered-home');
     vi.mocked(resolvePotHomeSlug)
       .mockReturnValueOnce(null as never)
       .mockReturnValueOnce(null as never);
@@ -1065,8 +1066,8 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
       firstSeenAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
-    // With no canonical operator home, retain the durable coord:orient scope.
-    operatorHomeM.mockReturnValueOnce(null);
+    // When the operator-home pointer names no registered pot, retain the durable coord:orient scope.
+    operatorHomeM.mockReturnValueOnce('unregistered-home');
     potHomeM.mockReturnValueOnce(null as never).mockReturnValueOnce('oriented-harness');
     const out = (await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
@@ -1350,8 +1351,8 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   // (which skips '*' at each level) rather than `??`-chaining ctx.harnessSlug in first.
   it("EI-7734: routes ctx.harnessSlug through resolvePotHomeSlug's '*'-skip instead of short-circuiting a raw ?? chain on it", async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
-    // Exercise the synchronous fallback after confirming no canonical operator home.
-    operatorHomeM.mockReturnValueOnce(null);
+    // Exercise the synchronous fallback after the operator-home pointer resolves to no registered pot.
+    operatorHomeM.mockReturnValueOnce('unregistered-home');
     potHomeM.mockReturnValueOnce(null as never).mockReturnValueOnce('papercusp');
     const out = (await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never)) as Out;
     const b = body(out);
