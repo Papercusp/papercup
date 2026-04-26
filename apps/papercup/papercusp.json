@@ -39,11 +39,12 @@
     "documenter",
     "summarizer"
   ],
+  "componentRoot": "@restart/papercup-shared",
   "ui": {
     "slug": "papercup",
     "label": "Papercup",
     "icon": "Building2",
-    "componentId": "PapercupRoot"
+    "componentId": "PapercupTabs"
   },
   "dashboardTabs": [
     { "id": "directives", "label": "Directives", "icon": "List",        "componentId": "DirectivesView" },
