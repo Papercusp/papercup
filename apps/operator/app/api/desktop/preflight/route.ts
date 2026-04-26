@@ -62,14 +62,25 @@ function checkHarnessDir(): Check {
   return { name: 'harness', status: 'ok', detail: dir };
 }
 
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
 export async function GET() {
-  const [node, claude, postgres] = await Promise.all([
+  const [node, claude, bash, postgres] = await Promise.all([
     checkBinary('node'),
     checkBinary('claude'),
+    checkBinary('bash'),
     checkPostgres(),
   ]);
   const harness = checkHarnessDir();
-  const checks = [node, postgres, claude, harness];
+  const checks = [node, postgres, claude, bash, harness];
   const allOk = checks.every((c) => c.status === 'ok');
-  return NextResponse.json({ ok: allOk, checks });
+  return NextResponse.json({ ok: allOk, checks }, { headers: CORS_HEADERS });
 }
