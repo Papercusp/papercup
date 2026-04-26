@@ -84,6 +84,26 @@ async function importPluginEntry(entryPath: string): Promise<Plugin | null> {
 function validate(plugin: Plugin, manifest: ManifestShape): string | null {
   if (plugin.name !== manifest.name) return `manifest.name "${manifest.name}" doesn't match plugin.name "${plugin.name}"`;
   if (plugin.version !== manifest.version) return `manifest.version "${manifest.version}" doesn't match plugin.version "${plugin.version}"`;
+  if (!Array.isArray(plugin.capabilities)) {
+    return `plugin "${plugin.name}" must declare \`capabilities: Capability[]\` (can be empty array, but the field is required)`;
+  }
+  // Validate that for each declared role, the plugin holds 'roles:register:<name>'.
+  for (const roleName of Object.keys(plugin.roles ?? {})) {
+    const requiredCap = `roles:register:${roleName}`;
+    if (!plugin.capabilities.includes(requiredCap as any)) {
+      return `plugin "${plugin.name}" registers role "${roleName}" but lacks capability "${requiredCap}"`;
+    }
+  }
+  // Validate UI requires the right cap.
+  if (plugin.ui && !plugin.capabilities.includes('ui:harness-route' as any)) {
+    return `plugin "${plugin.name}" declares ui contribution but lacks capability "ui:harness-route"`;
+  }
+  if ((plugin.dashboardTabs?.length ?? 0) > 0 && !plugin.capabilities.includes('ui:dashboard-tab' as any)) {
+    return `plugin "${plugin.name}" declares dashboardTabs but lacks capability "ui:dashboard-tab"`;
+  }
+  if ((plugin.sidebarItems?.length ?? 0) > 0 && !plugin.capabilities.includes('ui:sidebar-item' as any)) {
+    return `plugin "${plugin.name}" declares sidebarItems but lacks capability "ui:sidebar-item"`;
+  }
   return null;
 }
 
@@ -169,3 +189,69 @@ export function collectRoles(loaded: LoadedPlugin[]): Record<string, { plugin: s
   }
   return roles;
 }
+
+/**
+ * Extract routine definitions from all loaded plugins for registration with
+ * the substrate's routine ticker. Names are namespaced with the plugin name
+ * so two plugins can ship a routine of the same name without collision.
+ */
+export function collectRoutines(loaded: LoadedPlugin[]): Array<{
+  pluginName: string;
+  routineName: string;       // namespaced: "<plugin>.<routine>"
+  routine: import('@papercusp/plugin-sdk').RoutineDefinition;
+}> {
+  const out: Array<{ pluginName: string; routineName: string; routine: import('@papercusp/plugin-sdk').RoutineDefinition }> = [];
+  for (const lp of loaded) {
+    for (const r of lp.plugin.routines ?? []) {
+      out.push({
+        pluginName: lp.plugin.name,
+        routineName: `${lp.plugin.name}.${r.name}`,
+        routine: r,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Extract UI contributions from all loaded plugins. The host can iterate
+ * these to mount routes, sidebar items, and dashboard tabs.
+ */
+export function collectUiContributions(loaded: LoadedPlugin[]): {
+  routes: Array<{ pluginName: string; ui: import('@papercusp/plugin-sdk').UiContribution }>;
+  dashboardTabs: Array<{ pluginName: string; tab: import('@papercusp/plugin-sdk').DashboardTab }>;
+  sidebarItems: Array<{ pluginName: string; item: import('@papercusp/plugin-sdk').SidebarItem }>;
+} {
+  const routes: Array<{ pluginName: string; ui: import('@papercusp/plugin-sdk').UiContribution }> = [];
+  const dashboardTabs: Array<{ pluginName: string; tab: import('@papercusp/plugin-sdk').DashboardTab }> = [];
+  const sidebarItems: Array<{ pluginName: string; item: import('@papercusp/plugin-sdk').SidebarItem }> = [];
+
+  for (const lp of loaded) {
+    if (lp.plugin.ui) routes.push({ pluginName: lp.plugin.name, ui: lp.plugin.ui });
+    for (const tab of lp.plugin.dashboardTabs ?? []) {
+      dashboardTabs.push({ pluginName: lp.plugin.name, tab });
+    }
+    for (const item of lp.plugin.sidebarItems ?? []) {
+      sidebarItems.push({ pluginName: lp.plugin.name, item });
+    }
+  }
+
+  return { routes, dashboardTabs, sidebarItems };
+}
+
+// ─── Re-exports ──────────────────────────────────────────────────────
+export {
+  hasCapability,
+  requireCapability,
+  wrapServiceWithCaps,
+  makeFetchProxy,
+  makeSecretsProxy,
+  MissingCapabilityError,
+  UnknownMethodError,
+  type CapabilityCheckContext,
+} from './capabilities.js';
+
+export {
+  HookBus,
+  createPluginHookBus,
+} from './hookbus.js';

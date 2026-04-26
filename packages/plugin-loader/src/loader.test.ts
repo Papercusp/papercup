@@ -33,11 +33,16 @@ async function makePlugin(opts: {
     const rolesJs = opts.roles
       ? `roles: ${JSON.stringify(opts.roles)},`
       : 'roles: {},';
+    // Auto-include 'roles:register:<name>' caps for every declared role,
+    // matching the validation rule in index.ts.
+    const declaredRoleCaps = Object.keys(opts.roles ?? {}).map((n) => `'roles:register:${n}'`);
+    const capsList = declaredRoleCaps.length ? declaredRoleCaps.join(', ') : '';
     const entry = `
       export default {
         name: ${JSON.stringify(opts.name)},
         version: ${JSON.stringify(version)},
         papercusp: '^0.1.0',
+        capabilities: [${capsList}],
         ${rolesJs}
         hooks: {
           afterDone: async () => {},
