@@ -18,7 +18,16 @@ import { homedir } from 'node:os';
 import { harnessPackageDir, harnessPath } from './harness-paths';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getLegacyClient, slugToSchemaName, getOrgPg, listUnconsumedEvents, consumeEvents } from '@restart/db-org';
+import {
+  getLegacyClient,
+  slugToSchemaName,
+  getOrgPg,
+  getHarnessPg,
+  listUnconsumedEvents,
+  consumeEvents,
+  getFeatureLineage,
+  formatLineageForPrompt,
+} from '@restart/db-org';
 const getOrgDbClient = () => getLegacyClient();
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
@@ -527,6 +536,37 @@ harness.get('/:slug/agents/:runId', (c) => {
 });
 
 // ─── feature-level controls (resets, skips) ──────────────────────────
+
+/**
+ * Phase 8: Goal-lineage for a feature.
+ *
+ * Workers fetch this before starting work to inject "## Why this matters"
+ * into their context. Walks parent_id chain → goal_id via the
+ * harness_shared.task_lineage() Postgres function (Phase 1 schema).
+ *
+ * `?format=md` (default) returns markdown text/plain.
+ * `?format=json` returns the raw lineage row array.
+ */
+harness.get('/:slug/feature/:id/lineage', async (c) => {
+  const project = resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const id = c.req.param('id');
+  const format = c.req.query('format') ?? 'md';
+  const schemaName = slugToSchemaName(project.slug);
+  try {
+    const { sql } = getHarnessPg(project.slug);
+    const rows = await getFeatureLineage(sql, schemaName, project.slug, id);
+    if (rows.length === 0) {
+      return c.json({ error: 'feature not found or no lineage' }, 404);
+    }
+    if (format === 'json') {
+      return c.json({ slug: project.slug, featureId: id, lineage: rows });
+    }
+    return c.text(formatLineageForPrompt(rows), 200, { 'content-type': 'text/markdown; charset=utf-8' });
+  } catch (err: any) {
+    return c.json({ error: 'lineage lookup failed', detail: String(err?.message ?? err) }, 500);
+  }
+});
 
 harness.post('/:slug/features/:id/reset', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
