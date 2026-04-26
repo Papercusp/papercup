@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Wrapper that runs the TypeScript fire-hook CLI via tsx.
+set -euo pipefail
+SELF="$(readlink -f "$0")"
+HERE="$(cd "$(dirname "$SELF")" && pwd)"
+SCRIPT="$HERE/fire-hook.ts"
+if command -v tsx >/dev/null 2>&1; then
+  exec tsx "$SCRIPT" "$@"
+else
+  exec node --experimental-strip-types --no-warnings "$SCRIPT" "$@"
+fi
