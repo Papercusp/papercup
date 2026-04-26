@@ -17,7 +17,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient, getOrgPg, listUnconsumedEvents, consumeEvents } from '@restart/db-org';
 const getOrgDbClient = () => getLegacyClient();
 
 const ORG_ROOT = join(homedir(), '.restart-org');
@@ -1672,7 +1672,34 @@ async function buildResolvedPrompt(slug: string, role: string, mode?: string, in
 
     const memory = synthesizeRecentMemory(dept.harnessSlug, 12);
     const mission = existsSync(MISSION_PATH) ? readFileSync(MISSION_PATH, 'utf8') : '';
-    const ctx = `\n\n---\n\n# Live state for ${dept.name} (${slug}) at ${new Date().toISOString()}\n\n## Mission (north-star — every dept reads this)\n\n${mission || '(no mission file at ~/.restart-org/mission.md — operate without explicit mission)'}\n\n## Charter\n\n${charter}\n\n## Director notes\n\n${dirNotes}\n\n## Decision log\n\n${decisionLog}\n\n## Recent decisions (your own memory, newest first)\n\n${memory.text}\n\n## Inbox (newest first)\n\n\`\`\`jsonl\n${inboxRaw.trim() || '(empty)'}\n\`\`\`\n\n## Outbox (newest first)\n\n\`\`\`jsonl\n${outboxRaw.trim() || '(empty)'}\n\`\`\`\n\n# Your task right now\n\nFollowing the rules above, decide what to do next. Output a single decision keyword on the FIRST line of your response (e.g. \`NEXT_WORKER <MESSAGE_ID>\`, \`NEXT_WORKER_CEO_MODE <MESSAGE_ID>\`, \`DONE\`, \`ESCALATE <id> <reason>\`). After the decision keyword, you may write up to 3 lines of reasoning.\n`;
+
+    // Phase 7: Fetch pending_events the orchestrator should react to.
+    // Eager-consume strategy: routines re-fire on cron, webhooks retry, completion-deltas
+    // are idempotent — accept rare loss to avoid lease/TTL columns on pending_events.
+    let pendingBlock = '(empty)';
+    if (role === 'orchestrator') {
+      try {
+        const { sql } = getOrgPg();
+        const events = await listUnconsumedEvents(sql, dept.harnessSlug, { onlyDue: true, limit: 25 });
+        if (events.length > 0) {
+          pendingBlock = events
+            .map((e) => JSON.stringify({
+              id: e.id,
+              kind: e.kind,
+              target_role: e.targetRole,
+              payload: e.payload,
+              due_at: e.dueAt,
+              source_id: e.sourceId,
+            }))
+            .join('\n');
+          await consumeEvents(sql, events.map((e) => e.id), `orchestrator:${slug}`);
+        }
+      } catch {
+        // pending_events table absent on legacy installs; fall through with '(empty)'
+      }
+    }
+
+    const ctx = `\n\n---\n\n# Live state for ${dept.name} (${slug}) at ${new Date().toISOString()}\n\n## Mission (north-star — every dept reads this)\n\n${mission || '(no mission file at ~/.restart-org/mission.md — operate without explicit mission)'}\n\n## Charter\n\n${charter}\n\n## Director notes\n\n${dirNotes}\n\n## Decision log\n\n${decisionLog}\n\n## Recent decisions (your own memory, newest first)\n\n${memory.text}\n\n## Pending events (queue, oldest first — already marked consumed; act on them this tick)\n\n\`\`\`jsonl\n${pendingBlock}\n\`\`\`\n\n## Inbox (newest first)\n\n\`\`\`jsonl\n${inboxRaw.trim() || '(empty)'}\n\`\`\`\n\n## Outbox (newest first)\n\n\`\`\`jsonl\n${outboxRaw.trim() || '(empty)'}\n\`\`\`\n\n# Your task right now\n\nFollowing the rules above, decide what to do next. Output a single decision keyword on the FIRST line of your response (e.g. \`NEXT_WORKER <MESSAGE_ID>\`, \`NEXT_WORKER_CEO_MODE <MESSAGE_ID>\`, \`DONE\`, \`ESCALATE <id> <reason>\`). After the decision keyword, you may write up to 3 lines of reasoning.\n`;
     resolved = resolved + ctx;
   }
 

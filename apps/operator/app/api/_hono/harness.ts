@@ -18,7 +18,7 @@ import { homedir } from 'node:os';
 import { harnessPackageDir, harnessPath } from './harness-paths';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { getLegacyClient, slugToSchemaName } from '@restart/db-org';
+import { getLegacyClient, slugToSchemaName, getOrgPg, listUnconsumedEvents, consumeEvents } from '@restart/db-org';
 const getOrgDbClient = () => getLegacyClient();
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
@@ -852,6 +852,37 @@ harness.post('/:slug/invoke', async (c) => {
 
   const runScript = harnessPath('run.sh');
   if (!existsSync(runScript)) return c.json({ error: 'run.sh missing' }, 500);
+
+  // Phase 7: write pending_events for the role to read at $STATE_DIR/pending-events.jsonl.
+  // Eager-consume; sources retry/idempotent. Only the orchestrator reads this currently.
+  if (role === 'orchestrator') {
+    try {
+      const { sql } = getOrgPg();
+      const events = await listUnconsumedEvents(sql, project.slug, { onlyDue: true, limit: 25 });
+      const stateDir = join(project.path, '.harness');
+      const eventsFile = join(stateDir, 'pending-events.jsonl');
+      const { writeFileSync, mkdirSync, rmSync } = await import('node:fs');
+      mkdirSync(stateDir, { recursive: true });
+      if (events.length > 0) {
+        const jsonl = events
+          .map((e) => JSON.stringify({
+            id: e.id,
+            kind: e.kind,
+            target_role: e.targetRole,
+            payload: e.payload,
+            due_at: e.dueAt,
+            source_id: e.sourceId,
+          }))
+          .join('\n');
+        writeFileSync(eventsFile, jsonl + '\n', 'utf8');
+        await consumeEvents(sql, events.map((e) => e.id), `papercusp-invoke:${project.slug}`);
+      } else {
+        try { rmSync(eventsFile, { force: true }); } catch {}
+      }
+    } catch {
+      // pending_events table absent — proceed without
+    }
+  }
 
   const { spawn } = await import('node:child_process');
   // Source ONLY the function definitions (not run.sh's top-level orchestrator
