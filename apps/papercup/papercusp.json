@@ -1,0 +1,90 @@
+{
+  "name": "papercup",
+  "version": "0.0.1",
+  "description": "Papercup — autonomous AI organization with 5 fixed departments. The first reference Papercusp install.",
+  "author": "Papercusp",
+  "papercusp": "^0.1",
+  "capabilities": [
+    "tasks:read",
+    "tasks:write",
+    "features:read",
+    "features:write",
+    "comments:read",
+    "comments:write",
+    "goals:read",
+    "goals:write",
+    "projects:read",
+    "projects:write",
+    "routines:read",
+    "routines:write",
+    "ui:dashboard-tab",
+    "ui:sidebar-item",
+    "ui:harness-route",
+    "roles:register:orchestrator",
+    "roles:register:worker",
+    "roles:register:validator",
+    "roles:register:documenter",
+    "roles:register:summarizer",
+    "events:emit:directive-routed",
+    "events:emit:proposal-accepted",
+    "events:emit:budget-allocated",
+    "events:emit:project-launched",
+    "events:listen:market-signal",
+    "events:listen:capability-released"
+  ],
+  "roles": [
+    "orchestrator",
+    "worker",
+    "validator",
+    "documenter",
+    "summarizer"
+  ],
+  "ui": {
+    "slug": "papercup",
+    "label": "Papercup",
+    "icon": "Building2",
+    "componentId": "PapercupRoot"
+  },
+  "dashboardTabs": [
+    { "id": "directives", "label": "Directives", "icon": "List",        "componentId": "DirectivesView" },
+    { "id": "projects",   "label": "Projects",   "icon": "Folder",      "componentId": "ProjectsView" },
+    { "id": "harnesses",  "label": "Harnesses",  "icon": "Grid3x3",     "componentId": "HarnessesView" },
+    { "id": "briefings",  "label": "Briefings",  "icon": "FileText",    "componentId": "BriefingsView" },
+    { "id": "organization", "label": "Organization", "icon": "Users",   "componentId": "OrganizationView" }
+  ],
+  "sidebarItems": [
+    { "id": "papercup-home",      "label": "Papercup",      "href": "/papercup",              "icon": "Building2" },
+    { "id": "papercup-directives","label": "Directives",    "href": "/papercup/directives",   "icon": "List" },
+    { "id": "papercup-projects",  "label": "Projects",      "href": "/papercup/projects",     "icon": "Folder" },
+    { "id": "papercup-harnesses", "label": "Harnesses",     "href": "/papercup/harnesses",    "icon": "Grid3x3" },
+    { "id": "papercup-briefings", "label": "Briefings",     "href": "/papercup/briefings",    "icon": "FileText" },
+    { "id": "papercup-organization", "label": "Organization", "href": "/papercup/organization", "icon": "Users" }
+  ],
+  "routines": [
+    { "name": "rd-ideation-tick",      "trigger": "cron" },
+    { "name": "marketing-signal-poll", "trigger": "cron" },
+    { "name": "directive-status-sweep","trigger": "cron" }
+  ],
+  "schema": {
+    "name": "papercup_shared",
+    "tables": [
+      "messages",
+      "message_recipients",
+      "message_comments",
+      "directive_summaries"
+    ],
+    "note": "Schema is provisioned by libs/db-org migrations, not by the plugin loader. This declaration is informational — the loader treats schema as already-present when this manifest is loaded."
+  },
+  "config": {
+    "departments": [
+      { "slug": "business",    "harnessSlug": "org-business",    "label": "Business" },
+      { "slug": "rd",          "harnessSlug": "org-rd",          "label": "R&D" },
+      { "slug": "technology",  "harnessSlug": "org-technology",  "label": "Technology" },
+      { "slug": "management",  "harnessSlug": "org-management",  "label": "Management" },
+      { "slug": "marketing",   "harnessSlug": "org-marketing",   "label": "Marketing" }
+    ],
+    "missionPath": "~/.restart-org/mission.md",
+    "charterPath": "~/.restart-org/charter.md",
+    "messageBus": "papercup_shared.messages"
+  }
+}
