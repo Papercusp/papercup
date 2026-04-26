@@ -249,9 +249,9 @@ export {
   MissingCapabilityError,
   UnknownMethodError,
   type CapabilityCheckContext,
-} from './capabilities.js';
+} from './capabilities';
 
 export {
   HookBus,
   createPluginHookBus,
-} from './hookbus.js';
+} from './hookbus';

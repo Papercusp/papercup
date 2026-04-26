@@ -32,7 +32,7 @@
  */
 
 import type { Capability } from '@papercusp/plugin-sdk';
-import { hasCapability, type CapabilityCheckContext } from './capabilities.js';
+import { hasCapability, type CapabilityCheckContext } from './capabilities';
 
 type ActionHandler<T = unknown> = (arg: T) => void | Promise<void>;
 type FilterHandler<T = unknown> = (arg: T) => T | Promise<T>;

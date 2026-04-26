@@ -12,8 +12,10 @@
  *   3. ~/.papercusp/global-plugins/<name>/papercusp.json
  *
  * Endpoints:
- *   GET /:slug/installed   — plugins reachable by the named project
- *   GET /global            — globally installed plugins (no slug needed)
+ *   GET /                              — all plugins, all sources, deduped
+ *   GET /global                        — globally installed plugins
+ *   GET /:slug/installed               — plugins reachable by the named project
+ *   GET /:slug/contributions           — flat dashboard-tab + sidebar-item metadata
  */
 import { Hono } from 'hono';
 import { promises as fs, existsSync } from 'node:fs';
@@ -26,13 +28,45 @@ const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
 const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
 const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
 
+/**
+ * Phase 6a: contribution metadata declared in `papercusp.json`. Components
+ * referenced by `componentId` are loaded at runtime by the UI host (Phase 6b).
+ * Manifest carries only id + label + icon — no React refs.
+ */
+interface DashboardTabManifest {
+  id: string;
+  label: string;
+  icon?: string;
+  componentId?: string;        // resolved at UI-load time to a lazy import
+}
+
+interface SidebarItemManifest {
+  id: string;
+  label: string;
+  href: string;
+  icon?: string;
+  badge?: { source: 'static' | 'fetch'; value?: string | number; url?: string };
+}
+
+interface UiContributionManifest {
+  slug: string;                // mounted at /harness/<slug>
+  label: string;
+  icon?: string;
+  componentId?: string;        // lazy-loaded at UI host
+}
+
 interface PluginManifest {
   name: string;
   version: string;
   description?: string;
   author?: string;
   papercusp?: string;
-  plugins?: string[];
+  capabilities?: string[];
+  roles?: string[];            // role names declared (full RoleDefinition is in index.ts)
+  dashboardTabs?: DashboardTabManifest[];
+  sidebarItems?: SidebarItemManifest[];
+  ui?: UiContributionManifest;
+  routines?: Array<{ name: string; trigger: 'cron' | 'webhook' | 'api' }>;
   schema?: unknown;
   [k: string]: unknown;
 }
@@ -111,5 +145,88 @@ plugins.get('/:slug/installed', async (c) => {
   return c.json({
     project: { slug, path: projectPath },
     plugins: items,
+  });
+});
+
+/**
+ * Phase 6a: list every plugin reachable from any source, deduped.
+ * Useful for the marketplace + admin "what's installed" views.
+ */
+plugins.get('/', async (c) => {
+  const sources: Array<{ dir: string; source: 'project' | 'harness' | 'global' }> = [];
+  if (existsSync(HARNESSES_DIR)) {
+    const harnessDirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true }).catch(() => []);
+    for (const h of harnessDirs) {
+      if (!h.isDirectory()) continue;
+      sources.push({ dir: join(HARNESSES_DIR, h.name, 'plugins'), source: 'harness' });
+    }
+  }
+  sources.push({ dir: GLOBAL_PLUGINS_DIR, source: 'global' });
+
+  const seen = new Set<string>();
+  const items: Array<PluginManifest & { source: string; path: string }> = [];
+  for (const s of sources) {
+    for (const p of await listPluginsIn(s.dir, s.source)) {
+      if (seen.has(p.name)) continue;
+      seen.add(p.name);
+      items.push(p);
+    }
+  }
+  return c.json({ plugins: items });
+});
+
+/**
+ * Phase 6a: flat list of all UI contributions (dashboard tabs, sidebar items,
+ * ui routes) declared by plugins reachable from this project.
+ *
+ * The Next.js client uses this to render plugin-contributed surfaces.
+ * componentIds are returned as-is; Phase 6b adds dynamic-import resolution.
+ */
+plugins.get('/:slug/contributions', async (c) => {
+  const slug = c.req.param('slug');
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slug)) {
+    return c.json({ error: 'invalid slug' }, 400);
+  }
+  const projectPath = await resolveProjectPath(slug);
+  const sources: Array<{ name: string; dir: string; source: 'project' | 'harness' | 'global' }> = [];
+  if (projectPath) {
+    sources.push({ name: slug, dir: join(projectPath, 'plugins'), source: 'project' });
+  }
+  if (existsSync(HARNESSES_DIR)) {
+    const harnessDirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true }).catch(() => []);
+    for (const h of harnessDirs) {
+      if (!h.isDirectory()) continue;
+      sources.push({ name: h.name, dir: join(HARNESSES_DIR, h.name, 'plugins'), source: 'harness' });
+    }
+  }
+  sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR, source: 'global' });
+
+  const seen = new Set<string>();
+  type Tab = DashboardTabManifest & { pluginName: string };
+  type Item = SidebarItemManifest & { pluginName: string };
+  type Route = UiContributionManifest & { pluginName: string };
+  const dashboardTabs: Tab[] = [];
+  const sidebarItems: Item[] = [];
+  const routes: Route[] = [];
+
+  for (const s of sources) {
+    for (const p of await listPluginsIn(s.dir, s.source)) {
+      if (seen.has(p.name)) continue;
+      seen.add(p.name);
+      for (const tab of p.dashboardTabs ?? []) {
+        dashboardTabs.push({ ...tab, pluginName: p.name });
+      }
+      for (const item of p.sidebarItems ?? []) {
+        sidebarItems.push({ ...item, pluginName: p.name });
+      }
+      if (p.ui) routes.push({ ...p.ui, pluginName: p.name });
+    }
+  }
+
+  return c.json({
+    project: { slug, path: projectPath },
+    dashboardTabs,
+    sidebarItems,
+    routes,
   });
 });
