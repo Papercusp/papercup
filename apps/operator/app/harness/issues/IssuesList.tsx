@@ -11,6 +11,7 @@ import { useQuery } from '@rocicorp/zero/react';
 import { queries, slugToIssuesKey, type IssueRow } from '@restart/zero-harness';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from './types';
 import { IssueDetail } from './IssueDetail';
+import { Tooltip } from '../Tooltip';
 
 function rowToIssue(r: IssueRow): Issue {
   // PG TIMESTAMPTZ → zero-cache → number (epoch ms). Issue.foundAt is ISO
@@ -174,24 +175,23 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
           const SrcIcon = SOURCE_ICON[row.source] ?? Circle;
           return (
             <div className="h-issue-body" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, width: '100%' }}>
-              <div className="h-issue-title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div
+                className="h-issue-title"
+                style={{
+                  display: '-webkit-box',
+                  WebkitBoxOrient: 'vertical',
+                  WebkitLineClamp: 2,
+                  overflow: 'hidden',
+                  whiteSpace: 'normal',
+                  lineHeight: 1.28,
+                }}
+              >
                 {row.title}
               </div>
               <div
                 className="h-issue-meta"
-                style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10.5, color: 'var(--fg-dim)' }}
-              >
-                <span className="h-issue-source" title={`source: ${row.source}`}>
-                  <SrcIcon size={10} /> {row.source}
-                </span>
-                <span className="h-issue-id">{row.id}</span>
-                {row.foundDuring && <span className="h-issue-feat">found in {row.foundDuring}</span>}
-                {row.codePointer && (
-                  <span className="h-issue-code">
-                    <FileCode size={10} /> {row.codePointer}
-                  </span>
-                )}
-              </div>
+                style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10.5, color: 'var(--fg-dim)', flexWrap: 'wrap', minWidth: 0 }}
+              />
             </div>
           );
         },
@@ -273,15 +273,16 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
           <span className="h-issue-mini-stat"><strong>{openCount}</strong> open</span>
           <span className="h-issue-mini-stat"><strong>{fixingCount}</strong> fixing</span>
           {pending.length > 0 && (
-            <button
-              className="h-chip h-chip-pending"
-              disabled={triaging}
-              onClick={runTriage}
-              title="Merge pending validator findings into the tracker"
-            >
-              <Inbox size={10} />
-              triage <strong>{pending.length}</strong>
-            </button>
+            <Tooltip label="Merge pending validator findings into the tracker">
+              <button
+                className="h-chip h-chip-pending"
+                disabled={triaging}
+                onClick={runTriage}
+              >
+                <Inbox size={10} />
+                triage <strong>{pending.length}</strong>
+              </button>
+            </Tooltip>
           )}
         </div>
       </div>
