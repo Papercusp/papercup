@@ -1438,6 +1438,7 @@ export default function HarnessDashboard() {
           onInspectRun={loadAgent}
           onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
           onOpenInPi={(id) => { setPiLaneId(id); setActivePanel('pi'); setPeekFeature(null); }}
+          onSwitchToPi={() => setActivePanel('pi')}
         />
       )}
 

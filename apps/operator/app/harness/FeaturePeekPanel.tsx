@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus } from './theme';
 import { StatusPill, IdPill, RolePill, IconButton, KbdHint } from './primitives';
+import { openFeatureChat } from './PiTerminalsDock';
 
 const FeatureTimelinePanel = dynamic(() => import('./FeatureTimelinePanel'), { ssr: false });
+const OperatorNoteForm = dynamic(() => import('./OperatorNoteForm'), { ssr: false });
 
 interface Feature {
   id: string;
@@ -35,16 +37,21 @@ interface Props {
   onInspectRun: (runId: string) => void;
   onSetStatus: (id: string, status: HarnessStatus) => void;
   onOpenInPi?: (id: string) => void;
+  /** Switch the harness UI to the pi tab (which hosts the dockview). */
+  onSwitchToPi?: () => void;
 }
 
 export default function FeaturePeekPanel({
-  slug, feature, agents, issues, onClose, onReset, onEdit, onInspectRun, onSetStatus, onOpenInPi,
+  slug, feature, agents, issues, onClose, onReset, onEdit, onInspectRun, onSetStatus, onOpenInPi, onSwitchToPi,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [debugNote, setDebugNote] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
+  const [chatOpening, setChatOpening] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
 
   // Fetch PR URL (if branchIsolation.onPass=pr has opened one for this feature).
   useEffect(() => {
@@ -163,7 +170,31 @@ export default function FeaturePeekPanel({
               View PR ↗
             </a>
           )}
-          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <IconButton
+              onClick={() => setShowNotes((v) => !v)}
+              title="Operator notes — async guidance the worker reads on its next dispatch"
+            >{showNotes ? 'hide note' : 'note'}</IconButton>
+            <IconButton
+              onClick={async () => {
+                setChatOpening(true);
+                setChatError(null);
+                const result = await openFeatureChat({
+                  slug,
+                  role: 'worker',
+                  featureId: feature.id,
+                  title: `worker · ${feature.id}`,
+                });
+                setChatOpening(false);
+                if ('error' in result) {
+                  setChatError(result.error);
+                } else {
+                  onSwitchToPi?.();
+                  onClose();
+                }
+              }}
+              title="Open a real-time chat with the worker on this feature (creates a new chat in the pi tab)"
+            >{chatOpening ? 'opening…' : 'chat'}</IconButton>
             {onOpenInPi && (
               <IconButton
                 onClick={() => onOpenInPi(feature.id)}
@@ -175,6 +206,15 @@ export default function FeaturePeekPanel({
             <IconButton onClick={onClose} variant="ghost" title="Close (Esc)">✕</IconButton>
           </span>
         </div>
+        {chatError && (
+          <div style={{
+            padding: '6px 14px',
+            background: COLORS.dangerBg,
+            color: COLORS.dangerText,
+            fontSize: SIZES.xs,
+            borderBottom: `1px solid ${COLORS.borderSubtle}`,
+          }}>chat failed to open: {chatError}</div>
+        )}
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
@@ -251,6 +291,13 @@ export default function FeaturePeekPanel({
                   <li key={i} style={{ marginBottom: 4 }}>{c}</li>
                 ))}
               </ul>
+            </Section>
+          )}
+
+          {/* Operator notes — feature-scoped guidance the worker reads on next dispatch */}
+          {showNotes && (
+            <Section title="Operator notes">
+              <OperatorNoteForm slug={slug} featureId={feature.id} />
             </Section>
           )}
 
