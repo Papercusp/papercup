@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Proposal {
   id: string;
@@ -331,6 +332,87 @@ export default function ProposalsPanel({ slug }: Props) {
   const nextPending = useMemo(() => items
     .filter((p) => p.status === 'pending')
     .sort((a, b) => compareProposal(a, b, sortMode))[0] ?? null, [items, sortMode]);
+
+  // ── RichGrid columns for the proposals list ─────────────────────────
+  // Uses the existing inline JSX as the cell content, preserving all
+  // CSS classes (h-proposal-pin, h-proposal-row-button, badges) so the
+  // existing styling and tooltip behaviour keep working.
+  const proposalColumns: ColumnDef<Proposal>[] = useMemo(
+    () => [
+      {
+        key: 'check',
+        header: '',
+        width: 0.18,
+        align: 'center',
+        render: ({ row }) => {
+          const isPending = row.status === 'pending';
+          const isChecked = checked.has(row.id);
+          if (!isPending) return <span className="h-proposal-item-spacer" aria-hidden="true" />;
+          return (
+            <input
+              type="checkbox"
+              checked={isChecked}
+              onChange={(e) => { e.stopPropagation(); toggleCheck(row.id); }}
+              onClick={(e) => e.stopPropagation()}
+              aria-label={`Select proposal ${row.id}`}
+            />
+          );
+        },
+      },
+      {
+        key: 'pin',
+        header: '',
+        width: 0.18,
+        align: 'center',
+        render: ({ row }) => {
+          const isShort = shortlisted.has(row.id);
+          return (
+            <button
+              type="button"
+              className={`h-proposal-pin ${isShort ? 'on' : ''}`}
+              aria-label={`${isShort ? 'Remove from' : 'Add to'} proposal shortlist`}
+              onClick={(e) => { e.stopPropagation(); toggleShortlist(row.id); }}
+            >
+              ★
+            </button>
+          );
+        },
+      },
+      {
+        key: 'main',
+        header: 'proposal',
+        width: 5,
+        render: ({ row }) => {
+          const rowTitle = humanizeId(row.id);
+          const rowMeta = `${STATUS_LABEL[row.status]} · ${fmtTs(row.ts)} · ${fmtBytes(row.sizeBytes)} · ${STATUS_COPY[row.status]}`;
+          const isoTs = row.ts ? new Date(row.ts).toISOString() : undefined;
+          return (
+            <button
+              type="button"
+              onClick={() => setSelected(row.id)}
+              className="h-proposal-row-button"
+              title={rowMeta}
+              aria-label={`${rowTitle} — ${rowMeta}`}
+            >
+              <span className="h-proposal-row-title">{rowTitle}</span>
+              <span className={`h-proposal-badge status-${row.status}`}>{STATUS_LABEL[row.status]}</span>
+              {row.reviewVerdict && (
+                <span
+                  className={`h-proposal-badge review-${row.reviewVerdict}`}
+                  title={row.reviewSummary ?? `reviewer: ${row.reviewVerdict}`}
+                >
+                  {row.reviewVerdict === 'accept' ? 'auto-accepted' : `reviewer: ${row.reviewVerdict}`}
+                </span>
+              )}
+              <time className="h-proposal-row-age" dateTime={isoTs}>{fmtAge(row.ts)}</time>
+              <span className="h-proposal-row-size">{fmtBytes(row.sizeBytes)}</span>
+            </button>
+          );
+        },
+      },
+    ],
+    [checked, shortlisted, toggleCheck, toggleShortlist, setSelected],
+  );
 
   const contentStats = useMemo(() => {
     const lines = content.split('\n');
@@ -706,66 +788,21 @@ export default function ProposalsPanel({ slug }: Props) {
                 <span>Try another search term or status filter.</span>
               </div>
             ) : (
-              filteredItems.map((p) => {
-                const isActive = selected === p.id;
-                const isPending = p.status === 'pending';
-                const isChecked = checked.has(p.id);
-                const isShortlisted = shortlisted.has(p.id);
-                const rowTitle = humanizeId(p.id);
-                const rowMeta = `${STATUS_LABEL[p.status]} · ${fmtTs(p.ts)} · ${fmtBytes(p.sizeBytes)} · ${STATUS_COPY[p.status]}`;
-                const isoTs = p.ts ? new Date(p.ts).toISOString() : undefined;
-                return (
-                  <div
-                    key={p.id}
-                    className={`h-proposal-item status-${p.status} ${isActive ? 'is-active' : ''} ${isShortlisted ? 'is-shortlisted' : ''}`}
-                    role="listitem"
-                    aria-current={isActive ? 'true' : undefined}
-                  >
-                    {isPending ? (
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={(e) => { e.stopPropagation(); toggleCheck(p.id); }}
-                        onClick={(e) => e.stopPropagation()}
-                        aria-label={`Select proposal ${p.id}`}
-                      />
-                    ) : (
-                      <span className="h-proposal-item-spacer" aria-hidden="true" />
-                    )}
-                    <button
-                      type="button"
-                      className={`h-proposal-pin ${isShortlisted ? 'on' : ''}`}
-                      aria-label={`${isShortlisted ? 'Remove from' : 'Add to'} proposal shortlist`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleShortlist(p.id);
-                      }}
-                    >
-                      ★
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelected(p.id)}
-                      className="h-proposal-row-button"
-                      title={rowMeta}
-                      aria-label={`${rowTitle} — ${rowMeta}`}
-                    >
-                      <span className="h-proposal-row-title">{rowTitle}</span>
-                      <span className={`h-proposal-badge status-${p.status}`}>{STATUS_LABEL[p.status]}</span>
-                      {p.reviewVerdict && (
-                        <span
-                          className={`h-proposal-badge review-${p.reviewVerdict}`}
-                          title={p.reviewSummary ?? `reviewer: ${p.reviewVerdict}`}
-                        >
-                          {p.reviewVerdict === 'accept' ? 'auto-accepted' : `reviewer: ${p.reviewVerdict}`}
-                        </span>
-                      )}
-                      <time className="h-proposal-row-age" dateTime={isoTs}>{fmtAge(p.ts)}</time>
-                      <span className="h-proposal-row-size">{fmtBytes(p.sizeBytes)}</span>
-                    </button>
-                  </div>
-                );
-              })
+              <RichGrid<Proposal>
+                rows={filteredItems}
+                columns={proposalColumns}
+                getRowId={(p) => p.id}
+                rowProps={(ctx) => {
+                  const isActive = selected === ctx.row.id;
+                  const isShort = shortlisted.has(ctx.row.id);
+                  return {
+                    className: `h-proposal-item status-${ctx.row.status}${isActive ? ' is-active' : ''}${isShort ? ' is-shortlisted' : ''}`,
+                    role: 'listitem',
+                    'aria-current': isActive ? 'true' : undefined,
+                  };
+                }}
+                inline
+              />
             )}
           </div>
         </aside>
