@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import Editor from '@monaco-editor/react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 const KNOWN_HOOKS = ['pre-worker', 'post-worker', 'pre-validator', 'post-validator', 'on-escalate', 'on-feature-passed', 'on-feature-failing'] as const;
 type HookName = (typeof KNOWN_HOOKS)[number];
@@ -346,33 +347,7 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
               <span style={{ color: '#6b7280' }}>({runs.length})</span>
               {runs.length === 0 && <span style={{ color: '#6b7280', fontStyle: 'italic' }}>none yet — fire a hook to see logs here</span>}
             </div>
-            <table style={{ width: '100%', fontSize: '0.75rem', borderCollapse: 'collapse' }}>
-              <tbody>
-                {runs.map((r) => {
-                  const isSelected = selectedLog?.logId === r.logId;
-                  return (
-                    <tr
-                      key={r.logId}
-                      onClick={() => openLog(r.logId)}
-                      style={{
-                        cursor: 'pointer',
-                        background: isSelected ? '#1f2937' : 'transparent',
-                      }}
-                    >
-                      <td style={{ padding: '0.25rem 0.4rem', color: '#9ca3af', whiteSpace: 'nowrap' }}>{fmtTs(r.ts)}</td>
-                      <td style={{ padding: '0.25rem 0.4rem' }}>
-                        <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: HOOK_COLOR[r.name] ?? '#374151', color: 'white', fontWeight: 600 }}>
-                          {r.name}
-                        </span>
-                      </td>
-                      <td style={{ padding: '0.25rem 0.4rem', textAlign: 'right', color: '#6b7280', whiteSpace: 'nowrap' }}>
-                        {r.sizeBytes}B
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <HookRunsGrid runs={runs} selectedLogId={selectedLog?.logId ?? null} onSelect={openLog} />
           </div>
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
             <div style={{ fontSize: '0.75rem', color: '#9ca3af', padding: '0.5rem 0.75rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -387,5 +362,57 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+function HookRunsGrid({
+  runs, selectedLogId, onSelect,
+}: {
+  runs: HookRun[];
+  selectedLogId: string | null;
+  onSelect: (logId: string) => void;
+}) {
+  const columns: ColumnDef<HookRun>[] = useMemo(
+    () => [
+      {
+        key: 'when',
+        header: 'When',
+        width: 1.3,
+        sortKey: 'ts',
+        defaultSortDir: 'desc',
+        render: ({ row }) => <span style={{ color: '#9ca3af', whiteSpace: 'nowrap' }}>{fmtTs(row.ts)}</span>,
+      },
+      {
+        key: 'name',
+        header: 'Hook',
+        width: 1.5,
+        sortKey: 'name',
+        render: ({ row }) => (
+          <span style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: HOOK_COLOR[row.name] ?? '#374151', color: 'white', fontWeight: 600 }}>
+            {row.name}
+          </span>
+        ),
+      },
+      {
+        key: 'size',
+        header: 'Size',
+        width: 0.5,
+        align: 'right',
+        sortKey: 'sizeBytes',
+        render: ({ row }) => <span style={{ color: '#6b7280', whiteSpace: 'nowrap' }}>{row.sizeBytes}B</span>,
+      },
+    ],
+    [],
+  );
+  const richGetRowBg = (row: HookRun) => (selectedLogId === row.logId ? '#1f2937' : 'transparent');
+  return (
+    <RichGrid<HookRun>
+      rows={runs}
+      columns={columns}
+      getRowId={(r) => r.logId}
+      onRowClick={(r) => onSelect(r.logId)}
+      getRowBg={richGetRowBg}
+      inline
+    />
   );
 }

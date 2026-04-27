@@ -4,6 +4,15 @@ import './harness.css';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast, Toaster } from 'sonner';
 import { Inbox, Send, FileText, NotebookPen, Workflow, Cpu, Brain } from 'lucide-react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
+
+type MemoryEntry = {
+  filename: string;
+  ts: string | null;
+  decision: string | null;
+  firstAction: string | null;
+  final: string | null;
+};
 
 type Department = {
   slug: string;
@@ -965,26 +974,7 @@ function MemoryPanel({ departmentSlug }: { departmentSlug: string }) {
       ) : (
         <>
           <div style={{ overflowX: 'auto', background: 'var(--bg-2)', borderRadius: 6, border: '1px solid var(--border)' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: 'var(--bg-3)' }}>
-                  <th style={{ padding: '6px 10px', textAlign: 'left', color: 'var(--fg-dim)', fontWeight: 500 }}>When</th>
-                  <th style={{ padding: '6px 10px', textAlign: 'left', color: 'var(--fg-dim)', fontWeight: 500 }}>Decision</th>
-                  <th style={{ padding: '6px 10px', textAlign: 'left', color: 'var(--fg-dim)', fontWeight: 500 }}>First action</th>
-                  <th style={{ padding: '6px 10px', textAlign: 'left', color: 'var(--fg-dim)', fontWeight: 500 }}>Final</th>
-                </tr>
-              </thead>
-              <tbody>
-                {memory.entries.map((e) => (
-                  <tr key={e.filename} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '6px 10px', color: 'var(--fg-dim)', whiteSpace: 'nowrap' }}>{e.ts ?? '—'}</td>
-                    <td style={{ padding: '6px 10px', color: 'var(--fg)' }}>{e.decision ?? '—'}</td>
-                    <td style={{ padding: '6px 10px', color: 'var(--fg)', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.firstAction ?? '—'}</td>
-                    <td style={{ padding: '6px 10px', color: 'var(--fg-dim)' }}>{e.final ?? '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <MemoryEntriesGrid entries={memory.entries} />
           </div>
           <details style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
             <summary style={{ cursor: 'pointer' }}>Raw text injected into prompt</summary>
@@ -1112,5 +1102,52 @@ function MarkdownPanel({ title, content, empty }: { title: string; content: stri
         <div style={{ fontSize: 13, color: 'var(--fg-dim)', fontStyle: 'italic' }}>{empty}</div>
       )}
     </div>
+  );
+}
+
+function MemoryEntriesGrid({ entries }: { entries: MemoryEntry[] }) {
+  const columns: ColumnDef<MemoryEntry>[] = useMemo(
+    () => [
+      {
+        key: 'when',
+        header: 'When',
+        width: 1.2,
+        sortKey: 'ts',
+        defaultSortDir: 'desc',
+        render: ({ row }) => <span style={{ color: 'var(--fg-dim)', whiteSpace: 'nowrap' }}>{row.ts ?? '—'}</span>,
+      },
+      {
+        key: 'decision',
+        header: 'Decision',
+        width: 2,
+        sortKey: 'decision',
+        render: ({ row }) => <span style={{ color: 'var(--fg)' }}>{row.decision ?? '—'}</span>,
+      },
+      {
+        key: 'firstAction',
+        header: 'First action',
+        width: 3,
+        render: ({ row }) => (
+          <span style={{ color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {row.firstAction ?? '—'}
+          </span>
+        ),
+      },
+      {
+        key: 'final',
+        header: 'Final',
+        width: 2,
+        render: ({ row }) => <span style={{ color: 'var(--fg-dim)' }}>{row.final ?? '—'}</span>,
+      },
+    ],
+    [],
+  );
+  return (
+    <RichGrid<MemoryEntry>
+      rows={entries}
+      columns={columns}
+      getRowId={(e) => e.filename}
+      inline
+    />
   );
 }
