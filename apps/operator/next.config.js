@@ -10,13 +10,21 @@ module.exports = {
   outputFileTracingRoot: path.join(__dirname, '../..'),
   typescript: { ignoreBuildErrors: true },
   images: { unoptimized: true },
+  // Turbopack persistent cache deadlocks under load AND silently retains
+  // stale transpiled artifacts from workspace deps (e.g. libs/zero-harness)
+  // even after a dev restart — disable it so source edits actually rebuild.
+  experimental: {
+    turbopackFileSystemCacheForDev: false,
+  },
   transpilePackages: [
     '@papercusp/harness',
     '@restart/agent-chat',
     '@restart/db-org',
     '@restart/git-graph',
+    '@restart/grid-core',
     '@restart/papercup-shared',
     '@restart/ui-primitives',
+    '@restart/zero-harness',
   ],
   // node-pty's index.js does `require(<dynamic>)` to load its
   // platform-specific native binding. Turbopack can't trace that, so we
