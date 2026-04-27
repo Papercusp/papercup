@@ -1,0 +1,10 @@
+{
+  "title": "Operating",
+  "pages": [
+    "conventions",
+    "config",
+    "hooks",
+    "steer-and-chat",
+    "glossary"
+  ]
+}
