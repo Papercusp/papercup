@@ -18,6 +18,19 @@ module.exports = {
     '@restart/papercup-shared',
     '@restart/ui-primitives',
   ],
+  // node-pty's index.js does `require(<dynamic>)` to load its
+  // platform-specific native binding. Turbopack can't trace that, so we
+  // mark the package family as external — Next leaves it alone and Node
+  // resolves it normally at runtime.
+  serverExternalPackages: [
+    '@lydell/node-pty',
+    '@lydell/node-pty-linux-x64',
+    '@lydell/node-pty-linux-arm64',
+    '@lydell/node-pty-darwin-arm64',
+    '@lydell/node-pty-darwin-x64',
+    '@lydell/node-pty-win32-x64',
+    '@lydell/node-pty-win32-arm64',
+  ],
   // /api/harness/* and /api/plugins/* are served LOCALLY by this app
   // (mounted in app/api/[[...route]]/route.ts).
   //

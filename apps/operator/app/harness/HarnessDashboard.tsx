@@ -34,7 +34,7 @@ function openInVSCode(projectPath: string) {
   window.open(url, VSCODE_WINDOW_NAME);
 }
 
-type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'docs' | 'vscode' | 'insights' | 'config';
+type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'docs' | 'vscode' | 'pi' | 'insights' | 'config';
 
 import { Panel } from '@restart/ui-primitives';
 import { StatCard } from '@restart/ui-primitives';
@@ -58,6 +58,7 @@ import InsightsPanel from './InsightsPanel';
 import TriageQueue from './TriageQueue';
 import ArchitectInbox from './ArchitectInbox';
 import { CollapsedGitRail, CollapsedInboxRail } from './CollapsedRails';
+import PiPanel from './PiPanel';
 import PhaseTabs, { type Phase } from './PhaseTabs';
 import TestsTab from './TestsTab';
 import ProposalsPanel from './ProposalsPanel';
@@ -1081,6 +1082,16 @@ export default function HarnessDashboard() {
           <Code2 size={13} /> vscode
         </button>
         <button
+          className={`h-tab${activePanel === 'pi' ? ' on' : ''}`}
+          role="tab"
+          aria-selected={activePanel === 'pi'}
+          onClick={() => activeSlug && setActivePanel('pi')}
+          disabled={!activeSlug}
+          title={activeSlug ? 'pi (omp) — interactive coding agent' : 'Select a project to open pi'}
+        >
+          <Activity size={13} /> pi
+        </button>
+        <button
           className={`h-tab${activePanel === 'insights' ? ' on' : ''}`}
           role="tab"
           aria-selected={activePanel === 'insights'}
@@ -1144,6 +1155,11 @@ export default function HarnessDashboard() {
             title="VSCode"
             style={{ flex: 1, border: 'none', width: '100%', height: '100%', background: 'var(--bg-2)' }}
           />
+        )}
+        {activePanel === 'pi' && activeSlug && (
+          <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
+            <PiPanel slug={activeSlug} />
+          </div>
         )}
         {activePanel === 'insights' && status && (
           <InsightsPanel
@@ -1218,7 +1234,7 @@ export default function HarnessDashboard() {
               </div>
             </div>
           ) : (
-        <div className="h-dashboard-grid" style={{ display: 'flex', gap: 6, height: '100%', minHeight: 760, flex: 1 }}>
+        <div className="h-dashboard-grid" style={{ display: 'flex', gap: 6, height: '100%', minHeight: 0, flex: 1 }}>
           {activeSlug && leftPane === 'inbox' && (
             <CollapsedGitRail slug={activeSlug} onExpand={() => setLeftPane('git')} />
           )}

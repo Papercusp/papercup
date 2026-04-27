@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 import { handle } from 'hono/vercel';
 import { harness } from '../_hono/harness';
 import { plugins } from '../_hono/plugins';
+import { registerPty } from '../_hono/pty';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,6 +32,7 @@ const adminPreviewCors = async (c: any, next: any) => {
 app.use('/harness/*', adminPreviewCors);
 app.use('/plugins/*', adminPreviewCors);
 
+registerPty(harness);
 app.route('/harness', harness);
 app.route('/plugins', plugins);
 
