@@ -145,7 +145,15 @@ async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'gl
   if (!existsSync(parent)) return out;
   const entries = await fs.readdir(parent, { withFileTypes: true }).catch(() => []);
   for (const e of entries) {
-    if (!e.isDirectory() || e.name.startsWith('.')) continue;
+    if (e.name.startsWith('.')) continue;
+    // Accept directories AND symlinks (dev-mode pattern: symlinking a
+    // plugin's repo dir into ~/.papercusp/global-plugins/).
+    let isDirOrLinkToDir = e.isDirectory();
+    if (!isDirOrLinkToDir && e.isSymbolicLink()) {
+      const target = await fs.stat(join(parent, e.name)).catch(() => null);
+      isDirOrLinkToDir = target?.isDirectory() ?? false;
+    }
+    if (!isDirOrLinkToDir) continue;
     const dir = join(parent, e.name);
     const m = await readJson<PluginManifest>(join(dir, 'papercusp.json'));
     if (!m?.name || !m?.version) continue;

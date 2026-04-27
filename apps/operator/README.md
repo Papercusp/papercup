@@ -2,9 +2,10 @@
 
 > **Two-tree architecture.** This directory (`apps/papercusp/`) is the
 > **active development tree**. New features land here first. The Papercusp
-> framework's public-face copy lives in the `papercupai/papercusp` git
-> submodule at `libs/papercusp/apps/web/` — features get promoted there
-> when stable. See [**ARCHITECTURE.md**](../../ARCHITECTURE.md#two-papercusp-web-trees) for details.
+> framework's public-face copy lives at `libs/papercusp/apps/web/` —
+> originally a `papercupai/papercusp` git submodule, vendored into the
+> parent repo in commit `636c4219`. Features get promoted there when
+> stable. See [**ARCHITECTURE.md**](../../ARCHITECTURE.md#two-papercusp-web-trees) for details.
 >
 > | Tree | Path | Purpose | Consumed by |
 > |---|---|---|---|
