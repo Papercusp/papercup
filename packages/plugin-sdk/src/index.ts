@@ -6,7 +6,7 @@
  * and event hooks. Capabilities (declarative permissions) gate every
  * non-trivial action.
  *
- * Stability: pre-1.0. Spec at /papercusp-explanation in the admin app.
+ * Stability: pre-1.0. Spec at apps/papercusp-spec/ (dev: http://localhost:4324/).
  */
 
 import type { ComponentType } from 'react';
@@ -21,7 +21,7 @@ import type { ComponentType } from 'react';
  * - Iframe sandbox enforces network ones via CSP
  * - Install-time consent prompts the user
  *
- * See §10 of the Papercusp Explanation page for the full model.
+ * See §10 of the Papercusp spec (apps/papercusp-spec/, /spec/capabilities/) for the full model.
  * ───────────────────────────────────────────────────────────────────── */
 
 export type Capability =
