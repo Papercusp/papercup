@@ -54,6 +54,17 @@ interface ChatRow {
   archived_at: string | null;
 }
 
+interface FeatureLockState {
+  /** Worker that's currently holding the feature lock, or null if free. */
+  taken_by: string | null;
+  /** When the lock was acquired. */
+  taken_at: string | null;
+  /** When the lock auto-expires (orphan recovery). */
+  expires_at: string | null;
+  /** Convenience flag: true iff an autonomous run is currently in flight. */
+  active: boolean;
+}
+
 const VALID_ROLES = new Set([
   'orchestrator', 'scoper', 'worker', 'validator', 'reviewer',
   'documenter', 'summarizer', 'architect', 'curator', 'debugger',
@@ -69,6 +80,75 @@ const activeChats = new Map<string, { startedAt: number }>();
 
 function dbForSlug(slug: string) {
   return getLegacyClient(slug);
+}
+
+/**
+ * Read the current lock state of a feature row. Used to surface a "this
+ * feature is currently being autonomously worked" hint in chat responses
+ * — the UI can render a warning, the chat agent's prompt gets a preamble.
+ *
+ * Returns `null` if the feature row doesn't exist.
+ */
+async function readFeatureLockState(slug: string, featureId: string): Promise<FeatureLockState | null> {
+  try {
+    const db = dbForSlug(slug);
+    const row = (await db
+      .prepare('SELECT taken_by, taken_at, expires_at FROM harness_features WHERE harness_slug = ? AND feature_id = ? LIMIT 1')
+      .get(slug, featureId)) as { taken_by: string | null; taken_at: string | null; expires_at: string | null } | undefined;
+    if (!row) return null;
+    return {
+      taken_by: row.taken_by,
+      taken_at: row.taken_at,
+      expires_at: row.expires_at,
+      active: row.taken_by !== null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read the per-harness chat cost cap from `.harness/config.json`. Two keys
+ * supported: `maxChatCostUsd` (per-chat) and `maxAggregateChatCostUsd`
+ * (across all chats in the harness). Both default to undefined = uncapped.
+ */
+function readChatCostCap(slug: string): { perChatUsd?: number; aggregateUsd?: number } {
+  try {
+    const projectDir = (() => {
+      const fs = require('node:fs');
+      const path = require('node:path');
+      const home = process.env.HOME ?? require('node:os').homedir();
+      const reg = path.join(home, '.restart-harness-projects.json');
+      if (!fs.existsSync(reg)) return null;
+      const data = JSON.parse(fs.readFileSync(reg, 'utf8'));
+      return data.projects?.find((p: { slug?: string; path?: string }) => p.slug === slug)?.path ?? null;
+    })();
+    if (!projectDir) return {};
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const cfgPath = path.join(projectDir, '.harness', 'config.json');
+    if (!fs.existsSync(cfgPath)) return {};
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+    const out: { perChatUsd?: number; aggregateUsd?: number } = {};
+    if (typeof cfg.maxChatCostUsd === 'number' && cfg.maxChatCostUsd > 0) out.perChatUsd = cfg.maxChatCostUsd;
+    if (typeof cfg.maxAggregateChatCostUsd === 'number' && cfg.maxAggregateChatCostUsd > 0) out.aggregateUsd = cfg.maxAggregateChatCostUsd;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Sum of cents across all (non-archived) chats in this harness. */
+async function aggregateChatCostCents(slug: string): Promise<number> {
+  try {
+    const db = dbForSlug(slug);
+    const row = (await db
+      .prepare('SELECT COALESCE(SUM(total_cost_usd_cents), 0)::bigint AS total FROM agent_chats WHERE archived_at IS NULL')
+      .get()) as { total: number | bigint };
+    return typeof row.total === 'bigint' ? Number(row.total) : (row.total ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 function rowToChat(r: any): ChatRow {
@@ -132,7 +212,8 @@ export function registerAgentChats(harness: Hono): void {
          VALUES (?, ?, ?, ?, ?::jsonb)`,
       ).run(id, body.role, body.feature_id ?? null, title, '[]');
       const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as any;
-      return c.json(rowToChat(row), 201);
+      const featureLock = body.feature_id ? await readFeatureLockState(slug, body.feature_id) : null;
+      return c.json({ ...rowToChat(row), feature_lock: featureLock }, 201);
     } catch (e) {
       return c.json({ error: `failed to create chat: ${(e as Error).message}` }, 500);
     }
@@ -146,7 +227,9 @@ export function registerAgentChats(harness: Hono): void {
       const db = dbForSlug(slug);
       const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(chatId)) as any;
       if (!row) return c.json({ error: 'chat not found' }, 404);
-      return c.json(rowToChat(row));
+      const chat = rowToChat(row);
+      const featureLock = chat.feature_id ? await readFeatureLockState(slug, chat.feature_id) : null;
+      return c.json({ ...chat, feature_lock: featureLock });
     } catch (e) {
       return c.json({ error: `failed to load chat: ${(e as Error).message}` }, 500);
     }
@@ -193,6 +276,38 @@ export function registerAgentChats(harness: Hono): void {
       return c.json({ error: `failed to load chat: ${(e as Error).message}` }, 500);
     }
 
+    // Cost-cap check. Per-chat cap is checked against this chat's own
+    // accumulated cents; aggregate cap sums all non-archived chats in
+    // this harness. Either being exceeded refuses the spawn — operator
+    // must archive a chat or raise the cap before continuing.
+    const cap = readChatCostCap(slug);
+    if (cap.perChatUsd !== undefined && chat.total_cost_usd_cents >= cap.perChatUsd * 100) {
+      return c.json({
+        error: 'per-chat cost cap reached',
+        chat_cost_usd: chat.total_cost_usd_cents / 100,
+        cap_usd: cap.perChatUsd,
+        hint: 'increase config.json `maxChatCostUsd` or archive this chat',
+      }, 402);
+    }
+    if (cap.aggregateUsd !== undefined) {
+      const aggCents = await aggregateChatCostCents(slug);
+      if (aggCents >= cap.aggregateUsd * 100) {
+        return c.json({
+          error: 'aggregate chat cost cap reached for this harness',
+          aggregate_cost_usd: aggCents / 100,
+          cap_usd: cap.aggregateUsd,
+          hint: 'increase config.json `maxAggregateChatCostUsd` or archive other chats',
+        }, 402);
+      }
+    }
+
+    // Concurrency awareness. If the chat is feature-scoped AND that
+    // feature is currently locked by an autonomous worker, prepend a
+    // notice to the assembled prompt so the chat agent gives the user
+    // an honest "another instance of me is on this right now" answer
+    // instead of pretending exclusive ownership.
+    const featureLock = chat.feature_id ? await readFeatureLockState(slug, chat.feature_id) : null;
+
     // Append user turn before streaming so a client reload sees it.
     const userTurn: TranscriptTurn = { role: 'user', content: userContent, ts: new Date().toISOString() };
     const baseTranscript = [...chat.transcript, userTurn];
@@ -215,12 +330,15 @@ export function registerAgentChats(harness: Hono): void {
         featureId: chat.feature_id ?? undefined,
         mode: 'chat',
       });
+      const lockNotice = featureLock?.active
+        ? `\n---\n\n## ⚠ Concurrent autonomous run\n\nFeature ${chat.feature_id} is currently being worked on autonomously (taken_by=${featureLock.taken_by}, taken_at=${featureLock.taken_at}). The autonomous loop holds the worktree lock; you do not. **Do not propose code changes**; the user is asking you for advice or context. If they want guidance the autonomous worker should pick up, tell them to add a note (it lands in \`.harness/notes/${chat.feature_id}.md\`, which the next worker tick reads).\n`
+        : '';
       const historyBlock = baseTranscript.length > 1
         ? '\n---\n\n## Conversation history\n\n' +
           baseTranscript.slice(0, -1).map((t) => `${t.role === 'user' ? 'User' : 'You (assistant)'}: ${t.content}`).join('\n\n') +
           '\n'
         : '';
-      const promptText = `${r.text}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
+      const promptText = `${r.text}${lockNotice}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
       assembled = { text: promptText, runId: r.meta.runId };
     } catch (e) {
       return c.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, 500);
