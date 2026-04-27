@@ -20,9 +20,14 @@
  */
 import type { Hono } from 'hono';
 import { stream } from 'hono/streaming';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import {
+  getLegacyClient,
+  getFeatureLineage,
+  formatLineageForPrompt,
+} from '@restart/db-org';
 import {
   killPty,
   markActive,
@@ -77,6 +82,59 @@ function stateDirForSlug(slug: string): string | null {
 }
 
 /**
+ * Build a markdown system-prompt fragment describing the feature pi is being
+ * scoped to, and write it to the harness state dir so we can pass its path
+ * via `--append-system-prompt`. Returns the file path on success, null if
+ * the feature can't be resolved (caller falls back to no injection).
+ */
+async function buildFeaturePromptFile(
+  slug: string,
+  featureId: string,
+  stateDir: string,
+): Promise<string | null> {
+  try {
+    const c = getLegacyClient(slug);
+    const feature = (await c
+      .prepare('SELECT feature_id, title, summary, status FROM harness_features WHERE harness_slug = ? AND feature_id = ? LIMIT 1')
+      .get(slug, featureId)) as { feature_id: string; title?: string; summary?: string; status?: string } | undefined;
+    if (!feature) return null;
+
+    let lineageBlock = '';
+    try {
+      const lineage = await getFeatureLineage(slug, featureId);
+      const formatted = formatLineageForPrompt(lineage);
+      if (formatted && formatted.trim().length > 0) {
+        lineageBlock = `\n## Lineage\n\n${formatted.trim()}\n`;
+      }
+    } catch {}
+
+    const lines = [
+      `# Pi context — ${slug} / ${featureId}`,
+      '',
+      `You are running inside an isolated git worktree dedicated to **feature ${featureId}**.`,
+      `The Papercusp harness expects you to make focused changes for THIS feature only,`,
+      `then commit them in this worktree. The validator role will pick up your commits and`,
+      `decide whether to merge.`,
+      '',
+      `## Feature: ${feature.title ?? featureId}`,
+    ];
+    if (feature.status) lines.push('', `Status: ${feature.status}`);
+    if (feature.summary && feature.summary.trim().length > 0) {
+      lines.push('', '## Spec', '', feature.summary.trim());
+    }
+    if (lineageBlock) lines.push(lineageBlock);
+
+    const promptDir = join(stateDir, 'pi-prompts');
+    mkdirSync(promptDir, { recursive: true });
+    const path = join(promptDir, `${featureId}.md`);
+    writeFileSync(path, lines.join('\n'), 'utf8');
+    return path;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the pi binary. Many launch contexts (mac homebrew + Tauri-Cocoa,
  * Linux desktop launchers) miss the user's login-shell PATH entries. Probe
  * the known locations on top of $PATH and fall back to the bare name.
@@ -103,7 +161,6 @@ function resolvePiBinary(): string {
   }
 
   const command = body.command ?? resolvePiBinary();
-  const args = body.args ?? ['--no-pty'];
   const cols = Math.max(20, Math.min(500, Math.floor(body.cols ?? 80)));
   const rows = Math.max(5, Math.min(200, Math.floor(body.rows ?? 24)));
 
@@ -113,8 +170,8 @@ function resolvePiBinary(): string {
   }
 
   let cwd = projectDir;
+  const sd = stateDirForSlug(slug);
   if (body.laneId) {
-    const sd = stateDirForSlug(slug);
     if (sd) {
       const wt = join(sd, 'worktrees', body.laneId);
       if (existsSync(wt)) cwd = wt;
@@ -124,9 +181,23 @@ function resolvePiBinary(): string {
   // Default env additions: scope pi's session storage to the harness state
   // dir so per-harness sessions don't pollute ~/.omp/agent/.
   const defaultEnv: Record<string, string> = {};
-  const sd = stateDirForSlug(slug);
   if (sd) {
     defaultEnv.PI_CODING_AGENT_DIR = join(sd, 'pi-sessions');
+  }
+
+  // Build args. If caller didn't pass an explicit args array, start from
+  // the canonical defaults and append --append-system-prompt when we have
+  // a feature scope. Caller-provided args override entirely.
+  let args: readonly string[];
+  if (body.args) {
+    args = body.args;
+  } else {
+    const baseArgs: string[] = ['--no-pty'];
+    if (body.laneId && sd && command.includes('omp')) {
+      const promptPath = await buildFeaturePromptFile(slug, body.laneId, sd);
+      if (promptPath) baseArgs.push(`--append-system-prompt=${promptPath}`);
+    }
+    args = baseArgs;
   }
 
   try {
