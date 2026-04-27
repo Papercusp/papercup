@@ -21,7 +21,7 @@ This app powers `papercuspai.com`. It serves:
   bin/papercusp-init-db.sh
   ```
 
-  This creates the `restart_harness` + `restart_harness_test` databases, the
+  This creates the `papercusp` + `papercusp_test` databases, the
   `harness_app` / `harness_admin` roles, and applies the framework DDL plus
   the Papercup demo's extra DDL.
 
