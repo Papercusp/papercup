@@ -12,7 +12,9 @@ type ProjectEntry = {
 };
 
 async function fetchProject(slug: string): Promise<ProjectEntry | null> {
-  const base = process.env.NEXT_PUBLIC_WEB_URL ?? 'http://localhost:3001';
+  // Self-hit the local sidecar's /api/harness/projects (papercusp owns this
+  // route now post-migration; the old apps/web :3001 endpoint was deleted).
+  const base = process.env.PAPERCUSP_SELF_URL ?? 'http://localhost:3055';
   try {
     const res = await fetch(`${base}/api/harness/projects`, { cache: 'no-store' });
     if (!res.ok) return null;

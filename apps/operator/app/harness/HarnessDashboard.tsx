@@ -307,6 +307,10 @@ export default function HarnessDashboard() {
   const [lanes, setLanes] = useState<{ lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }>; max: number } | null>(null);
   const [pendingProposals, setPendingProposals] = useState(0);
   const [activePanel, setActivePanel] = useState<MainPanel>('dashboard');
+  // When the user clicks "open in pi" on a feature, scope the pi pane to
+  // that feature's worktree instead of the project root. Cleared when the
+  // pane is opened from the bare 'pi' tab.
+  const [piLaneId, setPiLaneId] = useState<string | null>(null);
   const [isCompact, setIsCompact] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const searchParams = useSearchParams();
@@ -1085,7 +1089,7 @@ export default function HarnessDashboard() {
           className={`h-tab${activePanel === 'pi' ? ' on' : ''}`}
           role="tab"
           aria-selected={activePanel === 'pi'}
-          onClick={() => activeSlug && setActivePanel('pi')}
+          onClick={() => { if (activeSlug) { setPiLaneId(null); setActivePanel('pi'); } }}
           disabled={!activeSlug}
           title={activeSlug ? 'pi (omp) — interactive coding agent' : 'Select a project to open pi'}
         >
@@ -1158,7 +1162,7 @@ export default function HarnessDashboard() {
         )}
         {activePanel === 'pi' && activeSlug && (
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-            <PiPanel slug={activeSlug} />
+            <PiPanel slug={activeSlug} laneId={piLaneId ?? undefined} />
           </div>
         )}
         {activePanel === 'insights' && status && (
@@ -1348,6 +1352,7 @@ export default function HarnessDashboard() {
           onEdit={() => { setEditingFeature(peekFeature); setPeekFeature(null); }}
           onInspectRun={loadAgent}
           onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
+          onOpenInPi={(id) => { setPiLaneId(id); setActivePanel('pi'); setPeekFeature(null); }}
         />
       )}
 

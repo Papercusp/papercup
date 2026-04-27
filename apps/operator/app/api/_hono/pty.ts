@@ -212,6 +212,11 @@ function resolvePiBinary(): string {
       closed = true;
       cleanup?.();
       clearInterval(ticker);
+      // PTY is tied to one UI pane. Once the SSE consumer disconnects
+      // (tab close, navigation away, network drop), the pty has no
+      // reader and should die immediately — relying on the 5-min idle
+      // reaper would orphan a pi process the user already abandoned.
+      killPty(id);
     });
 
     // Block until exit or abort.

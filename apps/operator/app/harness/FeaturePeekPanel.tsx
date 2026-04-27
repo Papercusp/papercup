@@ -34,10 +34,11 @@ interface Props {
   onEdit: (f: Feature) => void;
   onInspectRun: (runId: string) => void;
   onSetStatus: (id: string, status: HarnessStatus) => void;
+  onOpenInPi?: (id: string) => void;
 }
 
 export default function FeaturePeekPanel({
-  slug, feature, agents, issues, onClose, onReset, onEdit, onInspectRun, onSetStatus,
+  slug, feature, agents, issues, onClose, onReset, onEdit, onInspectRun, onSetStatus, onOpenInPi,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [prUrl, setPrUrl] = useState<string | null>(null);
@@ -163,6 +164,12 @@ export default function FeaturePeekPanel({
             </a>
           )}
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            {onOpenInPi && (
+              <IconButton
+                onClick={() => onOpenInPi(feature.id)}
+                title="Open this feature's worktree in pi (omp) — interactive coding agent"
+              >open in pi</IconButton>
+            )}
             <IconButton onClick={() => onEdit(feature)} title="Edit feature (E)">edit</IconButton>
             <IconButton onClick={() => onReset(feature.id)} title="Reset to todo, attempts=0 (R)">reset</IconButton>
             <IconButton onClick={onClose} variant="ghost" title="Close (Esc)">✕</IconButton>
