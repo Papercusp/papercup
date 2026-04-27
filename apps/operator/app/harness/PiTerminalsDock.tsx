@@ -115,8 +115,9 @@ function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: strin
 }
 
 const VALID_CHAT_ROLES = [
-  'worker', 'validator', 'scoper', 'reviewer', 'architect',
-  'orchestrator', 'documenter', 'summarizer', 'curator', 'debugger',
+  'worker', 'validator', 'scoper', 'plan-gate', 'architect',
+  'orchestrator', 'documenter', 'curator', 'debugger',
+  'project_manager',
 ] as const;
 
 /** Header action: "+" to start a new ad-hoc chat from the dock. */

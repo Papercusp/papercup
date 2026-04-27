@@ -66,9 +66,10 @@ interface FeatureLockState {
 }
 
 const VALID_ROLES = new Set([
-  'orchestrator', 'scoper', 'worker', 'validator', 'reviewer',
+  'orchestrator', 'scoper', 'worker', 'validator',
+  'plan-gate', 'reviewer', // 'reviewer' is the legacy alias for 'plan-gate'; both accepted during deprecation
   'documenter', 'summarizer', 'architect', 'curator', 'debugger',
-  'crosscheck', 'ui-qa',
+  'crosscheck', 'ui-qa', 'project_manager',
   'director', 'coordinator', 'auditor',
 ]);
 
