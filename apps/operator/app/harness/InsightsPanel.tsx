@@ -3,6 +3,7 @@
 import { useEffect, useMemo } from 'react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, HarnessStatus } from './theme';
 import { IconButton } from './primitives';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Feature {
   id: string;
@@ -170,38 +171,9 @@ export default function InsightsPanel({
               <SectionTitle>
                 Stuck features <span style={{ color: STATUS.blocked.text }}>· {stats.stuckCount}</span>
               </SectionTitle>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {features
-                  .filter((f) => f.attempts >= 3)
-                  .sort((a, b) => b.attempts - a.attempts)
-                  .map((f) => {
-                    const s = STATUS[f.status];
-                    return (
-                      <div key={f.id} style={{
-                        display: 'grid',
-                        gridTemplateColumns: '90px auto minmax(0, 1fr) 40px',
-                        alignItems: 'center', gap: 10,
-                        padding: '5px 8px',
-                        background: COLORS.bg,
-                        border: `1px solid ${COLORS.borderSubtle}`,
-                        borderRadius: RADIUS.sm,
-                        fontSize: SIZES.xs,
-                      }}>
-                        <span style={{ fontFamily: FONTS.mono, color: COLORS.textMuted }}>{f.id}</span>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: s.text }}>
-                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.solid }} />
-                          {s.label}
-                        </span>
-                        <span style={{ color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {f.title}
-                        </span>
-                        <span style={{ fontFamily: FONTS.mono, color: STATUS.blocked.text, textAlign: 'right' }}>
-                          ×{f.attempts}
-                        </span>
-                      </div>
-                    );
-                  })}
-              </div>
+              <StuckFeaturesGrid
+                features={features.filter((f) => f.attempts >= 3).sort((a, b) => b.attempts - a.attempts)}
+              />
             </div>
           )}
         </div>
@@ -256,5 +228,79 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
     }}>
       {children}
     </div>
+  );
+}
+
+function StuckFeaturesGrid({ features }: { features: Feature[] }) {
+  const columns: ColumnDef<Feature>[] = useMemo(
+    () => [
+      {
+        key: 'id',
+        header: 'ID',
+        width: 1,
+        sortKey: 'id',
+        render: ({ row }) => (
+          <span style={{ fontFamily: FONTS.mono, color: COLORS.textMuted, fontSize: SIZES.xs }}>
+            {row.id}
+          </span>
+        ),
+      },
+      {
+        key: 'status',
+        header: 'Status',
+        width: 1.2,
+        sortKey: 'status',
+        render: ({ row }) => {
+          const s = STATUS[row.status];
+          return (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: s.text, fontSize: SIZES.xs }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.solid }} />
+              {s.label}
+            </span>
+          );
+        },
+      },
+      {
+        key: 'title',
+        header: 'Title',
+        width: 4,
+        render: ({ row }) => (
+          <span
+            style={{
+              color: COLORS.text,
+              fontSize: SIZES.xs,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={row.title}
+          >
+            {row.title}
+          </span>
+        ),
+      },
+      {
+        key: 'attempts',
+        header: 'Try',
+        width: 0.5,
+        align: 'right',
+        sortKey: 'attempts',
+        defaultSortDir: 'desc',
+        render: ({ row }) => (
+          <span style={{ fontFamily: FONTS.mono, color: STATUS.blocked.text, fontSize: SIZES.xs }}>
+            ×{row.attempts}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
+  return (
+    <RichGrid<Feature>
+      rows={features}
+      columns={columns}
+      getRowId={(f) => f.id}
+      inline
+    />
   );
 }
