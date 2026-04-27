@@ -12,6 +12,7 @@ import { harness } from '../_hono/harness';
 import { plugins } from '../_hono/plugins';
 import { registerPty } from '../_hono/pty';
 import { registerOperatorNotes } from '../_hono/operator-notes';
+import { registerAgentChats } from '../_hono/agent-chats';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,6 +36,7 @@ app.use('/plugins/*', adminPreviewCors);
 
 registerPty(harness);
 registerOperatorNotes(harness);
+registerAgentChats(harness);
 app.route('/harness', harness);
 app.route('/plugins', plugins);
 
