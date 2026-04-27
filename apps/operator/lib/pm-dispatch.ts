@@ -177,17 +177,19 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
       ],
     });
 
-    // 6. Spawn claude. Pipe assembled prompt to stdin; capture stdout.
-    const stdout = await spawnClaude(claudeCmd, assembled.text);
-    if (!stdout.ok) {
-      return { ok: false, error: 'claude invocation failed', detail: stdout.detail };
+    // 6. Spawn claude. Pipe assembled prompt to stdin; capture stdout +
+    // usage + cost from the stream-json `result` event.
+    const spawned = await spawnClaude(claudeCmd, assembled.text);
+    if (!spawned.ok) {
+      return { ok: false, error: 'claude invocation failed', detail: spawned.detail };
     }
 
     // 7. Parse the three-section output.
-    const parsed = parsePmOutput(stdout.text);
+    const parsed = parsePmOutput(spawned.text);
     if ('error' in parsed) {
       return { ok: false, error: 'PM output unparseable', detail: parsed.error };
     }
+    const costCents = Math.round(spawned.cost_usd * 100);
 
     // 8. Persist. Always insert a revision row (even for NO_CHANGE — that's
     // an audit trail of "PM ran and decided nothing changed"). Only update
@@ -199,10 +201,13 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
     await db.transaction(async (tx) => {
       const insRow = (await tx.prepare(`
         INSERT INTO harness_shared.project_spec_revisions
-          (project_id, spec, summary, author_role, include_decisions)
-        VALUES (?, ?, ?, 'project_manager', ?::jsonb)
+          (project_id, spec, summary, author_role, include_decisions, tokens_in, tokens_out, cost_usd_cents)
+        VALUES (?, ?, ?, 'project_manager', ?::jsonb, ?, ?, ?)
         RETURNING id
-      `).get(projectId, newSpec, parsed.summary, JSON.stringify(parsed.decisions))) as { id: number | bigint };
+      `).get(
+        projectId, newSpec, parsed.summary, JSON.stringify(parsed.decisions),
+        spawned.tokens_in, spawned.tokens_out, costCents,
+      )) as { id: number | bigint };
       revisionId = typeof insRow.id === 'bigint' ? Number(insRow.id) : insRow.id;
 
       if (changed) {
@@ -231,39 +236,95 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
       summary: parsed.summary,
       decisions: parsed.decisions,
       consumed_event_ids: eventIds,
-      // Cost/token accounting is not yet wired — the spawnClaude wrapper
-      // returns plain text. A follow-up can parse stream-json events to
-      // get actual numbers; for now zeros.
-      tokens_in: 0,
-      tokens_out: 0,
-      cost_cents: 0,
+      tokens_in: spawned.tokens_in,
+      tokens_out: spawned.tokens_out,
+      cost_cents: costCents,
     };
   } finally {
     await releaseProjectLock(db, projectId);
   }
 }
 
-interface SpawnSuccess { ok: true; text: string }
+interface SpawnSuccess {
+  ok: true;
+  /** The model's final text output (parsed from the stream-json `result` event when present, falls back to raw stdout). */
+  text: string;
+  /** Aggregated usage from the stream's `result` event; zeros if unavailable. */
+  tokens_in: number;
+  tokens_out: number;
+  /** Total cost in USD (NOT cents) — caller multiplies by 100 + rounds to store as cents. */
+  cost_usd: number;
+}
 interface SpawnFailure { ok: false; detail: string }
 
+/**
+ * Spawn claude with stream-json output and parse the terminal `result`
+ * event for usage + cost. We use stream-json instead of plain text because
+ * (a) it carries token counts and cost on the result event so we can
+ * persist real numbers on `project_spec_revisions`, and (b) the result
+ * event's `result` field is the canonical final assistant text — robust
+ * against partial-message fragments at end-of-stream.
+ *
+ * Stream-json format reference (from claude code CLI):
+ *   {"type":"system","subtype":"init", ...}
+ *   {"type":"content_block_start"|"content_block_delta"|... , ...}
+ *   ...
+ *   {"type":"result","result":"<final text>","usage":{"input_tokens":N,"output_tokens":M},"total_cost_usd":0.0123}
+ */
 async function spawnClaude(claudeCmd: string, promptText: string): Promise<SpawnSuccess | SpawnFailure> {
   return await new Promise((resolve) => {
     const argv = claudeCmd.split(/\s+/).filter(Boolean);
     const exe = argv[0] ?? 'claude';
     const baseArgs = argv.slice(1);
-    // Plain text output — easier to parse the three-section format. We
-    // give up live streaming + cost accounting; caller can switch to
-    // stream-json if needed.
-    const args = [...baseArgs, '-p'];
+    const alreadyStreamJson = argv.some((a) => a.includes('stream-json'));
+    const args = alreadyStreamJson
+      ? [...baseArgs, '-p']
+      : [...baseArgs, '-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+
     const child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdoutBuf = '';
     let stderrBuf = '';
-    child.stdout.on('data', (b: Buffer) => { stdoutBuf += b.toString('utf8'); });
+    let lineBuf = '';
+    let resultText = '';
+    let tokensIn = 0;
+    let tokensOut = 0;
+    let costUsd = 0;
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      stdoutBuf += chunk.toString('utf8');
+      lineBuf += chunk.toString('utf8');
+      let nl: number;
+      // eslint-disable-next-line no-cond-assign
+      while ((nl = lineBuf.indexOf('\n')) >= 0) {
+        const line = lineBuf.slice(0, nl).trim();
+        lineBuf = lineBuf.slice(nl + 1);
+        if (!line || !line.startsWith('{')) continue;
+        try {
+          const ev = JSON.parse(line);
+          if (ev.type === 'result') {
+            if (typeof ev.result === 'string') resultText = ev.result;
+            if (ev.usage) {
+              tokensIn = ev.usage.input_tokens ?? tokensIn;
+              tokensOut = ev.usage.output_tokens ?? tokensOut;
+            }
+            if (typeof ev.total_cost_usd === 'number') costUsd = ev.total_cost_usd;
+          }
+        } catch { /* malformed line — skip */ }
+      }
+    });
     child.stderr.on('data', (b: Buffer) => { stderrBuf += b.toString('utf8'); });
     child.on('error', (err) => resolve({ ok: false, detail: `spawn error: ${err.message}` }));
     child.on('exit', (code) => {
       if (code === 0) {
-        resolve({ ok: true, text: stdoutBuf });
+        // If we never saw a `result` event, fall back to the raw stdout buffer.
+        // Parser will likely fail, but caller surfaces a clean error.
+        resolve({
+          ok: true,
+          text: resultText || stdoutBuf,
+          tokens_in: tokensIn,
+          tokens_out: tokensOut,
+          cost_usd: costUsd,
+        });
       } else {
         resolve({ ok: false, detail: `claude exit=${code} stderr=${stderrBuf.slice(-500)}` });
       }
