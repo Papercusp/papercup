@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import {
   AlertOctagon, AlertTriangle, Info, FileCode, User, Bot,
   ArrowUpRight, CheckCircle, CheckCircle2, XCircle, Loader2, Hammer, Inbox, Circle,
 } from 'lucide-react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from './types';
 import { IssueDetail } from './IssueDetail';
 
@@ -36,61 +37,6 @@ const SOURCE_ICON: Record<IssueSource, typeof User> = {
   worker: Bot,
   human: User,
 };
-
-function IssueRow({
-  issue,
-  onSelect,
-}: {
-  issue: Issue;
-  onSelect: () => void;
-}) {
-  const SevIcon = SEVERITY_ICON[issue.severity] ?? Circle;
-  const StatusIcon = STATUS_ICON[issue.status] ?? Circle;
-  const SrcIcon = SOURCE_ICON[issue.source] ?? Circle;
-  return (
-    <div
-      className={`h-issue h-issue-${issue.severity} h-issue-${issue.status}`}
-      onClick={onSelect}
-      role="button"
-      tabIndex={0}
-      aria-label={`Open ${issue.severity} ${issue.status} issue ${issue.id}: ${issue.title}`}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
-    >
-      <span className={`h-issue-sev ${SEVERITY_CLASS[issue.severity]}`}>
-        <SevIcon size={11} />
-        {issue.severity}
-      </span>
-      <div className="h-issue-body">
-        <div className="h-issue-title">{issue.title}</div>
-        <div className="h-issue-meta">
-          <span className="h-issue-source" title={`source: ${issue.source}`}><SrcIcon size={10} /> {issue.source}</span>
-          <span className="h-issue-id">{issue.id}</span>
-          {issue.foundDuring && <span className="h-issue-feat">found in {issue.foundDuring}</span>}
-          {issue.codePointer && (
-            <span className="h-issue-code"><FileCode size={10} /> {issue.codePointer}</span>
-          )}
-        </div>
-      </div>
-      <div className="h-issue-right">
-        {issue.linkedFeatureId && (
-          <span className="h-issue-linked" title={`Fix in progress: ${issue.linkedFeatureId}`}>
-            <ArrowUpRight size={10} /> {issue.linkedFeatureId}
-          </span>
-        )}
-        <span className={`h-issue-status st-${issue.status}`}>
-          <StatusIcon size={10} className={issue.status === 'fixing' ? 'h-spin' : ''} />
-          {issue.status}
-        </span>
-        <span className="h-issue-open" aria-hidden="true">open</span>
-      </div>
-    </div>
-  );
-}
 
 export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: number) => void }) {
   const [issues, setIssues] = useState<Issue[] | null>(null);
@@ -153,6 +99,94 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
 
   const refresh = () => setReloadTick((t) => t + 1);
 
+  const columns: ColumnDef<Issue>[] = useMemo(
+    () => [
+      {
+        key: 'sev',
+        header: 'sev',
+        width: 0.7,
+        render: ({ row }) => {
+          const SevIcon = SEVERITY_ICON[row.severity] ?? Circle;
+          return (
+            <span className={`h-issue-sev ${SEVERITY_CLASS[row.severity]}`}>
+              <SevIcon size={11} />
+              {row.severity}
+            </span>
+          );
+        },
+      },
+      {
+        key: 'body',
+        header: 'issue',
+        width: 4,
+        sortKey: 'title',
+        render: ({ row }) => {
+          const SrcIcon = SOURCE_ICON[row.source] ?? Circle;
+          return (
+            <div className="h-issue-body" style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0, width: '100%' }}>
+              <div className="h-issue-title" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {row.title}
+              </div>
+              <div
+                className="h-issue-meta"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 10.5, color: 'var(--fg-dim)' }}
+              >
+                <span className="h-issue-source" title={`source: ${row.source}`}>
+                  <SrcIcon size={10} /> {row.source}
+                </span>
+                <span className="h-issue-id">{row.id}</span>
+                {row.foundDuring && <span className="h-issue-feat">found in {row.foundDuring}</span>}
+                {row.codePointer && (
+                  <span className="h-issue-code">
+                    <FileCode size={10} /> {row.codePointer}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        },
+      },
+      {
+        key: 'right',
+        header: '',
+        width: 1.5,
+        align: 'right',
+        render: ({ row }) => {
+          const StatusIcon = STATUS_ICON[row.status] ?? Circle;
+          return (
+            <div
+              className="h-issue-right"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}
+            >
+              {row.linkedFeatureId && (
+                <span className="h-issue-linked" title={`Fix in progress: ${row.linkedFeatureId}`}>
+                  <ArrowUpRight size={10} /> {row.linkedFeatureId}
+                </span>
+              )}
+              <span className={`h-issue-status st-${row.status}`}>
+                <StatusIcon size={10} className={row.status === 'fixing' ? 'h-spin' : ''} />
+                {row.status}
+              </span>
+              <span className="h-issue-open" aria-hidden="true">open</span>
+            </div>
+          );
+        },
+      },
+    ],
+    [],
+  );
+
+  // Preserve the legacy h-issue / h-issue-{severity} / h-issue-{status} row classes
+  // so existing CSS (severity-tinted left border, status fade, hover bg) keeps applying.
+  const richRowProps = useMemo(
+    () => (ctx: { row: Issue }) => ({
+      className: `h-issue h-issue-${ctx.row.severity} h-issue-${ctx.row.status}`,
+      tabIndex: 0,
+      'aria-label': `Open ${ctx.row.severity} ${ctx.row.status} issue ${ctx.row.id}: ${ctx.row.title}`,
+    }),
+    [],
+  );
+
   if (error) {
     return <div className="h-empty"><span style={{ color: 'var(--bad)' }}>{error}</span></div>;
   }
@@ -207,11 +241,14 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
           <span>no {filter === 'all' ? '' : filter} issues</span>
         </div>
       ) : (
-        <div className="h-issues">
-          {filtered.map((i) => (
-            <IssueRow key={i.id} issue={i} onSelect={() => setSelectedId(i.id)} />
-          ))}
-        </div>
+        <RichGrid<Issue>
+          rows={filtered}
+          columns={columns}
+          getRowId={(i) => i.id}
+          onRowClick={(i) => setSelectedId(i.id)}
+          rowProps={richRowProps}
+          inline
+        />
       )}
       {selected && (
         <IssueDetail
