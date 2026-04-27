@@ -20,7 +20,7 @@ const FALLBACK_CATALOG = [
     homepage: 'https://papercupai.com',
   },
   {
-    name: 'coding-project',
+    name: 'papercup-coding',
     version: '0.1.0',
     description: 'Solo coding harness: scoper plans features, workers implement, validators verify, reviewers gate proposals. Drop in a SPEC.md and go.',
     author: 'Papercusp Team',
