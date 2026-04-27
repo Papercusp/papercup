@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, BOARD_COLUMN_ORDER, HarnessStatus, getStatusMeta } from './theme';
 import { StatusPill, IdPill, IconButton, KbdHint } from './primitives';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Feature {
   id: string;
@@ -345,136 +346,174 @@ function ListView({
   onToggleSelect: (id: string) => void;
   compact?: boolean;
 }) {
-  return (
-    <div>
-      {features.map((f, i) => {
-        const isFocus = i === focusIdx;
-        const isActive = f.id === activeId;
-        const isSel = selected.has(f.id);
-        return (
-          <div
-            key={f.id}
-            data-feat-idx={i}
-            className={`h-feature-row status-${f.status}${compact ? ' compact' : ''}${isFocus ? ' is-focused' : ''}${isActive ? ' is-active' : ''}${isSel ? ' is-selected' : ''}`}
-            role="button"
-            tabIndex={0}
-            aria-selected={isActive || isFocus}
-            aria-label={`${f.id}: ${f.summary || f.title} (${getStatusMeta(f.status).label})`}
-            onClick={() => onSelect(f)}
-            onKeyDown={(e) => {
-              if ((e.target as HTMLElement).tagName === 'INPUT') return;
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                onSelect(f);
-              }
-            }}
-            style={{
-              display: 'grid',
-              gridTemplateColumns: compact ? 'auto minmax(0, 1fr) auto' : 'auto auto minmax(0, 1fr) auto auto',
-              alignItems: 'center',
-              gap: compact ? 8 : 10,
-              padding: compact ? '8px 10px' : '6px 10px',
-              borderLeft: `2px solid ${isFocus ? COLORS.accent : isActive ? COLORS.accent : 'transparent'}`,
-              background: isSel ? 'rgba(94,106,210,0.10)' : (isActive ? COLORS.surfaceHover : 'transparent'),
-              borderBottom: `1px solid ${COLORS.borderSubtle}`,
-              cursor: 'pointer',
-              minHeight: compact ? 52 : 34,
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={isSel}
-              onClick={(e) => e.stopPropagation()}
-              onChange={() => onToggleSelect(f.id)}
-              style={{ accentColor: COLORS.accent, margin: 0, cursor: 'pointer' }}
-            />
-            {!compact && <StatusPill status={f.status} showLabel={false} size="xs" />}
-            <div style={{
-              display: 'flex',
-              alignItems: compact ? 'stretch' : 'center',
-              flexDirection: compact ? 'column' : 'row',
-              gap: compact ? 4 : 10,
-              minWidth: 0,
-            }}>
-              {compact ? (
-                <>
-                  <span
-                    title={f.title}
-                    style={{
-                      color: COLORS.text,
-                      fontSize: SIZES.sm,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >{f.summary || f.title}</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, color: COLORS.textDim, fontSize: SIZES.xs }}>
-                    <StatusPill status={f.status} showLabel={false} size="xs" />
-                    <span style={{ fontFamily: FONTS.mono, color: COLORS.textMuted, flexShrink: 0 }}>{f.id}</span>
-                    {f.claims && f.claims.length > 0 && <span style={{ flexShrink: 0 }}>{f.claims.length} claims</span>}
-                    {f.attempts > 0 && <span style={{ marginLeft: 'auto', fontFamily: FONTS.mono, color: f.attempts >= 3 ? STATUS.blocked.text : COLORS.textDim }}>×{f.attempts}</span>}
-                  </span>
-                </>
-              ) : (
-                <>
+  const columns: ColumnDef<Feature>[] = useMemo(() => {
+    const cols: ColumnDef<Feature>[] = [
+      {
+        key: 'select',
+        header: '',
+        width: 0.18,
+        align: 'center',
+        render: ({ row }) => (
+          <input
+            type="checkbox"
+            checked={selected.has(row.id)}
+            onClick={(e) => e.stopPropagation()}
+            onChange={() => onToggleSelect(row.id)}
+            style={{ accentColor: COLORS.accent, margin: 0, cursor: 'pointer' }}
+            aria-label={`Select ${row.id}`}
+          />
+        ),
+      },
+    ];
+    if (!compact) {
+      cols.push({
+        key: 'statusDot',
+        header: '',
+        width: 0.18,
+        align: 'center',
+        render: ({ row }) => <StatusPill status={row.status} showLabel={false} size="xs" />,
+      });
+      cols.push({
+        key: 'id',
+        header: 'ID',
+        width: 0.7,
+        render: ({ row }) => (
+          <span style={{
+            fontFamily: FONTS.mono,
+            fontSize: SIZES.xs,
+            color: COLORS.textMuted,
+            letterSpacing: '0.02em',
+          }}>{row.id}</span>
+        ),
+      });
+    }
+    cols.push({
+      key: 'title',
+      header: compact ? 'Feature' : 'Title',
+      width: compact ? 4 : 3.5,
+      render: ({ row }) => {
+        const claimsCount = row.claims?.length ?? 0;
+        if (compact) {
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0, width: '100%' }}>
+              <span title={row.title} style={{
+                color: COLORS.text, fontSize: SIZES.sm,
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{row.summary || row.title}</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.textDim, fontSize: SIZES.xs }}>
+                <StatusPill status={row.status} showLabel={false} size="xs" />
+                <span style={{ fontFamily: FONTS.mono, color: COLORS.textMuted }}>{row.id}</span>
+                {claimsCount > 0 && <span>{claimsCount} claims</span>}
+                {row.attempts > 0 && (
                   <span style={{
+                    marginLeft: 'auto',
                     fontFamily: FONTS.mono,
-                    fontSize: SIZES.xs,
-                    color: COLORS.textMuted,
-                    letterSpacing: '0.02em',
-                    flexShrink: 0,
-                  }}>{f.id}</span>
-                  <span
-                    title={f.title}
-                    style={{
-                      color: COLORS.text,
-                      fontSize: SIZES.sm,
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >{f.summary || f.title}</span>
-                  {f.claims && f.claims.length > 0 && (
-                    <span style={{
-                      fontSize: '0.65rem',
-                      color: COLORS.textDim,
-                      background: COLORS.bg,
-                      padding: '1px 6px',
-                      borderRadius: RADIUS.sm,
-                      border: `1px solid ${COLORS.borderSubtle}`,
-                      flexShrink: 0,
-                    }}>
-                      {f.claims.length} claims
-                    </span>
-                  )}
-                </>
-              )}
+                    color: row.attempts >= 3 ? STATUS.blocked.text : COLORS.textDim,
+                  }}>×{row.attempts}</span>
+                )}
+              </span>
             </div>
-            {!compact && (
+          );
+        }
+        return (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, width: '100%' }}>
+            <span title={row.title} style={{
+              color: COLORS.text, fontSize: SIZES.sm,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>{row.summary || row.title}</span>
+            {claimsCount > 0 && (
               <span style={{
-                fontFamily: FONTS.mono,
-                fontSize: SIZES.xs,
-                color: f.attempts >= 3 ? STATUS.blocked.text : COLORS.textDim,
-                textAlign: 'right',
-                minWidth: 20,
-              }}>{f.attempts}</span>
+                fontSize: '0.65rem', color: COLORS.textDim, background: COLORS.bg,
+                padding: '1px 6px', borderRadius: RADIUS.sm,
+                border: `1px solid ${COLORS.borderSubtle}`, flexShrink: 0,
+              }}>{claimsCount} claims</span>
             )}
-            <span style={{
-              fontSize: SIZES.xs,
-              color: getStatusMeta(f.status).text,
-              whiteSpace: 'nowrap',
-              minWidth: compact ? 62 : 80,
-              textAlign: 'right',
-              fontWeight: compact ? 600 : 400,
-            }}>{getStatusMeta(f.status).label}</span>
-          </div>
+          </span>
         );
-      })}
-    </div>
+      },
+    });
+    if (!compact) {
+      cols.push({
+        key: 'attempts',
+        header: 'Try',
+        width: 0.4,
+        align: 'right',
+        render: ({ row }) => (
+          <span style={{
+            fontFamily: FONTS.mono,
+            fontSize: SIZES.xs,
+            color: row.attempts >= 3 ? STATUS.blocked.text : COLORS.textDim,
+          }}>{row.attempts}</span>
+        ),
+      });
+    }
+    cols.push({
+      key: 'status',
+      header: 'Status',
+      width: compact ? 0.7 : 0.8,
+      align: 'right',
+      render: ({ row }) => (
+        <span style={{
+          fontSize: SIZES.xs,
+          color: getStatusMeta(row.status).text,
+          whiteSpace: 'nowrap',
+          fontWeight: compact ? 600 : 400,
+        }}>{getStatusMeta(row.status).label}</span>
+      ),
+    });
+    return cols;
+  }, [compact, selected, onToggleSelect]);
+
+  // Map per-row aria/data attributes + per-row background to mirror the
+  // pre-RichGrid behaviour (focus ring on keyboard focus, active row tint,
+  // selected row bg).
+  const richRowProps = useMemo(() => {
+    return (ctx: { row: Feature; rowIndex: number }) => {
+      const f = ctx.row;
+      const i = ctx.rowIndex;
+      const isFocus = i === focusIdx;
+      const isActive = f.id === activeId;
+      const isSel = selected.has(f.id);
+      const cls =
+        `h-feature-row status-${f.status}` +
+        (compact ? ' compact' : '') +
+        (isFocus ? ' is-focused' : '') +
+        (isActive ? ' is-active' : '') +
+        (isSel ? ' is-selected' : '');
+      return {
+        className: cls,
+        tabIndex: 0,
+        'aria-label': `${f.id}: ${f.summary || f.title} (${getStatusMeta(f.status).label})`,
+        'data-feat-idx': i,
+      };
+    };
+  }, [focusIdx, activeId, selected, compact]);
+
+  const richGetRowBg = useMemo(
+    () => (row: Feature, _idx: number, _isSelected: boolean) => {
+      const isActive = row.id === activeId;
+      const isSel = selected.has(row.id);
+      if (isSel) return 'rgba(94,106,210,0.10)';
+      if (isActive) return COLORS.surfaceHover;
+      return 'transparent';
+    },
+    [activeId, selected],
+  );
+
+  return (
+    <RichGrid<Feature>
+      rows={features}
+      columns={columns}
+      getRowId={(f) => f.id}
+      onRowClick={(f) => onSelect(f)}
+      rowProps={richRowProps}
+      getRowBg={richGetRowBg}
+      inline
+    />
   );
 }
 
-// ─── Board view ────────────────────────────────────────────────────
+// ─── Board view ──────────────────────────────────────────────────
 
 function BoardView({
   features, activeId, selected, onSelect, onToggleSelect,
