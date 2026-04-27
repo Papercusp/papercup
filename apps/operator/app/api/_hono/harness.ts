@@ -1736,28 +1736,34 @@ harness.get('/:slug/features/:id/diff', async (c) => {
 
 // ─── product proposals ─────────────────────────────────────────────────
 
-harness.get('/:slug/proposals', (c) => {
-  const project = resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
+interface ProposalListEntry {
+  id: string;
+  sizeBytes: number;
+  ts: number;
+  status: 'pending' | 'applied' | 'rejected';
+  reviewVerdict: 'accept' | 'reject' | 'defer' | null;
+  reviewedAt: number | null;
+  reviewSummary: string | null;
+}
+
+function scanProposalsDir(project: ProjectEntry): ProposalListEntry[] {
   const dir = join(harnessDir(project), 'proposals');
-  if (!existsSync(dir)) return c.json({ proposals: [], replanOnAccept: true });
+  if (!existsSync(dir)) return [];
   const allFiles = readdirSync(dir);
   const reviewSet = new Set(allFiles.filter((f) => f.endsWith('.review.md')));
-  const items = allFiles
-    // Exclude reviewer verdict files — they're surfaced as fields on their parent proposal.
+  return allFiles
     .filter((f) => f.endsWith('.md') && !f.endsWith('.review.md'))
-    .map((f) => {
+    .map((f): ProposalListEntry => {
       const full = join(dir, f);
       let size = 0, ts = 0;
-      try { const s = statSync(full); size = s.size; ts = s.mtimeMs; } catch {}
+      try { const s = statSync(full); size = s.size; ts = Math.floor(s.mtimeMs); } catch {}
       const body = safeRead(full) ?? '';
       const applied = /^applied:\s*true/m.test(body);
       const rejected = /^rejected:\s*true/m.test(body);
-      const status = applied ? 'applied' : rejected ? 'rejected' : 'pending';
+      const status: ProposalListEntry['status'] = applied ? 'applied' : rejected ? 'rejected' : 'pending';
 
-      // Sniff sibling reviewer verdict, if any
       const reviewName = `${f.replace(/\.md$/, '')}.review.md`;
-      let reviewVerdict: 'accept' | 'reject' | 'defer' | null = null;
+      let reviewVerdict: ProposalListEntry['reviewVerdict'] = null;
       let reviewedAt: number | null = null;
       let reviewSummary: string | null = null;
       if (reviewSet.has(reviewName)) {
@@ -1768,8 +1774,7 @@ harness.get('/:slug/proposals', (c) => {
           const v = verdictMatch[1].toLowerCase();
           if (v === 'accept' || v === 'reject' || v === 'defer') reviewVerdict = v;
         }
-        try { reviewedAt = statSync(reviewPath).mtimeMs; } catch {}
-        // First non-empty, non-VERDICT line — short reasoning preview
+        try { reviewedAt = Math.floor(statSync(reviewPath).mtimeMs); } catch {}
         const summaryLine = reviewBody
           .split(/\r?\n/)
           .map((l) => l.trim())
@@ -1779,6 +1784,66 @@ harness.get('/:slug/proposals', (c) => {
       return { id: f, sizeBytes: size, ts, status, reviewVerdict, reviewedAt, reviewSummary };
     })
     .sort((a, b) => b.ts - a.ts);
+}
+
+/**
+ * Mirror the filesystem-derived proposal metadata to
+ * `harness_<slug>.harness_proposals` so Zero subscribers (ProposalsPanel)
+ * see live updates instead of polling. Filesystem stays authoritative for
+ * the body; PG only holds queryable metadata. Fire-and-forget; failures
+ * don't break the GET response.
+ */
+async function syncProposalsToPg(project: ProjectEntry, items: ProposalListEntry[]): Promise<void> {
+  const { sql } = getHarnessPg(project.slug);
+  const now = Date.now();
+  const ids = items.map((p) => p.id);
+  if (items.length > 0) {
+    const rows = items.map((p) => ({
+      harness_slug: project.slug,
+      proposal_id: p.id,
+      size_bytes: p.sizeBytes,
+      status: p.status,
+      review_verdict: p.reviewVerdict ?? null,
+      review_summary: p.reviewSummary ?? null,
+      reviewed_at: p.reviewedAt ?? null,
+      ts: p.ts,
+      created_ts: now,
+      updated_ts: now,
+    }));
+    await sql`
+      INSERT INTO harness_proposals ${sql(rows, 'harness_slug', 'proposal_id', 'size_bytes', 'status', 'review_verdict', 'review_summary', 'reviewed_at', 'ts', 'created_ts', 'updated_ts')}
+      ON CONFLICT (harness_slug, proposal_id) DO UPDATE SET
+        size_bytes      = EXCLUDED.size_bytes,
+        status          = EXCLUDED.status,
+        review_verdict  = EXCLUDED.review_verdict,
+        review_summary  = EXCLUDED.review_summary,
+        reviewed_at     = EXCLUDED.reviewed_at,
+        ts              = EXCLUDED.ts,
+        updated_ts      = EXCLUDED.updated_ts
+    `;
+    await sql`
+      DELETE FROM harness_proposals
+      WHERE harness_slug = ${project.slug}
+        AND proposal_id <> ALL(${ids})
+    `;
+  } else {
+    await sql`
+      DELETE FROM harness_proposals
+      WHERE harness_slug = ${project.slug}
+    `;
+  }
+}
+
+harness.get('/:slug/proposals', (c) => {
+  const project = resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const dir = join(harnessDir(project), 'proposals');
+  if (!existsSync(dir)) return c.json({ proposals: [], replanOnAccept: true });
+  const items = scanProposalsDir(project);
+  // Fire-and-forget — don't block the GET response on PG.
+  syncProposalsToPg(project, items).catch((err) => {
+    console.warn(`[proposals] PG sync failed for ${project.slug}:`, err?.message ?? err);
+  });
 
   // Tell the UI whether the harness is configured to auto-replan on accept,
   // so it can suppress the "run /replan now" prompt that would otherwise
@@ -1836,6 +1901,10 @@ harness.post('/:slug/proposals/:id/accept', async (c) => {
   await appendFile(specPath, append, 'utf8');
   // Stamp the proposal
   await appendFile(proposalPath, `\n---\napplied: true\nappliedAt: ${new Date().toISOString()}\n`, 'utf8');
+  // Refresh PG so Zero subscribers see the new status without waiting for a list poll.
+  syncProposalsToPg(project, scanProposalsDir(project)).catch((err) => {
+    console.warn(`[proposals] PG sync after accept failed for ${project.slug}:`, err?.message ?? err);
+  });
 
   // Optional auto-replan: if config.reviewer.replanOnAccept (canonical) or the
   // legacy config.product.replanOnAccept is true, fire-and-forget. The API does
@@ -1880,6 +1949,9 @@ harness.post('/:slug/proposals/:id/reject', async (c) => {
   const proposalPath = join(harnessDir(project), 'proposals', id);
   if (!existsSync(proposalPath)) return c.json({ error: 'not found' }, 404);
   await appendFile(proposalPath, `\n---\nrejected: true\nrejectedAt: ${new Date().toISOString()}\n`, 'utf8');
+  syncProposalsToPg(project, scanProposalsDir(project)).catch((err) => {
+    console.warn(`[proposals] PG sync after reject failed for ${project.slug}:`, err?.message ?? err);
+  });
   return c.json({ ok: true });
 });
 
@@ -2978,12 +3050,17 @@ async function syncIssuesToPg(project: ProjectEntry, file: IssuesFile): Promise<
         notes             = EXCLUDED.notes,
         updated_ts        = EXCLUDED.updated_ts
     `;
+    await sql`
+      DELETE FROM harness_issues
+      WHERE harness_slug = ${project.slug}
+        AND issue_id <> ALL(${ids})
+    `;
+  } else {
+    await sql`
+      DELETE FROM harness_issues
+      WHERE harness_slug = ${project.slug}
+    `;
   }
-  await sql`
-    DELETE FROM harness_issues
-    WHERE harness_slug = ${project.slug}
-      AND issue_id <> ALL (${sql.array(ids, 'text')})
-  `;
 }
 
 // Call the parser from the harness UI code to seed issues when json is absent.

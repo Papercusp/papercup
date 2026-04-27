@@ -1,7 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as Tabs from '@radix-ui/react-tabs';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { useQuery } from '@rocicorp/zero/react';
+import { queries, slugToProposalsKey, type ProposalRow } from '@restart/zero-harness';
+import { Select } from './Select';
+import { Checkbox } from './Checkbox';
 
 interface Proposal {
   id: string;
@@ -11,6 +16,18 @@ interface Proposal {
   reviewVerdict?: 'accept' | 'reject' | 'defer' | null;
   reviewedAt?: number | null;
   reviewSummary?: string | null;
+}
+
+function rowToProposal(r: ProposalRow): Proposal {
+  return {
+    id: r.proposalId,
+    sizeBytes: Number(r.sizeBytes) || 0,
+    ts: Number(r.ts) || 0,
+    status: r.status as Proposal['status'],
+    reviewVerdict: (r.reviewVerdict ?? null) as Proposal['reviewVerdict'],
+    reviewedAt: r.reviewedAt ?? null,
+    reviewSummary: r.reviewSummary ?? null,
+  };
 }
 
 interface Props {
@@ -163,18 +180,29 @@ export default function ProposalsPanel({ slug }: Props) {
   const [shortlistOnly, setShortlistOnly] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
-  const loadList = useCallback(async () => {
+  // Proposals stream live from Zero (`harness_<slug>.harness_proposals` —
+  // metadata only; body is loaded on demand via /proposals/:id which still
+  // reads the markdown file). The legacy /proposals GET still exists and
+  // dual-writes filesystem→PG so freshly-created proposals show up within
+  // the next list call's PG sync.
+  const proposalsQuery = useMemo(() => {
+    if (!slug) return null;
+    const ns = (queries as Record<string, { all?: () => unknown }>)[slugToProposalsKey(slug)];
+    return ns?.all?.() ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
+  const [zeroRows, zeroInfo] = useQuery(
+    (proposalsQuery ?? (queries.proposalsSheets.all() as unknown)) as never,
+  );
+
+  // Trigger periodic dual-write by hitting the list endpoint — needed so
+  // newly-created proposals on disk get mirrored into PG. The actual
+  // data display reads from Zero, so this is just a sync ping that also
+  // refreshes the replanOnAccept flag.
+  const triggerSync = useCallback(async () => {
     try {
       const d = await fetch(`/api/harness/${slug}/proposals`).then((r) => r.json());
-      const proposals = (d.proposals ?? []) as Proposal[];
-      setItems(proposals);
       setReplanOnAccept(d.replanOnAccept !== false);
-      setSelected((prev) => {
-        if (prev && proposals.some((p) => p.id === prev)) return prev;
-        return proposals[0]?.id ?? null;
-      });
-      setChecked((prev) => new Set([...prev].filter((id) => proposals.some((p) => p.id === id && p.status === 'pending'))));
-      setShortlisted((prev) => new Set([...prev].filter((id) => proposals.some((p) => p.id === id))));
     } catch (e) {
       setToast(`load: ${e}`);
     }
@@ -189,11 +217,29 @@ export default function ProposalsPanel({ slug }: Props) {
   }, [slug]);
 
   useEffect(() => {
-    loadList();
+    if (!proposalsQuery) return;
+    const info = zeroInfo as { type?: string } | undefined;
+    if (info?.type !== 'complete') return;
+    if (!Array.isArray(zeroRows)) return;
+    const adapted = (zeroRows as ProposalRow[]).map(rowToProposal);
+    setItems(adapted);
+    setSelected((prev) => {
+      if (prev && adapted.some((p) => p.id === prev)) return prev;
+      return adapted[0]?.id ?? null;
+    });
+    setChecked((prev) => new Set([...prev].filter((id) => adapted.some((p) => p.id === id && p.status === 'pending'))));
+    setShortlisted((prev) => new Set([...prev].filter((id) => adapted.some((p) => p.id === id))));
+  }, [proposalsQuery, zeroRows, zeroInfo]);
+
+  useEffect(() => {
+    triggerSync();
     loadGoal();
-    const t = setInterval(loadList, 10000);
+    // Periodic ping so the server re-scans the proposals dir + upserts to PG.
+    // The UI itself doesn't depend on this for data — Zero pushes updates
+    // through the WS — but the ping is what causes the FS scan to run.
+    const t = setInterval(triggerSync, 10000);
     return () => clearInterval(t);
-  }, [loadList, loadGoal]);
+  }, [triggerSync, loadGoal]);
 
   useEffect(() => {
     setShortlisted(readShortlist(slug));
@@ -253,14 +299,14 @@ export default function ProposalsPanel({ slug }: Props) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error ?? `${r.status}`);
       setToast('product review complete');
-      await loadList();
+      await triggerSync();
     } catch (e) {
       setToast(`product-review failed: ${e}`);
     } finally {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, goal, loadList]);
+  }, [slug, goal, triggerSync]);
 
   const accept = useCallback(async (id: string) => {
     if (!confirm(`Accept proposal ${id}? Its acceptance bullets will be appended to SPEC.md.`)) return;
@@ -271,7 +317,7 @@ export default function ProposalsPanel({ slug }: Props) {
       if (!r.ok) throw new Error(d.error ?? `${r.status}`);
       setToast(`accepted: +${d.bulletsAdded} bullet(s) appended to SPEC.md`);
       setPendingReplanPrompt((prev) => prev + (d.bulletsAdded ?? 0));
-      await loadList();
+      await triggerSync();
       if (selected === id) {
         fetch(`/api/harness/${slug}/proposals/${id}`).then((r) => r.json()).then((d) => setContent(d.content ?? '')).catch(() => {});
       }
@@ -281,7 +327,7 @@ export default function ProposalsPanel({ slug }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, loadList, selected]);
+  }, [slug, triggerSync, selected]);
 
   const reject = useCallback(async (id: string) => {
     setBusy(true);
@@ -289,7 +335,7 @@ export default function ProposalsPanel({ slug }: Props) {
       const r = await fetch(`/api/harness/${slug}/proposals/${id}/reject`, { method: 'POST' });
       if (!r.ok) throw new Error(await r.text());
       setToast('rejected');
-      await loadList();
+      await triggerSync();
       if (selected === id) {
         fetch(`/api/harness/${slug}/proposals/${id}`).then((r) => r.json()).then((d) => setContent(d.content ?? '')).catch(() => {});
       }
@@ -299,7 +345,7 @@ export default function ProposalsPanel({ slug }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [slug, loadList, selected]);
+  }, [slug, triggerSync, selected]);
 
   const counts = useMemo(() => {
     const next = { all: items.length, pending: 0, applied: 0, rejected: 0, bytes: 0 };
@@ -349,13 +395,13 @@ export default function ProposalsPanel({ slug }: Props) {
           const isChecked = checked.has(row.id);
           if (!isPending) return <span className="h-proposal-item-spacer" aria-hidden="true" />;
           return (
-            <input
-              type="checkbox"
-              checked={isChecked}
-              onChange={(e) => { e.stopPropagation(); toggleCheck(row.id); }}
-              onClick={(e) => e.stopPropagation()}
-              aria-label={`Select proposal ${row.id}`}
-            />
+            <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+              <Checkbox
+                checked={isChecked}
+                onChange={() => toggleCheck(row.id)}
+                ariaLabel={`Select proposal ${row.id}`}
+              />
+            </span>
           );
         },
       },
@@ -454,12 +500,12 @@ export default function ProposalsPanel({ slug }: Props) {
       setChecked(new Set());
       setPendingReplanPrompt((prev) => prev + totalBullets);
       setToast(`bulk accept: +${totalBullets} bullets${errors ? `, ${errors} errors` : ''}`);
-      await loadList();
+      await triggerSync();
     } finally {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, checkedPending, loadList]);
+  }, [slug, checkedPending, triggerSync]);
 
   const bulkReject = useCallback(async () => {
     if (checkedPending.length === 0) return;
@@ -471,12 +517,12 @@ export default function ProposalsPanel({ slug }: Props) {
       }
       setChecked(new Set());
       setToast(`rejected ${checkedPending.length} proposal(s)`);
-      await loadList();
+      await triggerSync();
     } finally {
       setBusy(false);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [slug, checkedPending, loadList]);
+  }, [slug, checkedPending, triggerSync]);
 
   const replanNow = useCallback(async () => {
     if (!confirm('Run /replan now? Existing features.json + validation-contract.md are backed up and replaced.')) return;
@@ -702,28 +748,28 @@ export default function ProposalsPanel({ slug }: Props) {
               />
             </div>
             <div className="h-proposal-toolbar-controls" aria-label="Proposal queue tools">
-              <div className="h-proposal-filter-row" role="tablist" aria-label="Filter proposals by status">
-                {(['all', ...STATUS_ORDER] as StatusFilter[]).map((status) => (
-                  <button
-                    key={status}
-                    type="button"
-                    role="tab"
-                    aria-selected={statusFilter === status}
-                    onClick={() => setStatusFilter(status)}
-                    className={`h-proposal-filter ${statusFilter === status ? 'on' : ''} ${status !== 'all' ? `status-${status}` : ''}`}
-                  >
-                    <span>{status === 'all' ? 'All' : STATUS_LABEL[status]}</span>
-                    <b>{statusCount(status)}</b>
-                  </button>
-                ))}
-              </div>
+              <Tabs.Root value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)} asChild>
+                <Tabs.List className="h-proposal-filter-row" aria-label="Filter proposals by status">
+                  {(['all', ...STATUS_ORDER] as StatusFilter[]).map((status) => (
+                    <Tabs.Trigger
+                      key={status}
+                      value={status}
+                      className={`h-proposal-filter ${status !== 'all' ? `status-${status}` : ''}`}
+                    >
+                      <span>{status === 'all' ? 'All' : STATUS_LABEL[status]}</span>
+                      <b>{statusCount(status)}</b>
+                    </Tabs.Trigger>
+                  ))}
+                </Tabs.List>
+              </Tabs.Root>
               <label className="h-proposal-sort">
                 <span>sort</span>
-                <select value={sortMode} onChange={(e) => setSortMode(e.target.value as SortMode)} aria-label="Sort proposals">
-                  {(Object.keys(SORT_LABEL) as SortMode[]).map((mode) => (
-                    <option key={mode} value={mode}>{SORT_LABEL[mode]}</option>
-                  ))}
-                </select>
+                <Select
+                  value={sortMode}
+                  onChange={(v) => setSortMode(v as SortMode)}
+                  ariaLabel="Sort proposals"
+                  options={(Object.keys(SORT_LABEL) as SortMode[]).map((mode) => ({ value: mode, label: SORT_LABEL[mode] }))}
+                />
               </label>
               <button type="button" onClick={focusNextPending} disabled={!nextPending} className="h-proposal-mini ghost">next</button>
               <button
@@ -758,10 +804,11 @@ export default function ProposalsPanel({ slug }: Props) {
 
           {visiblePendingIds.length > 0 && (
             <label className="h-proposal-select-all">
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={checkedVisiblePending.length === visiblePendingIds.length && visiblePendingIds.length > 0}
-                onChange={toggleVisiblePending}
+                indeterminate={checkedVisiblePending.length > 0 && checkedVisiblePending.length < visiblePendingIds.length}
+                onChange={() => toggleVisiblePending()}
+                ariaLabel="Select all visible pending proposals"
               />
               <span>{checkedVisiblePending.length > 0 ? `${checkedVisiblePending.length} selected` : `Select ${visiblePendingIds.length} visible pending`}</span>
             </label>
