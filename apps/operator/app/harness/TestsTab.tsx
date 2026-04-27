@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Play, RefreshCw, Check, X, Minus } from 'lucide-react';
 import { toast } from 'sonner';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface TestItem {
   id: string;
@@ -102,53 +103,112 @@ export default function TestsTab({ slug, phase }: Props) {
           ><Play size={10} /> run all</button>
         </span>
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-        {tests.map((t) => {
-          const isRunning = running.has(t.id);
-          return (
-            <div key={t.id} style={{
-              display: 'grid',
-              gridTemplateColumns: 'auto auto minmax(0,1fr) auto auto',
-              alignItems: 'center', gap: 8,
-              padding: '6px 10px',
-              borderBottom: '1px solid color-mix(in oklab, var(--border), transparent 50%)',
-              fontSize: 11,
-            }}>
-              {isRunning ? <RefreshCw size={11} className="h-spin" /> : STATUS_ICON[t.status]}
-              <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--fg-dim)' }}>
-                {t.id}
-              </span>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.file}>
-                  {t.summary}
-                </div>
-                <div style={{ fontSize: 10, color: 'var(--fg-dim)' }}>
-                  {t.framework} · {t.coversVALs.join(', ') || 'no VAL link'}
-                  {t.kind === 'edge' && <span style={{ color: '#a855f7', marginLeft: 4 }}>[edge]</span>}
-                </div>
-              </div>
-              <span style={{ fontSize: 10, color: 'var(--fg-dim)', fontFamily: 'ui-monospace, monospace' }}>
-                {t.lastRunTs ? fmtAgo(t.lastRunTs) : '—'}
-                {t.durationMs ? ` · ${t.durationMs}ms` : ''}
-              </span>
-              <button
-                onClick={() => runOne(t.id)}
-                disabled={isRunning}
-                style={{
-                  fontSize: 10, padding: '2px 6px',
-                  background: 'transparent', color: 'var(--fg-dim)',
-                  border: '1px solid var(--border)', borderRadius: 3,
-                  cursor: isRunning ? 'not-allowed' : 'pointer',
-                  display: 'inline-flex', alignItems: 'center', gap: 2,
-                }}
-                title="Re-run this test"
-              >
-                {isRunning ? '…' : 'run'}
-              </button>
-            </div>
-          );
-        })}
-      </div>
+      <TestsGrid tests={tests} running={running} runOne={runOne} />
     </div>
+  );
+}
+
+function TestsGrid({
+  tests, running, runOne,
+}: {
+  tests: TestItem[];
+  running: Set<string>;
+  runOne: (id: string) => void;
+}) {
+  const columns: ColumnDef<TestItem>[] = useMemo(
+    () => [
+      {
+        key: 'status',
+        header: '',
+        width: 0.25,
+        align: 'center',
+        render: ({ row }) => {
+          const isRunning = running.has(row.id);
+          return isRunning
+            ? <RefreshCw size={11} className="h-spin" />
+            : STATUS_ICON[row.status];
+        },
+      },
+      {
+        key: 'id',
+        header: 'id',
+        width: 0.6,
+        sortKey: 'id',
+        render: ({ row }) => (
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, color: 'var(--fg-dim)' }}>
+            {row.id}
+          </span>
+        ),
+      },
+      {
+        key: 'body',
+        header: 'test',
+        width: 4,
+        sortKey: 'summary',
+        render: ({ row }) => (
+          <div style={{ minWidth: 0, width: '100%' }}>
+            <div
+              style={{ color: 'var(--fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+              title={row.file}
+            >
+              {row.summary}
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--fg-dim)' }}>
+              {row.framework} · {row.coversVALs.join(', ') || 'no VAL link'}
+              {row.kind === 'edge' && <span style={{ color: '#a855f7', marginLeft: 4 }}>[edge]</span>}
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'lastRun',
+        header: 'last',
+        width: 0.7,
+        align: 'right',
+        sortKey: 'lastRunTs',
+        defaultSortDir: 'desc',
+        render: ({ row }) => (
+          <span style={{ fontSize: 10, color: 'var(--fg-dim)', fontFamily: 'ui-monospace, monospace' }}>
+            {row.lastRunTs ? fmtAgo(row.lastRunTs) : '—'}
+            {row.durationMs ? ` · ${row.durationMs}ms` : ''}
+          </span>
+        ),
+      },
+      {
+        key: 'run',
+        header: '',
+        width: 0.4,
+        align: 'right',
+        render: ({ row }) => {
+          const isRunning = running.has(row.id);
+          return (
+            <button
+              onClick={(e) => { e.stopPropagation(); runOne(row.id); }}
+              disabled={isRunning}
+              style={{
+                fontSize: 10, padding: '2px 6px',
+                background: 'transparent', color: 'var(--fg-dim)',
+                border: '1px solid var(--border)', borderRadius: 3,
+                cursor: isRunning ? 'not-allowed' : 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: 2,
+              }}
+              title="Re-run this test"
+            >
+              {isRunning ? '…' : 'run'}
+            </button>
+          );
+        },
+      },
+    ],
+    [running, runOne],
+  );
+
+  return (
+    <RichGrid<TestItem>
+      rows={tests}
+      columns={columns}
+      getRowId={(t) => t.id}
+      inline
+    />
   );
 }
