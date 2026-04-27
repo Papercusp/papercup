@@ -5,6 +5,7 @@ import './harness.css';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@rocicorp/zero/react';
 import { queries, slugToFeaturesKey, type FeatureRow } from '@restart/zero-harness';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { Toaster, toast } from 'sonner';
@@ -1614,48 +1615,70 @@ function RecentAgentsTable({
   agents: AgentRun[];
   onSelect: (runId: string) => void;
 }) {
+  const columns: ColumnDef<AgentRun>[] = [
+    {
+      key: 'when',
+      header: 'when',
+      width: 1.1,
+      render: ({ row }) => (
+        <span className="h-agent-time-cell nowrap" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <span className="h-agent-dot" aria-hidden="true" />
+          <span>{fmtAgo(row.ts)}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'role',
+      header: 'role',
+      width: 1.0,
+      render: ({ row }) => {
+        const cls = roleClass(row.role);
+        return <span className={`h-agent-role ${cls}`}>{row.role}</span>;
+      },
+    },
+    {
+      key: 'runId',
+      header: 'run id',
+      width: 1.5,
+      render: ({ row }) => (
+        <span className="mono runid" title={row.runId} style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11.5 }}>
+          {row.runId.slice(0, 14)}…
+        </span>
+      ),
+    },
+    {
+      key: 'size',
+      header: 'size',
+      width: 0.6,
+      align: 'right',
+      render: ({ row }) => (
+        <span className="muted mono" style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>
+          {fmtBytes(row.sizeBytes)}
+        </span>
+      ),
+    },
+  ];
+
+  // Keep the legacy h-agent-row/role-{cls} classes so existing CSS hover
+  // rules (left-border accent, color-coded role tints) keep applying.
+  const richRowProps = (ctx: { row: AgentRun }) => {
+    const cls = roleClass(ctx.row.role);
+    return {
+      className: `h-agent-row role-${cls}`,
+      tabIndex: 0,
+      'aria-label': `Inspect ${ctx.row.role} run ${ctx.row.runId}`,
+    };
+  };
+
   return (
-    <table className="h-agent-table">
-      <thead>
-        <tr>
-          <th>when</th>
-          <th>role</th>
-          <th>run id</th>
-          <th className="right">size</th>
-        </tr>
-      </thead>
-      <tbody>
-        {agents.map((r) => {
-          const cls = roleClass(r.role);
-          return (
-            <tr
-              key={r.runId}
-              className={`h-agent-row role-${cls}`}
-              role="button"
-              tabIndex={0}
-              aria-label={`Inspect ${r.role} run ${r.runId}`}
-              onClick={() => onSelect(r.runId)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  onSelect(r.runId);
-                }
-              }}
-            >
-              <td className="h-agent-time-cell nowrap">
-                <span className="h-agent-dot" aria-hidden="true" />
-                <span>{fmtAgo(r.ts)}</span>
-              </td>
-              <td className="h-agent-role-cell">
-                <span className={`h-agent-role ${cls}`}>{r.role}</span>
-              </td>
-              <td className="h-agent-run-cell mono runid" title={r.runId}>{r.runId.slice(0, 14)}…</td>
-              <td className="h-agent-size-cell muted mono right">{fmtBytes(r.sizeBytes)}</td>
-            </tr>
-          );
-        })}
-      </tbody>
-    </table>
+    <RichGrid<AgentRun>
+      rows={agents}
+      columns={columns}
+      getRowId={(r) => r.runId}
+      onRowClick={(r) => onSelect(r.runId)}
+      rowProps={richRowProps}
+      inline
+    />
   );
 }
 
