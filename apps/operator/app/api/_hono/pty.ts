@@ -268,11 +268,30 @@ function resolvePiBinary(): string {
   }
 
   // Default env additions: scope pi's session storage to the harness state
-  // dir so per-harness sessions don't pollute ~/.omp/agent/.
+  // dir so per-harness sessions don't pollute ~/.omp/agent/. Plus identity
+  // env that the papercusp pi-plugin tools read to call back into this
+  // sidecar (PAPERCUSP_HARNESS_SLUG + PAPERCUSP_API_BASE).
   const defaultEnv: Record<string, string> = {};
   if (sd) {
     defaultEnv.PI_CODING_AGENT_DIR = join(sd, 'pi-sessions');
   }
+  defaultEnv.PAPERCUSP_HARNESS_SLUG = slug;
+  // The plugin tools call back into this same sidecar; derive the base
+  // URL from the incoming request so it works against any port (dev :3055,
+  // Tauri's random prod port, etc.).
+  try {
+    const u = new URL(c.req.url);
+    defaultEnv.PAPERCUSP_API_BASE = `${u.protocol}//${u.host}`;
+  } catch { /* non-URL request — fall back to localhost in plugin */ }
+
+  // Locate the papercusp pi-extension (auto-included on omp launches).
+  // It lives at ~/.papercusp/global-plugins/pi/extension.ts — created
+  // by `papercusp install` or seeded by the desktop bundle. omp loads
+  // it via `-e <path>` (its standard extension hook). The extension
+  // registers 7 read-only papercusp_* tools that pi can call to
+  // introspect the surrounding harness.
+  const piExtensionPath = join(homedir(), '.papercusp', 'global-plugins', 'pi', 'extension.ts');
+  const piExtensionAvailable = existsSync(piExtensionPath);
 
   // Build args. If caller didn't pass an explicit args array, start from
   // the canonical defaults and append --append-system-prompt when we have
@@ -282,6 +301,9 @@ function resolvePiBinary(): string {
     args = body.args;
   } else {
     const baseArgs: string[] = ['--no-pty'];
+    if (command.includes('omp') && piExtensionAvailable) {
+      baseArgs.push('-e', piExtensionPath);
+    }
     if (body.laneId && sd && command.includes('omp')) {
       const promptPath = await buildFeaturePromptFile(slug, body.laneId, sd);
       if (promptPath) baseArgs.push(`--append-system-prompt=${promptPath}`);
