@@ -107,12 +107,17 @@ describe('loadPlugins', () => {
   it('walks projectDir/plugins/', async () => {
     const projectDir = join(ROOT, 'walked-project');
     await fs.mkdir(join(projectDir, 'plugins'), { recursive: true });
+    // Override the global dir to an empty temp path so the test doesn't
+    // pick up plugins the developer happens to have installed in
+    // ~/.papercusp/global-plugins/.
+    const globalDir = join(ROOT, 'walked-empty-global');
+    await fs.mkdir(globalDir, { recursive: true });
     // Move two plugins under the project
     for (const name of ['plugin-a', 'plugin-b']) {
       const src = await makePlugin({ name });
       await fs.cp(src, join(projectDir, 'plugins', name), { recursive: true });
     }
-    const r = await loadPlugins({ projectDir });
+    const r = await loadPlugins({ projectDir, globalPluginsDir: globalDir });
     assert.equal(r.errors.length, 0);
     const names = r.loaded.map((l) => l.plugin.name).sort();
     assert.deepEqual(names, ['plugin-a', 'plugin-b']);
