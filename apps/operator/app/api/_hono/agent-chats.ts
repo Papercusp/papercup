@@ -24,7 +24,12 @@ import { stream, streamSSE } from 'hono/streaming';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getLegacyClient } from '@restart/db-org';
-import { assembleRolePrompt } from '@papercusp/orchestrator';
+// Local copy of assembleRolePrompt — the canonical version lives in
+// @papercusp/orchestrator. We can't import it directly until a natural
+// papercusp:web restart picks up the next.config.js → transpilePackages
+// change. See header of apps/papercusp/lib/assemble-role-prompt.ts for
+// the converge plan.
+import { assembleRolePrompt } from '../../../lib/assemble-role-prompt';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
