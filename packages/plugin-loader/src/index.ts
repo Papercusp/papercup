@@ -255,3 +255,17 @@ export {
   HookBus,
   createPluginHookBus,
 } from './hookbus';
+
+export {
+  createPapercuspApi,
+  TasksServiceDef,
+  GoalsServiceDef,
+  PendingEventsServiceDef,
+  RoutinesServiceDef,
+  CommentsServiceDef,
+  SecretsServiceDef,
+  PluginStorageDef,
+  PluginDbDef,
+  type RealServices,
+  type CreatePapercuspApiInput,
+} from './api-factory';
