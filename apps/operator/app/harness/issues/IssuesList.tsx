@@ -7,8 +7,32 @@ import {
   ArrowUpRight, CheckCircle, CheckCircle2, XCircle, Loader2, Hammer, Inbox, Circle,
 } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { useQuery } from '@rocicorp/zero/react';
+import { queries, slugToIssuesKey, type IssueRow } from '@restart/zero-harness';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from './types';
 import { IssueDetail } from './IssueDetail';
+
+function rowToIssue(r: IssueRow): Issue {
+  // PG TIMESTAMPTZ → zero-cache → number (epoch ms). Issue.foundAt is ISO
+  // string for downstream display compat.
+  const foundAtMs = typeof r.foundAt === 'number' ? r.foundAt : Date.parse(String(r.foundAt));
+  return {
+    id: r.issueId,
+    title: r.title,
+    severity: r.severity as IssueSeverity,
+    source: r.source as IssueSource,
+    status: r.status as IssueStatus,
+    foundAt: Number.isFinite(foundAtMs) ? new Date(foundAtMs).toISOString() : '',
+    foundDuring: r.foundDuring ?? undefined,
+    repro: r.repro ?? undefined,
+    evidence: r.evidence ?? undefined,
+    suggestedFix: r.suggestedFix ?? undefined,
+    codePointer: r.codePointer ?? undefined,
+    linkedFeatureId: r.linkedFeatureId ?? undefined,
+    attempts: Number(r.attempts) || 0,
+    notes: Array.isArray(r.notes) ? (r.notes as Issue['notes']) : [],
+  };
+}
 
 const SEVERITY_CLASS: Record<IssueSeverity, string> = {
   critical: 'sev-critical',
@@ -47,28 +71,54 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
   const [reloadTick, setReloadTick] = useState(0);
   const [triaging, setTriaging] = useState(false);
 
+  // Issues stream live from Zero (`harness_<slug>.harness_issues` via
+  // `useQuery`). The legacy `/api/harness/<slug>/issues-list` endpoint still
+  // exists and dual-writes JSON↔PG, but reads come straight from the replica.
+  // `pending` (validator findings awaiting curation) still lives in
+  // `pending-issues.jsonl` and is fetched separately until that file is also
+  // migrated to PG.
+  const issuesQuery = useMemo(() => {
+    if (!slug) return null;
+    const ns = (queries as Record<string, { all?: () => unknown }>)[slugToIssuesKey(slug)];
+    return ns?.all?.() ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slug]);
+  const [zeroRows, zeroInfo] = useQuery(
+    (issuesQuery ?? (queries.issuesSheets.all() as unknown)) as never,
+  );
+
   useEffect(() => {
-    // The dashboard mounts this panel before activeSlug is known and passes
-    // `slug=""` as a placeholder. Firing a fetch for `/api/harness//issues-list`
-    // produces a double-slash URL that the public-site admin proxy rejects
-    // with "Empty slug — skipping fetch", surfacing as a permanent error in
-    // the UI until the user toggles tabs. Skip the request until slug lands.
+    if (!issuesQuery) return;
+    const info = zeroInfo as { type?: string } | undefined;
+    if (info?.type !== 'complete') return;
+    if (!Array.isArray(zeroRows)) return;
+    const adapted = (zeroRows as IssueRow[]).map(rowToIssue);
+    setIssues(adapted);
+    setError(null);
+  }, [issuesQuery, zeroRows, zeroInfo]);
+
+  // Pending findings are file-system only; keep polling them.
+  useEffect(() => {
     if (!slug) return;
     let aborted = false;
-    fetch(`/api/harness/${slug}/issues-list`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (aborted) return;
-        if (d.error) setError(d.error);
-        else {
-          setIssues(d.issues ?? []);
+    const fetchPending = () => {
+      fetch(`/api/harness/${slug}/issues-list`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (aborted) return;
+          if (d.error) return;
           setPending(d.pending ?? []);
-          onCount?.((d.issues?.length ?? 0) + (d.pending?.length ?? 0));
-        }
-      })
-      .catch((e) => { if (!aborted) setError(String(e)); });
-    return () => { aborted = true; };
+        })
+        .catch(() => {});
+    };
+    fetchPending();
+    const interval = setInterval(fetchPending, 5000);
+    return () => { aborted = true; clearInterval(interval); };
   }, [slug, reloadTick]);
+
+  useEffect(() => {
+    onCount?.((issues?.length ?? 0) + pending.length);
+  }, [issues, pending, onCount]);
 
   const runTriage = async () => {
     setTriaging(true);

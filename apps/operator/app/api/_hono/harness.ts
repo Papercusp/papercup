@@ -2901,6 +2901,66 @@ function loadIssuesRaw(project: ProjectEntry): IssuesFile | null {
 
 async function saveIssues(project: ProjectEntry, file: IssuesFile): Promise<void> {
   await writeFile(issuesJsonPath(project), JSON.stringify(file, null, 2), 'utf8');
+  await syncIssuesToPg(project, file).catch((err) => {
+    // PG is the read-side replica via Zero; JSON remains authoritative for now.
+    // Don't fail the request if Zero replication target is unavailable.
+    console.warn(`[issues] PG sync failed for ${project.slug}:`, err?.message ?? err);
+  });
+}
+
+/**
+ * Bulk-mirror the JSON state to `harness_<slug>.harness_issues`. The whole
+ * issue set is upserted; rows in PG that no longer exist in JSON are deleted.
+ * Cheap because issue counts are O(100s).
+ */
+async function syncIssuesToPg(project: ProjectEntry, file: IssuesFile): Promise<void> {
+  const { sql } = getHarnessPg(project.slug);
+  const now = Date.now();
+  const ids = file.issues.map((i) => i.id);
+  if (ids.length > 0) {
+    const rows = file.issues.map((i) => ({
+      harness_slug: project.slug,
+      issue_id: i.id,
+      title: i.title,
+      severity: i.severity,
+      source: i.source,
+      status: i.status,
+      found_at: i.foundAt,
+      found_during: i.foundDuring ?? null,
+      repro: i.repro ?? null,
+      evidence: i.evidence ?? null,
+      suggested_fix: i.suggestedFix ?? null,
+      code_pointer: i.codePointer ?? null,
+      linked_feature_id: i.linkedFeatureId ?? null,
+      attempts: i.attempts ?? 0,
+      notes: JSON.stringify(i.notes ?? []),
+      created_ts: now,
+      updated_ts: now,
+    }));
+    await sql`
+      INSERT INTO harness_issues ${sql(rows, 'harness_slug', 'issue_id', 'title', 'severity', 'source', 'status', 'found_at', 'found_during', 'repro', 'evidence', 'suggested_fix', 'code_pointer', 'linked_feature_id', 'attempts', 'notes', 'created_ts', 'updated_ts')}
+      ON CONFLICT (harness_slug, issue_id) DO UPDATE SET
+        title             = EXCLUDED.title,
+        severity          = EXCLUDED.severity,
+        source            = EXCLUDED.source,
+        status            = EXCLUDED.status,
+        found_at          = EXCLUDED.found_at,
+        found_during      = EXCLUDED.found_during,
+        repro             = EXCLUDED.repro,
+        evidence          = EXCLUDED.evidence,
+        suggested_fix     = EXCLUDED.suggested_fix,
+        code_pointer      = EXCLUDED.code_pointer,
+        linked_feature_id = EXCLUDED.linked_feature_id,
+        attempts          = EXCLUDED.attempts,
+        notes             = EXCLUDED.notes,
+        updated_ts        = EXCLUDED.updated_ts
+    `;
+  }
+  await sql`
+    DELETE FROM harness_issues
+    WHERE harness_slug = ${project.slug}
+      AND issue_id <> ALL (${sql.array(ids, 'text')})
+  `;
 }
 
 // Call the parser from the harness UI code to seed issues when json is absent.
