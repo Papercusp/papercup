@@ -178,11 +178,17 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
 
   // Preserve the legacy h-issue / h-issue-{severity} / h-issue-{status} row classes
   // so existing CSS (severity-tinted left border, status fade, hover bg) keeps applying.
+  // The legacy .h-issue rule sets `display: grid` with its own auto/1fr/auto
+  // column template, which fights RichGrid's inner CSS-grid cell layout
+  // (and squashed the title+meta into column 1's auto width). Override with
+  // `display: block` here so the inner grid fills full row width. The visual
+  // styling (border, ::before accent bar, hover gradient) still applies.
   const richRowProps = useMemo(
     () => (ctx: { row: Issue }) => ({
       className: `h-issue h-issue-${ctx.row.severity} h-issue-${ctx.row.status}`,
       tabIndex: 0,
       'aria-label': `Open ${ctx.row.severity} ${ctx.row.status} issue ${ctx.row.id}: ${ctx.row.title}`,
+      style: { display: 'block' } as const,
     }),
     [],
   );

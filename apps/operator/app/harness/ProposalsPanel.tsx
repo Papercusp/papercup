@@ -799,6 +799,9 @@ export default function ProposalsPanel({ slug }: Props) {
                     className: `h-proposal-item status-${ctx.row.status}${isActive ? ' is-active' : ''}${isShort ? ' is-shortlisted' : ''}`,
                     role: 'listitem',
                     'aria-current': isActive ? 'true' : undefined,
+                    // Override legacy .h-proposal-item `display:grid` — see
+                    // IssuesList migration note for the same fix on .h-issue.
+                    style: { display: 'block' } as const,
                   };
                 }}
                 inline
