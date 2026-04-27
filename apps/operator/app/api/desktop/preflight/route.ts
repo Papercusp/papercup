@@ -2,9 +2,8 @@ import { NextResponse } from 'next/server';
 import { existsSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import net from 'node:net';
+import { harnessRoot, harnessPath } from '@papercusp/harness/paths';
 
 const exec = promisify(execFile);
 
@@ -49,17 +48,16 @@ async function checkPostgres(): Promise<Check> {
 }
 
 function checkHarnessDir(): Check {
-  const dir = process.env.PAPERCUSP_HARNESS_DIR ?? join(homedir(), 'autonomous-harness');
-  const runScript = join(dir, 'run.sh');
+  const runScript = harnessPath('run.sh');
   if (!existsSync(runScript)) {
     return {
       name: 'harness',
       status: 'missing',
       detail: `${runScript} not found`,
-      hint: 'Set PAPERCUSP_HARNESS_DIR or symlink ~/autonomous-harness',
+      hint: 'Reinstall workspace deps (npm install) so @papercusp/harness resolves; PAPERCUSP_HARNESS_DIR overrides if set.',
     };
   }
-  return { name: 'harness', status: 'ok', detail: dir };
+  return { name: 'harness', status: 'ok', detail: harnessRoot() };
 }
 
 const CORS_HEADERS = {

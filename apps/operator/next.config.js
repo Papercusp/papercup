@@ -11,6 +11,7 @@ module.exports = {
   typescript: { ignoreBuildErrors: true },
   images: { unoptimized: true },
   transpilePackages: [
+    '@papercusp/harness',
     '@restart/agent-chat',
     '@restart/db-org',
     '@restart/git-graph',

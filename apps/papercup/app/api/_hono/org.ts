@@ -1567,13 +1567,10 @@ org.post('/directives/:id/route', async (c) => {
 // Prompt resolver — concatenates base + kind + per-dept prompts
 // ================================================================
 
-const PROMPTS_ROOT = join(
-  process.env.PAPERCUSP_HARNESS_DIR ?? join(homedir(), 'autonomous-harness'),
-  'prompts',
-);
+import { harnessPath } from '@papercusp/harness/paths';
 
 function readPromptIfExists(relPath: string): string | null {
-  const path = join(PROMPTS_ROOT, relPath);
+  const path = harnessPath('prompts', relPath);
   if (!existsSync(path)) return null;
   return readFileSync(path, 'utf8');
 }
