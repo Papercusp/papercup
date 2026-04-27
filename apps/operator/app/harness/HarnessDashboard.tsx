@@ -1385,9 +1385,9 @@ export default function HarnessDashboard() {
             </Tooltip>
           )}
           {legacyTabSuppressed('pi') ? null : (
-            <Tooltip label={activeSlug ? 'pi (omp) — interactive coding agent' : 'Select a project to open pi'}>
+            <Tooltip label={activeSlug ? 'consoles — terminals, agent chats, and other dock panels' : 'Select a project to open consoles'}>
               <Tabs.Trigger value="pi" className="h-tab" disabled={!activeSlug}>
-                <Activity size={13} /> pi
+                <Activity size={13} /> consoles
               </Tabs.Trigger>
             </Tooltip>
           )}

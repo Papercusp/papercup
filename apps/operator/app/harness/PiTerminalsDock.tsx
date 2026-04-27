@@ -325,7 +325,7 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
     <div className="pi-dock">
       <div className="pi-dock__header">
         <span className="pi-dock__title">
-          <TerminalSquare size={13} /> pi
+          <TerminalSquare size={13} /> consoles
         </span>
         <AddTerminalAction api={api} slug={slug} />
         <AddChatAction api={api} slug={slug} />
