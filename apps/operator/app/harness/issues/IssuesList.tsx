@@ -104,7 +104,7 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
       {
         key: 'sev',
         header: 'sev',
-        width: 0.7,
+        width: 0.5,
         render: ({ row }) => {
           const SevIcon = SEVERITY_ICON[row.severity] ?? Circle;
           return (
@@ -118,7 +118,7 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
       {
         key: 'body',
         header: 'issue',
-        width: 4,
+        width: 6,
         sortKey: 'title',
         render: ({ row }) => {
           const SrcIcon = SOURCE_ICON[row.source] ?? Circle;
@@ -149,7 +149,7 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
       {
         key: 'right',
         header: '',
-        width: 1.5,
+        width: 1.2,
         align: 'right',
         render: ({ row }) => {
           const StatusIcon = STATUS_ICON[row.status] ?? Circle;
