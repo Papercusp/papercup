@@ -20,6 +20,7 @@
 import type { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { getLegacyClient } from '@restart/db-org';
+import { runProjectManager } from '../../../lib/pm-dispatch';
 
 interface ProjectRow {
   id: string;
@@ -244,27 +245,44 @@ export function registerProjects(harness: Hono): void {
     }
   });
 
-  // ── Manually queue a PM run for this project ──
+  // ── Manually trigger a PM run for this project ──
+  // ?async=1 → just queue a pm_due event for the orchestrator (cheap, returns
+  //            immediately; PM runs on the next iteration tick).
+  // default → run synchronously, returning the new revision id when done
+  //            (slower, ~30s of claude time, but the caller knows the
+  //            outcome before the response returns).
   harness.post('/:slug/projects/:id/regenerate-spec', async (c) => {
     const id = c.req.param('id');
     const slug = c.req.param('slug');
+    const asyncMode = c.req.query('async') === '1';
+
     try {
       const db = dbForSlug(slug);
       const existing = (await db.prepare('SELECT id FROM harness_shared.projects WHERE id = ?').get(id)) as any;
       if (!existing) return c.json({ error: 'project not found' }, 404);
 
-      // Insert a pending_events row of kind='pm_due' that the orchestrator's
-      // NEXT_PROJECT_MANAGER decision will pick up on its next tick.
-      const eventId = randomUUID();
-      await db.prepare(`
-        INSERT INTO harness_shared.pending_events
-          (id, install_slug, kind, target_role, payload, due_at)
-        VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now())
-      `).run(eventId, slug, JSON.stringify({ project_id: id, source: 'manual' }));
+      if (asyncMode) {
+        // Insert a pending_events row of kind='pm_due' that the orchestrator's
+        // NEXT_PROJECT_MANAGER decision will pick up on its next tick.
+        const eventId = randomUUID();
+        await db.prepare(`
+          INSERT INTO harness_shared.pending_events
+            (id, install_slug, kind, target_role, payload, due_at)
+          VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now())
+        `).run(eventId, slug, JSON.stringify({ project_id: id, source: 'manual' }));
+        return c.json({ ok: true, mode: 'async', event_id: eventId });
+      }
 
-      return c.json({ ok: true, event_id: eventId });
+      // Sync mode: spawn claude, parse, persist, return.
+      const result = await runProjectManager({
+        slug, projectId: id, bypassDebounce: true,
+      });
+      if (!result.ok) {
+        return c.json({ error: result.error, detail: result.detail }, 500);
+      }
+      return c.json({ ok: true, mode: 'sync', ...result });
     } catch (e) {
-      return c.json({ error: `failed to enqueue PM run: ${(e as Error).message}` }, 500);
+      return c.json({ error: `failed to run PM: ${(e as Error).message}` }, 500);
     }
   });
 }
