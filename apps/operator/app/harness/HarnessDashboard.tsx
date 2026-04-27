@@ -1,6 +1,11 @@
 'use client';
 
 import './harness.css';
+import * as Tabs from '@radix-ui/react-tabs';
+import * as RSelect from '@radix-ui/react-select';
+import { Check as LCheck, ChevronDown as LChevronDown } from 'lucide-react';
+import { Modal } from './Modal';
+import { Tooltip } from './Tooltip';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@rocicorp/zero/react';
@@ -37,7 +42,7 @@ function openInVSCode(projectPath: string) {
   window.open(url, VSCODE_WINDOW_NAME);
 }
 
-type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'docs' | 'vscode' | 'pi' | 'insights' | 'config';
+type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'docs' | 'vscode' | 'pi' | 'insights' | 'config' | `plugin:${string}`;
 
 import { Panel } from '@restart/ui-primitives';
 import { StatCard } from '@restart/ui-primitives';
@@ -295,9 +300,227 @@ function safeParseClaims(raw: unknown): string[] | undefined {
 
 // ─── Component ─────────────────────────────────────────────────────────
 
+/**
+ * Plugin tab trigger with a settings popover. Click the ⓘ adornment to see
+ * version + a link to the marketplace-ops audit page. The popover closes on
+ * Escape or click-outside.
+ */
+function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, activeSlug }: {
+  pluginSlug: string;
+  pluginVersion: string;
+  tabId: string;
+  label: string;
+  activeSlug: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest('[data-plugin-popover]')) setOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('click', onClick);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('click', onClick);
+    };
+  }, [open]);
+  return (
+    <div data-plugin-popover style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+      <Tooltip label={`${label} — from ${pluginSlug}@${pluginVersion}`}>
+        <Tabs.Trigger value={`plugin:${tabId}`} className="h-tab" disabled={!activeSlug}>
+          🧩 {label}
+        </Tabs.Trigger>
+      </Tooltip>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); e.preventDefault(); setOpen(!open); }}
+        title="Plugin info"
+        style={{
+          marginLeft: -4, padding: '0 4px', background: 'transparent',
+          border: 'none', color: 'var(--text-3)', cursor: 'pointer',
+          fontSize: 11, lineHeight: 1,
+        }}
+      >ⓘ</button>
+      {open ? (
+        <div
+          data-plugin-popover
+          style={{
+            position: 'absolute', top: '100%', right: 0, marginTop: 4,
+            zIndex: 100, minWidth: 240,
+            background: 'var(--bg-1)', color: 'var(--text-1)',
+            border: '1px solid var(--border-1)', borderRadius: 6,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
+            padding: 12, fontSize: 12,
+          }}
+        >
+          <div style={{ fontWeight: 600, marginBottom: 4, fontFamily: "'SF Mono', monospace", wordBreak: 'break-all' }}>
+            {pluginSlug}
+          </div>
+          <div style={{ color: 'var(--text-2)', marginBottom: 8 }}>
+            v{pluginVersion} · contributes &ldquo;{label}&rdquo; tab
+          </div>
+          <a
+            href={`http://localhost:3001/papercusp-marketplace-ops/plugins/${encodeURIComponent(pluginSlug)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'block', color: 'var(--accent-1, #0ea5e9)', fontSize: 11, marginBottom: 4, textDecoration: 'none' }}
+            onClick={() => setOpen(false)}
+          >
+            View audit log on Marketplace Ops →
+          </a>
+          <a
+            href={`http://localhost:3001/papercusp-marketplace-ops/explore/${encodeURIComponent(pluginSlug)}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'block', color: 'var(--accent-1, #0ea5e9)', fontSize: 11, textDecoration: 'none' }}
+            onClick={() => setOpen(false)}
+          >
+            View README + signature →
+          </a>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * iframe wrapper that shows a skeleton+spinner while the underlying plugin
+ * service spins up (e.g. code-server cold start). Fades the loader once the
+ * iframe fires `onLoad`. Includes a "still loading?" hint after 8s with a
+ * direct-open link so the operator isn't stuck staring at a blank slate.
+ */
+function PluginIframeWithLoader({ url, title }: { url: string; title: string }) {
+  const [loaded, setLoaded] = useState(false);
+  const [showHint, setShowHint] = useState(false);
+  useEffect(() => {
+    setLoaded(false);
+    setShowHint(false);
+    const t = setTimeout(() => setShowHint(true), 8000);
+    return () => clearTimeout(t);
+  }, [url]);
+  return (
+    <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <iframe
+        src={url}
+        title={title}
+        onLoad={() => setLoaded(true)}
+        style={{ flex: 1, border: 'none', width: '100%', height: '100%', background: 'var(--bg-2)' }}
+      />
+      {!loaded ? (
+        <div
+          style={{
+            position: 'absolute', inset: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexDirection: 'column', gap: 12,
+            background: 'var(--bg-2)',
+            color: 'var(--text-2)',
+            fontSize: 13,
+            transition: 'opacity 200ms',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            aria-hidden
+            style={{
+              width: 28, height: 28, borderRadius: '50%',
+              border: '2px solid var(--border-1)', borderTopColor: 'var(--accent-1, #0ea5e9)',
+              animation: 'papercusp-spin 0.8s linear infinite',
+            }}
+          />
+          <div>{title} — loading…</div>
+          {showHint ? (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', maxWidth: 360, textAlign: 'center' }}>
+              Still loading? The plugin service may not be running. Try opening{' '}
+              <a href={url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-1, #0ea5e9)', textDecoration: 'underline', pointerEvents: 'auto' }}>
+                {url}
+              </a>{' '}
+              directly.
+            </div>
+          ) : null}
+          <style>{`@keyframes papercusp-spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function HarnessDashboard() {
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
+
+  // Plugin tabs (P7): when PAPERCUSP_TABS_FROM_PLUGINS=1 is set on the
+  // substrate process, the docs/vscode/pi tabs come from installed plugins
+  // instead of being hard-coded. We always fetch the list so the UI can show
+  // additional plugin tabs even with the flag off (additive); the flag
+  // controls whether the legacy hard-coded tabs are hidden.
+  // Plugin-contributed dashboard tabs. Pulled from the unified contributions
+  // endpoint (Pattern 1 — see ARCHITECTURE.md). Only tabs with an iframeUrl
+  // are surfaced inline; React-mode tabs (componentRoot+componentId) need
+  // <PluginTabs> for rendering and are out of scope for this inline strip.
+  const [pluginTabs, setPluginTabs] = useState<Array<{
+    pluginSlug: string;
+    pluginVersion: string;  // not surfaced by the unified endpoint today
+    tabId: string;
+    label: string;
+    icon: string | null;
+    iframeUrl: string | null;
+    replaces: string[];
+  }>>([]);
+  useEffect(() => {
+    if (!activeSlug) {
+      setPluginTabs([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(
+          `/api/plugins/${encodeURIComponent(activeSlug)}/contributions`,
+          { cache: 'no-store' },
+        );
+        if (!r.ok) return;
+        const j = (await r.json()) as {
+          dashboardTabs?: Array<{
+            pluginName: string;
+            id: string;
+            label: string;
+            icon?: string;
+            iframeUrl?: string;
+            replaces?: string[];
+          }>;
+        };
+        if (cancelled) return;
+        const tabs = (j.dashboardTabs ?? [])
+          .filter((t) => typeof t.iframeUrl === 'string' && t.iframeUrl.length > 0)
+          .map((t) => ({
+            pluginSlug: t.pluginName,
+            pluginVersion: '',
+            tabId: t.id,
+            label: t.label,
+            icon: t.icon ?? null,
+            iframeUrl: t.iframeUrl ?? null,
+            replaces: Array.isArray(t.replaces) ? t.replaces : [],
+          }));
+        setPluginTabs(tabs);
+      } catch {
+        // best-effort — fall back to legacy tabs
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activeSlug]);
+  // Pattern 1 — built-in tab ids hidden when a plugin tab declares
+  // `replaces: ['<id>']`. Per-tab opt-in (replaces the previous coarse
+  // PAPERCUSP_TABS_FROM_PLUGINS env flag).
+  const replacedTabIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of pluginTabs) for (const r of t.replaces) set.add(r);
+    return set;
+  }, [pluginTabs]);
+  const legacyTabSuppressed = (id: 'docs' | 'vscode' | 'pi'): boolean =>
+    replacedTabIds.has(id);
   const [status, setStatus] = useState<Status | null>(null);
   const [agents, setAgents] = useState<AgentRun[]>([]);
   const [issues, setIssues] = useState<string>('');
@@ -850,33 +1073,41 @@ export default function HarnessDashboard() {
                 </span>
               )}
             </div>
-            <select
-              className="h-project"
-              aria-label="Select harness project"
-              value={activeSlug ?? ''}
-              onChange={(e) => setActiveSlug(e.target.value)}
-            >
-              <option value="">— pick a project —</option>
-              {/* Layer 3-E: group by harness_kind so the org/department hierarchy is visible. */}
-              {(['org', 'department', 'coding'] as const).map((kind) => {
-                const kindProjects = projects.filter((p) => ((p as any).harness_kind ?? 'coding') === kind);
-                if (kindProjects.length === 0) return null;
-                const labels: Record<typeof kind, string> = {
-                  org: 'Org (parent harnesses)',
-                  department: 'Departments (children)',
-                  coding: 'Coding projects',
-                } as const;
-                return (
-                  <optgroup key={kind} label={labels[kind]}>
-                    {kindProjects.map((p) => (
-                      <option key={p.slug} value={p.slug}>
-                        {p.slug} {p.hasState ? '' : '(no state)'}
-                      </option>
-                    ))}
-                  </optgroup>
-                );
-              })}
-            </select>
+            <RSelect.Root value={activeSlug ?? ''} onValueChange={setActiveSlug}>
+              <RSelect.Trigger className="h-project" aria-label="Select harness project">
+                <RSelect.Value placeholder="— pick a project —" />
+                <RSelect.Icon><LChevronDown size={11} /></RSelect.Icon>
+              </RSelect.Trigger>
+              <RSelect.Portal>
+                <RSelect.Content position="popper" sideOffset={4} style={{ zIndex: 70, minWidth: 'var(--radix-select-trigger-width)', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, padding: 4, boxShadow: '0 8px 24px rgba(0,0,0,0.4)', fontSize: 12 }}>
+                  <RSelect.Viewport>
+                    {/* Layer 3-E: group by harness_kind so the org/department hierarchy is visible. */}
+                    {(['org', 'department', 'coding'] as const).map((kind) => {
+                      const kindProjects = projects.filter((p) => ((p as any).harness_kind ?? 'coding') === kind);
+                      if (kindProjects.length === 0) return null;
+                      const labels: Record<typeof kind, string> = {
+                        org: 'Org (parent harnesses)',
+                        department: 'Departments (children)',
+                        coding: 'Coding projects',
+                      } as const;
+                      return (
+                        <RSelect.Group key={kind}>
+                          <RSelect.Label style={{ padding: '6px 8px 4px', color: 'var(--fg-dim)', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
+                            {labels[kind]}
+                          </RSelect.Label>
+                          {kindProjects.map((p) => (
+                            <RSelect.Item key={p.slug} value={p.slug} className="h-select-item" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '4px 8px', borderRadius: 3, outline: 'none', cursor: 'pointer' }}>
+                              <RSelect.ItemText>{p.slug}{p.hasState ? '' : ' (no state)'}</RSelect.ItemText>
+                              <RSelect.ItemIndicator><LCheck size={11} /></RSelect.ItemIndicator>
+                            </RSelect.Item>
+                          ))}
+                        </RSelect.Group>
+                      );
+                    })}
+                  </RSelect.Viewport>
+                </RSelect.Content>
+              </RSelect.Portal>
+            </RSelect.Root>
             <div className="h-project-meta">
               <span className="h-project-path">
                 {activeProjectPath || 'Choose a workspace to view agents, logs, issues, docs, and VSCode.'}
@@ -1109,98 +1340,83 @@ export default function HarnessDashboard() {
       )}
 
       {/* ── Main-area tab switcher ─────────────────────────────── */}
-      <div className="h-tabs h-main-tabs" role="tablist" aria-label="Harness workspace sections">
-        <button
-          className={`h-tab${activePanel === 'brainstorm' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'brainstorm'}
-          onClick={() => activeSlug && setActivePanel('brainstorm')}
-          disabled={!activeSlug}
-          title={activeSlug ? 'Brainstorm — write, mindmap, canvas, chat with Claude' : 'Select a project to brainstorm'}
-        >
-          <Lightbulb size={13} /> brainstorm
-        </button>
-        <button
-          className={`h-tab${activePanel === 'proposals' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'proposals'}
-          onClick={() => activeSlug && setActivePanel('proposals')}
-          disabled={!activeSlug}
-          title={activeSlug ? `Product proposals — scope expansion from GOAL.md${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}
-        >
-          🪄 proposals
-          {pendingProposals > 0 && <span className="h-tab-count">{pendingProposals}</span>}
-        </button>
-        <button
-          className={`h-tab${activePanel === 'dashboard' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'dashboard'}
-          onClick={() => setActivePanel('dashboard')}
-          title="Harness dashboard — feature queue, agents, logs, issues"
-        >
-          <LayoutDashboard size={13} /> dashboard
-        </button>
-        <button
-          className={`h-tab${activePanel === 'summary' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'summary'}
-          onClick={() => activeSlug && setActivePanel('summary')}
-          disabled={!activeSlug}
-          title={activeSlug ? 'Project summary — high-level changelog of what has been built' : 'Select a project to view summary'}
-        >
-          <FileText size={13} /> summary
-        </button>
-        <button
-          className={`h-tab${activePanel === 'docs' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'docs'}
-          onClick={() => activeSlug && setActivePanel('docs')}
-          disabled={!activeSlug}
-          title={activeSlug ? 'Project docs (requires docs-viewer on :4325)' : 'Select a project to view docs'}
-        >
-          <BookOpen size={13} /> docs
-        </button>
-        <button
-          className={`h-tab${activePanel === 'vscode' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'vscode'}
-          onClick={() => activeSlug && setActivePanel('vscode')}
-          disabled={!activeSlug}
-          title={activeSlug ? 'code-server — edit project in VSCode' : 'Select a project to open in VSCode'}
-        >
-          <Code2 size={13} /> vscode
-        </button>
-        <button
-          className={`h-tab${activePanel === 'pi' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'pi'}
-          onClick={() => { if (activeSlug) { setPiLaneId(null); setActivePanel('pi'); } }}
-          disabled={!activeSlug}
-          title={activeSlug ? 'pi (omp) — interactive coding agent' : 'Select a project to open pi'}
-        >
-          <Activity size={13} /> pi
-        </button>
-        <button
-          className={`h-tab${activePanel === 'insights' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'insights'}
-          onClick={() => activeSlug && setActivePanel('insights')}
-          disabled={!activeSlug}
-          title={activeSlug ? 'Insights — analytics' : 'Select a project to view insights'}
-        >
-          <TrendingUp size={13} /> insights
-        </button>
-        <button
-          className={`h-tab${activePanel === 'config' ? ' on' : ''}`}
-          role="tab"
-          aria-selected={activePanel === 'config'}
-          onClick={() => activeSlug && setActivePanel('config')}
-          disabled={!activeSlug}
-          title={activeSlug ? 'Edit SPEC.md / AGENTS.md / config.json' : 'Select a project to edit config'}
-        >
-          <SlidersHorizontal size={13} /> config
-        </button>
-      </div>
+      <Tabs.Root
+        value={activePanel}
+        onValueChange={(v) => {
+          if (v === 'pi') setPiLaneId(null);
+          setActivePanel(v as MainPanel);
+        }}
+        asChild
+      >
+        <Tabs.List className="h-tabs h-main-tabs" aria-label="Harness workspace sections">
+          <Tooltip label={activeSlug ? 'Brainstorm — write, mindmap, canvas, chat with Claude' : 'Select a project to brainstorm'}>
+            <Tabs.Trigger value="brainstorm" className="h-tab" disabled={!activeSlug}>
+              <Lightbulb size={13} /> brainstorm
+            </Tabs.Trigger>
+          </Tooltip>
+          <Tooltip label={activeSlug ? `Product proposals — scope expansion from GOAL.md${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
+            <Tabs.Trigger value="proposals" className="h-tab" disabled={!activeSlug}>
+              🪄 proposals
+              {pendingProposals > 0 && <span className="h-tab-count">{pendingProposals}</span>}
+            </Tabs.Trigger>
+          </Tooltip>
+          <Tooltip label="Harness dashboard — feature queue, agents, logs, issues">
+            <Tabs.Trigger value="dashboard" className="h-tab">
+              <LayoutDashboard size={13} /> dashboard
+            </Tabs.Trigger>
+          </Tooltip>
+          <Tooltip label={activeSlug ? 'Project summary — high-level changelog of what has been built' : 'Select a project to view summary'}>
+            <Tabs.Trigger value="summary" className="h-tab" disabled={!activeSlug}>
+              <FileText size={13} /> summary
+            </Tabs.Trigger>
+          </Tooltip>
+          {legacyTabSuppressed('docs') ? null : (
+            <Tooltip label={activeSlug ? 'Project docs (requires docs-viewer on :4325)' : 'Select a project to view docs'}>
+              <Tabs.Trigger value="docs" className="h-tab" disabled={!activeSlug}>
+                <BookOpen size={13} /> docs
+              </Tabs.Trigger>
+            </Tooltip>
+          )}
+          {legacyTabSuppressed('vscode') ? null : (
+            <Tooltip label={activeSlug ? 'code-server — edit project in VSCode' : 'Select a project to open in VSCode'}>
+              <Tabs.Trigger value="vscode" className="h-tab" disabled={!activeSlug}>
+                <Code2 size={13} /> vscode
+              </Tabs.Trigger>
+            </Tooltip>
+          )}
+          {legacyTabSuppressed('pi') ? null : (
+            <Tooltip label={activeSlug ? 'pi (omp) — interactive coding agent' : 'Select a project to open pi'}>
+              <Tabs.Trigger value="pi" className="h-tab" disabled={!activeSlug}>
+                <Activity size={13} /> pi
+              </Tabs.Trigger>
+            </Tooltip>
+          )}
+          {/* Plugin-mounted tabs. The trigger is the tab itself; a tiny ⓘ
+              button next to the label opens a popover with version + a link
+              to the marketplace-ops detail page so operators can inspect
+              the source of the tab. */}
+          {pluginTabs.map((pt) => (
+            <PluginTabTrigger
+              key={`${pt.pluginSlug}:${pt.tabId}`}
+              pluginSlug={pt.pluginSlug}
+              pluginVersion={pt.pluginVersion}
+              tabId={pt.tabId}
+              label={pt.label}
+              activeSlug={activeSlug}
+            />
+          ))}
+          <Tooltip label={activeSlug ? 'Insights — analytics' : 'Select a project to view insights'}>
+            <Tabs.Trigger value="insights" className="h-tab" disabled={!activeSlug}>
+              <TrendingUp size={13} /> insights
+            </Tabs.Trigger>
+          </Tooltip>
+          <Tooltip label={activeSlug ? 'Edit SPEC.md / AGENTS.md / config.json' : 'Select a project to edit config'}>
+            <Tabs.Trigger value="config" className="h-tab" disabled={!activeSlug}>
+              <SlidersHorizontal size={13} /> config
+            </Tabs.Trigger>
+          </Tooltip>
+        </Tabs.List>
+      </Tabs.Root>
 
       {!status && (
         <div className="h-guide-strip">
@@ -1250,6 +1466,31 @@ export default function HarnessDashboard() {
             <PiTerminalsDock slug={activeSlug} initialLaneId={piLaneId ?? undefined} />
           </div>
         )}
+        {/* Plugin-mounted tabs: pick whichever plugin matches the active panel
+            via the plugin:<id> prefix. iframeUrl is null when the plugin's
+            manifest doesn't expose one of the conventional config keys. */}
+        {activePanel.startsWith('plugin:') && activeSlug && (() => {
+          const tabId = activePanel.slice('plugin:'.length);
+          const pt = pluginTabs.find((t) => t.tabId === tabId);
+          if (!pt) {
+            return (
+              <div style={{ flex: 1, padding: 24, color: 'var(--text-2)' }}>
+                Plugin tab not found.
+              </div>
+            );
+          }
+          if (!pt.iframeUrl) {
+            return (
+              <div style={{ flex: 1, padding: 24, color: 'var(--text-2)' }}>
+                <strong>{pt.label}</strong> ({pt.pluginSlug}@{pt.pluginVersion}) is enabled but
+                doesn&rsquo;t expose an iframe URL via its config. Check the plugin&rsquo;s
+                <code style={{ margin: '0 4px' }}>configSchema</code> defaults or run{' '}
+                <code>papercusp plugin config {pt.pluginSlug} --harness {activeSlug}</code>.
+              </div>
+            );
+          }
+          return <PluginIframeWithLoader key={`${pt.pluginSlug}:${pt.tabId}`} url={pt.iframeUrl} title={pt.label} />;
+        })()}
         {activePanel === 'insights' && status && (
           <InsightsPanel
             inline
@@ -1780,26 +2021,19 @@ function AgentInspector({
   const done = agent.timeline.some((e) => e.kind === 'result');
   const lastResult = agent.timeline.findLast?.((e) => e.kind === 'result');
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      onClick={onClose}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Agent ${agent.runId}`}
+      srOnlyTitle
+      zIndex={50}
+      overlayStyle={{ background: 'rgba(0,0,0,0.7)' }}
+      contentStyle={{
+        background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8,
+        width: '90vw', height: '86vh', display: 'flex', flexDirection: 'column',
+      }}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 8,
-          width: '90vw', height: '86vh', display: 'flex', flexDirection: 'column',
-        }}
-      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border)' }}>
           <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: 'var(--fg)' }}>{agent.runId}</span>
           <span className={`h-pill ${done ? 'passed' : 'in_progress'}`}>
@@ -1830,8 +2064,7 @@ function AgentInspector({
             <pre style={{ fontSize: 11, fontFamily: 'ui-monospace, monospace', color: 'color-mix(in oklab, var(--bad), white 30%)', whiteSpace: 'pre-wrap', margin: 0 }}>{agent.stderr}</pre>
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }
 

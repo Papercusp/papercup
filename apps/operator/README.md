@@ -1,4 +1,20 @@
-# Papercusp
+# Papercusp web app — development tree
+
+> **Two-tree architecture.** This directory (`apps/papercusp/`) is the
+> **active development tree**. New features land here first. The Papercusp
+> framework's public-face copy lives in the `papercupai/papercusp` git
+> submodule at `libs/papercusp/apps/web/` — features get promoted there
+> when stable. See [**ARCHITECTURE.md**](../../ARCHITECTURE.md#two-papercusp-web-trees) for details.
+>
+> | Tree | Path | Purpose | Consumed by |
+> |---|---|---|---|
+> | Dev | `apps/papercusp/` | Active development; ships in desktop bundle | `bin/build-desktop-sidecar.sh`, `:3055` dev server |
+> | Public | `libs/papercusp/apps/web/` (submodule) | Public framework face; canonical when submodule is used standalone | External consumers cloning the submodule |
+>
+> Both share the same npm package name (`@papercusp/web`) and would collide
+> as workspace members — `apps/papercusp` is `!`-excluded from the root
+> workspace as a result. Workspace-internal deps in this tree use `file:`
+> paths and resolve via `npm install` inside this directory.
 
 The open-source autonomous-harness framework — the hosted web app + marketplace API.
 
