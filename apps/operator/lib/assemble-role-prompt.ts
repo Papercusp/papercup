@@ -37,6 +37,12 @@ export interface AssembleRolePromptOptions {
   mode?: RolePromptMode;
   runId?: string;
   extras?: readonly string[];
+  /** Project context to inject — see canonical version for full docs. */
+  projectSpec?: {
+    projectId: string;
+    content: string;
+    updatedAt?: string;
+  };
 }
 
 export interface AssembledPrompt {
@@ -223,7 +229,7 @@ export function assembleRolePrompt(opts: AssembleRolePromptOptions): AssembledPr
   }
   for (const e of opts.extras ?? []) extras.push(e);
 
-  const text = buildPrompt({
+  let text = buildPrompt({
     role: opts.role,
     promptFile,
     promptOverride,
@@ -235,6 +241,13 @@ export function assembleRolePrompt(opts: AssembleRolePromptOptions): AssembledPr
     runId,
     extras,
   });
+
+  if (opts.projectSpec?.content && opts.projectSpec.content.trim()) {
+    const updatedAtNote = opts.projectSpec.updatedAt ? ` · last curated ${opts.projectSpec.updatedAt}` : '';
+    text += `\n\n---\n## Project context — ${opts.projectSpec.projectId} (curated by Project Manager${updatedAtNote})\n\n`;
+    text += opts.projectSpec.content.trim();
+    text += '\n';
+  }
 
   return {
     text,

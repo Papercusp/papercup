@@ -653,6 +653,29 @@ harness.patch('/:slug/features/:id', async (c) => {
     }
   })();
 
+  // Phase B+ — Project Manager hook. When a feature transitions INTO 'passed'
+  // (was not passed before; is passed now) AND has a project_id, enqueue a
+  // pending_events row that the orchestrator's NEXT_PROJECT_MANAGER decision
+  // verb will eventually consume. Coalescing happens at the orchestrator
+  // (it picks one project per tick and PM consumes all pending events for
+  // that project in a batch).
+  const transitionedToPassed =
+    updates.status === 'passed' && existing.status !== 'passed';
+  const projectIdForPm = (updates.project_id ?? existing.project_id) as string | null | undefined;
+  if (transitionedToPassed && projectIdForPm) {
+    try {
+      const eventId = `pm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      await dbc.prepare(`
+        INSERT INTO harness_shared.pending_events
+          (id, install_slug, kind, target_role, payload, due_at)
+        VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now())
+      `).run(eventId, project.slug, JSON.stringify({ project_id: projectIdForPm, feature_id: id, source: 'feature_passed' }));
+    } catch {
+      // pending_events table absent or insert failed — best-effort, do not
+      // fail the PATCH response over PM scheduling.
+    }
+  }
+
   const updated = await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id) as any;
   return c.json({ ok: true, feature: rowToFeature(updated) });
 });
