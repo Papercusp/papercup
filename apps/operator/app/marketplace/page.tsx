@@ -10,6 +10,8 @@ interface CatalogEntry {
   plugins: string[];
   homepage?: string;
   install: string;
+  topology?: 'single' | 'multi';
+  subprojects?: Array<{ suffix: string; kind: string; department_slug?: string }>;
 }
 
 interface InstalledHarness {
@@ -89,10 +91,16 @@ export default async function MarketplacePage() {
               )}
             </div>
             <p style={{ minHeight: 64 }}>{h.description}</p>
-            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--fg-mute)', marginBottom: 12 }}>
+            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--fg-mute)', marginBottom: 12, flexWrap: 'wrap' }}>
               <span>v{h.version}</span>
               <span>·</span>
               <span>{h.license}</span>
+              {h.topology === 'multi' && h.subprojects && h.subprojects.length > 0 && (
+                <>
+                  <span>·</span>
+                  <span style={{ color: 'var(--accent)' }}>multi-topology · {h.subprojects.length} sub-harnesses</span>
+                </>
+              )}
               {h.plugins.length > 0 && (
                 <>
                   <span>·</span>
@@ -101,7 +109,12 @@ export default async function MarketplacePage() {
               )}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <InstallButton slug={h.slug} alreadyInstalled={installedSlugs.has(h.slug)} />
+              <InstallButton
+                slug={h.slug}
+                alreadyInstalled={installedSlugs.has(h.slug)}
+                topology={h.topology}
+                subprojects={h.subprojects}
+              />
             </div>
           </a>
         ))}

@@ -45,6 +45,8 @@ export async function GET() {
         license: m.license ?? 'unspecified',
         plugins: m.plugins ?? [],
         homepage: m.homepage ?? null,
+        topology: m.topology ?? 'single',
+        subprojects: Array.isArray(m.subprojects) ? m.subprojects : [],
         install: `papercusp install ${m.name}`,
         source: 'live',
       }));

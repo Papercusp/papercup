@@ -3,14 +3,23 @@
 import { useState } from 'react';
 import { toast } from 'sonner';
 
+interface Subproject {
+  suffix: string;
+  kind: string;
+  department_slug?: string;
+}
+
 interface Props {
   slug: string;
   alreadyInstalled?: boolean;
+  topology?: 'single' | 'multi';
+  subprojects?: Subproject[];
 }
 
 type Mode = 'idle' | 'fresh' | 'attach';
 
-export default function InstallButton({ slug, alreadyInstalled }: Props) {
+export default function InstallButton({ slug, alreadyInstalled, topology, subprojects }: Props) {
+  const isMulti = topology === 'multi' && Array.isArray(subprojects) && subprojects.length > 0;
   const [mode, setMode] = useState<Mode>('idle');
   const [busy, setBusy] = useState(false);
   const [name, setName] = useState(slug);
@@ -30,7 +39,8 @@ export default function InstallButton({ slug, alreadyInstalled }: Props) {
         return;
       }
       const where = d.attachedToExisting ? `attached to ${d.projectPath}` : `at ${d.projectPath}`;
-      toast.success(`✓ ${d.projectSlug} installed`, {
+      const multiBlurb = isMulti && subprojects ? ` · ${subprojects.length} sub-harnesses created` : '';
+      toast.success(`✓ ${d.projectSlug} installed${multiBlurb}`, {
         description: where,
         action: { label: 'Open harness', onClick: () => (window.location.href = `/harness/${d.projectSlug}`) },
         duration: 8000,
@@ -68,23 +78,33 @@ export default function InstallButton({ slug, alreadyInstalled }: Props) {
   if (mode === 'idle') {
     return (
       <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 8 }}>
-        <button className="pc-button" onClick={stop(() => setMode('fresh'))} disabled={busy}>
-          Fresh project
-        </button>
         <button
           className="pc-button"
-          onClick={stop(() => setMode('attach'))}
+          onClick={stop(() => setMode('fresh'))}
           disabled={busy}
-          style={{ background: 'var(--bg-1)', color: 'var(--fg-mute)' }}
-          title="Attach the harness to an existing repo on disk"
+          title={isMulti ? `Will create ${subprojects!.length} sub-harnesses` : undefined}
         >
-          Attach existing…
+          {isMulti ? `Install (${subprojects!.length} sub-harnesses)` : 'Fresh project'}
         </button>
+        {!isMulti && (
+          <button
+            className="pc-button"
+            onClick={stop(() => setMode('attach'))}
+            disabled={busy}
+            style={{ background: 'var(--bg-1)', color: 'var(--fg-mute)' }}
+            title="Attach the harness to an existing repo on disk"
+          >
+            Attach existing…
+          </button>
+        )}
       </div>
     );
   }
 
   if (mode === 'fresh') {
+    const previewLabel = isMulti && subprojects
+      ? `${name}, ${subprojects.filter((s) => s.suffix).map((s) => name + s.suffix).join(', ')}`
+      : null;
     return (
       <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <input
@@ -101,6 +121,11 @@ export default function InstallButton({ slug, alreadyInstalled }: Props) {
         <button className="pc-button" onClick={stop(() => setMode('idle'))} disabled={busy} style={cancelStyle}>
           ✕
         </button>
+        {previewLabel && (
+          <div style={{ flexBasis: '100%', fontSize: 10, color: 'var(--fg-mute)', marginTop: 4 }}>
+            will create: <code style={{ fontSize: 10 }}>{previewLabel}</code>
+          </div>
+        )}
       </div>
     );
   }
