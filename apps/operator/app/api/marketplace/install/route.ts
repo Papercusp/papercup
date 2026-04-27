@@ -28,7 +28,7 @@ function isValidSlug(s: string): boolean {
 }
 
 export async function POST(req: Request) {
-  let body: { slug?: string; projectName?: string };
+  let body: { slug?: string; projectName?: string; targetPath?: string };
   try {
     body = await req.json();
   } catch {
@@ -36,17 +36,43 @@ export async function POST(req: Request) {
   }
   const slug = String(body.slug ?? '').trim();
   const projectName = String(body.projectName ?? slug).trim();
+  const rawTarget = typeof body.targetPath === 'string' ? body.targetPath.trim() : '';
+  const targetPath = rawTarget.length > 0 ? rawTarget : null;
 
   if (!isValidSlug(slug)) return NextResponse.json({ ok: false, error: `invalid slug "${slug}"` }, { status: 400 });
   if (!isValidSlug(projectName)) return NextResponse.json({ ok: false, error: `invalid project name "${projectName}"` }, { status: 400 });
 
-  const projectsRoot = process.env.PAPERCUSP_PROJECTS_ROOT ?? join(homedir(), '.papercusp', 'projects');
-  const projectPath = join(projectsRoot, projectName);
-  if (existsSync(projectPath)) {
-    return NextResponse.json(
-      { ok: false, error: `project "${projectName}" already exists at ${projectPath}` },
-      { status: 409 },
-    );
+  // Resolve where the project will live + validate up front.
+  let projectPath: string;
+  if (targetPath) {
+    if (!targetPath.startsWith('/') && !targetPath.startsWith('~')) {
+      return NextResponse.json(
+        { ok: false, error: `target path must be absolute (got "${targetPath}")` },
+        { status: 400 },
+      );
+    }
+    projectPath = targetPath.startsWith('~') ? join(homedir(), targetPath.slice(1)) : targetPath;
+    if (!existsSync(projectPath)) {
+      return NextResponse.json(
+        { ok: false, error: `target path "${projectPath}" does not exist` },
+        { status: 400 },
+      );
+    }
+    if (existsSync(join(projectPath, '.harness'))) {
+      return NextResponse.json(
+        { ok: false, error: `target "${projectPath}" already has a .harness/ — already initialized?` },
+        { status: 409 },
+      );
+    }
+  } else {
+    const projectsRoot = process.env.PAPERCUSP_PROJECTS_ROOT ?? join(homedir(), '.papercusp', 'projects');
+    projectPath = join(projectsRoot, projectName);
+    if (existsSync(projectPath)) {
+      return NextResponse.json(
+        { ok: false, error: `project "${projectName}" already exists at ${projectPath}` },
+        { status: 409 },
+      );
+    }
   }
 
   const env = {
@@ -66,7 +92,9 @@ export async function POST(req: Request) {
     );
   }
 
-  const initResult = await run(PAPERCUSP_BIN, ['init', projectName, '--from', slug], env);
+  const initArgs = ['init', projectName, '--from', slug];
+  if (targetPath) initArgs.push('--target', projectPath);
+  const initResult = await run(PAPERCUSP_BIN, initArgs, env);
   if (initResult.code !== 0) {
     return NextResponse.json(
       {
@@ -85,6 +113,7 @@ export async function POST(req: Request) {
     projectSlug: projectName,
     projectPath,
     templateSlug: slug,
+    attachedToExisting: !!targetPath,
     log: [installResult.stdout, initResult.stdout].filter(Boolean).join('\n'),
   });
 }

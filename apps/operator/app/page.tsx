@@ -1,3 +1,5 @@
+import ApiKeyStatus from './_components/ApiKeyStatus';
+
 export default function HomePage() {
   return (
     <div className="pc-shell">
@@ -5,8 +7,10 @@ export default function HomePage() {
       <p style={{ fontSize: 17, color: 'var(--fg)', maxWidth: 640, marginBottom: 32 }}>
         An open-source framework for running autonomous multi-agent missions.
         Define a goal in plain English, install a harness from the marketplace,
-        and watch a coordinated team of AI roles plan, execute, validate,
-        and iterate against your spec — until it&rsquo;s done.
+        and watch a coordinated team of AI roles plan, execute, validate, and
+        iterate against your spec. Your API keys and project files stay on
+        your machine — Papercusp runs harnesses locally against your own
+        Anthropic / OpenAI keys.
       </p>
 
       <div className="pc-grid cards-3" style={{ marginTop: 24 }}>
@@ -27,12 +31,14 @@ export default function HomePage() {
           <a href="/marketplace" className="pc-button">Browse →</a>
         </div>
         <div className="pc-card">
-          <h3>Run locally</h3>
-          <p>
-            Your API keys and project files stay on your machine. Papercusp
-            runs the harness against your local Anthropic / OpenAI keys.
+          <h3>Configure API keys</h3>
+          <p style={{ minHeight: 48 }}>
+            Provide your Anthropic key (required) and optional OpenAI / GitHub
+            credentials. Stored in <code>~/.papercusp/credentials.json</code>,
+            never sent to our servers.
           </p>
-          <a href="/settings/api-keys" className="pc-button">Set up keys →</a>
+          <div style={{ marginBottom: 12 }}><ApiKeyStatus /></div>
+          <a href="/settings/api-keys" className="pc-button">Configure →</a>
         </div>
         <div className="pc-card">
           <h3>Publish your harness</h3>
