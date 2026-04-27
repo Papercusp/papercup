@@ -29,6 +29,35 @@ async function checkBinary(bin: string, args: string[] = ['--version']): Promise
   }
 }
 
+/**
+ * Check for pi (omp). GUI app launches on macOS often miss the user's
+ * login-shell PATH so 'omp' alone may fail even when installed via
+ * homebrew. Probe well-known absolute locations as a fallback.
+ */
+async function checkPi(): Promise<Check> {
+  const direct = await checkBinary('omp');
+  if (direct.status === 'ok') return { ...direct, name: 'pi' };
+
+  const candidates = [
+    '/usr/local/bin/omp',
+    '/opt/homebrew/bin/omp',
+    `${process.env.HOME ?? ''}/.cargo/bin/omp`,
+    `${process.env.HOME ?? ''}/.local/bin/omp`,
+  ];
+  for (const path of candidates) {
+    if (existsSync(path)) {
+      const probe = await checkBinary(path);
+      if (probe.status === 'ok') return { ...probe, name: 'pi', detail: `${probe.detail} (at ${path})` };
+    }
+  }
+  return {
+    name: 'pi',
+    status: 'missing',
+    detail: 'omp not on PATH or known install paths',
+    hint: 'Install via: brew install can1357/oh-my-pi/oh-my-pi (or see https://github.com/can1357/oh-my-pi). Optional — required only for the in-app pi tab.',
+  };
+}
+
 async function checkPostgres(): Promise<Check> {
   return new Promise((resolve) => {
     const socket = new net.Socket();
@@ -71,14 +100,17 @@ export async function OPTIONS() {
 }
 
 export async function GET() {
-  const [node, claude, bash, postgres] = await Promise.all([
+  const [node, claude, bash, postgres, pi] = await Promise.all([
     checkBinary('node'),
     checkBinary('claude'),
     checkBinary('bash'),
     checkPostgres(),
+    checkPi(),
   ]);
   const harness = checkHarnessDir();
-  const checks = [node, postgres, claude, bash, harness];
-  const allOk = checks.every((c) => c.status === 'ok');
+  const checks = [node, postgres, claude, bash, harness, pi];
+  // pi is optional — its absence shouldn't block the app from booting.
+  const required = checks.filter((c) => c.name !== 'pi');
+  const allOk = required.every((c) => c.status === 'ok');
   return NextResponse.json({ ok: allOk, checks }, { headers: CORS_HEADERS });
 }
