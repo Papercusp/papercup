@@ -20,9 +20,10 @@
  */
 import type { Hono } from 'hono';
 import { stream } from 'hono/streaming';
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
+import { spawn as spawnChild } from 'node:child_process';
 import {
   getLegacyClient,
   getFeatureLineage,
@@ -135,6 +136,94 @@ async function buildFeaturePromptFile(
 }
 
 /**
+ * Find pi/omp session jsonl files created within `windowMs` ms of the
+ * pty's startup. With `PI_CODING_AGENT_DIR=<stateDir>/pi-sessions/`,
+ * omp organizes sessions as:
+ *
+ *   <agentDir>/sessions/<encoded-cwd>/<timestamp>_<id>.jsonl
+ *
+ * encoded-cwd replaces `/` with `-`. Multiple ptys can share an agent
+ * dir, so we filter by mtime to pick only files that almost certainly
+ * belong to the pty that just exited.
+ */
+function findRecentSessionFiles(
+  agentDir: string,
+  startedAtMs: number,
+  windowMs: number,
+): string[] {
+  const sessionsRoot = join(agentDir, 'sessions');
+  if (!existsSync(sessionsRoot)) return [];
+  const out: string[] = [];
+  // Walk one level deep — workspace dirs.
+  let workspaces: string[];
+  try { workspaces = readdirSync(sessionsRoot); } catch { return []; }
+  for (const ws of workspaces) {
+    const wsDir = join(sessionsRoot, ws);
+    let entries: string[];
+    try { entries = readdirSync(wsDir); } catch { continue; }
+    for (const e of entries) {
+      if (!e.endsWith('.jsonl')) continue;
+      const full = join(wsDir, e);
+      try {
+        const st = statSync(full);
+        // mtime > startedAtMs - 5s slack (in case of clock drift)
+        if (st.mtimeMs >= startedAtMs - 5_000) out.push(full);
+      } catch { /* file vanished */ }
+    }
+  }
+  return out;
+}
+
+/**
+ * Best-effort: export pi/omp sessions created during this pty's lifetime
+ * to HTML under `<stateDir>/audit/pi-sessions/`. Runs `omp --export` per
+ * session file with cwd set to the audit dir (omp writes a file named
+ * `omp-session-<id>.html` in cwd). After the child exits, rename to our
+ * preferred `<tagPrefix>-<stem>.html` shape so the audit dir doesn't
+ * collide across multiple pty lifetimes for the same feature.
+ *
+ * All errors are swallowed — this is non-blocking polish, not a failure
+ * path.
+ */
+function exportPiSessions(opts: {
+  agentDir: string;
+  auditDir: string;
+  startedAtMs: number;
+  ompBin: string;
+  tagPrefix: string;
+}): void {
+  const { agentDir, auditDir, startedAtMs, ompBin, tagPrefix } = opts;
+  // Run async; caller doesn't await.
+  setImmediate(() => {
+    const files = findRecentSessionFiles(agentDir, startedAtMs, 24 * 60 * 60 * 1000);
+    if (files.length === 0) return;
+    try { mkdirSync(auditDir, { recursive: true }); } catch { return; }
+    for (const sessionFile of files) {
+      const stem = basename(sessionFile, '.jsonl');
+      const desiredPath = join(auditDir, `${tagPrefix}-${stem}.html`);
+      // omp's default output filename is omp-session-<stem>.html in cwd.
+      const ompDefaultName = `omp-session-${stem}.html`;
+      const ompDefaultPath = join(auditDir, ompDefaultName);
+      const child = spawnChild(ompBin, ['--export', sessionFile], {
+        cwd: auditDir,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      child.on('error', () => {});
+      child.on('exit', (code) => {
+        if (code !== 0) return;
+        // Rename to our naming scheme. If the rename target already
+        // exists, just leave both — re-running is idempotent.
+        try {
+          if (existsSync(ompDefaultPath) && !existsSync(desiredPath)) {
+            renameSync(ompDefaultPath, desiredPath);
+          }
+        } catch { /* keep omp's default name; not a failure */ }
+      });
+    }
+  });
+}
+
+/**
  * Resolve the pi binary. Many launch contexts (mac homebrew + Tauri-Cocoa,
  * Linux desktop launchers) miss the user's login-shell PATH entries. Probe
  * the known locations on top of $PATH and fall back to the bare name.
@@ -209,6 +298,26 @@ function resolvePiBinary(): string {
       rows,
       env: { ...defaultEnv, ...body.env },
     });
+
+    // Audit export — when this pty exits, dump any pi/omp session jsonls
+    // created during its lifetime to HTML under <stateDir>/audit/pi-sessions/.
+    // Best-effort; failures don't surface to the client.
+    if (sd && command.includes('omp')) {
+      const agentDir = defaultEnv.PI_CODING_AGENT_DIR ?? join(homedir(), '.omp', 'agent');
+      const auditDir = join(sd, 'audit', 'pi-sessions');
+      const tagPrefix = body.laneId ?? `pid${handle.pty.pid}`;
+      const startedAtMs = handle.startedAtMs;
+      handle.onExit.add(() => {
+        exportPiSessions({
+          agentDir,
+          auditDir,
+          startedAtMs,
+          ompBin: command,
+          tagPrefix,
+        });
+      });
+    }
+
     return c.json({
       id: handle.id,
       command: handle.command,
