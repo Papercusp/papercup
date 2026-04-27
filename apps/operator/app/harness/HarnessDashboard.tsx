@@ -3,6 +3,8 @@
 import './harness.css';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@rocicorp/zero/react';
+import { queries, slugToFeaturesKey, type FeatureRow } from '@restart/zero-harness';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { Toaster, toast } from 'sonner';
@@ -274,6 +276,22 @@ function fmtDuration(seconds: number): string {
   return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
+// PG `claims` is a JSON-encoded string array. Defensively handle invalid
+// JSON, non-array shapes, and pre-encoded arrays already passed through.
+function safeParseClaims(raw: unknown): string[] | undefined {
+  if (!raw) return undefined;
+  if (Array.isArray(raw)) return raw.map((s) => String(s));
+  if (typeof raw === 'string') {
+    try {
+      const v = JSON.parse(raw);
+      if (Array.isArray(v)) return v.map((s) => String(s));
+    } catch {
+      /* fall through */
+    }
+  }
+  return undefined;
+}
+
 // ─── Component ─────────────────────────────────────────────────────────
 
 export default function HarnessDashboard() {
@@ -420,6 +438,72 @@ export default function HarnessDashboard() {
     }, 5000);
     return () => clearInterval(t);
   }, [activeSlug, activePhase]);
+
+  // ── Zero live feature subscription ─────────────────────────────────────
+  // Subscribe to harness_<slug>.harness_features via the harness Zero
+  // (zero-cache-harness :4849). Replaces /status's features field whenever
+  // a row from Zero is available, so feature updates propagate live (~3s).
+  // Falls back to polled features for unknown slugs.
+  const slugKey = useMemo(
+    () => (activeSlug ? slugToFeaturesKey(activeSlug) : null),
+    [activeSlug],
+  );
+  const featuresQuery = useMemo(() => {
+    if (!slugKey) return null;
+    const ns = (queries as Record<string, unknown>)[slugKey] as
+      | { all: () => unknown }
+      | undefined;
+    return ns?.all() ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slugKey]);
+  const [zeroFeatureRows, zeroFeatureInfo] = useQuery(
+    (featuresQuery ?? (queries.featuresSheets.all() as unknown)) as never,
+  );
+  useEffect(() => {
+    if (!featuresQuery) return;
+    // Wait until Zero finishes its initial CVR (info.type === 'complete').
+    // Before that, zeroFeatureRows is the optimistic-empty array — applying
+    // it would clobber the polled features with [].
+    const info = zeroFeatureInfo as { type?: string } | undefined;
+    if (info?.type !== 'complete') return;
+    if (!Array.isArray(zeroFeatureRows)) return;
+    const adapted: Feature[] = (zeroFeatureRows as FeatureRow[]).map((zf) => ({
+      id: zf.featureId,
+      title: zf.title,
+      summary: zf.summary ?? undefined,
+      status: zf.status as FeatureStatus,
+      attempts: Number(zf.attempts) || 0,
+      claims: zf.claims ? safeParseClaims(zf.claims) : undefined,
+    }));
+    setStatus((prev) => {
+      if (!prev) {
+        // Zero arrived before any polled status; synthesize a minimal one.
+        return {
+          project: { slug: activeSlug ?? '', path: '' },
+          features: adapted,
+          counts: {},
+          iteration: 0,
+          lastDecision: null,
+          alive: false,
+          escalated: false,
+        } as Status;
+      }
+      const sameLength = prev.features.length === adapted.length;
+      if (sameLength) {
+        const same = prev.features.every((f, i) => {
+          const a = adapted[i];
+          return (
+            f.id === a.id &&
+            f.title === a.title &&
+            f.status === a.status &&
+            f.attempts === a.attempts
+          );
+        });
+        if (same) return prev;
+      }
+      return { ...prev, features: adapted };
+    });
+  }, [featuresQuery, zeroFeatureRows, zeroFeatureInfo, activeSlug]);
 
   const loadAgent = useCallback(async (runId: string) => {
     const r = await fetch(`/api/harness/${activeSlug}/agents/${runId}?phase=${activePhase}`).then((r) => r.json());
