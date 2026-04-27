@@ -74,7 +74,7 @@
       "message_comments",
       "directive_summaries"
     ],
-    "note": "Schema is provisioned by libs/db-org migrations, not by the plugin loader. This declaration is informational — the loader treats schema as already-present when this manifest is loaded."
+    "note": "Schema is provisioned by libs/papercusp/libs/db migrations, not by the plugin loader. This declaration is informational — the loader treats schema as already-present when this manifest is loaded."
   },
   "config": {
     "departments": [
