@@ -53,7 +53,7 @@ export interface PtyHandle {
   onExit: Set<(code: number, signal: number) => void>;
 }
 
-const MAX_CONCURRENT_PTYS = 4;
+const MAX_CONCURRENT_PTYS = 16;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const REAPER_INTERVAL_MS = 30 * 1000;
 

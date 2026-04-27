@@ -79,3 +79,76 @@
 .pi-panel__term .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: #3a3a3a;
 }
+
+/* PiTerminalsDock — multi-pane container around dockview-react. */
+
+.pi-dock {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #0a0a0a;
+  color: #e7e7e7;
+  border-left: 1px solid #1f1f1f;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.pi-dock__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #1f1f1f;
+  background: #111;
+  font-size: 11px;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  flex: 0 0 auto;
+}
+
+.pi-dock__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6ea8ff;
+  font-weight: 600;
+}
+
+.pi-dock__add-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  background: #1d2533;
+  color: #6ea8ff;
+  border: 1px solid #2a3a52;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.pi-dock__add-btn:hover {
+  background: #243046;
+  border-color: #3a5070;
+}
+
+.pi-dock__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.pi-dock__body > .dv-dockview {
+  width: 100%;
+  height: 100%;
+}
+
+/* Inside dockview panels: PiPanel removes its own border-left because the
+   dockview tab strip already provides visual separation. */
+.pi-dock__body .pi-panel {
+  border-left: none;
+}

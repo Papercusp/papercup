@@ -61,7 +61,7 @@ import InsightsPanel from './InsightsPanel';
 import TriageQueue from './TriageQueue';
 import ArchitectInbox from './ArchitectInbox';
 import { CollapsedGitRail, CollapsedInboxRail } from './CollapsedRails';
-import PiPanel from './PiPanel';
+import PiTerminalsDock from './PiTerminalsDock';
 import PhaseTabs, { type Phase } from './PhaseTabs';
 import TestsTab from './TestsTab';
 import ProposalsPanel from './ProposalsPanel';
@@ -1247,7 +1247,7 @@ export default function HarnessDashboard() {
         )}
         {activePanel === 'pi' && activeSlug && (
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-            <PiPanel slug={activeSlug} laneId={piLaneId ?? undefined} />
+            <PiTerminalsDock slug={activeSlug} initialLaneId={piLaneId ?? undefined} />
           </div>
         )}
         {activePanel === 'insights' && status && (
