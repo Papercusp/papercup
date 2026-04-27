@@ -20,7 +20,7 @@
  */
 import { spawn } from 'node:child_process';
 import { getLegacyClient } from '@restart/db-org';
-import { assembleRolePrompt } from './assemble-role-prompt';
+import { assembleRolePrompt } from '@papercusp/orchestrator';
 
 export interface RunPmOptions {
   slug: string;
@@ -73,7 +73,7 @@ function parsePmOutput(stdout: string): ParsedOutput | { error: string } {
     if (!Array.isArray(parsed)) return { error: 'PROJECT_MANAGER_DECISIONS must be a JSON array' };
     decisions = parsed.map((d: any) => ({
       feature_id: String(d.feature_id ?? ''),
-      action: d.action === 'include' ? 'include' : 'exclude',
+      action: (d.action === 'include' ? 'include' : 'exclude') as 'include' | 'exclude',
       reason: String(d.reason ?? ''),
     })).filter((d) => d.feature_id);
   } catch (e) {
