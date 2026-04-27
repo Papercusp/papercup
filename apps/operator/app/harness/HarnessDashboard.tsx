@@ -9,7 +9,13 @@ import { Tooltip } from './Tooltip';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@rocicorp/zero/react';
-import { queries, slugToFeaturesKey, type FeatureRow } from '@restart/zero-harness';
+import {
+  queries,
+  slugToFeaturesKey,
+  slugToAgentRunsKey,
+  type FeatureRow,
+  type AgentRunRow,
+} from '@restart/zero-harness';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -334,16 +340,17 @@ function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, activeSlug 
           🧩 {label}
         </Tabs.Trigger>
       </Tooltip>
-      <button
-        type="button"
-        onClick={(e) => { e.stopPropagation(); e.preventDefault(); setOpen(!open); }}
-        title="Plugin info"
-        style={{
-          marginLeft: -4, padding: '0 4px', background: 'transparent',
-          border: 'none', color: 'var(--text-3)', cursor: 'pointer',
-          fontSize: 11, lineHeight: 1,
-        }}
-      >ⓘ</button>
+      <Tooltip label="Plugin info">
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); e.preventDefault(); setOpen(!open); }}
+          style={{
+            marginLeft: -4, padding: '0 4px', background: 'transparent',
+            border: 'none', color: 'var(--text-3)', cursor: 'pointer',
+            fontSize: 11, lineHeight: 1,
+          }}
+        >ⓘ</button>
+      </Tooltip>
       {open ? (
         <div
           data-plugin-popover
@@ -728,6 +735,41 @@ export default function HarnessDashboard() {
       return { ...prev, features: adapted };
     });
   }, [featuresQuery, zeroFeatureRows, zeroFeatureInfo, activeSlug]);
+
+  // ── Zero live agent_runs subscription ──────────────────────────────────
+  // Replaces the polled /agents fetch. Polling still happens (in the EventSource
+  // handler below) but only as a sync ping that triggers the API's FS scan +
+  // PG dual-write — the data the UI displays comes from Zero.
+  const agentRunsKey = useMemo(
+    () => (activeSlug ? slugToAgentRunsKey(activeSlug) : null),
+    [activeSlug],
+  );
+  const agentRunsQuery = useMemo(() => {
+    if (!agentRunsKey) return null;
+    const ns = (queries as Record<string, unknown>)[agentRunsKey] as
+      | { all: () => unknown }
+      | undefined;
+    return ns?.all() ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentRunsKey]);
+  const [zeroAgentRows, zeroAgentInfo] = useQuery(
+    (agentRunsQuery ?? (queries.agentRunsSheets.all() as unknown)) as never,
+  );
+  useEffect(() => {
+    if (!agentRunsQuery) return;
+    const info = zeroAgentInfo as { type?: string } | undefined;
+    if (info?.type !== 'complete') return;
+    if (!Array.isArray(zeroAgentRows)) return;
+    const adapted: AgentRun[] = (zeroAgentRows as AgentRunRow[])
+      .slice(0, 200)
+      .map((r) => ({
+        runId: r.runId,
+        role: r.role,
+        ts: Number(r.ts) || 0,
+        sizeBytes: Number(r.sizeBytes) || 0,
+      }));
+    setAgents(adapted);
+  }, [agentRunsQuery, zeroAgentRows, zeroAgentInfo]);
 
   const loadAgent = useCallback(async (runId: string) => {
     const r = await fetch(`/api/harness/${activeSlug}/agents/${runId}?phase=${activePhase}`).then((r) => r.json());
@@ -1137,17 +1179,18 @@ export default function HarnessDashboard() {
                 icon={<CheckCircle2 size={13} />}
               />
               {typeof status.missionCostUsd === 'number' && status.missionCostUsd > 0 && (
-                <button
-                  className="h-stat-button"
-                  onClick={() => setShowUsage(true)}
-                  title="Open per-role cost breakdown"
-                >
-                  <StatCard
-                    label="spent"
-                    value={`${status.missionCostUsd.toFixed(2)}`}
-                    icon={<Coins size={13} />}
-                  />
-                </button>
+                <Tooltip label="Open per-role cost breakdown">
+                  <button
+                    className="h-stat-button"
+                    onClick={() => setShowUsage(true)}
+                  >
+                    <StatCard
+                      label="spent"
+                      value={`${status.missionCostUsd.toFixed(2)}`}
+                      icon={<Coins size={13} />}
+                    />
+                  </button>
+                </Tooltip>
               )}
               {activeSlug && <HealthBadge slug={activeSlug} />}
               {typeof status.pendingCheckpoints === 'number' && status.pendingCheckpoints > 0 && (
@@ -1169,13 +1212,14 @@ export default function HarnessDashboard() {
                 </div>
               )}
               {status.smokeFail && (
-                <button
-                  className="h-stat-button"
-                  onClick={() => setShowSmokeTest(true)}
-                  title="Last smoke test failed — click to view"
-                >
-                  <StatCard label="smoke" value="FAIL" tone="bad" />
-                </button>
+                <Tooltip label="Last smoke test failed — click to view">
+                  <button
+                    className="h-stat-button"
+                    onClick={() => setShowSmokeTest(true)}
+                  >
+                    <StatCard label="smoke" value="FAIL" tone="bad" />
+                  </button>
+                </Tooltip>
               )}
               {lanes && (lanes.max > 1 || lanes.lanes.filter((l) => l.alive).length > 0) && (() => {
                 const alive = lanes.lanes.filter((l) => l.alive);
@@ -1207,16 +1251,19 @@ export default function HarnessDashboard() {
                   <AlertTriangle size={12} /> escalated
                 </span>
               )}
-              <button className="h-btn ghost h-key-btn" onClick={() => setPaletteOpen(true)} title="Command palette (⌘K)">
-                ⌘K
-              </button>
-              <button
-                className={`h-btn ${triageCount > 0 ? 'danger' : 'ghost'}`}
-                onClick={() => setShowTriage(true)}
-                title="Triage — features needing attention"
-              >
-                <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
-              </button>
+              <Tooltip label="Command palette (⌘K)">
+                <button className="h-btn ghost h-key-btn" onClick={() => setPaletteOpen(true)}>
+                  ⌘K
+                </button>
+              </Tooltip>
+              <Tooltip label="Triage — features needing attention">
+                <button
+                  className={`h-btn ${triageCount > 0 ? 'danger' : 'ghost'}`}
+                  onClick={() => setShowTriage(true)}
+                >
+                  <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
+                </button>
+              </Tooltip>
               {status.alive ? (
                 <button className="h-btn danger" onClick={stopHarness}>
                   <Square size={13} fill="currentColor" /> stop

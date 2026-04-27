@@ -404,37 +404,164 @@ function probeRunLiveness(jsonlPath: string, now: number): { running: boolean; l
   }
 }
 
+/**
+ * Shared scan of `.harness/logs/` — produces the full agent_runs row shape
+ * (filename-parsed metadata + .out size + liveness probe + last-result-line
+ * cost/tokens). Used by both /agents (lightweight list) and /usage
+ * (aggregates over the same dataset). Parsing every .jsonl on each call is
+ * O(files × 4KB read) — fine at current scale (~200 files).
+ */
+interface AgentRunFull {
+  runId: string;
+  role: string;
+  featureId: string | null;
+  ts: number;
+  sizeBytes: number;
+  durationMs: number;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  running: boolean;
+  lastEventTs: number;
+}
+
+function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
+  const logDir = join(harnessDir(project), 'logs');
+  if (!existsSync(logDir)) return [];
+  const now = Date.now();
+  const out: AgentRunFull[] = [];
+  for (const f of readdirSync(logDir)) {
+    if (!f.endsWith('.jsonl')) continue;
+    const base = f.replace(/\.jsonl$/, '');
+    // Filename: <ts>-<role>[-<featureId>] e.g. 1777000000-worker-F-FIX-009
+    const match = base.match(/^(\d+)-([a-z]+)(?:-(F-[A-Z0-9-]+))?$/);
+    const jsonlPath = join(logDir, f);
+    let jsonlMtime = 0;
+    try { jsonlMtime = Math.floor(statSync(jsonlPath).mtimeMs); } catch {}
+    const outPath = join(logDir, `${base}.out`);
+    let outSize = 0;
+    try { if (existsSync(outPath)) outSize = statSync(outPath).size; } catch {}
+    const { running, lastEventTs } = probeRunLiveness(jsonlPath, now);
+    let costUsd = 0, inputTokens = 0, outputTokens = 0, cacheReadTokens = 0, cacheCreationTokens = 0, durationMs = 0;
+    // Parse the last `result` line for cost/tokens — single tail read instead
+    // of full file scan. We re-use the probeRunLiveness pattern but extract
+    // the result object too.
+    try {
+      const stat = statSync(jsonlPath);
+      const tailSize = Math.min(stat.size, 16384); // 16KB is enough for one result line
+      if (tailSize > 0) {
+        const fd = openSync(jsonlPath, 'r');
+        try {
+          const buf = Buffer.allocUnsafe(tailSize);
+          readSync(fd, buf, 0, tailSize, stat.size - tailSize);
+          const lines = buf.toString('utf8').split('\n').filter(Boolean);
+          for (let i = lines.length - 1; i >= 0; i--) {
+            if (!lines[i].includes('"type":"result"')) continue;
+            try {
+              const obj = JSON.parse(lines[i]);
+              if (obj.type === 'result') {
+                costUsd = obj.total_cost_usd ?? 0;
+                inputTokens = obj.usage?.input_tokens ?? 0;
+                outputTokens = obj.usage?.output_tokens ?? 0;
+                cacheReadTokens = obj.usage?.cache_read_input_tokens ?? 0;
+                cacheCreationTokens = obj.usage?.cache_creation_input_tokens ?? 0;
+                durationMs = obj.duration_ms ?? 0;
+                break;
+              }
+            } catch {}
+          }
+        } finally { closeSync(fd); }
+      }
+    } catch {}
+    out.push({
+      runId: base,
+      role: match ? match[2] : 'unknown',
+      featureId: (match && match[3]) || null,
+      ts: match ? Number(match[1]) * 1000 : jsonlMtime,
+      sizeBytes: outSize,
+      durationMs,
+      costUsd, inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens,
+      running,
+      lastEventTs: Math.floor(lastEventTs || jsonlMtime),
+    });
+  }
+  return out.sort((a, b) => b.ts - a.ts);
+}
+
+/**
+ * Mirror agent-run metadata into `harness_<slug>.agent_runs`. Cheap because
+ * the row count is bounded by .jsonl file count (~200). Fire-and-forget.
+ */
+async function syncAgentRunsToPg(project: ProjectEntry, runs: AgentRunFull[]): Promise<void> {
+  const { sql } = getHarnessPg(project.slug);
+  const now = Date.now();
+  const ids = runs.map((r) => r.runId);
+  if (runs.length > 0) {
+    const rows = runs.map((r) => ({
+      harness_slug: project.slug,
+      run_id: r.runId,
+      role: r.role,
+      feature_id: r.featureId ?? null,
+      ts: r.ts,
+      size_bytes: r.sizeBytes,
+      duration_ms: r.durationMs,
+      cost_usd: r.costUsd,
+      input_tokens: r.inputTokens,
+      output_tokens: r.outputTokens,
+      cache_read_tokens: r.cacheReadTokens,
+      cache_creation_tokens: r.cacheCreationTokens,
+      running: r.running,
+      last_event_ts: r.lastEventTs,
+      created_ts: now,
+      updated_ts: now,
+    }));
+    await sql`
+      INSERT INTO agent_runs ${sql(rows, 'harness_slug', 'run_id', 'role', 'feature_id', 'ts', 'size_bytes', 'duration_ms', 'cost_usd', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'running', 'last_event_ts', 'created_ts', 'updated_ts')}
+      ON CONFLICT (harness_slug, run_id) DO UPDATE SET
+        role                    = EXCLUDED.role,
+        feature_id              = EXCLUDED.feature_id,
+        ts                      = EXCLUDED.ts,
+        size_bytes              = EXCLUDED.size_bytes,
+        duration_ms             = EXCLUDED.duration_ms,
+        cost_usd                = EXCLUDED.cost_usd,
+        input_tokens            = EXCLUDED.input_tokens,
+        output_tokens           = EXCLUDED.output_tokens,
+        cache_read_tokens       = EXCLUDED.cache_read_tokens,
+        cache_creation_tokens   = EXCLUDED.cache_creation_tokens,
+        running                 = EXCLUDED.running,
+        last_event_ts           = EXCLUDED.last_event_ts,
+        updated_ts              = EXCLUDED.updated_ts
+    `;
+    await sql`
+      DELETE FROM agent_runs
+      WHERE harness_slug = ${project.slug}
+        AND run_id NOT IN ${sql(ids)}
+    `;
+  } else {
+    await sql`DELETE FROM agent_runs WHERE harness_slug = ${project.slug}`;
+  }
+}
+
 harness.get('/:slug/agents', (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const logDir = join(harnessDir(project), 'logs');
-  if (!existsSync(logDir)) return c.json({ runs: [] });
-
-  // List by .jsonl: it's created at spawn time, so in-flight runs appear
-  // immediately. .out is only produced after the agent exits cleanly.
-  const now = Date.now();
-  const files = readdirSync(logDir)
-    .filter((f) => f.endsWith('.jsonl'))
-    .map((f) => {
-      const base = f.replace(/\.jsonl$/, '');
-      const jsonlPath = join(logDir, f);
-      const jsonlStat = statSync(jsonlPath);
-      const outPath = join(logDir, `${base}.out`);
-      const outStat = existsSync(outPath) ? statSync(outPath) : null;
-      const match = base.match(/^(\d+)-(\w+)$/);
-      const { running, lastEventTs } = probeRunLiveness(jsonlPath, now);
-      return {
-        runId: base,
-        role: match ? match[2] : 'unknown',
-        ts: match ? Number(match[1]) * 1000 : jsonlStat.mtimeMs,
-        sizeBytes: outStat ? outStat.size : 0,
-        running,
-        lastEventTs: lastEventTs || jsonlStat.mtimeMs,
-      };
-    })
-    .sort((a, b) => b.ts - a.ts)
-    .slice(0, 200);
-  return c.json({ runs: files });
+  const all = scanAgentRuns(project);
+  // Fire-and-forget PG mirror — Zero subscribers see updates within one poll.
+  syncAgentRunsToPg(project, all).catch((err) => {
+    console.warn(`[agents] PG sync failed for ${project.slug}:`, err?.message ?? err);
+  });
+  // Backwards-compatible response shape.
+  const runs = all.slice(0, 200).map((r) => ({
+    runId: r.runId,
+    role: r.role,
+    ts: r.ts,
+    sizeBytes: r.sizeBytes,
+    running: r.running,
+    lastEventTs: r.lastEventTs,
+  }));
+  return c.json({ runs });
 });
 
 harness.get('/:slug/agents/:runId', (c) => {
@@ -2301,61 +2428,18 @@ harness.get('/:slug/notes', (c) => {
 harness.get('/:slug/usage', (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const logDir = join(harnessDir(project), 'logs');
-  if (!existsSync(logDir)) {
+  const all = scanAgentRuns(project);
+  // Force-sync to PG so usage and agents endpoints stay coherent.
+  syncAgentRunsToPg(project, all).catch((err) => {
+    console.warn(`[usage] PG sync failed for ${project.slug}:`, err?.message ?? err);
+  });
+  // Only count runs with a result line (cost > 0 OR duration > 0 OR tokens > 0)
+  // — the rest are still in-flight or aborted before producing usage.
+  const runs = all.filter((r) =>
+    r.costUsd > 0 || r.durationMs > 0 || r.inputTokens > 0 || r.outputTokens > 0
+  );
+  if (runs.length === 0 && all.length === 0) {
     return c.json({ totals: zeroUsage(), byRole: [], recent: [] });
-  }
-
-  type Run = {
-    runId: string;
-    role: string;
-    featureId: string | null;
-    ts: number;
-    costUsd: number;
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadTokens: number;
-    cacheCreationTokens: number;
-    durationMs: number;
-  };
-
-  const runs: Run[] = [];
-  for (const f of readdirSync(logDir)) {
-    if (!f.endsWith('.jsonl')) continue;
-    const stem = f.replace(/\.jsonl$/, '');
-    // Filename shape: <ts>-<role>[-<FEATURE_ID>].jsonl
-    //   Plain:    1777000000-worker
-    //   Tagged:   1777000000-worker-F-003   or   1777000000-worker-F-FIX-001
-    const match = stem.match(/^(\d+)-([a-z]+)(?:-(F-[A-Z0-9-]+))?$/);
-    if (!match) continue;
-    const ts = Number(match[1]) * 1000;
-    const role = match[2];
-    const featureId = match[3] ?? null;
-    try {
-      const raw = readFileSync(join(logDir, f), 'utf8');
-      const lines = raw.split('\n').filter(Boolean);
-      // last result line (a jsonl can have a tail re-run; take the last)
-      for (let i = lines.length - 1; i >= 0; i--) {
-        try {
-          const obj = JSON.parse(lines[i]);
-          if (obj.type === 'result') {
-            runs.push({
-              runId: stem,
-              role,
-              featureId,
-              ts,
-              costUsd: obj.total_cost_usd ?? 0,
-              inputTokens: obj.usage?.input_tokens ?? 0,
-              outputTokens: obj.usage?.output_tokens ?? 0,
-              cacheReadTokens: obj.usage?.cache_read_input_tokens ?? 0,
-              cacheCreationTokens: obj.usage?.cache_creation_input_tokens ?? 0,
-              durationMs: obj.duration_ms ?? 0,
-            });
-            break;
-          }
-        } catch {}
-      }
-    } catch {}
   }
 
   // Totals
