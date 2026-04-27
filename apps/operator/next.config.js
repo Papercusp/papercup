@@ -1,13 +1,31 @@
 const path = require('path');
+const { createMDX } = require('fumadocs-mdx/next');
 
 const PAPERCUP_UPSTREAM = process.env.PAPERCUSP_PAPERCUP_UPSTREAM ?? 'http://localhost:3061';
 const WEB_UPSTREAM      = process.env.PAPERCUSP_WEB_UPSTREAM      ?? 'http://localhost:3001';
 
+const withMDX = createMDX();
+
 /** @type {import('next').NextConfig} */
-module.exports = {
+const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
   outputFileTracingRoot: path.join(__dirname, '../..'),
+  // node-pty's native .node bindings live in prebuilds/<platform>/pty.node
+  // and are loaded via dynamic require — Next's tracer can't see them.
+  // Force-include them so the standalone bundle ships the prebuilt binary
+  // for whatever platform we're packaging on. The desktop build copies
+  // node_modules from this standalone tree into the sidecar bundle.
+  outputFileTracingIncludes: {
+    '/api/harness/**': [
+      'node_modules/@lydell/node-pty-linux-x64/prebuilds/**',
+      'node_modules/@lydell/node-pty-linux-arm64/prebuilds/**',
+      'node_modules/@lydell/node-pty-darwin-x64/prebuilds/**',
+      'node_modules/@lydell/node-pty-darwin-arm64/prebuilds/**',
+      'node_modules/@lydell/node-pty-win32-x64/prebuilds/**',
+      'node_modules/@lydell/node-pty-win32-arm64/prebuilds/**',
+    ],
+  },
   typescript: { ignoreBuildErrors: true },
   images: { unoptimized: true },
   // Turbopack persistent cache deadlocks under load AND silently retains
@@ -56,3 +74,5 @@ module.exports = {
     ];
   },
 };
+
+module.exports = withMDX(nextConfig);
