@@ -465,4 +465,96 @@ function resolvePiBinary(): string {
     if (!ok) return c.json({ error: 'unknown pty' }, 404);
     return c.body(null, 204);
   });
+
+  // ── Audit sessions (pi-export HTML) ─────────────────────────────────
+  // The pty's onExit handler async-exports any pi/omp session jsonls
+  // created during the pane's lifetime to <stateDir>/audit/pi-sessions/.
+  // These endpoints surface those HTML files to the UI so users can
+  // browse past pi conversations from the harness dashboard.
+
+  harness.get('/:slug/pi-sessions/audit', (c) => {
+    const slug = c.req.param('slug') ?? '';
+    const sd = stateDirForSlug(slug);
+    if (!sd) return c.json({ error: 'unknown harness slug', slug }, 404);
+    const auditDir = join(sd, 'audit', 'pi-sessions');
+    if (!existsSync(auditDir)) return c.json({ sessions: [] });
+
+    let entries: string[];
+    try { entries = readdirSync(auditDir); } catch { return c.json({ sessions: [] }); }
+
+    const sessions = entries
+      .filter((e) => e.endsWith('.html'))
+      .map((e) => {
+        const full = join(auditDir, e);
+        try {
+          const st = statSync(full);
+          // Filename shape: <tag>-<timestamp>_<id>.html
+          // Try to surface the tag (laneId / pid) and a friendly date.
+          const stem = e.slice(0, -'.html'.length);
+          const m = stem.match(/^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)_(.+)$/);
+          return {
+            filename: e,
+            tag: m?.[1] ?? null,
+            timestamp: m?.[2] ?? null,
+            sessionId: m?.[3] ?? null,
+            sizeBytes: st.size,
+            mtimeMs: st.mtimeMs,
+          };
+        } catch {
+          return { filename: e };
+        }
+      })
+      .sort((a, b) => (b.mtimeMs ?? 0) - (a.mtimeMs ?? 0));
+
+    return c.json({ sessions });
+  });
+
+  harness.get('/:slug/pi-sessions/audit/:filename', (c) => {
+    const slug = c.req.param('slug') ?? '';
+    const filename = c.req.param('filename');
+    // Defense in depth: filename must be a simple HTML basename, no path traversal.
+    if (!/^[\w.-]+\.html$/.test(filename)) {
+      return c.json({ error: 'invalid filename' }, 400);
+    }
+    const sd = stateDirForSlug(slug);
+    if (!sd) return c.json({ error: 'unknown harness slug', slug }, 404);
+    const full = join(sd, 'audit', 'pi-sessions', filename);
+    if (!existsSync(full)) return c.json({ error: 'not found' }, 404);
+
+    let html: Buffer;
+    try { html = readFileSync(full); } catch { return c.json({ error: 'read failed' }, 500); }
+    c.header('Content-Type', 'text/html; charset=utf-8');
+    // Audit HTML is self-contained (omp embeds CSS); allow inline.
+    c.header('X-Content-Type-Options', 'nosniff');
+    return c.body(html);
+  });
+
+  // ── Pi extension tool surface ──────────────────────────────────────
+  // Returns the static list of papercusp_* tools that the bundled pi
+  // extension registers. Lets the PiPanel UI show users which tools are
+  // available without invoking pi or asking the LLM. Source-of-truth
+  // is the extension file at ~/.papercusp/global-plugins/pi/extension.ts.
+
+  harness.get('/:slug/pty/tools', (c) => {
+    const piExtensionPath = join(homedir(), '.papercusp', 'global-plugins', 'pi', 'extension.ts');
+    const available = existsSync(piExtensionPath);
+    if (!available) return c.json({ extensionAvailable: false, tools: [] });
+
+    // Hard-coded list — keeping in sync with extension.ts. If we add a
+    // tool there, add it here too. Cheaper than parsing the .ts file
+    // at runtime.
+    return c.json({
+      extensionAvailable: true,
+      extensionPath: piExtensionPath,
+      tools: [
+        { name: 'papercusp_status', label: 'Harness Status', description: 'Mission state, iteration, last decision, cost.' },
+        { name: 'papercusp_list_features', label: 'List Features', description: 'List features, optionally filtered by status.' },
+        { name: 'papercusp_lineage', label: 'Feature Lineage', description: "Walk a feature's parent_id chain to root goal." },
+        { name: 'papercusp_audit', label: 'Feature Audit Log', description: 'Audit log for a specific feature.' },
+        { name: 'papercusp_proposals', label: 'Pending Proposals', description: 'Proposals from the scoper role.' },
+        { name: 'papercusp_decisions', label: 'Recent Decisions', description: 'Recent orchestrator decisions.' },
+        { name: 'papercusp_issues', label: 'Open Issues', description: 'Open issues for the harness.' },
+      ],
+    });
+  });
 }

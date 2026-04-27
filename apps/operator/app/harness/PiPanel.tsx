@@ -30,6 +30,21 @@ export interface PiPanelProps {
   args?: readonly string[];
 }
 
+interface ToolDef {
+  name: string;
+  label: string;
+  description: string;
+}
+
+interface AuditSession {
+  filename: string;
+  tag: string | null;
+  timestamp: string | null;
+  sessionId: string | null;
+  sizeBytes: number;
+  mtimeMs: number;
+}
+
 interface PtyHandle {
   id: string;
   command: string;
@@ -76,6 +91,36 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
   const handleIdRef = useRef<string | null>(null);
   const [state, setState] = useState<PaneState>({ kind: 'starting' });
   const [restartTick, setRestartTick] = useState(0);
+  const [tools, setTools] = useState<ToolDef[] | null>(null);
+  const [showTools, setShowTools] = useState(false);
+  const [sessions, setSessions] = useState<AuditSession[] | null>(null);
+  const [showSessions, setShowSessions] = useState(false);
+
+  // Fetch the static papercusp_* tool list once. Endpoint reflects whether
+  // the extension file is present on disk; sidecar passes -e <path> on
+  // omp spawn when it is, so this also tells the user whether tools are
+  // actually wired into this pty.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/pty/tools`);
+        if (!r.ok) return;
+        const data = await r.json() as { extensionAvailable: boolean; tools: ToolDef[] };
+        if (!cancelled && data.extensionAvailable) setTools(data.tools);
+      } catch { /* best-effort */ }
+    })();
+    return () => { cancelled = true; };
+  }, [slug]);
+
+  const refreshSessions = useCallback(async () => {
+    try {
+      const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/pi-sessions/audit`);
+      if (!r.ok) { setSessions([]); return; }
+      const data = await r.json() as { sessions: AuditSession[] };
+      setSessions(data.sessions);
+    } catch { setSessions([]); }
+  }, [slug]);
 
   const postKill = useCallback(async (id: string) => {
     try {
@@ -232,21 +277,109 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
           </span>
         )}
         {state.kind === 'exited' && (
-          <>
-            <span className="pi-panel__sub pi-panel__sub--exited">
-              exited {state.code}
-            </span>
-            <button
-              type="button"
-              className="pi-panel__btn"
-              onClick={() => setRestartTick((t) => t + 1)}
-            >Restart</button>
-          </>
+          <span className="pi-panel__sub pi-panel__sub--exited">
+            exited {state.code}
+          </span>
         )}
         {state.kind === 'error' && (
           <span className="pi-panel__sub pi-panel__sub--error">{state.message}</span>
         )}
+
+        {/* Spacer so action chips align right */}
+        <span className="pi-panel__spacer" />
+
+        {tools && tools.length > 0 && (
+          <button
+            type="button"
+            className="pi-panel__chip"
+            onClick={() => { setShowTools((v) => !v); setShowSessions(false); }}
+            title="Show papercusp tools the LLM can call from this pty"
+          >
+            ↯ {tools.length} papercusp tools
+          </button>
+        )}
+
+        <button
+          type="button"
+          className="pi-panel__chip"
+          onClick={async () => {
+            const next = !showSessions;
+            setShowSessions(next);
+            setShowTools(false);
+            if (next && sessions === null) await refreshSessions();
+          }}
+          title="Past pi sessions exported to HTML"
+        >
+          past sessions{sessions ? ` (${sessions.length})` : ''}
+        </button>
+
+        {state.kind === 'exited' && (
+          <button
+            type="button"
+            className="pi-panel__btn"
+            onClick={() => setRestartTick((t) => t + 1)}
+          >Restart</button>
+        )}
       </div>
+
+      {showTools && tools && (
+        <div className="pi-panel__popover">
+          <div className="pi-panel__popover-title">papercusp_* tools loaded for this pty</div>
+          <ul className="pi-panel__tools-list">
+            {tools.map((t) => (
+              <li key={t.name}>
+                <code>{t.name}</code>
+                <span>{t.description}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="pi-panel__popover-foot">
+            Pi calls these via the extension at <code>~/.papercusp/global-plugins/pi/extension.ts</code>.
+          </div>
+        </div>
+      )}
+
+      {showSessions && sessions !== null && (
+        <div className="pi-panel__popover">
+          <div className="pi-panel__popover-title">
+            Past pi sessions ({sessions.length})
+            <button
+              type="button"
+              className="pi-panel__refresh"
+              onClick={refreshSessions}
+              title="Refresh"
+            >↻</button>
+          </div>
+          {sessions.length === 0 ? (
+            <div className="pi-panel__empty">
+              No exported sessions yet. They appear here after a pi pane closes.
+            </div>
+          ) : (
+            <ul className="pi-panel__sessions-list">
+              {sessions.map((s) => {
+                const date = s.timestamp
+                  ? s.timestamp.replace('T', ' ').replace(/-/g, ':').replace(/Z$/, ' UTC').replace('::', '-').replace('::', '-')
+                  : null;
+                const niceDate = s.mtimeMs ? new Date(s.mtimeMs).toLocaleString() : date;
+                return (
+                  <li key={s.filename}>
+                    <a
+                      href={`/api/harness/${encodeURIComponent(slug)}/pi-sessions/audit/${encodeURIComponent(s.filename)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <span className="pi-panel__session-tag">{s.tag ?? s.filename}</span>
+                      {niceDate && <span className="pi-panel__session-date">{niceDate}</span>}
+                      <span className="pi-panel__session-size">{Math.round(s.sizeBytes / 1024)}&nbsp;KB</span>
+                    </a>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
       <div className="pi-panel__term" ref={containerRef} />
     </div>
   );
