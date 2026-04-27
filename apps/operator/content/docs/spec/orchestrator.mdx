@@ -1,0 +1,65 @@
+---
+title: 6. Orchestrator + pending_events
+---
+
+<p>
+        Papercusp uses a <strong>centralized orchestrator</strong> rather than per-agent heartbeats. Why:
+      </p>
+
+      <ul>
+        <li><strong>No wasted wakeups</strong> — only the orchestrator polls. The other agents stay asleep until summoned.</li>
+        <li><strong>Centralized auditing</strong> — every decision is one orchestrator output you can trace.</li>
+        <li><strong>Cheap state visibility</strong> — orchestrator sees the whole picture in one prompt.</li>
+        <li><strong>Drift control</strong> — sequential decisions, predictable order.</li>
+      </ul>
+
+      <p>
+        External events (cron, webhook, API) write to a `pending_events` queue. The orchestrator consumes it on each tick, alongside its other inputs:
+      </p>
+
+      
+
+```
+     pending_events
+     (queue)
+        ▲
+        │ inserts from:
+        ├── cron-routine ticker (substrate)
+        ├── webhook handlers
+        ├── API triggers
+        └── completion-delta hooks (e.g. task→passed → notify reviewer)
+        │
+        ▼
+  ┌────────────────────────────────┐
+  │   ORCHESTRATOR (1 per harness) │
+  │                                 │
+  │   reads:                        │
+  │     - tasks (queue state)       │
+  │     - pending_events            │
+  │     - issues, worker_log        │
+  │     - goal lineage              │
+  │                                 │
+  │   emits:                        │
+  │     NEXT_WORKER | NEXT_VALIDATOR│
+  │     | NEXT_NARRATOR | NEXT_<plugin>│
+  │     | DONE | ESCALATE           │
+  └─────────┬───────────────────────┘
+            │
+            ▼ (substrate dispatches the named role)
+```
+
+
+
+      <p>
+        Tick triggering can be:
+      </p>
+      <ul>
+        <li><strong>Timer-based</strong> — a routine fires every N seconds, inserting a <code>&#123;&#123;kind: 'routine', target_role: 'orchestrator'&#125;&#125;</code> event</li>
+        <li><strong>Event-triggered</strong> — substrate notices a new `pending_events` row (NOTIFY/LISTEN) and wakes the orchestrator immediately</li>
+      </ul>
+
+      <p>
+        For idle harnesses, this is strictly better than per-agent heartbeats: zero wakeups when there's nothing to do.
+      </p>
+
+      

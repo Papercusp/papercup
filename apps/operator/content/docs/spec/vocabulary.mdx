@@ -1,0 +1,57 @@
+---
+title: 2. Vocabulary
+---
+
+<table>
+        <thead>
+          <tr>
+            <th>Term</th>
+            <th>Definition</th>
+            <th>Example</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Harness</strong></td>
+            <td>A long-running iteration loop made of named roles invoked with fresh contexts that hand off via a structured state store.</td>
+            <td>The 4-role substrate in `libs/papercusp/packages/harness/`.</td>
+          </tr>
+          <tr>
+            <td><strong>Install</strong></td>
+            <td>A specific configured harness — its goal, its plugins, its UI, its DB schema. An install is what users actually run.</td>
+            <td>Papercup (papercupai.com): the 5-director autonomous-AI-company demo install.</td>
+          </tr>
+          <tr>
+            <td><strong>Role</strong></td>
+            <td>A named agent invocation — a <em>prompt file</em> + an entry in the orchestrator's decision table. Always with fresh context.</td>
+            <td>Planner, Worker, Validator, Orchestrator. (Plus user-defined roles via plugins.)</td>
+          </tr>
+          <tr>
+            <td><strong>Harness template</strong></td>
+            <td>A reusable recipe for spinning up a harness. One template → many concrete harness <em>instances</em>; each instance has its own goal, project dir, state. Templates declare their roles, default models, and the plugins they recommend.</td>
+            <td><code>papercup-coding</code> (the solo coding harness) and <code>papercup-org</code> (the 5-department company). One user spins up one <em>instance</em> of <code>papercup-coding</code> per project.</td>
+          </tr>
+          <tr>
+            <td><strong>Plugin</strong></td>
+            <td>A package that extends one or more harness instances with new capabilities — actions (buttons), routes, lifecycle hooks, DB schemas, custom UI tabs. Plugins are installed once globally and mounted into harness instances at runtime; their behaviour is gated by capability tiers (§10).</td>
+            <td><code>@papercupai/cloudflare-pages</code> contributes a "Publish" button; <code>@papercupai/vscode-server</code> contributes a code-server tab; <code>@papercupai/slack-notifier</code> sends a Slack message on <code>mission.done</code>. Multiple plugins compose per instance.</td>
+          </tr>
+          <tr>
+            <td><strong>Marketplace package <code>kind</code></strong></td>
+            <td>The discriminator that tells the marketplace + CLI which install pipeline a published artifact follows. Possible values: <code>template</code> (default), <code>plugin</code>.</td>
+            <td>Both go through the same publish + signing + retraction infrastructure; only the install handler differs.</td>
+          </tr>
+          <tr>
+            <td><strong>Goal</strong></td>
+            <td>The top-level mission. Every task traces back to a goal through a parent chain. Goals can themselves nest.</td>
+            <td>"Build a habit-tracker mobile app and ship to TestFlight" or "Run an autonomous marketing agency."</td>
+          </tr>
+          <tr>
+            <td><strong>Pending event</strong></td>
+            <td>An entry in the queue the orchestrator reads on each tick. Sources: cron routines, webhooks, API triggers, completion deltas.</td>
+            <td>Routine "weekly-briefing" fires at 9am Monday → inserts <code>&#123;&#123;role: narrator, due: 09:00&#125;&#125;</code>.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      

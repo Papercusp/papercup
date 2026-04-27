@@ -1,0 +1,91 @@
+---
+title: Implementation status
+description: Phase-by-phase ship state of the Papercusp reference runtime.
+---
+import { Callout } from 'fumadocs-ui/components/callout';
+
+
+
+The reference runtime lives in this monorepo (`aviynw/Restart`). Phase numbering matches the spec sections; some phases were split into a/b for separable shipping.
+
+## Phase status
+
+| Phase | Status | What landed |
+|---|---|---|
+| 1. Postgres schema | ✅ Implemented + verified | `libs/papercusp/libs/db/sql/005-goals-events-routines.sql` applied to `papercusp`; goals / pending_events / routines tables + `task_lineage()` function + `goal_id` / `parent_id` / `taken_by` / `expires_at` columns on every per-harness `harness_features` |
+| 2. Plugin SDK | ✅ Implemented | `@papercusp/plugin-sdk` — `Capability` type, `PapercuspApi` DI container, UI / Routine / Hook types, `defineService()` helper |
+| 3. Plugin loader | ✅ Implemented + 23 / 23 tests pass | `@papercusp/plugin-loader` — `capabilities.ts` (proxy + fetch + secrets gates), `hookbus.ts` (addAction / addFilter / emit), validation now requires `capabilities[]` |
+| 4. Substrate runtime | ✅ Implemented + smoke-tested against live DB | `libs/papercusp/libs/db` — `atomic-checkout.ts`, `budget-enforcement.ts`, `pending-events.ts`, `routines-runtime.ts`, `goal-lineage.ts` (postgres-js based) |
+| 5. Routine ticker + CLI | ✅ Implemented + 13 / 13 secret-scrubber tests pass | `startRoutineTicker()` long-lived loop; CLI `publish` scans for secrets pre-tar, hard-rejects `.env*` / `.pem` etc., supports `--acknowledge-secrets` placeholder substitution |
+| 5b. Hard-stop budget at proposal-add | ✅ Already implemented (verified) | `apps/papercusp/app/api/_hono/harness.ts:637` — atomic check-and-reject on `POST /features` when would-exceed; returns HTTP 409 with `out_of_budget` |
+| 6a. Plugin contribution surface (server-side) | ✅ Implemented + verified | `GET /api/plugins`, `/api/plugins/global`, `/api/plugins/:slug/contributions`. Manifest extended with `capabilities[]`, `roles[]`, `dashboardTabs[]`, `sidebarItems[]`, `ui`, `routines[]`. Symlink-following so dev plugins (e.g. `~/.papercusp/global-plugins/papercup` → repo) resolve correctly |
+| **6b. Plugin contribution UI render** | **⏳ Pending (multi-day)** | Wire `componentId` strings to lazy React imports in `HarnessDashboard.tsx`; Backstage-style typed-service DI container; v2 iframe-CSP loader. Spec is in §8 |
+| 7. Orchestrator reads pending_events | ✅ Implemented + verified end-to-end | Both `apps/papercup/app/api/_hono/org.ts` (markdown ctx) and `apps/papercusp/app/api/_hono/harness.ts` (per-harness `$STATE_DIR/.harness/pending-events.jsonl`) list+consume due events. Eager-consume strategy |
+| 8. Goal-lineage endpoint for workers | ✅ Implemented + verified | `GET /api/harness/:slug/feature/:id/lineage` returns markdown (default) or JSON. Walks `parent_id` chain → goal via `harness_shared.task_lineage()`. Workers can curl this and inject "## Why this matters" into their context |
+| 9. Convert Papercup → plugin manifest | ✅ Manifest authored at `apps/papercup/papercusp.json` | Declares 5 department roles, 5 dashboard tabs, 6 sidebar items, 3 routines, 24 capabilities, schema (`papercup_shared`), and config (department slug → harnessSlug, mission/charter paths). Discovered by the manifest contribution surface (Phase 6a). Component resolution waits on Phase 6b |
+
+## What's gating v1.0
+
+Exactly one phase: **6b**. Once componentId resolution + the Backstage-DI runtime land, the framework is v1.0-shaped and the Papercup reference plugin actually mounts as a plugin.
+
+The contained pieces of 6b in priority order:
+
+1. Wire the 7 not-yet-fired lifecycle hooks (`beforeMissionStart`, `onPostWorker`, `onPostValidator`, `onPostOrchestrator`, `onFeaturePassed`, `onProposalAccepted`, `onLoad`/`onUnload`)
+2. Mount plugin `apiRoutes` (Hono `app.route('/api/plugins/<name>', plugin.apiRoutes)` iteration)
+3. Build the typed-service DI container with capability proxy
+4. Construct gated `PapercuspContext` and pass it to plugin hooks at fire time
+5. Build `componentId` → lazy React registry; wire into `HarnessDashboard.tsx`
+
+Items 1 + 2 unblock most non-UI plugins. Items 3 + 4 are the Backstage-DI runtime. Item 5 is the UI render piece.
+
+## Roadmap (parallel work tracks)
+
+Two threads run in parallel against this status page. The **plugin architecture** thread is Phase 6b above (handed off to a separate agent). The **autonomous-harness orchestrator** thread is the run.sh → TS port (see [its own page](/docs/implementation/orchestrator-port)). Below is everything that's queued after each thread's headline task.
+
+### Pi (oh-my-pi) integration — _Tracks A & B Phase 3a/b/c shipped_
+
+Reference implementation of the [CLI pluggability](/docs/spec/cli-pluggability) pattern. Detailed plan + state at [/implementation/pi-integration/](/docs/implementation/pi-integration).
+
+| Phase | Status | What landed |
+|---|---|---|
+| 3a — MVP terminal pane (backend + UI plumbing) | ✅ Shipped | `node-pty` (lydell fork) sidecar bridge with idle reaper + 4-pty cap; Hono `/api/harness/:slug/pty/{spawn,:id/stream,:id/input,:id/resize,:id/kill}`; `<PiPanel>` xterm.js component slotted into `MainPanel` next to vscode tab |
+| 3b — feature-scoped "open in pi" + cleanup | ✅ Shipped | `FeaturePeekPanel` adds an `open in pi` IconButton; click sets `piLaneId` → pane spawns in `<stateDir>/worktrees/<feature-id>` (or project root fallback). SSE `onAbort` now kills the pty immediately so navigation doesn't orphan `omp` |
+| 3c — desktop polish | ✅ Shipped | `pi` added to `/api/desktop/preflight` with PATH+well-known-paths probe (GUI-app no-login-shell gotcha). Bootstrap install-hint surfaces missing-pi state with brew command. README documents pi as an optional prereq |
+| 3d — deeper integration | ⏳ Deferred | Pi plugin via `--plugin-dir` exposing `papercusp.feature_status` etc.; session persistence with `omp -c/-r`; audit `--export`; subagent cross-pollination via `omp agents unpack`; multi-pane support |
+
+### After 6b (plugin architecture)
+
+| Item | Scope | Notes |
+|---|---|---|
+| Plugin schema auto-apply at install | ~1 day | `papercusp install` runs the `PluginSchemaDef` migrations against Postgres, creating the `<plugin>_*` schema. Today this is manual. |
+| Marketplace → auto-install drop-in | ~2 days | Click-to-install on the marketplace UI extracts the package tarball into `~/.papercusp/global-plugins/<name>/`, runs migrations, fires `onLoad`. §11 specs it; not yet wired. |
+| Plugin hot-reload in dev mode | ~1 day | `papercusp dev --watch` polls plugin dirs and re-imports on change. Useful for plugin authors; no spec for it yet. |
+| Wildcard `secrets:read:PREFIX_*` capability | ~½ day | Mirror the `http:fetch:*.domain` wildcard already in the SDK. Lets a plugin declare `secrets:read:YT_*` instead of listing every key. |
+| `compute:exec:<binary>` capability | ~½ day | Gate `ctx.spawn(bin, args)` on the manifest's compute-exec list. Briefings needs `ffmpeg`; jira-sync may need `gh`; etc. |
+| Plugin runtime versioning + CHANGELOG | ~½ day | Manifest's `papercusp: '^0.1'` constraint becomes meaningful only with a published changelog. `papercusp doctor` validates at runtime. |
+| Reference plugins (slack-notify, jira-sync) | ~3 days | The "hello world" plugin (~30 lines) and the "real" plugin (~150 lines) — neither exists today. Briefings is too unusual to be the only reference. |
+
+### After Stage 5a (orchestrator port) — _Stage 5a is now ✅_
+
+| Item | Scope | Notes |
+|---|---|---|
+| **Cutover:** flip `PAPERCUSP_USE_TS_ORCHESTRATOR=1` default-on | ~½ day | Edit `apps/papercusp-desktop/src-tauri/src/main.rs` spawn env. Requires end-to-end run validation against papercup/sheets-clone first (sequential, parallel-lane, and competition modes). |
+| SQL feature import on TS path | ~1 day | The `features.json` → Postgres `harness_<slug>.harness_features` import. Bash currently does it via psql + python heredoc; observability layer only, doesn't gate cutover. |
+| Tag `desktop-v0.0.2` | ~½ day | Validates the new ARM64 + AppImage CI matrix end-to-end (added in this session but not yet exercised). Updated bundle includes the full TS orchestrator. |
+| macOS code signing | ~1 day my work + your $99/yr Apple cert | Adds 6 lines to `.github/workflows/desktop-release.yml` + 5 GitHub secrets. Eliminates Gatekeeper warning on first launch. |
+| Windows code signing | ~½ day my work + your $200-500/yr OV cert | Adds 4 lines + 2 secrets. Eliminates SmartScreen warning (~1-2wk reputation curve). |
+| Auto-updater wiring (Tauri) | ~2 hours | Depends on both signings. Adds `tauri-plugin-updater` Rust dep + `[plugins.updater]` config + a Tauri-managed signing keypair. Updates land via GitHub Releases JSON. |
+| pglite swap (drop Postgres prereq) | 2-3 days | Replace postgres-js with `@electric-sql/pglite` for desktop installs only. Web stays on Postgres. Adds a `PAPERCUSP_DB_KIND=pglite\|postgres` runtime flag at the connection layer. Coordination needed with libs/papercusp/libs/db work. |
+| Real branded icons | ~½ day | Replace placeholder paper-cup glyph with designed icons. Pure aesthetics; doesn't gate anything. |
+
+### After all of the above
+
+| Item | Scope | Notes |
+|---|---|---|
+| Spec page MDX cleanup | ~1 day | The current MDX is JSX-heavy (preserved from React conversion). Convert tables to markdown tables, strip residual `<p>` / `<ul>` tags, normalize callouts to Starlight `<Callout type="info">` components. Cosmetic but improves authoring ergonomics. |
+| Move spec to its own repo | ~½ day | After v1.0 freeze. Per the spec's own footer: "the canonical spec moves to its own repo and this page becomes a rendered version." |
+| Plugin marketplace cloud hosting | ~3 days | `apps/papercusp-marketplace/` runs locally today. Cloud-hosted version with auth + payments for paid plugins. |
+| Cloud-hosted Papercusp tier | ~2-3 weeks | Tauri sidecar packaged as a Docker container; Cloudflare Pages or Fly.io deploy; multi-tenant scoping; per-user billing. Same Hono code that runs locally. |
+| Multi-tenant cloud auth integration | ~1 week | OIDC / GitHub OAuth for the cloud tier. Tenant isolation in Postgres + plugin discovery. |
+| Linux ARM64 release validation | ~½ day | Tag desktop-v0.0.2 actually runs the new arm64 matrix. Smoke test on a real arm64 device (Pi 5 / Graviton). |
+| Plugin migration story | ~1 day | When a host upgrades 0.1 → 0.2, plugins with old `papercusp: '^0.1'` constraint need either a fallback or a clear deprecation path. Currently undocumented. |

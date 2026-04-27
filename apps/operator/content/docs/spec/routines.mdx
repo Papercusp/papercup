@@ -1,0 +1,152 @@
+---
+title: 9. Routines
+---
+
+<p>
+        A routine is a <em>scheduled or triggered event source</em>. Routines insert into `pending_events`; the orchestrator decides what to do with them.
+      </p>
+
+      
+
+```
+CREATE TABLE routines (
+  id              text PRIMARY KEY,
+  install_slug    text NOT NULL,
+  name            text NOT NULL,
+  trigger_kind    text NOT NULL,    -- 'cron' | 'webhook' | 'api'
+  trigger_config  jsonb NOT NULL,   -- { cron: '0 9 * * MON' } | { webhook_token: '...' }
+  target_role     text NOT NULL,    -- e.g. 'narrator', or 'orchestrator' for ticks
+  payload_template jsonb,            -- additional context to pass to the role
+  concurrency     text NOT NULL DEFAULT 'queue',     -- 'queue' | 'skip' | 'cancel-prev'
+  catchup         text NOT NULL DEFAULT 'skip-old',  -- 'skip-old' | 'run-all-backlog'
+  active          boolean NOT NULL DEFAULT true,
+  last_fired_at   timestamptz,
+  next_fire_at    timestamptz
+);
+```
+
+
+
+      
+
+### 9.1 Lifecycle
+
+
+
+      <ol>
+        <li><strong>Register</strong> — plugin manifest declares routines OR user creates one via UI</li>
+        <li><strong>Tick</strong> — substrate's "routine ticker" runs every ~30s, evaluates cron expressions, computes `next_fire_at`</li>
+        <li><strong>Fire</strong> — when due (or on webhook receipt / API trigger), insert into `pending_events`</li>
+        <li><strong>Orchestrator picks up</strong> — sees the event on its next tick, decides whether to dispatch (or queue / defer)</li>
+        <li><strong>Substrate dispatches</strong> the target role; marks the event consumed; updates routine's `last_fired_at`</li>
+      </ol>
+
+      
+
+### 9.2 What routines replace
+
+
+
+      <ul>
+        <li>Today's `auto-loop: on/off + intervalSeconds` per harness becomes one routine: <code>&#123;&#123;kind: 'cron', expr: '*/30 * * * * *', target_role: 'orchestrator'&#125;&#125;</code></li>
+        <li>Webhook handlers (e.g., GitHub PR opened → wake the reviewer) become webhook routines</li>
+        <li>Scheduled work (weekly briefings, daily cost reports, hourly health checks) is now first-class</li>
+      </ul>
+
+      
+
+### 9.3 Why this matters
+
+
+
+      <p>
+        Without routines, the orchestrator's prompt has to know about every scheduled thing. With routines, scheduling is data, not prompt-engineered. Plugin authors can ship a complete "weekly briefings" feature as a single manifest entry — they don't write any cron-parsing or webhook-receiving code.
+      </p>
+
+      
+
+### 9.4 Cost containment & kill switches
+
+
+
+      <p>
+        Routines are dangerous: a plugin that registers `cron: '* * * * * *'` (every second) and spawns an LLM call per fire can drain a budget overnight. The substrate enforces three layers, all per-install:
+      </p>
+
+      <h4>9.4.1 Per-routine rate limit</h4>
+
+      <p>
+        Every routine has a `min_interval_seconds` (default 60) regardless of what the cron expression says. A routine that asks for `cron: '* * * * * *'` will fire at most once per minute. Plugins can request a tighter limit via the `routines:rate-limit-bypass` capability — the user must approve at install time.
+      </p>
+
+      ```typescript
+const routine: RoutineDefinition = {
+  name: 'high-frequency-poll',
+  trigger: { kind: 'cron', expr: '*/5 * * * * *' },
+  // Substrate ignores the cron's "every 5s" and uses min_interval_seconds.
+  // To actually fire every 5s, plugin manifest must declare:
+  //   capabilities: ['routines:rate-limit-bypass:high-frequency-poll']
+  target_role: 'orchestrator',
+};
+```
+
+      <h4>9.4.2 Per-plugin budget cap</h4>
+
+      <p>
+        Each plugin has a daily LLM-spend budget enforced by the substrate's existing budget guard (§3.7). Default cap is <strong>$5/day</strong> per plugin. Plugins request a higher cap via `budget:daily:&lt;n&gt;-usd` capability. When a plugin's daily spend hits the cap, all of its routines and role invocations are paused for the remainder of the UTC day. The substrate emits a `plugin.budget-exhausted` event that other plugins (or the user UI) can react to.
+      </p>
+
+      <h4>9.4.3 Kill switches</h4>
+
+      <p>
+        The user can pause any routine immediately:
+      </p>
+
+      ```
+papercusp routines pause briefings/weekly-summary
+papercusp routines resume briefings/weekly-summary
+papercusp routines pause-plugin briefings        # all routines from briefings
+papercusp routines stats                          # see which plugins fired what, and what cost
+```
+
+      <p>
+        UI surface: each plugin's settings page shows live routine activity (last fired, fires/hr, $ spent today) with a one-click pause toggle. <strong>The substrate auto-pauses any routine that errors 5 times in a row</strong> — it stays paused until the user explicitly resumes.
+      </p>
+
+      <h4>9.4.4 Telemetry the substrate guarantees</h4>
+
+      <p>
+        Every routine fire is recorded in `audit.routine_fires` with: routine id, plugin name, fire timestamp, target role, dispatch outcome, total LLM cost, total wall time. This lets users (and the substrate's UI) answer "which plugin is consuming my budget?" without instrumentation in the plugin itself.
+      </p>
+
+      
+
+#### 9.4.5 System-wide caps and back-pressure
+
+
+
+      <p>
+        Per-plugin caps (§9.4.1, §9.4.2) catch a single misbehaving plugin.
+        They don't protect against <em>aggregate</em> overload — twenty
+        well-behaved plugins each within their own caps can collectively
+        exhaust LLM rate limits, DB connections, or wall-clock concurrency.
+        The substrate enforces three system-wide caps:
+      </p>
+
+      <ul>
+        <li><strong>Global daily LLM budget</strong> (default $50/day, configurable per install). Hits across all plugins; when exhausted, every plugin's routines pause until UTC rollover. The user's own non-plugin LLM calls (orchestrator ticks, ad-hoc queries) take priority over plugin routines once 80% of budget is consumed.</li>
+        <li><strong>Concurrent routine fires</strong> (default 4). The routine ticker dispatches at most N routines simultaneously; queued routines wait. Prevents 50 cron expressions all firing at minute :00 from spawning 50 simultaneous LLM calls.</li>
+        <li><strong>Per-minute LLM call rate</strong> (default 60/min across all plugins, calibrated to provider rate limits). When breached, routines are deferred (not failed) — the next-fire-at slips forward.</li>
+      </ul>
+
+      <p>
+        All three system caps emit metrics to `audit.system_pressure` so
+        operators can see when they're regularly close to the limit (signal
+        to either raise the cap or prune low-value routines). The UI surfaces
+        a "system at 87% of daily budget; 3 plugins competing for next fire"
+        indicator when caps are stressed.
+      </p>
+
+      <p><strong>Per-plugin caps interact with system caps multiplicatively, not additively.</strong> A plugin can hit either ceiling first; whichever triggers first stops the plugin. Authors should size their per-plugin caps assuming the system cap might constrain them earlier than their own.</p>
+
+      

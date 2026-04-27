@@ -1,0 +1,23 @@
+{
+  "title": "Spec",
+  "pages": [
+    "why",
+    "vocabulary",
+    "harness-contract",
+    "roles",
+    "state",
+    "orchestrator",
+    "plugins",
+    "ui-plugins",
+    "routines",
+    "capabilities",
+    "distribution",
+    "plugins-marketplace",
+    "multi-topology",
+    "reference-runtime",
+    "compared",
+    "what-not",
+    "open-questions",
+    "cli-pluggability"
+  ]
+}
