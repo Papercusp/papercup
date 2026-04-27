@@ -11,10 +11,18 @@ export default function HomePage() {
 
       <div className="pc-grid cards-3" style={{ marginTop: 24 }}>
         <div className="pc-card">
+          <h3>Open a harness</h3>
+          <p>
+            Run, monitor, and inspect your local harnesses — see live agent
+            traces, feature plans, proposals, and the embedded pi terminal.
+          </p>
+          <a href="/harness" className="pc-button">Open →</a>
+        </div>
+        <div className="pc-card">
           <h3>Browse the marketplace</h3>
           <p>
             Pick a harness — a coding-project harness, a research org, a content
-            pipeline — and install it with one command.
+            pipeline — and install it with one click.
           </p>
           <a href="/marketplace" className="pc-button">Browse →</a>
         </div>

@@ -15,6 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="pc-header">
           <a href="/" className="brand">PAPERCUSP</a>
           <nav>
+            <a href="/harness">Harnesses</a>
             <a href="/marketplace">Marketplace</a>
             <a href="/settings/api-keys">Settings</a>
             <SessionIndicator />

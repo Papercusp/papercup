@@ -1,3 +1,5 @@
+import InstallButton from './InstallButton';
+
 interface CatalogEntry {
   slug: string;
   name: string;
@@ -53,13 +55,7 @@ export default async function MarketplacePage() {
         command, and run it locally.
       </p>
 
-      <div className="pc-card" style={{ marginBottom: 24 }}>
-        <p style={{ color: 'var(--warn)', margin: 0 }}>
-          <strong>Preview catalog.</strong> The marketplace server is being
-          built. For now this page shows the curated list of harnesses we
-          plan to publish; the install commands won&rsquo;t resolve yet.
-        </p>
-      </div>
+
 
       {installed.length > 0 && (
         <>
@@ -93,10 +89,7 @@ export default async function MarketplacePage() {
               )}
             </div>
             <p style={{ minHeight: 64 }}>{h.description}</p>
-            <pre style={{ background: 'var(--bg-1)', padding: '8px 10px', borderRadius: 4, fontSize: 12, color: 'var(--fg-mute)', overflow: 'auto' }}>
-              $ {h.install}
-            </pre>
-            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--fg-mute)' }}>
+            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--fg-mute)', marginBottom: 12 }}>
               <span>v{h.version}</span>
               <span>·</span>
               <span>{h.license}</span>
@@ -106,6 +99,9 @@ export default async function MarketplacePage() {
                   <span>plugins: {h.plugins.join(', ')}</span>
                 </>
               )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <InstallButton slug={h.slug} alreadyInstalled={installedSlugs.has(h.slug)} />
             </div>
           </a>
         ))}
