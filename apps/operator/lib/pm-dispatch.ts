@@ -20,7 +20,7 @@
  */
 import { spawn } from 'node:child_process';
 import { getLegacyClient } from '@restart/db-org';
-import { assembleRolePrompt } from '@papercusp/orchestrator';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 
 export interface RunPmOptions {
   slug: string;

@@ -24,7 +24,7 @@ import { stream, streamSSE } from 'hono/streaming';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getLegacyClient } from '@restart/db-org';
-import { assembleRolePrompt } from '@papercusp/orchestrator';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
