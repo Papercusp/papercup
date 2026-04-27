@@ -819,7 +819,11 @@
   flex-shrink: 0;
 }
 
-.h-issue-open {
+/* The "open" affordance badge — appears on hover. Renamed from the
+   bare `h-issue-open` class (which collided with the row's
+   `h-issue-{status}` class when status === 'open' and made entire rows
+   transparent + display:none). */
+.h-issue-open-affordance {
   opacity: 0;
   transform: translateX(-2px);
   border: 1px solid color-mix(in oklab, var(--accent), transparent 62%);
@@ -834,8 +838,8 @@
   transition: opacity 140ms var(--ease-out), transform 140ms var(--ease-out);
 }
 
-.h-issue:hover .h-issue-open,
-.h-issue:focus-visible .h-issue-open {
+.h-issue:hover .h-issue-open-affordance,
+.h-issue:focus-visible .h-issue-open-affordance {
   opacity: 1;
   transform: translateX(0);
 }
@@ -3203,7 +3207,7 @@
     flex-wrap: wrap;
   }
 
-  .h-issue-open {
+  .h-issue-open-affordance {
     display: none;
   }
 }
@@ -3381,7 +3385,7 @@
   line-height: 1.35;
 }
 
-.h-issue-open {
+.h-issue-open-affordance {
   display: none;
 }
 

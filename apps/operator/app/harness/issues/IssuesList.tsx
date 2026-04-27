@@ -167,7 +167,7 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
                 <StatusIcon size={10} className={row.status === 'fixing' ? 'h-spin' : ''} />
                 {row.status}
               </span>
-              <span className="h-issue-open" aria-hidden="true">open</span>
+              <span className="h-issue-open-affordance" aria-hidden="true">open</span>
             </div>
           );
         },
