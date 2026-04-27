@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Archive {
   id: string;
@@ -132,37 +133,63 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
               No archives yet. Click "archive" above to create one.
             </div>
           ) : (
-            <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
-              <thead style={{ position: 'sticky', top: 0, background: '#0b0e14' }}>
-                <tr style={{ textAlign: 'left', color: '#9ca3af', borderBottom: '1px solid #1f2937' }}>
-                  <th style={{ padding: '0.4rem 0.8rem' }}>When</th>
-                  <th style={{ padding: '0.4rem 0.8rem' }}>ID</th>
-                  <th style={{ padding: '0.4rem 0.8rem', textAlign: 'right' }}>Size</th>
-                  <th style={{ padding: '0.4rem 0.8rem', textAlign: 'right' }}>Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((a) => (
-                  <tr key={a.id} style={{ borderBottom: '1px solid #1f2937' }}>
-                    <td style={{ padding: '0.35rem 0.8rem', color: '#9ca3af' }}>{fmtTs(a.ts)}</td>
-                    <td style={{ padding: '0.35rem 0.8rem', fontFamily: 'monospace', color: '#d1d5db' }}>{a.id}</td>
-                    <td style={{ padding: '0.35rem 0.8rem', textAlign: 'right', color: '#6b7280' }}>{fmtSize(a.sizeBytes)}</td>
-                    <td style={{ padding: '0.35rem 0.8rem', textAlign: 'right' }}>
-                      <button
-                        onClick={() => restore(a.id)}
-                        disabled={busy}
-                        style={{ background: 'transparent', color: '#fbbf24', border: '1px solid #78350f', borderRadius: 3, padding: '0.2rem 0.6rem', cursor: busy ? 'wait' : 'pointer', fontSize: '0.75rem' }}
-                      >
-                        restore
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ArchivesGrid items={items} restore={restore} busy={busy} />
           )}
         </div>
       </div>
     </div>
   );
+}
+
+function ArchivesGrid({
+  items, restore, busy,
+}: {
+  items: Archive[];
+  restore: (id: string) => void;
+  busy: boolean;
+}) {
+  const columns: ColumnDef<Archive>[] = useMemo(
+    () => [
+      {
+        key: 'when',
+        header: 'When',
+        width: 1.2,
+        sortKey: 'ts',
+        defaultSortDir: 'desc',
+        render: ({ row }) => <span style={{ color: '#9ca3af' }}>{fmtTs(row.ts)}</span>,
+      },
+      {
+        key: 'id',
+        header: 'ID',
+        width: 2,
+        sortKey: 'id',
+        render: ({ row }) => <span style={{ fontFamily: 'monospace', color: '#d1d5db' }}>{row.id}</span>,
+      },
+      {
+        key: 'size',
+        header: 'Size',
+        width: 0.7,
+        align: 'right',
+        sortKey: 'sizeBytes',
+        render: ({ row }) => <span style={{ color: '#6b7280' }}>{fmtSize(row.sizeBytes)}</span>,
+      },
+      {
+        key: 'action',
+        header: '',
+        width: 0.7,
+        align: 'right',
+        render: ({ row }) => (
+          <button
+            onClick={(e) => { e.stopPropagation(); restore(row.id); }}
+            disabled={busy}
+            style={{ background: 'transparent', color: '#fbbf24', border: '1px solid #78350f', borderRadius: 3, padding: '0.2rem 0.6rem', cursor: busy ? 'wait' : 'pointer', fontSize: '0.75rem' }}
+          >
+            restore
+          </button>
+        ),
+      },
+    ],
+    [restore, busy],
+  );
+  return <RichGrid<Archive> rows={items} columns={columns} getRowId={(a) => a.id} inline />;
 }

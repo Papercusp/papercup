@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Snapshot {
   id: string;
@@ -125,58 +126,13 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
                 No snapshots yet. Each iteration of the main loop creates one.
               </div>
             ) : (
-              <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
-                <thead style={{ position: 'sticky', top: 0, background: '#0b0e14' }}>
-                  <tr style={{ textAlign: 'left', color: '#9ca3af', borderBottom: '1px solid #1f2937' }}>
-                    <th style={{ padding: '0.4rem 0.6rem' }}>When</th>
-                    <th style={{ padding: '0.4rem 0.6rem' }}>Iter</th>
-                    <th style={{ padding: '0.4rem 0.6rem' }}>Feature counts</th>
-                    <th style={{ padding: '0.4rem 0.6rem' }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {snapshots.map((s) => {
-                    const isActive = selected?.id === s.id;
-                    return (
-                      <tr
-                        key={s.id}
-                        onClick={() => setSelected(s)}
-                        style={{
-                          cursor: 'pointer',
-                          background: isActive ? '#1f2937' : 'transparent',
-                          borderBottom: '1px solid #1f2937',
-                        }}
-                      >
-                        <td style={{ padding: '0.35rem 0.6rem', color: '#9ca3af' }}>{fmtTs(s.ts)}</td>
-                        <td style={{ padding: '0.35rem 0.6rem', fontFamily: 'monospace' }}>{s.iterNum}</td>
-                        <td style={{ padding: '0.35rem 0.6rem' }}>
-                          <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-                            {Object.entries(s.featureCounts).map(([status, n]) => (
-                              <span
-                                key={status}
-                                style={{ fontSize: '0.65rem', padding: '0.1rem 0.4rem', borderRadius: 3, background: STATUS_COLOR[status] ?? '#374151', color: 'white', fontWeight: 600 }}
-                                title={`${status}: ${n}`}
-                              >
-                                {status.slice(0,4)} {n}
-                              </span>
-                            ))}
-                          </div>
-                        </td>
-                        <td style={{ padding: '0.35rem 0.6rem', textAlign: 'right' }}>
-                          <button
-                            onClick={(e) => { e.stopPropagation(); remove(s.id); }}
-                            disabled={busy}
-                            style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.1rem 0.45rem', cursor: 'pointer', fontSize: '0.7rem' }}
-                            title="Delete this snapshot"
-                          >
-                            delete
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <SnapshotsGrid
+                snapshots={snapshots}
+                selected={selected}
+                onSelect={setSelected}
+                onRemove={remove}
+                busy={busy}
+              />
             )}
           </div>
 
@@ -250,5 +206,100 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+function SnapshotsGrid({
+  snapshots, selected, onSelect, onRemove, busy,
+}: {
+  snapshots: Snapshot[];
+  selected: Snapshot | null;
+  onSelect: (s: Snapshot) => void;
+  onRemove: (id: string) => void;
+  busy: boolean;
+}) {
+  const columns: ColumnDef<Snapshot>[] = useMemo(
+    () => [
+      {
+        key: 'when',
+        header: 'When',
+        width: 1.3,
+        sortKey: 'ts',
+        defaultSortDir: 'desc',
+        render: ({ row }) => <span style={{ color: '#9ca3af' }}>{fmtTs(row.ts)}</span>,
+      },
+      {
+        key: 'iter',
+        header: 'Iter',
+        width: 0.4,
+        align: 'right',
+        sortKey: 'iterNum',
+        render: ({ row }) => <span style={{ fontFamily: 'monospace' }}>{row.iterNum}</span>,
+      },
+      {
+        key: 'featureCounts',
+        header: 'Feature counts',
+        width: 3,
+        render: ({ row }) => (
+          <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+            {Object.entries(row.featureCounts).map(([status, n]) => (
+              <span
+                key={status}
+                style={{
+                  fontSize: '0.65rem',
+                  padding: '0.1rem 0.4rem',
+                  borderRadius: 3,
+                  background: STATUS_COLOR[status] ?? '#374151',
+                  color: 'white',
+                  fontWeight: 600,
+                }}
+                title={`${status}: ${n}`}
+              >
+                {status.slice(0, 4)} {n}
+              </span>
+            ))}
+          </div>
+        ),
+      },
+      {
+        key: 'action',
+        header: '',
+        width: 0.6,
+        align: 'right',
+        render: ({ row }) => (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(row.id);
+            }}
+            disabled={busy}
+            style={{
+              background: 'transparent',
+              color: '#9ca3af',
+              border: '1px solid #374151',
+              borderRadius: 3,
+              padding: '0.1rem 0.45rem',
+              cursor: 'pointer',
+              fontSize: '0.7rem',
+            }}
+            title="Delete this snapshot"
+          >
+            delete
+          </button>
+        ),
+      },
+    ],
+    [onRemove, busy],
+  );
+  const richGetRowBg = (row: Snapshot) => (selected?.id === row.id ? '#1f2937' : 'transparent');
+  return (
+    <RichGrid<Snapshot>
+      rows={snapshots}
+      columns={columns}
+      getRowId={(s) => s.id}
+      onRowClick={onSelect}
+      getRowBg={richGetRowBg}
+      inline
+    />
   );
 }

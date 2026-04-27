@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Decision {
   ts: number;
@@ -144,43 +145,94 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
               {data.total === 0 ? 'No orchestrator decisions yet.' : 'No decisions match filter.'}
             </div>
           ) : (
-            <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
-              <thead style={{ position: 'sticky', top: 0, background: '#0b0e14', zIndex: 1 }}>
-                <tr style={{ textAlign: 'left', color: '#9ca3af', borderBottom: '1px solid #1f2937' }}>
-                  <th style={{ padding: '0.4rem 0.6rem', width: 170 }}>When</th>
-                  <th style={{ padding: '0.4rem 0.6rem', width: 60 }}>Iter</th>
-                  <th style={{ padding: '0.4rem 0.6rem', width: 180 }}>Verb</th>
-                  <th style={{ padding: '0.4rem 0.6rem' }}>Args</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((d, i) => (
-                  <tr key={i} style={{ borderBottom: '1px solid #1f2937', opacity: d.isGhost ? 0.6 : 1 }}>
-                    <td style={{ padding: '0.35rem 0.6rem', color: '#9ca3af', fontFamily: 'monospace', fontSize: '0.75rem' }}>{fmtTs(d.ts)}</td>
-                    <td style={{ padding: '0.35rem 0.6rem', fontFamily: 'monospace', color: '#d1d5db' }}>{d.iteration ?? '—'}</td>
-                    <td style={{ padding: '0.35rem 0.6rem' }}>
-                      <span style={{
-                        fontFamily: 'monospace', fontSize: '0.75rem',
-                        padding: '0.1rem 0.4rem',
-                        border: `1px solid ${d.isGhost ? '#6b7280' : (VERB_COLOR[d.verb] ?? '#374151')}`,
-                        borderRadius: 3,
-                        color: d.isGhost ? '#9ca3af' : (VERB_COLOR[d.verb] ?? '#d1d5db'),
-                        background: d.isGhost ? 'transparent' : `color-mix(in oklab, ${VERB_COLOR[d.verb] ?? '#374151'}, transparent 88%)`,
-                      }}>
-                        {d.verb}
-                      </span>
-                      {d.isGhost && <span style={{ marginLeft: 6, fontSize: '0.7rem', color: '#f87171' }}>ghost</span>}
-                    </td>
-                    <td style={{ padding: '0.35rem 0.6rem', fontFamily: 'monospace', color: '#d1d5db', fontSize: '0.75rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {d.args || <span style={{ color: '#4b5563' }}>—</span>}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <DecisionsGrid rows={filtered} />
           )}
         </div>
       </div>
     </div>
+  );
+}
+
+function DecisionsGrid({ rows }: { rows: Decision[] }) {
+  const columns: ColumnDef<Decision>[] = useMemo(
+    () => [
+      {
+        key: 'when',
+        header: 'When',
+        width: 1.5,
+        sortKey: 'ts',
+        defaultSortDir: 'desc',
+        render: ({ row }) => (
+          <span style={{ color: '#9ca3af', fontFamily: 'monospace', fontSize: '0.75rem' }}>
+            {fmtTs(row.ts)}
+          </span>
+        ),
+      },
+      {
+        key: 'iter',
+        header: 'Iter',
+        width: 0.4,
+        align: 'right',
+        sortKey: 'iteration',
+        render: ({ row }) => (
+          <span style={{ fontFamily: 'monospace', color: '#d1d5db' }}>
+            {row.iteration ?? '—'}
+          </span>
+        ),
+      },
+      {
+        key: 'verb',
+        header: 'Verb',
+        width: 1.5,
+        sortKey: 'verb',
+        render: ({ row }) => (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{
+              fontFamily: 'monospace', fontSize: '0.75rem',
+              padding: '0.1rem 0.4rem',
+              border: `1px solid ${row.isGhost ? '#6b7280' : (VERB_COLOR[row.verb] ?? '#374151')}`,
+              borderRadius: 3,
+              color: row.isGhost ? '#9ca3af' : (VERB_COLOR[row.verb] ?? '#d1d5db'),
+              background: row.isGhost ? 'transparent' : `color-mix(in oklab, ${VERB_COLOR[row.verb] ?? '#374151'}, transparent 88%)`,
+            }}>
+              {row.verb}
+            </span>
+            {row.isGhost && <span style={{ fontSize: '0.7rem', color: '#f87171' }}>ghost</span>}
+          </span>
+        ),
+      },
+      {
+        key: 'args',
+        header: 'Args',
+        width: 4,
+        render: ({ row }) => (
+          <span style={{
+            fontFamily: 'monospace',
+            color: '#d1d5db',
+            fontSize: '0.75rem',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}>
+            {row.args || <span style={{ color: '#4b5563' }}>—</span>}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
+  // Preserve the ghost-row dimming via getRowBg+rowProps so existing CSS visuals
+  // (faded opacity for ghost decisions) still apply.
+  const richRowProps = (ctx: { row: Decision }) =>
+    ctx.row.isGhost
+      ? { style: { opacity: 0.6 } as React.CSSProperties }
+      : {};
+  return (
+    <RichGrid<Decision>
+      rows={rows}
+      columns={columns}
+      getRowId={(d) => `${d.ts}-${d.verb}-${d.iteration ?? 0}`}
+      rowProps={richRowProps}
+      inline
+    />
   );
 }

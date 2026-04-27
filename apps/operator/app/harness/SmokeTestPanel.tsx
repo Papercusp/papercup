@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface SmokeResult {
   url: string;
@@ -115,29 +116,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
               <div style={{ fontSize: '0.7rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 6 }}>
                 URL checks ({data.results.filter((r) => r.ok).length}/{data.results.length} passed)
               </div>
-              <table style={{ width: '100%', fontSize: '0.8rem', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ textAlign: 'left', color: '#9ca3af', borderBottom: '1px solid #1f2937' }}>
-                    <th style={{ padding: '0.3rem 0.5rem' }}>URL</th>
-                    <th style={{ padding: '0.3rem 0.5rem' }}>Expected</th>
-                    <th style={{ padding: '0.3rem 0.5rem' }}>Actual</th>
-                    <th style={{ padding: '0.3rem 0.5rem' }}>Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.results.map((r, i) => (
-                    <tr key={i} style={{ borderBottom: '1px solid #1f2937' }}>
-                      <td style={{ padding: '0.3rem 0.5rem', fontFamily: 'monospace', fontSize: '0.75rem' }}>
-                        <span style={{ marginRight: 6, color: r.ok ? '#10b981' : '#f87171' }}>{r.ok ? '✓' : '✗'}</span>
-                        {r.url}
-                      </td>
-                      <td style={{ padding: '0.3rem 0.5rem', fontFamily: 'monospace', color: '#9ca3af' }}>{r.expectStatus}</td>
-                      <td style={{ padding: '0.3rem 0.5rem', fontFamily: 'monospace', color: r.ok ? '#10b981' : '#f87171' }}>{r.actualStatus}</td>
-                      <td style={{ padding: '0.3rem 0.5rem', color: '#d1d5db', fontSize: '0.75rem' }}>{r.reason || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <SmokeResultsGrid results={data.results} />
             </section>
           )}
 
@@ -176,5 +155,54 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+function SmokeResultsGrid({ results }: { results: SmokeResult[] }) {
+  const columns: ColumnDef<SmokeResult>[] = useMemo(
+    () => [
+      {
+        key: 'url',
+        header: 'URL',
+        width: 4,
+        render: ({ row }) => (
+          <span style={{ fontFamily: 'monospace', fontSize: '0.75rem' }}>
+            <span style={{ marginRight: 6, color: row.ok ? '#10b981' : '#f87171' }}>{row.ok ? '✓' : '✗'}</span>
+            {row.url}
+          </span>
+        ),
+      },
+      {
+        key: 'expected',
+        header: 'Expected',
+        width: 0.7,
+        align: 'right',
+        render: ({ row }) => <span style={{ fontFamily: 'monospace', color: '#9ca3af' }}>{row.expectStatus}</span>,
+      },
+      {
+        key: 'actual',
+        header: 'Actual',
+        width: 0.7,
+        align: 'right',
+        render: ({ row }) => (
+          <span style={{ fontFamily: 'monospace', color: row.ok ? '#10b981' : '#f87171' }}>{row.actualStatus}</span>
+        ),
+      },
+      {
+        key: 'reason',
+        header: 'Reason',
+        width: 2,
+        render: ({ row }) => <span style={{ color: '#d1d5db', fontSize: '0.75rem' }}>{row.reason || '—'}</span>,
+      },
+    ],
+    [],
+  );
+  return (
+    <RichGrid<SmokeResult>
+      rows={results}
+      columns={columns}
+      getRowId={(r) => r.url}
+      inline
+    />
   );
 }
