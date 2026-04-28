@@ -313,6 +313,57 @@ async function saveMessagesRebuild(messages: Message[]): Promise<void> {
   const content = messages.map((m) => JSON.stringify(m)).join('\n') + (messages.length ? '\n' : '');
   await writeFile(MESSAGES_PATH, content);
   await rebuildInboxOutboxViews(messages);
+  // Mirror full message set into Postgres so mutations (status changes,
+  // deletes) propagate. appendMessage() already inserts new rows; this
+  // function handles the full-rebuild case where JSONL is rewritten.
+  try {
+    const { sql } = getOrgPg();
+    if (messages.length === 0) {
+      await sql`DELETE FROM papercup_shared.messages`;
+      return;
+    }
+    const rows = messages.map((m) => ({
+      id: m.id,
+      ts: m.ts,
+      from_dept: m.from,
+      kind: m.kind,
+      subject: m.subject,
+      body: m.body,
+      ref_id: m.refId ?? null,
+      project_id: m.projectId ?? null,
+      directive_id: m.directiveId ?? null,
+      status: m.status,
+      metadata: m.metadata ? JSON.stringify(m.metadata) : null,
+    }));
+    await sql`
+      INSERT INTO papercup_shared.messages ${sql(rows, 'id', 'ts', 'from_dept', 'kind', 'subject', 'body', 'ref_id', 'project_id', 'directive_id', 'status', 'metadata')}
+      ON CONFLICT (id) DO UPDATE SET
+        ts = EXCLUDED.ts,
+        from_dept = EXCLUDED.from_dept,
+        kind = EXCLUDED.kind,
+        subject = EXCLUDED.subject,
+        body = EXCLUDED.body,
+        ref_id = EXCLUDED.ref_id,
+        project_id = EXCLUDED.project_id,
+        directive_id = EXCLUDED.directive_id,
+        status = EXCLUDED.status,
+        metadata = EXCLUDED.metadata
+    `;
+    const ids = messages.map((m) => m.id);
+    await sql`DELETE FROM papercup_shared.messages WHERE id NOT IN ${sql(ids)}`;
+    // Also keep recipient projection coherent — replace each message's
+    // recipient set, leaving rows for messages NOT in this rebuild alone.
+    for (const m of messages) {
+      await sql`DELETE FROM papercup_shared.message_recipients WHERE message_id = ${m.id}`;
+      if (m.to.length > 0) {
+        const recRows = m.to.map((dept) => ({ message_id: m.id, dept_slug: dept }));
+        await sql`INSERT INTO papercup_shared.message_recipients ${sql(recRows, 'message_id', 'dept_slug')}`;
+      }
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[org/saveMessagesRebuild] PG mirror failed:', e);
+  }
 }
 
 async function appendMessage(m: Message): Promise<void> {
@@ -1185,15 +1236,123 @@ org.get('/projects/:slug/campaigns', (c) => {
 // Directives
 // ================================================================
 
+// Directives are now sourced from papercup_shared.directives. Same
+// pattern as projects (commit 0623d57b): in-memory cache for the
+// dozens of synchronous loadDirectives() call sites, with PG as the
+// authoritative store. The JSON file is regenerated as a derived
+// snapshot for legacy informational readers.
+let directivesCache: Directive[] = [];
+let directivesBootstrapped: Promise<void> | null = null;
+
+interface PgDirectiveRow {
+  id: string;
+  title: string;
+  body: string;
+  status: Directive['status'];
+  created_by: string;
+  created_ts: string | number;
+  deadline_ts: string | number | null;
+  budget_cents: string | number | null;
+  priority: Directive['priority'] | null;
+  assigned_departments: string[] | null;
+  linked_project_ids: string[] | null;
+}
+
+function pgRowToDirective(r: PgDirectiveRow): Directive {
+  return {
+    id: r.id,
+    title: r.title,
+    body: r.body,
+    status: r.status,
+    created_by: r.created_by,
+    created_ts: Number(r.created_ts),
+    deadline_ts: r.deadline_ts == null ? undefined : Number(r.deadline_ts),
+    budget_cents: r.budget_cents == null ? undefined : Number(r.budget_cents),
+    priority: r.priority ?? undefined,
+    assignedDepartments: r.assigned_departments ?? undefined,
+    linkedProjectIds: r.linked_project_ids ?? undefined,
+  };
+}
+
+async function refreshDirectivesCacheFromPg(): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<PgDirectiveRow[]>`
+      SELECT id, title, body, status, created_by, created_ts, deadline_ts,
+             budget_cents, priority, assigned_departments, linked_project_ids
+      FROM papercup_shared.directives
+      ORDER BY created_ts DESC
+    `;
+    directivesCache = rows.map(pgRowToDirective);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[org] PG directive fetch failed, cache stays as-is:', e);
+  }
+}
+
+function ensureDirectivesBootstrapped(): void {
+  if (!directivesBootstrapped) directivesBootstrapped = refreshDirectivesCacheFromPg();
+}
+ensureDirectivesBootstrapped();
+
+const DIRECTIVES_DERIVED_PATH = join(ORG_ROOT, 'directives.json');
+
 function loadDirectives(): Directive[] {
-  if (!existsSync(DIRECTIVES_PATH)) return [];
-  const raw = readFileSync(DIRECTIVES_PATH, 'utf8');
-  return JSON.parse(raw).directives as Directive[];
+  return directivesCache;
 }
 
 async function saveDirectives(directives: Directive[]): Promise<void> {
-  await mkdir(ORG_ROOT, { recursive: true });
-  await writeFile(DIRECTIVES_PATH, JSON.stringify({ version: 1, directives }, null, 2));
+  directivesCache = directives;
+  // Derived JSON snapshot (best-effort; PG is canonical).
+  try {
+    await mkdir(ORG_ROOT, { recursive: true });
+    await writeFile(
+      DIRECTIVES_DERIVED_PATH,
+      JSON.stringify({ version: 1, derivedFromPg: true, directives }, null, 2)
+    );
+  } catch {
+    // disk write failures are tolerable
+  }
+  try {
+    const { sql } = getOrgPg();
+    if (directives.length > 0) {
+      const rows = directives.map((d) => ({
+        id: d.id,
+        title: d.title,
+        body: d.body,
+        status: d.status,
+        created_by: d.created_by,
+        created_ts: d.created_ts,
+        deadline_ts: d.deadline_ts ?? null,
+        budget_cents: d.budget_cents ?? null,
+        priority: d.priority ?? null,
+        assigned_departments: JSON.stringify(d.assignedDepartments ?? []),
+        linked_project_ids: JSON.stringify(d.linkedProjectIds ?? []),
+        updated_ts: Date.now(),
+      }));
+      await sql`
+        INSERT INTO papercup_shared.directives ${sql(rows, 'id', 'title', 'body', 'status', 'created_by', 'created_ts', 'deadline_ts', 'budget_cents', 'priority', 'assigned_departments', 'linked_project_ids', 'updated_ts')}
+        ON CONFLICT (id) DO UPDATE SET
+          title = EXCLUDED.title,
+          body = EXCLUDED.body,
+          status = EXCLUDED.status,
+          created_by = EXCLUDED.created_by,
+          deadline_ts = EXCLUDED.deadline_ts,
+          budget_cents = EXCLUDED.budget_cents,
+          priority = EXCLUDED.priority,
+          assigned_departments = EXCLUDED.assigned_departments,
+          linked_project_ids = EXCLUDED.linked_project_ids,
+          updated_ts = EXCLUDED.updated_ts
+      `;
+      const ids = directives.map((d) => d.id);
+      await sql`DELETE FROM papercup_shared.directives WHERE id NOT IN ${sql(ids)}`;
+    } else {
+      await sql`DELETE FROM papercup_shared.directives`;
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[org/saveDirectives] PG write failed:', e);
+  }
 }
 
 function loadSummaries(): DirectiveSummary[] {
