@@ -26,7 +26,7 @@ declare global {
 }
 
 // Defaults from the operator's Chatwoot setup. Override via env at deploy time.
-const DEFAULT_BASE_URL = 'https://architects-dubai-ringtone-soundtrack.trycloudflare.com';
+const DEFAULT_BASE_URL = 'https://chat.papercupai.com';
 const DEFAULT_TOKEN = 'nQNnZSsKUsVEzeq7VLLUKhgJ';
 
 export function ChatwootWidget() {
