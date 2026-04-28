@@ -1,0 +1,12 @@
+{
+  "title": "Data Sync",
+  "pages": [
+    "index",
+    "richgrid",
+    "zero",
+    "named-queries",
+    "schema",
+    "pitfalls",
+    "cookbook"
+  ]
+}

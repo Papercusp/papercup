@@ -7,9 +7,10 @@
  * in multiple harnesses (org/dept), but this page only shows the slice
  * present in <slug>.
  */
-import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
-import { Loader2, ArrowRight, FolderKanban } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { Loader2, FolderKanban } from 'lucide-react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../theme';
 
 interface FeatureCounts {
@@ -30,8 +31,77 @@ interface ProjectRow {
 }
 
 export default function ProjectsList({ slug }: { slug: string }) {
+  const router = useRouter();
   const [projects, setProjects] = useState<ProjectRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const columns = useMemo<ColumnDef<ProjectRow>[]>(() => [
+    {
+      key: 'id',
+      header: 'ID',
+      width: 1,
+      sortKey: 'id',
+      render: ({ row }) => (
+        <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim, padding: '1px 6px', background: COLORS.bg, borderRadius: 3 }}>
+          {row.id}
+        </span>
+      ),
+    },
+    {
+      key: 'name',
+      header: 'Name',
+      width: 2.5,
+      sortKey: 'name',
+      render: ({ row }) => <span style={{ fontWeight: 600 }}>{row.name}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      width: 0.8,
+      sortKey: 'status',
+      render: ({ row }) => (
+        <span style={{ fontSize: SIZES.xs, padding: '1px 7px', borderRadius: 3, background: 'rgba(255,255,255,0.06)', color: COLORS.textDim }}>
+          {row.status}
+        </span>
+      ),
+    },
+    {
+      key: 'progress',
+      header: 'Progress',
+      width: 1.4,
+      align: 'right',
+      sortKey: (r) => (r.feature_counts.total > 0 ? r.feature_counts.passed / r.feature_counts.total : 0),
+      render: ({ row }) => {
+        const { passed, total, failing, blocked } = row.feature_counts;
+        const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
+        return (
+          <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim }}>
+            {passed}/{total} ({pct}%)
+            {failing > 0 && <span style={{ color: STATUS.failing.text, marginLeft: 6 }}>{failing}f</span>}
+            {blocked > 0 && <span style={{ color: STATUS.blocked.text, marginLeft: 6 }}>{blocked}b</span>}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'spec',
+      header: 'Spec',
+      width: 1.4,
+      sortKey: 'spec_updated_at',
+      render: ({ row }) => {
+        if (!row.spec) return <span style={{ fontSize: SIZES.xs, color: COLORS.textDim, opacity: 0.6 }}>none</span>;
+        const lastSpec = row.spec_updated_at
+          ? new Date(row.spec_updated_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+          : null;
+        return (
+          <span title={lastSpec ?? ''} style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim }}>
+            {Math.round(row.spec.length / 100) / 10}KB
+            {row.spec_manually_edited_at && <span style={{ marginLeft: 4, opacity: 0.7 }}>(edited)</span>}
+          </span>
+        );
+      },
+    },
+  ], []);
 
   const load = useCallback(async () => {
     try {
@@ -94,68 +164,13 @@ export default function ProjectsList({ slug }: { slug: string }) {
       )}
 
       {projects && projects.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {projects.map((p) => {
-            const passed = p.feature_counts.passed;
-            const total = p.feature_counts.total;
-            const pct = total > 0 ? Math.round((passed / total) * 100) : 0;
-            const lastSpec = p.spec_updated_at
-              ? new Date(p.spec_updated_at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-              : null;
-            return (
-              <Link
-                key={p.id}
-                href={`/harness/${encodeURIComponent(slug)}/projects/${encodeURIComponent(p.id)}`}
-                style={{ textDecoration: 'none' }}
-              >
-                <div style={{
-                  padding: 14,
-                  background: COLORS.surfaceRaised,
-                  border: `1px solid ${COLORS.borderSubtle}`,
-                  borderRadius: RADIUS.md,
-                  display: 'flex', alignItems: 'center', gap: 14,
-                  cursor: 'pointer',
-                  transition: 'border-color 120ms, transform 120ms',
-                }}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.borderSubtle; }}
-                >
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <span style={{
-                        fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim,
-                        padding: '1px 6px', background: COLORS.bg, borderRadius: 3,
-                      }}>{p.id}</span>
-                      <span style={{ fontSize: SIZES.md, fontWeight: 600 }}>{p.name}</span>
-                      <span style={{
-                        fontSize: SIZES.xs, padding: '1px 7px', borderRadius: 3,
-                        background: 'rgba(255,255,255,0.06)', color: COLORS.textDim,
-                      }}>{p.status}</span>
-                    </div>
-                    <div style={{ display: 'flex', gap: 14, fontSize: SIZES.xs, color: COLORS.textDim, fontFamily: FONTS.mono }}>
-                      <span>{passed}/{total} passed ({pct}%)</span>
-                      {p.feature_counts.failing > 0 && (
-                        <span style={{ color: STATUS.failing.text }}>{p.feature_counts.failing} failing</span>
-                      )}
-                      {p.feature_counts.blocked > 0 && (
-                        <span style={{ color: STATUS.blocked.text }}>{p.feature_counts.blocked} blocked</span>
-                      )}
-                      {p.spec ? (
-                        <span title={lastSpec ? `last curated ${lastSpec}` : undefined}>
-                          spec · {Math.round(p.spec.length / 100) / 10}KB
-                          {p.spec_manually_edited_at && <span style={{ marginLeft: 4, opacity: 0.7 }}>(edited)</span>}
-                        </span>
-                      ) : (
-                        <span style={{ opacity: 0.6 }}>no spec yet</span>
-                      )}
-                    </div>
-                  </div>
-                  <ArrowRight size={16} color={COLORS.textDim} />
-                </div>
-              </Link>
-            );
-          })}
-        </div>
+        <RichGrid<ProjectRow>
+          rows={projects}
+          columns={columns}
+          getRowId={(p) => p.id}
+          onRowClick={(p) => router.push(`/harness/${encodeURIComponent(slug)}/projects/${encodeURIComponent(p.id)}`)}
+          inline
+        />
       )}
     </div>
   );

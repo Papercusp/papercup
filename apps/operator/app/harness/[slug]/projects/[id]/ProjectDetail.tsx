@@ -18,7 +18,9 @@ import {
   Coins, Clock, Hammer, History as HistoryIcon, FileText,
 } from 'lucide-react';
 import { MarkdownView } from '@restart/ui-primitives';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../../theme';
+import { Tooltip } from '../../../Tooltip';
 
 interface FeatureCounts {
   todo: number; in_progress: number; validating: number; failing: number;
@@ -271,15 +273,16 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
                 <button onClick={startEdit} style={btnSecondary}>
                   <Pencil size={12} /> Edit
                 </button>
-                <button
-                  onClick={regenerate}
-                  disabled={regenState === 'running'}
-                  style={btnPrimary}
-                  title="Spawns claude with the project_manager prompt; ~30s"
-                >
-                  {regenState === 'running' ? <Loader2 size={12} className="op-note-spin" /> : <RefreshCw size={12} />}
-                  {regenState === 'running' ? 'Running PM…' : 'Regenerate (PM)'}
-                </button>
+                <Tooltip label="Spawns claude with the project_manager prompt; ~30s">
+                  <button
+                    onClick={regenerate}
+                    disabled={regenState === 'running'}
+                    style={btnPrimary}
+                  >
+                    {regenState === 'running' ? <Loader2 size={12} className="op-note-spin" /> : <RefreshCw size={12} />}
+                    {regenState === 'running' ? 'Running PM…' : 'Regenerate (PM)'}
+                  </button>
+                </Tooltip>
                 <button onClick={() => setShowRevisions((v) => !v)} style={btnSecondary}>
                   <Clock size={12} /> {showRevisions ? 'Hide revisions' : 'Show revisions'} ({revisions.length})
                 </button>
@@ -439,6 +442,55 @@ function SpecBody({ spec }: { spec: string | null }) {
 }
 
 function FeatureTable({ features, emptyText }: { features: FeatureRow[]; emptyText: string }) {
+  const columns = useMemo<ColumnDef<FeatureRow>[]>(() => [
+    {
+      key: 'dot',
+      header: '',
+      width: 0.15,
+      render: ({ row }) => {
+        const s = STATUS[row.status as keyof typeof STATUS] ?? STATUS.todo;
+        return <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: s.solid }} />;
+      },
+    },
+    {
+      key: 'id',
+      header: 'ID',
+      width: 1,
+      sortKey: 'id',
+      render: ({ row }) => <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim }}>{row.id}</span>,
+    },
+    {
+      key: 'title',
+      header: 'Title',
+      width: 4,
+      render: ({ row }) => (
+        <span style={{ color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {row.summary ?? row.title}
+        </span>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      width: 0.8,
+      sortKey: 'status',
+      render: ({ row }) => {
+        const s = STATUS[row.status as keyof typeof STATUS] ?? STATUS.todo;
+        return <span style={{ fontSize: SIZES.xs, color: s.text, padding: '1px 6px', background: s.bg, borderRadius: 3 }}>{s.label}</span>;
+      },
+    },
+    {
+      key: 'attempts',
+      header: 'Attempts',
+      width: 0.5,
+      align: 'right',
+      sortKey: 'attempts',
+      render: ({ row }) => row.attempts > 0
+        ? <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: row.attempts >= 3 ? STATUS.failing.text : COLORS.textDim }}>×{row.attempts}</span>
+        : null,
+    },
+  ], []);
+
   if (features.length === 0) {
     return (
       <div style={{ padding: 24, color: COLORS.textDim, fontSize: SIZES.sm, textAlign: 'center' }}>
@@ -446,31 +498,14 @@ function FeatureTable({ features, emptyText }: { features: FeatureRow[]; emptyTe
       </div>
     );
   }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      {features.map((f) => {
-        const s = STATUS[f.status as keyof typeof STATUS] ?? STATUS.todo;
-        return (
-          <div key={f.id} style={{
-            padding: '8px 12px',
-            background: COLORS.surfaceRaised,
-            border: `1px solid ${COLORS.borderSubtle}`,
-            borderRadius: RADIUS.sm,
-            display: 'flex', alignItems: 'center', gap: 10, fontSize: SIZES.sm,
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.solid }} />
-            <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.textDim, minWidth: 110 }}>{f.id}</span>
-            <span style={{ flex: 1, color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {f.summary ?? f.title}
-            </span>
-            <span style={{ fontSize: SIZES.xs, color: s.text, padding: '1px 6px', background: s.bg, borderRadius: 3 }}>{s.label}</span>
-            {f.attempts > 0 && (
-              <span style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: f.attempts >= 3 ? STATUS.failing.text : COLORS.textDim }}>×{f.attempts}</span>
-            )}
-          </div>
-        );
-      })}
-    </div>
+    <RichGrid<FeatureRow>
+      rows={features}
+      columns={columns}
+      getRowId={(f) => f.id}
+      inline
+    />
   );
 }
 
