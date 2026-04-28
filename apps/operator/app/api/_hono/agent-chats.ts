@@ -134,6 +134,32 @@ function readChatCostCap(slug: string): { perChatUsd?: number; aggregateUsd?: nu
   }
 }
 
+/**
+ * Read the strict-mode lock policy for chat. Default false (soft-warn).
+ * Set `parallelChat.respectFeatureLocks: true` in `.harness/config.json` to
+ * make chat refuse messages when the targeted feature is currently locked
+ * by the autonomous worker.
+ */
+function readChatLockPolicy(slug: string): boolean {
+  try {
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const home = process.env.HOME ?? require('node:os').homedir();
+    const reg = path.join(home, '.restart-harness-projects.json');
+    if (!fs.existsSync(reg)) return false;
+    const data = JSON.parse(fs.readFileSync(reg, 'utf8'));
+    const projectDir = data.projects?.find((p: { slug?: string; path?: string }) => p.slug === slug)?.path ?? null;
+    if (!projectDir) return false;
+    const cfgPath = path.join(projectDir, '.harness', 'config.json');
+    if (!fs.existsSync(cfgPath)) return false;
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+    const parallelChat = cfg.parallelChat as Record<string, unknown> | undefined;
+    return parallelChat?.respectFeatureLocks === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Sum of cents across all (non-archived) chats in this harness. */
 async function aggregateChatCostCents(slug: string): Promise<number> {
   try {
@@ -303,6 +329,27 @@ export function registerAgentChats(harness: Hono): void {
     // an honest "another instance of me is on this right now" answer
     // instead of pretending exclusive ownership.
     const featureLock = chat.feature_id ? await readFeatureLockState(slug, chat.feature_id) : null;
+
+    // Belt-and-braces strict mode: if config.json sets
+    // `parallelChat.respectFeatureLocks: true`, refuse chat messages on a
+    // feature that's currently locked by an autonomous worker. Default is
+    // false — keeps the historical soft-warn behavior (proceed but inject
+    // a "concurrent run" notice into the prompt). Strict mode is for
+    // operators who want hard substrate-level guarantees that no two
+    // claude -p processes can fire against the same feature concurrently.
+    if (featureLock?.active) {
+      const respectLocks = readChatLockPolicy(slug);
+      if (respectLocks) {
+        return c.json({
+          error: 'feature_locked',
+          feature_id: chat.feature_id,
+          taken_by: featureLock.taken_by,
+          taken_at: featureLock.taken_at,
+          expires_at: featureLock.expires_at,
+          hint: `Feature is currently being worked on autonomously by ${featureLock.taken_by}. Wait for the lock to release, or drop a note via POST /api/harness/${slug}/features/${chat.feature_id}/notes if you want guidance picked up on the next worker tick. Disable strict mode by removing parallelChat.respectFeatureLocks from .harness/config.json.`,
+        }, 409);
+      }
+    }
 
     // Append user turn before streaming so a client reload sees it.
     const userTurn: TranscriptTurn = { role: 'user', content: userContent, ts: new Date().toISOString() };
