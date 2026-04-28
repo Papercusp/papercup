@@ -160,6 +160,7 @@ function dynamicWithRetry<T>(
 }
 
 const SpecEditor = dynamicWithRetry(() => import('./SpecEditor'), 'SpecEditor');
+const ManifestSpecEditor = dynamicWithRetry(() => import('./ManifestSpecEditor'), 'ManifestSpecEditor');
 const EscalationBanner = dynamicWithRetry(() => import('./EscalationBanner'), 'EscalationBanner');
 const CheckpointBanner = dynamicWithRetry(() => import('./CheckpointBanner'), 'CheckpointBanner');
 const GitGraphPanelLib = dynamicWithRetry(
@@ -734,6 +735,119 @@ interface EnabledPluginManifest extends InstalledPluginInfo {
  * way to confirm they're enabled or fire their actions from the UI.
  */
 /**
+ * Reads the harness's manifest. If `configFiles` is declared, mounts the
+ * template-driven `<ManifestSpecEditor>`. Otherwise falls back to the
+ * legacy hardcoded-9-tabs `<SpecEditor>`. The fetch is fire-and-forget;
+ * during the brief load window we render the legacy editor (which works
+ * for any harness) so users never see a blank panel.
+ */
+function ManifestOrLegacySpecEditor({ slug, projectPath, alive, onClose }: {
+  slug: string;
+  projectPath: string;
+  alive: boolean;
+  onClose: () => void;
+}) {
+  const [configFiles, setConfigFiles] = useState<Array<{ path: string; label?: string; language?: 'markdown' | 'json' | 'yaml' | 'text'; description?: string; sensitivity?: 'normal' | 'warn' | 'secret' }> | null | 'pending'>('pending');
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/harness/${encodeURIComponent(slug)}/manifest`, { cache: 'no-store' })
+      .then((r) => r.ok ? r.json() : Promise.resolve({ configFiles: null }))
+      .then((d) => { if (!cancelled) setConfigFiles(Array.isArray(d?.configFiles) && d.configFiles.length > 0 ? d.configFiles : null); })
+      .catch(() => { if (!cancelled) setConfigFiles(null); });
+    return () => { cancelled = true; };
+  }, [slug]);
+  if (configFiles === 'pending') {
+    return <SpecEditor inline slug={slug} projectPath={projectPath} alive={alive} onClose={onClose} />;
+  }
+  if (configFiles && configFiles.length > 0) {
+    return <ManifestSpecEditor inline slug={slug} projectPath={projectPath} alive={alive} onClose={onClose} configFiles={configFiles} />;
+  }
+  return <SpecEditor inline slug={slug} projectPath={projectPath} alive={alive} onClose={onClose} />;
+}
+
+/**
+ * Renders enabled-plugin actions whose manifest declares
+ * `surfaces: ['harness-toolbar']` as buttons in the harness-page header,
+ * alongside the built-in triage / start-stop controls. Click → fires the
+ * action via `/api/plugins/invoke` with a Sonner toast for feedback.
+ *
+ * This is what makes plugin-contributed actions (e.g. cloudflare-pages's
+ * `publish`, slack-notifier's `notify`, jira-sync's `create-issue`)
+ * actually visible in the operator's main flow rather than buried inside
+ * the config sub-panel.
+ */
+function PluginToolbarActions({ harnessSlug, installed, enabledSlugs }: {
+  harnessSlug: string;
+  installed: InstalledPluginInfo[];
+  enabledSlugs: string[];
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  // Build the toolbar action list: every action of every enabled plugin
+  // whose `surfaces` includes 'harness-toolbar'.
+  const enabledSet = new Set(enabledSlugs);
+  const toolbarActions: Array<{ pluginName: string; pluginDirSlug: string; pluginIcon: string | null;
+    name: string; label: string; }> = [];
+  for (const p of installed) {
+    const dirSlug = p.path ? p.path.replace(/\/$/, '').split('/').pop() ?? p.name : p.name;
+    if (!(enabledSet.has(p.name) || enabledSet.has(dirSlug))) continue;
+    const actions = (p as { actions?: Array<{ name?: string; label?: string; surfaces?: string[] }> }).actions ?? [];
+    for (const a of actions) {
+      if (!a.name) continue;
+      if (!Array.isArray(a.surfaces) || !a.surfaces.includes('harness-toolbar')) continue;
+      toolbarActions.push({
+        pluginName: p.name,
+        pluginDirSlug: dirSlug,
+        pluginIcon: p.icon ?? null,
+        name: a.name,
+        label: a.label ?? a.name,
+      });
+    }
+  }
+  if (toolbarActions.length === 0) return null;
+
+  async function invoke(action: typeof toolbarActions[number]) {
+    setBusy(action.pluginDirSlug + '/' + action.name);
+    try {
+      const r = await fetch('/api/plugins/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: action.pluginDirSlug, action: action.name, harness: harnessSlug }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error(`${action.label} failed`, { description: d.error ?? d.log?.slice(-300) });
+        return;
+      }
+      toast.success(`${action.label} fired`, { description: typeof d.result === 'string' ? d.result.slice(0, 200) : 'Check action history.' });
+    } catch (e: any) {
+      toast.error(`${action.label} failed: ${e?.message ?? e}`);
+    } finally { setBusy(null); }
+  }
+
+  return (
+    <>
+      {toolbarActions.map((a) => {
+        const key = a.pluginDirSlug + '/' + a.name;
+        return (
+          <Tooltip key={key} label={`${a.label} — from ${a.pluginName}`}>
+            <button
+              type="button"
+              className="h-btn ghost"
+              onClick={() => invoke(a)}
+              disabled={busy === key}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <PluginIcon name={a.pluginIcon} size={13} />
+              {busy === key ? '…' : a.label}
+            </button>
+          </Tooltip>
+        );
+      })}
+    </>
+  );
+}
+
+/**
  * Config tab body. Sub-nav between "Spec" (SPEC.md / AGENTS.md / config.json
  * editor) and "Plugins" (per-harness plugin list with actions, events,
  * required capabilities, and disable/invoke controls). Replaces the older
@@ -791,8 +905,7 @@ function ConfigPanel({
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
         {pane === 'spec' ? (
-          <SpecEditor
-            inline
+          <ManifestOrLegacySpecEditor
             slug={harnessSlug}
             projectPath={projectPath}
             alive={alive}
@@ -1383,6 +1496,11 @@ export default function HarnessDashboard() {
   const searchParams = useSearchParams();
   const projectQueryParam = searchParams?.get('project') ?? null;
 
+
+  useEffect(() => {
+    document.body.classList.toggle('h-harness-top-collapsed', topChromeCollapsed);
+    return () => document.body.classList.remove('h-harness-top-collapsed');
+  }, [topChromeCollapsed]);
   useEffect(() => {
     fetch('/api/harness/projects')
       .then((r) => r.json())
@@ -1914,13 +2032,22 @@ export default function HarnessDashboard() {
   );
 
   return (
-    <div className={`h-root${isBrainstormPanel ? ' brainstorm-mode' : ''}`}>
+    <div className={`h-root${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}>
       <Toaster theme="dark" position="bottom-right" richColors />
 
       {!topChromeCollapsed && (
         <>
       {/* ── Mission header ─────────────────────────────────── */}
       <div className={`h-header${status?.alive ? ' alive' : ''}`}>
+        <button
+          type="button"
+          className="h-top-collapse-btn h-top-collapse-inline"
+          onClick={() => setTopChromeCollapsed(true)}
+          aria-expanded={!topChromeCollapsed}
+          title="Collapse the top header section to free vertical space"
+        >
+          Collapse top section
+        </button>
         <div className="h-header-main">
           <div className="h-brand">
             <span className="h-brand-kicker"><Activity size={12} /> autonomous workspace</span>
@@ -2122,7 +2249,6 @@ export default function HarnessDashboard() {
 
       {activeSlug && (
         <div className="h-phase-plan-row">
-          <PlanReviewBanner slug={activeSlug} compact />
           {status && !isBrainstormPanel && focusFeature && (
             <button
               className={`h-focus-card h-phase-plan-focus ${focusFeature.status}`}
@@ -2145,11 +2271,19 @@ export default function HarnessDashboard() {
               Review {triageCount} issue{triageCount === 1 ? '' : 's'}
             </button>
           )}
+          <PlanReviewBanner slug={activeSlug} compact />
           {status && (
             <div className="h-header-actions h-phase-plan-actions">
               {status.escalated && (
                 <span className="h-escalated-pill">
                   <AlertTriangle size={12} /> escalated
+                </span>
+              )}
+              {status.lastDecision && (
+                <span className="h-decision-chip h-phase-plan-decision" title={`Last decision: ${status.lastDecision}`}>
+                  <ArrowRight size={11} />
+                  <span>decision</span>
+                  <strong>{status.lastDecision}</strong>
                 </span>
               )}
               <Tooltip label="Command palette (⌘K)">
@@ -2165,12 +2299,12 @@ export default function HarnessDashboard() {
                   <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
                 </button>
               </Tooltip>
-              {status.lastDecision && (
-                <span className="h-decision-chip h-phase-plan-decision" title={`Last decision: ${status.lastDecision}`}>
-                  <ArrowRight size={11} />
-                  <span>decision</span>
-                  <strong>{status.lastDecision}</strong>
-                </span>
+              {activeSlug && (
+                <PluginToolbarActions
+                  harnessSlug={activeSlug}
+                  installed={installedPlugins ?? []}
+                  enabledSlugs={enabledByHarness[activeSlug] ?? []}
+                />
               )}
               {status.alive ? (
                 <button className="h-btn danger" onClick={stopHarness} title="Stop the autonomous loop for this harness">
@@ -2203,17 +2337,19 @@ export default function HarnessDashboard() {
         </>
       )}
 
-      <div className="h-top-collapse-row">
-        <button
-          type="button"
-          className="h-top-collapse-btn"
-          onClick={() => setTopChromeCollapsed((collapsed) => !collapsed)}
-          aria-expanded={!topChromeCollapsed}
-          title={topChromeCollapsed ? 'Expand the top header section' : 'Collapse the top header section to free vertical space'}
-        >
-          {topChromeCollapsed ? 'Expand top section' : 'Collapse top section'}
-        </button>
-      </div>
+      {topChromeCollapsed && (
+        <div className="h-top-collapse-row">
+          <button
+            type="button"
+            className="h-top-collapse-btn h-top-collapse-floating"
+            onClick={() => setTopChromeCollapsed(false)}
+            aria-expanded={!topChromeCollapsed}
+            title="Expand the top header section"
+          >
+            Expand top section
+          </button>
+        </div>
+      )}
 
       {/* ── Main-area tab switcher ─────────────────────────────── */}
       <Tabs.Root
@@ -2414,7 +2550,7 @@ export default function HarnessDashboard() {
             {isCompact ? (
             <div className="h-compact-dashboard">
               <div className="h-dashboard-panel-anchor" data-dashboard-panel="features" tabIndex={-1}>
-                <Panel title="Feature queue" count={totalCount}>
+                <Panel title="Feature queue" count={totalCount} className="h-feature-queue-panel">
                 <FeatureList
                   slug={activeSlug ?? ''}
                   features={(status?.features ?? []) as any}
@@ -2504,7 +2640,7 @@ export default function HarnessDashboard() {
               {/* Top: Feature queue, full width */}
               <RPanel defaultSize="40%" minSize="20%">
                 <div className="h-dashboard-panel-anchor" data-dashboard-panel="features" tabIndex={-1}>
-                  <Panel title="Feature queue" count={totalCount}>
+                  <Panel title="Feature queue" count={totalCount} className="h-feature-queue-panel">
                     <FeatureList
                       slug={activeSlug ?? ''}
                       features={(status?.features ?? []) as any}

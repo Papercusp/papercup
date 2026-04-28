@@ -41,8 +41,17 @@ function discoverHarnessSlugs(): string[] {
   }
 }
 
-let mountedPromise: Promise<{ mounted: number; skipped: number; errors: string[] }> | null = null;
-let mountedCounts: { mounted: number; skipped: number; errors: string[] } | null = null;
+// Pin the mount-result cache on globalThis so it survives Next.js HMR
+// module reloads. Without this, every HMR cycle resets the module-scope
+// state and re-runs the (slow + always-failing in dev) plugin discovery
+// on the next request, which serialised behind the substrate's event loop
+// makes /api/* calls take 5-15s in dev.
+const __mountKey = '__papercuspPluginApiMount';
+type Result = { mounted: number; skipped: number; errors: string[] };
+type Globals = { [__mountKey]?: { promise: Promise<Result> | null; counts: Result | null } };
+const __globals = globalThis as Globals;
+if (!__globals[__mountKey]) __globals[__mountKey] = { promise: null, counts: null };
+const __cache = __globals[__mountKey]!;
 
 export interface MountPluginApiRoutesOptions {
   /** Override the global-plugins discovery directory (tests). */
@@ -59,9 +68,9 @@ export interface MountPluginApiRoutesOptions {
  * errors encountered. Always resolves — never rejects (errors are collected).
  */
 export function mountPluginApiRoutes(parent: Hono<any, any, any>, opts: MountPluginApiRoutesOptions = {}): Promise<{ mounted: number; skipped: number; errors: string[] }> {
-  if (mountedPromise) return mountedPromise;
+  if (__cache.promise) return __cache.promise;
 
-  mountedPromise = (async () => {
+  __cache.promise = (async () => {
     const errors: string[] = [];
     let mounted = 0;
     let skipped = 0;
@@ -75,7 +84,7 @@ export function mountPluginApiRoutes(parent: Hono<any, any, any>, opts: MountPlu
     } catch (e: any) {
       errors.push(`plugin discovery failed: ${e?.message ?? String(e)}`);
       const result = { mounted: 0, skipped: 0, errors };
-      mountedCounts = result;
+      __cache.counts = result;
       return result;
     }
 
@@ -107,20 +116,20 @@ export function mountPluginApiRoutes(parent: Hono<any, any, any>, opts: MountPlu
     }
 
     const result = { mounted, skipped, errors };
-    mountedCounts = result;
+    __cache.counts = result;
     return result;
   })();
 
-  return mountedPromise;
+  return __cache.promise;
 }
 
 /** Inspector for tests / health endpoints — null until first mount completes. */
 export function pluginApiRoutesStatus() {
-  return mountedCounts;
+  return __cache.counts;
 }
 
 /** Resets the cache. Tests use this to re-mount with different fixtures. */
 export function _resetPluginApiRoutesForTests() {
-  mountedPromise = null;
-  mountedCounts = null;
+  __cache.promise = null;
+  __cache.counts = null;
 }

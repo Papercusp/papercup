@@ -1,125 +1,62 @@
-import InstallButton from './InstallButton';
+import Link from 'next/link';
 
-interface CatalogEntry {
-  slug: string;
-  name: string;
-  version: string;
-  description: string;
-  author: string;
-  license: string;
-  plugins: string[];
-  homepage?: string;
-  install: string;
-  topology?: 'single' | 'multi';
-  subprojects?: Array<{ suffix: string; kind: string; department_slug?: string }>;
-}
-
-interface InstalledHarness {
-  slug: string;
-  version: string | null;
-  description: string | null;
-}
-
-async function loadCatalog(): Promise<CatalogEntry[]> {
-  // Server-side fetch against our own API route. Using a relative URL would
-  // fail in RSC (Next requires absolute URLs for fetch in server components).
-  const base = process.env.PAPERCUSP_INTERNAL_BASE ?? 'http://localhost:3055';
-  try {
-    const r = await fetch(`${base}/api/marketplace/catalog`, { cache: 'no-store' });
-    if (!r.ok) return [];
-    const d = await r.json();
-    return Array.isArray(d?.catalog) ? d.catalog : [];
-  } catch {
-    return [];
-  }
-}
-
-async function loadInstalled(): Promise<InstalledHarness[]> {
-  const base = process.env.PAPERCUSP_INTERNAL_BASE ?? 'http://localhost:3055';
-  try {
-    const r = await fetch(`${base}/api/installed`, { cache: 'no-store' });
-    if (!r.ok) return [];
-    const d = await r.json();
-    return Array.isArray(d?.harnesses) ? d.harnesses : [];
-  } catch {
-    return [];
-  }
-}
-
-export default async function MarketplacePage() {
-  const [catalog, installed] = await Promise.all([loadCatalog(), loadInstalled()]);
-  const installedSlugs = new Set(installed.map((h) => h.slug));
+export default function MarketplaceLandingPage() {
   return (
     <div className="pc-shell">
       <h1>Marketplace</h1>
-      <p>
-        Browse community-published harnesses. Pick one, copy the install
-        command, and run it locally.
+      <p style={{ color: 'var(--fg-mute)', marginBottom: 32 }}>
+        Two distinct catalogs. Pick the one you need.
       </p>
 
+      <div className="pc-grid cards-2" style={{ gap: 20 }}>
+        <Link href="/marketplace/templates" className="pc-card" style={cardStyle}>
+          <span style={badgeTemplate}>Templates</span>
+          <h2 style={{ margin: '12px 0 6px' }}>Spin up a fresh harness</h2>
+          <p style={{ color: 'var(--fg-mute)', margin: 0, lineHeight: 1.55 }}>
+            Self-contained harness configurations. Each defines an autonomous-agent setup —
+            roles, prompts, schedules, policies. Install with{' '}
+            <code style={inlineCode}>papercusp install &lt;slug&gt;</code> to get a fresh harness instance.
+          </p>
+          <p style={ctaStyle}>Browse templates →</p>
+        </Link>
 
-
-      {installed.length > 0 && (
-        <>
-          <h2>Installed on this machine</h2>
-          <div className="pc-grid cards-3" style={{ marginBottom: 32 }}>
-            {installed.map((h) => (
-              <a className="pc-card" key={h.slug} href={`/marketplace/${h.slug}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer' }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
-                  <h3 style={{ marginTop: 0, marginBottom: 0 }}>{h.slug}</h3>
-                  <span style={{ fontSize: 10, color: 'var(--good)', textTransform: 'uppercase', letterSpacing: 0.04 }}>installed</span>
-                </div>
-                {h.version && <p style={{ margin: '4px 0', fontSize: 11, color: 'var(--fg-mute)' }}>v{h.version}</p>}
-                {h.description && <p style={{ minHeight: 48, fontSize: 13 }}>{h.description}</p>}
-                <pre style={{ background: 'var(--bg-1)', padding: '8px 10px', borderRadius: 4, fontSize: 12, color: 'var(--fg-mute)', overflow: 'auto' }}>
-                  $ papercusp init my-project --from {h.slug}
-                </pre>
-              </a>
-            ))}
-          </div>
-        </>
-      )}
-
-      <h2>{installed.length > 0 ? 'Browse the catalog' : 'Featured'}</h2>
-      <div className="pc-grid cards-3">
-        {catalog.map((h) => (
-          <a className="pc-card" key={h.slug} href={`/marketplace/${h.slug}`} style={{ textDecoration: 'none', color: 'inherit', cursor: 'pointer', transition: 'border-color 120ms ease' }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <h3 style={{ marginTop: 0 }}>{h.name}</h3>
-              {installedSlugs.has(h.slug) && (
-                <span style={{ fontSize: 10, color: 'var(--good)', textTransform: 'uppercase', letterSpacing: 0.04 }}>installed</span>
-              )}
-            </div>
-            <p style={{ minHeight: 64 }}>{h.description}</p>
-            <div style={{ display: 'flex', gap: 12, fontSize: 11, color: 'var(--fg-mute)', marginBottom: 12, flexWrap: 'wrap' }}>
-              <span>v{h.version}</span>
-              <span>·</span>
-              <span>{h.license}</span>
-              {h.topology === 'multi' && h.subprojects && h.subprojects.length > 0 && (
-                <>
-                  <span>·</span>
-                  <span style={{ color: 'var(--accent)' }}>multi-topology · {h.subprojects.length} sub-harnesses</span>
-                </>
-              )}
-              {h.plugins.length > 0 && (
-                <>
-                  <span>·</span>
-                  <span>plugins: {h.plugins.join(', ')}</span>
-                </>
-              )}
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <InstallButton
-                slug={h.slug}
-                alreadyInstalled={installedSlugs.has(h.slug)}
-                topology={h.topology}
-                subprojects={h.subprojects}
-              />
-            </div>
-          </a>
-        ))}
-        {catalog.length === 0 && <div className="pc-card pc-skeleton" />}
+        <Link href="/marketplace/plugins" className="pc-card" style={cardStyle}>
+          <span style={badgePlugin}>Plugins</span>
+          <h2 style={{ margin: '12px 0 6px' }}>Extend an existing harness</h2>
+          <p style={{ color: 'var(--fg-mute)', margin: 0, lineHeight: 1.55 }}>
+            Add capabilities to a harness you already run. Plugins contribute actions,
+            dashboard tabs, secrets, and integrations. Install per-machine, then enable per-harness.
+          </p>
+          <p style={ctaStyle}>Browse plugins →</p>
+        </Link>
       </div>
     </div>
   );
 }
+
+const cardStyle: React.CSSProperties = {
+  padding: 24, borderRadius: 12, textDecoration: 'none', color: 'inherit',
+  display: 'flex', flexDirection: 'column',
+};
+const badgeBase: React.CSSProperties = {
+  fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em',
+  padding: '3px 8px', borderRadius: 999, alignSelf: 'flex-start',
+};
+const badgeTemplate: React.CSSProperties = {
+  ...badgeBase,
+  background: 'rgba(34, 197, 94, 0.12)', color: '#86efac',
+  border: '1px solid rgba(34, 197, 94, 0.3)',
+};
+const badgePlugin: React.CSSProperties = {
+  ...badgeBase,
+  background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc',
+  border: '1px solid rgba(99, 102, 241, 0.3)',
+};
+const inlineCode: React.CSSProperties = {
+  fontFamily: "'SF Mono', monospace", fontSize: 12,
+  padding: '1px 6px', borderRadius: 3,
+  background: 'var(--bg-1)', border: '1px solid var(--border)',
+};
+const ctaStyle: React.CSSProperties = {
+  marginTop: 16, marginBottom: 0, fontSize: 13, color: 'var(--accent)',
+};

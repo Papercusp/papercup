@@ -10,13 +10,16 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
         <header className="pc-header">
-          <a href="/" className="brand">PAPERCUSP</a>
+          <a href="/" className="brand" aria-label="papercusp" style={{ display: 'flex', alignItems: 'center', gap: 0 }}>
+            <img src="/wordmark.svg" alt="papercusp" height={28} style={{ display: 'block' }} />
+          </a>
           <nav>
             <a href="/harness">Harnesses</a>
-            <a href="/marketplace">Marketplace</a>
+            <a href="/marketplace/templates">Templates</a>
+            <a href="/marketplace/plugins">Plugins</a>
             <a href="/settings/api-keys">Settings</a>
             <SessionIndicator />
           </nav>

@@ -20,7 +20,7 @@
 import { Hono } from 'hono';
 import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
@@ -274,6 +274,17 @@ plugins.get('/:slug/contributions', async (c) => {
   }
   sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR, source: 'global' });
 
+  // Per-harness opt-in (Phase D): only surface plugins that are explicitly
+  // enabled in <harness>/enabled-plugins.json. Plugins bundled inside the
+  // project dir or inside the harness's own /plugins/ tree (source=project
+  // or source=harness) keep auto-attaching — they are first-class to that
+  // install. Only `source=global` is gated.
+  type EnabledFile = { enabled: Record<string, { version: string }> };
+  const enabledFile = await readJson<EnabledFile>(
+    join(HARNESSES_DIR, slug, 'enabled-plugins.json'),
+  );
+  const enabledSet = new Set<string>(enabledFile ? Object.keys(enabledFile.enabled) : []);
+
   const seen = new Set<string>();
   type Tab = DashboardTabManifest & { pluginName: string };
   type Item = SidebarItemManifest & { pluginName: string };
@@ -285,6 +296,12 @@ plugins.get('/:slug/contributions', async (c) => {
   for (const s of sources) {
     for (const p of await listPluginsIn(s.dir, s.source)) {
       if (seen.has(p.name)) continue;
+      // Phase D: gate global plugins behind enabled-plugins.json. The CLI
+      // keys enabled-plugins.json by the on-disk directory name (which may
+      // be a short slug like `docs-viewer` even when the manifest's `name`
+      // is the scoped form `@papercupai/docs-viewer`). Match either form.
+      const dirBasename = basename(p.path);
+      if (s.source === 'global' && !(enabledSet.has(p.name) || enabledSet.has(dirBasename))) continue;
       seen.add(p.name);
       // Plugin-level componentRoot cascades to any contribution that
       // doesn't specify its own (Phase 6b runtime needs componentRoot
