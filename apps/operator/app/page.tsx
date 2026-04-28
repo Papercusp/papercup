@@ -13,7 +13,27 @@ export default function HomePage() {
         Anthropic / OpenAI keys.
       </p>
 
-      <div className="pc-grid cards-3" style={{ marginTop: 24 }}>
+      <div
+        style={{
+          maxWidth: 760,
+          margin: '0 auto 32px',
+          padding: '14px 18px',
+          background: 'var(--bg-1)',
+          border: '1px solid var(--border)',
+          borderRadius: 8,
+          fontSize: 14,
+          color: 'var(--fg-mute)',
+          textAlign: 'center',
+        }}
+      >
+        <strong style={{ color: 'var(--fg)' }}>First time here?</strong> Run through the{' '}
+        <a href="/setup" style={{ color: 'var(--accent)', fontWeight: 600 }}>
+          5-step setup
+        </a>{' '}
+        — Claude CLI, API key, install a harness, run.
+      </div>
+
+      <div className="pc-grid cards-2" style={{ marginTop: 32 }}>
         <div className="pc-card">
           <h3>Open a harness</h3>
           <p>
