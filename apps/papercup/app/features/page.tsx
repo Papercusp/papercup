@@ -377,7 +377,7 @@ export default function FeaturesPage() {
           Features <span style={{ color: '#64748b', fontWeight: 500 }}>· cross-harness work queue</span>
         </h1>
         <p style={{ fontSize: 13, color: '#64748b', margin: 0 }}>
-          Aggregates every harness's <code>harness_features</code> table. Polls every 10s.
+          Aggregates every harness's <code>harness_features</code> table. Live via Zero (trigger-mirrored).
         </p>
       </header>
 
