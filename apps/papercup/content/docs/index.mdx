@@ -1,0 +1,20 @@
+---
+title: Papercup harness documentation
+description: How the autonomous coding harness works, the decisions behind it, and how it compares to other frameworks.
+---
+
+## What lives in these docs
+
+These docs describe **two layers** of the Papercup system, both essential, neither sufficient on its own:
+
+1. **Coding harness** — the inner loop. A small bash supervisor that runs role agents (planner, worker, validator, orchestrator, etc.) on a single project. This is what physically writes code. One coding harness per project.
+2. **Org layer** — the outer loop. Five fixed director agents (Business, R&D, Technology, Management, Marketing) coordinating via typed inbox/outbox messages, dispatching directives into projects, each project running its own coding harness. This is the company-as-software.
+
+Sections:
+
+- **Overview** — what Papercup is, how the coding harness works in 5 minutes, why we built our own.
+- **Org layer** — the company-level concepts (charter, directives, projects, messages, director runtime, full API + UI map).
+- **Architecture** — the role graph, memory model, checkpoints, worktrees, competition mode, smoke gates, decisions timeline. Coding-harness internals.
+- **Decisions** — the actual decision log: why fresh contexts per role, why a prompt-cache-dominant design, why a curator role.
+- **Compared to other frameworks** — the matrix of 11 frameworks we surveyed, plus the synthesis of what we kept, dropped, and invented.
+- **Operating** — config reference, lifecycle hooks, glossary.

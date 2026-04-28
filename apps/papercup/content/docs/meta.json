@@ -1,0 +1,12 @@
+{
+  "title": "Papercup",
+  "pages": [
+    "index",
+    "overview",
+    "org",
+    "architecture",
+    "decisions",
+    "compared",
+    "operating"
+  ]
+}
