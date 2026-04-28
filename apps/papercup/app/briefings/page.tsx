@@ -1,2 +1,2 @@
 import { BriefingsView } from '@restart/papercup-shared';
-export default function Page() { return <BriefingsView />; }
+export default function Page() { return <BriefingsView live />; }
