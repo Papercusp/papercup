@@ -24,7 +24,6 @@ const ORG_ROOT = join(homedir(), '.restart-org');
 const CHARTER_PATH = join(ORG_ROOT, 'charter.md');
 const MISSION_PATH = join(ORG_ROOT, 'mission.md');
 const DEPARTMENTS_PATH = join(ORG_ROOT, 'departments.json');
-const PROJECTS_PATH = join(ORG_ROOT, 'projects.json');
 const MESSAGES_PATH = join(ORG_ROOT, 'messages.jsonl');
 const DIRECTIVES_PATH = join(ORG_ROOT, 'directives.json');
 const DIRECTIVE_SUMMARIES_PATH = join(ORG_ROOT, 'directive-summaries.jsonl');
@@ -167,15 +166,140 @@ function getDeptRoleConfig(deptSlug: string, role = 'director'): {
   };
 }
 
-function loadProjects(): Project[] {
-  if (!existsSync(PROJECTS_PATH)) return [];
-  const raw = readFileSync(PROJECTS_PATH, 'utf8');
-  return JSON.parse(raw).projects as Project[];
+// Projects are now sourced from harness_shared.projects. The legacy
+// ~/.restart-org/projects.json file is no longer the source of truth.
+// We keep an in-memory cache so the dozens of synchronous loadProjects()
+// call sites elsewhere in this file don't need to become async — at
+// module init we kick off a one-shot PG fetch, and every saveProjects()
+// updates both the cache and PG.
+//
+// owning_director (the JSON column name) maps to owning_dept (the PG
+// column name); the rest line up 1:1.
+let projectsCache: Project[] = [];
+let projectsBootstrapped: Promise<void> | null = null;
+
+interface PgProjectRow {
+  id: string;
+  name: string;
+  status: Project['status'];
+  slug: string | null;
+  budget_cents: string | number | null;
+  spent_cents: string | number;
+  cost_cap_cents: string | number | null;
+  earned_cents: string | number;
+  owning_dept: string | null;
+  vertical: string | null;
+  created_ts: string | number;
+  metadata: Record<string, unknown> | null;
 }
 
+function pgRowToProject(r: PgProjectRow): Project {
+  return {
+    id: r.id,
+    slug: r.slug ?? '',
+    name: r.name,
+    vertical: r.vertical ?? '',
+    status: r.status,
+    owning_director: r.owning_dept ?? 'management',
+    budget_cents: Number(r.budget_cents ?? 0),
+    spent_cents: Number(r.spent_cents),
+    earned_cents: Number(r.earned_cents),
+    cost_cap_cents: r.cost_cap_cents == null ? undefined : Number(r.cost_cap_cents),
+    created_ts: Number(r.created_ts),
+    metadata: r.metadata ?? undefined,
+  };
+}
+
+async function refreshProjectsCacheFromPg(): Promise<void> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<PgProjectRow[]>`
+      SELECT id, name, status, slug, budget_cents, spent_cents, cost_cap_cents,
+             earned_cents, owning_dept, vertical, created_ts, metadata
+      FROM harness_shared.projects
+      ORDER BY created_ts DESC
+    `;
+    projectsCache = rows.map(pgRowToProject);
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[org] PG project fetch failed, cache stays as-is:', e);
+  }
+}
+
+function ensureProjectsBootstrapped(): void {
+  if (!projectsBootstrapped) projectsBootstrapped = refreshProjectsCacheFromPg();
+}
+ensureProjectsBootstrapped();
+
+function loadProjects(): Project[] {
+  // Returns the cache; first call before bootstrap completes returns []
+  // (graceful empty state matching the legacy "no projects.json" behavior).
+  return projectsCache;
+}
+
+// Derived JSON snapshot path — kept regenerable for legacy readers
+// (apps/briefings reads this as informational context) but no longer
+// the source of truth.
+const PROJECTS_DERIVED_PATH = join(ORG_ROOT, 'projects.json');
+
 async function saveProjects(projects: Project[]): Promise<void> {
-  await mkdir(ORG_ROOT, { recursive: true });
-  await writeFile(PROJECTS_PATH, JSON.stringify({ version: 1, projects }, null, 2));
+  // Authoritative writer — bulk upsert into PG, then refresh the cache.
+  // Also writes the derived JSON snapshot for legacy informational readers.
+  projectsCache = projects;
+  // Derived JSON snapshot (best-effort; PG is canonical).
+  try {
+    await mkdir(ORG_ROOT, { recursive: true });
+    await writeFile(
+      PROJECTS_DERIVED_PATH,
+      JSON.stringify({ version: 1, derivedFromPg: true, projects }, null, 2)
+    );
+  } catch {
+    // disk write failures are tolerable — readers fall back to empty
+  }
+  try {
+    const { sql } = getOrgPg();
+    const ids = projects.map((p) => p.id);
+    if (projects.length > 0) {
+      const rows = projects.map((p) => ({
+        id: p.id,
+        name: p.name,
+        status: p.status,
+        slug: p.slug || null,
+        budget_cents: p.budget_cents ?? 0,
+        spent_cents: p.spent_cents ?? 0,
+        cost_cap_cents: p.cost_cap_cents ?? null,
+        earned_cents: p.earned_cents ?? 0,
+        owning_dept: p.owning_director ?? null,
+        vertical: p.vertical ?? null,
+        created_ts: p.created_ts,
+        updated_ts: Date.now(),
+        metadata: p.metadata ? JSON.stringify(p.metadata) : null,
+      }));
+      await sql`
+        INSERT INTO harness_shared.projects ${sql(rows, 'id', 'name', 'status', 'slug', 'budget_cents', 'spent_cents', 'cost_cap_cents', 'earned_cents', 'owning_dept', 'vertical', 'created_ts', 'updated_ts', 'metadata')}
+        ON CONFLICT (id) DO UPDATE SET
+          name = EXCLUDED.name,
+          status = EXCLUDED.status,
+          slug = EXCLUDED.slug,
+          budget_cents = EXCLUDED.budget_cents,
+          spent_cents = EXCLUDED.spent_cents,
+          cost_cap_cents = EXCLUDED.cost_cap_cents,
+          earned_cents = EXCLUDED.earned_cents,
+          owning_dept = EXCLUDED.owning_dept,
+          vertical = EXCLUDED.vertical,
+          metadata = EXCLUDED.metadata,
+          updated_ts = EXCLUDED.updated_ts
+      `;
+    }
+    if (ids.length > 0) {
+      await sql`DELETE FROM harness_shared.projects WHERE id NOT IN ${sql(ids)}`;
+    } else {
+      await sql`DELETE FROM harness_shared.projects`;
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[org/saveProjects] PG write failed:', e);
+  }
 }
 
 function loadMessages(): Message[] {
@@ -727,22 +851,6 @@ org.post('/campaigns/:messageId/metrics', async (c) => {
     if (pIdx !== -1) {
       projects[pIdx] = { ...projects[pIdx], earned_cents: (projects[pIdx].earned_cents ?? 0) + body.revenue_cents };
       await saveProjects(projects);
-      // Match by slug (or id) — the JSON-side id is a UUID but the PG
-      // row may use a PROJ-<slug> id from the legacy importer; slug is
-      // the only identifier guaranteed to match across both.
-      const targetSlug = projects[pIdx].slug;
-      try {
-        const { sql } = getOrgPg();
-        await sql`
-          UPDATE harness_shared.projects
-             SET earned_cents = COALESCE(earned_cents, 0) + ${body.revenue_cents},
-                 updated_ts = ${Date.now()}
-           WHERE slug = ${targetSlug} OR id = ${m.projectId}
-        `;
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[campaign/metrics] PG earned_cents bump failed:', e);
-      }
     }
   }
   await appendAudit('campaign.metrics', messageId, body);
@@ -912,34 +1020,6 @@ org.post('/projects', async (c) => {
   projects.push(project);
   await saveProjects(projects);
 
-  // Dual-write into Postgres so the Zero-driven /projects view + /portfolio
-  // see the new row in real time. Failure here is logged but doesn't fail
-  // the request — JSON remains the source of truth until the legacy reader
-  // path is fully migrated. slug / cost_cap_cents / earned_cents are
-  // first-class columns; arbitrary user metadata stays in the jsonb column.
-  try {
-    const { sql } = getOrgPg();
-    const metadataStr = project.metadata ? JSON.stringify(project.metadata) : null;
-    await sql`
-      INSERT INTO harness_shared.projects (
-        id, name, status, slug, vertical, owning_dept,
-        budget_cents, spent_cents, cost_cap_cents, earned_cents,
-        created_ts, updated_ts, metadata
-      ) VALUES (
-        ${project.id}, ${project.name}, ${project.status}, ${project.slug},
-        ${project.vertical}, ${project.owning_director},
-        ${project.budget_cents}, ${project.spent_cents},
-        ${project.cost_cap_cents ?? null}, ${project.earned_cents ?? 0},
-        ${project.created_ts}, ${project.created_ts},
-        ${metadataStr}::jsonb
-      )
-      ON CONFLICT (id) DO NOTHING
-    `;
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('[org/projects] PG dual-write failed:', e);
-  }
-
   // Emit ProjectKickoff broadcast
   const kickoff: Message = {
     id: randomUUID(),
@@ -1047,18 +1127,6 @@ org.post('/projects/:slug/record-revenue', async (c) => {
   if (idx === -1) return c.json({ error: 'project not found' }, 404);
   projects[idx] = { ...projects[idx], earned_cents: (projects[idx].earned_cents ?? 0) + body.amount_cents };
   await saveProjects(projects);
-  try {
-    const { sql } = getOrgPg();
-    await sql`
-      UPDATE harness_shared.projects
-         SET earned_cents = COALESCE(earned_cents, 0) + ${body.amount_cents},
-             updated_ts = ${Date.now()}
-       WHERE slug = ${slug} OR id = ${projects[idx].id}
-    `;
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('[record-revenue] PG earned_cents bump failed:', e);
-  }
   await appendAudit('project.revenue', slug, { amount_cents: body.amount_cents, note: body.note, total_earned_cents: projects[idx].earned_cents });
   return c.json({ project: projects[idx] });
 });
@@ -1078,30 +1146,6 @@ org.patch('/projects/:slug', async (c) => {
     created_ts: existing.created_ts,
   };
   await saveProjects(projects);
-  // Mirror first-class columns to PG. Only the fields a PATCH could
-  // legitimately touch are forwarded; jsonb metadata stays whatever the
-  // caller provided. id / slug / created_ts are immutable, so excluded.
-  try {
-    const { sql } = getOrgPg();
-    const p = projects[idx];
-    await sql`
-      UPDATE harness_shared.projects
-         SET name = ${p.name},
-             status = ${p.status},
-             vertical = ${p.vertical ?? null},
-             owning_dept = ${p.owning_director ?? null},
-             budget_cents = ${p.budget_cents ?? null},
-             spent_cents = ${p.spent_cents ?? 0},
-             cost_cap_cents = ${p.cost_cap_cents ?? null},
-             earned_cents = ${p.earned_cents ?? 0},
-             metadata = ${p.metadata ? JSON.stringify(p.metadata) : null}::jsonb,
-             updated_ts = ${Date.now()}
-       WHERE slug = ${p.slug} OR id = ${p.id}
-    `;
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.warn('[projects/PATCH] PG mirror failed:', e);
-  }
   return c.json({ project: projects[idx] });
 });
 
