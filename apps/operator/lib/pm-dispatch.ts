@@ -56,16 +56,38 @@ interface ParsedOutput {
 }
 
 function parsePmOutput(stdout: string): ParsedOutput | { error: string } {
-  // Find the three section markers; the body is everything between them.
-  const decisionsMarker = stdout.indexOf('PROJECT_MANAGER_DECISIONS');
-  const specMarker = stdout.indexOf('PROJECT_MANAGER_SPEC');
-  const summaryMarker = stdout.indexOf('PROJECT_MANAGER_SUMMARY');
+  // Permissive marker scan: the model occasionally wraps the markers in
+  // **bold**, ## headers, or markdown code fences. Match the marker name
+  // alone on its own line (with optional decorations).
+  const findMarker = (name: string): number => {
+    const patterns = [
+      new RegExp('^\\s*#{0,3}\\s*\\*{0,2}' + name + '\\*{0,2}:?\\s*$', 'm'),
+      new RegExp('^\\s*' + name + '\\s*$', 'm'),
+    ];
+    let earliest = -1;
+    for (const p of patterns) {
+      const m = p.exec(stdout);
+      if (m && (earliest < 0 || m.index < earliest)) earliest = m.index;
+    }
+    return earliest;
+  };
+  const decisionsMarker = findMarker('PROJECT_MANAGER_DECISIONS');
+  const specMarker = findMarker('PROJECT_MANAGER_SPEC');
+  const summaryMarker = findMarker('PROJECT_MANAGER_SUMMARY');
   if (decisionsMarker < 0 || specMarker < 0 || summaryMarker < 0) {
-    return { error: 'PM output missing one or more required section markers' };
+    return { error: 'PM output missing one or more required section markers (decisions=' + decisionsMarker + ', spec=' + specMarker + ', summary=' + summaryMarker + ')' };
   }
-  const decisionsRaw = stdout.slice(decisionsMarker, specMarker).replace(/^PROJECT_MANAGER_DECISIONS\s*/, '').replace(/---\s*$/, '').trim();
-  const specRaw = stdout.slice(specMarker, summaryMarker).replace(/^PROJECT_MANAGER_SPEC\s*/, '').replace(/---\s*$/, '').trim();
-  const summaryRaw = stdout.slice(summaryMarker).replace(/^PROJECT_MANAGER_SUMMARY\s*/, '').trim();
+  const stripMarker = (s: string, name: string): string => {
+    return s
+      .replace(new RegExp('^\\s*#{0,3}\\s*\\*{0,2}' + name + '\\*{0,2}:?\\s*\\n?'), '')
+      .replace(/\n\s*---\s*\n?$/, '')
+      .replace(/^\s*```(?:json)?\s*\n/, '')
+      .replace(/\n\s*```\s*$/, '')
+      .trim();
+  };
+  const decisionsRaw = stripMarker(stdout.slice(decisionsMarker, specMarker), 'PROJECT_MANAGER_DECISIONS');
+  const specRaw = stripMarker(stdout.slice(specMarker, summaryMarker), 'PROJECT_MANAGER_SPEC');
+  const summaryRaw = stripMarker(stdout.slice(summaryMarker), 'PROJECT_MANAGER_SUMMARY');
 
   let decisions: ParsedOutput['decisions'];
   try {
@@ -192,7 +214,18 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
     // 7. Parse the three-section output.
     const parsed = parsePmOutput(spawned.text);
     if ('error' in parsed) {
-      return { ok: false, error: 'PM output unparseable', detail: parsed.error };
+      // Persist raw output so we can inspect parse failures without log scraping.
+      try {
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        const dir = path.join('/tmp', 'papercusp-pm-debug');
+        fs.mkdirSync(dir, { recursive: true });
+        const fname = path.join(dir, slug + '-' + projectId + '-' + Date.now() + '.txt');
+        fs.writeFileSync(fname, spawned.text);
+        return { ok: false, error: 'PM output unparseable', detail: parsed.error + ' (raw saved to ' + fname + ')' };
+      } catch {
+        return { ok: false, error: 'PM output unparseable', detail: parsed.error };
+      }
     }
     const costCents = Math.round(spawned.cost_usd * 100);
 
