@@ -249,8 +249,13 @@ function ensurePapercuspMcpRegistered(): void {
   // <repo>/packages/papercusp-mcp-server/bin/papercusp-mcp-server.mjs.
   const bundledCandidates = [
     process.env.PAPERCUSP_MCP_SERVER,
-    join(process.cwd(), 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
-    join(homedir(), 'Restart', 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
+    // Production bundle (Tauri sidecar): co-located inside the sidecar dir.
+    join(process.cwd(), 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
+    // Dev: papercupai/papercup workspace at apps/operator → walk up to repo
+    // root, then sibling submodule papercusp/packages/.
+    join(process.cwd(), '..', '..', '..', '..', 'papercusp', 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
+    // Direct local clones side-by-side (e.g. /home/<user>/papercupai-workspace/).
+    join(homedir(), 'papercupai-workspace', 'papercusp', 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
   ].filter((p): p is string => typeof p === 'string' && p.length > 0);
   let serverBin: string | null = null;
   for (const p of bundledCandidates) {
