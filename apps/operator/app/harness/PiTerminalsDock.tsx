@@ -51,6 +51,14 @@ function layoutKey(slug: string): string {
  * Cross-component event for opening a chat panel from elsewhere in the
  * dashboard (e.g., FeaturePeekPanel's "chat" button). Dispatched on
  * window; the dock listens. Detail = the chat metadata to mount.
+ *
+ * Race fix: the event is fired by `openFeatureChat()` *before* the
+ * caller switches the dashboard to the consoles tab — so when the
+ * dispatcher fires, the dock hasn't mounted yet and no listener exists.
+ * To handle that, every dispatch ALSO pushes the detail onto the
+ * module-level `pendingOpens` queue. When the dock mounts (or when its
+ * event listener fires), it drains the queue. Either path opens the
+ * panel exactly once; the queue entry is removed as part of opening.
  */
 export interface OpenChatEventDetail {
   slug: string;
@@ -60,6 +68,36 @@ export interface OpenChatEventDetail {
   featureId?: string;
 }
 export const OPEN_CHAT_EVENT = 'papercusp:open-chat';
+
+const pendingOpens: OpenChatEventDetail[] = [];
+
+function drainPendingOpens(api: DockviewApi, slug: string): void {
+  for (let i = pendingOpens.length - 1; i >= 0; i--) {
+    const detail = pendingOpens[i];
+    if (detail.slug !== slug) continue;
+    const panelId = `chat-${detail.chatId}`;
+    const existing = api.panels.find((p) => p.id === panelId);
+    if (existing) {
+      try { existing.api.setActive(); } catch { /* ignore */ }
+    } else {
+      const panel = api.addPanel({
+        id: panelId,
+        component: 'chat',
+        title:
+          detail.title ??
+          (detail.featureId
+            ? `${detail.role ?? 'agent'} · ${detail.featureId}`
+            : (detail.role ?? 'chat')),
+        params: { slug: detail.slug, chatId: detail.chatId } satisfies ChatPanelParams,
+      });
+      // addPanel restores the previously-active panel from saved layout
+      // by default — explicitly activate the new one so the user sees
+      // their just-opened chat instead of a stale layout-restored panel.
+      try { panel.api.setActive(); } catch { /* ignore */ }
+    }
+    pendingOpens.splice(i, 1);
+  }
+}
 
 /** Component rendered inside each dockview panel. */
 function TerminalPanelComponent(props: IDockviewPanelProps<TerminalPanelParams>) {
@@ -265,7 +303,12 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
         restored = false;
       }
 
-      if (!restored) {
+      // If the user is opening a chat from the dashboard, don't also
+      // seed an initial terminal — they came here for the chat. Only
+      // seed when the dock is opened cold (no saved layout, no queued
+      // chats waiting).
+      const hasPendingForThisSlug = pendingOpens.some((d) => d.slug === slug);
+      if (!restored && !hasPendingForThisSlug) {
         event.api.addPanel({
           id: `term-initial`,
           component: 'terminal',
@@ -274,7 +317,13 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
         });
       }
 
-      // Persist layout on every change.
+      // Persist layout on every change. CRITICAL: registered BEFORE
+      // drainPendingOpens so that any chat panels added by the drain
+      // are persisted to localStorage. Otherwise React StrictMode's
+      // double-mount in dev silently loses chat panels: round 1 drains
+      // the queue and adds the panel but persist isn't wired yet, so
+      // localStorage stays stale; round 2 restores from stale storage
+      // and finds the queue already drained.
       const persist = () => {
         try {
           window.localStorage.setItem(layoutKey(slug), JSON.stringify(event.api.toJSON()));
@@ -283,6 +332,12 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
       event.api.onDidLayoutChange(persist);
       event.api.onDidAddPanel(persist);
       event.api.onDidRemovePanel(persist);
+
+      // Race fix: drain any pending chat opens that arrived before this
+      // mount. Without this, clicking "chat" on the dashboard tab silently
+      // drops the event because the dock isn't mounted yet — the user sees
+      // only the terminal restored from saved layout.
+      drainPendingOpens(event.api, slug);
     },
     [slug, initialLaneId],
   );
@@ -295,28 +350,17 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
     };
   }, [slug]);
 
-  // Listen for cross-component "open chat" events (dispatched by
-  // FeaturePeekPanel when the user clicks "chat" on a feature). The
-  // chat row has already been created by the dispatcher; we just add
-  // it to the dock and activate.
+  // Listen for cross-component "open chat" events. The dispatcher
+  // (openFeatureChat) has already created the chat row AND pushed the
+  // detail onto pendingOpens. If the dock is mounted, this handler
+  // drains the queue immediately. If the dock isn't mounted yet (because
+  // the dashboard tab is still active), the event is dropped — but the
+  // queue entry remains, and onReady drains it when the dock mounts.
   useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<OpenChatEventDetail>).detail;
-      if (!detail || detail.slug !== slug) return;
+    const handler = () => {
       const a = apiRef.current;
       if (!a) return;
-      const panelId = `chat-${detail.chatId}`;
-      const existing = a.panels.find((p) => p.id === panelId);
-      if (existing) {
-        a.setActivePanel({ id: panelId } as { id: string });
-        return;
-      }
-      a.addPanel({
-        id: panelId,
-        component: 'chat',
-        title: detail.title ?? (detail.featureId ? `${detail.role ?? 'agent'} · ${detail.featureId}` : (detail.role ?? 'chat')),
-        params: { slug: detail.slug, chatId: detail.chatId } satisfies ChatPanelParams,
-      });
+      drainPendingOpens(a, slug);
     };
     window.addEventListener(OPEN_CHAT_EVENT, handler);
     return () => window.removeEventListener(OPEN_CHAT_EVENT, handler);
@@ -376,6 +420,10 @@ export async function openFeatureChat(opts: {
       role: chat.role,
       featureId: chat.feature_id ?? undefined,
     };
+    // Push to queue first so the dock can drain it on mount even if no
+    // listener exists yet (dashboard tab is currently active). The
+    // event dispatch handles the case where the dock IS already mounted.
+    pendingOpens.push(detail);
     window.dispatchEvent(new CustomEvent(OPEN_CHAT_EVENT, { detail }));
     return { chatId: chat.id };
   } catch (err) {
