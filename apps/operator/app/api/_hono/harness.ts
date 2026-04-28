@@ -2676,13 +2676,18 @@ harness.delete('/:slug/screenshots/:id', async (c) => {
 
 const SNAPSHOT_FILES = ['features.json', 'validation-contract.md', 'supervisor-notes.md', 'config.json'] as const;
 
-harness.get('/:slug/snapshots', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const snapDir = join(harnessDir(project), 'snapshots');
-  if (!existsSync(snapDir)) return c.json({ snapshots: [] });
+interface SnapshotMeta {
+  id: string;
+  ts: number;
+  iterNum: number;
+  files: string[];
+  featureCounts: Record<string, number>;
+}
 
-  const snapshots = readdirSync(snapDir, { withFileTypes: true })
+function scanSnapshots(project: ProjectEntry): SnapshotMeta[] {
+  const snapDir = join(harnessDir(project), 'snapshots');
+  if (!existsSync(snapDir)) return [];
+  return readdirSync(snapDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => {
       const id = d.name;
@@ -2694,7 +2699,6 @@ harness.get('/:slug/snapshots', (c) => {
       for (const f of SNAPSHOT_FILES) {
         if (existsSync(join(dirPath, f))) files.push(f);
       }
-      // Quick feature counts for the UI
       const featureCounts: Record<string, number> = {};
       try {
         const raw = readFileSync(join(dirPath, 'features.json'), 'utf8');
@@ -2708,7 +2712,54 @@ harness.get('/:slug/snapshots', (c) => {
     })
     .filter((s) => s.ts > 0)
     .sort((a, b) => b.ts - a.ts);
+}
 
+/**
+ * Mirror snapshot metadata into harness_<slug>.harness_snapshots.
+ * Bulk upsert + tombstone for missing rows. Files/featureCounts go to
+ * JSONB; the directory itself stays on disk.
+ */
+async function syncSnapshotsToPg(project: ProjectEntry, snaps: SnapshotMeta[]): Promise<void> {
+  const { sql } = getHarnessPg(project.slug);
+  const now = Date.now();
+  if (snaps.length > 0) {
+    const rows = snaps.map((s) => ({
+      harness_slug: project.slug,
+      snapshot_id: s.id,
+      ts: s.ts,
+      iter_num: s.iterNum,
+      files: JSON.stringify(s.files),
+      feature_counts: JSON.stringify(s.featureCounts),
+      created_ts: now,
+      updated_ts: now,
+    }));
+    await sql`
+      INSERT INTO harness_snapshots ${sql(rows, 'harness_slug', 'snapshot_id', 'ts', 'iter_num', 'files', 'feature_counts', 'created_ts', 'updated_ts')}
+      ON CONFLICT (harness_slug, snapshot_id) DO UPDATE SET
+        ts = EXCLUDED.ts,
+        iter_num = EXCLUDED.iter_num,
+        files = EXCLUDED.files,
+        feature_counts = EXCLUDED.feature_counts,
+        updated_ts = EXCLUDED.updated_ts
+    `;
+    const ids = snaps.map((s) => s.id);
+    await sql`
+      DELETE FROM harness_snapshots
+      WHERE harness_slug = ${project.slug}
+        AND snapshot_id NOT IN ${sql(ids)}
+    `;
+  } else {
+    await sql`DELETE FROM harness_snapshots WHERE harness_slug = ${project.slug}`;
+  }
+}
+
+harness.get('/:slug/snapshots', (c) => {
+  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const snapshots = scanSnapshots(project);
+  syncSnapshotsToPg(project, snapshots).catch((err) => {
+    console.error(`[snapshots] PG sync failed for ${project.slug}:`, err);
+  });
   return c.json({ snapshots });
 });
 

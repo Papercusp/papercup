@@ -1,7 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@rocicorp/zero/react';
+import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { Checkbox } from './Checkbox';
+import { queries, slugToSnapshotsKey, type SnapshotRow } from '@restart/zero-harness';
 
 interface Snapshot {
   id: string;
@@ -9,6 +13,16 @@ interface Snapshot {
   iterNum: number;
   files: string[];
   featureCounts: Record<string, number>;
+}
+
+function rowToSnapshot(r: SnapshotRow): Snapshot {
+  return {
+    id: r.snapshotId,
+    ts: Number(r.ts) || 0,
+    iterNum: Number(r.iterNum) || 0,
+    files: (r.files as string[]) ?? [],
+    featureCounts: (r.featureCounts as Record<string, number>) ?? {},
+  };
 }
 
 interface Props {
@@ -32,7 +46,22 @@ function fmtTs(ts: number): string {
 }
 
 export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  // Snapshots stream live from Zero (`harness_<slug>.harness_snapshots`).
+  // Polling /api/harness/<slug>/snapshots stays as a sync ping that triggers
+  // the FS scan + PG dual-write on the server.
+  const snapshotsQuery = useMemo(() => {
+    const ns = (queries as Record<string, { all?: () => unknown }>)[slugToSnapshotsKey(slug)];
+    return ns?.all?.() ?? null;
+  }, [slug]);
+  const [zeroRows, zeroInfo] = useQuery(
+    (snapshotsQuery ?? (queries.snapshotsSheets.all() as unknown)) as never,
+  );
+  const snapshots: Snapshot[] = useMemo(() => {
+    const info = zeroInfo as { type?: string } | undefined;
+    if (info?.type !== 'complete' || !Array.isArray(zeroRows)) return [];
+    return (zeroRows as SnapshotRow[]).map(rowToSnapshot);
+  }, [zeroRows, zeroInfo]);
+
   const [selected, setSelected] = useState<Snapshot | null>(null);
   const [includeNotes, setIncludeNotes] = useState(true);
   const [includeConfig, setIncludeConfig] = useState(true);
@@ -40,9 +69,10 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
   const [toast, setToast] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    // Sync ping — server scans FS + dual-writes to PG. Zero subscription
+    // delivers the resulting rows back to this panel.
     try {
-      const d = await fetch(`/api/harness/${slug}/snapshots`).then((r) => r.json());
-      setSnapshots(d.snapshots ?? []);
+      await fetch(`/api/harness/${slug}/snapshots`);
     } catch (e) {
       setToast(`load failed: ${e}`);
     }
@@ -94,14 +124,14 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
   }, [slug, selected, load]);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Snapshots`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Snapshots — {slug}</strong>
@@ -158,20 +188,20 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
                 <div>
                   <div style={{ fontSize: '0.7rem', color: '#9ca3af', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.3rem' }}>Restore options</div>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#d1d5db', cursor: selected.files.includes('supervisor-notes.md') ? 'pointer' : 'not-allowed', opacity: selected.files.includes('supervisor-notes.md') ? 1 : 0.5 }}>
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={includeNotes && selected.files.includes('supervisor-notes.md')}
                       disabled={!selected.files.includes('supervisor-notes.md')}
-                      onChange={(e) => setIncludeNotes(e.target.checked)}
+                      onChange={setIncludeNotes}
+                      ariaLabel="Include supervisor-notes.md"
                     />
                     also restore supervisor-notes.md
                   </label>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#d1d5db', cursor: selected.files.includes('config.json') ? 'pointer' : 'not-allowed', opacity: selected.files.includes('config.json') ? 1 : 0.5 }}>
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       checked={includeConfig && selected.files.includes('config.json')}
                       disabled={!selected.files.includes('config.json')}
-                      onChange={(e) => setIncludeConfig(e.target.checked)}
+                      onChange={setIncludeConfig}
+                      ariaLabel="Include config.json"
                     />
                     also restore config.json (per-role models)
                   </label>
@@ -204,8 +234,7 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
             )}
           </div>
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }
 
