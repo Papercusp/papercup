@@ -1,0 +1,6 @@
+import type { ReactNode } from 'react';
+import { HarnessZeroProvider } from '../../../operator/providers/HarnessZeroProvider';
+
+export default function HarnessesLayout({ children }: { children: ReactNode }) {
+  return <HarnessZeroProvider>{children}</HarnessZeroProvider>;
+}
