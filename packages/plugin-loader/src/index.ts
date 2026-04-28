@@ -53,12 +53,15 @@ async function readManifest(dir: string): Promise<ManifestShape | null> {
 }
 
 async function locateEntry(dir: string): Promise<string | null> {
-  // Prefer ts > js > mjs > index in dist/
+  // Prefer compiled .js over source .ts. Reason: bundled runtimes (Next.js
+  // Turbopack, webpack standalone) can dynamic-import .js but not .ts at
+  // runtime. When both exist, .js is the runtime-canonical artifact and
+  // .ts is just for editor tooling.
   const candidates = [
-    'index.ts',
     'index.js',
     'index.mjs',
     join('dist', 'index.js'),
+    'index.ts',
     join('src', 'index.ts'),
   ];
   for (const c of candidates) {
@@ -68,16 +71,27 @@ async function locateEntry(dir: string): Promise<string | null> {
   return null;
 }
 
-async function importPluginEntry(entryPath: string): Promise<Plugin | null> {
+// Bundler-opaque dynamic import. Webpack/Turbopack refuse to compile a bare
+// `import(varURL)` (or even `new Function('return import(...)')()`) because
+// they statically scan all `import(...)` calls. We use Node's createRequire
+// which delegates to Node's native module resolver — bundlers don't try to
+// reach inside `module.createRequire(...)` to follow what gets required.
+//
+// Caveat: createRequire only handles CommonJS. ESM plugins must compile to
+// CJS (or ship .cjs alongside .mjs). For the v1 plugin loader, plugins are
+// expected to ship CJS-compatible artifacts.
+import { createRequire } from 'node:module';
+
+async function importPluginEntry(entryPath: string): Promise<Plugin | { error: string } | null> {
   try {
-    const url = pathToFileURL(entryPath).href;
-    const mod = await import(/* @vite-ignore */ url);
+    const req = createRequire(entryPath);
+    const mod = req(entryPath);
     const candidate = mod?.default ?? mod;
     if (!candidate || typeof candidate !== 'object') return null;
     if (typeof (candidate as any).name !== 'string') return null;
     return candidate as Plugin;
-  } catch {
-    return null;
+  } catch (e: any) {
+    return { error: e?.message ?? String(e) };
   }
 }
 
@@ -114,8 +128,10 @@ export async function loadPluginFromDir(dir: string, source: LoadedPlugin['sourc
   if (!manifest) return { error: 'missing or invalid papercusp.json', path };
   const entry = await locateEntry(path);
   if (!entry) return { error: 'no entry point found (looked for index.ts, index.js, index.mjs, dist/index.js, src/index.ts)', path };
-  const plugin = await importPluginEntry(entry);
-  if (!plugin) return { error: `failed to import default export from ${entry}`, path };
+  const importResult = await importPluginEntry(entry);
+  if (!importResult) return { error: `import returned null/non-object from ${entry}`, path };
+  if ('error' in importResult) return { error: `import threw at ${entry}: ${importResult.error}`, path };
+  const plugin = importResult;
   const validationError = validate(plugin, manifest);
   if (validationError) return { error: validationError, path };
   return { plugin, path, source };

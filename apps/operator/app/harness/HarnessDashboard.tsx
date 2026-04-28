@@ -25,7 +25,30 @@ import {
   Activity, Play, Square, SlidersHorizontal, RotateCcw,
   Coins, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Wrench, ArrowRight,
   Code2, BookOpen, LayoutDashboard, Lightbulb, FileText,
+  // Icons available to plugin manifests via dashboardTabs[].icon
+  Terminal, Code, Plus, Puzzle, Database, Cloud, MessageSquare,
+  Zap, Bell, Calendar, Folder, FolderOpen, Globe, GitBranch, Inbox,
+  Layers, Mail, Search, Settings, Send, Server, Shield, Star, Tag,
+  Image as ImageIcon, Music, Video, Box, Download, Upload, Link as LinkIcon,
+  CheckSquare, ListChecks, BarChart, PieChart, LineChart,
 } from 'lucide-react';
+
+// Plugin manifests reference icons by string name (e.g. "BookOpen", "Code").
+// Resolve to a lucide component, with Puzzle as the catch-all fallback so
+// plugins always render *something* even if they pick an unsupported name.
+const PLUGIN_ICON_MAP: Record<string, React.ComponentType<{ size?: number | string }>> = {
+  Activity, ArrowRight, AlertTriangle, BarChart, Bell, BookOpen, Box, Calendar,
+  CheckCircle2, CheckSquare, Cloud, Code, Code2, Coins, Database, Download,
+  FileText, Folder, FolderOpen, GitBranch, Globe, Image: ImageIcon, Inbox,
+  Layers, LayoutDashboard, Lightbulb, LineChart, Link: LinkIcon, ListChecks,
+  Loader2, Mail, MessageSquare, Music, PieChart, Play, Plus, Puzzle, RotateCcw,
+  Search, Send, Server, Settings, Shield, Slack: MessageSquare, SlidersHorizontal, Square,
+  Star, Tag, Terminal, TrendingUp, Upload, Video, Wrench, Zap,
+};
+function PluginIcon({ name, size = 13 }: { name?: string | null; size?: number }) {
+  const Icon = (name && PLUGIN_ICON_MAP[name]) ?? Puzzle;
+  return <Icon size={size} />;
+}
 
 const CODE_SERVER_PORT = 8082;
 const DOCS_VIEWER_URL = 'http://127.0.0.1:4325';
@@ -311,11 +334,12 @@ function safeParseClaims(raw: unknown): string[] | undefined {
  * version + a link to the marketplace-ops audit page. The popover closes on
  * Escape or click-outside.
  */
-function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, activeSlug }: {
+function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activeSlug }: {
   pluginSlug: string;
   pluginVersion: string;
   tabId: string;
   label: string;
+  icon: string | null;
   activeSlug: string | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -337,7 +361,7 @@ function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, activeSlug 
     <div data-plugin-popover style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
       <Tooltip label={`${label} — from ${pluginSlug}@${pluginVersion}`}>
         <Tabs.Trigger value={`plugin:${tabId}`} className="h-tab" disabled={!activeSlug}>
-          🧩 {label}
+          <PluginIcon name={icon} /> {label}
         </Tabs.Trigger>
       </Tooltip>
       <Tooltip label="Plugin info">
@@ -454,6 +478,198 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
   );
 }
 
+interface InstalledPluginInfo {
+  name: string;
+  version?: string;
+  description?: string;
+  source?: string;
+  icon?: string;
+  /** Absolute on-disk path; basename is the dir slug the CLI keys
+   *  enable/disable by (independent of scoped manifest.name). */
+  path?: string;
+  dashboardTabs?: Array<{ id?: string; label?: string; icon?: string }>;
+}
+
+/**
+ * "+" trigger after the last plugin tab. Opens a popover listing every
+ * installed plugin not currently enabled in this harness; clicking one
+ * fires `papercusp plugin enable <slug> --harness <activeSlug>` and the
+ * dashboard re-fetches its contributions on the next tick.
+ */
+function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabled, onRetry }: {
+  activeSlug: string | null;
+  alreadyEnabled: Set<string>;
+  /** null = still loading; [] = loaded but empty; populated array = ready. */
+  installed: InstalledPluginInfo[] | null;
+  /** non-null = the prefetch failed/timed out — show error UI in popover. */
+  error: string | null;
+  onEnabled: () => void;
+  onRetry: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const btnRef = useRef<HTMLButtonElement | null>(null);
+  const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
+
+  useEffect(() => {
+    if (!open || !btnRef.current) return;
+    const r = btnRef.current.getBoundingClientRect();
+    setCoords({ top: r.bottom + 4, right: window.innerWidth - r.right });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest('[data-add-plugin-popover]')) setOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('click', onClick);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('click', onClick);
+    };
+  }, [open]);
+
+  const candidates = useMemo(
+    () => (installed ?? []).filter((p) => {
+      const dirSlug = p.path ? p.path.replace(/\/$/, '').split('/').pop() ?? p.name : p.name;
+      return !alreadyEnabled.has(dirSlug) && !alreadyEnabled.has(p.name);
+    }),
+    [installed, alreadyEnabled],
+  );
+
+  async function enable(plugin: InstalledPluginInfo) {
+    if (!activeSlug) return;
+    // Use the on-disk dir basename — that's what the CLI keys
+    // enabled-plugins.json by, independent of scoped manifest.name.
+    const dirSlug = plugin.path ? plugin.path.replace(/\/$/, '').split('/').pop() ?? plugin.name : plugin.name;
+    setBusy(dirSlug);
+    try {
+      const r = await fetch('/api/plugins/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: dirSlug, harnesses: [activeSlug] }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        alert(`enable failed: ${d.error ?? 'unknown'}\n${d.results?.[0]?.log?.slice(-300) ?? ''}`);
+        return;
+      }
+      setOpen(false);
+      onEnabled();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  if (!activeSlug) return null;
+
+  return (
+    <div data-add-plugin-popover style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+      <Tooltip label="Add a plugin to this harness">
+        <button
+          ref={btnRef}
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+          className="h-tab"
+          style={{
+            marginLeft: 8,
+            background: open ? 'var(--accent)' : 'rgba(99, 102, 241, 0.15)',
+            border: `1px solid ${open ? 'var(--accent)' : 'rgba(99, 102, 241, 0.5)'}`,
+            color: open ? '#fff' : '#a5b4fc',
+            cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '4px 12px', fontSize: 13, fontWeight: 600,
+            borderRadius: 6,
+            transition: 'background 120ms ease, color 120ms ease',
+          }}
+          aria-label="Add plugin"
+        >
+          <Plus size={14} /> Add plugin
+        </button>
+      </Tooltip>
+      {open && coords ? (
+        <div
+          data-add-plugin-popover
+          style={{
+            position: 'fixed', top: coords.top, right: coords.right,
+            zIndex: 1000, minWidth: 320, maxWidth: 400,
+            background: 'var(--bg-1)', color: 'var(--text-1)',
+            border: '1px solid var(--border)', borderRadius: 6,
+            boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+            padding: 8,
+          }}
+        >
+          <div style={{ fontSize: 11, color: 'var(--text-3)', padding: '4px 8px 8px', borderBottom: '1px solid var(--border)', marginBottom: 4 }}>
+            Add to <code style={{ fontSize: 11 }}>{activeSlug}</code>
+          </div>
+          {error ? (
+            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
+              <div style={{ color: '#fca5a5', marginBottom: 6 }}>Couldn't load plugins.</div>
+              <div style={{ marginBottom: 8, fontSize: 11 }}>{error}</div>
+              <button
+                type="button"
+                onClick={onRetry}
+                style={{
+                  padding: '4px 10px', fontSize: 12, cursor: 'pointer',
+                  background: 'var(--bg-2)', border: '1px solid var(--border)',
+                  color: 'var(--text-1)', borderRadius: 4,
+                }}
+              >Retry</button>
+            </div>
+          ) : installed === null ? (
+            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>
+          ) : candidates.length === 0 ? (
+            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
+              {(installed?.length ?? 0) === 0
+                ? <>No plugins installed. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse plugins →</a></>
+                : 'All installed plugins are already enabled here.'}
+            </div>
+          ) : (
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 320, overflowY: 'auto' }}>
+              {candidates.map((p) => {
+                const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
+                return (
+                  <li key={p.name}>
+                    <button
+                      type="button"
+                      onClick={() => enable(p)}
+                      disabled={busy !== null}
+                      style={{
+                        width: '100%', textAlign: 'left', padding: '8px 10px',
+                        background: 'transparent', border: 'none', cursor: 'pointer',
+                        color: 'var(--text-1)', fontSize: 12, borderRadius: 4,
+                        display: 'flex', alignItems: 'flex-start', gap: 10,
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-2)')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      <span style={{
+                        flex: '0 0 auto', width: 22, height: 22, borderRadius: 4,
+                        background: 'var(--bg-2)', display: 'inline-flex',
+                        alignItems: 'center', justifyContent: 'center',
+                        color: '#a5b4fc',
+                      }}>
+                        <PluginIcon name={tabIcon} size={14} />
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 500 }}>{p.name}{p.version ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> @{p.version}</span> : null}</div>
+                        {p.description && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{p.description}</div>}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function HarnessDashboard() {
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
@@ -467,6 +683,49 @@ export default function HarnessDashboard() {
   // endpoint (Pattern 1 — see ARCHITECTURE.md). Only tabs with an iframeUrl
   // are surfaced inline; React-mode tabs (componentRoot+componentId) need
   // <PluginTabs> for rendering and are out of scope for this inline strip.
+  const [pluginRefreshKey, setPluginRefreshKey] = useState(0);
+  // Prefetch installed plugins so the "+ plugin" popover renders instantly.
+  // Cached at the dashboard level so a single fetch backs every popover open.
+  // 8s timeout — substrate dev server can be slow under HMR; we'd rather show
+  // an error than have the popover sit on "Loading…" indefinitely.
+  const [installedPlugins, setInstalledPlugins] = useState<InstalledPluginInfo[] | null>(null);
+  const [installedPluginsError, setInstalledPluginsError] = useState<string | null>(null);
+  const [installedPluginsRefreshKey, setInstalledPluginsRefreshKey] = useState(0);
+  // enabled-plugins.json contents per harness — the source of truth for
+  // "is this plugin enabled here?". Independent of which plugins contribute
+  // dashboard tabs (action-only plugins like @papercupai/jira-sync would
+  // otherwise look un-enabled).
+  const [enabledByHarness, setEnabledByHarness] = useState<Record<string, string[]>>({});
+  useEffect(() => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 8000);
+    fetch('/api/plugins/enabled', { cache: 'no-store', signal: ac.signal })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d) => setEnabledByHarness(d?.enabled ?? {}))
+      .catch(() => { /* best-effort; popover still works without this */ })
+      .finally(() => clearTimeout(t));
+    return () => { clearTimeout(t); ac.abort(); };
+  }, [installedPluginsRefreshKey]);
+  useEffect(() => {
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 8000);
+    setInstalledPluginsError(null);
+    fetch('/api/plugins/global', { cache: 'no-store', signal: ac.signal })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d) => {
+        setInstalledPlugins(Array.isArray(d?.plugins) ? d.plugins : []);
+        setInstalledPluginsError(null);
+      })
+      .catch((e) => {
+        if (e?.name === 'AbortError') {
+          setInstalledPluginsError('Request timed out after 8s. The substrate is busy — try again.');
+        } else {
+          setInstalledPluginsError(String(e?.message ?? e));
+        }
+      })
+      .finally(() => clearTimeout(t));
+    return () => { clearTimeout(t); ac.abort(); };
+  }, [installedPluginsRefreshKey]);
   const [pluginTabs, setPluginTabs] = useState<Array<{
     pluginSlug: string;
     pluginVersion: string;  // not surfaced by the unified endpoint today
@@ -517,7 +776,7 @@ export default function HarnessDashboard() {
       }
     })();
     return () => { cancelled = true; };
-  }, [activeSlug]);
+  }, [activeSlug, pluginRefreshKey]);
   // Pattern 1 — built-in tab ids hidden when a plugin tab declares
   // `replaces: ['<id>']`. Per-tab opt-in (replaces the previous coarse
   // PAPERCUSP_TABS_FROM_PLUGINS env flag).
@@ -1395,7 +1654,8 @@ export default function HarnessDashboard() {
         }}
         asChild
       >
-        <Tabs.List className="h-tabs h-main-tabs" aria-label="Harness workspace sections">
+        <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, flex: 1, minWidth: 0 }}>
+        <Tabs.List className="h-tabs h-main-tabs" aria-label="Harness workspace sections" style={{ flex: 1, minWidth: 0 }}>
           <Tooltip label={activeSlug ? 'Brainstorm — write, mindmap, canvas, chat with Claude' : 'Select a project to brainstorm'}>
             <Tabs.Trigger value="brainstorm" className="h-tab" disabled={!activeSlug}>
               <Lightbulb size={13} /> brainstorm
@@ -1449,6 +1709,7 @@ export default function HarnessDashboard() {
               pluginVersion={pt.pluginVersion}
               tabId={pt.tabId}
               label={pt.label}
+              icon={pt.icon}
               activeSlug={activeSlug}
             />
           ))}
@@ -1463,6 +1724,20 @@ export default function HarnessDashboard() {
             </Tabs.Trigger>
           </Tooltip>
         </Tabs.List>
+        <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
+          <AddPluginButton
+            activeSlug={activeSlug}
+            alreadyEnabled={new Set(activeSlug ? enabledByHarness[activeSlug] ?? [] : [])}
+            installed={installedPlugins}
+            error={installedPluginsError}
+            onEnabled={() => {
+              setPluginRefreshKey((k) => k + 1);
+              setInstalledPluginsRefreshKey((k) => k + 1);
+            }}
+            onRetry={() => setInstalledPluginsRefreshKey((k) => k + 1)}
+          />
+        </div>
+        </div>
       </Tabs.Root>
 
       {!status && (

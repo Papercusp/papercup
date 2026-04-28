@@ -53,13 +53,11 @@ app.route('/plugins', plugins);
 // in lib/plugin-api-mount.smoke.ts.
 mountPluginApiRoutes(app)
   .then((r) => {
-    if (r.mounted > 0) {
+    // eslint-disable-next-line no-console
+    console.log(`[plugin-mount] mounted=${r.mounted} skipped=${r.skipped} errors=${r.errors.length}`);
+    for (const e of r.errors) {
       // eslint-disable-next-line no-console
-      console.log(`[plugin-mount] ${r.mounted} plugin apiRoutes mounted`);
-    }
-    if (r.errors.length > 0) {
-      // eslint-disable-next-line no-console
-      console.warn(`[plugin-mount] ${r.errors.length} discovery errors (see lib/plugin-api-mount.ts)`);
+      console.warn(`[plugin-mount] error: ${e}`);
     }
   })
   .catch((e) => {
