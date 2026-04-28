@@ -240,6 +240,38 @@ function resolvePiBinary(): string {
   return 'omp';
 }
 
+// Ensure ~/.omp/agent/mcp.json has the `papercusp` server entry pointing at
+// the bundled MCP server. Idempotent: only writes if missing or stale.
+function ensurePapercuspMcpRegistered(): void {
+  const mcpPath = join(homedir(), '.omp', 'agent', 'mcp.json');
+  // Find the bundled MCP server. Production: bundled into the sidecar at
+  // <sidecar>/papercusp-mcp-server/bin/papercusp-mcp-server.mjs. Dev: at
+  // <repo>/packages/papercusp-mcp-server/bin/papercusp-mcp-server.mjs.
+  const bundledCandidates = [
+    process.env.PAPERCUSP_MCP_SERVER,
+    join(process.cwd(), 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
+    join(homedir(), 'Restart', 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
+  ].filter((p): p is string => typeof p === 'string' && p.length > 0);
+  let serverBin: string | null = null;
+  for (const p of bundledCandidates) {
+    if (existsSync(p)) { serverBin = p; break; }
+  }
+  if (!serverBin) return; // Server not bundled — skip silently.
+
+  let cfg: { mcpServers?: Record<string, unknown> } = {};
+  if (existsSync(mcpPath)) {
+    try { cfg = JSON.parse(readFileSync(mcpPath, 'utf-8')); } catch { return; }
+  } else {
+    mkdirSync(join(homedir(), '.omp', 'agent'), { recursive: true });
+  }
+  cfg.mcpServers = cfg.mcpServers ?? {};
+  const existing = cfg.mcpServers.papercusp as { command?: string; args?: string[] } | undefined;
+  const desired = { type: 'stdio', command: 'node', args: [serverBin] };
+  if (existing && existing.command === 'node' && existing.args?.[0] === serverBin) return; // Already correct.
+  cfg.mcpServers.papercusp = desired;
+  writeFileSync(mcpPath, JSON.stringify(cfg, null, 2));
+}
+
   harness.post('/:slug/pty/spawn', async (c) => {
   const slug = c.req.param('slug') ?? '';
   let body: SpawnBody;
@@ -292,6 +324,14 @@ function resolvePiBinary(): string {
   // introspect the surrounding harness.
   const piExtensionPath = join(homedir(), '.papercusp', 'global-plugins', 'pi', 'extension.ts');
   const piExtensionAvailable = existsSync(piExtensionPath);
+
+  // Auto-register the papercusp MCP server in ~/.omp/agent/mcp.json so
+  // omp's LLM sees mcp_papercusp_* tools. Idempotent: only writes if
+  // missing or pointing at a stale path. The extension above is now
+  // redundant given the MCP server but kept for back-compat.
+  if (command.includes('omp')) {
+    try { ensurePapercuspMcpRegistered(); } catch { /* best-effort */ }
+  }
 
   // Build args. If caller didn't pass an explicit args array, start from
   // the canonical defaults and append --append-system-prompt when we have
