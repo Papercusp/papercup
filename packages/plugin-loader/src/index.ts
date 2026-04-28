@@ -124,7 +124,21 @@ export async function loadPluginFromDir(dir: string, source: LoadedPlugin['sourc
 async function listSubdirs(parent: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(parent, { withFileTypes: true });
-    return entries.filter((e) => e.isDirectory() && !e.name.startsWith('.')).map((e) => join(parent, e.name));
+    const out: string[] = [];
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue;
+      let isDir = e.isDirectory();
+      if (!isDir && e.isSymbolicLink()) {
+        // Follow symlinks (dev-mode pattern: symlinking a plugin's repo
+        // dir into ~/.papercusp/global-plugins/<name>).
+        try {
+          const st = await fs.stat(join(parent, e.name));
+          isDir = st.isDirectory();
+        } catch { /* dangling symlink — skip */ }
+      }
+      if (isDir) out.push(join(parent, e.name));
+    }
+    return out;
   } catch {
     return [];
   }
