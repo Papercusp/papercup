@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { projectDirForSlug } from '../../../lib/operator-notes';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
@@ -392,7 +393,12 @@ export function registerAgentChats(harness: Hono): void {
     return streamSSE(c, async (sseStream) => {
       const claudeCmd = process.env.CLAUDE_CMD ?? 'claude';
       const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
-      const child = spawn(claudeCmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      // Spawn claude with cwd set to the harness project directory so its
+      // session-scoped path restriction allows reading harness state and
+      // feature docs. Without this, claude is locked to the dev-server's
+      // cwd and cannot read any of the inputs the role prompt references.
+      const projectDir = projectDirForSlug(slug);
+      const child = spawn(claudeCmd, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: projectDir ?? undefined });
 
       let assistantText = '';
       let tokensIn = 0;

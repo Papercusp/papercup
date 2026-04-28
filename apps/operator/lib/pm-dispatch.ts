@@ -21,6 +21,7 @@
 import { spawn } from 'node:child_process';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { projectDirForSlug } from './operator-notes';
 
 export interface RunPmOptions {
   slug: string;
@@ -56,6 +57,13 @@ interface ParsedOutput {
 }
 
 function parsePmOutput(stdout: string): ParsedOutput | { error: string } {
+  // Strip a single outer markdown code fence if the model wrapped the
+  // entire three-section output (or part of it) in ```...``` — common when
+  // the model is mid-conversation and considers the output a "code block".
+  let text = stdout.replace(/^[\s\S]*?```(?:[a-z]*)?\n/, (m) => {
+    // Only strip if it looks like the fence opens before the first marker.
+    return m.includes('PROJECT_MANAGER_') ? m : m;
+  });
   // Permissive marker scan: the model occasionally wraps the markers in
   // **bold**, ## headers, or markdown code fences. Match the marker name
   // alone on its own line (with optional decorations).
@@ -66,7 +74,7 @@ function parsePmOutput(stdout: string): ParsedOutput | { error: string } {
     ];
     let earliest = -1;
     for (const p of patterns) {
-      const m = p.exec(stdout);
+      const m = p.exec(text);
       if (m && (earliest < 0 || m.index < earliest)) earliest = m.index;
     }
     return earliest;
@@ -81,13 +89,16 @@ function parsePmOutput(stdout: string): ParsedOutput | { error: string } {
     return s
       .replace(new RegExp('^\\s*#{0,3}\\s*\\*{0,2}' + name + '\\*{0,2}:?\\s*\\n?'), '')
       .replace(/\n\s*---\s*\n?$/, '')
-      .replace(/^\s*```(?:json)?\s*\n/, '')
+      .replace(/^\s*```(?:[a-z]*)?\s*\n/, '')
       .replace(/\n\s*```\s*$/, '')
       .trim();
   };
-  const decisionsRaw = stripMarker(stdout.slice(decisionsMarker, specMarker), 'PROJECT_MANAGER_DECISIONS');
-  const specRaw = stripMarker(stdout.slice(specMarker, summaryMarker), 'PROJECT_MANAGER_SPEC');
-  const summaryRaw = stripMarker(stdout.slice(summaryMarker), 'PROJECT_MANAGER_SUMMARY');
+  const decisionsRaw = stripMarker(text.slice(decisionsMarker, specMarker), 'PROJECT_MANAGER_DECISIONS');
+  const specRaw = stripMarker(text.slice(specMarker, summaryMarker), 'PROJECT_MANAGER_SPEC');
+  // Summary section ends at the first closing fence or end-of-text.
+  const summarySection = text.slice(summaryMarker);
+  const fenceClose = summarySection.search(/\n\s*```/);
+  const summaryRaw = stripMarker(fenceClose >= 0 ? summarySection.slice(0, fenceClose) : summarySection, 'PROJECT_MANAGER_SUMMARY');
 
   let decisions: ParsedOutput['decisions'];
   try {
@@ -204,9 +215,13 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
       ],
     });
 
-    // 6. Spawn claude. Pipe assembled prompt to stdin; capture stdout +
-    // usage + cost from the stream-json `result` event.
-    const spawned = await spawnClaude(claudeCmd, assembled.text);
+    // 6. Spawn claude with cwd set to the harness project directory so its
+    // session-scoped path restriction allows reading harness state, feature
+    // docs, .harness/memory/, etc. Without this, claude is locked to the
+    // dev-server's cwd and cannot read any of the inputs the PM prompt
+    // tells it to look at.
+    const projectDir = projectDirForSlug(slug);
+    const spawned = await spawnClaude(claudeCmd, assembled.text, projectDir ?? undefined);
     if (!spawned.ok) {
       return { ok: false, error: 'claude invocation failed', detail: spawned.detail };
     }
@@ -285,7 +300,9 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
 
 interface SpawnSuccess {
   ok: true;
-  /** The model's final text output (parsed from the stream-json `result` event when present, falls back to raw stdout). */
+  /** The model's final text output. Prefers the `result` event when present;
+   * falls back to accumulated text_delta events when the stream ends without
+   * a result event (e.g. claude hit a tool-use limit before completing). */
   text: string;
   /** Aggregated usage from the stream's `result` event; zeros if unavailable. */
   tokens_in: number;
@@ -303,13 +320,11 @@ interface SpawnFailure { ok: false; detail: string }
  * event's `result` field is the canonical final assistant text — robust
  * against partial-message fragments at end-of-stream.
  *
- * Stream-json format reference (from claude code CLI):
- *   {"type":"system","subtype":"init", ...}
- *   {"type":"content_block_start"|"content_block_delta"|... , ...}
- *   ...
- *   {"type":"result","result":"<final text>","usage":{"input_tokens":N,"output_tokens":M},"total_cost_usd":0.0123}
+ * If no `result` event arrives (e.g. claude exits early), we fall back to
+ * the assistant text we accumulated from text_delta events. That gives the
+ * parser something useful to work with even on aborted runs.
  */
-async function spawnClaude(claudeCmd: string, promptText: string): Promise<SpawnSuccess | SpawnFailure> {
+async function spawnClaude(claudeCmd: string, promptText: string, cwd?: string): Promise<SpawnSuccess | SpawnFailure> {
   return await new Promise((resolve) => {
     const argv = claudeCmd.split(/\s+/).filter(Boolean);
     const exe = argv[0] ?? 'claude';
@@ -326,17 +341,16 @@ async function spawnClaude(claudeCmd: string, promptText: string): Promise<Spawn
       ? [...baseArgs, '-p', ...denyToolFlags]
       : [...baseArgs, '-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...denyToolFlags];
 
-    const child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdoutBuf = '';
+    const child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd });
     let stderrBuf = '';
     let lineBuf = '';
     let resultText = '';
+    let assistantText = '';   // accumulated from text_delta events as fallback
     let tokensIn = 0;
     let tokensOut = 0;
     let costUsd = 0;
 
     child.stdout.on('data', (chunk: Buffer) => {
-      stdoutBuf += chunk.toString('utf8');
       lineBuf += chunk.toString('utf8');
       let nl: number;
       // eslint-disable-next-line no-cond-assign
@@ -353,6 +367,9 @@ async function spawnClaude(claudeCmd: string, promptText: string): Promise<Spawn
               tokensOut = ev.usage.output_tokens ?? tokensOut;
             }
             if (typeof ev.total_cost_usd === 'number') costUsd = ev.total_cost_usd;
+          } else if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta'
+                     && ev.event?.delta?.type === 'text_delta') {
+            assistantText += ev.event.delta.text ?? '';
           }
         } catch { /* malformed line — skip */ }
       }
@@ -361,11 +378,9 @@ async function spawnClaude(claudeCmd: string, promptText: string): Promise<Spawn
     child.on('error', (err) => resolve({ ok: false, detail: `spawn error: ${err.message}` }));
     child.on('exit', (code) => {
       if (code === 0) {
-        // If we never saw a `result` event, fall back to the raw stdout buffer.
-        // Parser will likely fail, but caller surfaces a clean error.
         resolve({
           ok: true,
-          text: resultText || stdoutBuf,
+          text: resultText || assistantText,
           tokens_in: tokensIn,
           tokens_out: tokensOut,
           cost_usd: costUsd,
