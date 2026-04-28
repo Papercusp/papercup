@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { mirrorHarness } from '../../../../lib/plugin-enables-pg';
+import { mirrorPluginConfig } from '../../../../lib/plugin-configs-pg';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -71,6 +72,9 @@ export async function PUT(req: Request) {
 
   const configPath = join(HARNESSES_DIR, harness, 'plugin-configs', `${plugin}.json`);
   await writeJson(configPath, cfg);
+  try { await mirrorPluginConfig(harness, plugin, cfg as Record<string, unknown>); } catch (e) {
+    console.warn('[plugins/config] PG config mirror failed for', harness, plugin, e);
+  }
 
   // Bump enabled-plugins.json configHash so the substrate sees the change.
   const enabledPath = join(HARNESSES_DIR, harness, 'enabled-plugins.json');
