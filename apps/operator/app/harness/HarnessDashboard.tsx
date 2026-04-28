@@ -130,22 +130,17 @@ function dynamicWithRetry<T>(
         await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
       }
     }
-    // Give up — render a visible failure card so the user knows to refresh
-    // instead of staring at an empty pane.
+    // Give up — render a compact failure chip so optional panels don't blow up
+    // the dashboard layout while still giving the operator an escape hatch.
     const Fallback = () => (
-      <div style={{ padding: 24, color: '#fca5a5', fontSize: 13, fontFamily: 'ui-monospace, monospace' }}>
-        Failed to load <strong>{label}</strong> after 3 attempts.<br />
-        <span style={{ color: '#9ca3af', fontSize: 12 }}>
-          {String((lastErr as any)?.message ?? lastErr).slice(0, 200)}
+      <div className="h-dynamic-fallback" role="status">
+        <span>Could not load <strong>{label}</strong>.</span>
+        <span className="h-dynamic-fallback-detail">
+          {String((lastErr as any)?.message ?? lastErr).slice(0, 120)}
         </span>
-        <br />
-        <button
-          onClick={() => location.reload()}
-          title="Reload the page"
-          style={{ marginTop: 12, background: '#1f2937', color: '#e5e7eb', border: '1px solid #374151', borderRadius: 4, padding: '6px 14px', cursor: 'pointer' }}
-        >
-          Reload page
-        </button>
+        <Tooltip label="Reload the page">
+          <button type="button" onClick={() => location.reload()}>reload</button>
+        </Tooltip>
       </div>
     );
     return Fallback as any;
@@ -153,7 +148,7 @@ function dynamicWithRetry<T>(
   return dynamic(importer, {
     ssr: false,
     loading: () => (
-      <div style={{ padding: 24, color: '#9ca3af', fontSize: 13 }}>
+      <div className="h-dynamic-loading" role="status">
         loading <em>{label}</em>…
       </div>
     ),
@@ -438,11 +433,11 @@ function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activ
             View README + signature →
           </a>
           <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-            <button
+            <Tooltip label="Disable this plugin in the active harness (config preserved)">
+              <button
               type="button"
               onClick={disable}
               disabled={busy || !activeSlug}
-              title="Disable this plugin in the active harness (config preserved)"
               style={{
                 width: '100%', padding: '6px 10px', fontSize: 12, cursor: 'pointer',
                 background: 'transparent', color: '#fca5a5',
@@ -451,6 +446,7 @@ function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activ
             >
               {busy ? 'Disabling…' : `Disable in ${activeSlug ?? '…'}`}
             </button>
+            </Tooltip>
           </div>
         </div>
       ) : null}
@@ -555,7 +551,18 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
   useEffect(() => {
     if (!open || !btnRef.current) return;
     const r = btnRef.current.getBoundingClientRect();
-    setCoords({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    // Popover is ~373px tall; if there isn't room below the button, flip
+    // it above. Without this, on shorter viewports the popover anchors
+    // below the button and renders past the bottom of the page —
+    // looks like the button "doesn't do anything".
+    const POPOVER_HEIGHT_ESTIMATE = 380;
+    const spaceBelow = window.innerHeight - r.bottom;
+    const spaceAbove = r.top;
+    const flipUp = spaceBelow < POPOVER_HEIGHT_ESTIMATE && spaceAbove > spaceBelow;
+    const top = flipUp
+      ? Math.max(8, r.top - POPOVER_HEIGHT_ESTIMATE - 4)
+      : r.bottom + 4;
+    setCoords({ top, right: window.innerWidth - r.right });
   }, [open]);
 
   useEffect(() => {
@@ -656,16 +663,17 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
             <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
               <div style={{ color: '#fca5a5', marginBottom: 6 }}>Couldn't load plugins.</div>
               <div style={{ marginBottom: 8, fontSize: 11 }}>{error}</div>
-              <button
+              <Tooltip label="Retry plugin discovery">
+                <button
                 type="button"
                 onClick={onRetry}
-                title="Retry plugin discovery"
                 style={{
                   padding: '4px 10px', fontSize: 12, cursor: 'pointer',
                   background: 'var(--bg-2)', border: '1px solid var(--border)',
                   color: 'var(--text-1)', borderRadius: 4,
                 }}
               >Retry</button>
+              </Tooltip>
             </div>
           ) : installed === null ? (
             <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>
@@ -681,11 +689,11 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                 const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
                 return (
                   <li key={p.name}>
-                    <button
+                    <Tooltip label="Enable this plugin in the active harness">
+                      <button
                       type="button"
                       onClick={() => enable(p)}
                       disabled={busy !== null}
-                      title="Enable this plugin in the active harness"
                       style={{
                         width: '100%', textAlign: 'left', padding: '8px 10px',
                         background: 'transparent', border: 'none', cursor: 'pointer',
@@ -708,6 +716,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                         {p.description && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{p.description}</div>}
                       </span>
                     </button>
+                    </Tooltip>
                   </li>
                 );
               })}
@@ -1071,15 +1080,16 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
             </p>
           )}
         </div>
-        <button
+        <Tooltip label="Disable this plugin (config preserved)">
+          <button
           onClick={disable}
           disabled={busy}
           className="pc-button"
-          title="Disable this plugin (config preserved)"
           style={{ background: 'transparent', color: '#fca5a5', border: '1px solid var(--border)', flex: '0 0 auto' }}
         >
           {busy ? 'Disabling…' : 'Disable'}
         </button>
+        </Tooltip>
       </div>
 
       {(plugin.actions?.length ?? 0) > 0 && (
@@ -1098,15 +1108,16 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
                   <span style={{ flex: 1, fontSize: 12, color: 'var(--text-3)' }}>
                     {a.label ?? a.description ?? ''}
                   </span>
-                  <button
+                  <Tooltip label="Manually invoke this hook now">
+                    <button
                     onClick={() => invoke(id)}
                     disabled={invoking !== null}
                     className="pc-button"
-                    title="Manually invoke this hook now"
                     style={{ fontSize: 11, padding: '4px 10px', flex: '0 0 auto' }}
                   >
                     {invoking === id ? 'Invoking…' : 'Invoke'}
                   </button>
+                  </Tooltip>
                 </div>
               );
             })}
@@ -1285,26 +1296,29 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
             placeholder='{ "key": "value" }'
           />
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-            <button
+            <Tooltip label="Save plugin config changes">
+              <button
               type="button"
               onClick={save}
               disabled={saving || !dirty}
               className="pc-button"
-              title="Save plugin config changes"
               style={{ fontSize: 12, padding: '4px 12px' }}
             >{saving ? 'Saving…' : dirty ? 'Save' : 'No changes'}</button>
-            <button
+            </Tooltip>
+            <Tooltip label="Discard unsaved config changes">
+              <button
               type="button"
               onClick={reset}
               disabled={saving || !dirty}
-              title="Discard unsaved config changes"
               style={{
                 fontSize: 11, padding: '4px 10px', cursor: 'pointer',
                 background: 'transparent', color: 'var(--text-3)',
                 border: '1px solid var(--border)', borderRadius: 4,
               }}
             >Reset</button>
-            <button
+            </Tooltip>
+            <Tooltip label="Replace draft with the plugin's defaultConfig + configSchema defaults">
+              <button
               type="button"
               onClick={loadDefaults}
               disabled={saving}
@@ -1313,8 +1327,8 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                 background: 'transparent', color: 'var(--text-3)',
                 border: '1px solid var(--border)', borderRadius: 4,
               }}
-              title="Replace draft with the plugin's defaultConfig + configSchema defaults"
             >Load defaults</button>
+            </Tooltip>
             {savedAt && !dirty && (
               <span style={{ fontSize: 10, color: '#86efac' }}>
                 ✓ saved {new Date(savedAt).toLocaleTimeString()}
@@ -2041,15 +2055,16 @@ export default function HarnessDashboard() {
         <>
       {/* ── Mission header ─────────────────────────────────── */}
       <div className={`h-header${status?.alive ? ' alive' : ''}`}>
-        <button
+        <Tooltip label="Collapse the top header section to free vertical space">
+          <button
           type="button"
           className="h-top-collapse-btn h-top-collapse-inline"
           onClick={() => setTopChromeCollapsed(true)}
           aria-expanded={!topChromeCollapsed}
-          title="Collapse the top header section to free vertical space"
         >
           Collapse top section
         </button>
+        </Tooltip>
         <div className="h-header-main">
           <div className="h-brand">
             <span className="h-brand-kicker"><Activity size={12} /> autonomous workspace</span>
@@ -2265,13 +2280,14 @@ export default function HarnessDashboard() {
             </button>
           )}
           {status && !isBrainstormPanel && triageCount > 0 && (
-            <button
+            <Tooltip label="Open the triage queue (features needing attention)">
+              <button
               className="h-overview-action warn h-phase-plan-review"
               onClick={() => setShowTriage(true)}
-              title="Open the triage queue (features needing attention)"
             >
               Review {triageCount} issue{triageCount === 1 ? '' : 's'}
             </button>
+            </Tooltip>
           )}
           <PlanReviewBanner slug={activeSlug} compact />
           {status && (
@@ -2309,13 +2325,17 @@ export default function HarnessDashboard() {
                 />
               )}
               {status.alive ? (
-                <button className="h-btn danger" onClick={stopHarness} title="Stop the autonomous loop for this harness">
-                  <Square size={13} fill="currentColor" /> stop
-                </button>
+                <Tooltip label="Stop the autonomous loop for this harness">
+                  <button className="h-btn danger" onClick={stopHarness}>
+                    <Square size={13} fill="currentColor" /> stop
+                  </button>
+                </Tooltip>
               ) : (
-                <button className="h-btn primary" onClick={launchHarness} title="Start the autonomous loop for this harness">
-                  <Play size={13} fill="currentColor" /> start
-                </button>
+                <Tooltip label="Start the autonomous loop for this harness">
+                  <button className="h-btn primary" onClick={launchHarness}>
+                    <Play size={13} fill="currentColor" /> start
+                  </button>
+                </Tooltip>
               )}
             </div>
           )}
@@ -2341,15 +2361,16 @@ export default function HarnessDashboard() {
 
       {topChromeCollapsed && (
         <div className="h-top-collapse-row">
-          <button
+          <Tooltip label="Expand the top header section">
+            <button
             type="button"
             className="h-top-collapse-btn h-top-collapse-floating"
             onClick={() => setTopChromeCollapsed(false)}
             aria-expanded={!topChromeCollapsed}
-            title="Expand the top header section"
           >
             Expand top section
           </button>
+          </Tooltip>
         </div>
       )}
 
@@ -3027,29 +3048,32 @@ function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string
   return (
     <div className="h-panel" style={{ height: '100%' }}>
       <div className="h-tabs">
-        <button
+        <Tooltip label="Open issue tracker — bugs and concerns surfaced by validators">
+          <button
           className={`h-tab${tab === 'issues' ? ' on' : ''}`}
           onClick={() => setTab('issues')}
-          title="Open issue tracker — bugs and concerns surfaced by validators"
         >
           issues
           {issueCount !== null && <span className="h-tab-count">{issueCount}</span>}
         </button>
-        <button
+        </Tooltip>
+        <Tooltip label="Show test claims and validator outcomes">
+          <button
           className={`h-tab${tab === 'tests' ? ' on' : ''}`}
           onClick={() => setTab('tests')}
-          title="Show test claims and validator outcomes"
         >
           tests
         </button>
-        <button
+        </Tooltip>
+        <Tooltip label="Show the validator's prose report for the latest run">
+          <button
           className={`h-tab${tab === 'report' ? ' on' : ''}`}
           onClick={() => setTab('report')}
-          title="Show the validator's prose report for the latest run"
         >
           report
           {reportMd && <span className="h-tab-count">{reportMd.length > 0 ? 'md' : ''}</span>}
         </button>
+        </Tooltip>
       </div>
       <div className="h-panel-body" style={{ display: 'flex', flexDirection: 'column' }}>
         {tab === 'issues' && <IssuesList slug={slug} onCount={setIssueCount} />}
@@ -3099,8 +3123,12 @@ function AgentInspector({
             </span>
           )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-            <button className="h-btn ghost" onClick={onRefresh} title="Refresh the data shown in this panel"><RotateCcw size={12} /> refresh</button>
-            <button className="h-btn ghost" onClick={onClose} title="Close this panel">close</button>
+            <Tooltip label="Refresh the data shown in this panel">
+              <button className="h-btn ghost" onClick={onRefresh}><RotateCcw size={12} /> refresh</button>
+            </Tooltip>
+            <Tooltip label="Close this panel">
+              <button className="h-btn ghost" onClick={onClose}>close</button>
+            </Tooltip>
           </div>
         </div>
         {agent.timeline.length === 0 && (
