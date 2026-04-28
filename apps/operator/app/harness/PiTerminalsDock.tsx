@@ -154,7 +154,7 @@ function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: strin
 
 const VALID_CHAT_ROLES = [
   'worker', 'validator', 'scoper', 'plan-gate', 'architect',
-  'orchestrator', 'documenter', 'curator', 'debugger',
+  'orchestrator', 'documenter', 'summarizer', 'curator', 'debugger',
   'project_manager',
 ] as const;
 
