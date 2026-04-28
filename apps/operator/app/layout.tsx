@@ -21,6 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/harness">Harnesses</a>
             <a href="/marketplace/templates">Templates</a>
             <a href="/marketplace/plugins">Plugins</a>
+            <a href="/support">Support</a>
             <a href="/settings/api-keys">Settings</a>
             <SessionIndicator />
           </nav>
