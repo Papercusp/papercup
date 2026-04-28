@@ -3,6 +3,7 @@
 import './harness.css';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as RSelect from '@radix-ui/react-select';
+import * as RTooltip from '@radix-ui/react-tooltip';
 import { Check as LCheck, ChevronDown as LChevronDown } from 'lucide-react';
 import { Modal } from './Modal';
 import { Tooltip } from './Tooltip';
@@ -2032,6 +2033,7 @@ export default function HarnessDashboard() {
   );
 
   return (
+    <RTooltip.Provider delayDuration={400}>
     <div className={`h-root${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}>
       <Toaster theme="dark" position="bottom-right" richColors />
 
@@ -2878,6 +2880,7 @@ export default function HarnessDashboard() {
         </div>
       )}
     </div>
+    </RTooltip.Provider>
   );
 }
 
