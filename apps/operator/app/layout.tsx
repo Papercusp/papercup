@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Toaster } from 'sonner';
 import SessionIndicator from './_components/SessionIndicator';
+import { ChatwootWidget } from './_components/ChatwootWidget';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -26,6 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
         <main>{children}</main>
         <Toaster theme="dark" position="top-right" />
+        <ChatwootWidget />
       </body>
     </html>
   );
