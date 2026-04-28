@@ -720,13 +720,29 @@ org.post('/campaigns/:messageId/metrics', async (c) => {
     },
   };
   await saveMessagesRebuild(messages);
-  // Also accumulate revenue onto the project's earned_cents
+  // Also accumulate revenue onto the project's earned_cents (JSON + PG)
   if (body.revenue_cents && m.projectId) {
     const projects = loadProjects();
     const pIdx = projects.findIndex((p) => p.id === m.projectId);
     if (pIdx !== -1) {
       projects[pIdx] = { ...projects[pIdx], earned_cents: (projects[pIdx].earned_cents ?? 0) + body.revenue_cents };
       await saveProjects(projects);
+      // Match by slug (or id) — the JSON-side id is a UUID but the PG
+      // row may use a PROJ-<slug> id from the legacy importer; slug is
+      // the only identifier guaranteed to match across both.
+      const targetSlug = projects[pIdx].slug;
+      try {
+        const { sql } = getOrgPg();
+        await sql`
+          UPDATE harness_shared.projects
+             SET earned_cents = COALESCE(earned_cents, 0) + ${body.revenue_cents},
+                 updated_ts = ${Date.now()}
+           WHERE slug = ${targetSlug} OR id = ${m.projectId}
+        `;
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[campaign/metrics] PG earned_cents bump failed:', e);
+      }
     }
   }
   await appendAudit('campaign.metrics', messageId, body);
@@ -1031,6 +1047,18 @@ org.post('/projects/:slug/record-revenue', async (c) => {
   if (idx === -1) return c.json({ error: 'project not found' }, 404);
   projects[idx] = { ...projects[idx], earned_cents: (projects[idx].earned_cents ?? 0) + body.amount_cents };
   await saveProjects(projects);
+  try {
+    const { sql } = getOrgPg();
+    await sql`
+      UPDATE harness_shared.projects
+         SET earned_cents = COALESCE(earned_cents, 0) + ${body.amount_cents},
+             updated_ts = ${Date.now()}
+       WHERE slug = ${slug} OR id = ${projects[idx].id}
+    `;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[record-revenue] PG earned_cents bump failed:', e);
+  }
   await appendAudit('project.revenue', slug, { amount_cents: body.amount_cents, note: body.note, total_earned_cents: projects[idx].earned_cents });
   return c.json({ project: projects[idx] });
 });
@@ -1050,6 +1078,30 @@ org.patch('/projects/:slug', async (c) => {
     created_ts: existing.created_ts,
   };
   await saveProjects(projects);
+  // Mirror first-class columns to PG. Only the fields a PATCH could
+  // legitimately touch are forwarded; jsonb metadata stays whatever the
+  // caller provided. id / slug / created_ts are immutable, so excluded.
+  try {
+    const { sql } = getOrgPg();
+    const p = projects[idx];
+    await sql`
+      UPDATE harness_shared.projects
+         SET name = ${p.name},
+             status = ${p.status},
+             vertical = ${p.vertical ?? null},
+             owning_dept = ${p.owning_director ?? null},
+             budget_cents = ${p.budget_cents ?? null},
+             spent_cents = ${p.spent_cents ?? 0},
+             cost_cap_cents = ${p.cost_cap_cents ?? null},
+             earned_cents = ${p.earned_cents ?? 0},
+             metadata = ${p.metadata ? JSON.stringify(p.metadata) : null}::jsonb,
+             updated_ts = ${Date.now()}
+       WHERE slug = ${p.slug} OR id = ${p.id}
+    `;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[projects/PATCH] PG mirror failed:', e);
+  }
   return c.json({ project: projects[idx] });
 });
 
