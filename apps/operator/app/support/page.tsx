@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { SupportChatButton } from '../_components/SupportChatButton';
+import { SupportAgentPanel } from '../_components/SupportAgentPanel';
 
 export const metadata = {
   title: 'Support · Papercusp',
@@ -118,6 +119,9 @@ export default function SupportPage() {
         First check the FAQs below — they cover the most common stuck points. If you're still
         blocked, start a chat with our support team or open a GitHub issue.
       </p>
+
+      {/* AI agent panel — try AI first, fall back to human */}
+      <SupportAgentPanel surface="operator" />
 
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 40 }}>
