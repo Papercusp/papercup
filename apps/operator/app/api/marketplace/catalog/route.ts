@@ -47,6 +47,9 @@ export async function GET() {
         homepage: m.homepage ?? null,
         topology: m.topology ?? 'single',
         subprojects: Array.isArray(m.subprojects) ? m.subprojects : [],
+        kind: m.kind ?? 'template',
+        icon: m.icon ?? null,
+        requiresTemplateKinds: Array.isArray(m.requiresTemplateKinds) ? m.requiresTemplateKinds : [],
         install: `papercusp install ${m.name}`,
         source: 'live',
       }));
