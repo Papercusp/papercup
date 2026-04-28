@@ -18,14 +18,31 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
     const r = await fetch(`${base}/catalog/${slug}`, { cache: 'no-store', signal: AbortSignal.timeout(2000) });
     if (!r.ok) return NextResponse.json({ error: 'not found' }, { status: 404 });
     const detail = await r.json();
-    if (detail.versions?.[0]) {
-      const manifestR = await fetch(`${base}/catalog/${slug}/${detail.versions[0]}`, { cache: 'no-store', signal: AbortSignal.timeout(2000) });
-      if (manifestR.ok) {
-        const full = await manifestR.json();
-        return NextResponse.json({ ...detail, manifest: full.manifest, readme: full.readme });
-      }
+    const latestVersion = detail.versions?.[0];
+    // Fan out to /catalog/:slug/:version, /v1/packages/:slug/:version/sbom,
+    // and /v1/packages/:slug/reviews in parallel. None are critical;
+    // failures (404 sbom = no SBOM uploaded yet) silently degrade.
+    const [manifestRes, sbomRes, reviewsRes] = await Promise.all([
+      latestVersion
+        ? fetch(`${base}/catalog/${slug}/${latestVersion}`, { cache: 'no-store', signal: AbortSignal.timeout(2000) }).catch(() => null)
+        : Promise.resolve(null),
+      latestVersion
+        ? fetch(`${base}/v1/packages/${slug}/${latestVersion}/sbom`, { cache: 'no-store', signal: AbortSignal.timeout(2000) }).catch(() => null)
+        : Promise.resolve(null),
+      fetch(`${base}/v1/packages/${slug}/reviews`, { cache: 'no-store', signal: AbortSignal.timeout(2000) }).catch(() => null),
+    ]);
+    let manifest: unknown = undefined;
+    let readme: string | null | undefined = undefined;
+    if (manifestRes?.ok) {
+      const full = await manifestRes.json();
+      manifest = full.manifest;
+      readme = full.readme;
     }
-    return NextResponse.json(detail);
+    let sbom: { format?: string; vulnerabilities?: { total: number; high: number; critical: number; medium: number; low: number } } | null = null;
+    if (sbomRes?.ok) sbom = await sbomRes.json();
+    let reviews: { summary?: { reviewCount: number; averageRating: number; histogram: Record<string, number> } | null } | null = null;
+    if (reviewsRes?.ok) reviews = await reviewsRes.json();
+    return NextResponse.json({ ...detail, manifest, readme, sbom, reviews });
   } catch (e: any) {
     return NextResponse.json({ error: 'marketplace unreachable' }, { status: 503 });
   }
