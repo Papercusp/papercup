@@ -896,6 +896,34 @@ org.post('/projects', async (c) => {
   projects.push(project);
   await saveProjects(projects);
 
+  // Dual-write into Postgres so the Zero-driven /projects view + /portfolio
+  // see the new row in real time. Failure here is logged but doesn't fail
+  // the request — JSON remains the source of truth until the legacy reader
+  // path is fully migrated. slug / cost_cap_cents / earned_cents are
+  // first-class columns; arbitrary user metadata stays in the jsonb column.
+  try {
+    const { sql } = getOrgPg();
+    const metadataStr = project.metadata ? JSON.stringify(project.metadata) : null;
+    await sql`
+      INSERT INTO harness_shared.projects (
+        id, name, status, slug, vertical, owning_dept,
+        budget_cents, spent_cents, cost_cap_cents, earned_cents,
+        created_ts, updated_ts, metadata
+      ) VALUES (
+        ${project.id}, ${project.name}, ${project.status}, ${project.slug},
+        ${project.vertical}, ${project.owning_director},
+        ${project.budget_cents}, ${project.spent_cents},
+        ${project.cost_cap_cents ?? null}, ${project.earned_cents ?? 0},
+        ${project.created_ts}, ${project.created_ts},
+        ${metadataStr}::jsonb
+      )
+      ON CONFLICT (id) DO NOTHING
+    `;
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[org/projects] PG dual-write failed:', e);
+  }
+
   // Emit ProjectKickoff broadcast
   const kickoff: Message = {
     id: randomUUID(),
