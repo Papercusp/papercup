@@ -32,10 +32,16 @@ declare global {
   }
 }
 
+// Defaults from the operator's Chatwoot setup. Override via env at deploy time.
+// The Cloudflare-Tunnel base URL ROTATES if the tunnel restarts; production DNS
+// will eventually point at chat.papercusp.com — update this default then.
+const DEFAULT_BASE_URL = 'https://architects-dubai-ringtone-soundtrack.trycloudflare.com';
+const DEFAULT_TOKEN = 'CT5CTToo11YtPN3CVkhvbFs9'; // papercuspai.com (operator) inbox
+
 export function ChatwootWidget() {
   useEffect(() => {
-    const baseUrl = process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL ?? 'https://chat.papercusp.com';
-    const websiteToken = process.env.NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN;
+    const baseUrl = process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL ?? DEFAULT_BASE_URL;
+    const websiteToken = process.env.NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN ?? DEFAULT_TOKEN;
     if (!websiteToken) return;
 
     window.chatwootSettings = {
