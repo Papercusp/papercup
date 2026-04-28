@@ -188,7 +188,35 @@ harness.post('/projects', async (c) => {
   }
   reg.projects.push({ slug, path });
   await saveRegistry(reg);
-  return c.json({ ok: true, project: { slug, path } });
+
+  // Provision the per-harness PG schema (tables, trigger for the consolidated
+  // mirror, publication entries, harness_zero grants) and refresh the
+  // cross-harness view so the new harness shows up everywhere immediately.
+  const scaffoldOutputs: { stage: string; status: 'ok' | 'failed'; detail?: string }[] = [];
+  try {
+    const r = await execFileP('bin/scaffold-harness-schema.sh', [slug], {
+      cwd: '/home/marsh-office/Restart',
+      env: { ...process.env, PGUSER: 'postgres_app', PGPASSWORD: 'postgres', PGHOST: 'localhost', PGDATABASE: 'papercusp' },
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    scaffoldOutputs.push({ stage: 'scaffold', status: 'ok', detail: r.stdout.split('\n').slice(-2).join(' ') });
+  } catch (e) {
+    scaffoldOutputs.push({ stage: 'scaffold', status: 'failed', detail: String((e as Error).message).slice(0, 300) });
+  }
+  try {
+    const r = await execFileP('scripts/regenerate-harness-features-view.sh', [], {
+      cwd: '/home/marsh-office/Restart',
+      env: { ...process.env, PGUSER: 'harness_admin', PGPASSWORD: 'harness_admin_pwd', PGHOST: 'localhost' },
+      timeout: 15_000,
+      maxBuffer: 1 * 1024 * 1024,
+    });
+    scaffoldOutputs.push({ stage: 'view', status: 'ok', detail: r.stdout.split('\n').slice(-2).join(' ') });
+  } catch (e) {
+    scaffoldOutputs.push({ stage: 'view', status: 'failed', detail: String((e as Error).message).slice(0, 300) });
+  }
+
+  return c.json({ ok: true, project: { slug, path }, provisioning: scaffoldOutputs });
 });
 
 harness.delete('/projects/:slug', async (c) => {
