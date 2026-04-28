@@ -1,0 +1,24 @@
+[submodule "libs/agent-chat"]
+	path = libs/agent-chat
+	url = https://github.com/papercupai/agent-chat.git
+[submodule "libs/git-graph"]
+	path = libs/git-graph
+	url = https://github.com/papercupai/git-graph.git
+[submodule "libs/papergrid"]
+	path = libs/papergrid
+	url = https://github.com/papercupai/papergrid.git
+[submodule "libs/papercup-db"]
+	path = libs/papercup-db
+	url = https://github.com/papercupai/papercup-db.git
+[submodule "libs/papercup-shared"]
+	path = libs/papercup-shared
+	url = https://github.com/papercupai/papercup-shared.git
+[submodule "libs/ui-primitives"]
+	path = libs/ui-primitives
+	url = https://github.com/papercupai/ui-primitives.git
+[submodule "libs/papercusp"]
+	path = libs/papercusp
+	url = https://github.com/papercupai/papercusp.git
+[submodule "libs/zero-harness"]
+	path = libs/zero-harness
+	url = https://github.com/papercupai/zero-harness.git

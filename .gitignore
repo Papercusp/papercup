@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.next-build-cache/
+package-lock.json
+*.tsbuildinfo
+.DS_Store
+*.log
+.env
+.env.local

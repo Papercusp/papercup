@@ -1,0 +1,8 @@
+{
+  "app": {
+    "[project]/apps/papercup/app/harnesses/page": []
+  },
+  "appUsingSizeAdjust": false,
+  "pages": {},
+  "pagesUsingSizeAdjust": false
+}

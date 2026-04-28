@@ -1,5 +1,5 @@
 import { HarnessesView } from '@restart/papercup-shared';
-import HarnessDashboard from '../../../papercusp/app/harness/HarnessDashboard';
+import HarnessDashboard from '../../../operator/app/harness/HarnessDashboard';
 
 export const dynamic = 'force-dynamic';
 
