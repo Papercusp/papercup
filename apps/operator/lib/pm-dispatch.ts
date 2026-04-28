@@ -277,9 +277,16 @@ async function spawnClaude(claudeCmd: string, promptText: string): Promise<Spawn
     const exe = argv[0] ?? 'claude';
     const baseArgs = argv.slice(1);
     const alreadyStreamJson = argv.some((a) => a.includes('stream-json'));
+    // Substrate-level authorization: PM produces structured text output
+    // (the three-section format that's parsed and written to project_spec_revisions);
+    // it has no business writing files directly. Disallow Edit/Write/Create
+    // tools so the PM agent physically cannot mutate SPEC.md, the worktree,
+    // or anything else even if its prompt rule is forgotten or overridden.
+    // Read/Grep/Glob/Bash remain available for context discovery.
+    const denyToolFlags = ['--disallowed-tools', 'Edit Write Create MultiEdit NotebookEdit'];
     const args = alreadyStreamJson
-      ? [...baseArgs, '-p']
-      : [...baseArgs, '-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+      ? [...baseArgs, '-p', ...denyToolFlags]
+      : [...baseArgs, '-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...denyToolFlags];
 
     const child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'] });
     let stdoutBuf = '';
