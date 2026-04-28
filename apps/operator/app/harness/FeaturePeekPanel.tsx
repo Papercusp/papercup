@@ -2,12 +2,11 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { Drawer } from 'vaul';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus } from './theme';
 import { StatusPill, IdPill, RolePill, IconButton, KbdHint } from './primitives';
-import { openFeatureChat } from './PiTerminalsDock';
 
 const FeatureTimelinePanel = dynamic(() => import('./FeatureTimelinePanel'), { ssr: false });
-const OperatorNoteForm = dynamic(() => import('./OperatorNoteForm'), { ssr: false });
 
 interface Feature {
   id: string;
@@ -42,16 +41,13 @@ interface Props {
 }
 
 export default function FeaturePeekPanel({
-  slug, feature, agents, issues, onClose, onReset, onEdit, onInspectRun, onSetStatus, onOpenInPi, onSwitchToPi,
+  slug, feature, agents, issues, onClose, onInspectRun, onSetStatus,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [debugNote, setDebugNote] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
-  const [showNotes, setShowNotes] = useState(false);
-  const [chatOpening, setChatOpening] = useState(false);
-  const [chatError, setChatError] = useState<string | null>(null);
 
   // Fetch PR URL (if branchIsolation.onPass=pr has opened one for this feature).
   useEffect(() => {
@@ -104,48 +100,36 @@ export default function FeaturePeekPanel({
     return agents.slice(0, 8);
   }, [feature, agents]);
 
-  useEffect(() => {
-    // Close on escape
-    if (!feature) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [feature, onClose]);
-
   if (!feature) return null;
 
   const s = STATUS[feature.status];
 
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 90,
-        background: 'rgba(0,0,0,0.3)',
-        display: 'flex',
-        justifyContent: 'flex-end',
-      }}
-    >
-      <aside
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 'min(560px, 92vw)',
-          height: '100%',
-          background: COLORS.surfaceRaised,
-          borderLeft: `1px solid ${COLORS.borderStrong}`,
-          boxShadow: '-12px 0 30px rgba(0,0,0,0.4)',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
-      >
+    <Drawer.Root open={!!feature} onOpenChange={(o) => { if (!o) onClose(); }} direction="right">
+      <Drawer.Portal>
+        <Drawer.Overlay style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.65)' }} />
+        <Drawer.Content
+          aria-describedby={undefined}
+          style={{
+            position: 'fixed', top: 0, right: 0, bottom: 0,
+            width: 'min(720px, 72vw)',
+            background: 'var(--bg-2)',
+            borderLeft: '1px solid var(--border)',
+            display: 'flex', flexDirection: 'column',
+            overflow: 'hidden',
+            zIndex: 61, outline: 'none',
+          }}
+        >
+          <Drawer.Title style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
+            Feature {feature.id}
+          </Drawer.Title>
         {/* Header */}
         <div style={{
-          padding: '10px 14px',
-          borderBottom: `1px solid ${COLORS.border}`,
-          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 16px',
+          borderBottom: `1px solid ${COLORS.border}` ,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
           flexShrink: 0,
         }}>
           <IdPill id={feature.id} onClick={() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }} />
@@ -159,128 +143,121 @@ export default function FeaturePeekPanel({
               title={prUrl}
               style={{
                 fontSize: SIZES.xs,
-                color: '#3b82f6',
+                color: '#dbeafe',
                 textDecoration: 'none',
-                padding: '2px 8px',
-                border: '1px solid #1e40af',
-                borderRadius: RADIUS.sm,
-                background: 'color-mix(in oklab, #3b82f6, transparent 85%)',
+                padding: '4px 10px',
+                border: '1px solid rgba(59,130,246,0.34)',
+                borderRadius: 999,
+                background: 'rgba(59,130,246,0.14)',
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.03)',
+                whiteSpace: 'nowrap',
               }}
             >
               View PR ↗
             </a>
           )}
-          <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <IconButton
-              onClick={() => setShowNotes((v) => !v)}
-              title="Operator notes — async guidance the worker reads on its next dispatch"
-            >{showNotes ? 'hide note' : 'note'}</IconButton>
-            <IconButton
-              onClick={async () => {
-                setChatOpening(true);
-                setChatError(null);
-                const result = await openFeatureChat({
-                  slug,
-                  role: 'worker',
-                  featureId: feature.id,
-                  title: `worker · ${feature.id}`,
-                });
-                setChatOpening(false);
-                if ('error' in result) {
-                  setChatError(result.error);
-                } else {
-                  onSwitchToPi?.();
-                  onClose();
-                }
-              }}
-              title="Open a real-time chat with the worker on this feature (creates a new chat in the pi tab)"
-            >{chatOpening ? 'opening…' : 'chat'}</IconButton>
-            {onOpenInPi && (
-              <IconButton
-                onClick={() => onOpenInPi(feature.id)}
-                title="Open this feature's worktree in pi (omp) — interactive coding agent"
-              >open in pi</IconButton>
-            )}
-            <IconButton onClick={() => onEdit(feature)} title="Edit feature (E)">edit</IconButton>
-            <IconButton onClick={() => onReset(feature.id)} title="Reset to todo, attempts=0 (R)">reset</IconButton>
-            <IconButton onClick={onClose} variant="ghost" title="Close (Esc)">✕</IconButton>
-          </span>
+          <button
+            onClick={onClose}
+            title="Close (Esc)"
+            style={{
+              marginLeft: 'auto',
+              background: 'transparent',
+              color: COLORS.textMuted,
+              border: `1px solid ${COLORS.border}`,
+              borderRadius: 999,
+              padding: '5px 9px',
+              fontSize: SIZES.xs,
+              lineHeight: 1,
+              cursor: 'pointer',
+              fontWeight: 700,
+              whiteSpace: 'nowrap',
+            }}
+          >✕</button>
         </div>
-        {chatError && (
-          <div style={{
-            padding: '6px 14px',
-            background: COLORS.dangerBg,
-            color: COLORS.dangerText,
-            fontSize: SIZES.xs,
-            borderBottom: `1px solid ${COLORS.borderSubtle}`,
-          }}>chat failed to open: {chatError}</div>
-        )}
 
         {/* Body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px' }}>
-          <h2 style={{
-            margin: 0, marginBottom: feature.summary ? 6 : 12,
-            fontSize: SIZES.lg, fontWeight: 600, color: COLORS.text,
-            lineHeight: 1.3,
-          }}>
-            {feature.summary || feature.title}
-          </h2>
-          {feature.summary && (
-            <div style={{
-              fontFamily: FONTS.mono,
-              fontSize: SIZES.xs,
-              color: COLORS.textDim,
-              marginBottom: 12,
-            }}>{feature.title}</div>
-          )}
-
-          {/* Property rail */}
+        {/* Body */}
+        <div style={{
+          flex: 1,
+          overflowY: 'auto',
+          padding: '16px 18px 18px',
+        }}>
           <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'auto 1fr',
-            columnGap: 14, rowGap: 6,
-            fontSize: SIZES.sm,
             marginBottom: 18,
-            paddingBottom: 14,
-            borderBottom: `1px solid ${COLORS.borderSubtle}`,
+            padding: '14px 14px 12px',
+            border: `1px solid ${COLORS.border}` ,
+            borderRadius: 14,
+            background: 'linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 3%), color-mix(in oklab, var(--bg), white 1%))',
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.025)',
           }}>
-            <span style={{ color: COLORS.textDim }}>Status</span>
-            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-              {(['todo','in_progress','validating','failing','blocked','passed'] as HarnessStatus[]).map((st) => {
-                const active = st === feature.status;
-                const ss = STATUS[st];
-                return (
-                  <button
-                    key={st}
-                    onClick={() => onSetStatus(feature.id, st)}
-                    disabled={active}
-                    title={`Set status to ${ss.label}`}
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 5,
-                      padding: '3px 8px',
-                      background: active ? ss.bg : 'transparent',
-                      border: `1px solid ${active ? ss.solid : COLORS.border}`,
-                      borderRadius: RADIUS.sm,
-                      fontSize: SIZES.xs,
-                      color: active ? ss.text : COLORS.textMuted,
-                      cursor: active ? 'default' : 'pointer',
-                    }}
-                  >
-                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: ss.solid }} />
-                    {ss.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <span style={{ color: COLORS.textDim }}>Attempts</span>
-            <span style={{
-              color: feature.attempts >= 3 ? STATUS.blocked.text : COLORS.text,
-              fontFamily: FONTS.mono,
+            <h2 style={{
+              margin: 0,
+              marginBottom: feature.summary ? 8 : 10,
+              fontSize: '1.14rem',
+              fontWeight: 740,
+              letterSpacing: '-0.02em',
+              color: COLORS.text,
+              lineHeight: 1.4,
             }}>
-              {feature.attempts}
-              {feature.attempts >= 3 && <span style={{ color: COLORS.textDim, marginLeft: 6 }}>(stuck)</span>}
-            </span>
+              {feature.summary || feature.title}
+            </h2>
+            {feature.summary && (
+              <div style={{
+                fontFamily: FONTS.mono,
+                fontSize: '0.76rem',
+                letterSpacing: '0.012em',
+                color: COLORS.textDim,
+                marginBottom: 12,
+              }}>{feature.title}</div>
+            )}
+            {/* Property rail */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: 'auto 1fr',
+              columnGap: 14,
+              rowGap: 8,
+              fontSize: SIZES.sm,
+              paddingTop: 10,
+              borderTop: `1px solid ${COLORS.borderSubtle}`,
+            }}>
+              <span style={{ color: COLORS.textDim }}>Status</span>
+              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                {(['todo','in_progress','validating','failing','blocked','passed'] as HarnessStatus[]).map((st) => {
+                  const active = st === feature.status;
+                  const ss = STATUS[st];
+                  return (
+                    <button
+                      key={st}
+                      onClick={() => onSetStatus(feature.id, st)}
+                      disabled={active}
+                      title={`Set status to ${ss.label}`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '3px 8px',
+                        background: active ? ss.bg : 'transparent',
+                        border: `1px solid ${active ? ss.solid : COLORS.border}`,
+                        borderRadius: 999,
+                        fontSize: SIZES.xs,
+                        color: active ? ss.text : COLORS.textMuted,
+                        cursor: active ? 'default' : 'pointer',
+                      }}
+                    >
+                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: ss.solid }} />
+                      {ss.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <span style={{ color: COLORS.textDim }}>Attempts</span>
+              <span style={{
+                color: feature.attempts >= 3 ? STATUS.blocked.text : COLORS.text,
+                fontFamily: FONTS.mono,
+              }}>
+                {feature.attempts}
+                {feature.attempts >= 3 && <span style={{ color: COLORS.textDim, marginLeft: 6 }}>(stuck)</span>}
+              </span>
+            </div>
           </div>
 
           {/* Claims */}
@@ -294,12 +271,6 @@ export default function FeaturePeekPanel({
             </Section>
           )}
 
-          {/* Operator notes — feature-scoped guidance the worker reads on next dispatch */}
-          {showNotes && (
-            <Section title="Operator notes">
-              <OperatorNoteForm slug={slug} featureId={feature.id} />
-            </Section>
-          )}
 
           {/* Debugger notes, if the debugger role has investigated this feature */}
           {debugNote && (
@@ -307,6 +278,7 @@ export default function FeaturePeekPanel({
               <div style={{ marginBottom: 6 }}>
                 <button
                   onClick={() => setShowDebug((v) => !v)}
+                  title={showDebug ? "Hide debugger's hypothesis notes" : "Show debugger's hypothesis notes for this feature"}
                   style={{
                     background: 'transparent',
                     border: `1px solid ${COLORS.borderSubtle}`,
@@ -346,6 +318,7 @@ export default function FeaturePeekPanel({
                   <button
                     key={r.runId}
                     onClick={() => onInspectRun(r.runId)}
+                    title="Inspect this agent run's full output"
                     style={{
                       display: 'flex', alignItems: 'center', gap: 8,
                       padding: '5px 8px',
@@ -394,34 +367,44 @@ export default function FeaturePeekPanel({
 
           {/* Actions row */}
           <div style={{
-            marginTop: 18, padding: '10px 0',
+            marginTop: 18,
+            marginInline: -18,
+            marginBottom: -18,
+            padding: '12px 18px 14px',
             borderTop: `1px solid ${COLORS.borderSubtle}`,
-            display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            background: 'linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.12))',
+            backdropFilter: 'blur(10px)',
           }}>
             <button
               onClick={() => setShowTimeline(true)}
               style={{
-                background: 'transparent',
+                background: 'rgba(255,255,255,0.03)',
                 border: `1px solid ${COLORS.borderSubtle}`,
                 color: COLORS.text,
-                padding: '5px 12px',
-                borderRadius: RADIUS.sm,
+                padding: '6px 12px',
+                borderRadius: 999,
                 cursor: 'pointer',
                 fontSize: SIZES.sm,
-                display: 'inline-flex', alignItems: 'center', gap: 6,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
               }}
               title="Aggregate snapshots, agent runs, debug notes, and PR metadata into one timeline"
             >
               🕰 View timeline
             </button>
-            <span style={{ marginLeft: 'auto', fontSize: SIZES.xs, color: COLORS.textDim, display: 'flex', gap: 10 }}>
-              <span><KbdHint>E</KbdHint> edit</span>
-              <span><KbdHint>R</KbdHint> reset</span>
+            <span style={{ marginLeft: 'auto', fontSize: SIZES.xs, color: COLORS.textDim, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <span><KbdHint>Esc</KbdHint> close</span>
             </span>
           </div>
         </div>
-      </aside>
+        </Drawer.Content>
+      </Drawer.Portal>
 
       {showTimeline && (
         <FeatureTimelinePanel
@@ -430,20 +413,29 @@ export default function FeaturePeekPanel({
           onClose={() => setShowTimeline(false)}
         />
       )}
-    </div>
+    </Drawer.Root>
   );
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: 18 }}>
+    <div
+      style={{
+        marginBottom: 18,
+        padding: '12px 12px 10px',
+        border: `1px solid ${COLORS.border}` ,
+        borderRadius: 12,
+        background: 'linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), white 1%))',
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
+      }}
+    >
       <div style={{
-        fontSize: '0.65rem',
-        color: COLORS.textDim,
+        fontSize: '0.72rem',
+        color: COLORS.textMuted,
         textTransform: 'uppercase',
-        letterSpacing: '0.08em',
-        fontWeight: 600,
-        marginBottom: 8,
+        letterSpacing: '0.11em',
+        fontWeight: 700,
+        marginBottom: 10,
       }}>
         {title}
       </div>

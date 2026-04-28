@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Send, Archive, Loader2, AlertTriangle, Coins, RotateCcw } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './theme';
+import { Tooltip } from './Tooltip';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
@@ -199,7 +200,7 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
     return (
       <div className="chat-panel chat-panel--error">
         <AlertTriangle size={14} /> Failed to load chat: {loadError}
-        <button className="chat-panel__retry" onClick={() => void loadChat()}>retry</button>
+        <button className="chat-panel__retry" onClick={() => void loadChat()} title="Retry loading the chat transcript">retry</button>
       </div>
     );
   }
@@ -217,12 +218,16 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
         <span className="chat-panel__role">{chat.role}</span>
         {chat.feature_id && <span className="chat-panel__feature">{chat.feature_id}</span>}
         <span className="chat-panel__title">{chat.title ?? ''}</span>
-        <span className="chat-panel__cost" title={`${tokensTotal.toLocaleString()} tokens`}>
-          <Coins size={11} /> ${costUsd.toFixed(4)}
-        </span>
-        <button onClick={onArchiveClick} className="chat-panel__archive" title="Archive chat">
-          <Archive size={12} />
-        </button>
+        <Tooltip label={`${tokensTotal.toLocaleString()} tokens`}>
+          <span className="chat-panel__cost">
+            <Coins size={11} /> ${costUsd.toFixed(4)}
+          </span>
+        </Tooltip>
+        <Tooltip label="Archive chat">
+          <button onClick={onArchiveClick} className="chat-panel__archive">
+            <Archive size={12} />
+          </button>
+        </Tooltip>
       </div>
 
       {chat.feature_lock?.active && (
@@ -260,9 +265,11 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
         {sendState.kind === 'error' && (
           <div className="chat-panel__send-error" role="alert">
             <AlertTriangle size={12} /> {sendState.message}
-            <button onClick={() => setSendState({ kind: 'idle' })} title="Dismiss">
-              <RotateCcw size={11} />
-            </button>
+            <Tooltip label="Dismiss">
+              <button onClick={() => setSendState({ kind: 'idle' })}>
+                <RotateCcw size={11} />
+              </button>
+            </Tooltip>
           </div>
         )}
       </div>
@@ -289,14 +296,15 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
           rows={2}
           className="chat-panel__input"
         />
-        <button
-          type="submit"
-          disabled={sendState.kind === 'streaming' || !draft.trim()}
-          className="chat-panel__send"
-          title="Send (Enter)"
-        >
-          {sendState.kind === 'streaming' ? <Loader2 size={13} className="chat-panel__spin" /> : <Send size={13} />}
-        </button>
+        <Tooltip label="Send (Enter)">
+          <button
+            type="submit"
+            disabled={sendState.kind === 'streaming' || !draft.trim()}
+            className="chat-panel__send"
+          >
+            {sendState.kind === 'streaming' ? <Loader2 size={13} className="chat-panel__spin" /> : <Send size={13} />}
+          </button>
+        </Tooltip>
       </form>
     </div>
   );

@@ -297,6 +297,7 @@ function AddChatAction({ api, slug }: { api: DockviewApi | null; slug: string })
               type="button"
               onClick={() => setOpen(false)}
               disabled={creating}
+              title="Cancel without creating a chat"
               style={{
                 padding: '4px 10px', fontSize: 11,
                 background: 'transparent', color: '#888',
@@ -308,6 +309,7 @@ function AddChatAction({ api, slug }: { api: DockviewApi | null; slug: string })
               type="button"
               onClick={() => void create()}
               disabled={creating}
+              title="Create a new chat panel with the selected role"
               style={{
                 padding: '4px 10px', fontSize: 11,
                 background: '#1d2533', color: '#6ea8ff',

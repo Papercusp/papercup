@@ -187,6 +187,7 @@ export default function OperatorNoteForm({ slug, featureId }: OperatorNoteFormPr
           <button
             type="submit"
             disabled={state.kind === 'submitting' || !draft.trim()}
+            title="Save this note — the worker will read it on its next dispatch (⌘/Ctrl+Enter)"
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
               padding: '5px 12px',

@@ -94,7 +94,6 @@ import PulseFeed, { usePulse } from './PulseFeed';
 import InsightsPanel from './InsightsPanel';
 import TriageQueue from './TriageQueue';
 import ArchitectInbox from './ArchitectInbox';
-import { CollapsedGitRail, CollapsedInboxRail } from './CollapsedRails';
 import PiTerminalsDock from './PiTerminalsDock';
 import PhaseTabs, { type Phase } from './PhaseTabs';
 import TestsTab from './TestsTab';
@@ -141,6 +140,7 @@ function dynamicWithRetry<T>(
         <br />
         <button
           onClick={() => location.reload()}
+          title="Reload the page"
           style={{ marginTop: 12, background: '#1f2937', color: '#e5e7eb', border: '1px solid #374151', borderRadius: 4, padding: '6px 14px', cursor: 'pointer' }}
         >
           Reload page
@@ -334,15 +334,39 @@ function safeParseClaims(raw: unknown): string[] | undefined {
  * version + a link to the marketplace-ops audit page. The popover closes on
  * Escape or click-outside.
  */
-function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activeSlug }: {
+function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activeSlug, onDisabled }: {
   pluginSlug: string;
   pluginVersion: string;
   tabId: string;
   label: string;
   icon: string | null;
   activeSlug: string | null;
+  onDisabled: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  async function disable() {
+    if (!activeSlug) return;
+    if (!confirm(`Disable ${pluginSlug} in ${activeSlug}?\n\nThe plugin's config will be preserved.`)) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/plugins/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: pluginSlug, harnesses: [activeSlug], disable: true }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error('Disable failed', { description: d.results?.[0]?.log?.slice(-300) ?? d.error });
+        return;
+      }
+      toast.success(`${pluginSlug} disabled in ${activeSlug}`);
+      setOpen(false);
+      onDisabled();
+    } catch (e: any) {
+      toast.error(`Disable failed: ${e?.message ?? e}`);
+    } finally { setBusy(false); }
+  }
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
@@ -406,11 +430,26 @@ function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activ
             href={`http://localhost:3001/papercusp-marketplace-ops/explore/${encodeURIComponent(pluginSlug)}`}
             target="_blank"
             rel="noopener noreferrer"
-            style={{ display: 'block', color: 'var(--accent-1, #0ea5e9)', fontSize: 11, textDecoration: 'none' }}
+            style={{ display: 'block', color: 'var(--accent-1, #0ea5e9)', fontSize: 11, textDecoration: 'none', marginBottom: 8 }}
             onClick={() => setOpen(false)}
           >
             View README + signature →
           </a>
+          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+            <button
+              type="button"
+              onClick={disable}
+              disabled={busy || !activeSlug}
+              title="Disable this plugin in the active harness (config preserved)"
+              style={{
+                width: '100%', padding: '6px 10px', fontSize: 12, cursor: 'pointer',
+                background: 'transparent', color: '#fca5a5',
+                border: '1px solid var(--border)', borderRadius: 4,
+              }}
+            >
+              {busy ? 'Disabling…' : `Disable in ${activeSlug ?? '…'}`}
+            </button>
+          </div>
         </div>
       ) : null}
     </div>
@@ -545,6 +584,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
     // Use the on-disk dir basename — that's what the CLI keys
     // enabled-plugins.json by, independent of scoped manifest.name.
     const dirSlug = plugin.path ? plugin.path.replace(/\/$/, '').split('/').pop() ?? plugin.name : plugin.name;
+    const displayName = plugin.name || dirSlug;
     setBusy(dirSlug);
     try {
       const r = await fetch('/api/plugins/enable', {
@@ -554,11 +594,21 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
       });
       const d = await r.json();
       if (!r.ok || !d.ok) {
-        alert(`enable failed: ${d.error ?? 'unknown'}\n${d.results?.[0]?.log?.slice(-300) ?? ''}`);
+        toast.error(`Enable failed: ${displayName}`, {
+          description: d.results?.[0]?.log?.slice(-300) ?? d.error ?? 'unknown',
+        });
         return;
       }
+      const contributesTab = (plugin.dashboardTabs?.length ?? 0) > 0;
+      toast.success(`${displayName} enabled in ${activeSlug}`, {
+        description: contributesTab
+          ? 'Tab added to the harness workspace.'
+          : 'Plugin is active. It contributes actions/secrets/webhooks (no dashboard tab).',
+      });
       setOpen(false);
       onEnabled();
+    } catch (e: any) {
+      toast.error(`Enable failed: ${displayName}`, { description: String(e?.message ?? e) });
     } finally {
       setBusy(null);
     }
@@ -573,17 +623,12 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
           ref={btnRef}
           type="button"
           onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
-          className="h-tab"
+          className="h-tab h-add-plugin-tab"
           style={{
-            marginLeft: 8,
             background: open ? 'var(--accent)' : 'rgba(99, 102, 241, 0.15)',
-            border: `1px solid ${open ? 'var(--accent)' : 'rgba(99, 102, 241, 0.5)'}`,
+            borderColor: open ? 'var(--accent)' : 'rgba(99, 102, 241, 0.5)',
             color: open ? '#fff' : '#a5b4fc',
             cursor: 'pointer',
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '4px 12px', fontSize: 13, fontWeight: 600,
-            borderRadius: 6,
-            transition: 'background 120ms ease, color 120ms ease',
           }}
           aria-label="Add plugin"
         >
@@ -612,6 +657,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
               <button
                 type="button"
                 onClick={onRetry}
+                title="Retry plugin discovery"
                 style={{
                   padding: '4px 10px', fontSize: 12, cursor: 'pointer',
                   background: 'var(--bg-2)', border: '1px solid var(--border)',
@@ -637,6 +683,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
                       type="button"
                       onClick={() => enable(p)}
                       disabled={busy !== null}
+                      title="Enable this plugin in the active harness"
                       style={{
                         width: '100%', textAlign: 'left', padding: '8px 10px',
                         background: 'transparent', border: 'none', cursor: 'pointer',
@@ -670,6 +717,517 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
   );
 }
 
+interface EnabledPluginManifest extends InstalledPluginInfo {
+  capabilities?: string[];
+  actions?: Array<{ id?: string; name?: string; label?: string; description?: string; params?: Record<string, unknown> }>;
+  routines?: Array<{ name?: string; trigger?: string }>;
+  configSchema?: { properties?: Record<string, { default?: unknown; description?: string }> };
+}
+
+/**
+ * Visible per-harness "what plugins are enabled" surface. Lists every
+ * enabled plugin with its actions/event-listeners/required-capabilities/
+ * config-file path, plus an Invoke button per action and a Disable button.
+ *
+ * Critical for action-only plugins (slack-notifier, jira-sync, etc.) that
+ * don't render a dashboard tab — without this panel the operator has no
+ * way to confirm they're enabled or fire their actions from the UI.
+ */
+/**
+ * Config tab body. Sub-nav between "Spec" (SPEC.md / AGENTS.md / config.json
+ * editor) and "Plugins" (per-harness plugin list with actions, events,
+ * required capabilities, and disable/invoke controls). Replaces the older
+ * plain-SpecEditor body so action-only plugins have a visible home.
+ */
+function ConfigPanel({
+  harnessSlug, projectPath, alive, onClose,
+  installedPlugins, enabledSlugs, pluginCount, onPluginsChange,
+}: {
+  harnessSlug: string;
+  projectPath: string;
+  alive: boolean;
+  onClose: () => void;
+  installedPlugins: InstalledPluginInfo[];
+  enabledSlugs: string[];
+  pluginCount: number;
+  onPluginsChange: () => void;
+}) {
+  type SubPane = 'spec' | 'plugins';
+  const [pane, setPane] = useState<SubPane>('spec');
+  const TabBtn = ({ id, label, count }: { id: SubPane; label: string; count?: number }) => (
+    <button
+      type="button"
+      onClick={() => setPane(id)}
+      className="h-tab"
+      aria-pressed={pane === id}
+      style={{
+        background: pane === id ? 'var(--bg-1)' : 'transparent',
+        border: '1px solid',
+        borderColor: pane === id ? 'var(--border)' : 'transparent',
+        color: pane === id ? 'var(--text-1)' : 'var(--text-3)',
+        padding: '4px 12px',
+        fontSize: 13,
+        cursor: 'pointer',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
+        borderRadius: 6,
+      }}
+    >
+      {id === 'spec' ? <SlidersHorizontal size={13} /> : <Puzzle size={13} />}
+      {label}
+      {typeof count === 'number' && count > 0 && (
+        <span className="h-tab-count" style={{ marginLeft: 4 }}>{count}</span>
+      )}
+    </button>
+  );
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '10px 20px',
+        borderBottom: '1px solid var(--border)',
+      }}>
+        <TabBtn id="spec" label="Spec" />
+        <TabBtn id="plugins" label="Plugins" count={pluginCount} />
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
+        {pane === 'spec' ? (
+          <SpecEditor
+            inline
+            slug={harnessSlug}
+            projectPath={projectPath}
+            alive={alive}
+            onClose={onClose}
+          />
+        ) : (
+          <PluginsPanel
+            harnessSlug={harnessSlug}
+            installed={installedPlugins}
+            enabledSlugs={enabledSlugs}
+            onChange={onPluginsChange}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function PluginsPanel({ harnessSlug, installed, enabledSlugs, onChange }: {
+  harnessSlug: string;
+  installed: InstalledPluginInfo[];
+  enabledSlugs: string[];
+  onChange: () => void;
+}) {
+  const enabledManifests = useMemo(() => {
+    const out: EnabledPluginManifest[] = [];
+    for (const slug of enabledSlugs) {
+      const m = installed.find((p) => {
+        const dirSlug = p.path ? p.path.replace(/\/$/, '').split('/').pop() : null;
+        return p.name === slug || dirSlug === slug;
+      });
+      if (m) out.push(m as EnabledPluginManifest);
+    }
+    return out;
+  }, [installed, enabledSlugs]);
+
+  return (
+    <div style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--text-1)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+        <Puzzle size={20} />
+        <h2 style={{ margin: 0, fontSize: 22 }}>Plugins enabled in {harnessSlug}</h2>
+      </div>
+      <p style={{ color: 'var(--text-3)', marginTop: 0, marginBottom: 24, fontSize: 13 }}>
+        Every plugin currently active in this harness. Use the <code style={inlineCode}>+ plugin</code> button
+        in the tab strip to enable more.
+      </p>
+
+      {enabledManifests.length === 0 ? (
+        <div style={{ padding: 32, textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)' }}>
+          <p style={{ margin: 0, fontSize: 14 }}>No plugins enabled in this harness yet.</p>
+          <p style={{ margin: '8px 0 0', fontSize: 12 }}>
+            Click the <code style={inlineCode}>+ plugin</code> button in the tab strip to add one,
+            or browse <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>the marketplace</a>.
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {enabledManifests.map((p) => (
+            <PluginPanelCard
+              key={p.name}
+              plugin={p}
+              harnessSlug={harnessSlug}
+              onChange={onChange}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const inlineCode: React.CSSProperties = {
+  fontFamily: "'SF Mono', monospace", fontSize: 11,
+  padding: '1px 6px', borderRadius: 3,
+  background: 'var(--bg-1)', border: '1px solid var(--border)',
+};
+
+function PluginPanelCard({ plugin, harnessSlug, onChange }: {
+  plugin: EnabledPluginManifest;
+  harnessSlug: string;
+  onChange: () => void;
+}) {
+  const dirSlug = plugin.path ? plugin.path.replace(/\/$/, '').split('/').pop() ?? plugin.name : plugin.name;
+  const tabIcon = plugin.dashboardTabs?.[0]?.icon ?? plugin.icon ?? null;
+  const [busy, setBusy] = useState(false);
+  const [invoking, setInvoking] = useState<string | null>(null);
+  const configPath = `~/.papercusp/harnesses/${harnessSlug}/plugin-configs/${dirSlug}.json`;
+  const secretCaps = (plugin.capabilities ?? []).filter((c) => c.startsWith('secrets:read:'));
+  const eventListens = (plugin.capabilities ?? []).filter((c) => c.startsWith('events:listen:'));
+  const httpFetches = (plugin.capabilities ?? []).filter((c) => c.startsWith('http:fetch:'));
+
+  async function disable() {
+    if (!confirm(`Disable ${plugin.name} in ${harnessSlug}?\n\nThe plugin's config will be preserved.`)) return;
+    setBusy(true);
+    try {
+      const r = await fetch('/api/plugins/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: dirSlug, harnesses: [harnessSlug], disable: true }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error(`Disable failed`, { description: d.results?.[0]?.log?.slice(-300) ?? d.error });
+        return;
+      }
+      toast.success(`${plugin.name} disabled in ${harnessSlug}`);
+      onChange();
+    } catch (e: any) {
+      toast.error(`Disable failed: ${e?.message ?? e}`);
+    } finally { setBusy(false); }
+  }
+
+  async function invoke(actionId: string) {
+    setInvoking(actionId);
+    try {
+      const r = await fetch('/api/plugins/invoke', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: dirSlug, action: actionId, harness: harnessSlug }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error(`Invoke failed: ${actionId}`, { description: d.error ?? d.log?.slice(-300) });
+        return;
+      }
+      toast.success(`Action ${actionId} fired`, {
+        description: typeof d.result === 'string' ? d.result.slice(0, 200) : 'Check the action history for details.',
+      });
+    } catch (e: any) {
+      toast.error(`Invoke failed: ${e?.message ?? e}`);
+    } finally { setInvoking(null); }
+  }
+
+  return (
+    <div className="pc-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+        <span style={{
+          flex: '0 0 auto', width: 40, height: 40, borderRadius: 8,
+          background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc',
+          border: '1px solid rgba(99, 102, 241, 0.3)',
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        }}>
+          <PluginIcon name={tabIcon} size={20} />
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0, fontSize: 16 }}>{plugin.name}</h3>
+            <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: "'SF Mono', monospace" }}>
+              v{plugin.version}
+            </span>
+            {(plugin.dashboardTabs?.length ?? 0) === 0 && (
+              <span style={{
+                fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em',
+                padding: '2px 6px', borderRadius: 4,
+                background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc',
+              }}>action-only</span>
+            )}
+          </div>
+          {plugin.description && (
+            <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>
+              {plugin.description}
+            </p>
+          )}
+        </div>
+        <button
+          onClick={disable}
+          disabled={busy}
+          className="pc-button"
+          title="Disable this plugin (config preserved)"
+          style={{ background: 'transparent', color: '#fca5a5', border: '1px solid var(--border)', flex: '0 0 auto' }}
+        >
+          {busy ? 'Disabling…' : 'Disable'}
+        </button>
+      </div>
+
+      {(plugin.actions?.length ?? 0) > 0 && (
+        <div>
+          <div style={sectionLabel}>Actions</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {plugin.actions!.map((a) => {
+              const id = a.id ?? a.name ?? '?';
+              return (
+                <div key={id} style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '8px 12px', background: 'var(--bg-1)', borderRadius: 6,
+                  border: '1px solid var(--border)',
+                }}>
+                  <code style={{ fontSize: 12, fontFamily: "'SF Mono', monospace", flex: '0 0 auto' }}>{id}</code>
+                  <span style={{ flex: 1, fontSize: 12, color: 'var(--text-3)' }}>
+                    {a.label ?? a.description ?? ''}
+                  </span>
+                  <button
+                    onClick={() => invoke(id)}
+                    disabled={invoking !== null}
+                    className="pc-button"
+                    title="Manually invoke this hook now"
+                    style={{ fontSize: 11, padding: '4px 10px', flex: '0 0 auto' }}
+                  >
+                    {invoking === id ? 'Invoking…' : 'Invoke'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {eventListens.length > 0 && (
+        <div>
+          <div style={sectionLabel}>Listens to events</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {eventListens.map((c) => (
+              <span key={c} style={tagStyle}>{c.replace('events:listen:', '')}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(secretCaps.length > 0 || httpFetches.length > 0) && (
+        <div>
+          <div style={sectionLabel}>Required capabilities</div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {secretCaps.map((c) => {
+              const key = c.replace('secrets:read:', '');
+              return <span key={c} style={{ ...tagStyle, color: '#fbbf24', borderColor: 'rgba(251, 191, 36, 0.3)', background: 'rgba(251, 191, 36, 0.1)' }} title={`Set this with: papercusp secrets set ${key} <value>`}>secret: {key}</span>;
+            })}
+            {httpFetches.map((c) => (
+              <span key={c} style={tagStyle}>http: {c.replace('http:fetch:', '')}</span>
+            ))}
+          </div>
+          {secretCaps.length > 0 && (
+            <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+              Set secrets via the CLI:{' '}
+              <code style={inlineCode}>papercusp secrets set {secretCaps[0]!.replace('secrets:read:', '')} &lt;value&gt;</code>
+            </p>
+          )}
+        </div>
+      )}
+
+      <PluginConfigEditor
+        harnessSlug={harnessSlug}
+        dirSlug={dirSlug}
+        configPath={configPath}
+        configSchema={plugin.configSchema}
+        defaultConfig={(plugin as { defaultConfig?: Record<string, unknown> }).defaultConfig}
+      />
+    </div>
+  );
+}
+
+function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, defaultConfig }: {
+  harnessSlug: string;
+  dirSlug: string;
+  configPath: string;
+  configSchema?: { properties?: Record<string, { default?: unknown; description?: string }> };
+  defaultConfig?: Record<string, unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loaded, setLoaded] = useState<Record<string, unknown> | null>(null);
+  const [draft, setDraft] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!open || loaded !== null) return;
+    fetch(`/api/plugins/config?harness=${encodeURIComponent(harnessSlug)}&plugin=${encodeURIComponent(dirSlug)}`, { cache: 'no-store' })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d) => {
+        const cfg = d?.config ?? {};
+        setLoaded(cfg);
+        setDraft(JSON.stringify(cfg, null, 2));
+      })
+      .catch((e) => setError(String(e?.message ?? e)));
+  }, [open, loaded, harnessSlug, dirSlug]);
+
+  function reset() {
+    if (loaded) setDraft(JSON.stringify(loaded, null, 2));
+    setError(null);
+  }
+  function loadDefaults() {
+    const obj: Record<string, unknown> = { ...(defaultConfig ?? {}) };
+    if (configSchema?.properties) {
+      for (const [k, v] of Object.entries(configSchema.properties)) {
+        if (!(k in obj) && v.default !== undefined) obj[k] = v.default;
+      }
+    }
+    setDraft(JSON.stringify(obj, null, 2));
+    setError(null);
+  }
+
+  async function save() {
+    let parsed: unknown;
+    try { parsed = JSON.parse(draft); } catch (e: any) {
+      setError(`Invalid JSON: ${e?.message ?? e}`);
+      return;
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      setError('Config must be a JSON object.');
+      return;
+    }
+    setError(null);
+    setSaving(true);
+    try {
+      const r = await fetch('/api/plugins/config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ harness: harnessSlug, plugin: dirSlug, config: parsed }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        setError(d.error ?? `HTTP ${r.status}`);
+        return;
+      }
+      setLoaded(parsed as Record<string, unknown>);
+      setSavedAt(Date.now());
+      toast.success(`Config saved for ${dirSlug}`);
+    } catch (e: any) {
+      setError(String(e?.message ?? e));
+    } finally { setSaving(false); }
+  }
+
+  const dirty = loaded !== null && draft !== JSON.stringify(loaded, null, 2);
+  const schemaKeys = Object.keys(configSchema?.properties ?? {});
+
+  return (
+    <div style={{
+      marginTop: 4, padding: '8px 12px', background: 'var(--bg-1)', borderRadius: 6,
+      border: '1px solid var(--border)',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          <span style={{ fontWeight: 600, color: 'var(--text-2)', marginRight: 8 }}>Config</span>
+          <code style={{ fontFamily: "'SF Mono', monospace", fontSize: 11 }}>{configPath}</code>
+          {schemaKeys.length > 0 && (
+            <span style={{ marginLeft: 12, color: 'var(--text-3)' }}>
+              keys: {schemaKeys.map((k) => <code key={k} style={{ ...inlineCode, fontSize: 10, marginLeft: 4 }}>{k}</code>)}
+            </span>
+          )}
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          title={open ? 'Close the plugin config editor' : 'Open the plugin config editor'}
+          style={{
+            fontSize: 11, padding: '2px 10px', cursor: 'pointer',
+            background: 'transparent', color: 'var(--text-2)',
+            border: '1px solid var(--border)', borderRadius: 4,
+          }}
+        >{open ? 'Close editor' : 'Edit config'}</button>
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 10 }}>
+          {error && (
+            <div style={{
+              marginBottom: 8, padding: '6px 10px',
+              background: '#450a0a', color: '#fca5a5',
+              border: '1px solid #7f1d1d', borderRadius: 4,
+              fontSize: 11,
+            }}>{error}</div>
+          )}
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            spellCheck={false}
+            rows={Math.min(20, Math.max(6, draft.split('\n').length + 1))}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              fontFamily: "'SF Mono', monospace", fontSize: 12,
+              padding: 10, borderRadius: 4,
+              background: 'var(--bg-2)', color: 'var(--text-1)',
+              border: '1px solid var(--border)',
+              resize: 'vertical',
+            }}
+            placeholder='{ "key": "value" }'
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={save}
+              disabled={saving || !dirty}
+              className="pc-button"
+              title="Save plugin config changes"
+              style={{ fontSize: 12, padding: '4px 12px' }}
+            >{saving ? 'Saving…' : dirty ? 'Save' : 'No changes'}</button>
+            <button
+              type="button"
+              onClick={reset}
+              disabled={saving || !dirty}
+              title="Discard unsaved config changes"
+              style={{
+                fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+                background: 'transparent', color: 'var(--text-3)',
+                border: '1px solid var(--border)', borderRadius: 4,
+              }}
+            >Reset</button>
+            <button
+              type="button"
+              onClick={loadDefaults}
+              disabled={saving}
+              style={{
+                fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+                background: 'transparent', color: 'var(--text-3)',
+                border: '1px solid var(--border)', borderRadius: 4,
+              }}
+              title="Replace draft with the plugin's defaultConfig + configSchema defaults"
+            >Load defaults</button>
+            {savedAt && !dirty && (
+              <span style={{ fontSize: 10, color: '#86efac' }}>
+                ✓ saved {new Date(savedAt).toLocaleTimeString()}
+              </span>
+            )}
+            <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-3)' }}>
+              CLI:{' '}
+              <code style={inlineCode}>papercusp plugin config {dirSlug} --harness {harnessSlug}</code>
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const sectionLabel: React.CSSProperties = {
+  fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
+  color: 'var(--text-3)', marginBottom: 8,
+};
+const tagStyle: React.CSSProperties = {
+  fontSize: 11, fontFamily: "'SF Mono', monospace",
+  padding: '2px 8px', borderRadius: 4,
+  background: 'var(--bg-1)', border: '1px solid var(--border)',
+  color: 'var(--text-2)',
+};
+
 export default function HarnessDashboard() {
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
@@ -698,7 +1256,7 @@ export default function HarnessDashboard() {
   const [enabledByHarness, setEnabledByHarness] = useState<Record<string, string[]>>({});
   useEffect(() => {
     const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 8000);
+    const t = setTimeout(() => ac.abort(), 30000);
     fetch('/api/plugins/enabled', { cache: 'no-store', signal: ac.signal })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then((d) => setEnabledByHarness(d?.enabled ?? {}))
@@ -708,7 +1266,7 @@ export default function HarnessDashboard() {
   }, [installedPluginsRefreshKey]);
   useEffect(() => {
     const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 8000);
+    const t = setTimeout(() => ac.abort(), 30000);
     setInstalledPluginsError(null);
     fetch('/api/plugins/global', { cache: 'no-store', signal: ac.signal })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
@@ -718,7 +1276,7 @@ export default function HarnessDashboard() {
       })
       .catch((e) => {
         if (e?.name === 'AbortError') {
-          setInstalledPluginsError('Request timed out after 8s. The substrate is busy — try again.');
+          setInstalledPluginsError('Request timed out after 30s. The substrate is busy — try again.');
         } else {
           setInstalledPluginsError(String(e?.message ?? e));
         }
@@ -815,6 +1373,7 @@ export default function HarnessDashboard() {
   const [lanes, setLanes] = useState<{ lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }>; max: number } | null>(null);
   const [pendingProposals, setPendingProposals] = useState(0);
   const [activePanel, setActivePanel] = useState<MainPanel>('dashboard');
+  const [topChromeCollapsed, setTopChromeCollapsed] = useState(false);
   // When the user clicks "open in pi" on a feature, scope the pi pane to
   // that feature's worktree instead of the project root. Cleared when the
   // pane is opened from the bare 'pi' tab.
@@ -1149,6 +1708,8 @@ export default function HarnessDashboard() {
 
   const totalCount = status?.features.length ?? 0;
   const passedCount = status?.counts.passed ?? 0;
+  const todoCount = status?.counts.todo ?? 0;
+  const blockedCount = status?.counts.blocked ?? 0;
   const progressPct = totalCount ? Math.round((passedCount / totalCount) * 100) : 0;
 
   const sortedFeatures = useMemo(() => {
@@ -1356,6 +1917,8 @@ export default function HarnessDashboard() {
     <div className={`h-root${isBrainstormPanel ? ' brainstorm-mode' : ''}`}>
       <Toaster theme="dark" position="bottom-right" richColors />
 
+      {!topChromeCollapsed && (
+        <>
       {/* ── Mission header ─────────────────────────────────── */}
       <div className={`h-header${status?.alive ? ' alive' : ''}`}>
         <div className="h-header-main">
@@ -1366,11 +1929,61 @@ export default function HarnessDashboard() {
 
           <div className="h-project-card">
             <div className="h-project-topline">
-              <span className="h-project-label">Project</span>
+              {activeSlug && (
+                <div className="h-project-phases">
+                  <PhaseTabs slug={activeSlug} activePhase={activePhase} onChange={setActivePhase} />
+                </div>
+              )}
               {status && (
-                <span className={`h-status-chip ${status.alive ? 'live' : 'idle'}`}>
-                  <span className={`h-pulse-dot ${status.alive ? 'live' : 'idle'}`} />
-                  {status.alive ? 'running' : 'idle'}
+                <div className="h-project-topline-statuses">
+                  <div className="h-overview-pulse h-project-pulse">
+                    <PulseFeed
+                      compact
+                      events={pulseEvents}
+                      onOpenFeature={(id) => {
+                        const f = status.features.find((ff) => ff.id === id);
+                        if (f) setPeekFeature(f);
+                      }}
+                    />
+                  </div>
+                  {lanes && (
+                    <div className="h-overview-lanes h-project-lanes" aria-label="Now running lanes">
+                      <div className="h-running-head">
+                        <span>Now running</span>
+                        <strong>{activeLanes.length}/{lanes.max}</strong>
+                      </div>
+                      <div className="h-running-lanes">
+                        {Array.from({ length: Math.max(lanes.max, activeLanes.length, 1) }).map((_, index) => {
+                          const lane = activeLanes[index];
+                          if (!lane) {
+                            return <span key={`idle-${index}`} className="h-running-lane idle">available lane</span>;
+                          }
+                          const feature = status.features.find((f) => f.id === lane.featureId);
+                          return (
+                            <button
+                              key={`${lane.pid}-${lane.featureId}`}
+                              className="h-running-lane live"
+                              onClick={() => { if (feature) setPeekFeature(feature); }}
+                              title={`PID ${lane.pid} · ${lane.featureId}`}
+                            >
+                              <span className="h-running-dot" />
+                              <span className="h-running-id">{lane.featureId}</span>
+                              <span className="h-running-title">{feature?.title ?? 'working'}</span>
+                              <span className="h-running-time">{fmtDuration(lane.elapsedSeconds)}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {status && (
+                <span className="h-project-badges">
+                  <span className={`h-status-chip ${status.alive ? 'live' : 'idle'}`}>
+                    <span className={`h-pulse-dot ${status.alive ? 'live' : 'idle'}`} />
+                    {status.alive ? 'running' : 'idle'}
+                  </span>
                 </span>
               )}
             </div>
@@ -1413,13 +2026,15 @@ export default function HarnessDashboard() {
               <span className="h-project-path">
                 {activeProjectPath || 'Choose a workspace to view agents, logs, issues, docs, and VSCode.'}
               </span>
-              {status && <span className="h-project-progress">{progressPct}% complete</span>}
+              {status && (
+                <span className="h-project-meta-status">
+                  <span className="h-project-progress">{progressPct}% complete</span>
+                  <span className="h-project-count todo"><strong>{todoCount}</strong> todo</span>
+                  <span className="h-project-count blocked"><strong>{blockedCount}</strong> blocked</span>
+                  <span className="h-project-count passed"><strong>{passedCount}</strong> passed</span>
+                </span>
+              )}
             </div>
-            {status && (
-              <div className="h-progress-rail" aria-label={`Mission progress ${progressPct}%`}>
-                <span style={{ width: `${progressPct}%` }} />
-              </div>
-            )}
           </div>
         </div>
 
@@ -1495,16 +2110,43 @@ export default function HarnessDashboard() {
                   </div>
                 );
               })()}
-              {status.lastDecision && (
-                <StatCard
-                  label="decision"
-                  value={<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>{status.lastDecision}</span>}
-                  icon={<ArrowRight size={13} />}
-                />
-              )}
             </div>
 
-            <div className="h-header-actions">
+          </div>
+        ) : (
+          <div className="h-header-empty">
+            <span>Pick a project, then use <strong>⌘K</strong> for every harness action.</span>
+          </div>
+        )}
+      </div>
+
+      {activeSlug && (
+        <div className="h-phase-plan-row">
+          <PlanReviewBanner slug={activeSlug} compact />
+          {status && !isBrainstormPanel && focusFeature && (
+            <button
+              className={`h-focus-card h-phase-plan-focus ${focusFeature.status}`}
+              onClick={() => setPeekFeature(focusFeature)}
+              title={`Open ${focusFeature.id}`}
+            >
+              <span className="h-overline">Mission focus</span>
+              <strong>{focusVerb(focusFeature.status)}</strong>
+              <span className="h-focus-title">
+                {focusFeature.id} · {focusFeature.title}
+              </span>
+            </button>
+          )}
+          {status && !isBrainstormPanel && triageCount > 0 && (
+            <button
+              className="h-overview-action warn h-phase-plan-review"
+              onClick={() => setShowTriage(true)}
+              title="Open the triage queue (features needing attention)"
+            >
+              Review {triageCount} issue{triageCount === 1 ? '' : 's'}
+            </button>
+          )}
+          {status && (
+            <div className="h-header-actions h-phase-plan-actions">
               {status.escalated && (
                 <span className="h-escalated-pill">
                   <AlertTriangle size={12} /> escalated
@@ -1523,26 +2165,25 @@ export default function HarnessDashboard() {
                   <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
                 </button>
               </Tooltip>
+              {status.lastDecision && (
+                <span className="h-decision-chip h-phase-plan-decision" title={`Last decision: ${status.lastDecision}`}>
+                  <ArrowRight size={11} />
+                  <span>decision</span>
+                  <strong>{status.lastDecision}</strong>
+                </span>
+              )}
               {status.alive ? (
-                <button className="h-btn danger" onClick={stopHarness}>
+                <button className="h-btn danger" onClick={stopHarness} title="Stop the autonomous loop for this harness">
                   <Square size={13} fill="currentColor" /> stop
                 </button>
               ) : (
-                <button className="h-btn primary" onClick={launchHarness}>
+                <button className="h-btn primary" onClick={launchHarness} title="Start the autonomous loop for this harness">
                   <Play size={13} fill="currentColor" /> start
                 </button>
               )}
             </div>
-          </div>
-        ) : (
-          <div className="h-header-empty">
-            <span>Pick a project, then use <strong>⌘K</strong> for every harness action.</span>
-          </div>
-        )}
-      </div>
-
-      {activeSlug && (
-        <PhaseTabs slug={activeSlug} activePhase={activePhase} onChange={setActivePhase} />
+          )}
+        </div>
       )}
 
       {activeSlug && status && (
@@ -1555,95 +2196,24 @@ export default function HarnessDashboard() {
         />
       )}
 
-      {activeSlug && <PlanReviewBanner slug={activeSlug} />}
       {activeSlug && <CheckpointBanner slug={activeSlug} />}
 
-      {activeSlug && status && !isBrainstormPanel && (
-        <PulseFeed
-          events={pulseEvents}
-          onOpenFeature={(id) => {
-            const f = status.features.find((ff) => ff.id === id);
-            if (f) setPeekFeature(f);
-          }}
-        />
+
+
+        </>
       )}
 
-      {activeSlug && status && !isBrainstormPanel && (
-        <div className={`h-mission-overview ${triageCount > 0 ? 'has-action' : ''}`} aria-label="Mission overview">
-          <button
-            className={`h-focus-card ${focusFeature?.status ?? 'empty'}`}
-            onClick={() => { if (focusFeature) setPeekFeature(focusFeature); }}
-            disabled={!focusFeature}
-            title={focusFeature ? `Open ${focusFeature.id}` : 'No focus feature yet'}
-          >
-            <span className="h-overline">Mission focus</span>
-            <strong>{focusFeature ? focusVerb(focusFeature.status) : 'Waiting for planner'}</strong>
-            <span className="h-focus-title">
-              {focusFeature ? `${focusFeature.id} · ${focusFeature.title}` : 'Features will appear here once planning starts.'}
-            </span>
-          </button>
-
-          <div className="h-status-distribution">
-            <div className="h-status-rail" aria-label="Feature status distribution">
-              {statusSummary.length > 0 ? statusSummary.map((entry) => (
-                <span
-                  key={entry.status}
-                  className={`h-status-segment ${entry.status}`}
-                  style={{ flexGrow: entry.count }}
-                  title={`${entry.count} ${entry.label}`}
-                />
-              )) : <span className="h-status-segment empty" />}
-            </div>
-            <div className="h-status-legend">
-              {statusSummary.length > 0 ? statusSummary.map((entry) => (
-                <span key={entry.status} className={`h-status-token ${entry.status}`}>
-                  <span /> {entry.label} <strong>{entry.count}</strong>
-                </span>
-              )) : <span className="h-status-token empty">no features yet</span>}
-            </div>
-          </div>
-
-          {triageCount > 0 && (
-            <button
-              className="h-overview-action warn"
-              onClick={() => setShowTriage(true)}
-            >
-              Review {triageCount} issue{triageCount === 1 ? '' : 's'}
-            </button>
-          )}
-        </div>
-      )}
-
-      {activeSlug && status && lanes && !isBrainstormPanel && (
-        <div className="h-running-strip" aria-label="Now running lanes">
-          <div className="h-running-head">
-            <span>Now running</span>
-            <strong>{activeLanes.length}/{lanes.max}</strong>
-          </div>
-          <div className="h-running-lanes">
-            {Array.from({ length: Math.max(lanes.max, activeLanes.length, 1) }).map((_, index) => {
-              const lane = activeLanes[index];
-              if (!lane) {
-                return <span key={`idle-${index}`} className="h-running-lane idle">available lane</span>;
-              }
-              const feature = status.features.find((f) => f.id === lane.featureId);
-              return (
-                <button
-                  key={`${lane.pid}-${lane.featureId}`}
-                  className="h-running-lane live"
-                  onClick={() => { if (feature) setPeekFeature(feature); }}
-                  title={`PID ${lane.pid} · ${lane.featureId}`}
-                >
-                  <span className="h-running-dot" />
-                  <span className="h-running-id">{lane.featureId}</span>
-                  <span className="h-running-title">{feature?.title ?? 'working'}</span>
-                  <span className="h-running-time">{fmtDuration(lane.elapsedSeconds)}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      <div className="h-top-collapse-row">
+        <button
+          type="button"
+          className="h-top-collapse-btn"
+          onClick={() => setTopChromeCollapsed((collapsed) => !collapsed)}
+          aria-expanded={!topChromeCollapsed}
+          title={topChromeCollapsed ? 'Expand the top header section' : 'Collapse the top header section to free vertical space'}
+        >
+          {topChromeCollapsed ? 'Expand top section' : 'Collapse top section'}
+        </button>
+      </div>
 
       {/* ── Main-area tab switcher ─────────────────────────────── */}
       <Tabs.Root
@@ -1652,10 +2222,9 @@ export default function HarnessDashboard() {
           if (v === 'pi') setPiLaneId(null);
           setActivePanel(v as MainPanel);
         }}
-        asChild
+        className="h-tab-strip"
       >
-        <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, flex: 1, minWidth: 0 }}>
-        <Tabs.List className="h-tabs h-main-tabs" aria-label="Harness workspace sections" style={{ flex: 1, minWidth: 0 }}>
+        <Tabs.List className="h-tabs h-main-tabs" aria-label="Harness workspace sections">
           <Tooltip label={activeSlug ? 'Brainstorm — write, mindmap, canvas, chat with Claude' : 'Select a project to brainstorm'}>
             <Tabs.Trigger value="brainstorm" className="h-tab" disabled={!activeSlug}>
               <Lightbulb size={13} /> brainstorm
@@ -1711,6 +2280,10 @@ export default function HarnessDashboard() {
               label={pt.label}
               icon={pt.icon}
               activeSlug={activeSlug}
+              onDisabled={() => {
+                setPluginRefreshKey((k) => k + 1);
+                setInstalledPluginsRefreshKey((k) => k + 1);
+              }}
             />
           ))}
           <Tooltip label={activeSlug ? 'Insights — analytics' : 'Select a project to view insights'}>
@@ -1723,8 +2296,6 @@ export default function HarnessDashboard() {
               <SlidersHorizontal size={13} /> config
             </Tabs.Trigger>
           </Tooltip>
-        </Tabs.List>
-        <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'center', paddingLeft: 8, borderLeft: '1px solid var(--border)' }}>
           <AddPluginButton
             activeSlug={activeSlug}
             alreadyEnabled={new Set(activeSlug ? enabledByHarness[activeSlug] ?? [] : [])}
@@ -1736,15 +2307,14 @@ export default function HarnessDashboard() {
             }}
             onRetry={() => setInstalledPluginsRefreshKey((k) => k + 1)}
           />
-        </div>
-        </div>
+        </Tabs.List>
       </Tabs.Root>
 
       {!status && (
         <div className="h-guide-strip">
           {activeSlug ? <Loader2 size={14} className="h-spin" /> : <Activity size={14} />}
           <span>{activeSlug ? `Loading ${activeSlug} mission state…` : 'Pick a project to unlock docs, VSCode, logs, issues, and agent controls.'}</span>
-          <button className="h-guide-action" onClick={() => setPaletteOpen(true)}>Open commands</button>
+          <button className="h-guide-action" onClick={() => setPaletteOpen(true)} title="Open the command palette (⌘K)">Open commands</button>
         </div>
       )}
 
@@ -1825,12 +2395,18 @@ export default function HarnessDashboard() {
           />
         )}
         {activePanel === 'config' && activeSlug && status && (
-          <SpecEditor
-            inline
-            slug={activeSlug}
+          <ConfigPanel
+            harnessSlug={activeSlug}
             projectPath={status.project.path}
             alive={status.alive}
             onClose={() => setActivePanel('dashboard')}
+            installedPlugins={installedPlugins ?? []}
+            enabledSlugs={enabledByHarness[activeSlug] ?? []}
+            pluginCount={enabledByHarness[activeSlug]?.length ?? 0}
+            onPluginsChange={() => {
+              setPluginRefreshKey((k) => k + 1);
+              setInstalledPluginsRefreshKey((k) => k + 1);
+            }}
           />
         )}
         {activePanel === 'dashboard' && (
@@ -1840,10 +2416,14 @@ export default function HarnessDashboard() {
               <div className="h-dashboard-panel-anchor" data-dashboard-panel="features" tabIndex={-1}>
                 <Panel title="Feature queue" count={totalCount}>
                 <FeatureList
+                  slug={activeSlug ?? ''}
                   features={(status?.features ?? []) as any}
                   activeFeatureId={peekFeature?.id ?? null}
                   onSelect={(f) => setPeekFeature(f as Feature)}
                   onReset={resetFeature}
+                  onEdit={(f) => setEditingFeature(f as Feature)}
+                  onOpenInPi={(id) => { setPiLaneId(id); setActivePanel('pi'); setPeekFeature(null); }}
+                  onSwitchToPi={() => setActivePanel('pi')}
                   onAdd={() => setEditingFeature('new')}
                   onBatchReset={batchReset}
                   onBatchDelete={batchDelete}
@@ -1887,12 +2467,6 @@ export default function HarnessDashboard() {
             </div>
           ) : (
         <div className="h-dashboard-grid" style={{ display: 'flex', gap: 6, height: '100%', minHeight: 0, flex: 1 }}>
-          {activeSlug && leftPane === 'inbox' && (
-            <CollapsedGitRail slug={activeSlug} onExpand={() => setLeftPane('git')} />
-          )}
-          {activeSlug && leftPane === 'git' && (
-            <CollapsedInboxRail slug={activeSlug} onExpand={() => setLeftPane('inbox')} />
-          )}
           <div style={{ flex: 1, minWidth: 0 }}>
         <PanelGroup orientation="horizontal">
           {activeSlug && (
@@ -1932,10 +2506,14 @@ export default function HarnessDashboard() {
                 <div className="h-dashboard-panel-anchor" data-dashboard-panel="features" tabIndex={-1}>
                   <Panel title="Feature queue" count={totalCount}>
                     <FeatureList
+                      slug={activeSlug ?? ''}
                       features={(status?.features ?? []) as any}
                       activeFeatureId={peekFeature?.id ?? null}
                       onSelect={(f) => setPeekFeature(f as Feature)}
                       onReset={resetFeature}
+                      onEdit={(f) => setEditingFeature(f as Feature)}
+                      onOpenInPi={(id) => { setPiLaneId(id); setActivePanel('pi'); setPeekFeature(null); }}
+                      onSwitchToPi={() => setActivePanel('pi')}
                       onAdd={() => setEditingFeature('new')}
                       onBatchReset={batchReset}
                       onBatchDelete={batchDelete}
@@ -2267,27 +2845,36 @@ function LeftPaneTabs({
       background: 'var(--bg-2)',
       flexShrink: 0,
     }}>
-      {tabs.map((t) => (
-        <button
-          key={t.id}
-          onClick={() => setLeftPane(t.id)}
-          style={{
-            padding: '4px 10px',
-            fontSize: 10.5,
-            fontWeight: 600,
-            letterSpacing: 0.4,
-            textTransform: 'uppercase',
-            color: leftPane === t.id ? 'var(--fg)' : 'var(--fg-dim)',
-            background: leftPane === t.id ? 'var(--bg-3)' : 'transparent',
-            border: `1px solid ${leftPane === t.id ? 'var(--border)' : 'transparent'}`,
-            borderRadius: 4,
-            cursor: 'pointer',
-            transition: 'all 120ms ease',
-          }}
-        >
-          {t.label}
-        </button>
-      ))}
+      {tabs.map((t) => {
+        const active = leftPane === t.id;
+        const Icon = t.id === 'inbox' ? Inbox : GitBranch;
+        return (
+          <button
+            key={t.id}
+            onClick={() => setLeftPane(t.id)}
+            title={`Switch to ${t.label}`}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '4px 10px',
+              fontSize: 10.5,
+              fontWeight: 600,
+              letterSpacing: 0.4,
+              textTransform: 'uppercase',
+              color: active ? 'var(--fg)' : 'var(--fg-dim)',
+              background: active ? 'var(--bg-3)' : 'transparent',
+              border: `1px solid ${active ? 'var(--border)' : 'transparent'}`,
+              borderRadius: 4,
+              cursor: 'pointer',
+              transition: 'all 120ms ease',
+            }}
+          >
+            <Icon size={12} />
+            {t.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -2304,6 +2891,7 @@ function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string
         <button
           className={`h-tab${tab === 'issues' ? ' on' : ''}`}
           onClick={() => setTab('issues')}
+          title="Open issue tracker — bugs and concerns surfaced by validators"
         >
           issues
           {issueCount !== null && <span className="h-tab-count">{issueCount}</span>}
@@ -2311,12 +2899,14 @@ function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string
         <button
           className={`h-tab${tab === 'tests' ? ' on' : ''}`}
           onClick={() => setTab('tests')}
+          title="Show test claims and validator outcomes"
         >
           tests
         </button>
         <button
           className={`h-tab${tab === 'report' ? ' on' : ''}`}
           onClick={() => setTab('report')}
+          title="Show the validator's prose report for the latest run"
         >
           report
           {reportMd && <span className="h-tab-count">{reportMd.length > 0 ? 'md' : ''}</span>}
@@ -2370,8 +2960,8 @@ function AgentInspector({
             </span>
           )}
           <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-            <button className="h-btn ghost" onClick={onRefresh}><RotateCcw size={12} /> refresh</button>
-            <button className="h-btn ghost" onClick={onClose}>close</button>
+            <button className="h-btn ghost" onClick={onRefresh} title="Refresh the data shown in this panel"><RotateCcw size={12} /> refresh</button>
+            <button className="h-btn ghost" onClick={onClose} title="Close this panel">close</button>
           </div>
         </div>
         {agent.timeline.length === 0 && (

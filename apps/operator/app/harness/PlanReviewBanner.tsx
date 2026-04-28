@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 interface Props {
   slug: string;
+  compact?: boolean;
 }
 
 function extractVerdict(content: string): string | null {
@@ -17,7 +18,7 @@ const VERDICT_TONE: Record<string, { bg: string; border: string; fg: string; ico
   reject: { bg: '#7f1d1d', border: '#ef4444', fg: '#fca5a5', icon: '⚠' },
 };
 
-export default function PlanReviewBanner({ slug }: Props) {
+export default function PlanReviewBanner({ slug, compact = false }: Props) {
   const [content, setContent] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
@@ -43,26 +44,30 @@ export default function PlanReviewBanner({ slug }: Props) {
   const tone = VERDICT_TONE[key] ?? { bg: '#1f2937', border: '#374151', fg: '#d1d5db', icon: 'ℹ' };
 
   return (
-    <div style={{
+    <div className={`h-plan-review-banner${compact ? ' compact' : ''}`} style={{
       background: tone.bg,
       border: `1px solid ${tone.border}`,
       borderLeft: `4px solid ${tone.border}`,
       borderRadius: 4,
-      padding: '0.6rem 0.9rem',
-      marginBottom: '0.75rem',
+      padding: compact ? '0.25rem 0.5rem' : '0.6rem 0.9rem',
+      marginBottom: compact ? 0 : '0.75rem',
       fontFamily: 'system-ui, sans-serif',
+      minWidth: 0,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.8rem', color: tone.fg }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: compact ? '0.45rem' : '0.65rem', fontSize: compact ? '0.72rem' : '0.8rem', color: tone.fg, minWidth: 0 }}>
         <span style={{ fontWeight: 700 }}>{tone.icon} Plan review · <code style={{ fontFamily: 'ui-monospace, monospace' }}>{verdict}</code></span>
         <button
           onClick={() => setOpen((v) => !v)}
+          title={open ? 'Hide the plan-review markdown' : "Show the full plan-gate review (.harness/plan-review.md)"}
           style={{ background: 'transparent', border: `1px solid ${tone.border}`, color: tone.fg, borderRadius: 3, padding: '0.2rem 0.55rem', cursor: 'pointer', fontSize: '0.7rem' }}
         >
           {open ? 'hide' : 'show details'}
         </button>
-        <span style={{ marginLeft: 'auto', fontFamily: 'ui-monospace, monospace', color: tone.fg, fontSize: '0.7rem', opacity: 0.75 }}>
-          .harness/plan-review.md
-        </span>
+        {!compact && (
+          <span style={{ marginLeft: 'auto', fontFamily: 'ui-monospace, monospace', color: tone.fg, fontSize: '0.7rem', opacity: 0.75 }}>
+            .harness/plan-review.md
+          </span>
+        )}
         <button
           onClick={() => setDismissed(true)}
           style={{ background: 'transparent', border: 'none', color: tone.fg, cursor: 'pointer', fontSize: '0.9rem', opacity: 0.7 }}
