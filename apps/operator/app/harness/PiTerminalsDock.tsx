@@ -80,6 +80,12 @@ function drainPendingOpens(api: DockviewApi, slug: string): void {
     if (existing) {
       try { existing.api.setActive(); } catch { /* ignore */ }
     } else {
+      // Add into the currently-active group so the new chat appears as
+      // a tab next to whatever the user was looking at, not as a fresh
+      // split. Without this, dockview defaults to creating a new group
+      // when the layout is non-empty and the active group's reference
+      // becomes ambiguous (StrictMode double-mount can do this).
+      const activeGroup = api.activeGroup;
       const panel = api.addPanel({
         id: panelId,
         component: 'chat',
@@ -89,6 +95,7 @@ function drainPendingOpens(api: DockviewApi, slug: string): void {
             ? `${detail.role ?? 'agent'} · ${detail.featureId}`
             : (detail.role ?? 'chat')),
         params: { slug: detail.slug, chatId: detail.chatId } satisfies ChatPanelParams,
+        ...(activeGroup ? { position: { referenceGroup: activeGroup } } : {}),
       });
       // addPanel restores the previously-active panel from saved layout
       // by default — explicitly activate the new one so the user sees
@@ -96,6 +103,40 @@ function drainPendingOpens(api: DockviewApi, slug: string): void {
       try { panel.api.setActive(); } catch { /* ignore */ }
     }
     pendingOpens.splice(i, 1);
+  }
+}
+
+/**
+ * Validate any restored chat panels against the live chat list. Any chat
+ * panel whose chat row no longer exists (deleted or archived) gets closed
+ * so the operator doesn't see ghost panels from past sessions.
+ *
+ * Async + best-effort: if the fetch fails, leave the layout alone.
+ */
+async function pruneStaleChatPanels(api: DockviewApi, slug: string): Promise<void> {
+  const chatPanelIds = api.panels
+    .map((p) => p.id)
+    .filter((id) => id.startsWith('chat-'));
+  if (chatPanelIds.length === 0) return;
+
+  let liveChatIds: Set<string>;
+  try {
+    const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/agent-chats`);
+    if (!r.ok) return;
+    const body = await r.json() as { chats?: Array<{ id: string }> };
+    liveChatIds = new Set((body.chats ?? []).map((c) => c.id));
+  } catch {
+    return;
+  }
+
+  for (const panelId of chatPanelIds) {
+    const chatId = panelId.slice('chat-'.length);
+    if (!liveChatIds.has(chatId)) {
+      const panel = api.getPanel(panelId);
+      if (panel) {
+        try { api.removePanel(panel); } catch { /* ignore */ }
+      }
+    }
   }
 }
 
@@ -338,6 +379,12 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
       // drops the event because the dock isn't mounted yet — the user sees
       // only the terminal restored from saved layout.
       drainPendingOpens(event.api, slug);
+
+      // Async cleanup: remove chat panels for chats that no longer exist
+      // (deleted, archived, expired). Runs after drain so we don't race
+      // against new additions. Best-effort — fetches the live chat list
+      // and closes panels whose chatId isn't in it.
+      void pruneStaleChatPanels(event.api, slug);
     },
     [slug, initialLaneId],
   );
