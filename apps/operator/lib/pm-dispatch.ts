@@ -134,18 +134,23 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
     // since the last project_spec_revision OR (if none) all currently-passed
     // features (the very-first PM run for this project).
     const lastRev = (await db.prepare(
-      'SELECT ts FROM harness_shared.project_spec_revisions WHERE project_id = ? AND author_role = $2 ORDER BY ts DESC LIMIT 1',
+      'SELECT ts FROM harness_shared.project_spec_revisions WHERE project_id = ? AND author_role = ? ORDER BY ts DESC LIMIT 1',
     ).get(projectId, 'project_manager')) as { ts: string } | undefined;
 
-    const sinceClause = lastRev?.ts
-      ? `AND updated_ts > extract(epoch from $2::timestamptz) * 1000`
-      : '';
-    const featureRows = (await db.prepare(
-      `SELECT feature_id, title, status, updated_ts
-         FROM harness_features
-        WHERE harness_slug = ? AND project_id = $2 AND status = 'passed' ${sinceClause}
-        ORDER BY updated_ts DESC LIMIT 20`,
-    ).all(slug, projectId, lastRev?.ts ?? '1970-01-01')) as Array<{ feature_id: string; title: string; status: string; updated_ts: number | bigint }>;
+    const featureRows = lastRev?.ts
+      ? (await db.prepare(
+          `SELECT feature_id, title, status, updated_ts
+             FROM harness_features
+            WHERE harness_slug = ? AND project_id = ? AND status = 'passed'
+              AND updated_ts > extract(epoch from ?::timestamptz) * 1000
+            ORDER BY updated_ts DESC LIMIT 20`,
+        ).all(slug, projectId, lastRev.ts)) as Array<{ feature_id: string; title: string; status: string; updated_ts: number | bigint }>
+      : (await db.prepare(
+          `SELECT feature_id, title, status, updated_ts
+             FROM harness_features
+            WHERE harness_slug = ? AND project_id = ? AND status = 'passed'
+            ORDER BY updated_ts DESC LIMIT 20`,
+        ).all(slug, projectId)) as Array<{ feature_id: string; title: string; status: string; updated_ts: number | bigint }>;
 
     if (featureRows.length === 0 && !bypassDebounce) {
       return {
@@ -162,7 +167,7 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
     const pendingEvents = (await db.prepare(
       `SELECT id FROM harness_shared.pending_events
         WHERE install_slug = ? AND kind = 'pm_due' AND consumed_at IS NULL
-          AND payload->>'project_id' = $2`,
+          AND payload->>'project_id' = ?`,
     ).all(slug, projectId)) as Array<{ id: string }>;
     const eventIds = pendingEvents.map((e) => e.id);
 
