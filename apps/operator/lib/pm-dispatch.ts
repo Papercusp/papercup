@@ -252,7 +252,7 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
         await tx.prepare(`
           UPDATE harness_shared.projects
              SET spec = ?, spec_updated_at = now(), updated_ts = ?
-           WHERE id = $3
+           WHERE id = ?
         `).run(newSpec, Date.now(), projectId);
       }
 
@@ -262,7 +262,7 @@ export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult
           UPDATE harness_shared.pending_events
              SET consumed_at = now(),
                  consumed_by = 'project_manager:' || ?
-           WHERE id = ANY($2::text[])
+           WHERE id = ANY(?::text[])
         `).run(`pm-${revisionId}`, eventIds);
       }
     })();
