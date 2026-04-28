@@ -221,7 +221,11 @@ export function registerAgentChats(harness: Hono): void {
     if (!body.role || !VALID_ROLES.has(body.role)) {
       return c.json({ error: `role must be one of: ${[...VALID_ROLES].join(', ')}` }, 400);
     }
-    if (body.feature_id && !/^F-[A-Z0-9-]+$/i.test(body.feature_id)) {
+    // Accept any uppercase-prefixed alphanumeric+hyphen ID. Different
+    // harness templates use different prefixes (F-NNN for coding, BRIEF-BRF-NNN
+    // for org briefs, DIR-D-NNN for directives, INIT-NNN, etc.). The bound
+    // here is anti-injection — must look like an ID, not arbitrary text.
+    if (body.feature_id && !/^[A-Z][A-Z0-9_-]*[A-Z0-9]$/i.test(body.feature_id)) {
       return c.json({ error: `invalid feature_id: ${body.feature_id}` }, 400);
     }
 
