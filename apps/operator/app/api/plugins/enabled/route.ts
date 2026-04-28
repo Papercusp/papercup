@@ -1,38 +1,30 @@
+/**
+ * GET /api/plugins/enabled
+ *   → { enabled: { <harness>: [pluginSlug, ...], ... } }
+ *
+ * GET /api/plugins/enabled?plugin=<slug>
+ *   → { plugin, byHarness: { <harness>: boolean, ... } }
+ *
+ * Reads from harness_shared.plugin_enables (PG, Zero-synced). The CLI is
+ * still the source-of-truth writer for ~/.papercusp/harnesses/<slug>/
+ * enabled-plugins.json; the operator API mirrors writes into PG via
+ * mirrorHarness(). If a direct CLI invocation outside the operator drifts
+ * the two, run scripts/backfill-plugin-enables.mjs.
+ */
 import { NextResponse } from 'next/server';
-import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { listEnabledByHarness } from '../../../../lib/plugin-enables-pg';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
-const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
-
-interface EnabledFile {
-  enabled: Record<string, { version: string; enabledAt: string; configHash: string }>;
-}
-
-async function readJson<T>(p: string): Promise<T | null> {
-  try { return JSON.parse(await fs.readFile(p, 'utf8')) as T; } catch { return null; }
-}
-
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const filterPlugin = url.searchParams.get('plugin');
-  const out: Record<string, string[]> = {}; // harness → enabled plugin slugs
-  if (!existsSync(HARNESSES_DIR)) return NextResponse.json({ enabled: out });
-  const dirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true });
-  for (const d of dirs) {
-    if (!d.isDirectory()) continue;
-    const file = await readJson<EnabledFile>(join(HARNESSES_DIR, d.name, 'enabled-plugins.json'));
-    const slugs = file ? Object.keys(file.enabled) : [];
-    out[d.name] = slugs;
-  }
+  const enabled = await listEnabledByHarness();
   if (filterPlugin) {
-    const result: Record<string, boolean> = {};
-    for (const [h, slugs] of Object.entries(out)) result[h] = slugs.includes(filterPlugin);
-    return NextResponse.json({ plugin: filterPlugin, byHarness: result });
+    const byHarness: Record<string, boolean> = {};
+    for (const [h, slugs] of Object.entries(enabled)) byHarness[h] = slugs.includes(filterPlugin);
+    return NextResponse.json({ plugin: filterPlugin, byHarness });
   }
-  return NextResponse.json({ enabled: out });
+  return NextResponse.json({ enabled });
 }

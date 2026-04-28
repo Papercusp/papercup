@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { mirrorHarness } from '../../../../lib/plugin-enables-pg';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -79,6 +80,12 @@ export async function POST(req: Request) {
     const ok = r.code === 0;
     results.push({ harness: h, ok, log });
     if (!ok && !firstFailure) firstFailure = { harness: h, log };
+    // Mirror the on-disk JSON into PG so cross-harness reads stay current.
+    // Best-effort: a failed mirror should not turn a successful CLI run into
+    // a 500. The next write or the backfill script will reconcile.
+    try { await mirrorHarness(h); } catch (e) {
+      console.warn('[plugins/enable] PG mirror failed for', h, e);
+    }
   }
   const allOk = results.every((r) => r.ok);
   return NextResponse.json({

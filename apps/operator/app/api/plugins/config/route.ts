@@ -3,6 +3,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
+import { mirrorHarness } from '../../../../lib/plugin-enables-pg';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -78,6 +79,9 @@ export async function PUT(req: Request) {
   if (enabled.enabled[plugin]) {
     enabled.enabled[plugin].configHash = configHash(cfg as Record<string, unknown>);
     await writeJson(enabledPath, enabled);
+    try { await mirrorHarness(harness); } catch (e) {
+      console.warn('[plugins/config] PG mirror failed for', harness, e);
+    }
   }
 
   return NextResponse.json({
