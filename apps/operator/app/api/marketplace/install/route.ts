@@ -1,14 +1,105 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const PAPERCUSP_BIN = process.env.PAPERCUSP_CLI ?? 'papercusp';
+const ALLOWED_ORIGINS = new Set([
+  'http://localhost:3060',
+  'http://127.0.0.1:3060',
+  'https://papercuspai.com',
+  'https://www.papercuspai.com',
+]);
+
+function corsHeaders(origin: string | null): HeadersInit {
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    return {
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+      Vary: 'Origin',
+    };
+  }
+  return {};
+}
+
+export function OPTIONS(req: Request) {
+  return new Response(null, { status: 204, headers: corsHeaders(req.headers.get('origin')) });
+}
+
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
+
+// Resolve the papercusp CLI: explicit env first, then walk up from CWD looking
+// for sibling workspace `papercusp/packages/cli/bin/papercusp`, then fall back
+// to PATH lookup. Cached after first resolution.
+let cachedCli: string | null = null;
+// Best-effort: locate the Papercusp desktop app binary so we can launch it
+// after a successful install. Returns null when no built/installed copy is
+// found — the marketplace UI then opens the operator URL in a new browser tab.
+function resolveDesktopBin(): string | null {
+  if (process.env.PAPERCUSP_DESKTOP_BIN && existsSync(process.env.PAPERCUSP_DESKTOP_BIN)) {
+    return process.env.PAPERCUSP_DESKTOP_BIN;
+  }
+  const home = homedir();
+  const candidates =
+    platform() === 'darwin'
+      ? [
+          '/Applications/Papercusp.app',
+          join(home, 'Applications', 'Papercusp.app'),
+        ]
+      : platform() === 'win32'
+      ? [
+          join(home, 'AppData', 'Local', 'Papercusp', 'Papercusp.exe'),
+          'C:\\Program Files\\Papercusp\\Papercusp.exe',
+        ]
+      : [
+          // Linux — built bundles + dev target dir
+          '/usr/local/bin/papercusp-desktop',
+          '/usr/bin/papercusp-desktop',
+          join(home, '.local', 'bin', 'papercusp-desktop'),
+          join(home, 'papercupai-workspace', 'papercusp-desktop', 'src-tauri', 'target', 'release', 'papercusp-desktop'),
+          join(home, 'papercupai-workspace', 'papercusp-desktop', 'src-tauri', 'target', 'debug', 'papercusp-desktop'),
+        ];
+  return candidates.find((p) => existsSync(p)) ?? null;
+}
+
+function launchDesktopBin(bin: string): { ok: true } | { ok: false; error: string } {
+  try {
+    if (platform() === 'darwin' && bin.endsWith('.app')) {
+      spawn('open', [bin], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn(bin, [], { detached: true, stdio: 'ignore' }).unref();
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function resolvePapercuspCli(): string {
+  if (cachedCli) return cachedCli;
+  if (process.env.PAPERCUSP_CLI && existsSync(process.env.PAPERCUSP_CLI)) {
+    cachedCli = process.env.PAPERCUSP_CLI;
+    return cachedCli;
+  }
+  let dir = process.cwd();
+  for (let i = 0; i < 8; i++) {
+    const candidate = join(dir, 'papercusp', 'packages', 'cli', 'bin', 'papercusp');
+    if (existsSync(candidate)) {
+      cachedCli = candidate;
+      return cachedCli;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  cachedCli = process.env.PAPERCUSP_CLI ?? 'papercusp';
+  return cachedCli;
+}
 
 type RunResult = { code: number; stdout: string; stderr: string };
 
@@ -94,11 +185,15 @@ async function installSubagentPack(
 }
 
 export async function POST(req: Request) {
+  const cors = corsHeaders(req.headers.get('origin'));
+  const json = (data: unknown, init?: { status?: number }) =>
+    NextResponse.json(data, { status: init?.status ?? 200, headers: cors });
+
   let body: { slug?: string; projectName?: string; targetPath?: string; harness?: string };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ ok: false, error: 'invalid json body' }, { status: 400 });
+    return json({ ok: false, error: 'invalid json body' }, { status: 400 });
   }
   const slug = String(body.slug ?? '').trim();
   const projectName = String(body.projectName ?? slug).trim();
@@ -106,7 +201,7 @@ export async function POST(req: Request) {
   const targetPath = rawTarget.length > 0 ? rawTarget : null;
   const harnessSlug = typeof body.harness === 'string' ? body.harness.trim() : '';
 
-  if (!isValidSlug(slug)) return NextResponse.json({ ok: false, error: `invalid slug "${slug}"` }, { status: 400 });
+  if (!isValidSlug(slug)) return json({ ok: false, error: `invalid slug "${slug}"` }, { status: 400 });
 
   // ── subagent-pack branch ─────────────────────────────────────────────
   // Pre-flight the manifest so we know if this install needs the harness
@@ -116,27 +211,27 @@ export async function POST(req: Request) {
   const catalogManifest = await fetchCatalogManifest(slug);
   if (catalogManifest?.kind === 'subagent-pack') {
     if (!harnessSlug || !isValidSlug(harnessSlug)) {
-      return NextResponse.json(
+      return json(
         { ok: false, error: `subagent-pack install requires "harness": "<existing-slug>" in body` },
         { status: 400 },
       );
     }
     const env = { ...process.env, PAPERCUSP_MARKETPLACE_URL: MARKETPLACE_URL };
-    const installResult = await run(PAPERCUSP_BIN, ['install', slug], env);
+    const installResult = await run(resolvePapercuspCli(), ['install', slug], env);
     if (installResult.code !== 0) {
-      return NextResponse.json(
+      return json(
         { ok: false, error: 'papercusp install failed', log: [installResult.stdout, installResult.stderr].filter(Boolean).join('\n') },
         { status: 500 },
       );
     }
     const subResult = await installSubagentPack(slug, harnessSlug, catalogManifest);
     if (!subResult.ok) {
-      return NextResponse.json(
+      return json(
         { ok: false, error: subResult.error, log: installResult.stdout },
         { status: subResult.status },
       );
     }
-    return NextResponse.json({
+    return json({
       ok: true,
       kind: 'subagent-pack',
       templateSlug: slug,
@@ -147,26 +242,90 @@ export async function POST(req: Request) {
     });
   }
 
-  if (!isValidSlug(projectName)) return NextResponse.json({ ok: false, error: `invalid project name "${projectName}"` }, { status: 400 });
+  // ── snapshot branch ──────────────────────────────────────────────────
+  // Snapshots fork into a brand-new harness (registered in the CLI's
+  // registry.json), not "install + init" the way templates do. Delegate
+  // to `papercusp snapshot fork`, which handles tarball download +
+  // extract + registry write atomically.
+  if (catalogManifest?.kind === 'snapshot') {
+    const env = { ...process.env, PAPERCUSP_MARKETPLACE_URL: MARKETPLACE_URL };
+    // If the caller explicitly passed a project name (different from the
+    // snapshot slug — projectName defaults to slug above), forward it; else
+    // let the fork CLI auto-derive (<sourceHarness>-fork[-<n>]) — that's
+    // the saner default for "browse → click Fork" without naming it.
+    const forkArgs = ['snapshot', 'fork', slug];
+    const explicitName = body.projectName && body.projectName !== slug ? body.projectName.trim() : null;
+    if (explicitName && isValidSlug(explicitName)) forkArgs.push(explicitName);
+    const forkResult = await run(resolvePapercuspCli(), forkArgs, env);
+    if (forkResult.code !== 0) {
+      return json(
+        {
+          ok: false,
+          error: 'papercusp snapshot fork failed',
+          log: [forkResult.stdout, forkResult.stderr].filter(Boolean).join('\n'),
+        },
+        { status: 500 },
+      );
+    }
+    // Read registry.json to discover the slug the CLI picked + its path.
+    let forkedSlug: string | null = null;
+    let forkedPath: string | null = null;
+    try {
+      const regRaw = await fs.readFile(join(homedir(), '.papercusp', 'registry.json'), 'utf8');
+      const reg = JSON.parse(regRaw) as { projects?: Array<{ slug: string; path: string; addedAt?: string }> };
+      // Newest entry by addedAt is the fork we just made.
+      const projects = reg.projects ?? [];
+      const sorted = [...projects].sort((a, b) =>
+        (b.addedAt ?? '').localeCompare(a.addedAt ?? ''),
+      );
+      if (sorted[0]) {
+        forkedSlug = sorted[0].slug;
+        forkedPath = sorted[0].path;
+      }
+    } catch {
+      // Best-effort; if registry read fails the fork still succeeded.
+    }
+
+    const desktopBin = resolveDesktopBin();
+    let desktopLaunched = false;
+    let desktopError: string | undefined;
+    if (desktopBin) {
+      const launch = launchDesktopBin(desktopBin);
+      if (launch.ok) desktopLaunched = true;
+      else desktopError = launch.error;
+    }
+
+    return json({
+      ok: true,
+      kind: 'snapshot',
+      templateSlug: slug,
+      projectSlug: forkedSlug ?? slug,
+      projectPath: forkedPath ?? '(unknown)',
+      log: forkResult.stdout,
+      desktop: { launched: desktopLaunched, bin: desktopBin, error: desktopError },
+    });
+  }
+
+  if (!isValidSlug(projectName)) return json({ ok: false, error: `invalid project name "${projectName}"` }, { status: 400 });
 
   // Resolve where the project will live + validate up front.
   let projectPath: string;
   if (targetPath) {
     if (!targetPath.startsWith('/') && !targetPath.startsWith('~')) {
-      return NextResponse.json(
+      return json(
         { ok: false, error: `target path must be absolute (got "${targetPath}")` },
         { status: 400 },
       );
     }
     projectPath = targetPath.startsWith('~') ? join(homedir(), targetPath.slice(1)) : targetPath;
     if (!existsSync(projectPath)) {
-      return NextResponse.json(
+      return json(
         { ok: false, error: `target path "${projectPath}" does not exist` },
         { status: 400 },
       );
     }
     if (existsSync(join(projectPath, '.harness'))) {
-      return NextResponse.json(
+      return json(
         { ok: false, error: `target "${projectPath}" already has a .harness/ — already initialized?` },
         { status: 409 },
       );
@@ -175,7 +334,7 @@ export async function POST(req: Request) {
     const projectsRoot = process.env.PAPERCUSP_PROJECTS_ROOT ?? join(homedir(), '.papercusp', 'projects');
     projectPath = join(projectsRoot, projectName);
     if (existsSync(projectPath)) {
-      return NextResponse.json(
+      return json(
         { ok: false, error: `project "${projectName}" already exists at ${projectPath}` },
         { status: 409 },
       );
@@ -187,9 +346,9 @@ export async function POST(req: Request) {
     PAPERCUSP_MARKETPLACE_URL: MARKETPLACE_URL,
   };
 
-  const installResult = await run(PAPERCUSP_BIN, ['install', slug], env);
+  const installResult = await run(resolvePapercuspCli(), ['install', slug], env);
   if (installResult.code !== 0) {
-    return NextResponse.json(
+    return json(
       {
         ok: false,
         error: 'papercusp install failed',
@@ -201,9 +360,9 @@ export async function POST(req: Request) {
 
   const initArgs = ['init', projectName, '--from', slug];
   if (targetPath) initArgs.push('--target', projectPath);
-  const initResult = await run(PAPERCUSP_BIN, initArgs, env);
+  const initResult = await run(resolvePapercuspCli(), initArgs, env);
   if (initResult.code !== 0) {
-    return NextResponse.json(
+    return json(
       {
         ok: false,
         error: 'papercusp init failed',
@@ -215,12 +374,23 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json({
+  // Best-effort: launch the desktop app if it's installed/built.
+  const desktopBin = resolveDesktopBin();
+  let desktopLaunched = false;
+  let desktopError: string | undefined;
+  if (desktopBin) {
+    const launch = launchDesktopBin(desktopBin);
+    if (launch.ok) desktopLaunched = true;
+    else desktopError = launch.error;
+  }
+
+  return json({
     ok: true,
     projectSlug: projectName,
     projectPath,
     templateSlug: slug,
     attachedToExisting: !!targetPath,
     log: [installResult.stdout, initResult.stdout].filter(Boolean).join('\n'),
+    desktop: { launched: desktopLaunched, bin: desktopBin, error: desktopError },
   });
 }
