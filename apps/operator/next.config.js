@@ -37,6 +37,7 @@ const nextConfig = {
   transpilePackages: [
     '@papercusp/harness',
     '@papercusp/orchestrator',
+    '@papercusp/export-state',
     '@restart/agent-chat',
     '@restart/db-org',
     '@restart/git-graph',
