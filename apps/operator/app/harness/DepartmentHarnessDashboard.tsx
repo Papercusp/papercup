@@ -1,7 +1,12 @@
 'use client';
 
 import './harness.css';
+import * as Collapsible from '@radix-ui/react-collapsible';
+import { Tooltip } from './Tooltip';
+import { Select } from './Select';
+import { Checkbox } from './Checkbox';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { toast, Toaster } from 'sonner';
 import { Inbox, Send, FileText, NotebookPen, Workflow, Cpu, Brain } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
@@ -63,7 +68,10 @@ function statusColor(s: OrgMessage['status']): string {
 }
 
 export default function DepartmentHarnessDashboard({ harnessSlug, departmentSlug }: Props) {
-  const [tab, setTab] = useState<Tab>('inbox');
+  const [tab, setTab] = useQueryState(
+    'deptTab',
+    parseAsStringEnum<Tab>(['inbox', 'outbox', 'compose', 'charter', 'notes', 'decisions', 'memory', 'director']).withDefault('inbox'),
+  );
   const [departments, setDepartments] = useState<Department[]>([]);
   const [self, setSelf] = useState<Department | null>(null);
   const [inbox, setInbox] = useState<OrgMessage[]>([]);
@@ -465,33 +473,32 @@ function ComposeMessage({
       <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
         <div style={{ flex: 1 }}>
           <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>Kind</label>
-          <select
+          <Select
             value={kind}
-            onChange={(e) => setKind(e.target.value)}
-            style={{
+            onChange={setKind}
+            ariaLabel="Kind"
+            options={self.outboxKinds.map((k) => ({ value: k, label: k }))}
+            triggerStyle={{
               width: '100%', padding: '8px', background: 'var(--bg)',
               color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13,
             }}
-          >
-            {self.outboxKinds.map((k) => <option key={k} value={k}>{k}</option>)}
-          </select>
+          />
         </div>
         <div style={{ flex: 1 }}>
           <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>Project *</label>
-          <select
+          <Select
             value={projectSlug}
-            onChange={(e) => setProjectSlug(e.target.value)}
-            style={{
+            onChange={setProjectSlug}
+            ariaLabel="Project"
+            options={projects.map((p) => ({
+              value: p.slug,
+              label: `${p.name} ${p.slug.includes('reserved') ? '' : `(${p.vertical})`}`,
+            }))}
+            triggerStyle={{
               width: '100%', padding: '8px', background: 'var(--bg)',
               color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13,
             }}
-          >
-            {projects.map((p) => (
-              <option key={p.slug} value={p.slug}>
-                {p.name} {p.slug.includes('reserved') ? '' : `(${p.vertical})`}
-              </option>
-            ))}
-          </select>
+          />
         </div>
         <div style={{ flex: 2 }}>
           <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>To</label>
@@ -727,39 +734,44 @@ function DirectorAgentPanel({ departmentSlug, self }: { departmentSlug: string; 
       <div style={{ display: 'flex', gap: 12, marginBottom: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <div>
           <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>Role</label>
-          <select
+          <Select
             value={role}
-            onChange={(e) => setRole(e.target.value as any)}
-            style={{ padding: 8, background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13 }}
-          >
-            <option value="orchestrator">orchestrator</option>
-            <option value="worker">worker</option>
-            <option value="validator">validator</option>
-            <option value="documenter">documenter</option>
-            <option value="summarizer">summarizer</option>
-          </select>
+            onChange={(v) => setRole(v as any)}
+            ariaLabel="Role"
+            options={[
+              { value: 'orchestrator', label: 'orchestrator' },
+              { value: 'worker', label: 'worker' },
+              { value: 'validator', label: 'validator' },
+              { value: 'documenter', label: 'documenter' },
+              { value: 'summarizer', label: 'summarizer' },
+            ]}
+            triggerStyle={{ padding: 8, background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13 }}
+          />
         </div>
         {isCeoEligible && (
           <div>
             <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>Mode</label>
-            <select
-              value={mode}
-              onChange={(e) => setMode(e.target.value)}
-              style={{ padding: 8, background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13 }}
-            >
-              <option value="">default</option>
-              <option value="ceo">ceo</option>
-            </select>
+            <Select
+              value={mode || '_default'}
+              onChange={(v) => setMode(v === '_default' ? '' : v)}
+              ariaLabel="Mode"
+              options={[
+                { value: '_default', label: 'default' },
+                { value: 'ceo', label: 'ceo' },
+              ]}
+              triggerStyle={{ padding: 8, background: 'var(--bg)', color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13 }}
+            />
           </div>
         )}
-        <button
-          onClick={runLoop}
-          disabled={looping || running}
-          title="Orchestrator → worker → execute actions, looping until DONE/ESCALATE"
-          style={{ padding: '8px 16px', background: 'var(--counter)', color: 'var(--bg)', border: 'none', borderRadius: 4, fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: looping ? 0.6 : 1 }}
-        >
-          {looping ? 'Looping…' : '⟳ Run autonomous loop'}
-        </button>
+        <Tooltip label="Orchestrator → worker → execute actions, looping until DONE/ESCALATE">
+          <button
+            onClick={runLoop}
+            disabled={looping || running}
+            style={{ padding: '8px 16px', background: 'var(--counter)', color: 'var(--bg)', border: 'none', borderRadius: 4, fontSize: 13, fontWeight: 600, cursor: 'pointer', opacity: looping ? 0.6 : 1 }}
+          >
+            {looping ? 'Looping…' : '⟳ Run autonomous loop'}
+          </button>
+        </Tooltip>
         {(looping || running) && (
           <button
             onClick={async () => {
@@ -774,14 +786,15 @@ function DirectorAgentPanel({ departmentSlug, self }: { departmentSlug: string; 
             ■ Stop
           </button>
         )}
-        <button
-          onClick={runDirector}
-          disabled={running || looping}
-          title="One-shot: just the orchestrator's decision, no execution"
-          style={{ padding: '8px 16px', background: 'var(--good)', color: 'var(--bg)', border: 'none', borderRadius: 4, fontSize: 13, fontWeight: 500, cursor: 'pointer', opacity: running ? 0.6 : 1 }}
-        >
-          {running ? 'Running…' : '▶ Run orchestrator only'}
-        </button>
+        <Tooltip label="One-shot: just the orchestrator's decision, no execution">
+          <button
+            onClick={runDirector}
+            disabled={running || looping}
+            style={{ padding: '8px 16px', background: 'var(--good)', color: 'var(--bg)', border: 'none', borderRadius: 4, fontSize: 13, fontWeight: 500, cursor: 'pointer', opacity: running ? 0.6 : 1 }}
+          >
+            {running ? 'Running…' : '▶ Run orchestrator only'}
+          </button>
+        </Tooltip>
         <button
           onClick={load}
           disabled={loading}
@@ -798,11 +811,10 @@ function DirectorAgentPanel({ departmentSlug, self }: { departmentSlug: string; 
           </button>
         )}
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: 'var(--fg-dim)', marginLeft: 'auto' }}>
-          <input
-            type="checkbox"
+          <Checkbox
             checked={autoLoop}
-            onChange={(e) => setAutoLoop(e.target.checked)}
-            style={{ accentColor: 'var(--counter)' }}
+            onChange={setAutoLoop}
+            ariaLabel="Auto-loop"
           />
           <span>auto-loop every</span>
           <input
@@ -856,12 +868,16 @@ function DirectorAgentPanel({ departmentSlug, self }: { departmentSlug: string; 
             </pre>
           )}
           {runResult.stdout && (
-            <details>
-              <summary style={{ fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer' }}>full stdout</summary>
-              <pre style={{ marginTop: 6, fontSize: 11, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--bg-3)', padding: 8, borderRadius: 3, maxHeight: 300, overflowY: 'auto' }}>
-                {runResult.stdout}
-              </pre>
-            </details>
+            <Collapsible.Root>
+              <Collapsible.Trigger asChild>
+                <button type="button" style={{ background: 'none', border: 'none', padding: 0, fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer', textAlign: 'left' }}>full stdout</button>
+              </Collapsible.Trigger>
+              <Collapsible.Content>
+                <pre style={{ marginTop: 6, fontSize: 11, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: 'var(--bg-3)', padding: 8, borderRadius: 3, maxHeight: 300, overflowY: 'auto' }}>
+                  {runResult.stdout}
+                </pre>
+              </Collapsible.Content>
+            </Collapsible.Root>
           )}
           {runResult.runPath && (
             <div style={{ marginTop: 6, fontSize: 11, color: 'var(--fg-dim)', fontFamily: 'ui-monospace, monospace' }}>
@@ -872,16 +888,22 @@ function DirectorAgentPanel({ departmentSlug, self }: { departmentSlug: string; 
       )}
 
       {recentRuns.length > 0 && (
-        <details style={{ marginBottom: 16 }}>
-          <summary style={{ fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            Recent runs ({recentRuns.length})
-          </summary>
-          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {recentRuns.map((r) => (
-              <RunRow key={r.filename} run={r} departmentSlug={departmentSlug} />
-            ))}
+        <Collapsible.Root>
+          <div style={{ marginBottom: 16 }}>
+            <Collapsible.Trigger asChild>
+              <button type="button" style={{ background: 'none', border: 'none', padding: 0, fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 0.5, textAlign: 'left' }}>
+                Recent runs ({recentRuns.length})
+              </button>
+            </Collapsible.Trigger>
+            <Collapsible.Content>
+              <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {recentRuns.map((r) => (
+                  <RunRow key={r.filename} run={r} departmentSlug={departmentSlug} />
+                ))}
+              </div>
+            </Collapsible.Content>
           </div>
-        </details>
+        </Collapsible.Root>
       )}
 
       {sections.length > 0 && (
@@ -951,16 +973,18 @@ function MemoryPanel({ departmentSlug }: { departmentSlug: string }) {
         </span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center' }}>
           <label style={{ fontSize: 11, color: 'var(--fg-dim)' }}>Limit</label>
-          <select
-            value={limit}
-            onChange={(e) => setLimit(parseInt(e.target.value, 10))}
-            style={{ padding: '4px 8px', background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg)', borderRadius: 4, fontSize: 12 }}
-          >
-            <option value={6}>6</option>
-            <option value={12}>12</option>
-            <option value={24}>24</option>
-            <option value={50}>50</option>
-          </select>
+          <Select
+            value={String(limit)}
+            onChange={(v) => setLimit(parseInt(v, 10))}
+            ariaLabel="Limit"
+            options={[
+              { value: '6', label: '6' },
+              { value: '12', label: '12' },
+              { value: '24', label: '24' },
+              { value: '50', label: '50' },
+            ]}
+            triggerStyle={{ padding: '4px 8px', background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg)', borderRadius: 4, fontSize: 12 }}
+          />
           <button onClick={load} disabled={loading} style={{ padding: '4px 12px', background: 'var(--bg-2)', border: '1px solid var(--border)', color: 'var(--fg)', borderRadius: 4, fontSize: 12, cursor: loading ? 'wait' : 'pointer' }}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>
@@ -976,10 +1000,16 @@ function MemoryPanel({ departmentSlug }: { departmentSlug: string }) {
           <div style={{ overflowX: 'auto', background: 'var(--bg-2)', borderRadius: 6, border: '1px solid var(--border)' }}>
             <MemoryEntriesGrid entries={memory.entries} />
           </div>
-          <details style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
-            <summary style={{ cursor: 'pointer' }}>Raw text injected into prompt</summary>
-            <pre style={{ marginTop: 8, padding: 10, background: 'var(--bg-2)', borderRadius: 4, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap', color: 'var(--fg)' }}>{memory.text}</pre>
-          </details>
+          <Collapsible.Root>
+            <div style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
+              <Collapsible.Trigger asChild>
+                <button type="button" style={{ background: 'none', border: 'none', padding: 0, fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer', textAlign: 'left' }}>Raw text injected into prompt</button>
+              </Collapsible.Trigger>
+              <Collapsible.Content>
+                <pre style={{ marginTop: 8, padding: 10, background: 'var(--bg-2)', borderRadius: 4, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap', color: 'var(--fg)' }}>{memory.text}</pre>
+              </Collapsible.Content>
+            </div>
+          </Collapsible.Root>
         </>
       )}
     </div>

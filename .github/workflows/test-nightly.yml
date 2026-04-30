@@ -1,0 +1,59 @@
+name: Test (nightly full)
+on:
+  schedule:
+    - cron: '0 7 * * *'  # 07:00 UTC
+  workflow_dispatch:
+
+jobs:
+  full:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Doctor (Docker + node)
+        run: node scripts/test-doctor.mjs
+
+      - name: Cache testcontainers Docker layer
+        uses: actions/cache@v4
+        with:
+          path: ~/.testcontainers
+          key: testcontainers-${{ runner.os }}-postgres-16-alpine
+
+      - name: Run every workspace's tests (unit + integration)
+        env:
+          CI: 'true'
+        run: node scripts/affected-tests.mjs --all --integration
+
+      - name: Run slow tier (orchestrator main-loop)
+        env:
+          CI: 'true'
+        run: npm run test:slow --workspace @papercusp/orchestrator
+
+      - name: Publish JUnit reports
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: vitest-nightly
+          path: '**/junit.xml'
+          reporter: java-junit
+          fail-on-error: false
+
+      - name: Upload coverage artifacts (if produced)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: '**/coverage/**'
+          if-no-files-found: ignore

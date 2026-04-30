@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { Suspense } from 'react';
 import MarketplaceList from '../MarketplaceList';
 
 interface CatalogEntry {
@@ -41,37 +41,36 @@ async function loadInstalled(): Promise<InstalledHarness[]> {
   } catch { return []; }
 }
 
+export const dynamic = 'force-dynamic';
+
 export default async function TemplatesPage() {
   const [catalog, installed] = await Promise.all([loadCatalog(), loadInstalled()]);
+  const templates = catalog.filter((entry) => (entry.kind ?? 'template') === 'template');
   return (
-    <div className="pc-shell">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginBottom: 8 }}>
-        <h1 style={{ margin: 0 }}>Templates</h1>
-        <nav style={{ display: 'flex', gap: 4 }}>
-          <Link href="/marketplace/templates" aria-current="page" style={tabActive}>Templates</Link>
-          <Link href="/marketplace/plugins" style={tabIdle}>Plugins</Link>
-        </nav>
-      </div>
-      <p style={{ color: 'var(--fg-mute)', marginBottom: 24 }}>
-        Self-contained harness configurations. Install one to spin up a fresh harness instance —
-        a complete autonomous-agent setup ready to run.
-      </p>
-      <MarketplaceList
-        kind="template"
-        catalog={catalog}
-        installedTemplates={installed}
-        installedPlugins={[]}
-      />
+    <div className="pc-shell pc-marketplace-shell">
+      <section className="pc-marketplace-pagehead">
+        <div>
+          <p className="pc-eyebrow">Templates</p>
+          <h1>Launch from a harness blueprint.</h1>
+          <p>
+            Self-contained harness configurations for coding projects, autonomous organizations, research pipelines, and any mission shape the marketplace grows into.
+          </p>
+        </div>
+        <div className="pc-marketplace-mini-stats" aria-label="Template status">
+          <div><strong>{templates.length}</strong><span>published</span></div>
+          <div><strong>{installed.length}</strong><span>installed locally</span></div>
+          <div><strong>{templates.filter((entry) => entry.topology === 'multi').length}</strong><span>multi-harness</span></div>
+        </div>
+      </section>
+      <Suspense fallback={<div className="pc-card pc-marketplace-loading">Loading templates…</div>}>
+        <MarketplaceList
+          kind="template"
+          catalog={catalog}
+          installedTemplates={installed}
+          installedPlugins={[]}
+        />
+      </Suspense>
     </div>
   );
 }
 
-const tabBase: React.CSSProperties = {
-  padding: '6px 12px', borderRadius: 999, fontSize: 13, fontWeight: 500, textDecoration: 'none',
-};
-const tabActive: React.CSSProperties = {
-  ...tabBase, background: 'var(--bg-1)', color: 'var(--fg)', border: '1px solid var(--border)',
-};
-const tabIdle: React.CSSProperties = {
-  ...tabBase, color: 'var(--fg-mute)',
-};

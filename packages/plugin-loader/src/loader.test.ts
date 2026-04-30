@@ -2,7 +2,7 @@
  * Tests for the plugin loader. Run with:
  *   cd packages/papercusp-plugin-loader && npx tsx --test src/loader.test.ts
  */
-import { describe, it, before, after } from 'node:test';
+import { describe, it, beforeAll as before, afterAll as after } from 'vitest';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -101,6 +101,33 @@ describe('loadPluginFromDir', () => {
       assert.match(r.error, /version/);
     }
   });
+
+  it('rejects when papercusp range excludes the runtime version', async () => {
+    // Runtime is 0.1.0; ^99.0.0 is incompatible.
+    const dir = join(ROOT, 'incompatible-runtime');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      join(dir, 'papercusp.json'),
+      JSON.stringify({ name: 'incompatible-runtime', version: '0.1.0' }),
+      'utf8',
+    );
+    await fs.writeFile(
+      join(dir, 'index.mjs'),
+      `export default {
+        name: 'incompatible-runtime',
+        version: '0.1.0',
+        papercusp: '^99.0.0',
+        capabilities: [],
+        hooks: {},
+      };`,
+      'utf8',
+    );
+    const r = await loadPluginFromDir(dir, 'project');
+    assert.ok('error' in r);
+    if ('error' in r) {
+      assert.match(r.error, /papercusp runtime/);
+    }
+  });
 });
 
 describe('loadPlugins', () => {
@@ -122,6 +149,27 @@ describe('loadPlugins', () => {
     const names = r.loaded.map((l) => l.plugin.name).sort();
     assert.deepEqual(names, ['plugin-a', 'plugin-b']);
     for (const lp of r.loaded) assert.equal(lp.source, 'project');
+  });
+
+  it('skips dirs with neither manifest nor entry (not-a-plugin)', async () => {
+    // pi/ dir at ~/.papercusp/global-plugins/pi/ holds extension.ts for
+    // pi-omp integration; it's not a papercusp plugin. Loader should skip
+    // silently rather than emit a loud error.
+    const dir = await makePlugin({ name: 'omp-stub', noManifest: true, noEntry: true });
+    const r = await loadPluginFromDir(dir, 'project');
+    assert.ok('skipped' in r, `expected skipped, got ${JSON.stringify(r)}`);
+    if ('skipped' in r) assert.equal(r.skipped, 'not-a-plugin');
+  });
+
+  it('recurses into @scope/ dirs as plugin candidates', async () => {
+    const globalDir = join(ROOT, 'scoped-global');
+    await fs.mkdir(join(globalDir, '@papercupai'), { recursive: true });
+    const innerSrc = await makePlugin({ name: 'inside-scope' });
+    await fs.cp(innerSrc, join(globalDir, '@papercupai', 'inside-scope'), { recursive: true });
+    const r = await loadPlugins({ globalPluginsDir: globalDir });
+    assert.equal(r.errors.length, 0, `got errors: ${JSON.stringify(r.errors)}`);
+    const names = r.loaded.map((l) => l.plugin.name);
+    assert.ok(names.includes('inside-scope'));
   });
 
   it('dedupes by plugin name across sources', async () => {

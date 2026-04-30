@@ -1,0 +1,55 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": ["scripts/*.mjs"],
+      "project": ["scripts/**/*.mjs"]
+    },
+    "apps/operator": {
+      "entry": [
+        "app/**/{page,layout,loading,error,not-found,template,default,route}.{ts,tsx}",
+        "app/**/{generateStaticParams,generateMetadata,sitemap,robots,manifest}.{ts,tsx}",
+        "lib/**/*.{ts,tsx}",
+        "next.config.*",
+        "vitest.config.ts",
+        "vitest.integration.config.ts",
+        "test/**/*.{ts,tsx}",
+        "*.bench.ts"
+      ]
+    },
+    "apps/papercup": {
+      "entry": [
+        "app/**/{page,layout,loading,error,not-found,template,default,route}.{ts,tsx}",
+        "lib/**/*.{ts,tsx}",
+        "next.config.*"
+      ]
+    },
+    "libs/**": {
+      "entry": [
+        "src/index.{ts,tsx}",
+        "src/**/*.test.{ts,tsx}",
+        "src/**/*.spec.{ts,tsx}",
+        "src/**/*.property.test.{ts,tsx}",
+        "vitest.config.ts"
+      ]
+    },
+    "packages/*": {
+      "entry": [
+        "src/index.{ts,tsx}",
+        "src/**/*.test.{ts,tsx}",
+        "vitest.config.ts"
+      ]
+    }
+  },
+  "ignoreDependencies": [
+    "@papercusp/test-config",
+    "tsconfig-paths",
+    "vite-tsconfig-paths"
+  ],
+  "ignore": [
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/dist/**",
+    "libs/papercusp/**"
+  ]
+}

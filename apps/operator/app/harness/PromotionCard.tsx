@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Tooltip } from './Tooltip';
 import { toast } from 'sonner';
 import { ArrowRight, Check, X, Loader2 } from 'lucide-react';
 
@@ -136,23 +137,24 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
       </ul>
 
       <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-        <button
-          onClick={doConfirm}
-          disabled={!ready || !!busy}
-          style={{
-            padding: '3px 10px', fontSize: 11,
-            background: ready ? '#10b981' : 'var(--border)',
-            color: 'white', border: 'none', borderRadius: 3,
-            cursor: ready ? 'pointer' : 'not-allowed',
-            opacity: busy === 'confirm' ? 0.5 : 1,
-            fontWeight: 600,
-            display: 'inline-flex', alignItems: 'center', gap: 4,
-          }}
-          title={ready ? 'Merge and advance to the next phase' : 'Criteria not yet satisfied'}
-        >
-          {busy === 'confirm' ? <Loader2 size={11} className="h-spin" /> : <Check size={11} />}
-          confirm
-        </button>
+        <Tooltip label={ready ? 'Merge and advance to the next phase' : 'Criteria not yet satisfied'}>
+          <button
+            onClick={doConfirm}
+            disabled={!ready || !!busy}
+            style={{
+              padding: '3px 10px', fontSize: 11,
+              background: ready ? '#10b981' : 'var(--border)',
+              color: 'white', border: 'none', borderRadius: 3,
+              cursor: ready ? 'pointer' : 'not-allowed',
+              opacity: busy === 'confirm' ? 0.5 : 1,
+              fontWeight: 600,
+              display: 'inline-flex', alignItems: 'center', gap: 4,
+            }}
+          >
+            {busy === 'confirm' ? <Loader2 size={11} className="h-spin" /> : <Check size={11} />}
+            confirm
+          </button>
+        </Tooltip>
         <button
           onClick={doCancel}
           disabled={!!busy}

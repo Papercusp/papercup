@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Modal } from './Modal';
+import { Checkbox } from './Checkbox';
 
 interface Template {
   id: string;
@@ -76,14 +78,14 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
   }, [selected, slug, overwrite, onClose, onBootstrapped]);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Templates`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Mission templates</strong>
           <span style={{ color: '#6b7280', fontSize: '0.75rem', fontFamily: 'monospace' }}>→ {slug}</span>
@@ -155,7 +157,7 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
                 </pre>
                 <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #1f2937', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer' }}>
-                    <input type="checkbox" checked={overwrite} onChange={(e) => setOverwrite(e.target.checked)} />
+                    <Checkbox checked={overwrite} onChange={setOverwrite} ariaLabel="Overwrite existing files" />
                     overwrite existing files
                   </label>
                   <button
@@ -174,7 +176,6 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
             )}
           </div>
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }

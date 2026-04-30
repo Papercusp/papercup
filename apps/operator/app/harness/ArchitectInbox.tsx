@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import * as Tabs from '@radix-ui/react-tabs';
 import ArchitectChat from './ArchitectChat';
 import PromotionCard from './PromotionCard';
 
@@ -103,12 +105,15 @@ export default function ArchitectInbox({ slug, onFeatureFocus }: Props) {
     | null
   >(null);
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState<InboxFilter>('all');
+  const [filter, setFilter] = useQueryState(
+    'inbox',
+    parseAsStringEnum<InboxFilter>(['all', 'reviews', 'threads', 'pinned']).withDefault('all'),
+  );
   const [composing, setComposing] = useState(false);
   const [ideaDraft, setIdeaDraft] = useState('');
   const [lastSync, setLastSync] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
-  const [kindFilter, setKindFilter] = useState<KindFilter>('all');
+  const [kindFilter, setKindFilter] = useQueryState('inboxKind', parseAsString.withDefault('all'));
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const loadReviews = useCallback(async () => {
@@ -301,12 +306,14 @@ export default function ArchitectInbox({ slug, onFeatureFocus }: Props) {
           />
         </div>
 
-        <div className="h-inbox-filter-row" role="tablist" aria-label="Inbox filter">
-          <FilterButton id="all" label="All" count={counts.total} filter={filter} setFilter={setFilter} />
-          <FilterButton id="reviews" label="Decisions" count={counts.reviews} filter={filter} setFilter={setFilter} />
-          <FilterButton id="threads" label="Threads" count={counts.threads} filter={filter} setFilter={setFilter} />
-          <FilterButton id="pinned" label="Pinned" count={counts.pinned} filter={filter} setFilter={setFilter} />
-        </div>
+        <Tabs.Root value={filter} onValueChange={(v) => setFilter(v as InboxFilter)} asChild>
+          <Tabs.List className="h-inbox-filter-row" aria-label="Inbox filter">
+            <FilterButton id="all" label="All" count={counts.total} />
+            <FilterButton id="reviews" label="Decisions" count={counts.reviews} />
+            <FilterButton id="threads" label="Threads" count={counts.threads} />
+            <FilterButton id="pinned" label="Pinned" count={counts.pinned} />
+          </Tabs.List>
+        </Tabs.Root>
 
 
         {kindOptions.length > 0 && (
@@ -428,25 +435,17 @@ function Metric({ label, value, tone }: { label: string; value: number; tone?: s
 }
 
 function FilterButton({
-  id, label, count, filter, setFilter,
+  id, label, count,
 }: {
   id: InboxFilter;
   label: string;
   count: number;
-  filter: InboxFilter;
-  setFilter: (filter: InboxFilter) => void;
 }) {
   return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={filter === id}
-      className={`h-inbox-filter ${filter === id ? 'on' : ''}`}
-      onClick={() => setFilter(id)}
-    >
+    <Tabs.Trigger value={id} className="h-inbox-filter">
       <span>{label}</span>
       <b>{count}</b>
-    </button>
+    </Tabs.Trigger>
   );
 }
 

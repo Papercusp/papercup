@@ -96,12 +96,12 @@ export async function POST(req: NextRequest, ctx: DispatchParams) {
   }
 
   const fakePlugin: Plugin = {
-    kind: 'plugin',
     name: manifest.name,
     version: manifest.version,
+    papercusp: manifest.papercusp ?? '*',
     description: manifest.description ?? '',
     capabilities: (manifest.capabilities ?? []) as Capability[],
-  } as Plugin;
+  };
 
   const runtime = buildPluginRuntime({ slug, plugin: fakePlugin });
   const target = (runtime.api as any)[service];

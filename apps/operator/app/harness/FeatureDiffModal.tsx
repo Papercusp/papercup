@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Modal } from './Modal';
 
 interface Props {
   slug: string;
@@ -33,14 +34,14 @@ export default function FeatureDiffModal({ slug, featureId, onClose }: Props) {
   useEffect(() => { load(); }, [load]);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Feature diff`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '88vw', maxWidth: 1200, height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '88vw', maxWidth: 1200, height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Feature diff — {featureId}</strong>
           {data && (
@@ -92,7 +93,6 @@ export default function FeatureDiffModal({ slug, featureId, onClose }: Props) {
             </div>
           </div>
         ) : null}
-      </div>
-    </div>
+      </Modal>
   );
 }

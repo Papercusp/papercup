@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
@@ -95,7 +97,10 @@ interface Props {
 }
 
 export default function HooksPanel({ slug, alive, onClose }: Props) {
-  const [tab, setTab] = useState<HookName>('pre-worker');
+  const [tab, setTab] = useQueryState(
+    'hookTab',
+    parseAsStringEnum<HookName>([...KNOWN_HOOKS]).withDefault('pre-worker'),
+  );
   const [hooks, setHooks] = useState<Record<HookName, HookEntry> | null>(null);
   const [draft, setDraft] = useState<Record<HookName, string>>(() => Object.fromEntries(KNOWN_HOOKS.map((n) => [n, ''])) as Record<HookName, string>);
   const [saving, setSaving] = useState<HookName | null>(null);
@@ -217,14 +222,14 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
   const isEmpty = (draft[tab] ?? '').trim() === '';
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Hooks`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '88vw', height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '88vw', height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong style={{ color: '#e5e7eb' }}>Hooks — {slug}</strong>
@@ -360,8 +365,7 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
             </pre>
           </div>
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }
 

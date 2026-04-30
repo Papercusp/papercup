@@ -4,13 +4,17 @@ title: 15. Snapshots — share working harness state via marketplace (v1.2)
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-<Callout type="warn" title="Status: design proposal v1.2, eight review rounds completed">
-This page is the active design document for **snapshots** — sharing
-a working harness instance (template + state) so other developers can
-fork and continue it. Eight rounds of architectural research and
-critique have been incorporated. Once the artifact format and capture/restore
-flows land in code, sections will be folded into §11 (Distribution) and
-this page becomes a historical record of the design rationale.
+<Callout type="info" title="Status: v1.0 (local capture+restore) shipped 2026-04-28; v1.1+ in design">
+**Snapshots** — sharing a working harness instance (template + state) so
+other developers can fork and continue it. **v1.0** (local capture +
+restore, no marketplace) shipped: see `libs/papercusp-export-state/`,
+`papercusp snapshot {create,list,info,install}` CLI, and the §15.5/§15.6
+implementation rows in [Implementation status](/docs/implementation/status).
+
+**v1.1** (cross-machine via Gitea/Forgejo + ORAS + Cosign) and **v1.2**
+(marketplace UI) remain in design — sections 15.7 onwards describe the
+target shape. Eight rounds of architectural research and critique have
+been incorporated.
 
 **This is a different feature from §16 (Publishing).** Snapshots ship the
 entire working harness (DB rows + filesystem + git history) to a marketplace
@@ -138,7 +142,7 @@ Without this, sharing in-progress work requires a manual `pg_dump` + tarball
   for centralized live sync is filed for the hosted offering, not v1.
 - Hot-restore (resume in-flight without restart). Restore stops the
   orchestrator, swaps state, restarts. Acceptable downtime is seconds.
-- Federated marketplaces. v1 is one papercupai.com Gitea/Forgejo instance.
+- Federated marketplaces. v1 is one papercuspai.com Gitea/Forgejo instance.
   Federation between instances is v2+.
 
 ## 15.2 The ontological split — three concepts
@@ -201,7 +205,7 @@ snapshots are evidence, not specs.
 └──────────────────────────┘
 ```
 
-The marketplace front-end (`papercupai.com/snapshots`) is a thin custom UI
+The marketplace front-end (`papercuspai.com/snapshots`) is a thin custom UI
 that calls Gitea's API for storage operations and adds snapshot-specific
 affordances (cost preview, fork count, redaction-status badge). Underneath,
 **Gitea provides**: OCI registry, auth, web-based browse fallback, search,
@@ -756,7 +760,7 @@ reported via the same token-based async pattern as snapshot creation
 ## 15.7 Marketplace layer
 
 Backend: **self-hosted Gitea** (or Forgejo, the community fork) on
-papercupai.com. Provides for free:
+papercuspai.com. Provides for free:
 
 - OCI registry (Docker / OCI-image / OCI-artifact protocols)
 - Auth (built-in user accounts, OAuth, GitHub/Google SSO)
@@ -766,7 +770,7 @@ papercupai.com. Provides for free:
 - Webhook events for "package published" / "package retracted"
 - API for listing, search, install counts, retention policies
 
-Frontend: **thin custom UI** at `papercupai.com/snapshots` which:
+Frontend: **thin custom UI** at `papercuspai.com/snapshots` which:
 
 - Browses snapshots by Gitea API + Typesense for advanced search
 - Shows snapshot-specific metadata Gitea doesn't natively render:
@@ -784,7 +788,7 @@ Frontend: **thin custom UI** at `papercupai.com/snapshots` which:
 This split — Gitea for storage/auth, custom thin UI for branding/affordances —
 is the same pattern as npmjs.com on top of the npm registry protocol.
 
-The Gitea instance is itself a build-block: if papercupai.com is ever
+The Gitea instance is itself a build-block: if papercuspai.com is ever
 suspended or compromised, anyone can `docker run gitea/gitea` and host
 their own snapshot mirror. Federation between instances is a v2+ feature.
 
@@ -1147,9 +1151,9 @@ Don't merge them into one button. Different mental models.
 
 These are filed for future phases. Not v1 work.
 
-### v2: hosted papercupai.com with Neon-branched snapshots
+### v2: hosted papercuspai.com with Neon-branched snapshots
 
-Once papercupai.com runs as a hosted service with multi-tenant centralized
+Once papercuspai.com runs as a hosted service with multi-tenant centralized
 state, switch the snapshot creation primitive from `pg_dump` to **Neon
 copy-on-write branching**. Concretely:
 
@@ -1196,7 +1200,7 @@ spec doesn't preclude this future, but doesn't enable it either.
 
 ### v3+: P2P decentralized snapshot distribution
 
-If centralization through papercupai.com Gitea becomes a problem, a
+If centralization through papercuspai.com Gitea becomes a problem, a
 P2P stack (Iroh + iroh-blobs for transport, p2panda for protocol) could
 distribute snapshots peer-to-peer with no central host. Pre-production
 today; revisit in 2-3 years.
@@ -1440,7 +1444,7 @@ Architectural patterns adopted, with sources:
   ecosystem is small. Pg + ORAS achieves snapshot/transport without
   rewriting Postgres.
 - *Sandstorm's `backup.c++` user-namespace sandbox*: overkill for v1
-  single-user local install. Filed for if/when papercupai.com runs
+  single-user local install. Filed for if/when papercuspai.com runs
   multi-tenant snapshot creation on shared infra.
 - *AFFiNE / BlockSuite*: editor-domain frameworks; harness state isn't
   document-shaped.
@@ -1603,7 +1607,7 @@ Looking at the divergence:
 | Redaction aggression | Light (build artifacts rarely leak secrets) | Heavy (source + .harness/) |
 | Artifact format | Tarball of files | Tarball of files + DB dump + shared CSVs |
 | Size target | 5-25 MB | 50-500 MB |
-| Auth | JWT against `publish.papercupai.com` | JWT against `papercupai.com/snapshots` |
+| Auth | JWT against `publish.papercuspai.com` | JWT against `papercuspai.com/snapshots` |
 
 Five of six concerns diverge. The shared concern (auth) extracts cleanly.
 A single library with a `kind: 'for-publish' | 'for-snapshot'` parameter
@@ -1905,7 +1909,7 @@ that touch snapshot staging or restored artifacts fails the build.
 
 ### Takedown process
 
-- **Public abuse@papercupai.com mailbox**, monitored. 48-hour SLA for
+- **Public abuse@papercuspai.com mailbox**, monitored. 48-hour SLA for
   initial response on legal-content takedowns; 1-week SLA for terms-of-
   service complaints.
 - **Marketplace UI report button** on every public snapshot detail

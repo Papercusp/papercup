@@ -1,0 +1,135 @@
+---
+title: Library reference
+description: Per-library notes — what we use it for, why this one, version, install location.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+All libraries below are installed in `apps/operator/package.json` and resolved through the monorepo root `node_modules`. Total bundle delta from the migration was ~55 KB gzipped across the harness routes, all tree-shakable.
+
+## `@radix-ui/react-tooltip`
+
+**What:** Hover/focus tooltip primitive. WAI-ARIA `tooltip` role, focus-aware, touch-friendly, keyboard-navigable.
+
+**Why this one:** Radix is the de facto standard for headless UI primitives in React. Same family as `@radix-ui/react-hover-card` already in the codebase, so peer-deps align automatically. Maintained by WorkOS, used by Vercel, Linear, and most of the React ecosystem. Tiny (~5 KB gzipped) and tree-shakable.
+
+**Why not `react-tooltip`?** Older, heavier, less accessible. Why not native `title=`? See [gotchas](/docs/design/gotchas) — it has UX problems we lived through.
+
+**Wrapper:** `app/harness/Tooltip.tsx` exports `<Tooltip label={...}>{trigger}</Tooltip>`. Returns the trigger unchanged when `label` is falsy. Trigger receives `asChild` so the underlying button/span keeps its DOM identity.
+
+**Provider:** Wrapped once in `app/harness/layout.tsx` with `delayDuration={150} skipDelayDuration={300}` — opens after 150ms, but consecutive tooltips open instantly within 300ms of the last close (keeps quick scans fast).
+
+## `@radix-ui/react-dialog`
+
+**What:** Modal dialog primitive. Provides focus trap, focus restoration on close, scroll lock, portal rendering, and ESC + outside-click handling.
+
+**Why this one:** Same Radix family. The hand-rolled alternatives we tried (`<div role="dialog" aria-modal>`) consistently lost focus trap on tab cycling, missed scroll lock on iOS, and raced ESC against other listeners. Dialog gives us all four for free.
+
+**Wrapper:** `app/harness/Modal.tsx` matches the harness's centered-modal visual (rgba(0,0,0,0.75) overlay, fixed inset, content centered, ~zIndex 60). Accepts `contentStyle` for sizing, `overlayStyle` to tweak backdrop, `zIndex` for stacking. Always provide `title` (sr-only renders if `srOnlyTitle`) for screen readers.
+
+**Programmatic close:** `onOpenChange={(o) => { if (!o) onClose(); }}`. To prevent ESC or outside-click closing: `closeOnEscape={false}` / `closeOnOutsideClick={false}`.
+
+## `vaul`
+
+**What:** Drawer primitive (right/left/bottom/top slide-in panels). Drag-to-dismiss, focus trap, scroll lock, ARIA — all handled.
+
+**Why this one:** Built by Emil Kowalski (Vercel design engineer). Drag gestures and momentum are surprisingly hard to get right; vaul does. We use it for the right-side feature peek panel (`FeaturePeekPanel.tsx`) and the issue detail panel (`issues/IssueDetail.tsx`).
+
+**Why not Radix Dialog with `direction`?** Radix doesn't have a slide direction concept; you'd hand-roll the transform. vaul is dialog-equivalent for drawers and shipped specifically for this use case.
+
+**Usage:** `<Drawer.Root open onOpenChange direction="right"><Drawer.Portal><Drawer.Overlay/><Drawer.Content>…</Drawer.Content></Drawer.Portal></Drawer.Root>`. Always include `<Drawer.Title className="sr-only">` for accessibility.
+
+## `cmdk`
+
+**What:** Command palette primitive. Built by Paco Coursey (Vercel). Powers the launchers in Linear, Raycast, Vercel's dashboard, and many others.
+
+**Why this one:** Hand-rolling a command palette means re-implementing fuzzy filtering, keyboard nav (↑/↓/Enter/Escape), focus management, group rendering, virtualization, and accessibility. cmdk does all of that out of the box. We pair it with `@radix-ui/react-dialog` for the shell.
+
+**Usage:** `<Dialog.Root><Command label loop shouldFilter><Command.Input/><Command.List><Command.Empty/><Command.Group heading="…"><Command.Item value onSelect>…</Command.Item></Command.Group></Command.List></Command>`. The `value` on each Item is what cmdk fuzzy-searches.
+
+**File:** `CommandPalette.tsx` — the harness ⌘K palette.
+
+## `@radix-ui/react-tabs`
+
+**What:** Tab primitive. Real ARIA tablist + tab + tabpanel.
+
+**Why this one:** Same Radix family. Handles activation modes (automatic vs manual), keyboard nav (arrows, home/end), and `aria-selected` automatically.
+
+**Two usage patterns:**
+
+1. **Real tabs with content panels** — wrap each panel in `<Tabs.Content value="…">`. Radix sets `data-state="active"` on the trigger when the matching content is open. See `BrainstormFull.tsx`.
+
+2. **Filter pills (shared content)** — render content imperatively based on `Tabs.Root`'s `value` (no `<Tabs.Content>`). Radix only sets `aria-selected="true"` (not `data-state`). See `ArchitectInbox.tsx`, `ProposalsPanel.tsx`, `HarnessDashboard.tsx` (9-tab nav).
+
+<Callout type="warn" title="Style triggers via aria-selected, not data-state">
+If your tabs render content imperatively (no `<Tabs.Content>`), Radix only flips `aria-selected`, not `data-state`. Bridge with `[aria-selected="true"]` selectors in `harness.css`. See [gotchas](/docs/design/gotchas) for the trap.
+</Callout>
+
+## `@radix-ui/react-select`
+
+**What:** Single-select dropdown primitive. Renders a button trigger + portaled listbox.
+
+**Why this one:** Native `<select>` is OS-themed (white-on-macOS, blue-highlight-on-Windows) and ignores our dark theme. Radix Select gives us full control: themed trigger, portal-positioned listbox that handles viewport edges, proper keyboard search ("type-ahead"), `<optgroup>` analog (`<Select.Group>` + `<Select.Label>`), and `<ItemIndicator>` for the current selection.
+
+**Wrapper:** `app/harness/Select.tsx` exports `<Select value onChange options>` with a flat options array. For grouped options (like the project picker with org/department/coding sections), inline Radix Select directly — see `HarnessDashboard.tsx`.
+
+<Callout type="warn" title="Empty-string values">
+Radix Select reserves `value=""` to mean "no value selected". If your business logic uses `''` as a sentinel for "default mode", map to a non-empty string at the boundary: `value={mode || '_default'} onChange={(v) => setMode(v === '_default' ? '' : v)}`. See `DepartmentHarnessDashboard.tsx`'s mode select.
+</Callout>
+
+## `@radix-ui/react-checkbox`
+
+**What:** Checkbox primitive. Supports `checked={true | false | 'indeterminate'}`.
+
+**Why this one:** Native `<input type="checkbox">` can't render the indeterminate state declaratively (you have to set `el.indeterminate = true` after mount, awkward in React). It also fights the dark theme and uses OS check styling. Radix renders a `<button role="checkbox">` with a `<Checkbox.Indicator>` slot we control.
+
+**Wrapper:** `app/harness/Checkbox.tsx` exports `<Checkbox checked onChange indeterminate>`. We use lucide `Check` for the checked state and `Minus` for indeterminate.
+
+**Grid cells:** When using inside a `RichGrid` row render, wrap with `<span onClick={(e) => e.stopPropagation()}>` so clicking the checkbox doesn't trigger the row's click handler. See `FeatureList.tsx`, `ProposalsPanel.tsx`.
+
+## `@radix-ui/react-collapsible`
+
+**What:** Disclosure primitive (single-section show/hide).
+
+**Why this one:** Same Radix family. Native `<details>` works but doesn't share our focus styles or animation system, and doesn't compose with controlled state cleanly. Collapsible takes `open` + `onOpenChange` like the rest of our Radix primitives.
+
+**Usage:** `<Collapsible.Root open={isOpen} onOpenChange={setIsOpen}><Collapsible.Trigger asChild><button>label</button></Collapsible.Trigger><Collapsible.Content>…</Collapsible.Content></Collapsible.Root>`.
+
+**Files:** `CheckpointBanner.tsx` (per-row Collapsible with state map), `DepartmentHarnessDashboard.tsx` (replaces 3 `<details>` blocks).
+
+## `@radix-ui/react-hover-card`
+
+**What:** Rich hover-triggered popover (different from Tooltip — designed for multi-line content, links, badges).
+
+**Why this one:** Same Radix family. Used in `FeatureLink.tsx` for the on-hover feature info card. If you find yourself wanting a Tooltip but with non-text content, switch to HoverCard.
+
+## `sonner`
+
+**What:** Toast notification system. Lightweight, accessible, themeable.
+
+**Why this one:** Built by Emil Kowalski (same author as vaul). Replaces every `window.alert()` we used to have. Single global `<Toaster>` mount in `apps/operator/app/layout.tsx`; call `toast.success()`, `toast.error()`, or `toast.info()` from anywhere.
+
+**Why not `react-hot-toast` or `react-toastify`?** sonner has the cleanest API, smallest bundle, and best dark-theme defaults. `react-toastify` has a heavy CSS bundle. `react-hot-toast` is fine but the API is less pleasant.
+
+**Common usage:**
+
+```tsx
+import { toast } from 'sonner';
+
+// Success
+toast.success('phases created');
+// Error with description
+toast.error('setup failed', { description: error.message });
+// Info / promise / etc.
+toast('quote draft saved');
+```
+
+## `lucide-react`
+
+**What:** Icon set. Tree-shakable, ESM-first, ~1500 icons.
+
+**Why this one:** Forked from Feather Icons, actively maintained, consistent stroke-width, easy to swap. Replaces the 100+ inline `<svg>` icons we had before. Each icon is a separate import: `import { Check, X, ChevronRight } from 'lucide-react'`.
+
+**Sizing convention:** `<Check size={11} />` for inline pills, `<Check size={13} />` for buttons, `<Check className="h-3 w-3" />` works too. Use `strokeWidth={1.75}` to match the harness's existing visual weight; the default `strokeWidth={2}` looks slightly bolder.
+
+**Brand logos kept as inline SVG:** Google, Facebook, Apple, Visa, Mastercard, Amex, Discover. Not in lucide; can't be replaced by a generic icon.

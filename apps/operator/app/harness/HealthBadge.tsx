@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Tooltip } from './Tooltip';
 import { Heart } from 'lucide-react';
 import { StatCard } from '@restart/ui-primitives';
 
@@ -48,17 +49,21 @@ export default function HealthBadge({ slug }: Props) {
 
   if (err) {
     return (
-      <div title="Health endpoint failed to load">
-        <StatCard label="health" value="—" tone="bad" icon={<Heart size={13} />} />
-      </div>
+      <Tooltip label="Health endpoint failed to load">
+        <div>
+          <StatCard label="health" value="—" tone="bad" icon={<Heart size={13} />} />
+        </div>
+      </Tooltip>
     );
   }
 
   if (!data) {
     return (
-      <div title="Loading health…">
-        <StatCard label="health" value="…" icon={<Heart size={13} />} />
-      </div>
+      <Tooltip label="Loading health…">
+        <div>
+          <StatCard label="health" value="…" icon={<Heart size={13} />} />
+        </div>
+      </Tooltip>
     );
   }
 
@@ -78,13 +83,15 @@ export default function HealthBadge({ slug }: Props) {
   ].join('\n');
 
   return (
-    <div title={tooltip}>
-      <StatCard
-        label="health"
-        value={`${passed}/${total}`}
-        tone={tone}
-        icon={<Heart size={13} />}
-      />
-    </div>
+    <Tooltip label={<span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>}>
+      <div>
+        <StatCard
+          label="health"
+          value={`${passed}/${total}`}
+          tone={tone}
+          icon={<Heart size={13} />}
+        />
+      </div>
+    </Tooltip>
   );
 }

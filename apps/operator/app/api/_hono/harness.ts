@@ -16,6 +16,7 @@ import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, 
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { harnessPackageDir, harnessPath } from './harness-paths';
+import { firePluginLifecycle, firePluginEvent } from '../../../lib/plugin-host-runtime';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -831,6 +832,16 @@ harness.patch('/:slug/features/:id', async (c) => {
     }
   }
 
+  if (transitionedToPassed) {
+    void firePluginLifecycle('onFeaturePassed', {
+      installSlug: project.slug,
+      projectDir: project.path,
+      stateDir: harnessDir(project),
+    }, id);
+    void firePluginEvent('task.passed', { taskId: id, installSlug: project.slug });
+    void firePluginEvent('feature.completed', { featureId: id, installSlug: project.slug });
+  }
+
   const updated = await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id) as any;
   return c.json({ ok: true, feature: rowToFeature(updated) });
 });
@@ -1045,6 +1056,15 @@ harness.post('/:slug/launch', async (c) => {
   const extra = typeof body.extra === 'string' ? body.extra : '';
   const result = launchRun(project, extra);
   if (!result.ok) return c.json({ error: result.error }, 500);
+  // Phase 6b — plugin lifecycle: fire `beforeMissionStart` (typed hook) +
+  // `mission.start` (free-form event bus). Best-effort; never blocks the
+  // launch response.
+  void firePluginLifecycle('beforeMissionStart', {
+    installSlug: project.slug,
+    projectDir: project.path,
+    stateDir: harnessDir(project),
+  });
+  void firePluginEvent('mission.start', { installSlug: project.slug });
   return c.json({ ok: true, logPath: result.logPath });
 });
 
@@ -2060,6 +2080,15 @@ harness.post('/:slug/proposals/:id/accept', async (c) => {
   syncProposalsToPg(project, scanProposalsDir(project)).catch((err) => {
     console.warn(`[proposals] PG sync after accept failed for ${project.slug}:`, err?.message ?? err);
   });
+
+  // Phase 6b — plugin lifecycle: fire `onProposalAccepted` (typed) +
+  // `proposal.accepted` (free-form). Best-effort.
+  void firePluginLifecycle('onProposalAccepted', {
+    installSlug: project.slug,
+    projectDir: project.path,
+    stateDir: harnessDir(project),
+  }, `proposals/${id}`);
+  void firePluginEvent('proposal.accepted', { proposalId: id, installSlug: project.slug });
 
   // Optional auto-replan: if config.reviewer.replanOnAccept (canonical) or the
   // legacy config.product.replanOnAccept is true, fire-and-forget. The API does

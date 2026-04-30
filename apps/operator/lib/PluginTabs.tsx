@@ -16,6 +16,7 @@
 'use client';
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 import {
   fetchContributions,
   resolveComponent,
@@ -36,7 +37,7 @@ interface PluginTabsProps {
 export default function PluginTabs({ slug, componentProps, fallback, readOnly = false }: PluginTabsProps) {
   const [tabs, setTabs] = useState<DashboardTabContribution[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [active, setActive] = useState<string | null>(null);
+  const [active, setActive] = useQueryState('pluginTab', parseAsString);
 
   // Per-(slug, plugin) browser API. Memoized so each plugin tab gets a
   // stable api reference across renders.

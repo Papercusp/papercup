@@ -2,6 +2,7 @@
 
 import { CSSProperties, ReactNode } from 'react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus, ROLE, RoleKey } from './theme';
+import { Tooltip } from './Tooltip';
 
 /** Dot + label — Linear's status badge pattern. */
 export function StatusPill({
@@ -186,10 +187,9 @@ export function IconButton({
       fontWeight: 600,
     },
   };
-  return (
+  const btn = (
     <button
       onClick={onClick}
-      title={title}
       disabled={disabled}
       style={{
         ...styles[variant],
@@ -207,4 +207,6 @@ export function IconButton({
       {children}
     </button>
   );
+  if (!title) return btn;
+  return <Tooltip label={title}>{btn}</Tooltip>;
 }

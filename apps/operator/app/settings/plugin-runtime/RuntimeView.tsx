@@ -1,0 +1,186 @@
+'use client';
+
+import { useState } from 'react';
+
+interface RuntimeStatus {
+  loaded: number;
+  errors: number;
+  hookRegistrations: { event: string; kind: 'action' | 'filter'; plugins: string[] }[];
+  plugins: { name: string; version: string; source: string }[];
+  loadErrors: { error: string | object; path: string }[];
+  initializedPairs: string[];
+  registeredActions: { key: string; declared: string[]; registered: string[] }[];
+}
+
+export default function RuntimeView({ status: initial }: { status: RuntimeStatus }) {
+  const [status, setStatus] = useState(initial);
+  const [resetting, setResetting] = useState(false);
+
+  async function reset() {
+    setResetting(true);
+    try {
+      const r = await fetch('/api/plugins/runtime/status?reset=1', { cache: 'no-store' });
+      if (r.ok) setStatus(await r.json());
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <Stat label="Loaded" value={status.loaded} />
+        <Stat label="Load errors" value={status.errors} bad={status.errors > 0} />
+        <Stat label="Initialized pairs" value={status.initializedPairs.length} />
+        <button
+          className="pc-button"
+          onClick={reset}
+          disabled={resetting}
+          style={{ marginLeft: 'auto' }}
+          title="Drop the cache; the next request rediscovers."
+        >
+          {resetting ? 'Resetting…' : 'Reset cache'}
+        </button>
+      </div>
+
+      <Card title={`Loaded plugins (${status.plugins.length})`}>
+        {status.plugins.length === 0 ? (
+          <Empty>No plugins loaded.</Empty>
+        ) : (
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Name</th>
+                <th style={thStyle}>Version</th>
+                <th style={thStyle}>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.plugins.map((p) => (
+                <tr key={p.name}>
+                  <td style={tdMono}>{p.name}</td>
+                  <td style={tdStyle}>{p.version}</td>
+                  <td style={tdStyle}>{p.source}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      <Card title={`Initialized (plugin, harness) pairs — ${status.initializedPairs.length}`}>
+        {status.initializedPairs.length === 0 ? (
+          <Empty>No (plugin, harness) pair has been initialized yet. The next lifecycle fire will warm them up.</Empty>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 20, fontFamily: 'var(--font-mono)', fontSize: 13 }}>
+            {status.initializedPairs.map((k) => <li key={k}>{k}</li>)}
+          </ul>
+        )}
+      </Card>
+
+      <Card title={`Registered actions — ${status.registeredActions.length}`}>
+        {status.registeredActions.length === 0 ? (
+          <Empty>No action registries built yet (plugins haven't been initialized for any harness).</Empty>
+        ) : (
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Plugin :: Harness</th>
+                <th style={thStyle}>Declared</th>
+                <th style={thStyle}>Registered</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.registeredActions.map((r) => {
+                const incomplete = r.declared.length !== r.registered.length;
+                return (
+                  <tr key={r.key} style={incomplete ? { background: 'var(--bg-warn, transparent)' } : undefined}>
+                    <td style={tdMono}>{r.key}</td>
+                    <td style={tdMono}>{r.declared.join(', ') || <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
+                    <td style={tdMono}>{r.registered.join(', ') || <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      <Card title={`Hook subscriptions — ${status.hookRegistrations.length}`}>
+        {status.hookRegistrations.length === 0 ? (
+          <Empty>No plugin has subscribed to free-form events via <code>ctx.api.hooks.addAction</code> or <code>addFilter</code>.</Empty>
+        ) : (
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Event</th>
+                <th style={thStyle}>Kind</th>
+                <th style={thStyle}>Plugins</th>
+              </tr>
+            </thead>
+            <tbody>
+              {status.hookRegistrations.map((h, i) => (
+                <tr key={`${h.event}:${h.kind}:${i}`}>
+                  <td style={tdMono}>{h.event}</td>
+                  <td style={tdStyle}>{h.kind}</td>
+                  <td style={tdMono}>{h.plugins.join(', ')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      <Card title={`Load errors — ${status.loadErrors.length}`} variant={status.loadErrors.length > 0 ? 'warn' : 'default'}>
+        {status.loadErrors.length === 0 ? (
+          <Empty>None.</Empty>
+        ) : (
+          <ul style={{ margin: 0, paddingLeft: 20, fontSize: 13 }}>
+            {status.loadErrors.map((e, i) => {
+              const errStr = typeof e.error === 'string' ? e.error : JSON.stringify(e.error);
+              return (
+                <li key={i} style={{ marginBottom: 6 }}>
+                  <code style={{ fontSize: 12 }}>{e.path.split('global-plugins/').slice(-1)[0]}</code>
+                  <div style={{ color: 'var(--fg-mute)', fontSize: 12, marginTop: 2 }}>{errStr.slice(0, 240)}</div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function Stat({ label, value, bad }: { label: string; value: number; bad?: boolean }) {
+  return (
+    <div className="pc-card" style={{ padding: '8px 16px', minWidth: 110 }}>
+      <div style={{ fontSize: 11, color: 'var(--fg-mute)' }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 600, color: bad ? 'var(--bad)' : 'var(--fg)' }}>{value}</div>
+    </div>
+  );
+}
+
+function Card({ title, children, variant }: { title: string; children: React.ReactNode; variant?: 'default' | 'warn' }) {
+  return (
+    <section
+      className="pc-card"
+      style={{
+        padding: 16,
+        borderColor: variant === 'warn' ? 'var(--bad)' : undefined,
+      }}
+    >
+      <h3 style={{ margin: '0 0 8px 0', fontSize: 14 }}>{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function Empty({ children }: { children: React.ReactNode }) {
+  return <div style={{ color: 'var(--fg-mute)', fontSize: 13 }}>{children}</div>;
+}
+
+const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 13 };
+const thStyle: React.CSSProperties = { textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--border)', fontWeight: 500, color: 'var(--fg-mute)' };
+const tdStyle: React.CSSProperties = { padding: '4px 8px', borderBottom: '1px solid var(--border)' };
+const tdMono: React.CSSProperties = { ...tdStyle, fontFamily: 'var(--font-mono)' };

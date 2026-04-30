@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 import * as Tabs from '@radix-ui/react-tabs';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useQuery } from '@rocicorp/zero/react';
@@ -174,8 +175,14 @@ export default function ProposalsPanel({ slug }: Props) {
   const [pendingReplanPrompt, setPendingReplanPrompt] = useState<number>(0);
   const [replanOnAccept, setReplanOnAccept] = useState<boolean>(true);
   const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [sortMode, setSortMode] = useState<SortMode>('newest');
+  const [statusFilter, setStatusFilter] = useQueryState(
+    'proposalStatus',
+    parseAsStringEnum<StatusFilter>(['all', 'pending', 'applied', 'rejected']).withDefault('all'),
+  );
+  const [sortMode, setSortMode] = useQueryState(
+    'proposalSort',
+    parseAsStringEnum<SortMode>(['newest', 'oldest', 'largest', 'smallest']).withDefault('newest'),
+  );
   const [shortlisted, setShortlisted] = useState<Set<string>>(() => readShortlist(slug));
   const [shortlistOnly, setShortlistOnly] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);

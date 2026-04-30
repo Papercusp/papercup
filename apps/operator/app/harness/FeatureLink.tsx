@@ -1,6 +1,7 @@
 'use client';
 
 import { ReactNode } from 'react';
+import { Tooltip } from './Tooltip';
 import * as HoverCard from '@radix-ui/react-hover-card';
 import { ExternalLink, Circle, Loader2, AlertTriangle, CheckCircle2, CircleSlash, Clock } from 'lucide-react';
 
@@ -83,7 +84,7 @@ export function FeatureLink({
               <meta.Icon size={10} className={spin ? 'h-spin' : ''} /> {meta.label}
             </span>
             {feature.attempts > 0 && (
-              <span className="h-fid-pop-attempts" title="attempts">×{feature.attempts}</span>
+              <Tooltip label="attempts"><span className="h-fid-pop-attempts">×{feature.attempts}</span></Tooltip>
             )}
           </div>
           <div className="h-fid-pop-title">{feature.title}</div>

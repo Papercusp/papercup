@@ -362,7 +362,7 @@ function makeStubActionRegistry(pluginName: string): ActionRegistryHandle {
   const handlers = new Map<string, unknown>();
   let initClosed = false;
   return {
-    register: (name, handler) => {
+    register: (name: string, handler: unknown) => {
       if (initClosed) {
         throw new Error(
           `action.register("${name}") called after init() returned for plugin "${pluginName}". ` +

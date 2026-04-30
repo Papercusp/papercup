@@ -43,5 +43,20 @@ export async function POST(req: Request) {
       log: [r.stdout, r.stderr].filter(Boolean).join('\n'),
     }, { status: 500 });
   }
+
+  // Invalidate the in-process plugin host cache so the just-installed plugin
+  // is discovered on the next request. Also kicks the apiRoutes mounter cache
+  // so any apiRoutes the new plugin ships go live without a server restart.
+  // Best-effort — these caches are operator-side conveniences, never required
+  // for the install itself to be considered successful.
+  try {
+    const { _resetPluginHostForTests } = await import('../../../../lib/plugin-host-runtime');
+    _resetPluginHostForTests();
+  } catch { /* host runtime not initialized yet — fine */ }
+  try {
+    const { _resetPluginApiRoutesForTests } = await import('../../../../lib/plugin-api-mount');
+    _resetPluginApiRoutesForTests();
+  } catch { /* mount cache not initialized yet — fine */ }
+
   return NextResponse.json({ ok: true, slug, log: r.stdout });
 }

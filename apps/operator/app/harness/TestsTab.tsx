@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Tooltip } from './Tooltip';
 import { Play, RefreshCw, Check, X, Minus } from 'lucide-react';
 import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
@@ -126,7 +127,7 @@ function TestsGrid({
           const isRunning = running.has(row.id);
           return isRunning
             ? <RefreshCw size={11} className="h-spin" />
-            : STATUS_ICON[row.status];
+            : (STATUS_ICON[row.status] ?? <Minus size={11} style={{ color: '#4b5563' }} />);
         },
       },
       {
@@ -182,20 +183,21 @@ function TestsGrid({
         render: ({ row }) => {
           const isRunning = running.has(row.id);
           return (
-            <button
-              onClick={(e) => { e.stopPropagation(); runOne(row.id); }}
-              disabled={isRunning}
-              style={{
-                fontSize: 10, padding: '2px 6px',
-                background: 'transparent', color: 'var(--fg-dim)',
-                border: '1px solid var(--border)', borderRadius: 3,
-                cursor: isRunning ? 'not-allowed' : 'pointer',
-                display: 'inline-flex', alignItems: 'center', gap: 2,
-              }}
-              title="Re-run this test"
-            >
-              {isRunning ? '…' : 'run'}
-            </button>
+            <Tooltip label="Re-run this test">
+              <button
+                onClick={(e) => { e.stopPropagation(); runOne(row.id); }}
+                disabled={isRunning}
+                style={{
+                  fontSize: 10, padding: '2px 6px',
+                  background: 'transparent', color: 'var(--fg-dim)',
+                  border: '1px solid var(--border)', borderRadius: 3,
+                  cursor: isRunning ? 'not-allowed' : 'pointer',
+                  display: 'inline-flex', alignItems: 'center', gap: 2,
+                }}
+              >
+                {isRunning ? '…' : 'run'}
+              </button>
+            </Tooltip>
           );
         },
       },

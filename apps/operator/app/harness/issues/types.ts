@@ -2,7 +2,7 @@
 
 export type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
 export type IssueSource = 'validator' | 'worker' | 'human';
-export type IssueStatus = 'open' | 'acknowledged' | 'fixing' | 'closed' | 'wontfix' | 'passed';
+export type IssueStatus = 'open' | 'acknowledged' | 'fixing' | 'closed' | 'wontfix';
 
 export interface IssueNote {
   ts: string;

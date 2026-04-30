@@ -1,6 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { Tooltip } from './Tooltip';
+import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
@@ -39,7 +42,10 @@ interface Props {
 
 export default function SpecEditor({ slug, projectPath, alive, onClose, inline = false }: Props) {
   const [section, setSection] = useState<Section>('settings');
-  const [tab, setTab] = useState<Tab>('spec');
+  const [tab, setTab] = useQueryState(
+    'specTab',
+    parseAsStringEnum<Tab>(['spec', 'agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env', 'skills']).withDefault('spec'),
+  );
   const [original, setOriginal] = useState<Record<SimpleTab, string | null>>({ spec: null, agents: null, contract: null, config: null, knowledge: null, mcp: null, supervisor: null, claudeSettings: null, env: null });
   const [draft, setDraft] = useState<Record<SimpleTab, string>>({ spec: '', agents: '', contract: '', config: '', knowledge: '', mcp: '', supervisor: '', claudeSettings: '', env: '' });
   const [envRevealed, setEnvRevealed] = useState(false);
@@ -232,22 +238,24 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
             )}
             {onSettings && !isCollectionTab && (
               <>
-                <button
-                  onClick={revertActive}
-                  disabled={!isDirtyTab}
-                  style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: isDirtyTab ? 'pointer' : 'not-allowed', opacity: isDirtyTab ? 1 : 0.5 }}
-                  title="Revert active tab to last-saved state"
-                >
-                  revert tab
-                </button>
-                <button
-                  onClick={save}
-                  disabled={dirty.length === 0 || saving}
-                  style={{ background: dirty.length ? '#2563eb' : '#374151', color: 'white', border: 'none', borderRadius: 3, padding: '0.35rem 0.9rem', cursor: dirty.length ? 'pointer' : 'not-allowed', fontWeight: 600 }}
-                  title="Save all dirty files (⌘/Ctrl+S)"
-                >
-                  {saving ? 'saving…' : `save${dirty.length ? ` (${dirty.length})` : ''}`}
-                </button>
+                <Tooltip label="Revert active tab to last-saved state">
+                  <button
+                    onClick={revertActive}
+                    disabled={!isDirtyTab}
+                    style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: isDirtyTab ? 'pointer' : 'not-allowed', opacity: isDirtyTab ? 1 : 0.5 }}
+                  >
+                    revert tab
+                  </button>
+                </Tooltip>
+                <Tooltip label="Save all dirty files (⌘/Ctrl+S)">
+                  <button
+                    onClick={save}
+                    disabled={dirty.length === 0 || saving}
+                    style={{ background: dirty.length ? '#2563eb' : '#374151', color: 'white', border: 'none', borderRadius: 3, padding: '0.35rem 0.9rem', cursor: dirty.length ? 'pointer' : 'not-allowed', fontWeight: 600 }}
+                  >
+                    {saving ? 'saving…' : `save${dirty.length ? ` (${dirty.length})` : ''}`}
+                  </button>
+                </Tooltip>
               </>
             )}
             <button
@@ -394,11 +402,13 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   if (inline) return inner;
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title="Spec editor"
+      srOnlyTitle
     >
       {inner}
-    </div>
+    </Modal>
   );
 }

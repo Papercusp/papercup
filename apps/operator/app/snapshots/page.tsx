@@ -1,0 +1,261 @@
+'use client';
+
+import { useEffect, useState } from 'react';
+import { toast } from 'sonner';
+
+interface PublishRecord {
+  slug: string;
+  version: string;
+  browseUrl: string;
+  publishedAtMs: number;
+}
+
+interface SnapshotRow {
+  id: string;
+  harnessSlug: string;
+  bytes: number;
+  createdAtMs: number;
+  name: string;
+  description: string | null;
+  template: { name: string; version: string };
+  filesCount: number;
+  excludedCount: number;
+  pluginsCount: number;
+  partial: boolean;
+  license: string;
+  redactions: { blockedSecretsTier: string; verifiedHits: number; highRecallHits: number };
+  publishes: PublishRecord[];
+}
+
+function formatBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function formatDate(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+export default function SnapshotsPage() {
+  const [rows, setRows] = useState<SnapshotRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch('/api/snapshots', { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setRows(d.snapshots ?? []);
+    } catch (e: unknown) {
+      toast.error(`load failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { void load(); }, []);
+
+  const onInstantiate = async (row: SnapshotRow) => {
+    const proposed = `${row.harnessSlug}-fork-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}`;
+    const name = window.prompt(
+      `Name for the new harness?\n\nLetters, digits, dots, underscores, dashes only.\nPress Cancel to skip and use the auto-generated name.`,
+      proposed,
+    );
+    // null = user cancelled. Empty string = use lib default. Otherwise validate.
+    setBusyId(row.id);
+    try {
+      const r = await fetch(`/api/snapshots/${row.id}/instantiate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: name?.trim() || undefined }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
+      toast.success(`Instantiated as ${d.newSlug}`, {
+        description: 'Open the Harnesses tab to find it.',
+        action: {
+          label: 'Open',
+          onClick: () => { window.location.href = `/harness?slug=${d.newSlug}`; },
+        },
+        duration: 8000,
+      });
+    } catch (e: unknown) {
+      toast.error(`instantiate failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onPublish = async (row: SnapshotRow) => {
+    if (!confirm(`Publish "${row.name}" (${formatBytes(row.bytes)}) to the marketplace at localhost:3060?`)) return;
+    setBusyId(row.id);
+    try {
+      const r = await fetch(`/api/snapshots/${row.id}/publish`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
+      toast.success(`Published ${d.slug}@${d.version}`, {
+        action: {
+          label: 'Open marketplace',
+          onClick: () => { window.open(d.browseUrl, '_blank'); },
+        },
+        duration: 10000,
+      });
+    } catch (e: unknown) {
+      toast.error(`publish failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onRetract = async (row: SnapshotRow) => {
+    if (row.publishes.length === 0) {
+      toast.error('This snapshot has not been published — nothing to retract.');
+      return;
+    }
+    // If multiple publishes, default to the most recent. Operator can edit.
+    const last = row.publishes[row.publishes.length - 1]!;
+    const defaultSlug = last.slug;
+    const slug = prompt(
+      `Retract published snapshot. Marketplace slug:\n(known: ${row.publishes.map((p) => `${p.slug}@${p.version}`).join(', ')})`,
+      defaultSlug,
+    );
+    if (!slug) return;
+    const action = prompt(`Action: deprecate (default), withdraw, or yank.\n\n• deprecate: warn on install, still installable\n• withdraw: refuse new installs; existing installs keep working\n• yank: remove a specific version (requires version)`, 'deprecate');
+    if (!action) return;
+    let version: string | null = null;
+    if (action === 'yank') {
+      // Default to the last-published version for this slug
+      const matchingVersion = row.publishes.filter((p) => p.slug === slug).map((p) => p.version).pop();
+      version = prompt('Version to yank:', matchingVersion ?? '');
+      if (!version) return;
+    }
+    const reason = prompt('Reason (optional, ≤1000 chars):') ?? '';
+    setBusyId(row.id);
+    try {
+      const r = await fetch(`/api/snapshots/${row.id}/retract`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ marketplaceSlug: slug, action, version, reason }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
+      toast.success(`Retracted ${slug}${version ? `@${version}` : ''} (${action})`, { duration: 6000 });
+    } catch (e: unknown) {
+      toast.error(`retract failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onDelete = async (row: SnapshotRow) => {
+    if (!confirm(`Delete local snapshot ${row.id}? Tarball is removed; published copies on the marketplace are unaffected.`)) return;
+    setBusyId(row.id);
+    try {
+      const r = await fetch(`/api/snapshots/${row.id}`, { method: 'DELETE' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      toast.success(`Deleted ${row.id}`);
+      await load();
+    } catch (e: unknown) {
+      toast.error(`delete failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="pc-shell">
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+        <h1 style={{ margin: 0 }}>Snapshots</h1>
+        <button type="button" className="h-btn ghost" onClick={() => void load()} disabled={loading}>
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+      <p style={{ color: 'var(--fg-mute)', marginTop: 0, marginBottom: 24 }}>
+        Frozen tarballs of harness state — DB rows, project files, plugin enablement.
+        Created from a harness via <strong>Save snapshot</strong>; instantiate to fork into a new harness, or publish to the marketplace.
+      </p>
+
+      {!loading && rows.length === 0 && (
+        <div className="pc-callout">
+          <strong>No snapshots yet.</strong> Open a harness from the{' '}
+          <a href="/harness">Harnesses</a> tab and click <code>Save snapshot</code>.
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <table className="pc-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: 'var(--fg-mute)', borderBottom: '1px solid var(--border)' }}>
+              <th style={{ padding: '8px 6px' }}>Snapshot</th>
+              <th style={{ padding: '8px 6px' }}>Harness</th>
+              <th style={{ padding: '8px 6px' }}>Created</th>
+              <th style={{ padding: '8px 6px', textAlign: 'right' }}>Size</th>
+              <th style={{ padding: '8px 6px', textAlign: 'right' }}>Files</th>
+              <th style={{ padding: '8px 6px', textAlign: 'right' }}>Plugins</th>
+              <th style={{ padding: '8px 6px' }}>Redactions</th>
+              <th style={{ padding: '8px 6px' }} />
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const busy = busyId === row.id;
+              return (
+                <tr key={row.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                  <td style={{ padding: '10px 6px' }}>
+                    <div style={{ fontWeight: 500 }}>{row.name}</div>
+                    {row.description && (
+                      <div style={{ color: 'var(--fg)', fontSize: 12, marginTop: 2 }}>{row.description}</div>
+                    )}
+                    <div style={{ color: 'var(--fg-mute)', fontSize: 12, fontFamily: "'SF Mono', monospace" }}>{row.id}</div>
+                    {row.partial && (
+                      <div style={{ color: '#f59e0b', fontSize: 11 }}>partial</div>
+                    )}
+                  </td>
+                  <td style={{ padding: '10px 6px' }}>
+                    <code>{row.harnessSlug}</code>
+                  </td>
+                  <td style={{ padding: '10px 6px', color: 'var(--fg-mute)', fontSize: 12 }}>
+                    {formatDate(row.createdAtMs)}
+                  </td>
+                  <td style={{ padding: '10px 6px', textAlign: 'right' }}>{formatBytes(row.bytes)}</td>
+                  <td style={{ padding: '10px 6px', textAlign: 'right' }}>{row.filesCount}</td>
+                  <td style={{ padding: '10px 6px', textAlign: 'right' }}>{row.pluginsCount}</td>
+                  <td style={{ padding: '10px 6px', fontSize: 12 }}>
+                    {row.redactions.verifiedHits > 0 && (
+                      <span style={{ color: '#ef4444' }}>{row.redactions.verifiedHits} verified </span>
+                    )}
+                    {row.redactions.highRecallHits > 0 && (
+                      <span style={{ color: '#f59e0b' }}>{row.redactions.highRecallHits} warns</span>
+                    )}
+                    {row.redactions.verifiedHits === 0 && row.redactions.highRecallHits === 0 && (
+                      <span style={{ color: 'var(--fg-mute)' }}>clean</span>
+                    )}
+                  </td>
+                  <td style={{ padding: '10px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onInstantiate(row)} style={{ marginRight: 6 }}>
+                      {busy ? '…' : 'Instantiate'}
+                    </button>
+                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onPublish(row)} style={{ marginRight: 6 }}>
+                      Publish
+                    </button>
+                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onRetract(row)} style={{ marginRight: 6 }} title="Retract a previously-published copy from the marketplace">
+                      Retract
+                    </button>
+                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onDelete(row)}>
+                      Delete
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}

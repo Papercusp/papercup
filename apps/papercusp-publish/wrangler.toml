@@ -1,0 +1,58 @@
+# Publish service Worker — §16.
+#
+# Routes:
+#   publish.papercuspai.com/*               → fetch handler (this Worker)
+#   *.preview.papercuspai.com/*             → fetch handler (vanity reverse proxy)
+#
+# Bindings:
+#   DB        → D1 papercusp-publish (run `wrangler d1 create papercusp-publish` once)
+#   COUNTERS  → KV namespace (run `wrangler kv:namespace create papercusp-publish-counters` once)
+#   ARCHIVE   → R2 bucket papercusp-marketplace-tarballs (existing; reused with prefix "publish/")
+#
+# Secrets (install via scripts/install-secrets.sh):
+#   CF_MASTER_TOKEN   — Cloudflare API token (Pages:Edit minimum)
+#   CF_ACCOUNT_ID     — Cloudflare account UUID
+#   JWT_SECRET        — 32 random bytes, base64
+#   HASH_PEPPER       — 32 random bytes, base64 (separate from JWT_SECRET)
+name = "papercusp-publish"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "production"
+VANITY_HOST = "preview.papercuspai.com"
+PUBLISH_HOST = "publish.papercuspai.com"
+RATE_PER_TENANT_BURST = "5"
+RATE_PER_TENANT_DAILY_FREE = "50"
+RATE_PER_TENANT_DAILY_PAID = "500"
+RATE_PER_IP_PUBLISH_DAILY = "50"
+RATE_PER_IP_REGISTER_HOURLY = "10"
+DEPLOYMENT_BYTES_CAP = "1073741824"          # 1 GB
+DEPLOYMENT_FILES_CAP = "20000"
+PER_FILE_BYTES_CAP = "26214400"              # 25 MB
+R2_PREFIX = "publish/"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "papercusp-publish"
+database_id = "local-dev-stub-id"
+
+[[kv_namespaces]]
+binding = "COUNTERS"
+id = "local-dev-stub-id"
+
+[[r2_buckets]]
+binding = "ARCHIVE"
+bucket_name = "papercusp-marketplace-tarballs"
+
+[[routes]]
+pattern = "publish.papercuspai.com/*"
+zone_name = "papercuspai.com"
+
+[[routes]]
+pattern = "*preview.papercuspai.com/*"
+zone_name = "papercuspai.com"
+
+[triggers]
+crons = ["0 6 * * *"]                        # daily 06:00 UTC GC

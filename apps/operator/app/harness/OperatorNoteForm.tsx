@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Send, Loader2, AlertTriangle, MessageSquarePlus } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './theme';
+import { Tooltip } from './Tooltip';
 
 interface NoteBlock {
   author: string;
@@ -184,25 +185,26 @@ export default function OperatorNoteForm({ slug, featureId }: OperatorNoteFormPr
           {state.kind === 'success' && (
             <span style={{ color: COLORS.successText }}>sent ✓</span>
           )}
-          <button
-            type="submit"
-            disabled={state.kind === 'submitting' || !draft.trim()}
-            title="Save this note — the worker will read it on its next dispatch (⌘/Ctrl+Enter)"
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5,
-              padding: '5px 12px',
-              background: draft.trim() ? COLORS.accent : COLORS.surfaceRaised,
-              color: draft.trim() ? '#fff' : COLORS.textDim,
-              border: `1px solid ${draft.trim() ? COLORS.accent : COLORS.borderSubtle}`,
-              borderRadius: RADIUS.sm,
-              fontSize: SIZES.xs,
-              cursor: draft.trim() ? 'pointer' : 'not-allowed',
-              opacity: state.kind === 'submitting' ? 0.6 : 1,
-            }}
-          >
-            {state.kind === 'submitting' ? <Loader2 size={11} className="op-note-spin" /> : <Send size={11} />}
-            send note
-          </button>
+          <Tooltip label="Save this note — the worker will read it on its next dispatch (⌘/Ctrl+Enter)">
+            <button
+              type="submit"
+              disabled={state.kind === 'submitting' || !draft.trim()}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 5,
+                padding: '5px 12px',
+                background: draft.trim() ? COLORS.accent : COLORS.surfaceRaised,
+                color: draft.trim() ? '#fff' : COLORS.textDim,
+                border: `1px solid ${draft.trim() ? COLORS.accent : COLORS.borderSubtle}`,
+                borderRadius: RADIUS.sm,
+                fontSize: SIZES.xs,
+                cursor: draft.trim() ? 'pointer' : 'not-allowed',
+                opacity: state.kind === 'submitting' ? 0.6 : 1,
+              }}
+            >
+              {state.kind === 'submitting' ? <Loader2 size={11} className="op-note-spin" /> : <Send size={11} />}
+              send note
+            </button>
+          </Tooltip>
         </div>
       </form>
     </div>

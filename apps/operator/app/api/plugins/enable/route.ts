@@ -4,6 +4,12 @@ import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mirrorHarness } from '../../../../lib/plugin-enables-pg';
+import { resolvePluginCliSlug } from '../../../../lib/plugin-slug';
+import {
+  pluginAllowsKind,
+  readPluginRequiresTemplateKinds,
+  resolveTemplateKind,
+} from '../../../../lib/template-kind';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,26 +33,6 @@ function isValidPluginSlug(s: string): boolean {
 
 const GLOBAL_PLUGINS_DIR = join(homedir(), '.papercusp', 'global-plugins');
 
-/**
- * The CLI keys enable/disable by on-disk dir name. Manifest `name` may be a
- * scoped form like `@papercupai/jira-sync` while the dir is `jira-sync` —
- * translate so the UI can pass either and we always do the right thing.
- */
-async function resolveDirSlug(input: string): Promise<string> {
-  // Already a valid dir name — common case.
-  if (existsSync(join(GLOBAL_PLUGINS_DIR, input))) return input;
-  // Otherwise scan all dirs and look for a manifest whose `name` matches.
-  if (!existsSync(GLOBAL_PLUGINS_DIR)) return input;
-  const entries = await fs.readdir(GLOBAL_PLUGINS_DIR, { withFileTypes: true }).catch(() => []);
-  for (const e of entries) {
-    if (!e.isDirectory() && !e.isSymbolicLink()) continue;
-    try {
-      const m = JSON.parse(await fs.readFile(join(GLOBAL_PLUGINS_DIR, e.name, 'papercusp.json'), 'utf8'));
-      if (m?.name === input) return e.name;
-    } catch { /* skip */ }
-  }
-  return input;
-}
 function isValidHarnessSlug(s: string): boolean {
   return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(s);
 }
@@ -67,9 +53,35 @@ export async function POST(req: Request) {
   }
 
   // Translate manifest name → dir basename if needed (e.g. @papercupai/jira-sync → jira-sync).
-  const cliSlug = await resolveDirSlug(slug);
+  const cliSlug = await resolvePluginCliSlug(slug);
 
   const verb = body.disable ? 'disable' : 'enable';
+
+  // Template-kind gate (§16): refuse `enable` if the plugin's
+  // `requiresTemplateKinds[]` excludes any of the target harnesses' kinds.
+  // Disabling is always allowed regardless of kind.
+  if (verb === 'enable') {
+    const required = await readPluginRequiresTemplateKinds(join(GLOBAL_PLUGINS_DIR, cliSlug));
+    if (required && required.length > 0) {
+      const incompatible: { harness: string; kind: string }[] = [];
+      for (const h of harnesses) {
+        const kind = await resolveTemplateKind(h);
+        if (!pluginAllowsKind(required, kind)) incompatible.push({ harness: h, kind });
+      }
+      if (incompatible.length > 0) {
+        const list = incompatible.map((i) => `${i.harness} (kind=${i.kind})`).join(', ');
+        return NextResponse.json(
+          {
+            ok: false,
+            error: `plugin "${slug}" requires templateKinds=[${required.join(', ')}]; incompatible with ${list}`,
+            requiresTemplateKinds: required,
+            incompatible,
+          },
+          { status: 422 },
+        );
+      }
+    }
+  }
   const results: Array<{ harness: string; ok: boolean; log: string }> = [];
   let firstFailure: { harness: string; log: string } | null = null;
   for (const h of harnesses) {

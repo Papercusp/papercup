@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Tooltip } from './Tooltip';
 import { Play, Square, Activity, AlertTriangle, ExternalLink } from 'lucide-react';
 
 export type Phase = 'staging' | 'testing' | 'production';
@@ -153,9 +154,11 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                   </span>
                 )}
                 {info.promotionInFlight && (
-                  <span title="Promotion in progress" style={{ color: '#f59e0b' }}>
-                    <AlertTriangle size={10} />
-                  </span>
+                  <Tooltip label="Promotion in progress">
+                    <span style={{ color: '#f59e0b', display: 'inline-flex' }}>
+                      <AlertTriangle size={10} />
+                    </span>
+                  </Tooltip>
                 )}
                 {(info.publicUrl || info.port) && (() => {
                   const localUrl = info.port ? `http://localhost:${info.port}/` : null;

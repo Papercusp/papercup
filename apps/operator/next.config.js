@@ -38,6 +38,8 @@ const nextConfig = {
     '@papercusp/harness',
     '@papercusp/orchestrator',
     '@papercusp/export-state',
+    '@papercusp/plugin-loader',
+    '@papercusp/plugin-sdk',
     '@restart/agent-chat',
     '@restart/db-org',
     '@restart/git-graph',

@@ -1,10 +1,17 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { Tooltip } from './Tooltip';
+import { Select } from './Select';
+import { Checkbox } from './Checkbox';
+import { openFeatureChat } from './PiTerminalsDock';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, BOARD_COLUMN_ORDER, HarnessStatus, getStatusMeta } from './theme';
 import { StatusPill, IdPill, IconButton, KbdHint } from './primitives';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
+const OperatorNoteForm = dynamic(() => import('./OperatorNoteForm'), { ssr: false });
 interface Feature {
   id: string;
   title: string;
@@ -37,24 +44,31 @@ const BUILT_IN_VIEWS: SavedView[] = [
 ];
 
 interface Props {
+  slug: string;
   features: Feature[];
   activeFeatureId: string | null;
   onSelect: (f: Feature) => void;
   onReset: (id: string) => void;
+  onEdit: (f: Feature) => void;
+  onOpenInPi?: (id: string) => void;
+  onSwitchToPi?: () => void;
   onAdd: () => void;
   onBatchReset: (ids: string[]) => void;
   onBatchDelete: (ids: string[]) => void;
 }
 
 export default function FeatureList({
-  features, activeFeatureId, onSelect, onReset, onAdd, onBatchReset, onBatchDelete,
+  slug, features, activeFeatureId, onSelect, onReset, onEdit, onOpenInPi, onSwitchToPi, onAdd, onBatchReset, onBatchDelete,
 }: Props) {
-  const [mode, setMode] = useState<ViewMode>('list');
-  const [viewId, setViewId] = useState<string>('all');
-  const [search, setSearch] = useState('');
+  const [mode, setMode] = useQueryState(
+    'view',
+    parseAsStringEnum<ViewMode>(['list', 'board']).withDefault('list'),
+  );
+  const [viewId, setViewId] = useQueryState('viewId', parseAsString.withDefault('all'));
+  const [search, setSearch] = useQueryState('q', parseAsString.withDefault(''));
   // Item 7 (2026-04-26): project + tag filters for the new project_id and tags fields
-  const [projectFilter, setProjectFilter] = useState<string>('all');
-  const [tagFilter, setTagFilter] = useState<string>('');
+  const [projectFilter, setProjectFilter] = useQueryState('proj', parseAsString.withDefault('all'));
+  const [tagFilter, setTagFilter] = useQueryState('tag', parseAsString.withDefault(''));
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [focusIdx, setFocusIdx] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -166,6 +180,10 @@ export default function FeatureList({
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       {/* Header: filters + search + view mode + actions */}
       <div className="h-feature-toolbar">
+        <span className="h-feature-toolbar-title">
+          Feature Queue <strong>{features.length}</strong>
+        </span>
+
         <div className="h-feature-viewbar" role="tablist" aria-label="Feature filters">
           {BUILT_IN_VIEWS.map((v) => {
             const active = v.id === viewId;
@@ -190,85 +208,80 @@ export default function FeatureList({
         </div>
 
         <div className="h-feature-toolrow">
-          <div className="h-feature-search">
-            <span className="h-feature-search-icon" aria-hidden="true">⌕</span>
-            <input
-              ref={searchRef}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search features…"
-              className="h-feature-search-input"
-              aria-label="Search features"
-            />
-            {search && (
-              <button
-                type="button"
-                className="h-feature-search-clear"
-                onClick={() => { setSearch(''); searchRef.current?.focus(); }}
-                aria-label="Clear feature search"
-              >
-                ×
-              </button>
-            )}
-          </div>
-
-          {/* Item 7: project filter dropdown (small fixed list) */}
-          {projectOptions.length > 0 && (
-            <select
+          <div className="h-feature-primary-filters">
+            <Select
               value={projectFilter}
-              onChange={(e) => setProjectFilter(e.target.value)}
-              aria-label="Filter by project"
-              style={{
-                fontSize: SIZES.xs, padding: '4px 8px', borderRadius: RADIUS.sm,
-                border: `1px solid ${COLORS.border}`, background: COLORS.bg, color: COLORS.text,
-              }}
-            >
-              <option value="all">All projects</option>
-              <option value="__none">No project</option>
-              {projectOptions.map((pid) => (
-                <option key={pid} value={pid}>{pid}</option>
-              ))}
-            </select>
-          )}
+              onChange={setProjectFilter}
+              ariaLabel="Filter by project"
+              triggerClassName="h-feature-project-filter"
+              contentStyle={{ minWidth: 160 }}
+              options={[
+                { value: 'all', label: 'All projects' },
+                { value: '__none', label: 'No project' },
+                ...projectOptions.map((pid) => ({ value: pid, label: pid })),
+              ]}
+            />
 
-          {/* Item 7: tag search (free-form, can grow infinitely) */}
-          <input
-            value={tagFilter}
-            onChange={(e) => setTagFilter(e.target.value)}
-            placeholder="Tag…"
-            aria-label="Filter by tag"
-            style={{
-              fontSize: SIZES.xs, padding: '4px 8px', borderRadius: RADIUS.sm,
-              border: `1px solid ${COLORS.border}`, background: COLORS.bg, color: COLORS.text,
-              width: 90,
-            }}
-          />
+            <input
+              value={tagFilter}
+              onChange={(e) => setTagFilter(e.target.value)}
+              placeholder="Tag…"
+              aria-label="Filter by tag"
+              className="h-feature-tag-filter"
+            />
 
-          <span className="h-feature-result-count" title="Filtered features">
-            {filtered.length}/{features.length} shown
-          </span>
-
-          <div className="h-feature-mode" role="group" aria-label="View mode">
-            {(['list', 'board'] as ViewMode[]).map((m) => {
-              const active = mode === m;
-              return (
+            <div className="h-feature-search">
+              <span className="h-feature-search-icon" aria-hidden="true">⌕</span>
+              <input
+                ref={searchRef}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search features…"
+                className="h-feature-search-input"
+                aria-label="Search features"
+              />
+              {search && (
                 <button
-                  key={m}
-                  className={`h-feature-mode-btn${active ? ' active' : ''}`}
-                  onClick={() => setMode(m)}
-                  title={`${m} view`}
-                  aria-pressed={active}
                   type="button"
+                  className="h-feature-search-clear"
+                  onClick={() => { setSearch(''); searchRef.current?.focus(); }}
+                  aria-label="Clear feature search"
                 >
-                  {m}
+                  ×
                 </button>
-              );
-            })}
+              )}
+            </div>
           </div>
 
-          <button type="button" className="h-feature-add" onClick={onAdd}>
-            + new
-          </button>
+          <div className="h-feature-secondary-tools">
+            <Tooltip label="Filtered features">
+              <span className="h-feature-result-count">
+                {filtered.length}/{features.length} shown
+              </span>
+            </Tooltip>
+
+            <div className="h-feature-mode" role="group" aria-label="View mode">
+              {(['list', 'board'] as ViewMode[]).map((m) => {
+                const active = mode === m;
+                return (
+                  <Tooltip key={m} label={`${m} view`}>
+                    <button
+                      className={`h-feature-mode-btn${active ? ' active' : ''}`}
+                      onClick={() => setMode(m)}
+                      aria-pressed={active}
+                      type="button"
+                    >
+                      {m}
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </div>
+
+            <button type="button" className="h-feature-add" onClick={onAdd}>
+              + new
+            </button>
+          </div>
         </div>
       </div>
 
@@ -297,12 +310,17 @@ export default function FeatureList({
           </div>
         ) : mode === 'list' ? (
           <ListView
+            slug={slug}
             features={filtered}
             focusIdx={focusIdx}
             activeId={activeFeatureId}
             selected={selected}
             onSelect={onSelect}
             onToggleSelect={(id) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
+            onReset={onReset}
+            onEdit={onEdit}
+            onOpenInPi={onOpenInPi}
+            onSwitchToPi={onSwitchToPi}
             compact={isCompact}
           />
         ) : (
@@ -336,16 +354,46 @@ export default function FeatureList({
 // ─── List view ─────────────────────────────────────────────────────
 
 function ListView({
-  features, focusIdx, activeId, selected, onSelect, onToggleSelect, compact = false,
+  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onOpenInPi, onSwitchToPi, compact = false,
 }: {
+  slug: string;
   features: Feature[];
   focusIdx: number;
   activeId: string | null;
   selected: Set<string>;
   onSelect: (f: Feature) => void;
   onToggleSelect: (id: string) => void;
+  onReset: (id: string) => void;
+  onEdit: (f: Feature) => void;
+  onOpenInPi?: (id: string) => void;
+  onSwitchToPi?: () => void;
   compact?: boolean;
 }) {
+  const [noteFeatureId, setNoteFeatureId] = useState<string | null>(null);
+  const [chatBusyId, setChatBusyId] = useState<string | null>(null);
+  const [chatError, setChatError] = useState<{ id: string; message: string } | null>(null);
+
+  const startChat = useCallback(async (row: Feature) => {
+    if (!slug) return;
+    setChatBusyId(row.id);
+    setChatError(null);
+    try {
+      const res = await openFeatureChat({
+        slug,
+        role: 'worker',
+        featureId: row.id,
+        title: row.summary || row.title,
+      });
+      if ('error' in res) {
+        setNoteFeatureId(row.id);
+        setChatError({ id: row.id, message: res.error });
+        return;
+      }
+      onSwitchToPi?.();
+    } finally {
+      setChatBusyId(null);
+    }
+  }, [slug, onSwitchToPi]);
   const columns: ColumnDef<Feature>[] = useMemo(() => {
     const cols: ColumnDef<Feature>[] = [
       {
@@ -354,14 +402,13 @@ function ListView({
         width: 0.18,
         align: 'center',
         render: ({ row }) => (
-          <input
-            type="checkbox"
-            checked={selected.has(row.id)}
-            onClick={(e) => e.stopPropagation()}
-            onChange={() => onToggleSelect(row.id)}
-            style={{ accentColor: COLORS.accent, margin: 0, cursor: 'pointer' }}
-            aria-label={`Select ${row.id}`}
-          />
+          <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+            <Checkbox
+              checked={selected.has(row.id)}
+              onChange={() => onToggleSelect(row.id)}
+              ariaLabel={`Select ${row.id}`}
+            />
+          </span>
         ),
       },
     ];
@@ -390,19 +437,19 @@ function ListView({
     cols.push({
       key: 'title',
       header: compact ? 'Feature' : 'Title',
-      width: compact ? 4 : 3.5,
+      width: compact ? 4 : 3.15,
       render: ({ row }) => {
         const claimsCount = row.claims?.length ?? 0;
         if (compact) {
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0, width: '100%' }}>
-              <span title={row.title} style={{
+              <span className="h-feature-row-title" title={row.title} style={{
                 color: COLORS.text, fontSize: SIZES.sm,
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{row.summary || row.title}</span>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.textDim, fontSize: SIZES.xs }}>
+              <span className="h-feature-row-meta" style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.textDim, fontSize: SIZES.xs }}>
                 <StatusPill status={row.status} showLabel={false} size="xs" />
-                <span style={{ fontFamily: FONTS.mono, color: COLORS.textMuted }}>{row.id}</span>
+                <span className="h-feature-row-id" style={{ fontFamily: FONTS.mono, color: COLORS.textMuted }}>{row.id}</span>
                 {claimsCount > 0 && <span>{claimsCount} claims</span>}
                 {row.attempts > 0 && (
                   <span style={{
@@ -416,13 +463,13 @@ function ListView({
           );
         }
         return (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, width: '100%' }}>
-            <span title={row.title} style={{
+          <span className="h-feature-row-main" style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, width: '100%' }}>
+            <span className="h-feature-row-title" title={row.title} style={{
               color: COLORS.text, fontSize: SIZES.sm,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>{row.summary || row.title}</span>
             {claimsCount > 0 && (
-              <span style={{
+              <span className="h-feature-claims-chip" style={{
                 fontSize: '0.65rem', color: COLORS.textDim, background: COLORS.bg,
                 padding: '1px 6px', borderRadius: RADIUS.sm,
                 border: `1px solid ${COLORS.borderSubtle}`, flexShrink: 0,
@@ -450,19 +497,65 @@ function ListView({
     cols.push({
       key: 'status',
       header: 'Status',
-      width: compact ? 0.7 : 0.8,
+      width: compact ? 0.7 : 0.78,
       align: 'right',
       render: ({ row }) => (
-        <span style={{
-          fontSize: SIZES.xs,
-          color: getStatusMeta(row.status).text,
-          whiteSpace: 'nowrap',
-          fontWeight: compact ? 600 : 400,
-        }}>{getStatusMeta(row.status).label}</span>
+        <span className="h-feature-status-text">{getStatusMeta(row.status).label}</span>
       ),
     });
+    if (!compact) {
+      cols.push({
+        key: 'actions',
+        header: '',
+        width: 2.08,
+        align: 'right',
+        render: ({ row }) => {
+          const noteOpen = noteFeatureId === row.id;
+          const chatBusy = chatBusyId === row.id;
+          return (
+            <div className="h-feature-row-actions" onClick={(e) => e.stopPropagation()}>
+              <Tooltip label="Steer this feature — expands an inline note area for the worker">
+                <button
+                  type="button"
+                  className={`h-feature-row-action${noteOpen ? ' active' : ''}`}
+                  aria-expanded={noteOpen}
+                  onClick={() => setNoteFeatureId(noteOpen ? null : row.id)}
+                >
+                  steer
+                </button>
+              </Tooltip>
+              <Tooltip label="Open a worker chat for this feature in consoles">
+                <button
+                  type="button"
+                  className="h-feature-row-action"
+                  disabled={chatBusy}
+                  onClick={() => void startChat(row)}
+                >
+                  {chatBusy ? 'chat…' : 'chat'}
+                </button>
+              </Tooltip>
+              <Tooltip label="Open this feature in the Pi console lane">
+                <button type="button" className="h-feature-row-action" onClick={() => onOpenInPi?.(row.id)}>
+                  open in pi
+                </button>
+              </Tooltip>
+              <Tooltip label="Edit this feature">
+                <button type="button" className="h-feature-row-action" onClick={() => onEdit(row)}>
+                  edit
+                </button>
+              </Tooltip>
+              <Tooltip label="Reset this feature to todo">
+                <button type="button" className="h-feature-row-action danger" onClick={() => onReset(row.id)}>
+                  reset
+                </button>
+              </Tooltip>
+            </div>
+          );
+        },
+      });
+    }
     return cols;
-  }, [compact, selected, onToggleSelect]);
+  }, [chatBusyId, compact, noteFeatureId, onEdit, onOpenInPi, onReset, onToggleSelect, selected, startChat]);
 
   // Map per-row aria/data attributes + per-row background to mirror the
   // pre-RichGrid behaviour (focus ring on keyboard focus, active row tint,
@@ -474,20 +567,30 @@ function ListView({
       const isFocus = i === focusIdx;
       const isActive = f.id === activeId;
       const isSel = selected.has(f.id);
+      const isNoteOpen = f.id === noteFeatureId;
       const cls =
         `h-feature-row status-${f.status}` +
         (compact ? ' compact' : '') +
         (isFocus ? ' is-focused' : '') +
         (isActive ? ' is-active' : '') +
-        (isSel ? ' is-selected' : '');
+        (isSel ? ' is-selected' : '') +
+        (isNoteOpen ? ' is-steering' : '');
+      const collapseOnLeave = isNoteOpen ? {
+        onPointerLeave: () => setNoteFeatureId(null),
+        onMouseOut: (e: any) => {
+          const next = e.relatedTarget as Node | null;
+          if (!next || !e.currentTarget.contains(next)) setNoteFeatureId(null);
+        },
+      } : {};
       return {
         className: cls,
         tabIndex: 0,
         'aria-label': `${f.id}: ${f.summary || f.title} (${getStatusMeta(f.status).label})`,
         'data-feat-idx': i,
+        ...collapseOnLeave,
       };
     };
-  }, [focusIdx, activeId, selected, compact]);
+  }, [activeId, compact, focusIdx, noteFeatureId, selected]);
 
   const richGetRowBg = useMemo(
     () => (row: Feature, _idx: number, _isSelected: boolean) => {
@@ -508,6 +611,19 @@ function ListView({
       onRowClick={(f) => onSelect(f)}
       rowProps={richRowProps}
       getRowBg={richGetRowBg}
+      expandedRowKey={noteFeatureId}
+      renderExpandedRow={(row) => (
+        <div className="h-feature-inline-note" onClick={(e) => e.stopPropagation()}>
+          <div className="h-feature-inline-note-head">
+            <strong>Steer · {row.id}</strong>
+            <button type="button" onClick={() => setNoteFeatureId(null)}>close</button>
+          </div>
+          {chatError?.id === row.id && (
+            <div className="h-feature-inline-note-error">chat failed: {chatError.message}</div>
+          )}
+          <OperatorNoteForm slug={slug} featureId={row.id} />
+        </div>
+      )}
       inline
     />
   );
@@ -587,13 +703,13 @@ function BoardView({
                         marginBottom: 2,
                         display: 'flex', alignItems: 'center', gap: 4,
                       }}>
-                        <input
-                          type="checkbox"
-                          checked={isSel}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={() => onToggleSelect(f.id)}
-                          style={{ accentColor: COLORS.accent, margin: 0 }}
-                        />
+                        <span onClick={(e) => e.stopPropagation()} style={{ display: 'inline-flex' }}>
+                          <Checkbox
+                            checked={isSel}
+                            onChange={() => onToggleSelect(f.id)}
+                            ariaLabel={`Select ${f.id}`}
+                          />
+                        </span>
                         {f.id}
                         {f.attempts > 0 && (
                           <span style={{

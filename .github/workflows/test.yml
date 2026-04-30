@@ -1,0 +1,57 @@
+name: Test
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  affected:
+    name: Affected tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Doctor (Docker + node)
+        run: node scripts/test-doctor.mjs
+
+      - name: Cache testcontainers Docker layer
+        uses: actions/cache@v4
+        with:
+          path: ~/.testcontainers
+          key: testcontainers-${{ runner.os }}-postgres-16-alpine
+
+      - name: Run affected unit + integration suites
+        env:
+          AFFECTED_BASE: origin/${{ github.base_ref || 'main' }}
+          CI: 'true'
+        run: node scripts/affected-tests.mjs --integration
+
+      - name: Knip (informational — does not gate)
+        if: always()
+        continue-on-error: true
+        run: npx knip --no-config-hints --reporter compact
+
+      - name: Publish JUnit reports
+        if: always()
+        uses: dorny/test-reporter@v2
+        with:
+          name: vitest
+          path: '**/junit.xml'
+          reporter: java-junit
+          fail-on-error: false

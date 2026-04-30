@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
+import { Tooltip } from './Tooltip';
 import Editor from '@monaco-editor/react';
 import { Plus, Trash2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -39,7 +41,7 @@ export function CollectionTab({
   fallbackKey = 'globalContent',
   disabled,
 }: Props) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useQueryState('item', parseAsString);
   const [draft, setDraft] = useState<string>('');
   const [original, setOriginal] = useState<string>('');
   const [fallback, setFallback] = useState<string>('');
@@ -223,9 +225,9 @@ export function CollectionTab({
               {loading && <Loader2 size={12} className="h-spin" />}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                 {selected.exists && deletable?.(selected) !== false && !disabled && (
-                  <button className="h-btn ghost" onClick={remove} disabled={deleting} title="Delete this file">
+                  <Tooltip label="Delete this file"><button className="h-btn ghost" onClick={remove} disabled={deleting}>
                     <Trash2 size={11} /> delete
-                  </button>
+                  </button></Tooltip>
                 )}
                 <button className="h-btn primary" onClick={save} disabled={!dirty || saving || disabled}>
                   {saving ? 'saving…' : 'save'}

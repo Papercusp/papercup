@@ -1,82 +1,149 @@
 import ApiKeyStatus from './_components/ApiKeyStatus';
 
+const highlights = [
+  ['Runs locally', 'Your files and keys stay on this machine.'],
+  ['Starts from a template', 'Choose a ready-made AI workflow from the marketplace.'],
+  ['Shows its work', 'Open mission control to watch progress and results.'],
+];
+
+const steps = [
+  {
+    n: '1',
+    title: 'Choose a template',
+    body: 'Pick the kind of workflow you want: coding, research, content, operations, or something new.',
+    href: '/marketplace',
+    cta: 'Browse marketplace',
+  },
+  {
+    n: '2',
+    title: 'Add your AI key',
+    body: 'Papercusp uses your own Anthropic or OpenAI credentials and keeps them local.',
+    href: '/settings/api-keys',
+    cta: 'Open settings',
+  },
+  {
+    n: '3',
+    title: 'Run the workflow',
+    body: 'Papercusp launches a small team of AI roles that plan, do the work, and review the result.',
+    href: '/harness',
+    cta: 'Open mission control',
+  },
+];
+
+const roles = [
+  {
+    title: 'Planner',
+    body: 'Turns your goal into a clear sequence of tasks.',
+  },
+  {
+    title: 'Worker',
+    body: 'Does the actual work on your project or mission.',
+  },
+  {
+    title: 'Reviewer',
+    body: 'Checks the result before the workflow moves on.',
+  },
+];
+
 export default function HomePage() {
   return (
-    <div className="pc-shell">
-      <h1>Papercusp</h1>
-      <p style={{ fontSize: 17, color: 'var(--fg)', maxWidth: 640, marginBottom: 32 }}>
-        An open-source framework for running autonomous multi-agent missions.
-        Define a goal in plain English, install a harness from the marketplace,
-        and watch a coordinated team of AI roles plan, execute, validate, and
-        iterate against your spec. Your API keys and project files stay on
-        your machine — Papercusp runs harnesses locally against your own
-        Anthropic / OpenAI keys.
-      </p>
+    <div className="pc-shell pc-home">
+      <section className="pc-home-hero" aria-labelledby="home-title">
+        <div className="pc-hero-copy">
+          <p className="pc-eyebrow">Local AI workflows, with clear steps and visible progress</p>
+          <h1 id="home-title" className="pc-hero-logo">
+            <img src="/wordmark.svg" alt="Papercusp" />
+          </h1>
+          <p className="pc-hero-lede">
+            Papercusp helps you run repeatable AI workflows on your own machine. Pick a template, connect your key, and let a small AI team plan, work, and review the result.
+          </p>
+          <div className="pc-hero-actions" aria-label="Primary actions">
+            <a href="/setup" className="pc-button primary">Start setup</a>
+            <a href="/marketplace" className="pc-button">Browse marketplace</a>
+          </div>
+          <div className="pc-home-proof" aria-label="Why Papercusp is simple to understand">
+            {highlights.map(([label, body]) => (
+              <div key={label}>
+                <strong>{label}</strong>
+                <span>{body}</span>
+              </div>
+            ))}
+          </div>
+        </div>
 
-      <div
-        style={{
-          maxWidth: 760,
-          margin: '0 auto 32px',
-          padding: '14px 18px',
-          background: 'var(--bg-1)',
-          border: '1px solid var(--border)',
-          borderRadius: 8,
-          fontSize: 14,
-          color: 'var(--fg-mute)',
-          textAlign: 'center',
-        }}
-      >
-        <strong style={{ color: 'var(--fg)' }}>First time here?</strong> Run through the{' '}
-        <a href="/setup" style={{ color: 'var(--accent)', fontWeight: 600 }}>
-          5-step setup
-        </a>{' '}
-        — Claude CLI, API key, install a harness, run.
-      </div>
+        <aside className="pc-launch-console" aria-label="How Papercusp works">
+          <div className="pc-console-topline">
+            <span><i /> How it works</span>
+            <strong>3 steps</strong>
+          </div>
+          <div className="pc-console-focus">
+            <span>Simple first run</span>
+            <h2>Pick a workflow. Add your key. Press run.</h2>
+            <p>
+              Papercusp calls these packaged workflows <strong>harnesses</strong>. A harness is just a reusable AI workflow: who helps, what they do, and how their work gets checked.
+            </p>
+          </div>
+          <div className="pc-key-status-card">
+            <div>
+              <span>Key status</span>
+              <strong>Uses your own credentials</strong>
+            </div>
+            <ApiKeyStatus />
+          </div>
+          <ol className="pc-launch-steps">
+            {steps.map((step) => (
+              <li key={step.n}>
+                <span>{step.n}</span>
+                <div>
+                  <strong>{step.title}</strong>
+                  <p>{step.body}</p>
+                </div>
+                <a href={step.href}>{step.cta}</a>
+              </li>
+            ))}
+          </ol>
+          <div className="pc-home-note">
+            Start with templates first. Add plugins later when you want extra tools or integrations.
+          </div>
+        </aside>
+      </section>
 
-      <div className="pc-grid cards-2" style={{ marginTop: 32 }}>
-        <div className="pc-card">
-          <h3>Open a harness</h3>
+      <section className="pc-home-story">
+        <div className="pc-home-story-copy">
+          <p className="pc-eyebrow">What happens when it runs</p>
+          <h2>A small AI team works in turns.</h2>
           <p>
-            Run, monitor, and inspect your local harnesses — see live agent
-            traces, feature plans, proposals, and the embedded pi terminal.
+            Instead of one endless chat, Papercusp gives each role a focused job. That keeps work easier to inspect, easier to trust, and easier to correct.
           </p>
-          <a href="/harness" className="pc-button">Open →</a>
         </div>
-        <div className="pc-card">
-          <h3>Browse the marketplace</h3>
-          <p>
-            Pick a harness — a coding-project harness, a research org, a content
-            pipeline — and install it with one click.
-          </p>
-          <a href="/marketplace" className="pc-button">Browse →</a>
+        <div className="pc-home-role-grid">
+          {roles.map((role) => (
+            <article key={role.title} className="pc-card pc-home-role-card">
+              <h3>{role.title}</h3>
+              <p>{role.body}</p>
+            </article>
+          ))}
         </div>
-        <div className="pc-card">
-          <h3>Configure API keys</h3>
-          <p style={{ minHeight: 48 }}>
-            Provide your Anthropic key (required) and optional OpenAI / GitHub
-            credentials. Stored in <code>~/.papercusp/credentials.json</code>,
-            never sent to our servers.
-          </p>
-          <div style={{ marginBottom: 12 }}><ApiKeyStatus /></div>
-          <a href="/settings/api-keys" className="pc-button">Configure →</a>
-        </div>
-        <div className="pc-card">
-          <h3>Publish your harness</h3>
-          <p>
-            Built something useful? Publish it to the marketplace so others
-            can install it with <code>papercusp install &lt;slug&gt;</code>.
-          </p>
-          <a href="/signup" className="pc-button">Sign up →</a>
-        </div>
-      </div>
+      </section>
 
-      <div style={{ marginTop: 48, paddingTop: 24, borderTop: '1px solid var(--border)', color: 'var(--fg-mute)', fontSize: 12 }}>
-        <p>
-          Papercup is the first reference install of Papercusp — a 5-department
-          fictional company running an AI-driven shareholder briefing pipeline.
-          See <a href="https://papercupai.com">papercupai.com</a>.
-        </p>
-      </div>
+      <section className="pc-home-cta-card">
+        <div>
+          <p className="pc-eyebrow">Start here</p>
+          <h2>The simplest path is: marketplace → key → run.</h2>
+          <p>
+            If you are new, start with the marketplace. Choose a template that matches the kind of work you want Papercusp to help with, then follow the guided setup.
+          </p>
+        </div>
+        <div className="pc-hero-actions">
+          <a href="/marketplace" className="pc-button primary">Open marketplace</a>
+          <a href="/setup" className="pc-button ghost">Open setup guide</a>
+        </div>
+      </section>
+
+      <footer className="pc-home-footer">
+        <span>Papercusp is a local control room for reusable AI workflows.</span>
+        <a href="/docs/spec/why">Why Papercusp exists →</a>
+      </footer>
     </div>
   );
 }

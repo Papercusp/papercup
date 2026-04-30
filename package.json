@@ -10,18 +10,30 @@
     "libs/ui-primitives",
     "libs/papercup-db",
     "libs/papercup-shared",
+    "libs/papercusp-publish-auth",
+    "libs/papercusp-export-state",
     "libs/zero-harness",
     "libs/papergrid/grid-core",
     "libs/papergrid/grid",
     "libs/papercusp/libs/db",
     "libs/papercusp/packages/harness",
-    "libs/papercusp/packages/orchestrator"
+    "libs/papercusp/packages/orchestrator",
+    "libs/test-config",
+    "libs/papergrid/bloom-grid"
   ],
   "scripts": {
     "dev:papercup": "npm --workspace @papercup/web run dev",
     "dev:operator": "npm --workspace @papercusp/web run dev",
     "build:papercup": "npm --workspace @papercup/web run build",
-    "build:operator": "npm --workspace @papercusp/web run build"
+    "build:operator": "npm --workspace @papercusp/web run build",
+    "test": "node scripts/affected-tests.mjs",
+    "test:affected": "node scripts/affected-tests.mjs",
+    "test:affected:integration": "node scripts/affected-tests.mjs --integration",
+    "test:all": "node scripts/affected-tests.mjs --all",
+    "test:all:integration": "node scripts/affected-tests.mjs --all --integration",
+    "test:doctor": "node scripts/test-doctor.mjs",
+    "lint:knip": "knip --no-config-hints",
+    "lint:knip:fix": "knip --fix --no-config-hints"
   },
   "dependencies": {
     "@ai-sdk/google": "^3.0.64",
@@ -148,6 +160,7 @@
     "@nx/next": "22.6.5",
     "@nx/node": "22.6.5",
     "@nx/workspace": "22.6.5",
+    "@testcontainers/postgresql": "^11.14.0",
     "@types/adm-zip": "^0.5.8",
     "@types/cors": "^2.8.19",
     "@types/node": "^22.0.0",
@@ -157,13 +170,18 @@
     "concurrently": "^9.2.0",
     "drizzle-kit": "^0.31.10",
     "fast-xml-parser": "^5.5.11",
+    "knip": "^5.88.1",
+    "msw": "^2.13.6",
     "nx": "22.6.5",
     "puppeteer-core": "^24.41.0",
     "stream-chain": "^3.6.1",
     "stream-json": "^2.1.0",
+    "testcontainers": "^11.14.0",
     "tsx": "^4.21.0",
     "typescript": "~6.0.0",
+    "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^4.1.4",
+    "vitest-fail-on-console": "^0.7.1",
     "wrangler": "^4.85.0"
   }
 }

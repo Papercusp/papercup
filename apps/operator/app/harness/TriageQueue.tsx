@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useEffect } from 'react';
+import { useMemo } from 'react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus } from './theme';
 import { IconButton, KbdHint } from './primitives';
+import { Modal } from './Modal';
 
 interface Feature {
   id: string;
@@ -60,34 +61,22 @@ export default function TriageQueue({
     return map;
   }, [issues]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   return (
-    <div
-      data-harness-modal="true"
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 80,
-        background: 'rgba(0,0,0,0.5)',
-        display: 'flex', justifyContent: 'center', alignItems: 'center',
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 'min(780px, 94vw)', maxHeight: '88vh',
-          background: COLORS.surfaceRaised,
-          border: `1px solid ${COLORS.borderStrong}`,
-          borderRadius: 8,
-          boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
-          display: 'flex', flexDirection: 'column',
-          overflow: 'hidden',
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title="Triage queue"
+      srOnlyTitle
+      zIndex={80}
+      overlayStyle={{ background: 'rgba(0,0,0,0.5)' }}
+      contentStyle={{
+        width: 'min(780px, 94vw)', maxHeight: '88vh',
+        background: COLORS.surfaceRaised,
+        border: `1px solid ${COLORS.borderStrong}`,
+        borderRadius: 8,
+        boxShadow: '0 20px 50px rgba(0,0,0,0.5)',
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
         }}
       >
         <div style={{
@@ -195,7 +184,6 @@ export default function TriageQueue({
             Skip marks a feature as passed so the harness moves on. Reset retries it from scratch.
           </span>
         </div>
-      </div>
-    </div>
+    </Modal>
   );
 }

@@ -38,5 +38,17 @@ export async function POST(req: Request) {
       log: [r.stdout, r.stderr].filter(Boolean).join('\n'),
     }, { status: 500 });
   }
+
+  // Drop the just-removed plugin from the in-process runtime caches so the
+  // next request stops serving stale state.
+  try {
+    const { _resetPluginHostForTests } = await import('../../../../lib/plugin-host-runtime');
+    _resetPluginHostForTests();
+  } catch { /* not initialized — fine */ }
+  try {
+    const { _resetPluginApiRoutesForTests } = await import('../../../../lib/plugin-api-mount');
+    _resetPluginApiRoutesForTests();
+  } catch { /* not initialized — fine */ }
+
   return NextResponse.json({ ok: true, slug, log: r.stdout });
 }

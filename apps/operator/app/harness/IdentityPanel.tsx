@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
+import { Modal } from './Modal';
 
 interface Identity {
   role: string;
@@ -23,7 +25,7 @@ function contentLines(s: string): number {
 
 export default function IdentityPanel({ onClose }: Props) {
   const [list, setList] = useState<Identity[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useQueryState('identityRole', parseAsString);
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -50,14 +52,14 @@ export default function IdentityPanel({ onClose }: Props) {
   const cur = list.find((i) => i.role === selected);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Identity`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '85vw', maxWidth: 1200, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '85vw', maxWidth: 1200, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Cross-mission identity</strong>
           <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>~/autonomous-harness/identity/</span>
@@ -110,7 +112,6 @@ export default function IdentityPanel({ onClose }: Props) {
             )}
           </div>
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }

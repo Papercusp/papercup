@@ -1,0 +1,161 @@
+---
+title: Gotchas, performance, and migration anti-patterns
+description: Sharp edges, perf budgets, and traps caught during the original migration.
+---
+
+import { Callout } from 'fumadocs-ui/components/callout';
+
+This page collects the non-obvious things — "I would have stepped on this if you hadn't told me" — found during the multi-phase library migration of the harness page. Skim before making UI changes.
+
+## The `data-state` vs `aria-selected` trap (Radix Tabs)
+
+When you use `@radix-ui/react-tabs` without an associated `<Tabs.Content>` for each trigger, **Radix only sets `aria-selected="true"` on the active trigger — it does NOT set `data-state="active"`.** Reason: with no `<Tabs.Content>`, there's nothing to "open"; Radix considers the tab semantically selected but not "active".
+
+This bites when you write CSS like:
+
+```css
+.h-tab[data-state="active"] {
+  background: var(--bg-3);
+}
+```
+
+…and your styling silently never fires.
+
+**Fix:** target `aria-selected="true"` instead.
+
+```css
+/* For tabs without Tabs.Content (filter pills + imperative content render) */
+.h-tab[aria-selected="true"] {
+  background: var(--bg-3);
+}
+
+/* For tabs WITH Tabs.Content */
+.my-tab[data-state="active"] {
+  background: var(--bg-3);
+}
+```
+
+`harness.css` has examples of both at the bottom.
+
+## Native `title=` is fine in grid cells, NOT on actions
+
+The "no native title=" rule is a soft rule, not a hard one.
+
+**Use `<Tooltip label>` for action elements** — buttons, status badges, IconButtons, anywhere the user might hover for a hint about what clicking does.
+
+**Use native `title=` for grid-cell truncation tooltips** — when you have thousands of `<RichGrid>` rows and each cell wants "show full text on hover when truncated". Wrapping every cell in a Radix Tooltip mounts thousands of portals + listeners and noticeably hits scroll performance. Native `title=` is browser-built-in, free, and accessible-enough for data hover.
+
+A tell that you should use native `title=`: the value is dynamic and per-row (`title={row.title}`), not a static label. Static action-button hints almost always belong in `<Tooltip>`.
+
+## Radix Select doesn't allow empty-string values
+
+`<Select value="">` is reserved by Radix Select to mean "no value selected" — same as `<Select value={undefined}>`. If your business logic uses `''` as a real value (e.g., "default mode"), Radix Select will display the placeholder when you actually mean to display "default".
+
+**Fix:** translate at the boundary.
+
+```tsx
+<Select
+  value={mode || '_default'}
+  onChange={(v) => setMode(v === '_default' ? '' : v)}
+  options={[{ value: '_default', label: 'default' }, { value: 'ceo', label: 'ceo' }]}
+/>
+```
+
+Use a sentinel like `'_default'` that's guaranteed not to collide with a real value, and translate in `onChange`.
+
+## Vaul drawer needs an explicit Title
+
+Radix Dialog's accessibility check warns if you don't render a `<Dialog.Title>`. Vaul reuses the Dialog primitive internally and inherits the same check. Always include a sr-only Title:
+
+```tsx
+<Drawer.Title style={{
+  position: 'absolute', width: 1, height: 1, padding: 0, margin: -1,
+  overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0,
+}}>
+  Feature {feature.id}
+</Drawer.Title>
+```
+
+## Modal overlay click vs ESC
+
+Radix Dialog's outside-click is implemented as a `pointerdown` event on the overlay, not a `click`. If you're writing tests that "click outside to close", dispatch a `pointerdown` event, not a `click`:
+
+```js
+const overlay = document.querySelector('[data-state=open][role!=dialog]');
+overlay.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'mouse' }));
+```
+
+ESC works as expected via `keydown`.
+
+## Tooltip needs real pointer events to fire
+
+When testing tooltips programmatically, synthetic `MouseEvent('mouseenter')` doesn't trigger Radix Tooltip's open state. You need real pointer events from a browser-driver (Playwright `page.hover()` works; `verdict hover @e18` works).
+
+This is a Radix design choice (focus on real input intent, not synthetic dispatches) — there's no workaround beyond using a real driver.
+
+## cmdk groups hide automatically when filtering
+
+When the user types in `<Command.Input>`, cmdk filters items by their `value` prop. If a `<Command.Group>` ends up with zero matching children, cmdk **hides the entire group, including the heading.** This is the right UX, but if you're testing or debugging, your group's heading vanishing is expected behavior, not a bug.
+
+Use `<Command.Group hidden={false}>` to force-show, or check the `[hidden]` attr in DevTools.
+
+## Performance budget — what's reasonable
+
+These are the numbers we measured after the original migration. Use them as floors; if your change makes any of these significantly worse, investigate.
+
+| Interaction | Dev mode | Production target |
+|---|---|---|
+| Cold page load (HTTP `time_total`) | 0.87 – 1.21s | < 200ms |
+| Inner tab switch (e.g., Inbox All → Threads) | ~150ms | ~50ms |
+| Command palette open (Dialog mount + cmdk wiring) | ~314ms | ~100ms |
+| Modal open/close cycle | ~100ms | ~30ms |
+| Memory after 10 modal open/close cycles | 0 KB heap growth | 0 KB heap growth |
+
+If you're adding a new modal or a new heavy panel and tab switches start feeling sluggish (>300ms in dev), check:
+
+1. Are you mounting heavy children eagerly when the modal closes? Use lazy / dynamic imports or guard rendering with `{open && <…/>}`.
+2. Did you wrap a frequently-rendered grid cell in `<Tooltip>`? See "Native `title=` is fine in grid cells".
+3. Did a useEffect get added that runs every render? Check deps.
+
+## Bundle-size budget
+
+The original migration added ~55 KB gzipped to the harness route's JS payload. Library-by-library:
+
+| Library | Gzipped |
+|---|---|
+| `@radix-ui/react-tooltip` | ~5 KB |
+| `@radix-ui/react-dialog` | ~10 KB |
+| `@radix-ui/react-tabs` | ~5 KB |
+| `@radix-ui/react-select` | ~12 KB |
+| `@radix-ui/react-checkbox` | ~3 KB |
+| `@radix-ui/react-collapsible` | ~3 KB |
+| `vaul` | ~6 KB |
+| `cmdk` | ~10 KB |
+
+If you find yourself reaching for a NEW library not in this list, ask first. Most cases the existing set covers — see the [decision matrix](/docs/design).
+
+## Migration anti-patterns
+
+Things we did wrong during the migration and had to back out — don't repeat:
+
+- **Don't write a Python regex that captures `.+?` between `<div>` tags.** Self-closing `<div/>` tags throw off the depth counter. Use a stack-based walker that distinguishes `<div ... />` from `<div ...>`.
+
+- **Don't add a `tsconfig.json` to a sub-package to fix `.js`-extension resolution under Turbopack.** Turbopack doesn't honor sub-package tsconfigs for files outside the project's own `tsconfig.json` `include`. We tried; it didn't help. The actual fix was a local copy at `apps/operator/lib/...` that bypassed the package barrel.
+
+- **Don't delete `.next/` to force a recompile.** The dev server gets wedged because it can't find its build manifests. Touch a source file or restart the server entirely instead.
+
+- **Don't rely on `await import()` to lazy-load.** Turbopack statically traces dynamic imports too. To genuinely defer, you need either (a) the library lazy-loaded via Next.js's `dynamic()`, or (b) a constructed import path (`new Function('s', 'return import(s)')`) — but (b) is fragile and we ended up not needing it.
+
+- **Don't compare `data-state` on Radix Tabs triggers when there's no `<Tabs.Content>`.** Compare `aria-selected`. (Repeating because this is the most subtle one.)
+
+## When the agent population is large
+
+Multiple agents working on the same files concurrently is normal here. The harness is the substrate's most-edited surface. Best practices:
+
+1. **Run an audit before you start.** `grep -lE "from './Tooltip'"` etc. tells you which files use which library. If your file isn't in the list and the pattern says it should, that's a regression to fix.
+
+2. **Run an audit after you finish.** Re-grep. If a file you edited dropped its `Tooltip` import while you were adding new functionality, you reintroduced native `title=` or stripped a wrap by accident.
+
+3. **Don't blanket-replace.** A Python script that mass-removes `<Tooltip>` wrappers (because some IDE auto-import suggested them as redundant) will silently revert dozens of files. We've seen this happen.
+
+4. **When in doubt, look at a working example.** The "where to look" table on the [overview page](/docs/design) lists a canonical example for each pattern.

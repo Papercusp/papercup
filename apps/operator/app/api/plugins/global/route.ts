@@ -42,8 +42,35 @@ export async function GET() {
     if (!isDirOrLinkToDir) continue;
     const dir = join(GLOBAL_PLUGINS_DIR, e.name);
     const m = await readJson<PluginManifest>(join(dir, 'papercusp.json'));
-    if (!m?.name || !m?.version) continue;
-    plugins.push({ ...m, source: 'global', path: dir });
+    if (m?.name && m?.version) {
+      plugins.push({ ...m, source: 'global', path: dir });
+      continue;
+    }
+    // Scoped npm packages (`@papercupai/<name>/`) extract one level deeper.
+    // Mirror the listPluginsIn helper in _hono/plugins.ts so this fast-path
+    // route surfaces the same set of plugins.
+    if (!e.name.startsWith('@')) continue;
+    const inner = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const sub of inner) {
+      if (sub.name.startsWith('.')) continue;
+      let subIsDir = sub.isDirectory();
+      if (!subIsDir && sub.isSymbolicLink()) {
+        const t = await fs.stat(join(dir, sub.name)).catch(() => null);
+        subIsDir = t?.isDirectory() ?? false;
+      }
+      if (!subIsDir) continue;
+      const subDir = join(dir, sub.name);
+      const subM = await readJson<PluginManifest>(join(subDir, 'papercusp.json'));
+      if (!subM?.name || !subM?.version) continue;
+      plugins.push({ ...subM, source: 'global', path: subDir });
+    }
   }
-  return NextResponse.json({ plugins });
+  // Dedup by name — a plugin can exist both at top-level and under its scope.
+  const seen = new Set<string>();
+  const deduped = plugins.filter((p) => {
+    if (seen.has(p.name)) return false;
+    seen.add(p.name);
+    return true;
+  });
+  return NextResponse.json({ plugins: deduped });
 }

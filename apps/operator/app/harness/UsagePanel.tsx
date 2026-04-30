@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Usage {
@@ -89,14 +90,14 @@ export default function UsagePanel({ slug, onClose }: Props) {
   }, [load]);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Usage`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Usage — {slug}</strong>
@@ -158,8 +159,7 @@ export default function UsagePanel({ slug, onClose }: Props) {
             </div>
           </div>
         )}
-      </div>
-    </div>
+      </Modal>
   );
 }
 

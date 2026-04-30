@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Modal } from './Modal';
+import { Select } from './Select';
 
 const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked'] as const;
 type Status = (typeof VALID_STATUSES)[number];
@@ -99,14 +101,14 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
   }, [save]);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Edit feature`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Header */}
         <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong style={{ color: '#e5e7eb' }}>{isCreate ? 'New feature' : `Edit ${feature!.id}`}</strong>
@@ -208,18 +210,18 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
           <div style={{ display: 'flex', gap: '1rem' }}>
             <div style={{ flex: 1 }}>
               <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>Status</label>
-              <select
+              <Select
                 value={status}
-                onChange={(e) => setStatus(e.target.value as Status)}
-                style={{
+                onChange={(v) => setStatus(v as Status)}
+                ariaLabel="Status"
+                options={VALID_STATUSES.map((s) => ({ value: s, label: s }))}
+                triggerStyle={{
                   width: '100%', boxSizing: 'border-box',
                   background: '#111827', color: '#e5e7eb',
                   border: '1px solid #374151', borderRadius: 3,
                   padding: '0.45rem 0.6rem', fontSize: '0.85rem',
                 }}
-              >
-                {VALID_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
+              />
             </div>
             {!isCreate && (
               <div style={{ flex: 1 }}>
@@ -240,7 +242,6 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
             )}
           </div>
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }

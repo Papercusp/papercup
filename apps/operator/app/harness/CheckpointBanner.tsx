@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 
 interface Checkpoint {
   name: string;
@@ -81,55 +82,62 @@ export default function CheckpointBanner({ slug, onGranted }: Props) {
       {list.map((cp) => {
         const isExpanded = expanded === cp.name;
         return (
-          <div key={cp.name} style={{
-            display: 'flex', flexDirection: 'column', gap: 6,
-            padding: '0.5rem 0', borderTop: list.indexOf(cp) > 0 ? '1px solid rgba(255,255,255,0.08)' : undefined,
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-              <code style={{ fontSize: '0.85rem', color: '#fde68a', fontWeight: 600 }}>{cp.name}</code>
-              <span style={{ fontSize: '0.75rem', color: '#d1d5db' }}>waiting {fmtAge(cp.waitingSinceMs)}</span>
-              {cp.granted && <span style={{ fontSize: '0.7rem', color: '#10b981' }}>✓ granted</span>}
-              <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                <button
-                  onClick={() => setExpanded(isExpanded ? null : cp.name)}
-                  style={{
-                    background: 'transparent',
-                    border: '1px solid rgba(255,255,255,0.2)',
-                    color: '#fde68a', padding: '0.25rem 0.6rem',
-                    borderRadius: 3, cursor: 'pointer', fontSize: '0.75rem',
-                  }}
-                >
-                  {isExpanded ? 'hide' : 'details'}
-                </button>
-                {!cp.granted && (
-                  <button
-                    onClick={() => grant(cp.name)}
-                    disabled={busy === cp.name}
-                    style={{
-                      background: '#10b981', color: 'white', border: 'none',
-                      padding: '0.25rem 0.75rem', borderRadius: 3,
-                      cursor: busy === cp.name ? 'wait' : 'pointer',
-                      fontSize: '0.8rem', fontWeight: 600,
-                    }}
-                  >
-                    {busy === cp.name ? '…' : 'Grant'}
-                  </button>
-                )}
-              </span>
+          <Collapsible.Root
+            key={cp.name}
+            open={isExpanded}
+            onOpenChange={(o) => setExpanded(o ? cp.name : null)}
+          >
+            <div style={{
+              display: 'flex', flexDirection: 'column', gap: 6,
+              padding: '0.5rem 0', borderTop: list.indexOf(cp) > 0 ? '1px solid rgba(255,255,255,0.08)' : undefined,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <code style={{ fontSize: '0.85rem', color: '#fde68a', fontWeight: 600 }}>{cp.name}</code>
+                <span style={{ fontSize: '0.75rem', color: '#d1d5db' }}>waiting {fmtAge(cp.waitingSinceMs)}</span>
+                {cp.granted && <span style={{ fontSize: '0.7rem', color: '#10b981' }}>✓ granted</span>}
+                <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                  <Collapsible.Trigger asChild>
+                    <button
+                      style={{
+                        background: 'transparent',
+                        border: '1px solid rgba(255,255,255,0.2)',
+                        color: '#fde68a', padding: '0.25rem 0.6rem',
+                        borderRadius: 3, cursor: 'pointer', fontSize: '0.75rem',
+                      }}
+                    >
+                      {isExpanded ? 'hide' : 'details'}
+                    </button>
+                  </Collapsible.Trigger>
+                  {!cp.granted && (
+                    <button
+                      onClick={() => grant(cp.name)}
+                      disabled={busy === cp.name}
+                      style={{
+                        background: '#10b981', color: 'white', border: 'none',
+                        padding: '0.25rem 0.75rem', borderRadius: 3,
+                        cursor: busy === cp.name ? 'wait' : 'pointer',
+                        fontSize: '0.8rem', fontWeight: 600,
+                      }}
+                    >
+                      {busy === cp.name ? '…' : 'Grant'}
+                    </button>
+                  )}
+                </span>
+              </div>
+              <Collapsible.Content>
+                <pre style={{
+                  margin: 0,
+                  fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem',
+                  color: '#e5e7eb', background: 'rgba(0,0,0,0.3)',
+                  padding: '0.6rem 0.8rem', borderRadius: 3,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  maxHeight: 240, overflow: 'auto',
+                }}>
+                  {cp.content || '(no content)'}
+                </pre>
+              </Collapsible.Content>
             </div>
-            {isExpanded && (
-              <pre style={{
-                margin: 0,
-                fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem',
-                color: '#e5e7eb', background: 'rgba(0,0,0,0.3)',
-                padding: '0.6rem 0.8rem', borderRadius: 3,
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                maxHeight: 240, overflow: 'auto',
-              }}>
-                {cp.content || '(no content)'}
-              </pre>
-            )}
-          </div>
+          </Collapsible.Root>
         );
       })}
 

@@ -18,7 +18,8 @@ import {
   type AgentRunRow,
 } from '@restart/zero-harness';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
-import { useSearchParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
+import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import dynamic from 'next/dynamic';
 import { Toaster, toast } from 'sonner';
 import { Group as PanelGroup, Panel as RPanel, Separator } from 'react-resizable-panels';
@@ -89,6 +90,7 @@ function preloadGitLog(slug: string, limit = 300) {
 
 // Linear-inspired extensions (palette, peek, pulse, insights, triage).
 import CommandPalette, { Command } from './CommandPalette';
+import PluginReactTab from '../../lib/PluginReactTab';
 import FeatureList from './FeatureList';
 import FeaturePeekPanel from './FeaturePeekPanel';
 import PulseFeed, { usePulse } from './PulseFeed';
@@ -515,6 +517,22 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
   );
 }
 
+/**
+ * Resolve the slug used by the CLI / `/api/plugins/enable` for a given
+ * installed plugin. Top-level dirs (`global-plugins/<name>/`) → `<name>`;
+ * scoped-package dirs (`global-plugins/@scope/<name>/`) → `@scope/<name>`.
+ * Sending the bare basename for scoped-only installs makes the CLI look up
+ * `<name>` at the top level and fail with "not installed".
+ */
+function pluginSlugFromPath(path: string | null | undefined, fallbackName: string): string {
+  if (!path) return fallbackName;
+  const parts = path.replace(/\/$/, '').split('/');
+  const last = parts[parts.length - 1];
+  const parent = parts[parts.length - 2];
+  if (parent && parent.startsWith('@')) return `${parent}/${last}`;
+  return last ?? fallbackName;
+}
+
 interface InstalledPluginInfo {
   name: string;
   version?: string;
@@ -582,7 +600,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
 
   const candidates = useMemo(
     () => (installed ?? []).filter((p) => {
-      const dirSlug = p.path ? p.path.replace(/\/$/, '').split('/').pop() ?? p.name : p.name;
+      const dirSlug = pluginSlugFromPath(p.path, p.name);
       return !alreadyEnabled.has(dirSlug) && !alreadyEnabled.has(p.name);
     }),
     [installed, alreadyEnabled],
@@ -592,7 +610,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
     if (!activeSlug) return;
     // Use the on-disk dir basename — that's what the CLI keys
     // enabled-plugins.json by, independent of scoped manifest.name.
-    const dirSlug = plugin.path ? plugin.path.replace(/\/$/, '').split('/').pop() ?? plugin.name : plugin.name;
+    const dirSlug = pluginSlugFromPath(plugin.path, plugin.name);
     const displayName = plugin.name || dirSlug;
     setBusy(dirSlug);
     try {
@@ -681,7 +699,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
             <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
               {(installed?.length ?? 0) === 0
                 ? <>No plugins installed. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse plugins →</a></>
-                : 'All installed plugins are already enabled here.'}
+                : <>All installed plugins are already enabled here. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse marketplace →</a></>}
             </div>
           ) : (
             <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 320, overflowY: 'auto' }}>
@@ -776,6 +794,136 @@ function ManifestOrLegacySpecEditor({ slug, projectPath, alive, onClose }: {
 }
 
 /**
+ * "Save snapshot" button — captures the current harness state to a
+ * tarball under <projectDir>/.harness/snapshots/<id>.tar.gz. Then the
+ * user can browse, instantiate, or publish it from the top-nav
+ * Snapshots tab.
+ */
+function SaveSnapshotButton({ slug }: { slug: string }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const defaultName = `${slug} snapshot @ ${new Date().toISOString().slice(0, 16)}`;
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [license, setLicense] = useState('MIT');
+  const [includeGit, setIncludeGit] = useState(false);
+  const [includeAgentTranscripts, setIncludeAgentTranscripts] = useState(false);
+  const [includeOperatorNotes, setIncludeOperatorNotes] = useState(true);
+  const [acceptVerifiedSecrets, setAcceptVerifiedSecrets] = useState(false);
+
+  async function onSubmit() {
+    setBusy(true);
+    const t = toast.loading('Capturing snapshot…');
+    try {
+      const r = await fetch('/api/snapshots/create', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          slug,
+          name: name.trim() || undefined,
+          description: description.trim() || undefined,
+          license: license.trim() || 'MIT',
+          includeGit,
+          includeAgentTranscripts,
+          includeOperatorNotes,
+          acceptVerifiedSecrets,
+          // soft-cap default: bypass for a one-click flow. The lib still
+          // hard-caps at 1 GB, so genuinely runaway snapshots still refuse.
+          acceptSoftCap: true,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error(`snapshot failed: ${d.error ?? `HTTP ${r.status}`}`, { id: t });
+        return;
+      }
+      toast.success(`Snapshot ${d.id} captured (${(d.bytes / 1e6).toFixed(1)} MB)`, {
+        id: t,
+        action: { label: 'Open Snapshots', onClick: () => { window.location.href = '/snapshots'; } },
+        duration: 8000,
+      });
+      for (const w of (d.warnings ?? []) as string[]) toast.warning(w);
+      setOpen(false);
+      setName('');
+      setDescription('');
+    } catch (e: unknown) {
+      toast.error(`snapshot failed: ${e instanceof Error ? e.message : String(e)}`, { id: t });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const labelStyle: React.CSSProperties = { display: 'block', fontSize: 12, color: 'var(--fg-mute)', marginBottom: 4 };
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '6px 8px', background: 'var(--bg-mute)',
+    border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 13,
+  };
+  const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, marginTop: 6 };
+
+  return (
+    <>
+      <Tooltip label="Save current harness state as a tarball">
+        <button type="button" className="h-btn ghost" onClick={() => setOpen(true)} disabled={busy}>
+          {busy ? '…' : 'save snapshot'}
+        </button>
+      </Tooltip>
+      <Modal
+        open={open}
+        onOpenChange={setOpen}
+        title="Save snapshot"
+        description="Capture the current harness state as a forkable, publishable tarball."
+        contentStyle={{ width: 480, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 20 }}
+      >
+        <h2 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Save snapshot</h2>
+        <div style={{ color: 'var(--fg-mute)', fontSize: 12, marginBottom: 16 }}>
+          Captures `.harness/` + per-harness PG schema. Logs/screenshots are excluded by default.
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Name</label>
+          <input type="text" value={name} onChange={(e) => setName(e.target.value)} placeholder={defaultName} style={inputStyle} />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Description (optional)</label>
+          <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} style={{ ...inputStyle, fontFamily: 'inherit', resize: 'vertical' }} />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>License</label>
+          <input type="text" value={license} onChange={(e) => setLicense(e.target.value)} style={inputStyle} />
+        </div>
+
+        <div style={{ marginTop: 16, marginBottom: 4, fontSize: 12, color: 'var(--fg-mute)' }}>Include</div>
+        <label style={checkRow}>
+          <input type="checkbox" checked={includeOperatorNotes} onChange={(e) => setIncludeOperatorNotes(e.target.checked)} />
+          Operator notes
+        </label>
+        <label style={checkRow}>
+          <input type="checkbox" checked={includeAgentTranscripts} onChange={(e) => setIncludeAgentTranscripts(e.target.checked)} />
+          Agent transcripts
+        </label>
+        <label style={checkRow}>
+          <input type="checkbox" checked={includeGit} onChange={(e) => setIncludeGit(e.target.checked)} />
+          .git directory <span style={{ color: 'var(--fg-mute)' }}>(large)</span>
+        </label>
+        <label style={checkRow}>
+          <input type="checkbox" checked={acceptVerifiedSecrets} onChange={(e) => setAcceptVerifiedSecrets(e.target.checked)} />
+          <span>Accept verified secrets <span style={{ color: 'var(--fg-mute)' }}>(don't fail on detected secrets)</span></span>
+        </label>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+          <button type="button" className="h-btn ghost" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+          <button type="button" className="h-btn" onClick={() => void onSubmit()} disabled={busy}>
+            {busy ? 'Capturing…' : 'Capture snapshot'}
+          </button>
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+/**
  * Renders enabled-plugin actions whose manifest declares
  * `surfaces: ['harness-toolbar']` as buttons in the harness-page header,
  * alongside the built-in triage / start-stop controls. Click → fires the
@@ -798,7 +946,7 @@ function PluginToolbarActions({ harnessSlug, installed, enabledSlugs }: {
   const toolbarActions: Array<{ pluginName: string; pluginDirSlug: string; pluginIcon: string | null;
     name: string; label: string; }> = [];
   for (const p of installed) {
-    const dirSlug = p.path ? p.path.replace(/\/$/, '').split('/').pop() ?? p.name : p.name;
+    const dirSlug = pluginSlugFromPath(p.path, p.name);
     if (!(enabledSet.has(p.name) || enabledSet.has(dirSlug))) continue;
     const actions = (p as { actions?: Array<{ name?: string; label?: string; surfaces?: string[] }> }).actions ?? [];
     for (const a of actions) {
@@ -944,7 +1092,7 @@ function PluginsPanel({ harnessSlug, installed, enabledSlugs, onChange }: {
     const out: EnabledPluginManifest[] = [];
     for (const slug of enabledSlugs) {
       const m = installed.find((p) => {
-        const dirSlug = p.path ? p.path.replace(/\/$/, '').split('/').pop() : null;
+        const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
         return p.name === slug || dirSlug === slug;
       });
       if (m) out.push(m as EnabledPluginManifest);
@@ -998,7 +1146,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
   harnessSlug: string;
   onChange: () => void;
 }) {
-  const dirSlug = plugin.path ? plugin.path.replace(/\/$/, '').split('/').pop() ?? plugin.name : plugin.name;
+  const dirSlug = pluginSlugFromPath(plugin.path, plugin.name);
   const tabIcon = plugin.dashboardTabs?.[0]?.icon ?? plugin.icon ?? null;
   const [busy, setBusy] = useState(false);
   const [invoking, setInvoking] = useState<string | null>(null);
@@ -1419,6 +1567,8 @@ export default function HarnessDashboard() {
     label: string;
     icon: string | null;
     iframeUrl: string | null;
+    componentRoot: string | null;
+    componentId: string | null;
     replaces: string[];
   }>>([]);
   useEffect(() => {
@@ -1441,12 +1591,19 @@ export default function HarnessDashboard() {
             label: string;
             icon?: string;
             iframeUrl?: string;
+            componentRoot?: string;
+            componentId?: string;
             replaces?: string[];
           }>;
         };
         if (cancelled) return;
         const tabs = (j.dashboardTabs ?? [])
-          .filter((t) => typeof t.iframeUrl === 'string' && t.iframeUrl.length > 0)
+          .filter((t) => {
+            const hasIframe = typeof t.iframeUrl === 'string' && t.iframeUrl.length > 0;
+            const hasReact = typeof t.componentRoot === 'string' && typeof t.componentId === 'string'
+              && t.componentRoot.length > 0 && t.componentId.length > 0;
+            return hasIframe || hasReact;
+          })
           .map((t) => ({
             pluginSlug: t.pluginName,
             pluginVersion: '',
@@ -1454,6 +1611,8 @@ export default function HarnessDashboard() {
             label: t.label,
             icon: t.icon ?? null,
             iframeUrl: t.iframeUrl ?? null,
+            componentRoot: t.componentRoot ?? null,
+            componentId: t.componentId ?? null,
             replaces: Array.isArray(t.replaces) ? t.replaces : [],
           }));
         setPluginTabs(tabs);
@@ -1482,26 +1641,32 @@ export default function HarnessDashboard() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [peekFeature, setPeekFeature] = useState<Feature | null>(null);
   // Left sidebar defaults to 'inbox'; user can flip to git graph via toggle.
-  const [leftPane, setLeftPane] = useState<'inbox' | 'git'>('inbox');
-  const [activePhase, setActivePhase] = useState<Phase>('staging');
+  const [leftPane, setLeftPane] = useQueryState(
+    'left',
+    parseAsStringEnum<'inbox' | 'git'>(['inbox', 'git']).withDefault('inbox'),
+  );
+  const [activePhase, setActivePhase] = useQueryState(
+    'phase',
+    parseAsStringEnum<Phase>(['staging', 'testing', 'production']).withDefault('staging'),
+  );
   const [reviewCount, setReviewCount] = useState(0);
-  const [showTriage, setShowTriage] = useState(false);
-  const [showHooks, setShowHooks] = useState(false);
-  const [showIntervention, setShowIntervention] = useState(false);
-  const [showUsage, setShowUsage] = useState(false);
-  const [showSnapshots, setShowSnapshots] = useState(false);
-  const [showScreenshots, setShowScreenshots] = useState(false);
-  const [showDecisions, setShowDecisions] = useState(false);
-  const [showSmokeTest, setShowSmokeTest] = useState(false);
-  const [showIdentity, setShowIdentity] = useState(false);
-  const [showTemplates, setShowTemplates] = useState(false);
-  const [showArchives, setShowArchives] = useState(false);
-  const [diffFeatureId, setDiffFeatureId] = useState<string | null>(null);
+  const [showTriage, setShowTriage] = useQueryState('triage', parseAsBoolean.withDefault(false));
+  const [showHooks, setShowHooks] = useQueryState('hooks', parseAsBoolean.withDefault(false));
+  const [showIntervention, setShowIntervention] = useQueryState('intervene', parseAsBoolean.withDefault(false));
+  const [showUsage, setShowUsage] = useQueryState('usage', parseAsBoolean.withDefault(false));
+  const [showSnapshots, setShowSnapshots] = useQueryState('snapshots', parseAsBoolean.withDefault(false));
+  const [showScreenshots, setShowScreenshots] = useQueryState('screenshots', parseAsBoolean.withDefault(false));
+  const [showDecisions, setShowDecisions] = useQueryState('decisions', parseAsBoolean.withDefault(false));
+  const [showSmokeTest, setShowSmokeTest] = useQueryState('smoke', parseAsBoolean.withDefault(false));
+  const [showIdentity, setShowIdentity] = useQueryState('identity', parseAsBoolean.withDefault(false));
+  const [showTemplates, setShowTemplates] = useQueryState('templates', parseAsBoolean.withDefault(false));
+  const [showArchives, setShowArchives] = useQueryState('archives', parseAsBoolean.withDefault(false));
+  const [diffFeatureId, setDiffFeatureId] = useQueryState('diff', parseAsString);
   const [editingFeature, setEditingFeature] = useState<Feature | null | 'new'>(null);
   const [lanes, setLanes] = useState<{ lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }>; max: number } | null>(null);
   const [pendingProposals, setPendingProposals] = useState(0);
-  const [activePanel, setActivePanel] = useState<MainPanel>('dashboard');
-  const [topChromeCollapsed, setTopChromeCollapsed] = useState(false);
+  const [activePanel, setActivePanel] = useQueryState('panel', parseAsString.withDefault('dashboard'));
+  const [topChromeCollapsed, setTopChromeCollapsed] = useQueryState('chromeCollapsed', parseAsBoolean.withDefault(false));
   // When the user clicks "open in pi" on a feature, scope the pi pane to
   // that feature's worktree instead of the project root. Cleared when the
   // pane is opened from the bare 'pi' tab.
@@ -1510,6 +1675,16 @@ export default function HarnessDashboard() {
   const esRef = useRef<EventSource | null>(null);
   const searchParams = useSearchParams();
   const projectQueryParam = searchParams?.get('project') ?? null;
+  // URL path takes precedence over query param + localStorage. When the
+  // dashboard is mounted under /harness/<slug>/, that slug is the source
+  // of truth — we shouldn't surreptitiously fall back to whatever was
+  // last stored in localStorage when the user types the URL by hand.
+  const routeParams = useParams<{ slug?: string | string[] }>();
+  const projectPathParam = (() => {
+    const v = routeParams?.slug;
+    if (Array.isArray(v)) return v[0] ?? null;
+    return v ?? null;
+  })();
 
 
   useEffect(() => {
@@ -1523,20 +1698,24 @@ export default function HarnessDashboard() {
         const nextProjects = d.projects ?? [];
         setProjects(nextProjects);
         if (!nextProjects.length) return;
-        // Prefer ?project= query param > localStorage > first project
+        // Precedence: URL path > ?project= query > localStorage > first project.
+        const fromPath = projectPathParam && nextProjects.find((p: ProjectEntry) => p.slug === projectPathParam)
+          ? projectPathParam
+          : null;
         const fromQuery = projectQueryParam && nextProjects.find((p: ProjectEntry) => p.slug === projectQueryParam)
           ? projectQueryParam
           : null;
         const saved = window.localStorage.getItem('harness.activeProject');
         const savedProject = saved ? nextProjects.find((p: ProjectEntry) => p.slug === saved) : null;
         setActiveSlug((current) => {
+          if (fromPath) return fromPath;
           if (fromQuery) return fromQuery;
           if (current && nextProjects.some((p: ProjectEntry) => p.slug === current)) return current;
           return savedProject?.slug ?? nextProjects[0].slug;
         });
       })
       .catch((e) => toast.error(`Failed to load projects: ${e}`));
-  }, [projectQueryParam]);
+  }, [projectQueryParam, projectPathParam]);
 
   useEffect(() => {
     if (!activeSlug) return;
@@ -2131,7 +2310,20 @@ export default function HarnessDashboard() {
                 </span>
               )}
             </div>
-            <RSelect.Root value={activeSlug ?? ''} onValueChange={setActiveSlug}>
+            <RSelect.Root
+              value={activeSlug ?? ''}
+              onValueChange={(next) => {
+                setActiveSlug(next);
+                // Keep the URL path in sync with the dropdown so the URL
+                // remains the canonical source of truth across reloads.
+                if (typeof window !== 'undefined' && next) {
+                  const target = `/harness/${encodeURIComponent(next)}`;
+                  if (window.location.pathname !== target) {
+                    window.history.replaceState(null, '', target + window.location.search);
+                  }
+                }
+              }}
+            >
               <RSelect.Trigger className="h-project" aria-label="Select harness project">
                 <RSelect.Value placeholder="— pick a project —" />
                 <RSelect.Icon><LChevronDown size={11} /></RSelect.Icon>
@@ -2324,6 +2516,7 @@ export default function HarnessDashboard() {
                   enabledSlugs={enabledByHarness[activeSlug] ?? []}
                 />
               )}
+              {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
               {status.alive ? (
                 <Tooltip label="Stop the autonomous loop for this harness">
                   <button className="h-btn danger" onClick={stopHarness}>
@@ -2530,17 +2723,29 @@ export default function HarnessDashboard() {
               </div>
             );
           }
-          if (!pt.iframeUrl) {
+          if (pt.iframeUrl) {
+            return <PluginIframeWithLoader key={`${pt.pluginSlug}:${pt.tabId}`} url={pt.iframeUrl} title={pt.label} />;
+          }
+          if (pt.componentRoot && pt.componentId) {
             return (
-              <div style={{ flex: 1, padding: 24, color: 'var(--text-2)' }}>
-                <strong>{pt.label}</strong> ({pt.pluginSlug}@{pt.pluginVersion}) is enabled but
-                doesn&rsquo;t expose an iframe URL via its config. Check the plugin&rsquo;s
-                <code style={{ margin: '0 4px' }}>configSchema</code> defaults or run{' '}
-                <code>papercusp plugin config {pt.pluginSlug} --harness {activeSlug}</code>.
-              </div>
+              <PluginReactTab
+                key={`${pt.pluginSlug}:${pt.tabId}`}
+                pluginName={pt.pluginSlug}
+                componentRoot={pt.componentRoot}
+                componentId={pt.componentId}
+                slug={activeSlug}
+                label={pt.label}
+              />
             );
           }
-          return <PluginIframeWithLoader key={`${pt.pluginSlug}:${pt.tabId}`} url={pt.iframeUrl} title={pt.label} />;
+          return (
+            <div style={{ flex: 1, padding: 24, color: 'var(--text-2)' }}>
+              <strong>{pt.label}</strong> ({pt.pluginSlug}@{pt.pluginVersion}) is enabled but
+              declares neither an iframeUrl nor a (componentRoot, componentId) pair. Update the
+              plugin manifest, or run{' '}
+              <code>papercusp plugin config {pt.pluginSlug} --harness {activeSlug}</code>.
+            </div>
+          );
         })()}
         {activePanel === 'insights' && status && (
           <InsightsPanel

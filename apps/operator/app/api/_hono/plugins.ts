@@ -140,10 +140,11 @@ function resolveIframeUrl(
   return `${url}${sep}harness=${encodeURIComponent(harnessSlug)}`;
 }
 
-async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'global'): Promise<Array<PluginManifest & { source: string; path: string }>> {
+export async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'global'): Promise<Array<PluginManifest & { source: string; path: string }>> {
   const out: Array<PluginManifest & { source: string; path: string }> = [];
   if (!existsSync(parent)) return out;
   const entries = await fs.readdir(parent, { withFileTypes: true }).catch(() => []);
+  const seen = new Set<string>();
   for (const e of entries) {
     if (e.name.startsWith('.')) continue;
     // Accept directories AND symlinks (dev-mode pattern: symlinking a
@@ -156,8 +157,34 @@ async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'gl
     if (!isDirOrLinkToDir) continue;
     const dir = join(parent, e.name);
     const m = await readJson<PluginManifest>(join(dir, 'papercusp.json'));
-    if (!m?.name || !m?.version) continue;
-    out.push({ ...m, source, path: dir });
+    if (m?.name && m?.version) {
+      if (!seen.has(m.name)) {
+        seen.add(m.name);
+        out.push({ ...m, source, path: dir });
+      }
+      continue;
+    }
+    // No manifest at this level. If the dirname looks like an npm scope
+    // (e.g. `@papercupai`), recurse one level (HMR bust marker) — `papercusp install <slug>`
+    // extracts scoped packages into `<scope>/<name>/`. Matches the runtime
+    // loader's behaviour (loader.test.ts > recurses into @scope/ dirs).
+    if (!e.name.startsWith('@')) continue;
+    const inner = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const sub of inner) {
+      if (sub.name.startsWith('.')) continue;
+      let subIsDir = sub.isDirectory();
+      if (!subIsDir && sub.isSymbolicLink()) {
+        const t = await fs.stat(join(dir, sub.name)).catch(() => null);
+        subIsDir = t?.isDirectory() ?? false;
+      }
+      if (!subIsDir) continue;
+      const subDir = join(dir, sub.name);
+      const subM = await readJson<PluginManifest>(join(subDir, 'papercusp.json'));
+      if (!subM?.name || !subM?.version) continue;
+      if (seen.has(subM.name)) continue;
+      seen.add(subM.name);
+      out.push({ ...subM, source, path: subDir });
+    }
   }
   return out;
 }
@@ -174,6 +201,105 @@ async function resolveProjectPath(slug: string): Promise<string | null> {
 }
 
 export const plugins = new Hono();
+
+plugins.get('/runtime/status', async (c) => {
+  const { pluginHostStatus, _resetPluginHostForTests } = await import('../../../lib/plugin-host-runtime');
+  if (c.req.query('reset') === '1') {
+    _resetPluginHostForTests();
+    const { _resetPluginApiRoutesForTests, mountPluginApiRoutes } = await import('../../../lib/plugin-api-mount');
+    _resetPluginApiRoutesForTests();
+    // Rebuild the in-memory apiRoutes registry so freshly-symlinked
+    // plugins become reachable without a server restart. The dispatcher
+    // route was registered once at boot and reads from this registry.
+    await mountPluginApiRoutes(plugins);
+  }
+  try {
+    const s = await pluginHostStatus();
+    return c.json(s);
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500);
+  }
+});
+
+plugins.post('/runtime/invoke-action', async (c) => {
+  // Diagnostic — invoke a plugin action via the in-process registry
+  // (different code path from the existing `/api/plugins/invoke` which
+  // shells out to the `papercusp` CLI). Useful for verifying that
+  // Phase 6b wiring is functional from the host's perspective.
+  //
+  // Body: { plugin: string; action: string; slug: string; params?: object }
+  const body = await c.req.json().catch(() => ({} as any));
+  const plugin = String(body?.plugin ?? '');
+  const action = String(body?.action ?? '');
+  const slug = String(body?.slug ?? '');
+  if (!plugin || !action || !slug) {
+    return c.json({ error: 'plugin, action, slug are all required' }, 400);
+  }
+  const project = (() => {
+    try {
+      const reg = JSON.parse(require('node:fs').readFileSync(require('node:os').homedir() + '/.restart-harness-projects.json', 'utf8'));
+      return (reg.projects ?? []).find((p: any) => p.slug === slug) ?? null;
+    } catch { return null; }
+  })();
+  const projectDir = project?.path ?? '/tmp';
+  const stateDir = project ? `${project.path}/.harness` : '/tmp';
+  const { invokePluginAction } = await import('../../../lib/plugin-host-runtime');
+  try {
+    const r = await invokePluginAction({
+      pluginName: plugin,
+      actionName: action,
+      installSlug: slug,
+      projectDir,
+      stateDir,
+      params: body?.params,
+      triggerSource: 'api',
+      triggerId: `diag-${Date.now()}`,
+    });
+    return c.json(r);
+  } catch (e: any) {
+    return c.json({ ok: false, error: e?.message ?? String(e) }, 500);
+  }
+});
+
+plugins.post('/runtime/fire-event', async (c) => {
+  // Diagnostic — fire a free-form event OR a typed lifecycle hook through
+  // the host runtime. Useful for smoke-testing handler wiring without
+  // touching the substrate's mission lifecycle.
+  //
+  // Body: { event: string; lifecycle?: keyof PluginHooks; slug?: string; args?: unknown[] }
+  const body = await c.req.json().catch(() => ({} as any));
+  const event = typeof body?.event === 'string' ? body.event : '';
+  const lifecycle = typeof body?.lifecycle === 'string' ? body.lifecycle : '';
+  const { firePluginEvent, firePluginLifecycle } = await import('../../../lib/plugin-host-runtime');
+  try {
+    if (lifecycle) {
+      const slug = String(body?.slug ?? 'diag');
+      const harnessSlugs = (() => {
+        try { return require('node:fs').readdirSync(require('node:os').homedir() + '/.papercusp/harnesses'); }
+        catch { return []; }
+      })();
+      const project = (() => {
+        try {
+          const reg = JSON.parse(require('node:fs').readFileSync(require('node:os').homedir() + '/.restart-harness-projects.json', 'utf8'));
+          return (reg.projects ?? []).find((p: any) => p.slug === slug) ?? null;
+        } catch { return null; }
+      })();
+      const ctxArgs = {
+        installSlug: slug,
+        projectDir: project?.path ?? '/tmp',
+        stateDir: project ? `${project.path}/.harness` : '/tmp',
+      };
+      const args = Array.isArray(body?.args) ? body.args : [];
+      await (firePluginLifecycle as any)(lifecycle, ctxArgs, ...args);
+      return c.json({ ok: true, fired: lifecycle, slug });
+    }
+    if (!event) return c.json({ error: 'event (string) or lifecycle (string) required' }, 400);
+    await firePluginEvent(event, body?.payload ?? {});
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ error: e?.message ?? String(e) }, 500);
+  }
+});
 
 plugins.get('/global', async (c) => {
   const items = await listPluginsIn(GLOBAL_PLUGINS_DIR, 'global');
@@ -298,8 +424,8 @@ plugins.get('/:slug/contributions', async (c) => {
       if (seen.has(p.name)) continue;
       // Phase D: gate global plugins behind enabled-plugins.json. The CLI
       // keys enabled-plugins.json by the on-disk directory name (which may
-      // be a short slug like `docs-viewer` even when the manifest's `name`
-      // is the scoped form `@papercupai/docs-viewer`). Match either form.
+      // be a short slug like `fumadocs` even when the manifest's `name`
+      // is the scoped form `@papercupai/fumadocs`). Match either form.
       const dirBasename = basename(p.path);
       if (s.source === 'global' && !(enabledSet.has(p.name) || enabledSet.has(dirBasename))) continue;
       seen.add(p.name);

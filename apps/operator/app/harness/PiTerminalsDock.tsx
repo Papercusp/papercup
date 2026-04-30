@@ -380,6 +380,26 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
       // mount. Without this, clicking "chat" on the dashboard tab silently
       // drops the event because the dock isn't mounted yet — the user sees
       // only the terminal restored from saved layout.
+      // Drain any chat-open request stashed by the Oracle dock before
+      // navigation. Survives the route change because it lives in
+      // sessionStorage, not module memory.
+      try {
+        const raw = sessionStorage.getItem('oracle_pending_open_chat');
+        if (raw) {
+          const detail = JSON.parse(raw) as Partial<OpenChatEventDetail> & { slug?: string; chatId?: string };
+          if (detail?.slug === slug && detail.chatId) {
+            pendingOpens.push({
+              slug: detail.slug,
+              chatId: detail.chatId,
+              role: detail.role,
+              title: detail.title,
+              featureId: detail.featureId,
+            });
+          }
+          sessionStorage.removeItem('oracle_pending_open_chat');
+        }
+      } catch { /* ignore */ }
+
       drainPendingOpens(event.api, slug);
 
       // Async cleanup: remove chat panels for chats that no longer exist

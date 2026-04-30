@@ -1,7 +1,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 import dynamic from 'next/dynamic';
+import * as Tabs from '@radix-ui/react-tabs';
 import { Pencil, Network, PencilRuler } from 'lucide-react';
 
 const WriteView = dynamic(() => import('./WriteView').then((m) => m.WriteView), { ssr: false });
@@ -18,7 +20,10 @@ const TOOLS: Array<{ id: SubTab; icon: typeof Pencil; label: string; caption: st
 ];
 
 export function BrainstormFull({ slug }: { slug: string }) {
-  const [sub, setSub] = useState<SubTab>('write');
+  const [sub, setSub] = useQueryState(
+    'brainstormTab',
+    parseAsStringEnum<SubTab>(['write', 'map', 'canvas']).withDefault('write'),
+  );
   const [md, setMd] = useState('');
   const [isCompact, setIsCompact] = useState(false);
 
@@ -33,41 +38,33 @@ export function BrainstormFull({ slug }: { slug: string }) {
   const activeTool = useMemo(() => TOOLS.find((t) => t.id === sub) ?? TOOLS[0], [sub]);
 
   const workspacePanel = (
-    <section className="h-panel h-bsfull-panel primary" aria-label="Brainstorm workspace">
-      <div className="h-panel-head h-bsfull-head">
-        <div className="h-bsfull-titleblock">
-          <span className="h-panel-title">brainstorm workspace</span>
-          <span className="h-bsfull-caption">{activeTool.caption}</span>
+    <Tabs.Root value={sub} onValueChange={(v) => setSub(v as SubTab)} asChild>
+      <section className="h-panel h-bsfull-panel primary" aria-label="Brainstorm workspace">
+        <div className="h-panel-head h-bsfull-head">
+          <div className="h-bsfull-titleblock">
+            <span className="h-panel-title">brainstorm workspace</span>
+            <span className="h-bsfull-caption">{activeTool.caption}</span>
+          </div>
+          <Tabs.List className="h-bsfull-subtabs" aria-label="Brainstorm views">
+            {TOOLS.map((t) => (
+              <Tabs.Trigger key={t.id} value={t.id} className="h-bsfull-sub">
+                <t.icon size={12} />
+                <span>{t.label}</span>
+              </Tabs.Trigger>
+            ))}
+          </Tabs.List>
         </div>
-        <div className="h-bsfull-subtabs" role="tablist" aria-label="Brainstorm views">
-          {TOOLS.map((t) => (
-            <button
-              key={t.id}
-              id={`brainstorm-tab-${t.id}`}
-              className={`h-bsfull-sub${sub === t.id ? ' on' : ''}`}
-              onClick={() => setSub(t.id)}
-              role="tab"
-              aria-selected={sub === t.id}
-              aria-controls="brainstorm-workspace-panel"
-              type="button"
-            >
-              <t.icon size={12} />
-              <span>{t.label}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div
-        id="brainstorm-workspace-panel"
-        className="h-bsfull-main"
-        role="tabpanel"
-        aria-labelledby={`brainstorm-tab-${sub}`}
-      >
-        {sub === 'write' && <WriteView slug={slug} onMarkdownChange={setMd} />}
-        {sub === 'map' && <MapView markdown={md} />}
-        {sub === 'canvas' && <CanvasView slug={slug} />}
-      </div>
-    </section>
+        <Tabs.Content value="write" className="h-bsfull-main">
+          <WriteView slug={slug} onMarkdownChange={setMd} />
+        </Tabs.Content>
+        <Tabs.Content value="map" className="h-bsfull-main">
+          <MapView markdown={md} />
+        </Tabs.Content>
+        <Tabs.Content value="canvas" className="h-bsfull-main">
+          <CanvasView slug={slug} />
+        </Tabs.Content>
+      </section>
+    </Tabs.Root>
   );
 
   const partnerPanel = (

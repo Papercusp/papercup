@@ -16,9 +16,33 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from '@papercusp/plugin-sdk';
+import { satisfies } from './semver';
+
+// Lazy + cached read of PAPERCUSP_RUNTIME_VERSION. Top-level destructure of
+// the CJS-loaded plugin-sdk namespace yields undefined under Node 25 + tsx
+// 4.21 (the named export is on `.default` and named-binding attachment
+// happens after the importing module has already evaluated). Reading it
+// inside an async function works because the namespace is fully populated
+// by then.
+let _runtimeVersion: string | undefined;
+async function getRuntimeVersion(): Promise<string> {
+  // Escape hatch (incident-response only — see /docs/spec/plugin-migration):
+  // PAPERCUSP_RUNTIME_VERSION_OVERRIDE makes the loader treat that string as
+  // the runtime version when validating plugin ranges. Read on every call so
+  // operators can flip it via env without restarting the host.
+  const override = process.env.PAPERCUSP_RUNTIME_VERSION_OVERRIDE;
+  if (override && override.length > 0) return override;
+  if (_runtimeVersion) return _runtimeVersion;
+  const sdk = await import('@papercusp/plugin-sdk');
+  const v = (sdk as { PAPERCUSP_RUNTIME_VERSION?: string }).PAPERCUSP_RUNTIME_VERSION
+    ?? (sdk as { default?: { PAPERCUSP_RUNTIME_VERSION?: string } }).default?.PAPERCUSP_RUNTIME_VERSION;
+  if (!v) throw new Error('plugin-loader: @papercusp/plugin-sdk did not export PAPERCUSP_RUNTIME_VERSION');
+  _runtimeVersion = v;
+  return v;
+}
 
 export interface LoadedPlugin {
   plugin: Plugin;
@@ -58,6 +82,12 @@ async function locateEntry(dir: string): Promise<string | null> {
   // runtime. When both exist, .js is the runtime-canonical artifact and
   // .ts is just for editor tooling.
   const candidates = [
+    // Prefer `.cjs` for plugins whose package.json declares `type: module`
+    // — `.js` is interpreted as ESM there and our CJS createRequire path
+    // would fail to bind `module.exports`. The runtime tries each in order;
+    // first hit wins.
+    'index.cjs',
+    join('dist', 'index.cjs'),
     'index.js',
     'index.mjs',
     join('dist', 'index.js'),
@@ -95,9 +125,20 @@ async function importPluginEntry(entryPath: string): Promise<Plugin | { error: s
   }
 }
 
-function validate(plugin: Plugin, manifest: ManifestShape): string | null {
+async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string | null> {
   if (plugin.name !== manifest.name) return `manifest.name "${manifest.name}" doesn't match plugin.name "${plugin.name}"`;
   if (plugin.version !== manifest.version) return `manifest.version "${manifest.version}" doesn't match plugin.version "${plugin.version}"`;
+  // Runtime version constraint — plugins declare `papercusp: '<range>'` in
+  // their manifest. Refuse to load if the host's runtime is outside the
+  // declared range. Plugins that omit `papercusp` are considered legacy and
+  // allowed (with a future-deprecation warning expected at the host).
+  const range = (plugin as unknown as { papercusp?: string }).papercusp ?? manifest.papercusp;
+  if (range) {
+    const runtimeVersion = await getRuntimeVersion();
+    if (!satisfies(runtimeVersion, range)) {
+      return `plugin "${plugin.name}" requires papercusp runtime "${range}" but host is "${runtimeVersion}"`;
+    }
+  }
   if (!Array.isArray(plugin.capabilities)) {
     return `plugin "${plugin.name}" must declare \`capabilities: Capability[]\` (can be empty array, but the field is required)`;
   }
@@ -122,17 +163,25 @@ function validate(plugin: Plugin, manifest: ManifestShape): string | null {
 }
 
 /** Load a single plugin from a known directory. */
-export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<LoadedPlugin | { error: string; path: string }> {
+export async function loadPluginFromDir(dir: string, source: LoadedPlugin['source']): Promise<LoadedPlugin | { error: string; path: string } | { skipped: 'not-a-plugin'; path: string }> {
   const path = resolve(dir);
   const manifest = await readManifest(path);
-  if (!manifest) return { error: 'missing or invalid papercusp.json', path };
+  // A directory with neither manifest nor entry point isn't a misconfigured
+  // plugin — it's not a plugin dir at all (scope dir like `@papercupai/`,
+  // or a stray dir like `pi/` for pi-omp integration). Skip silently
+  // instead of polluting the error log.
+  if (!manifest) {
+    const entry = await locateEntry(path);
+    if (!entry) return { skipped: 'not-a-plugin', path };
+    return { error: 'missing or invalid papercusp.json', path };
+  }
   const entry = await locateEntry(path);
-  if (!entry) return { error: 'no entry point found (looked for index.ts, index.js, index.mjs, dist/index.js, src/index.ts)', path };
+  if (!entry) return { error: 'no entry point found (looked for index.cjs, dist/index.cjs, index.js, index.mjs, dist/index.js, index.ts, src/index.ts)', path };
   const importResult = await importPluginEntry(entry);
   if (!importResult) return { error: `import returned null/non-object from ${entry}`, path };
   if ('error' in importResult) return { error: `import threw at ${entry}: ${importResult.error}`, path };
   const plugin = importResult;
-  const validationError = validate(plugin, manifest);
+  const validationError = await validate(plugin, manifest);
   if (validationError) return { error: validationError, path };
   return { plugin, path, source };
 }
@@ -183,6 +232,15 @@ export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
   }
   const globalDir = opts.globalPluginsDir ?? join(PAPERCUSP_ROOT, 'global-plugins');
   for (const d of await listSubdirs(globalDir)) {
+    // npm-style scope dirs (`@papercupai/`) hold one or more plugins; treat
+    // each child dir as a candidate, not the scope itself. The scope dir
+    // never carries its own manifest.
+    if (basename(d).startsWith('@')) {
+      for (const child of await listSubdirs(d)) {
+        candidates.push({ dir: child, source: 'global' });
+      }
+      continue;
+    }
     candidates.push({ dir: d, source: 'global' });
   }
 
@@ -190,6 +248,7 @@ export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
   const seen = new Set<string>();
   for (const c of candidates) {
     const result = await loadPluginFromDir(c.dir, c.source);
+    if ('skipped' in result) continue;
     if ('error' in result) {
       errors.push(result);
       continue;
@@ -299,3 +358,13 @@ export {
   type RealServices,
   type CreatePapercuspApiInput,
 } from './api-factory';
+
+export {
+  ServerActionRegistry,
+  ActionRegistryError,
+  type ActionDecl,
+  type ActionHandler,
+  type ActionResult,
+  type InvokeRequest,
+  type RegistryOptions,
+} from './actions';

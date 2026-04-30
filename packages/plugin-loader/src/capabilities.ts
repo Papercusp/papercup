@@ -42,13 +42,65 @@ export interface CapabilityCheckContext {
 /**
  * Check whether a plugin holds a specific capability.
  *
- * Supports literal match AND resource-scoped wildcard match. e.g., a plugin
- * declaring `'http:fetch:youtube.com'` would pass a check for that exact
- * string. We do NOT support `*` wildcards in declared capabilities — that
- * would defeat the purpose. Plugins must enumerate domains/names explicitly.
+ * Supports two flavors of resource-scoped wildcard in the *declared* caps:
+ *
+ *   - Subdomain (used by `http:fetch`): `http:fetch:*.youtube.com` matches
+ *     any `http:fetch:<sub>.youtube.com` request. The leading `*.` is
+ *     literal — `*foo` (no dot) does not match.
+ *
+ *   - Suffix (used by `secrets:read`):  `secrets:read:YT_*` matches any
+ *     `secrets:read:YT_<rest>` request. Useful for plugins that consume
+ *     a family of related secrets without declaring each one.
+ *
+ * Wildcards are resolved scoped to a `prefix:` namespace; a `*` wildcard
+ * cap can never match a request from a different prefix.
  */
 export function hasCapability(ctx: CapabilityCheckContext, cap: Capability | string): boolean {
-  return ctx.capabilities.includes(cap as Capability);
+  const target = String(cap);
+  if (ctx.capabilities.includes(target as Capability)) return true;
+  for (const declared of ctx.capabilities) {
+    if (matchWildcardCap(String(declared), target)) return true;
+  }
+  return false;
+}
+
+/**
+ * Wildcard matching for declared caps. Returns true iff `declared` is a
+ * wildcard pattern and `requested` is in its match set. Both inputs share
+ * the form `<prefix>:<resource>`; the prefix must match exactly.
+ *
+ * Patterns recognised in `declared`:
+ *   1. `<prefix>:*.<suffix>`     subdomain-style: requested `<prefix>:<host>`
+ *                                where `host` ends with `.<suffix>` matches.
+ *   2. `<prefix>:<head>*`        prefix-style:    requested `<prefix>:<x>`
+ *                                where `x` starts with `<head>` matches.
+ *                                (`<head>` must be non-empty to avoid the
+ *                                degenerate "match-everything" cap.)
+ */
+export function matchWildcardCap(declared: string, requested: string): boolean {
+  if (!declared.includes('*')) return false;
+  const dColon = declared.indexOf(':');
+  const rColon = requested.indexOf(':');
+  if (dColon < 0 || rColon < 0) return false;
+  // Cap may have multiple colon-separated segments (`http:fetch:host`).
+  // Use the last colon as the prefix-vs-resource split.
+  const dPrefix = declared.slice(0, declared.lastIndexOf(':'));
+  const rPrefix = requested.slice(0, requested.lastIndexOf(':'));
+  if (dPrefix !== rPrefix) return false;
+  const dResource = declared.slice(declared.lastIndexOf(':') + 1);
+  const rResource = requested.slice(requested.lastIndexOf(':') + 1);
+  // Subdomain wildcard: `*.suffix` matches host ending in `.suffix`.
+  if (dResource.startsWith('*.')) {
+    const suffix = dResource.slice(1); // ".suffix"
+    return rResource.endsWith(suffix) && rResource.length > suffix.length;
+  }
+  // Prefix wildcard: `head*` (head must be non-empty).
+  if (dResource.endsWith('*')) {
+    const head = dResource.slice(0, -1);
+    if (head.length === 0) return false;
+    return rResource.startsWith(head) && rResource.length > head.length;
+  }
+  return false;
 }
 
 /**
@@ -127,9 +179,9 @@ export function wrapServiceWithCaps<T extends Record<string, (...a: any[]) => an
  * Wrap fetch with domain allowlist enforcement. Plugin can only hit domains
  * that appear in its `http:fetch:<domain>` capabilities.
  *
- * Domain matching: exact host. Subdomains do NOT match wildcards in the
- * declared cap; declare each one explicitly. (Future: allow `*.domain.com`
- * if needed; for now, strict.)
+ * Matching: exact host, OR subdomain wildcard (`http:fetch:*.youtube.com`
+ * matches any `http:fetch:<sub>.youtube.com`). Wildcards are evaluated by
+ * `hasCapability`.
  */
 export function makeFetchProxy(
   ctx: CapabilityCheckContext,
@@ -154,8 +206,9 @@ export function makeFetchProxy(
 
 /**
  * Wrap the secrets service so each `read(name)` call checks for the
- * resource-specific capability `secrets:read:<NAME>`. Plugins must
- * declare each secret they need by name; no wildcards.
+ * resource-specific capability `secrets:read:<NAME>`. Plugins may declare
+ * exact names or prefix wildcards (`secrets:read:YT_*` matches any name
+ * starting with `YT_`). Wildcards are evaluated by `hasCapability`.
  */
 export function makeSecretsProxy(
   ctx: CapabilityCheckContext,

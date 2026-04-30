@@ -1,18 +1,21 @@
 /**
  * Phase 6b item 2 — apiRoutes mounting.
  *
- * Discovers loaded plugins on first call and mounts each plugin's
- * `apiRoutes` (a Hono app) at `/api/plugins/<plugin-name>`.
+ * Discovers loaded plugins on first call and registers each plugin's
+ * `apiRoutes` (a Hono app or any object with a `fetch(req)` method)
+ * into an in-memory registry keyed by safe-name.
  *
- * The mount is idempotent and lazy: the first call to `mountPluginApiRoutes()`
- * does the discovery + mounting and caches a promise so subsequent calls
- * become no-ops. Failures during a single plugin's load are caught + logged
- * so a misbehaving plugin can't take down the whole API surface.
+ * `installPluginApiDispatcher(plugins)` adds ONE catch-all route on the
+ * supplied Hono router that looks up the requested plugin and forwards
+ * the request to its handler. We use runtime dispatch instead of
+ * `Hono.mount(...)` because Hono's `app.route(prefix, sub)` snapshots the
+ * sub-app's routes at registration time — late mounts (after server boot
+ * or after a hot-reload reset) silently no-op.
  *
  * Plugin authors expose `apiRoutes` in their manifest as a Hono app. The
- * SDK types this as `unknown` (to keep the SDK Hono-version-agnostic); we
- * duck-type at mount time and skip plugins that don't expose a Hono-shaped
- * route() / fetch() handler.
+ * SDK types this as `unknown` (to keep the SDK Hono-version-agnostic);
+ * we duck-type at registration time and skip plugins that don't expose
+ * a Hono-shaped `fetch` handler.
  */
 import type { Hono } from 'hono';
 import { loadPlugins, type LoadedPlugin } from '@papercusp/plugin-loader';
@@ -21,7 +24,6 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 interface ApiRouteHandle {
-  // Hono and Hono-compatible routers must implement at minimum `fetch`.
   fetch: (req: Request, ...rest: any[]) => Promise<Response> | Response;
 }
 
@@ -41,16 +43,16 @@ function discoverHarnessSlugs(): string[] {
   }
 }
 
-// Pin the mount-result cache on globalThis so it survives Next.js HMR
-// module reloads. Without this, every HMR cycle resets the module-scope
-// state and re-runs the (slow + always-failing in dev) plugin discovery
-// on the next request, which serialised behind the substrate's event loop
-// makes /api/* calls take 5-15s in dev.
+// Pin the registry on globalThis so HMR module reloads don't lose mounts.
 const __mountKey = '__papercuspPluginApiMount';
 type Result = { mounted: number; skipped: number; errors: string[] };
-type Globals = { [__mountKey]?: { promise: Promise<Result> | null; counts: Result | null } };
+type Registry = Map<string, ApiRouteHandle>;
+type CacheShape = { promise: Promise<Result> | null; counts: Result | null; registry: Registry };
+type Globals = { [__mountKey]?: CacheShape };
 const __globals = globalThis as Globals;
-if (!__globals[__mountKey]) __globals[__mountKey] = { promise: null, counts: null };
+if (!__globals[__mountKey]) {
+  __globals[__mountKey] = { promise: null, counts: null, registry: new Map() };
+}
 const __cache = __globals[__mountKey]!;
 
 export interface MountPluginApiRoutesOptions {
@@ -58,22 +60,31 @@ export interface MountPluginApiRoutesOptions {
   globalPluginsDir?: string;
   /** Override the harness-slug list (tests). Defaults to scanning ~/.papercusp/harnesses. */
   harnessSlugs?: string[];
+  /**
+   * Compatibility shim — ignored (the runtime now uses an in-router
+   * dispatcher rather than path mounts). Accepted so existing callers
+   * don't break.
+   */
+  mountPrefix?: string;
 }
 
 /**
- * Mount plugin apiRoutes onto the parent Hono app. Idempotent: safe to call
- * from multiple modules; only does work the first time per options snapshot.
+ * Build / refresh the in-memory plugin-apiRoutes registry. Idempotent
+ * after first call until `_resetPluginApiRoutesForTests()` is invoked.
  *
- * Resolves with a summary of what was mounted, what was skipped, and any
- * errors encountered. Always resolves — never rejects (errors are collected).
+ * The `parent` argument is accepted for back-compat with the old mount
+ * API but is no longer used — dispatch happens via
+ * `installPluginApiDispatcher(plugins)` which registers a single
+ * catch-all route on the plugins sub-app.
  */
-export function mountPluginApiRoutes(parent: Hono<any, any, any>, opts: MountPluginApiRoutesOptions = {}): Promise<{ mounted: number; skipped: number; errors: string[] }> {
+export function mountPluginApiRoutes(_parent: Hono<any, any, any>, opts: MountPluginApiRoutesOptions = {}): Promise<{ mounted: number; skipped: number; errors: string[] }> {
   if (__cache.promise) return __cache.promise;
 
   __cache.promise = (async () => {
     const errors: string[] = [];
     let mounted = 0;
     let skipped = 0;
+    __cache.registry.clear();
 
     let discovered: { loaded: LoadedPlugin[]; errors: Array<{ error: string; path: string }> };
     try {
@@ -99,16 +110,9 @@ export function mountPluginApiRoutes(parent: Hono<any, any, any>, opts: MountPlu
         skipped++;
         continue;
       }
-      try {
-        const safeName = lp.plugin.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        // Use Hono.mount() — accepts any fetch handler (including a real
-        // Hono instance via its bound .fetch). Works for plugins that ship
-        // Hono apps and plugins that ship custom Web-Fetch handlers alike.
-        parent.mount(`/plugins/${safeName}`, apiRoutes.fetch.bind(apiRoutes) as any);
-        mounted++;
-      } catch (e: any) {
-        errors.push(`plugin "${lp.plugin.name}" mount failed: ${e?.message ?? String(e)}`);
-      }
+      const safeName = lp.plugin.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      __cache.registry.set(safeName, apiRoutes);
+      mounted++;
     }
 
     for (const err of discovered.errors) {
@@ -123,13 +127,62 @@ export function mountPluginApiRoutes(parent: Hono<any, any, any>, opts: MountPlu
   return __cache.promise;
 }
 
+async function ensureRegistryBuilt(): Promise<void> {
+  if (__cache.promise) {
+    await __cache.promise;
+    return;
+  }
+  // Lazy rebuild: install/uninstall reset paths clear the cache and don't
+  // re-call mountPluginApiRoutes themselves. We rehydrate on first dispatch.
+  await mountPluginApiRoutes(null as any);
+}
+
+/**
+ * Register a single catch-all route on the given Hono router that
+ * forwards `/<safe-name>/...` requests to the corresponding plugin's
+ * apiRoutes handler. Safe to call once at module init — the underlying
+ * registry is hot-swappable without re-registering this route.
+ */
+export function installPluginApiDispatcher(router: Hono<any, any, any>): void {
+  router.all('/:pluginName/*', async (c) => {
+    await ensureRegistryBuilt();
+    const name = c.req.param('pluginName');
+    const handle = __cache.registry.get(name);
+    if (!handle) return c.notFound();
+    // Hand the inner handler a Request stripped of the `/<plugin-name>` prefix
+    // and the parent's basePath so its own internal routing matches the way
+    // it does in standalone tests.
+    const url = new URL(c.req.url);
+    const stripped = url.pathname.replace(new RegExp(`^.*/plugins/${name}`), '') || '/';
+    const innerUrl = url.origin + stripped + url.search;
+    const innerReq = new Request(innerUrl, c.req.raw);
+    return handle.fetch(innerReq);
+  });
+  router.all('/:pluginName', async (c) => {
+    await ensureRegistryBuilt();
+    const name = c.req.param('pluginName');
+    const handle = __cache.registry.get(name);
+    if (!handle) return c.notFound();
+    const url = new URL(c.req.url);
+    const innerUrl = url.origin + '/' + url.search;
+    const innerReq = new Request(innerUrl, c.req.raw);
+    return handle.fetch(innerReq);
+  });
+}
+
 /** Inspector for tests / health endpoints — null until first mount completes. */
 export function pluginApiRoutesStatus() {
   return __cache.counts;
+}
+
+/** Read-only view of the registry — used by diagnostics. */
+export function pluginApiRegistryNames(): string[] {
+  return Array.from(__cache.registry.keys()).sort();
 }
 
 /** Resets the cache. Tests use this to re-mount with different fixtures. */
 export function _resetPluginApiRoutesForTests() {
   __cache.promise = null;
   __cache.counts = null;
+  __cache.registry.clear();
 }

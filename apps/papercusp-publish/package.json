@@ -1,0 +1,28 @@
+{
+  "name": "@papercusp/publish-worker",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "deploy:secrets": "bash scripts/install-secrets.sh",
+    "d1:apply:local": "wrangler d1 execute papercusp-publish --local --file migrations/001_init.sql",
+    "d1:apply:remote": "wrangler d1 execute papercusp-publish --remote --file migrations/001_init.sql",
+    "test": "vitest run --passWithNoTests",
+    "smoke": "tsx scripts/smoke-test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@papercusp/publish-auth": "*",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250101.0",
+    "@papercusp/test-config": "*",
+    "typescript": "^5",
+    "vitest": "^4.1.4",
+    "wrangler": "^4.0.0"
+  }
+}

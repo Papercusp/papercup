@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { Checkbox } from './Checkbox';
 
 interface Decision {
   ts: number;
@@ -76,20 +78,20 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
   }, [data]);
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Decisions`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Decisions — {slug}</strong>
           <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>orchestrator verb timeline</span>
           <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.8rem', color: '#d1d5db', cursor: 'pointer' }}>
-            <input type="checkbox" checked={hideGhosts} onChange={(e) => setHideGhosts(e.target.checked)} />
+            <Checkbox checked={hideGhosts} onChange={setHideGhosts} ariaLabel="Hide ghosts" />
             hide ghosts
           </label>
           <span style={{ fontSize: '0.75rem', color: '#6b7280' }}>auto-refresh 5s</span>
@@ -148,8 +150,7 @@ export default function DecisionsPanel({ slug, onClose }: Props) {
             <DecisionsGrid rows={filtered} />
           )}
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }
 

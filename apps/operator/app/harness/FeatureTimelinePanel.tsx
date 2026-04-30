@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Modal } from './Modal';
 
 interface TimelineEvent {
   ts: number;
@@ -53,25 +54,17 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
     load();
   }, [load]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
   const events = data?.events ?? [];
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Feature timeline`}
+      srOnlyTitle
+      zIndex={100}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 820, maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 820, maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Timeline</strong>
           <span style={{ fontFamily: 'monospace', color: '#9ca3af', fontSize: '0.8rem' }}>{featureId}</span>
@@ -140,7 +133,6 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
             </ol>
           )}
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }

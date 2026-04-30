@@ -2,7 +2,7 @@
  * Tests for capability proxy + fetch/secrets gates. Run with:
  *   cd packages/papercusp-plugin-loader && npx tsx --test src/capabilities.test.ts
  */
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import {
   hasCapability,
@@ -38,6 +38,35 @@ describe('hasCapability / requireCapability', () => {
       () => requireCapability(ctx, 'tasks:write'),
       (e: Error) => e instanceof MissingCapabilityError,
     );
+  });
+
+  it('subdomain wildcard `http:fetch:*.foo.com` matches `http:fetch:api.foo.com`', () => {
+    const ctx = { pluginName: 'p', capabilities: ['http:fetch:*.foo.com'] as any };
+    assert.equal(hasCapability(ctx, 'http:fetch:api.foo.com'), true);
+    assert.equal(hasCapability(ctx, 'http:fetch:deep.api.foo.com'), true);
+  });
+
+  it('subdomain wildcard does NOT match the bare suffix `foo.com`', () => {
+    const ctx = { pluginName: 'p', capabilities: ['http:fetch:*.foo.com'] as any };
+    assert.equal(hasCapability(ctx, 'http:fetch:foo.com'), false);
+    assert.equal(hasCapability(ctx, 'http:fetch:.foo.com'), false);
+  });
+
+  it('subdomain wildcard does NOT cross prefixes', () => {
+    const ctx = { pluginName: 'p', capabilities: ['http:fetch:*.foo.com'] as any };
+    assert.equal(hasCapability(ctx, 'secrets:read:api.foo.com'), false);
+  });
+
+  it('prefix wildcard `secrets:read:YT_*` matches `secrets:read:YT_API_KEY`', () => {
+    const ctx = { pluginName: 'p', capabilities: ['secrets:read:YT_*'] as any };
+    assert.equal(hasCapability(ctx, 'secrets:read:YT_API_KEY'), true);
+    assert.equal(hasCapability(ctx, 'secrets:read:YT_'), false); // empty tail rejected
+    assert.equal(hasCapability(ctx, 'secrets:read:OTHER'), false);
+  });
+
+  it('degenerate `secrets:read:*` (empty head) is rejected', () => {
+    const ctx = { pluginName: 'p', capabilities: ['secrets:read:*'] as any };
+    assert.equal(hasCapability(ctx, 'secrets:read:ANY'), false);
   });
 });
 

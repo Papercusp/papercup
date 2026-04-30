@@ -57,7 +57,12 @@ export type Capability =
   | `events:listen:${string}`
 
   // Roles. e.g. 'roles:register:narrator'.
-  | `roles:register:${string}`;
+  | `roles:register:${string}`
+
+  // Subprocess execution — manifest declares each binary the plugin's
+  // `ctx.spawn(bin, args)` may invoke. e.g. 'compute:exec:ffmpeg'.
+  // Wildcards (`compute:exec:py-*`) match the binary basename.
+  | `compute:exec:${string}`;
 
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -78,6 +83,71 @@ export interface PapercuspContext {
   pluginDataDir: string;
   /** Plugin-scoped logger; output goes to the harness run log. */
   log: (msg: string) => void;
+  /**
+   * Action registry — plugins call `ctx.actions.register(name, handler)` from
+   * `init()` to bind handlers for the actions declared in their manifest.
+   * Sealed by the host after `init()` returns. Optional because `fire-hook`
+   * CLI invocations don't need it; the in-process host always provides it.
+   */
+  actions?: PluginActionRegistry;
+
+  /**
+   * Capability-gated subprocess spawn. Plugins call
+   * `ctx.spawn('ffmpeg', ['-i', input, output], { cwd, env, stdin })`
+   * and receive `{stdout, stderr, code}` after the process exits.
+   *
+   * The host enforces `compute:exec:<binary-basename>` against the plugin's
+   * declared capabilities before invoking. The provided `bin` is resolved
+   * via PATH; absolute paths are rejected (use the binary name + caps).
+   *
+   * Optional — `fire-hook` CLI invocations don't get a spawn surface.
+   */
+  spawn?: PluginSpawn;
+}
+
+export interface PluginSpawnOptions {
+  /** Working directory; defaults to `pluginDataDir`. */
+  cwd?: string;
+  /** Additional env vars merged on top of process.env. */
+  env?: Record<string, string>;
+  /** Stdin payload to write before closing stdin. */
+  stdin?: string | Uint8Array;
+  /** Hard timeout in ms; SIGKILL on expiry. Default 30s. */
+  timeoutMs?: number;
+  /** Max captured stdout/stderr size in bytes. Default 1 MiB each. */
+  maxBufferBytes?: number;
+}
+
+export interface PluginSpawnResult {
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  /** True if the process was killed by the host (timeout, abort). */
+  killed: boolean;
+}
+
+export type PluginSpawn = (
+  bin: string,
+  args: readonly string[],
+  opts?: PluginSpawnOptions,
+) => Promise<PluginSpawnResult>;
+
+/**
+ * Per-plugin handle for binding action implementations during `init()`.
+ *
+ * The host validates each `register()` call against the plugin's
+ * manifest-declared `actions[]` and `capabilities[]`, then seals the
+ * registry after `init()` returns. Subsequent `register()` calls throw.
+ */
+export interface PluginActionRegistry {
+  register(
+    name: string,
+    handler: (
+      ctx: PapercuspContext,
+      params: unknown,
+      signal: AbortSignal,
+    ) => Promise<{ ok: boolean; result?: unknown; error?: string }> | { ok: boolean; result?: unknown; error?: string },
+  ): void;
 }
 
 
@@ -356,6 +426,18 @@ export interface PluginSchemaDef {
   ddlPath: string;
 }
 
+/**
+ * Manifest.schema field — accepted shapes (the install path normalizes them).
+ *
+ * Canonical: a single PluginSchemaDef or an array of them. Legacy: a bare
+ * string array of DDL paths (no schemaName association). New plugins should
+ * use the canonical form.
+ */
+export type PluginSchemaField =
+  | PluginSchemaDef
+  | PluginSchemaDef[]
+  | string[];
+
 
 /* ─────────────────────────────────────────────────────────────────────
  * The main plugin shape.
@@ -367,7 +449,37 @@ export interface PluginSchemaDef {
  * resolve, schema DDL applies cleanly, UI components import.
  * ───────────────────────────────────────────────────────────────────── */
 
+/**
+ * Action declaration — appears in `Plugin.actions[]` AND in `papercusp.json`.
+ * Server-runtime actions are registered imperatively from `init()` via
+ * `ctx.actions.register(name, handler)`. The host dispatches surface events
+ * (toolbar clicks, mission-done, etc.) to the registered handler.
+ */
+export interface ActionDefinition {
+  /** Action name. Must match a key registered via ctx.actions.register(). */
+  name: string;
+  /** Human-readable button label for harness-toolbar etc. */
+  label?: string;
+  /** Where this action surfaces in the host UI / lifecycle. */
+  surfaces?: ('mission-done' | 'harness-toolbar' | 'feature-row' | 'plugin-detail' | string)[];
+  /** Capabilities this action additionally requires beyond the plugin's own. */
+  capabilities?: Capability[];
+  /** Server-side handler hints. */
+  serverHandler?: {
+    /** Per-invocation timeout in seconds (host enforces via AbortSignal). */
+    timeoutSec?: number;
+  };
+  /** JSON-Schema for the params object the handler receives. */
+  paramsSchema?: Record<string, unknown>;
+}
+
 export interface Plugin {
+  /**
+   * Manifest discriminator. Mirrors the `kind` field in papercusp.json so
+   * `Plugin` literals in source can match. The loader treats `'plugin'` as
+   * default; other values reserve room for future package types.
+   */
+  kind?: 'plugin' | 'service' | 'theme' | 'harness';
   /** Unique plugin name (filesystem dir + Postgres schema prefix). */
   name: string;
   /** Plugin semver. */
@@ -376,6 +488,8 @@ export interface Plugin {
   papercusp: string;
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
+  /** Action declarations. Each must be registered from `init()` to be invocable. */
+  actions?: ActionDefinition[];
 
   /** Declarative permission manifest. Loader enforces these at every API call. */
   capabilities: Capability[];
@@ -407,7 +521,7 @@ export interface Plugin {
   apiRoutes?: unknown;
 
   /** Postgres schema this plugin owns. */
-  schema?: PluginSchemaDef;
+  schema?: PluginSchemaField;
 
   /**
    * JSON-Schema describing config keys this plugin accepts under
@@ -437,3 +551,25 @@ export interface ServiceDef {
 export function defineService(def: ServiceDef): ServiceDef {
   return def;
 }
+
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Runtime version — the canonical "host runtime" semver. Plugin manifests
+ * declare `papercusp: '<range>'` (e.g. `^0.1.0`) and the loader validates
+ * the range against this constant at load time.
+ *
+ * This is intentionally distinct from the @papercusp/plugin-sdk package
+ * version. The SDK package version tracks shape changes to types in this
+ * file; the runtime version tracks behavior + lifecycle changes that
+ * plugins actually depend on (which fire-points exist, what services
+ * back PapercuspApi, etc).
+ *
+ * Bump rules:
+ *   - patch: bug fixes, internal changes invisible to plugins.
+ *   - minor: add new optional surface (new lifecycle hook, new service,
+ *     new optional ctx field). Backwards-compatible.
+ *   - major: remove or rename existing surface. Bumps `0.x → 1.x` etc.
+ *     Plugins with `^0.1` constraint will refuse to load against `1.x`.
+ * ───────────────────────────────────────────────────────────────────── */
+
+export const PAPERCUSP_RUNTIME_VERSION = '0.1.0' as const;

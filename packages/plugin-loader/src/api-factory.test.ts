@@ -2,7 +2,7 @@
  * Tests for the DI container factory.  Run with:
  *   cd packages/papercusp-plugin-loader && npx tsx --test src/api-factory.test.ts
  */
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import assert from 'node:assert/strict';
 import { createPapercuspApi, type RealServices } from './api-factory.ts';
 import { MissingCapabilityError, UnknownMethodError } from './capabilities.ts';

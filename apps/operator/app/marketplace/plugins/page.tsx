@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import { Suspense } from 'react';
 import MarketplaceList from '../MarketplaceList';
 
 interface CatalogEntry {
@@ -59,41 +59,40 @@ async function loadInstalledPlugins(): Promise<InstalledPluginRecord[]> {
   } catch { return []; }
 }
 
+export const dynamic = 'force-dynamic';
+
 export default async function PluginsPage() {
   const [catalog, installedTemplates, installedPlugins] = await Promise.all([
     loadCatalog(),
     loadInstalledHarnesses(),
     loadInstalledPlugins(),
   ]);
+  const plugins = catalog.filter((entry) => entry.kind === 'plugin');
   return (
-    <div className="pc-shell">
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', marginBottom: 8 }}>
-        <h1 style={{ margin: 0 }}>Plugins</h1>
-        <nav style={{ display: 'flex', gap: 4 }}>
-          <Link href="/marketplace/templates" style={tabIdle}>Templates</Link>
-          <Link href="/marketplace/plugins" aria-current="page" style={tabActive}>Plugins</Link>
-        </nav>
-      </div>
-      <p style={{ color: 'var(--fg-mute)', marginBottom: 24 }}>
-        Extend an existing harness with new actions, dashboard tabs, secrets, or integrations.
-        Install per-machine, then enable per-harness.
-      </p>
-      <MarketplaceList
-        kind="plugin"
-        catalog={catalog}
-        installedTemplates={installedTemplates}
-        installedPlugins={installedPlugins}
-      />
+    <div className="pc-shell pc-marketplace-shell">
+      <section className="pc-marketplace-pagehead">
+        <div>
+          <p className="pc-eyebrow">Plugins</p>
+          <h1>Install capabilities without surrendering control.</h1>
+          <p>
+            Extend installed harnesses with new actions, dashboard tabs, API routes, routines, lifecycle hooks, roles, and integrations — all permissioned through the Papercusp capability model.
+          </p>
+        </div>
+        <div className="pc-marketplace-mini-stats" aria-label="Plugin status">
+          <div><strong>{plugins.length}</strong><span>published</span></div>
+          <div><strong>{installedPlugins.length}</strong><span>installed locally</span></div>
+          <div><strong>{installedTemplates.length}</strong><span>available harnesses</span></div>
+        </div>
+      </section>
+      <Suspense fallback={<div className="pc-card pc-marketplace-loading">Loading plugins…</div>}>
+        <MarketplaceList
+          kind="plugin"
+          catalog={catalog}
+          installedTemplates={installedTemplates}
+          installedPlugins={installedPlugins}
+        />
+      </Suspense>
     </div>
   );
 }
 
-const tabBase: React.CSSProperties = {
-  padding: '6px 12px', borderRadius: 999, fontSize: 13, fontWeight: 500, textDecoration: 'none',
-};
-const tabActive: React.CSSProperties = {
-  ...tabBase, background: 'var(--bg-1)', color: 'var(--fg)', border: '1px solid var(--border)',
-};
-const tabIdle: React.CSSProperties = {
-  ...tabBase, color: 'var(--fg-mute)',
-};

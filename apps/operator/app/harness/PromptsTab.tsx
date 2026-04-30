@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Tooltip } from './Tooltip';
 import Editor from '@monaco-editor/react';
 import { Trash2, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
@@ -193,9 +194,11 @@ export default function PromptsTab({ slug, alive }: Props) {
               )}
               <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
                 {scope === 'override' && data?.overrideExists && (
-                  <button className="h-btn ghost" onClick={deleteOverride} disabled={deleting} title="Delete override → revert to global base">
-                    <Trash2 size={11} /> delete override
-                  </button>
+                  <Tooltip label="Delete override → revert to global base">
+                    <button className="h-btn ghost" onClick={deleteOverride} disabled={deleting}>
+                      <Trash2 size={11} /> delete override
+                    </button>
+                  </Tooltip>
                 )}
                 {scope === 'override' && (
                   <button className="h-btn primary" onClick={saveOverride} disabled={!dirty || saving}>

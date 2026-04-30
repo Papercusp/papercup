@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Tooltip } from './Tooltip';
 
 interface EscalationPayload {
   escalation: string | null;
@@ -202,40 +203,42 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
         >
           {busy === 'clear' ? '…' : '↻ respond & resume'}
         </button>
-        <button
-          onClick={() => resolve('keep')}
-          disabled={!!busy || !response.trim()}
-          style={{
-            background: 'transparent',
-            color: '#fbbf24',
-            border: '1px solid #78350f',
-            borderRadius: 3,
-            padding: '0.4rem 0.9rem',
-            cursor: busy || !response.trim() ? 'not-allowed' : 'pointer',
-            fontSize: '0.8rem',
-            opacity: !response.trim() ? 0.5 : 1,
-          }}
-          title="Save note to supervisor-notes.md without clearing escalation (add more context before resuming)"
-        >
-          {busy === 'keep' ? '…' : 'save note only'}
-        </button>
-        <button
-          onClick={clearWithoutResponse}
-          disabled={!!busy}
-          style={{
-            background: 'transparent',
-            color: '#a8a29e',
-            border: '1px solid #44403c',
-            borderRadius: 3,
-            padding: '0.4rem 0.9rem',
-            cursor: busy ? 'wait' : 'pointer',
-            fontSize: '0.75rem',
-            marginLeft: 'auto',
-          }}
-          title="Emergency: clear escalation.md and resume without leaving a note"
-        >
-          clear without responding
-        </button>
+        <Tooltip label="Save note to supervisor-notes.md without clearing escalation (add more context before resuming)">
+          <button
+            onClick={() => resolve('keep')}
+            disabled={!!busy || !response.trim()}
+            style={{
+              background: 'transparent',
+              color: '#fbbf24',
+              border: '1px solid #78350f',
+              borderRadius: 3,
+              padding: '0.4rem 0.9rem',
+              cursor: busy || !response.trim() ? 'not-allowed' : 'pointer',
+              fontSize: '0.8rem',
+              opacity: !response.trim() ? 0.5 : 1,
+            }}
+          >
+            {busy === 'keep' ? '…' : 'save note only'}
+          </button>
+        </Tooltip>
+        <Tooltip label="Emergency: clear escalation.md and resume without leaving a note">
+          <button
+            onClick={clearWithoutResponse}
+            disabled={!!busy}
+            style={{
+              background: 'transparent',
+              color: '#a8a29e',
+              border: '1px solid #44403c',
+              borderRadius: 3,
+              padding: '0.4rem 0.9rem',
+              cursor: busy ? 'wait' : 'pointer',
+              fontSize: '0.75rem',
+              marginLeft: 'auto',
+            }}
+          >
+            clear without responding
+          </button>
+        </Tooltip>
       </div>
     </div>
   );

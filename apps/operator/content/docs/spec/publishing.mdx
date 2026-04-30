@@ -4,13 +4,17 @@ title: 16. Publishing — hosted Cloudflare publishing (v3)
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-<Callout type="warn" title="Status: design proposal, three review rounds completed">
-This page is the active design document for one-click public publishing
-from coding harnesses. Three rounds of architectural review have been
-incorporated (v1 → v2 → v3). Once the Worker + plugin land and a real user
-publishes their first project, the implementation moves into §7 (Plugin
-extension points) and §11 (Distribution), and this page becomes a historical
-record of the v1 design rationale.
+<Callout type="info" title="Status: code complete, awaiting Cloudflare bootstrap">
+**Publishing** — one-click public publishing from coding harnesses.
+Worker (`apps/papercusp-publish/`), shared auth lib
+(`libs/papercusp-publish-auth/`), substrate plugin
+(`@papercupai/cloudflare-pages-hosted`), and Settings UI all landed
+2026-04-28. Live deployment waits on `wrangler d1/kv create + secret put
++ deploy` and a wildcard cert on `*.preview.papercuspai.com`.
+
+Three rounds of architectural review have been incorporated (v1 → v2 →
+v3). Once a real user publishes their first project this page folds into
+§7 (Plugin extension points) and §11 (Distribution).
 </Callout>
 
 ## 15.0 Why this exists
@@ -42,7 +46,7 @@ content's served on a vanity subdomain we control.
   every user can recover their projects without our infra.
 
 **Non-goals (v1)**
-- Custom user-owned domains. v1 deploys to `*.preview.papercupai.com`.
+- Custom user-owned domains. v1 deploys to `*.preview.papercuspai.com`.
 - Private/access-gated deployments. v1 is fully public; private mode is
   spec'd here but built later.
 - Build pipelines. v1 publishes static files from `<project>/<exportDir>`;
@@ -54,7 +58,7 @@ content's served on a vanity subdomain we control.
 
 ```text
 ┌────────────────────────────┐         ┌───────────────────────────────────┐         ┌─────────────────┐
-│  user's coding harness     │         │  publish.papercupai.com           │         │   Cloudflare    │
+│  user's coding harness     │         │  publish.papercuspai.com           │         │   Cloudflare    │
 │  (substrate at :3055)      │         │  (Worker + D1 + KV + R2)          │         │   Pages API     │
 │                            │         │                                   │         │                 │
 │  click Publish             │         │  POST /publish/start              │         │                 │
@@ -72,7 +76,7 @@ content's served on a vanity subdomain we control.
 │   ↓                        │         │                                   │  status │                 │
 │  poll /status/:depId       ├────────►│  ── returns CF status             │◄────────┤                 │
 │   ↓                        │         │                                   │         │                 │
-│  toast: live at <vanity>   │         │  *.preview.papercupai.com via     │         │                 │
+│  toast: live at <vanity>   │         │  *.preview.papercuspai.com via     │         │                 │
 └────────────────────────────┘         │  Worker route → CF Pages auto     │         │                 │
                                        │  subdomain                        │         │                 │
                                        └───────────────────────────────────┘         └─────────────────┘
@@ -101,7 +105,7 @@ CREATE TABLE projects (
   harness_slug     text not null,
   cf_project_name  text not null,             -- sha256(secret||harness)[:16] + "-" + sanitize(harness)
   cf_subdomain     text,
-  vanity_subdomain text,                       -- "<harness>-<rand>" on preview.papercupai.com
+  vanity_subdomain text,                       -- "<harness>-<rand>" on preview.papercuspai.com
   created_at       int not null,
   primary key (tenant_id, harness_slug)
 );
@@ -183,7 +187,7 @@ $0.07/mo. Pennies.
 
 ### Per-substrate handshake — one time
 
-`POST publish.papercupai.com/register-tenant` with `Content-Type:
+`POST publish.papercuspai.com/register-tenant` with `Content-Type:
 application/json`, body `{}` (anonymous v1 — when OAuth ships,
 auth header binds the tenant to a user account). Returns:
 
@@ -280,9 +284,9 @@ validation and burn debug hours.
   {
     "deploymentId": "dep_<8>",
     "missing": [
-      { "path": "index.html", "sha256": "...", "uploadUrl": "https://publish.papercupai.com/publish/file/<id>?token=..." }
+      { "path": "index.html", "sha256": "...", "uploadUrl": "https://publish.papercuspai.com/publish/file/<id>?token=..." }
     ],
-    "vanityUrl": "https://sheets2-a4f9c.preview.papercupai.com",
+    "vanityUrl": "https://sheets2-a4f9c.preview.papercuspai.com",
     "createdProject": false
   }
   ```
@@ -346,7 +350,7 @@ button ships v1.1.
 }
 ```
 
-When both are present, the plugin **bypasses** `publish.papercupai.com`
+When both are present, the plugin **bypasses** `publish.papercuspai.com`
 entirely and calls CF Pages directly with the user's own token. Same
 plugin, two configurations. Free forever for self-hosters who bring their
 own credentials.
@@ -429,7 +433,7 @@ even from CF support engineers reading abuse reports.
 ### Vanity URL (user-visible)
 
 ```
-<sanitized-harness-slug>-<8-base32-random>.preview.papercupai.com
+<sanitized-harness-slug>-<8-base32-random>.preview.papercuspai.com
 ```
 
 The 8-base32-random is per-deployment; same harness republished gets
@@ -442,7 +446,7 @@ harness slug, sanitized). Helps when the harness was named
 
 ### Wildcard subdomain routing
 
-`*.preview.papercupai.com` → Worker route → looks up
+`*.preview.papercuspai.com` → Worker route → looks up
 `projects.vanity_subdomain` → proxies to the auto-generated CF
 `<prefix>.pages.dev` for that project. CF's Pages.dev URL never leaks
 to the user.
@@ -455,7 +459,7 @@ to the user.
 | 2 | `@papercupai/cloudflare-pages-hosted` plugin — JCS manifest, retry/resume on partial upload, BYO-CF fallback | ~500 |
 | 3 | Substrate "Publishing" settings page — mode selector, tenant info, rotate-secret button | ~250 |
 | 4 | `papercup-coding` template — adds `recommendedPlugins` | 5 lines |
-| 5 | DNS — wildcard cert + Worker route on `*.preview.papercupai.com` + `publish.papercupai.com` | ~3 hours |
+| 5 | DNS — wildcard cert + Worker route on `*.preview.papercuspai.com` + `publish.papercuspai.com` | ~3 hours |
 | 6 | Eject script reading from R2 | ~200 |
 | 7 | `requiresTemplateKinds` field — spec + CLI loader + UI gating + marketplace pill | ~300 |
 | 8 | R2 bucket setup + lifecycle rules + cleanup cron | ~150 |
@@ -475,7 +479,7 @@ to the user.
 6. `wrangler d1 create papercusp-publish` + apply migration.
 7. **Workers Paid plan** ($5/mo) — confirmed prerequisite.
 8. `wrangler deploy` Worker.
-9. DNS: `*.preview.papercupai.com` and `publish.papercupai.com` → Worker
+9. DNS: `*.preview.papercuspai.com` and `publish.papercuspai.com` → Worker
    route. Wildcard cert via CF managed cert (1-click in dashboard).
 10. Cron: daily `/admin/gc` for stale uploads + R2 archive expiry.
 11. Smoke test from a clean machine.
@@ -487,7 +491,7 @@ to the user.
   for v1. Worth revisiting at 1k+ paying users.
 - **Machine fingerprinting** for tenant binding. Privacy-invasive; per-IP
   daily cap (§15.5 #3) closes the abuse loop without it.
-- **Custom user-owned domains.** v1 deploys to `*.preview.papercupai.com`
+- **Custom user-owned domains.** v1 deploys to `*.preview.papercuspai.com`
   only; user-supplied domains in v1.1.
 - **Private mode** via Cloudflare Access. Schema field
   `projects.access_policy: 'public' | 'private'` reserved; Worker
@@ -533,7 +537,7 @@ to the user.
 - `/publish/start` resume semantics + GC cron (~2h)
 
 **Day 2.5**
-- DNS + URL-rewrite Worker route on `*.preview.papercupai.com` (~3h)
+- DNS + URL-rewrite Worker route on `*.preview.papercuspai.com` (~3h)
 - Plugin (JCS manifest, resume on partial upload, polling, BYO-CF
   fallback) (~4h)
 - Settings UI + eject script + smoke test + docs (~3h)

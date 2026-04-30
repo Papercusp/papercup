@@ -17,6 +17,7 @@
  * pure browser-side component.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { Tooltip } from './Tooltip';
 import './PiPanel.css';
 
 export interface PiPanelProps {
@@ -289,29 +290,31 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
         <span className="pi-panel__spacer" />
 
         {tools && tools.length > 0 && (
+          <Tooltip label="Show papercusp tools the LLM can call from this pty">
+            <button
+              type="button"
+              className="pi-panel__chip"
+              onClick={() => { setShowTools((v) => !v); setShowSessions(false); }}
+            >
+              ↯ {tools.length} papercusp tools
+            </button>
+          </Tooltip>
+        )}
+
+        <Tooltip label="Past pi sessions exported to HTML">
           <button
             type="button"
             className="pi-panel__chip"
-            onClick={() => { setShowTools((v) => !v); setShowSessions(false); }}
-            title="Show papercusp tools the LLM can call from this pty"
+            onClick={async () => {
+              const next = !showSessions;
+              setShowSessions(next);
+              setShowTools(false);
+              if (next && sessions === null) await refreshSessions();
+            }}
           >
-            ↯ {tools.length} papercusp tools
+            past sessions{sessions ? ` (${sessions.length})` : ''}
           </button>
-        )}
-
-        <button
-          type="button"
-          className="pi-panel__chip"
-          onClick={async () => {
-            const next = !showSessions;
-            setShowSessions(next);
-            setShowTools(false);
-            if (next && sessions === null) await refreshSessions();
-          }}
-          title="Past pi sessions exported to HTML"
-        >
-          past sessions{sessions ? ` (${sessions.length})` : ''}
-        </button>
+        </Tooltip>
 
         {state.kind === 'exited' && (
           <button
@@ -343,12 +346,13 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
         <div className="pi-panel__popover">
           <div className="pi-panel__popover-title">
             Past pi sessions ({sessions.length})
-            <button
-              type="button"
-              className="pi-panel__refresh"
-              onClick={refreshSessions}
-              title="Refresh"
-            >↻</button>
+            <Tooltip label="Refresh">
+              <button
+                type="button"
+                className="pi-panel__refresh"
+                onClick={refreshSessions}
+              >↻</button>
+            </Tooltip>
           </div>
           {sessions.length === 0 ? (
             <div className="pi-panel__empty">

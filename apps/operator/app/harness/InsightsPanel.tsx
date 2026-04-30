@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, HarnessStatus } from './theme';
 import { IconButton } from './primitives';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { Modal } from './Modal';
 
 interface Feature {
   id: string;
@@ -51,13 +52,6 @@ export default function InsightsPanel({
 
   const maxStatusCount = Math.max(1, ...Object.values(stats.byStatus));
   const maxAttemptsBin = Math.max(1, ...stats.attemptsHist);
-
-  useEffect(() => {
-    if (inline) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, inline]);
 
   const inner = (
     <div
@@ -183,17 +177,16 @@ export default function InsightsPanel({
   if (inline) return inner;
 
   return (
-    <div
-      data-harness-modal="true"
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 80,
-        background: 'rgba(0,0,0,0.5)',
-        display: 'flex', justifyContent: 'center', alignItems: 'center',
-      }}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title="Insights"
+      srOnlyTitle
+      zIndex={80}
+      overlayStyle={{ background: 'rgba(0,0,0,0.5)' }}
     >
       {inner}
-    </div>
+    </Modal>
   );
 }
 

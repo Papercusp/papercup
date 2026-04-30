@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface SmokeResult {
@@ -72,14 +73,14 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
   const tone = data?.status === 'pass' ? '#10b981' : data?.status === 'fail' ? '#f87171' : '#9ca3af';
 
   return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }}
-      onClick={onClose}
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`Smoke test`}
+      srOnlyTitle
+      zIndex={60}
+      contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
-      <div
-        style={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
-        onClick={(e) => e.stopPropagation()}
-      >
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Smoke test — {slug}</strong>
           <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>bin/service-smoke-test.sh</span>
@@ -153,8 +154,7 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </Modal>
   );
 }
 

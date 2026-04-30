@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 interface Props {
   slug: string;
@@ -22,6 +23,26 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
   const [content, setContent] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const bannerRef = useRef<HTMLDivElement | null>(null);
+  const [popoverRect, setPopoverRect] = useState<{ top: number; left: number } | null>(null);
+
+  // Position the compact-mode details popover under the banner. The compact
+  // banner lives inside .h-phase-plan-row which forces `overflow: hidden`,
+  // so we portal the popover to <body> instead of nesting it inside.
+  useEffect(() => {
+    if (!compact || !open) { setPopoverRect(null); return; }
+    const update = () => {
+      const r = bannerRef.current?.getBoundingClientRect();
+      if (r) setPopoverRect({ top: r.bottom + 4, left: r.left });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
+  }, [compact, open]);
 
   const load = useCallback(async () => {
     try {
@@ -44,7 +65,8 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
   const tone = VERDICT_TONE[key] ?? { bg: '#1f2937', border: '#374151', fg: '#d1d5db', icon: 'ℹ' };
 
   return (
-    <div className={`h-plan-review-banner${compact ? ' compact' : ''}`} style={{
+    <>
+    <div ref={bannerRef} className={`h-plan-review-banner${compact ? ' compact' : ''}`} style={{
       background: tone.bg,
       border: `1px solid ${tone.border}`,
       borderLeft: `4px solid ${tone.border}`,
@@ -76,11 +98,29 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
           ✕
         </button>
       </div>
-      {open && (
+      {open && !compact && (
         <pre style={{ margin: '0.5rem 0 0 0', padding: '0.5rem 0.75rem', background: '#0b0e14', color: '#d1d5db', fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem', borderRadius: 3, maxHeight: '30vh', overflow: 'auto', whiteSpace: 'pre-wrap' }}>
           {content}
         </pre>
       )}
     </div>
+    {compact && open && popoverRect && typeof document !== 'undefined' && createPortal(
+      <pre style={{
+        position: 'fixed',
+        top: popoverRect.top, left: popoverRect.left,
+        width: 'min(640px, 90vw)',
+        margin: 0, padding: '0.5rem 0.75rem',
+        background: '#0b0e14', color: '#d1d5db',
+        fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem',
+        border: `1px solid ${tone.border}`, borderRadius: 4,
+        boxShadow: '0 12px 28px rgba(0,0,0,0.45)',
+        maxHeight: '50vh', overflow: 'auto', whiteSpace: 'pre-wrap',
+        zIndex: 90,
+      }}>
+        {content}
+      </pre>,
+      document.body,
+    )}
+    </>
   );
 }

@@ -12,6 +12,7 @@
  * Project Manager role synchronously and updates the spec inline.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 import Link from 'next/link';
 import {
   ArrowLeft, Loader2, AlertTriangle, RefreshCw, Save, X, Pencil,
@@ -72,7 +73,10 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
   const [features, setFeatures] = useState<FeatureRow[] | null>(null);
   const [revisions, setRevisions] = useState<RevisionRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab>('roadmap');
+  const [tab, setTab] = useQueryState(
+    'projectTab',
+    parseAsStringEnum<Tab>(['roadmap', 'history', 'spec']).withDefault('roadmap'),
+  );
 
   // Spec edit + regenerate state
   const [editing, setEditing] = useState(false);

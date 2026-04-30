@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 import Editor from '@monaco-editor/react';
 
 type Tier = 'green' | 'yellow' | 'red';
@@ -50,7 +51,7 @@ function fmtAgo(ms: number): string {
 
 export default function MemoryBrowser({ slug, alive }: Props) {
   const [files, setFiles] = useState<MemFile[]>([]);
-  const [active, setActive] = useState<string | null>(null);
+  const [active, setActive] = useQueryState('mem', parseAsString);
   const [original, setOriginal] = useState<string | null>(null);
   const [draft, setDraft] = useState<string>('');
   const [loading, setLoading] = useState(true);

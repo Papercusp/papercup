@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { Drawer } from 'vaul';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus } from './theme';
 import { StatusPill, IdPill, RolePill, IconButton, KbdHint } from './primitives';
+import { Tooltip } from './Tooltip';
 
 const FeatureTimelinePanel = dynamic(() => import('./FeatureTimelinePanel'), { ssr: false });
 
@@ -107,17 +108,17 @@ export default function FeaturePeekPanel({
   return (
     <Drawer.Root open={!!feature} onOpenChange={(o) => { if (!o) onClose(); }} direction="right">
       <Drawer.Portal>
-        <Drawer.Overlay style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,0.65)' }} />
+        <Drawer.Overlay style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.65)' }} />
         <Drawer.Content
           aria-describedby={undefined}
           style={{
             position: 'fixed', top: 0, right: 0, bottom: 0,
             width: 'min(720px, 72vw)',
-            background: 'var(--bg-2)',
+            background: '#17131f',
             borderLeft: '1px solid var(--border)',
             display: 'flex', flexDirection: 'column',
             overflow: 'hidden',
-            zIndex: 61, outline: 'none',
+            zIndex: 81, outline: 'none',
           }}
         >
           <Drawer.Title style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
@@ -127,6 +128,7 @@ export default function FeaturePeekPanel({
         <div style={{
           padding: '12px 16px',
           borderBottom: `1px solid ${COLORS.border}` ,
+          background: '#17131f',
           display: 'flex',
           alignItems: 'center',
           gap: 10,
@@ -156,23 +158,24 @@ export default function FeaturePeekPanel({
               View PR ↗
             </a>
           )}
-          <button
-            onClick={onClose}
-            title="Close (Esc)"
-            style={{
-              marginLeft: 'auto',
-              background: 'transparent',
-              color: COLORS.textMuted,
-              border: `1px solid ${COLORS.border}`,
-              borderRadius: 999,
-              padding: '5px 9px',
-              fontSize: SIZES.xs,
-              lineHeight: 1,
-              cursor: 'pointer',
-              fontWeight: 700,
-              whiteSpace: 'nowrap',
-            }}
-          >✕</button>
+          <Tooltip label="Close (Esc)">
+            <button
+              onClick={onClose}
+              style={{
+                marginLeft: 'auto',
+                background: 'transparent',
+                color: COLORS.textMuted,
+                border: `1px solid ${COLORS.border}`,
+                borderRadius: 999,
+                padding: '5px 9px',
+                fontSize: SIZES.xs,
+                lineHeight: 1,
+                cursor: 'pointer',
+                fontWeight: 700,
+                whiteSpace: 'nowrap',
+              }}
+            >✕</button>
+          </Tooltip>
         </div>
 
         {/* Body */}
@@ -181,14 +184,15 @@ export default function FeaturePeekPanel({
           flex: 1,
           overflowY: 'auto',
           padding: '16px 18px 18px',
+          background: '#17131f',
         }}>
           <div style={{
             marginBottom: 18,
             padding: '14px 14px 12px',
             border: `1px solid ${COLORS.border}` ,
             borderRadius: 14,
-            background: 'linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 3%), color-mix(in oklab, var(--bg), white 1%))',
-            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.025)',
+            background: '#1d1826',
+            boxShadow: '0 16px 34px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02)',
           }}>
             <h2 style={{
               margin: 0,
@@ -280,7 +284,7 @@ export default function FeaturePeekPanel({
                   onClick={() => setShowDebug((v) => !v)}
                   title={showDebug ? "Hide debugger's hypothesis notes" : "Show debugger's hypothesis notes for this feature"}
                   style={{
-                    background: 'transparent',
+                    background: '#221c2d',
                     border: `1px solid ${COLORS.borderSubtle}`,
                     color: COLORS.text,
                     padding: '4px 10px',
@@ -290,8 +294,8 @@ export default function FeaturePeekPanel({
                     display: 'flex',
                     alignItems: 'center',
                     gap: 6,
-                  }}
-                >
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
+                  }}>
                   <span>{showDebug ? '▾' : '▸'}</span>
                   <span>Root-cause investigation ({debugNote.length.toLocaleString()} chars) · from debugger role</span>
                 </button>
@@ -322,15 +326,15 @@ export default function FeaturePeekPanel({
                     style={{
                       display: 'flex', alignItems: 'center', gap: 8,
                       padding: '5px 8px',
-                      background: 'transparent',
+                      background: '#201a2a',
                       border: `1px solid ${COLORS.borderSubtle}`,
                       borderRadius: RADIUS.sm,
                       color: COLORS.text,
                       cursor: 'pointer',
                       fontSize: SIZES.sm,
                       textAlign: 'left',
-                    }}
-                  >
+                      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
+                    }}>
                     <RolePill role={r.role} />
                     <span style={{ fontFamily: FONTS.mono, color: COLORS.textMuted, fontSize: SIZES.xs }}>
                       {r.runId.slice(-20)}
@@ -376,13 +380,13 @@ export default function FeaturePeekPanel({
             gap: 8,
             alignItems: 'center',
             flexWrap: 'wrap',
-            background: 'linear-gradient(180deg, rgba(255,255,255,0.01), rgba(0,0,0,0.12))',
-            backdropFilter: 'blur(10px)',
+            background: '#17131f',
+            boxShadow: '0 -12px 28px rgba(0,0,0,0.18)',
           }}>
             <button
               onClick={() => setShowTimeline(true)}
               style={{
-                background: 'rgba(255,255,255,0.03)',
+                background: '#221c2d',
                 border: `1px solid ${COLORS.borderSubtle}`,
                 color: COLORS.text,
                 padding: '6px 12px',
@@ -425,7 +429,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         padding: '12px 12px 10px',
         border: `1px solid ${COLORS.border}` ,
         borderRadius: 12,
-        background: 'linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), white 1%))',
+        background: '#1c1824',
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
       }}
     >
