@@ -426,7 +426,7 @@ a plugin if it's specific to one template family or external integration.
 | **insights** | Features count, cost, tokens, iterations | **CORE** | Universal harness metrics. Every harness pays for tokens; every harness has iterations. |
 | **config** | Per-instance configuration | **CORE** | Every harness needs config. Plugins contribute their own config sections via `configSchema`. |
 | **proposals** | AI-generated scope expansion suggestions for the SPEC.md | **CORE for v1**, defer extraction | See §14.6 — proposals isn't a UI tab extraction, it's an authorization-model question. |
-| **docs** | iframe of project docs (docs-viewer on :4325) | **PLUGIN** (`@papercupai/docs-viewer`) | Optional integration with an external docs server. Templates that don't generate docs shouldn't see this tab. |
+| **docs** | iframe of project docs (fumadocs on :4325) | **PLUGIN** (`@papercupai/fumadocs`) | Optional integration with an external docs server. Templates that don't generate docs shouldn't see this tab. |
 | **vscode** | iframe of code-server on the project dir | **PLUGIN** (`@papercupai/vscode-server`) | Code-server is heavyweight + only useful when there's code to edit. Research, marketing, support harnesses don't need it. |
 | **pi** | iframe of the pi (omp) interactive coding agent | **PLUGIN** (`@papercupai/pi-companion`) | Pi is one specific external tool. Would be like baking "ChatGPT side panel" into Slack. |
 
@@ -473,7 +473,7 @@ Per-tab effort estimate (post-Phase-P2):
 | Tab → Plugin | Lines | Capabilities | Est | Status |
 |---|---|---|---|---|
 | `vscode` → `@papercupai/vscode-server` | ~10 (iframe) | `ui:harness-tab:vscode` + config `code_server_url` | 30 min | **Pilot — P5** |
-| `docs` → `@papercupai/docs-viewer` | ~10 (iframe) | `ui:harness-tab:docs` + config `docs_url` | 30 min | P7 |
+| `docs` → `@papercupai/fumadocs` | ~10 (iframe) | `ui:harness-tab:docs` + config `docs_url` | 30 min | P7 |
 | `pi` → `@papercupai/pi-companion` | ~150 (PiPanel) | `ui:harness-tab:pi` + typed-services for child-process needs | 1.5h | P7 |
 | `proposals` → `@papercupai/scope-proposals` | substrate-protocol change | New: plugin authorization to mutate harness-canonical state | DEFERRED to v1.5 | See note |
 
@@ -502,7 +502,7 @@ Order matters; later items depend on earlier.
 **Status — 2026-04-27**: P1 → P8 shipped + operator dashboards for
 `audit.action_executions` (drill-down + webhooks) and plugin grants
 (`granted-capabilities.json` + `extended-grants.json` with revoke). **Seven** in-tree reference plugins (`@papercupai/{vscode-server,
-cloudflare-pages,pi-coding,docs-viewer,slack-notifier,postgres-manager,
+cloudflare-pages,pi-coding,fumadocs,slack-notifier,postgres-manager,
 notion-export}`) published to the local marketplace; full publish → catalog
 → install → enable → lockfile round-trip verified end-to-end with the
 service-token CI flow. Drill-down drawer has **Detail** + **History** tabs +

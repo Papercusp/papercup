@@ -20,8 +20,8 @@ export const runtime = 'nodejs';
  * `~/.papercusp/harnesses/<h>/plugin-configs/<plugin>.json`. Used by the
  * harness page's config→Plugins panel inline editor.
  *
- * Plugin slug is the on-disk dir basename (`docs-viewer`), not the
- * scoped manifest name (`@papercupai/docs-viewer`) — same convention as
+ * Plugin slug is the on-disk dir basename (`fumadocs`), not the
+ * scoped manifest name (`@papercupai/fumadocs`) — same convention as
  * `enable`/`disable`/`uninstall`.
  *
  * Save also bumps the harness's `enabled-plugins.json` configHash so the
