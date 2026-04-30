@@ -129,7 +129,7 @@ describe('redactPluginConfig', () => {
     const r = redactPluginConfig({
       configJson: JSON.stringify({
         exportDir: '/home/u/proj/dist',
-        byoCloudflareToken: 'cfut_bAZl73mwvkJwlVAI2TwSZ2WvjWUang4sumH2bqWe770c2e0e',
+        byoCloudflareToken: 'cfut_redactedfixturetoken1234567890abcdef',
         byoCloudflareAccountId: 'f896982ea2f6d507e4f29eeecbd26e94',
       }),
       uiSchema: {
@@ -139,7 +139,7 @@ describe('redactPluginConfig', () => {
         },
       },
     });
-    expect(r.configJson).not.toContain('cfut_bAZl');
+    expect(r.configJson).not.toContain('cfut_redactedfixturetoken');
     expect(r.configJson).toContain('[REDACTED]');
     expect(r.configJson).toContain('f896982ea2f6d507e4f29eeecbd26e94'); // accountId is NOT a secret
     expect(r.redactedKeys).toEqual(['byoCloudflareToken']);
