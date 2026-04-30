@@ -10,7 +10,15 @@
  *   papercusp-fire-hook <hook-name> <plugin-dir> \
  *     --project-slug=<slug> --project-dir=<path> --state-dir=<path>
  *
- * Hook names: afterDone | beforeMissionStart | onProposalAccepted | onFeaturePassed
+ * Hook names: afterDone | beforeMissionStart | onProposalAccepted |
+ *             onFeaturePassed | onPostWorker | onPostValidator | onPostOrchestrator
+ *
+ * Per-hook flags:
+ *   onProposalAccepted    --proposal-path=proposals/x.md
+ *   onFeaturePassed       --feature-id=F-001
+ *   onPostWorker          --feature-id=F-001
+ *   onPostValidator       --feature-id=F-001 --status=passed|failing
+ *   onPostOrchestrator    --decision="NEXT_WORKER F-001"
  *
  * Exit codes:
  *   0  = hook fired successfully (or hook not implemented — no-op)
@@ -30,6 +38,8 @@ interface CliArgs {
   stateDir: string;
   proposalPath?: string;
   featureId?: string;
+  decision?: string;
+  status?: string;
 }
 
 function parseArgs(argv: string[]): CliArgs {
@@ -60,12 +70,18 @@ function parseArgs(argv: string[]): CliArgs {
     stateDir: flags['state-dir'],
     proposalPath: flags['proposal-path'],
     featureId: flags['feature-id'],
+    decision: flags['decision'],
+    status: flags['status'],
   };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const result = await loadPluginFromDir(args.pluginDir, 'project');
+  if ('skipped' in result) {
+    console.error(`papercusp-fire-hook: ${args.pluginDir} is not a plugin directory (no manifest, no entry point)`);
+    process.exit(3);
+  }
   if ('error' in result) {
     console.error(`papercusp-fire-hook: failed to load ${args.pluginDir}: ${result.error}`);
     process.exit(3);
@@ -76,7 +92,7 @@ async function main(): Promise<void> {
   const pluginDataDir = join(args.stateDir, 'plugins', plugin.name);
   await mkdir(pluginDataDir, { recursive: true });
   const ctx = {
-    projectSlug: args.projectSlug,
+    installSlug: args.projectSlug,
     projectDir: args.projectDir,
     stateDir: args.stateDir,
     pluginDataDir,
@@ -93,8 +109,13 @@ async function main(): Promise<void> {
   try {
     if (args.hook === 'onProposalAccepted') {
       await fn(ctx, args.proposalPath ?? '');
-    } else if (args.hook === 'onFeaturePassed') {
+    } else if (args.hook === 'onFeaturePassed' || args.hook === 'onPostWorker') {
       await fn(ctx, args.featureId ?? '');
+    } else if (args.hook === 'onPostValidator') {
+      const status = args.status === 'failing' ? 'failing' : 'passed';
+      await fn(ctx, args.featureId ?? '', status);
+    } else if (args.hook === 'onPostOrchestrator') {
+      await fn(ctx, args.decision ?? '');
     } else {
       await fn(ctx);
     }
