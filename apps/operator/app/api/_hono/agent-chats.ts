@@ -427,8 +427,11 @@ export function registerAgentChats(harness: Hono): void {
           try {
             const ev = JSON.parse(line);
             // Stream-json: text deltas come as content_block_delta with text_delta.
-            if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-              const delta = ev.delta.text ?? '';
+            // Newer claude CLI versions wrap these inside `{type:"stream_event", event:{...}}`;
+            // unwrap so we still pick them up.
+            const inner = ev.type === 'stream_event' && ev.event ? ev.event : ev;
+            if (inner.type === 'content_block_delta' && inner.delta?.type === 'text_delta') {
+              const delta = inner.delta.text ?? '';
               assistantText += delta;
               void send('delta', { text: delta });
             } else if (ev.type === 'result') {
