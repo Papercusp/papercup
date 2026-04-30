@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { Toaster } from 'sonner';
 import SessionIndicator from './_components/SessionIndicator';
+import WorkspaceSwitcher from './_components/WorkspaceSwitcher';
 import { ChatwootWidget } from './_components/ChatwootWidget';
 import './globals.css';
 
@@ -23,6 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/marketplace/plugins">Plugins</a>
             <a href="/support">Support</a>
             <a href="/settings/api-keys">Settings</a>
+            <WorkspaceSwitcher />
             <SessionIndicator />
           </nav>
         </header>
