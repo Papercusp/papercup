@@ -17,6 +17,19 @@ const nextConfig = {
   // for whatever platform we're packaging on. The desktop build copies
   // node_modules from this standalone tree into the sidecar bundle.
   outputFileTracingIncludes: {
+    // The Hono mount lives at /api/[[...route]] and pulls node-pty in at
+    // module load time, so its trace also needs the prebuilds. Without
+    // this entry, /api/harness, /api/projects, /api/plugins/enabled, etc.
+    // all 500 with "Failed to load native module: pty.node" because they're
+    // served by the catch-all, not /api/harness/route.
+    '/api/[[...route]]/**': [
+      'node_modules/@lydell/node-pty-linux-x64/prebuilds/**',
+      'node_modules/@lydell/node-pty-linux-arm64/prebuilds/**',
+      'node_modules/@lydell/node-pty-darwin-x64/prebuilds/**',
+      'node_modules/@lydell/node-pty-darwin-arm64/prebuilds/**',
+      'node_modules/@lydell/node-pty-win32-x64/prebuilds/**',
+      'node_modules/@lydell/node-pty-win32-arm64/prebuilds/**',
+    ],
     '/api/harness/**': [
       'node_modules/@lydell/node-pty-linux-x64/prebuilds/**',
       'node_modules/@lydell/node-pty-linux-arm64/prebuilds/**',
