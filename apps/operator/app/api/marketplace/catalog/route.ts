@@ -31,14 +31,19 @@ const FALLBACK_CATALOG = [
 
 export async function GET() {
   const base = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
-  try {
-    const r = await fetch(`${base}/catalog`, { cache: 'no-store', signal: AbortSignal.timeout(2000) });
-    if (r.ok) {
+  // Try DB-backed `/v1/catalog` first (sees R2-only publishes). Fall back to
+  // the filesystem-backed `/catalog` if v1 isn't available (e.g. older
+  // marketplace-api), then to the hardcoded list below.
+  for (const path of ['/v1/catalog', '/catalog']) {
+    try {
+      const r = await fetch(`${base}${path}`, { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+      if (!r.ok) continue;
       const d = await r.json();
+      const upstream = (d.catalog ?? []) as any[];
       // Reshape from marketplace's `{name, version, ...}` to UI's `{slug, name, install, ...}`.
-      const items = (d.catalog ?? []).map((m: any) => ({
-        slug: m.name,
-        name: m.name,
+      const items = upstream.map((m: any) => ({
+        slug: m.slug ?? m.name,
+        name: m.name ?? m.slug,
         version: m.version,
         description: m.description ?? '',
         author: m.author ?? 'unknown',
@@ -50,12 +55,15 @@ export async function GET() {
         kind: m.kind ?? 'template',
         icon: m.icon ?? null,
         requiresTemplateKinds: Array.isArray(m.requiresTemplateKinds) ? m.requiresTemplateKinds : [],
-        install: `papercusp install ${m.name}`,
+        retracted: m.retracted,
+        install: `papercusp install ${m.slug ?? m.name}`,
         source: 'live',
       }));
-      return NextResponse.json({ catalog: items, source: 'marketplace' });
+      return NextResponse.json({ catalog: items, source: path === '/v1/catalog' ? 'marketplace-db' : 'marketplace-fs' });
+    } catch {
+      continue;
     }
-  } catch {}
+  }
   // Fallback when marketplace isn't reachable.
   const items = FALLBACK_CATALOG.map((m) => ({
     slug: m.name,
