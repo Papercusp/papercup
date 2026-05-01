@@ -45,7 +45,31 @@ export type ExecuteAction =
   | SendMessageAction
   | MarkMessageStatusAction
   | SpinupProjectAction
-  | ScaffoldHarnessAction;
+  | ScaffoldHarnessAction
+  | PauseProjectAction
+  | ResumeProjectAction
+  | MarkCampaignPublishedAction;
+
+export interface PauseProjectAction {
+  op: 'pause_project';
+  projectSlug: string;
+  reason?: string;
+}
+
+export interface ResumeProjectAction {
+  op: 'resume_project';
+  projectSlug: string;
+  status?: string; // default 'in_progress'
+}
+
+export interface MarkCampaignPublishedAction {
+  op: 'mark_campaign_published';
+  messageId: string;
+  channels: string[];
+  impressions?: number;
+  clicks?: number;
+  installs?: number;
+}
 
 export interface SendMessageAction {
   op: 'send_message';
@@ -80,6 +104,7 @@ export interface ScaffoldHarnessAction {
   spec: string;
   goal: string;
   parent_slug?: string; // body-supplied; rejected (server-derived)
+  dryRun?: boolean;     // if true, validate-only — no shell-out, no FS writes
 }
 
 export interface ExecuteActionResult {
@@ -373,6 +398,23 @@ async function doScaffoldHarness(
     return { ok: false, actionId: '', error: 'slug_already_in_use', detail: `path ${projectPath} already exists on disk` };
   }
 
+  // dryRun: validation-only path. Returns what would have been bound,
+  // without shelling out, writing files, or scaffolding the schema.
+  if (action.dryRun) {
+    return {
+      ok: true,
+      actionId: '',
+      result: {
+        dryRun: true,
+        slug: action.projectSlug,
+        path: projectPath,
+        template: action.template,
+        parent_slug: callerSlug,
+        templateKind: tmpl.spawnable?.kind ?? null,
+      },
+    };
+  }
+
   // Shell out to `papercusp init`. Without --target, init creates the project
   // dir under PAPERCUSP_PROJECTS_ROOT/<slug>.
   const cliPath = process.env.PAPERCUSP_CLI ?? join(homeDir, '.local/bin/papercusp');
@@ -524,6 +566,63 @@ async function fetchSpawnableTemplates(): Promise<SpawnableTemplate[]> {
 
 // ── Public dispatch ────────────────────────────────────────────────────────
 
+async function doPauseProject(
+  _callerSlug: string,
+  action: PauseProjectAction,
+): Promise<ExecuteActionResult> {
+  if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    UPDATE harness_shared.projects SET status = 'paused', updated_ts = ${Date.now()}
+    WHERE slug = ${action.projectSlug}
+    RETURNING id, slug, status
+  `;
+  if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };
+  return { ok: true, actionId: '', result: { project: rows[0], reason: action.reason ?? null } };
+}
+
+async function doResumeProject(
+  _callerSlug: string,
+  action: ResumeProjectAction,
+): Promise<ExecuteActionResult> {
+  if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
+  const target = action.status ?? 'in_progress';
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    UPDATE harness_shared.projects SET status = ${target}, updated_ts = ${Date.now()}
+    WHERE slug = ${action.projectSlug}
+    RETURNING id, slug, status
+  `;
+  if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };
+  return { ok: true, actionId: '', result: { project: rows[0] } };
+}
+
+async function doMarkCampaignPublished(
+  callerSlug: string,
+  action: MarkCampaignPublishedAction,
+): Promise<ExecuteActionResult> {
+  if (!action.messageId || !Array.isArray(action.channels) || action.channels.length === 0) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'messageId and channels[] required' };
+  }
+  const { sql } = getOrgPg();
+  const schema = slugToSchema(callerSlug);
+  // Annotate the existing message with a JSON block in body (preserves it)
+  // and bump status to acknowledged. The campaign metrics live as an
+  // appended marker; v2 may add a dedicated column.
+  const annotation = `\n\n[mark_campaign_published @ ${new Date().toISOString()}] channels=${action.channels.join(',')} impressions=${action.impressions ?? 0} clicks=${action.clicks ?? 0} installs=${action.installs ?? 0}`;
+  const rows = await sql.unsafe(
+    `UPDATE ${schema}.messages
+     SET body = COALESCE(body, '') || $1, status = 'acknowledged', acknowledged_at = now()
+     WHERE id = $2
+     RETURNING id, status`,
+    [annotation, action.messageId],
+  );
+  if ((rows as any).length === 0) {
+    return { ok: false, actionId: '', error: 'not_found', detail: `message ${action.messageId} not in caller's schema` };
+  }
+  return { ok: true, actionId: '', result: { id: action.messageId, channels: action.channels } };
+}
+
 export async function dispatchAction(
   callerSlug: string,
   action: ExecuteAction,
@@ -533,6 +632,9 @@ export async function dispatchAction(
     case 'mark_message_status': return doMarkMessageStatus(callerSlug, action);
     case 'spinup_project': return doSpinupProject(callerSlug, action);
     case 'scaffold_harness': return doScaffoldHarness(callerSlug, action);
+    case 'pause_project': return doPauseProject(callerSlug, action);
+    case 'resume_project': return doResumeProject(callerSlug, action);
+    case 'mark_campaign_published': return doMarkCampaignPublished(callerSlug, action);
     default: return { ok: false, actionId: '', error: 'validation_error', detail: `unknown op: ${(action as any).op}` };
   }
 }

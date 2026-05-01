@@ -18,6 +18,7 @@ import { registerProjects } from '../_hono/projects';
 import { registerOracle } from '../_hono/oracle';
 import { registerCrossHarness } from '../_hono/cross-harness';
 import { mountPluginApiRoutes, installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
+import { startAutoLoopOnce } from '../../../lib/autoloop';
 
 export const dynamic = 'force-dynamic';
 
@@ -73,6 +74,9 @@ mountPluginApiRoutes(plugins)
   });
 
 app.route('/plugins', plugins);
+
+// AutoLoop ticker — periodic fires of harnesses with autoLoop=true. Idempotent.
+startAutoLoopOnce();
 
 // Opt-in dev-mode hot-reload — watches ~/.papercusp/global-plugins/ and
 // resets the in-process runtime cache whenever a manifest or entry file

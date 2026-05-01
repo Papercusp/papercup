@@ -37,6 +37,19 @@ token_for() {
 
 uuid() { uuidgen 2>/dev/null || python3 -c 'import uuid; print(uuid.uuid4())'; }
 
+# ── Pre-clean: stale smoke-* state from prior runs ──
+note "Pre-cleanup"
+for stale in $(curl -sS "$OPERATOR_BASE/api/harness/projects" 2>/dev/null | jq -r '.projects[] | select(.slug | test("^smoke-")) | .slug'); do
+  curl -sS -X DELETE "$OPERATOR_BASE/api/harness/projects/$stale" >/dev/null 2>&1
+done
+PGUSER=${PGUSER:-postgres_app} PGPASSWORD=${PGPASSWORD:-postgres} PGHOST=${PGHOST:-localhost} PGDATABASE=${PGDATABASE:-papercusp} \
+  psql -At -c "
+    DELETE FROM harness_shared.token_index WHERE harness_slug LIKE 'smoke-%';
+    DELETE FROM harness_shared.projects WHERE slug LIKE 'smoke-%';
+  " 2>/dev/null | tail -2 >/dev/null
+rm -rf /home/marsh-office/.papercusp/projects/smoke-* /home/marsh-office/.papercusp-workspaces/default/.papercusp/projects/smoke-* 2>/dev/null
+echo "  done"
+
 # ── Smoke D — auth model (cheap, no LLM, run first to fail-fast on infra) ──
 note "Smoke D — auth model holds"
 
@@ -127,6 +140,15 @@ ORG_TOKEN="$(token_for papercup-org)"
 if [ -z "$ORG_TOKEN" ]; then
   bad "A-prep papercup-org token not found"
 else
+  # Pre-clean stale Smoke A/B children from prior runs so neighbor-view counts stay deterministic.
+  for stale in $(curl -sS "$OPERATOR_BASE/api/harness/projects" 2>/dev/null | jq -r '.projects[] | select(.slug | test("^smoke-(a|b)-child-")) | .slug'); do
+    curl -sS -X DELETE "$OPERATOR_BASE/api/harness/projects/$stale" >/dev/null 2>&1
+  done
+  PGUSER=postgres_app PGPASSWORD=postgres PGHOST=localhost PGDATABASE=papercusp psql -At -c "
+    DELETE FROM harness_shared.token_index WHERE harness_slug LIKE 'smoke-%';
+    DELETE FROM harness_shared.projects WHERE slug LIKE 'smoke-%';
+  " 2>/dev/null | tail -2 >/dev/null
+
   # 1. Drop directive into parent inbox
   ACT=$(uuid)
   R=$(curl -sS -X POST "$OPERATOR_BASE/api/harness/papercup-org/messages" \
@@ -136,9 +158,10 @@ else
 
   # 2. Director (simulated): emit spinup_project + scaffold_harness via direct executeAction
   ACT_SP=$(uuid)
+  PROJ_NAME="smoke A hello world $(date +%s)"
   SPINUP=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
     -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
-    -d "{\"actionId\":\"$ACT_SP\",\"action\":{\"op\":\"spinup_project\",\"directiveId\":\"D-SMOKE-A\",\"projectName\":\"smoke A hello world\",\"projectVertical\":\"apps\",\"projectBudgetCents\":10000,\"departments\":[\"papercup-org-technology\"]}}")
+    -d "{\"actionId\":\"$ACT_SP\",\"action\":{\"op\":\"spinup_project\",\"directiveId\":\"D-SMOKE-A\",\"projectName\":\"$PROJ_NAME\",\"projectVertical\":\"apps\",\"projectBudgetCents\":10000,\"departments\":[\"papercup-org-technology\"]}}")
   echo "$SPINUP" | jq -er '.ok == true' >/dev/null && ok "A2 spinup_project ok" || bad "A2 unexpected: $SPINUP"
   PROJ_ID=$(echo "$SPINUP" | jq -r '.result.projectId // empty')
   [ -n "$PROJ_ID" ] && ok "A2b projectId returned: $PROJ_ID" || bad "A2b no projectId"
@@ -207,6 +230,48 @@ else
     PARENT=$(curl -sS "$OPERATOR_BASE/api/harness/projects?parent_slug=org" | jq -e ".projects[] | select(.slug == \"$CHILD_B\") | .parent_slug" 2>&1)
     [ "$PARENT" = "\"org\"" ] && ok "B2 child parent_slug=org" || bad "B2 unexpected parent_slug: $PARENT"
   fi
+fi
+
+# ── Smoke E — additional v2 verbs (pause/resume/mark_campaign_published, dryRun, prune) ──
+note "Smoke E — v2 verbs + dryRun + prune"
+
+ORG_TOKEN="$(token_for papercup-org)"
+[ -z "$ORG_TOKEN" ] && ORG_TOKEN="$(token_for org)"
+
+if [ -z "$ORG_TOKEN" ]; then
+  bad "E-prep no token"
+else
+  # Pick any project slug from harness_shared.projects (not the harness registry).
+  # spinup_project from Smoke A creates one we can target.
+  PROJ_SLUG=$(PGUSER=postgres_app PGPASSWORD=postgres PGHOST=localhost PGDATABASE=papercusp psql -At -c \
+    "SELECT slug FROM harness_shared.projects WHERE slug IS NOT NULL ORDER BY updated_ts DESC LIMIT 1" 2>/dev/null)
+  [ -z "$PROJ_SLUG" ] && PROJ_SLUG="sheets"
+
+  E1=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+    -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
+    -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"pause_project\",\"projectSlug\":\"$PROJ_SLUG\",\"reason\":\"E1 smoke pause test\"}}")
+  echo "$E1" | jq -er '.ok == true' >/dev/null && ok "E1 pause_project ok ($PROJ_SLUG)" || bad "E1 unexpected: $E1"
+
+  E2=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+    -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
+    -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"resume_project\",\"projectSlug\":\"$PROJ_SLUG\"}}")
+  echo "$E2" | jq -er '.ok == true' >/dev/null && ok "E2 resume_project ok" || bad "E2 unexpected: $E2"
+
+  E3=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+    -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
+    -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"pause_project\",\"projectSlug\":\"nonexistent-$(date +%s)\"}}")
+  echo "$E3" | jq -er '.error == "not_found"' >/dev/null && ok "E3 pause non-existent → not_found" || bad "E3 unexpected: $E3"
+
+  # dryRun
+  E4=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+    -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
+    -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"scaffold_harness\",\"projectSlug\":\"would-spawn-$(date +%s)\",\"template\":\"papercup-coding\",\"spec\":\"x\",\"goal\":\"y\",\"dryRun\":true}}")
+  echo "$E4" | jq -er '.result.dryRun == true' >/dev/null && ok "E4 scaffold_harness dryRun returns binding without scaffolding" || bad "E4 unexpected: $E4"
+
+  # Prune endpoint (dryRun)
+  E5=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/prune-executed-actions?dryRun=1" \
+    -H "Authorization: Bearer $ORG_TOKEN")
+  echo "$E5" | jq -er '.ok == true' >/dev/null && ok "E5 prune endpoint dryRun ok ($(echo "$E5" | jq -r '.totalDeleted // "?"') would-delete)" || bad "E5 unexpected: $E5"
 fi
 
 # ── Summary ──
