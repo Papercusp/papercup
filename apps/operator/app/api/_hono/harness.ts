@@ -968,6 +968,98 @@ harness.patch('/:slug/features/:id', async (c) => {
   return c.json({ ok: true, feature: rowToFeature(updated) });
 });
 
+/**
+ * POST /:slug/features/import — bulk-import endpoint for the scoper.
+ *
+ * Replaces the run.sh `features.json → psql ON CONFLICT` shim that's been
+ * the import path since 2026-04-26. Body matches the legacy features.json
+ * shape: `{features: [{id, title, summary, status, attempts, claims, ...}]}`.
+ *
+ * INSERT ... ON CONFLICT DO UPDATE updates title/status/summary on existing
+ * feature_id; new rows are inserted with caller-provided ts/created_ts/
+ * updated_ts (defaulting to now). Returns counts.
+ *
+ * The scoper now POSTs here on MODE=initial / MODE=replan; run.sh's shim
+ * stays as a transition fallback for harnesses whose scoper hasn't been
+ * updated yet.
+ */
+harness.post('/:slug/features/import', async (c) => {
+  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const body = await c.req.json().catch(() => null) as null | {
+    features?: Array<{
+      id: string;
+      title: string;
+      summary?: string;
+      status?: string;
+      attempts?: number;
+      claims?: string[] | null;
+      notes?: string | null;
+      metadata?: Record<string, unknown> | null;
+      kind?: string | null;
+      project_id?: string | null;
+      expected_cost_cents?: number | null;
+      tags?: string[] | null;
+      needs_human_review?: boolean;
+      ts?: number | null;
+    }>;
+  };
+  if (!body?.features || !Array.isArray(body.features) || body.features.length === 0) {
+    return c.json({ error: 'features array required' }, 400);
+  }
+  const features = body.features;
+  const invalid = features.find((f) => !f.id || !FEATURE_ID_RE.test(f.id) || !f.title);
+  if (invalid) {
+    return c.json({ error: `every feature requires a valid id (matching ${FEATURE_ID_RE.source}) and title; offender: ${JSON.stringify(invalid).slice(0, 200)}` }, 400);
+  }
+
+  const dbc = dbcFor(project.slug);
+  const now = Date.now();
+  let inserted = 0;
+  let updated = 0;
+  // Note: dbc.transaction() returns a deferred function (legacy-shim quirk).
+  // The 6 other endpoints in this file use it identically and effectively
+  // run their statements outside the transaction. We follow the same shape
+  // here for consistency; the operations are still per-statement-atomic via
+  // postgres-js's auto-begin/commit.
+  for (const f of features) {
+    const existing = await dbc.prepare('SELECT 1 AS x FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, f.id);
+    if (existing) {
+      await dbc.prepare(`
+        UPDATE harness_features SET
+          title = ?,
+          summary = ?,
+          status = ?,
+          updated_ts = ?
+        WHERE harness_slug = ? AND feature_id = ?
+      `).run(f.title, f.summary ?? null, f.status ?? 'todo', now, project.slug, f.id);
+      updated++;
+    } else {
+      await dbc.prepare(`
+        INSERT INTO harness_features
+          (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
+           kind, project_id, expected_cost_cents, tags, needs_human_review,
+           ts, created_ts, updated_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        project.slug, f.id, f.title, f.summary ?? null, f.status ?? 'todo',
+        f.attempts ?? 0,
+        f.claims && f.claims.length > 0 ? JSON.stringify(f.claims) : null,
+        f.notes ?? null,
+        f.metadata ? JSON.stringify(f.metadata) : null,
+        f.kind ?? null,
+        f.project_id ?? null,
+        f.expected_cost_cents ?? null,
+        f.tags && f.tags.length > 0 ? JSON.stringify(f.tags) : null,
+        Boolean(f.needs_human_review),
+        f.ts ?? now, now, now,
+      );
+      inserted++;
+    }
+  }
+  return c.json({ ok: true, inserted, updated, total: features.length });
+});
+
 harness.post('/:slug/features', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
