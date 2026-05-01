@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { registerExperts } from './experts';
@@ -233,6 +233,82 @@ describe('experts API', () => {
     expect(r.data.ok).toBe(true);
     const { data } = await call('GET', '/experts/EXP-001/spec');
     expect(data.content).toBe('# hello\n\n- list');
+  });
+
+  it('full choreography: orchestrator decision rules drive the multi-turn back-and-forth correctly', async () => {
+    // This is the regression test for the structural bug end-to-end testing
+    // exposed: the orchestrator drives the loop by inspecting which turn-NNN-*.md
+    // file is most recent in each in-flight conversation. Expert and feedback
+    // both call APIs and exit; neither emits a decision verb.
+    //
+    // Simulate the orchestrator's decision rule against the same state shapes
+    // the real orchestrator inspects.
+    const decide = async (): Promise<string> => {
+      const exps = (await call('GET', '/experts')).data.experts as any[];
+      // Rule 1: feedback waiting on the agent's reply.
+      for (const e of exps) {
+        if (e.status !== 'gathering_feedback') continue;
+        const fb = (await call('GET', `/experts/${e.id}/feedback`)).data.feedback as any[];
+        for (const f of fb) {
+          if (f.ended) continue;
+          const dir = join(PROJECT_DIR, '.harness', 'experts', e.id, 'feedback', f.id);
+          const turns = readdirSync(dir).filter((n) => /^turn-\d{3}-(expert|feedback)\.md$/.test(n)).sort();
+          if (turns.length && turns[turns.length - 1].endsWith('-expert.md')) {
+            return `NEXT_FEEDBACK ${e.id}.${f.id}`;
+          }
+        }
+      }
+      // Rule 2: any expert that needs to act?
+      for (const e of [...exps].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))) {
+        if (['cancelled', 'superseded', 'final', 'max_rounds', 'error', 'awaiting_user'].includes(e.status)) continue;
+        if (e.userEngaged) continue;
+        const fb = (await call('GET', `/experts/${e.id}/feedback`)).data.feedback as any[];
+        const inFlight = fb.filter((f) => !f.ended);
+        if (e.status === 'drafting' || inFlight.length === 0) return `NEXT_EXPERT ${e.id}`;
+        for (const f of inFlight) {
+          const dir = join(PROJECT_DIR, '.harness', 'experts', e.id, 'feedback', f.id);
+          const turns = readdirSync(dir).filter((n) => /^turn-\d{3}-(expert|feedback)\.md$/.test(n)).sort();
+          if (turns.length && turns[turns.length - 1].endsWith('-feedback.md')) {
+            return `NEXT_EXPERT ${e.id}`;
+          }
+        }
+      }
+      // Rule 3: terminal experts → scoper phase 2.
+      for (const e of exps) {
+        if (['final', 'max_rounds'].includes(e.status)) return 'NEXT_SCOPER phase2';
+      }
+      return 'IDLE';
+    };
+
+    // Empty → next is to dispatch a (not-yet-existing) expert. Skip; create one.
+    await call('POST', '/experts', { title: 'choreo', highLevelSpec: 'x', budgetCents: 999_999, featureSize: 'standard' });
+    expect(await decide()).toBe('NEXT_EXPERT EXP-001'); // drafting
+    // Expert opens FB-001 + writes opening turn.
+    await call('POST', '/experts/EXP-001/feedback', { persona: 'security' });
+    await call('POST', '/experts/EXP-001/feedback/FB-001/turn', { from: 'expert', body: 'opening' });
+    expect(await decide()).toBe('NEXT_FEEDBACK EXP-001.FB-001');
+    // Feedback replies.
+    await call('POST', '/experts/EXP-001/feedback/FB-001/turn', { from: 'feedback', body: 'critique' });
+    expect(await decide()).toBe('NEXT_EXPERT EXP-001');
+    // Expert pushes back.
+    await call('POST', '/experts/EXP-001/feedback/FB-001/turn', { from: 'expert', body: 'follow up' });
+    expect(await decide()).toBe('NEXT_FEEDBACK EXP-001.FB-001');
+    // Feedback replies again.
+    await call('POST', '/experts/EXP-001/feedback/FB-001/turn', { from: 'feedback', body: 'final critique' });
+    expect(await decide()).toBe('NEXT_EXPERT EXP-001');
+    // Expert ends FB-001 (substantive → not converged).
+    await call('POST', '/experts/EXP-001/feedback/FB-001/end', {
+      verdict: { newIssues: [{ summary: 'x', severity: 'major' }], coversPriorIssues: [] },
+    });
+    expect(await decide()).toBe('NEXT_EXPERT EXP-001'); // spawn next persona
+    // Two empty rounds → convergence.
+    await call('POST', '/experts/EXP-001/feedback', { persona: 'UX' });
+    await call('POST', '/experts/EXP-001/feedback/FB-002/end', { verdict: { newIssues: [], coversPriorIssues: [] } });
+    await call('POST', '/experts/EXP-001/feedback', { persona: 'perf' });
+    const r = await call('POST', '/experts/EXP-001/feedback/FB-003/end', { verdict: { newIssues: [], coversPriorIssues: [] } });
+    expect(r.data.expert.status).toBe('final');
+    // Final → scoper phase 2.
+    expect(await decide()).toBe('NEXT_SCOPER phase2');
   });
 
   it('chat-agents excludes cancelled and superseded experts but lists static roles', async () => {
