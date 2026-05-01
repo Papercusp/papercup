@@ -181,7 +181,7 @@ export default function MarketplaceSnapshotsPage() {
         <section className="pc-marketplace-catalog-section" style={{ marginBottom: 32 }}>
           <div className="pc-marketplace-grid">
             {catalog.map((s) => {
-              const Icon = (s.icon && (Lucide as Record<string, unknown>)[s.icon] as React.ComponentType<{ size?: number }>) ?? Lucide.Layers;
+              const Icon: React.ComponentType<{ size?: number }> = (s.icon && (Lucide as Record<string, unknown>)[s.icon] as React.ComponentType<{ size?: number }>) || Lucide.Layers;
               return (
                 <article key={s.slug} className="pc-card pc-marketplace-card">
                   <div className="pc-marketplace-card-head">

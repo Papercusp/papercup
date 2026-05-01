@@ -12,12 +12,6 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-declare global {
-  interface Window {
-    $chatwoot?: { toggle: (state?: 'open' | 'close') => void };
-  }
-}
-
 interface Message {
   role: 'user' | 'assistant';
   content: string;

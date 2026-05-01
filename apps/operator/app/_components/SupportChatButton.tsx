@@ -9,14 +9,6 @@
 
 import type { ReactNode } from 'react';
 
-declare global {
-  interface Window {
-    $chatwoot?: {
-      toggle: (state?: 'open' | 'close') => void;
-    };
-  }
-}
-
 interface Props {
   children?: ReactNode;
   className?: string;

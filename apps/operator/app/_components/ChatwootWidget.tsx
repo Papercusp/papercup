@@ -28,6 +28,7 @@ declare global {
       setLabel: (label: string) => void;
       setCustomAttributes: (attrs: Record<string, unknown>) => void;
       reset: () => void;
+      toggle: (state?: 'open' | 'close') => void;
     };
   }
 }
