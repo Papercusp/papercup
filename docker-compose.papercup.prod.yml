@@ -105,6 +105,8 @@ services:
     image: rocicorp/zero:latest # placeholder; substituted with restart-zero-cache:latest in deploy
     container_name: papercup-zero-cache
     restart: unless-stopped
+    depends_on:
+      - papercup
     environment:
       NODE_ENV: production
       ZERO_APP_ID: papercup
@@ -113,6 +115,12 @@ services:
       ZERO_REPLICA_FILE: /data/zero/replica.db
       ZERO_APP_PUBLICATIONS: zero_harness
       ZERO_ADMIN_PASSWORD: ${ZERO_ADMIN_PASSWORD}
+      # Named-query resolver — every useQuery(queries.X.Y(...)) call routes
+      # here so zero-cache can re-transform it into ZQL against the replica.
+      # Without this, named-query subscriptions return 0 rows and the
+      # zero-cache log spits "no ZERO_QUERY_URL is configured" warnings.
+      # papercup hosts the resolver at /api/zero-harness-query.
+      ZERO_QUERY_URL: http://papercup:3061/api/zero-harness-query
     volumes:
       - papercup-zero-data:/data/zero
     networks:
