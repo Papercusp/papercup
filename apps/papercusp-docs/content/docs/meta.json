@@ -1,0 +1,11 @@
+{
+  "title": "Papercusp Docs",
+  "pages": [
+    "index",
+    "---Sections---",
+    "using-the-app",
+    "harness-templates",
+    "harness-snapshots",
+    "plugins"
+  ]
+}

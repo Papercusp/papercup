@@ -447,123 +447,9 @@ publicPapercup.get('/healthz', async (c) => {
 
 // ─── /summary ─────────────────────────────────────────────
 // Aggregated home-page snapshot.
-publicPapercup.get('/summary', async (c) => {
-  const [{ departments = [] }, { directives = [] }, projectsRes] = await Promise.all([
-    fetchInternal<{ departments: any[] }>('/org/departments', { departments: [] }),
-    fetchInternal<{ directives: any[] }>('/org/directives', { directives: [] }),
-    fetchInternal<{ projects?: any[] }>('/org/projects', { projects: [] }),
-  ]);
-  const projects = projectsRes.projects ?? [];
 
-  const totals = departments.reduce(
-    (a: any, d: any) => {
-      a.pendingInbox += d.counts?.inboxPending ?? 0;
-      a.messages += (d.counts?.inboxTotal ?? 0) + (d.counts?.outboxTotal ?? 0);
-      if (d.lastActivity && Date.now() - d.lastActivity < 15 * 60_000) a.activeDirectors += 1;
-      return a;
-    },
-    { departments: departments.length, pendingInbox: 0, messages: 0, activeDirectors: 0 },
-  );
 
-  return c.json({
-    totals,
-    topDirectives: directives
-      .filter((d: any) => d.status === 'active')
-      .slice(0, 6)
-      .map((d: any) => ({
-        id: d.id,
-        title: d.title,
-        status: d.status,
-        priority: d.priority ?? 'normal',
-      })),
-    topProjects: projects
-      .filter((p: any) => p.status !== 'archived' && p.status !== 'cancelled')
-      .slice(0, 6)
-      .map((p: any) => ({
-        id: p.id,
-        name: p.name ?? p.title ?? 'Project',
-        status: p.status ?? 'active',
-      })),
-    lastUpdatedMs: Date.now(),
-  });
-});
 
-// ─── /organization ────────────────────────────────────────
-publicPapercup.get('/organization', async (c) => {
-  const { departments = [] } = await fetchInternal<{ departments: any[] }>('/org/departments', { departments: [] });
-  return c.json({
-    departments: departments.map((d: any) => ({
-      slug: d.slug,
-      harnessSlug: d.harnessSlug,
-      name: d.name,
-      mandate: d.mandate,
-      inboxKinds: d.inboxKinds ?? [],
-      outboxKinds: d.outboxKinds ?? [],
-      counts: {
-        inboxTotal: d.counts?.inboxTotal ?? 0,
-        inboxPending: d.counts?.inboxPending ?? 0,
-        outboxTotal: d.counts?.outboxTotal ?? 0,
-      },
-      lastActivity: d.lastActivity ?? null,
-    })),
-  });
-});
-
-// ─── /directives ──────────────────────────────────────────
-publicPapercup.get('/directives', async (c) => {
-  const { directives = [] } = await fetchInternal<{ directives: any[] }>('/org/directives', { directives: [] });
-  return c.json({
-    directives: directives.map((d: any) => ({
-      id: d.id,
-      title: d.title,
-      body: d.body,
-      status: d.status,
-      created_ts: d.created_ts,
-      priority: d.priority,
-      assignedDepartments: d.assignedDepartments ?? [],
-      budget_cents: d.budget_cents,
-    })),
-  });
-});
-
-// ─── /projects ────────────────────────────────────────────
-publicPapercup.get('/projects', async (c) => {
-  const res = await fetchInternal<{ projects?: any[] }>('/org/projects', { projects: [] });
-  const projects = res.projects ?? [];
-  return c.json({
-    projects: projects.map((p: any) => ({
-      id: p.id,
-      name: p.name ?? p.title ?? 'Project',
-      status: p.status ?? 'active',
-      description: p.description ?? p.summary,
-      ownerDepartment: p.ownerDepartment ?? p.owner,
-      createdMs: p.createdMs ?? p.created_ts,
-      updatedMs: p.updatedMs ?? p.updated_ts,
-    })),
-  });
-});
-
-// ─── /timeline ────────────────────────────────────────────
-publicPapercup.get('/timeline', async (c) => {
-  // Admin's source of inter-department messages is /org/messages.
-  const res = await fetchInternal<{ messages?: any[]; events?: any[] }>('/org/messages', { messages: [], events: [] });
-  const raw = res.messages ?? res.events ?? [];
-  return c.json({
-    events: raw.slice(0, 200).map((e: any) => ({
-      id: e.id,
-      ts: e.ts,
-      kind: e.kind,
-      from: e.from,
-      // TimelineView expects `to` as an array of department slugs.
-      to: Array.isArray(e.to) ? e.to : (e.to ? [e.to] : []),
-      subject: e.subject,
-      projectId: e.projectId ?? null,
-      directiveId: e.directiveId ?? null,
-      status: e.status,
-      // Body omitted to avoid leaking internal context.
-    })),
-  });
-});
 
 // ─── /harnesses ───────────────────────────────────────────
 // Now exposes BOTH department harnesses (org-*) and coding harnesses (sheets, etc.).
@@ -787,23 +673,6 @@ publicPapercup.get('/harness/:slug', async (c) => {
   });
 });
 
-// ─── /briefings ───────────────────────────────────────────
-publicPapercup.get('/briefings', async (c) => {
-  const res = await fetchInternal<{ briefings?: any[] }>('/briefings', { briefings: [] });
-  const briefings = res.briefings ?? [];
-  return c.json({
-    briefings: briefings
-      .filter((b: any) => b.status === 'published' || b.public === true)
-      .map((b: any) => ({
-        id: b.id,
-        ts: b.ts ?? b.created_ts,
-        title: b.title,
-        summary: b.summary ?? b.tldr,
-        audience: b.audience,
-        body: b.body,
-      })),
-  });
-});
 
 // ─── /chat ────────────────────────────────────────────────
 // Public chatbot: visitor-facing AI guide for papercupai.com.

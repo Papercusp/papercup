@@ -179,6 +179,14 @@ export interface PluginHooks {
   /** Fires when the plugin is being unloaded (uninstall, host shutdown). */
   onUnload?(ctx: PapercuspContext): Promise<void>;
 
+  /**
+   * Fires once when a new harness is created (after `papercusp init`
+   * succeeds; before any role runs). Plugins use this to provision
+   * external resources tied to the harness — e.g. create a GitHub repo,
+   * Linear team, etc. Per-harness plugin config is already on disk by
+   * this point, so handlers can `readConfig(ctx)` safely.
+   */
+  onHarnessCreated?(ctx: PapercuspContext): Promise<void>;
   /** Fires before the harness loop's first iteration. */
   beforeMissionStart?(ctx: PapercuspContext): Promise<void>;
   /** Fires when the orchestrator decides DONE. */

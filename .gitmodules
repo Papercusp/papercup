@@ -22,3 +22,6 @@
 [submodule "libs/zero-harness"]
 	path = libs/zero-harness
 	url = https://github.com/papercupai/zero-harness.git
+[submodule "libs/sync"]
+	path = libs/sync
+	url = https://github.com/papercupai/sync.git

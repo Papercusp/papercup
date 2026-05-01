@@ -1,23 +1,18 @@
-# Quarantined tests — flaky in CI but kept visible.
+# quarantine.txt — flaky-test register
 #
-# Format: one entry per line, "<workspace-name>::<test-file-relative-path>"
-# Lines starting with # are comments. Blank lines ignored.
+# Read by scripts/affected-tests.mjs at the start of every CI run. Two formats:
 #
-# Quarantined tests still RUN in CI but their failures do NOT gate the merge.
-# A PR that touches the source under test (or the test itself) MUST either
-# de-quarantine the test (remove the line) or document why it stays.
+#   <workspace-name>                -> excluded from the affected run; logged as
+#                                      quarantined (not silently skipped).
+#   <workspace-name>::<file-glob>   -> per-file informational marker; the runner
+#                                      doesn't currently filter at file-level,
+#                                      so this is a hint for humans triaging.
 #
-# A test is auto-flagged here by the nightly job after failing then passing
-# 3 times in a 7-day window. Manual entries are also welcome — add the line
-# with a `# reason: ...` comment after.
+# Lines starting with `#` and blank lines are ignored.
 #
-# Examples:
-# @papercusp/web::test/db.integration.test.ts  # reason: testcontainers boot timing on cold cache
-
-# Currently quarantined (file-level): src/plugin-hooks.test.ts in
-# @papercusp/orchestrator is excluded directly in its vitest.config.ts.
-# Reason: 4 firePluginHook tests leak into the runner's real
-# ~/.papercusp/global-plugins/ directory (e.g. fired=6 expected=0).
-# Pre-existing bug — failures reproduce under the original `node --test`
-# script too. Fix: take homeDir explicitly in pluginSearchPaths /
-# FirePluginHookOptions, then remove the exclude.
+# Policy (per spec §1.9):
+#   - A test that's been flaky three times in seven days is auto-added.
+#   - Any PR touching a quarantined test's source must address the flake
+#     before merge (CODEOWNERS catches this).
+#   - Empty quarantine list = the suite is healthy. The list grows in
+#     PRs reviewed by humans, never silently.

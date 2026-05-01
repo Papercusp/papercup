@@ -41,6 +41,23 @@ jobs:
           CI: 'true'
         run: npm run test:slow --workspace @papercusp/orchestrator
 
+      - name: Run benchmarks (libs/papergrid)
+        if: always()
+        continue-on-error: true
+        env:
+          CI: 'true'
+        run: npm run bench --workspace @restart/grid-core
+
+      - name: Upload bench results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: |
+            libs/**/bench-result.json
+            libs/**/bench-output.txt
+          if-no-files-found: ignore
+
       - name: Publish JUnit reports
         if: always()
         uses: dorny/test-reporter@v2

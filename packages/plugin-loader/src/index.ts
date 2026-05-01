@@ -14,9 +14,32 @@
  *   2. ~/.papercusp/harnesses/<harness-slug>/plugins/<name>/
  *   3. ~/.papercusp/global-plugins/<name>/
  */
-import { promises as fs, existsSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+
+/**
+ * Resolve the active Papercusp root. The substrate moved to per-workspace
+ * storage at ~/.papercusp-workspaces/<id>/.papercusp/. This mirrors the
+ * resolver used in the operator and CLI so the loader picks up plugins
+ * from the right location regardless of where it's invoked from.
+ */
+function papercuspRootResolved(): string {
+  if (process.env.PAPERCUSP_HOME) return process.env.PAPERCUSP_HOME;
+  const wsIndex = join(homedir(), '.papercusp-workspaces', 'registry.json');
+  if (existsSync(wsIndex)) {
+    try {
+      const parsed = JSON.parse(readFileSync(wsIndex, 'utf8')) as { current?: string };
+      if (parsed.current) {
+        const cand = join(homedir(), '.papercusp-workspaces', parsed.current, '.papercusp');
+        if (existsSync(cand)) return cand;
+      }
+    } catch { /* fall through */ }
+  }
+  const def = join(homedir(), '.papercusp-workspaces', 'default', '.papercusp');
+  if (existsSync(def)) return def;
+  return join(homedir(), '.papercusp');
+}
 import { pathToFileURL } from 'node:url';
 import type { Plugin } from '@papercusp/plugin-sdk';
 import { satisfies } from './semver';
@@ -56,7 +79,7 @@ export interface LoaderOptions {
   globalPluginsDir?: string; // override ~/.papercusp/global-plugins/
 }
 
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRootResolved();
 
 interface ManifestShape {
   name: string;

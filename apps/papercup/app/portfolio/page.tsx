@@ -18,7 +18,8 @@
  * place, the legacy view can switch to this lib.
  */
 import { useMemo, useState } from 'react';
-import { useSyncQuery } from '@restart/sync';
+import { useQuery, useZero } from '@rocicorp/zero/react';
+import { queries } from '@restart/zero-harness';
 import {
   type ProjectRow,
   type AuditLogRow,
@@ -133,28 +134,21 @@ export default function PortfolioPage() {
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [projectSort, setProjectSort] = useState<RichGridSortState | null>(null);
   const [auditSort, setAuditSort] = useState<RichGridSortState | null>(null);
-  const { data: allProjects, loading: projectsLoading } = useSyncQuery<ProjectRow>({ queryName: 'projects.all' });
-  const { data: filteredProjects } = useSyncQuery<ProjectRow>({
-    queryName: 'projects.byStatus',
-    args: { status: statusFilter ?? '' },
-    enabled: !!statusFilter,
-  });
+  const __z = useZero();
+  const [allProjectsRaw, allProjectsInfo] = useQuery(queries.projects.all(), __z) as unknown as [any[], { type: string }];
+  const allProjects = allProjectsRaw ?? [];
+  const projectsLoading = allProjectsInfo?.type !== 'complete';
+  const filteredProjects: any[] = [];
   const projects = statusFilter ? filteredProjects : allProjects;
   const [subjectFilter, setSubjectFilter] = useState<string | null>(null);
-  const { data: recentAudit, loading: auditLoading } = useSyncQuery<AuditLogRow>({
-    queryName: 'auditLog.recent',
-    args: { limit: 50 },
-  });
-  const { data: filteredAudit } = useSyncQuery<AuditLogRow>({
-    queryName: 'auditLog.bySubject',
-    args: { subject: subjectFilter ?? '' },
-    enabled: !!subjectFilter,
-  });
+  const [recentAuditRaw, recentAuditInfo] = useQuery(queries.auditLog.recent({ limit: 200 }), __z) as unknown as [any[], { type: string }];
+  const recentAudit = recentAuditRaw ?? [];
+  const auditLoading = recentAuditInfo?.type !== 'complete';
+  const filteredAudit: any[] = [];
   const audit = subjectFilter ? filteredAudit : recentAudit;
-  const { data: summaries, loading: summariesLoading } = useSyncQuery<DirectiveSummaryRow>({
-    queryName: 'directiveSummaries.recent',
-    args: { limit: 30 },
-  });
+  const [summariesRaw, summariesInfo] = useQuery((queries as any).directiveSummaries?.recent ? (queries as any).directiveSummaries.recent({ limit: 50 }) : queries.auditLog.recent({ limit: 1 }), __z) as unknown as [any[], { type: string }];
+  const summaries = summariesRaw ?? [];
+  const summariesLoading = summariesInfo?.type !== 'complete';
 
   const projectsLive = !projectsLoading;
   const auditLive = !auditLoading;

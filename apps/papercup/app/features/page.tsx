@@ -12,7 +12,8 @@
  * filter avoids the round-trip the polled /features-all endpoint required.
  */
 import { useMemo, useState } from 'react';
-import { useSyncQuery } from '@restart/sync';
+import { useQuery, useZero } from '@rocicorp/zero/react';
+import { queries } from '@restart/zero-harness';
 import { type FeatureConsolidatedRow } from '@restart/zero-harness';
 import {
   RichGrid,
@@ -165,9 +166,10 @@ function rowToLegacy(r: FeatureConsolidatedRow): FeatureRow {
 }
 
 export default function FeaturesPage() {
-  const { data: zeroRows, loading: zeroLoading } = useSyncQuery<FeatureConsolidatedRow>({
-    queryName: 'featuresConsolidated.all',
-  });
+  const __z = useZero();
+  const [zeroRowsRaw, zeroRowsInfo] = useQuery(queries.featuresConsolidated.all(), __z) as unknown as [any[], { type: string }];
+  const zeroRows = zeroRowsRaw ?? [];
+  const zeroLoading = zeroRowsInfo?.type !== 'complete';
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [slugFilter, setSlugFilter] = useState<string | null>(null);
   const [reviewOnly, setReviewOnly] = useState(false);

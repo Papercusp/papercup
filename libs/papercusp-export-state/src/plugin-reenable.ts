@@ -13,8 +13,8 @@
 
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
 import type { SnapshotPlugin } from './manifest';
+import { papercuspPath } from './paths';
 
 export interface ConsentSummary {
   /** Plugins enumerated by name with their union-of-caps. */
@@ -28,7 +28,7 @@ export interface ConsentSummary {
   capDeltas: { name: string; declaredInSnapshot: string[]; installed: string[] }[];
 }
 
-const GLOBAL_PLUGINS_DIR = join(homedir(), '.papercusp', 'global-plugins');
+const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
 
 export async function readInstalledPluginCaps(
   pluginName: string,
@@ -125,7 +125,7 @@ export async function persistPluginConfigs(args: {
   newSlug: string;
   plugins: ConsentSummary['plugins'];
 }): Promise<void> {
-  const dir = join(homedir(), '.papercusp', 'harnesses', args.newSlug, 'plugin-configs');
+  const dir = papercuspPath('harnesses', args.newSlug, 'plugin-configs');
   await fs.mkdir(dir, { recursive: true });
   for (const p of args.plugins) {
     let json: unknown;

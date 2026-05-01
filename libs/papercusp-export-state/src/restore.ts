@@ -20,7 +20,7 @@
 
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import {
   applyPerHarnessDump,
   releaseRestoreLock,
@@ -34,6 +34,7 @@ import { rewriteSlugInDir } from './slug-rewrite';
 import { buildConsentSummary, persistPluginConfigs } from './plugin-reenable';
 import { resolveDatabaseUrl } from './pg-dump';
 import { newForkSlugSuffix } from './manifest';
+import { papercuspPath, papercuspRoot } from './paths';
 import { assertValidSlug } from './shared-table-filters';
 import type { RestoreProgress, RestoreRequest, RestoreResult } from './restore-types';
 
@@ -193,7 +194,7 @@ async function copyDir(src: string, dest: string): Promise<void> {
 }
 
 async function registerHarness(slug: string, projectDir: string): Promise<void> {
-  const registryPath = join(homedir(), '.papercusp', 'registry.json');
+  const registryPath = papercuspPath('registry.json');
   let reg: { projects: { slug: string; path: string }[] } = { projects: [] };
   try {
     const raw = await fs.readFile(registryPath, 'utf8');
@@ -205,7 +206,7 @@ async function registerHarness(slug: string, projectDir: string): Promise<void> 
   if (!reg.projects.some((p) => p.slug === slug)) {
     reg.projects.push({ slug, path: projectDir });
   }
-  await fs.mkdir(join(homedir(), '.papercusp'), { recursive: true });
+  await fs.mkdir(papercuspRoot(), { recursive: true });
   await fs.writeFile(registryPath, JSON.stringify(reg, null, 2) + '\n');
 }
 

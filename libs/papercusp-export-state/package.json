@@ -26,6 +26,7 @@
   "devDependencies": {
     "@papercusp/test-config": "*",
     "@types/node": "^22",
+    "fast-check": "^4.7.0",
     "vitest": "^4.1.4"
   }
 }

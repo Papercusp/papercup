@@ -1,0 +1,29 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": "Per testing-spec §1.12: quarterly mutation-testing health check on this crypto-adjacent library. NOT in PR CI — Stryker is slow (~10-30 min). Run via `npm run mutate` from this package directory; surfaces a Stryker HTML report. Threshold of 80% mutation score is a target, not a gate. Below 80% triggers a tracking issue.",
+  "packageManager": "npm",
+  "reporters": ["html", "clear-text", "progress"],
+  "testRunner": "vitest",
+  "testRunner_comment": "Vitest's stryker plugin: runs the existing vitest config per mutant. No extra setup needed.",
+  "vitest": {
+    "configFile": "vitest.config.ts"
+  },
+  "mutate": [
+    "src/**/*.ts",
+    "!src/**/*.test.ts",
+    "!src/**/*.property.test.ts",
+    "!src/**/*.bench.ts"
+  ],
+  "thresholds": {
+    "high": 90,
+    "low": 70,
+    "break": 0
+  },
+  "thresholds_comment": "break:0 means Stryker never fails its run on score alone — surface, don't gate. low:70 turns the report yellow; high:90 turns it green.",
+  "coverageAnalysis": "perTest",
+  "concurrency": 4,
+  "timeoutMS": 30000,
+  "checkers": [],
+  "incremental": true,
+  "incremental_comment": "Stores results in .stryker-tmp/incremental.json so subsequent runs only mutate changed files."
+}

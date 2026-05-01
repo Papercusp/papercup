@@ -9,6 +9,8 @@ const withMDX = createMDX();
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  output: 'standalone',
+  outputFileTracingRoot: path.join(__dirname, '../..'),
   typescript: { ignoreBuildErrors: true },
   images: { unoptimized: true },
   transpilePackages: ['@restart/papercup-shared'],

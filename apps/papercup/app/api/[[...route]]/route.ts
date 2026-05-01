@@ -6,7 +6,6 @@
  */
 import { Hono } from 'hono';
 import { handle } from 'hono/vercel';
-import { org } from '../_hono/org';
 import { briefings } from '../_hono/briefings';
 import { publicPapercup } from '../_hono/public-papercup';
 
@@ -26,7 +25,6 @@ const adminPreviewCors = async (c: any, next: any) => {
   await next();
 };
 
-app.use('/org/*', adminPreviewCors);
 app.use('/briefings/*', adminPreviewCors);
 
 // CORS for the public read-only API: any origin can hit /api/public/*
@@ -39,7 +37,6 @@ app.use('/public/*', async (c, next) => {
   await next();
 });
 
-app.route('/org', org);
 app.route('/briefings', briefings);
 app.route('/public/papercup', publicPapercup);
 
