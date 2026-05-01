@@ -43,13 +43,17 @@ async function ensureTable(): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.autoloop_state (
-      harness_slug TEXT PRIMARY KEY,
+      harness_slug TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'director',
       last_fired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_role TEXT,
       last_status TEXT,
-      consecutive_errors INT NOT NULL DEFAULT 0
+      consecutive_errors INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (harness_slug, role)
     )
   `;
+  // Backwards-compat: add `role` column if upgrading from the older
+  // single-role-per-harness shape.
+  await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'director'`);
 }
 
 async function listHarnesses(operatorBase: string): Promise<HarnessRow[]> {
@@ -73,12 +77,13 @@ async function readDirectorConfig(harnessPath: string): Promise<DirectorConfig |
   }
 }
 
-async function shouldFire(slug: string, intervalSeconds: number): Promise<boolean> {
+async function shouldFire(slug: string, role: string, intervalSeconds: number): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql<{ last_fired_at: Date }[]>`
-    SELECT last_fired_at FROM harness_shared.autoloop_state WHERE harness_slug = ${slug}
+    SELECT last_fired_at FROM harness_shared.autoloop_state
+    WHERE harness_slug = ${slug} AND role = ${role}
   `;
-  if (rows.length === 0) return true; // never fired
+  if (rows.length === 0) return true; // never fired for this role
   const elapsed = (Date.now() - new Date(rows[0].last_fired_at).getTime()) / 1000;
   return elapsed >= intervalSeconds;
 }
@@ -87,24 +92,40 @@ async function recordFire(slug: string, role: string, status: string, errorBumpe
   const { sql } = getOrgPg();
   if (errorBumped) {
     await sql`
-      INSERT INTO harness_shared.autoloop_state (harness_slug, last_fired_at, last_role, last_status, consecutive_errors)
-      VALUES (${slug}, now(), ${role}, ${status}, 1)
-      ON CONFLICT (harness_slug) DO UPDATE
+      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors)
+      VALUES (${slug}, ${role}, now(), ${status}, 1)
+      ON CONFLICT (harness_slug, role) DO UPDATE
         SET last_fired_at = now(),
-            last_role = EXCLUDED.last_role,
             last_status = EXCLUDED.last_status,
             consecutive_errors = harness_shared.autoloop_state.consecutive_errors + 1
     `;
   } else {
     await sql`
-      INSERT INTO harness_shared.autoloop_state (harness_slug, last_fired_at, last_role, last_status, consecutive_errors)
-      VALUES (${slug}, now(), ${role}, ${status}, 0)
-      ON CONFLICT (harness_slug) DO UPDATE
+      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors)
+      VALUES (${slug}, ${role}, now(), ${status}, 0)
+      ON CONFLICT (harness_slug, role) DO UPDATE
         SET last_fired_at = now(),
-            last_role = EXCLUDED.last_role,
             last_status = EXCLUDED.last_status,
             consecutive_errors = 0
     `;
+  }
+}
+
+interface RoleConfig {
+  cadence?: number;
+}
+
+interface HarnessConfig {
+  roles?: Record<string, RoleConfig>;
+}
+
+async function readHarnessConfig(harnessPath: string): Promise<HarnessConfig | null> {
+  const cfg = join(harnessPath, '.harness', 'config.json');
+  if (!existsSync(cfg)) return null;
+  try {
+    return JSON.parse(await fs.readFile(cfg, 'utf8')) as HarnessConfig;
+  } catch {
+    return null;
   }
 }
 
@@ -128,36 +149,47 @@ async function tickOnce(operatorBase: string): Promise<void> {
   const harnesses = await listHarnesses(operatorBase);
   for (const h of harnesses) {
     if (stopped) return;
-    const cfg = await readDirectorConfig(h.path);
-    if (!cfg?.autoLoop) continue;
-    const interval = Number(cfg.autoIntervalSeconds ?? 60);
-    if (interval < 30) continue; // hard floor
-    const due = await shouldFire(h.slug, interval);
-    if (!due) continue;
+    const dirCfg = await readDirectorConfig(h.path);
+    if (!dirCfg?.autoLoop) continue;
+    const harnessCfg = await readHarnessConfig(h.path);
+    const baseInterval = Math.max(30, Number(dirCfg.autoIntervalSeconds ?? 60)); // hard floor 30s
 
-    // Fire-and-forget: record the fire BEFORE awaiting so a slow director
-    // doesn't get fired twice in overlapping ticks. Bump errors only if
-    // the request itself fails (the director may legitimately take minutes).
-    const role = 'director';
-    // eslint-disable-next-line no-console
-    console.log(`[autoloop] firing ${h.slug} → ${role} (interval=${interval}s)`);
-    await recordFire(h.slug, role, 'firing', false);
-    fireDirector(operatorBase, h.slug, role).then(
-      (r) => {
-        if (!r.ok) {
+    // Roles to consider: always 'director' (using director-config.autoIntervalSeconds);
+    // also coordinator + auditor IF declared in roles config with a `cadence` field.
+    const rolesToFire: { role: string; intervalSeconds: number }[] = [
+      { role: 'director', intervalSeconds: baseInterval },
+    ];
+    const allRoles = harnessCfg?.roles ?? {};
+    for (const r of ['coordinator', 'auditor']) {
+      const cad = Number(allRoles[r]?.cadence ?? 0);
+      if (cad >= 30) rolesToFire.push({ role: r, intervalSeconds: cad });
+    }
+
+    for (const { role, intervalSeconds } of rolesToFire) {
+      if (stopped) return;
+      const due = await shouldFire(h.slug, role, intervalSeconds);
+      if (!due) continue;
+
+      // eslint-disable-next-line no-console
+      console.log(`[autoloop] firing ${h.slug} → ${role} (interval=${intervalSeconds}s)`);
+      await recordFire(h.slug, role, 'firing', false);
+      fireDirector(operatorBase, h.slug, role).then(
+        (r) => {
+          if (!r.ok) {
+            // eslint-disable-next-line no-console
+            console.warn(`[autoloop] ${h.slug}/${role} fire FAILED: ${r.detail}`);
+            recordFire(h.slug, role, `error: ${r.detail}`, true).catch(() => { /* ignore */ });
+          } else {
+            recordFire(h.slug, role, 'ok', false).catch(() => { /* ignore */ });
+          }
+        },
+        (err) => {
           // eslint-disable-next-line no-console
-          console.warn(`[autoloop] ${h.slug} fire FAILED: ${r.detail}`);
-          recordFire(h.slug, role, `error: ${r.detail}`, true).catch(() => { /* ignore */ });
-        } else {
-          recordFire(h.slug, role, 'ok', false).catch(() => { /* ignore */ });
-        }
-      },
-      (err) => {
-        // eslint-disable-next-line no-console
-        console.warn(`[autoloop] ${h.slug} fire threw: ${err}`);
-        recordFire(h.slug, role, `throw: ${err}`, true).catch(() => { /* ignore */ });
-      },
-    );
+          console.warn(`[autoloop] ${h.slug}/${role} fire threw: ${err}`);
+          recordFire(h.slug, role, `throw: ${err}`, true).catch(() => { /* ignore */ });
+        },
+      );
+    }
   }
 }
 
@@ -198,12 +230,13 @@ export function stopAutoLoop(): void {
   started = false;
 }
 
-/** Test/diagnostic: read current state for a harness. */
-export async function getAutoLoopState(slug: string): Promise<any | null> {
+/** Test/diagnostic: read current state for a harness (all roles). */
+export async function getAutoLoopState(slug: string): Promise<any[] | null> {
   const { sql } = getOrgPg();
   const rows = await sql`
-    SELECT harness_slug, last_fired_at, last_role, last_status, consecutive_errors
+    SELECT harness_slug, role, last_fired_at, last_status, consecutive_errors
     FROM harness_shared.autoloop_state WHERE harness_slug = ${slug}
+    ORDER BY role
   `;
-  return rows.length > 0 ? rows[0] : null;
+  return rows.length > 0 ? Array.from(rows) : null;
 }

@@ -280,8 +280,27 @@ else
   echo "$E6" | jq -er '.error == "validation_error" and (.detail | tostring | contains("itself") or contains("cycle") or contains("ancestor"))' >/dev/null \
     && ok "E6 self-spawn rejected as cycle/validation" || bad "E6 unexpected: $E6"
 
-  # Rate limit: spam send_message past the threshold (env-set low for the smoke)
-  # Skip unless PAPERCUSP_SEND_MESSAGE_RATE_LIMIT is intentionally low.
+  # Token rotation: rotate a department's token; old → 401, new → 200
+  ROTATE_TARGET=papercup-org-coordination
+  ROTATE_OLD="$(token_for $ROTATE_TARGET)"
+  if [ -n "$ROTATE_OLD" ]; then
+    E7=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/rotate-token" \
+      -H "Authorization: Bearer $ROTATE_OLD")
+    echo "$E7" | jq -er '.ok == true' >/dev/null && ok "E7 rotate-token returned new bearer" || bad "E7 unexpected: $E7"
+
+    NEW_T=$(echo "$E7" | jq -r '.newToken // ""')
+    if [ -n "$NEW_T" ]; then
+      OLD_S=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+        -H "Authorization: Bearer $ROTATE_OLD" -H 'content-type: application/json' \
+        -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"send_message\",\"to\":[\"papercup-org\"],\"kind\":\"X\",\"subject\":\"y\",\"reason\":\"E7 old-token rejection check after rotate\"}}")
+      [ "$OLD_S" = "401" ] && ok "E7b old token now 401" || bad "E7b old token still works: $OLD_S"
+
+      NEW_S=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+        -H "Authorization: Bearer $NEW_T" -H 'content-type: application/json' \
+        -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"send_message\",\"to\":[\"papercup-org\"],\"kind\":\"Test\",\"subject\":\"y\",\"reason\":\"E7 new-token usability check after rotate\"}}")
+      echo "$NEW_S" | jq -er '.ok == true' >/dev/null && ok "E7c new token works for executeAction" || bad "E7c unexpected: $NEW_S"
+    fi
+  fi
 fi
 
 # ── Summary ──
