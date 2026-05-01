@@ -3,8 +3,10 @@ import { Toaster } from 'sonner';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
 import WorkspaceSwitcher from './_components/WorkspaceSwitcher';
 import UpdateChip from './_components/UpdateChip';
+import TutorialButton from './_components/TutorialButton';
 import { ChatwootWidget } from './_components/ChatwootWidget';
 import { OracleDock } from './_components/OracleDock';
+import { SiteHeader } from '@papercup/marketplace-public-ui';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -17,20 +19,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning>
       <body>
         <NuqsAdapter>
-          <header className="pc-header">
-            <a href="/" className="brand" aria-label="papercusp" style={{ display: 'flex', alignItems: 'center' }}>
-              <img src="/wordmark.svg" alt="papercusp" height={22} style={{ display: 'block' }} />
-            </a>
-            <span className="pc-header-quote">Nothing is so painful to the human mind as a great and sudden change</span>
-            <nav aria-label="Primary navigation">
-              <a href="/marketplace/">Marketplace</a>
-              <a href="/support">Support</a>
-              <a href="/settings/api-keys">Settings</a>
-              <a href="https://github.com/papercupai/papercusp" target="_blank" rel="noopener noreferrer">GitHub</a>
-              <UpdateChip />
-              <WorkspaceSwitcher />
-            </nav>
-          </header>
+          <SiteHeader
+            navLinks={[
+              { href: '/marketplace/', label: 'Marketplace' },
+              { href: '/installed/harnesses', label: 'Harnesses' },
+              { href: '/installed/plugins', label: 'Plugins' },
+              { href: '/installed/snapshots', label: 'Snapshots' },
+              { href: '/docs', label: 'Docs' },
+              { href: '/support', label: 'Support' },
+              { href: 'https://github.com/papercupai/papercusp', label: 'GitHub', external: true },
+            ]}
+            extras={<><TutorialButton /><UpdateChip /><WorkspaceSwitcher /></>}
+          />
           <main>{children}</main>
           <Toaster theme="dark" position="top-right" />
           <ChatwootWidget />
