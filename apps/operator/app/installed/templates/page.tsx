@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Layers, ExternalLink, Loader2, Pencil, Trash2 } from 'lucide-react';
+import { Layers, ExternalLink, Loader2, Pencil, Trash2, Play } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 
 interface PublishRecord {
@@ -51,6 +51,7 @@ export default function InstalledTemplatesPage() {
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [installing, setInstalling] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -85,6 +86,44 @@ export default function InstalledTemplatesPage() {
       toast.error(`delete error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDeleting(null);
+    }
+  };
+
+  const onInstall = async (row: TemplateRow) => {
+    const key = `${row.slug}@${row.version}`;
+    const proposed = `${row.slug.replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '')}-test`;
+    const projectSlug = window.prompt(
+      `New harness slug?\n\nThis materialises ${row.slug}@${row.version} into a fresh harness so you can test the recipe locally before publishing.`,
+      proposed,
+    );
+    if (!projectSlug) return;
+    setInstalling(key);
+    try {
+      const r = await fetch(
+        `/api/templates/${encodeURIComponent(row.slug)}/${encodeURIComponent(row.version)}/install`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ projectSlug }),
+        },
+      );
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        toast.error(j.error ?? `install failed (${r.status})`);
+        return;
+      }
+      toast.success(`Installed as ${j.projectSlug}`, {
+        description: j.targetPath,
+        duration: 8000,
+        action: j.operatorUrl ? {
+          label: 'open',
+          onClick: () => window.open(j.operatorUrl, '_blank', 'noopener'),
+        } : undefined,
+      });
+    } catch (e) {
+      toast.error(`install error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setInstalling(null);
     }
   };
 
@@ -209,6 +248,27 @@ export default function InstalledTemplatesPage() {
                   >
                     <Pencil size={12} /> edit
                   </Link>
+                  <button
+                    onClick={() => onInstall(row)}
+                    disabled={installing === key}
+                    style={{
+                      padding: '6px 12px',
+                      background: 'transparent',
+                      color: 'var(--fg)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: installing === key ? 'default' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                    title="Materialise this template into a new harness for testing"
+                  >
+                    {installing === key ? <Loader2 size={12} className="pc-spin" /> : <Play size={12} />}
+                    install locally
+                  </button>
                   <button
                     onClick={() => onPublish(row)}
                     disabled={isPublishing}

@@ -63,6 +63,7 @@ export default function EditTemplatePage() {
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [manifestRawMode, setManifestRawMode] = useState(false);
+  const [addFileOpen, setAddFileOpen] = useState(false);
 
   // Two-step load: hit /api/templates for the version list (so the
   // dropdown can show every version of this slug), then fetch the
@@ -179,6 +180,73 @@ export default function EditTemplatePage() {
     }
   }, [tpl, resolvedVersion, dirty, draft]);
 
+  const onAddFile = useCallback(async (spec: ConfigFileSpec, initialContent: string) => {
+    if (!tpl || !resolvedVersion) return;
+    if (!spec.path.trim()) {
+      toast.error('path is required');
+      return;
+    }
+    if (spec.path.includes('..') || spec.path.startsWith('/')) {
+      toast.error('path must be relative and inside the template');
+      return;
+    }
+    // Reject duplicates upfront so the structured form keeps invariants.
+    if ((tpl.manifest.configFiles ?? []).some((cf) => cf.path === spec.path)) {
+      toast.error(`"${spec.path}" is already declared`);
+      return;
+    }
+    setSaving(true);
+    try {
+      // Step 1: update papercusp.json with the new entry (this goes
+      // through the same allowlist + write path as any other manifest
+      // edit; configFiles[] is mutable, the allowlist regrows on the
+      // next read).
+      const nextManifest = {
+        ...tpl.manifest,
+        configFiles: [...(tpl.manifest.configFiles ?? []), spec],
+      };
+      const manifestText = JSON.stringify(nextManifest, null, 2) + '\n';
+      const r1 = await fetch(`/api/templates/${encodeURIComponent(tpl.slug)}/${encodeURIComponent(resolvedVersion)}/file`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: 'papercusp.json', content: manifestText }),
+      });
+      const j1 = await r1.json();
+      if (!r1.ok || !j1.ok) {
+        toast.error(`failed to update manifest: ${j1.error ?? r1.status}`);
+        return;
+      }
+      // Step 2: write the new file (allowlist now includes it).
+      const r2 = await fetch(`/api/templates/${encodeURIComponent(tpl.slug)}/${encodeURIComponent(resolvedVersion)}/file`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path: spec.path, content: initialContent }),
+      });
+      const j2 = await r2.json();
+      if (!r2.ok || !j2.ok) {
+        toast.error(`manifest saved, but creating file failed: ${j2.error ?? r2.status}`);
+        // Don't roll back manifest — the user can save again or remove
+        // the row. Rolling back partial state would surprise them more.
+      }
+      // Step 3: refetch local state so the sidebar + draft caches see
+      // the new file. Cleaner than splicing client-side state.
+      const detail = await fetch(`/api/templates/${encodeURIComponent(tpl.slug)}/${encodeURIComponent(resolvedVersion)}`, { cache: 'no-store' });
+      const dd = detail.ok ? await detail.json() as { template: TemplateRow } : null;
+      if (dd?.template) {
+        setTpl((prev) => prev ? { ...dd.template, versions: prev.versions } : dd.template);
+        // Reset draft for the new file so the editor opens to the
+        // initial content rather than an empty Monaco buffer.
+        setOriginal((prev) => ({ ...prev, [spec.path]: initialContent, 'papercusp.json': manifestText }));
+        setDraft((prev) => ({ ...prev, [spec.path]: initialContent, 'papercusp.json': manifestText }));
+        setActivePath(spec.path);
+      }
+      toast.success(`Added ${spec.path}`);
+      setAddFileOpen(false);
+    } finally {
+      setSaving(false);
+    }
+  }, [tpl, resolvedVersion]);
+
   const onPublish = useCallback(async () => {
     if (!tpl || !resolvedVersion) return;
     if (dirty.length > 0) {
@@ -226,6 +294,14 @@ export default function EditTemplatePage() {
   return (
     <div className="pc-shell" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <Toaster position="bottom-right" richColors />
+      {addFileOpen && (
+        <AddFileDialog
+          existingPaths={(tpl.manifest.configFiles ?? []).map((cf) => cf.path)}
+          onCancel={() => setAddFileOpen(false)}
+          onSubmit={onAddFile}
+          busy={saving}
+        />
+      )}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
         <Link href="/installed/templates" style={{ fontSize: 13, color: 'var(--fg-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <ArrowLeft size={13} /> back
@@ -279,8 +355,17 @@ export default function EditTemplatePage() {
 
       <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
         <aside style={{ width: 240, borderRight: '1px solid var(--border)', paddingRight: 12, overflow: 'auto' }}>
-          <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--fg-dim)', marginBottom: 8 }}>
-            Files
+          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+            <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--fg-dim)' }}>
+              Files
+            </span>
+            <button
+              onClick={() => setAddFileOpen(true)}
+              style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 11, background: 'transparent', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}
+              title="Add a new config file to this template"
+            >
+              <Plus size={11} /> new
+            </button>
           </div>
           <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {allFiles.map((f) => {
@@ -372,6 +457,106 @@ export default function EditTemplatePage() {
   );
 }
 
+function AddFileDialog({
+  existingPaths,
+  onCancel,
+  onSubmit,
+  busy,
+}: {
+  existingPaths: string[];
+  onCancel: () => void;
+  onSubmit: (spec: ConfigFileSpec, initialContent: string) => void;
+  busy: boolean;
+}) {
+  const [path, setPath] = useState('');
+  const [label, setLabel] = useState('');
+  const [language, setLanguage] = useState<'markdown' | 'json' | 'yaml' | 'text'>('markdown');
+  const [description, setDescription] = useState('');
+  const [sensitivity, setSensitivity] = useState<'normal' | 'warn' | 'secret'>('normal');
+
+  // Auto-pick a sensible language from the extension as the user types
+  // so the form stays useful without requiring them to flip the dropdown.
+  useEffect(() => {
+    if (!path) return;
+    if (path.endsWith('.json')) setLanguage('json');
+    else if (path.endsWith('.yaml') || path.endsWith('.yml')) setLanguage('yaml');
+    else if (path.endsWith('.md')) setLanguage('markdown');
+  }, [path]);
+
+  const conflict = existingPaths.includes(path.trim());
+  const invalid = !path.trim() || path.includes('..') || path.startsWith('/');
+
+  const initialContent = language === 'json'
+    ? '{\n}\n'
+    : language === 'markdown'
+      ? `# ${label || path}\n`
+      : '';
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div style={{ background: 'var(--bg, #0c0d10)', border: '1px solid var(--border)', borderRadius: 6, padding: 20, width: 480, maxWidth: '90vw' }}>
+        <h2 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Add config file</h2>
+        <p style={{ margin: '0 0 16px', fontSize: 12, color: 'var(--fg-dim)' }}>
+          Creates the file under the template root and registers it in
+          <code> configFiles[]</code> so it shows in the operator&apos;s Config tab post-install.
+        </p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Field label="path" value={path} onChange={setPath} mono />
+          <Field label="label (optional)" value={label} onChange={setLabel} />
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <label style={{ display: 'block' }}>
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>language</span>
+              <select value={language} onChange={(e) => setLanguage(e.target.value as typeof language)} style={{ ...inputStyle(0), width: '100%', padding: '4px 6px' }}>
+                <option value="markdown">markdown</option>
+                <option value="json">json</option>
+                <option value="yaml">yaml</option>
+                <option value="text">text</option>
+              </select>
+            </label>
+            <label style={{ display: 'block' }}>
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>sensitivity</span>
+              <select value={sensitivity} onChange={(e) => setSensitivity(e.target.value as typeof sensitivity)} style={{ ...inputStyle(0), width: '100%', padding: '4px 6px' }}>
+                <option value="normal">normal</option>
+                <option value="warn">warn</option>
+                <option value="secret">secret</option>
+              </select>
+            </label>
+          </div>
+          <Field label="description" value={description} onChange={setDescription} multiline />
+        </div>
+        {conflict ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: '#fbbf24' }}>
+            &ldquo;{path}&rdquo; is already declared.
+          </div>
+        ) : null}
+        <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button onClick={onCancel} disabled={busy} style={btnStyle('muted')}>Cancel</button>
+          <button
+            onClick={() => onSubmit({
+              path: path.trim(),
+              label: label.trim() || undefined,
+              language,
+              description: description.trim() || undefined,
+              sensitivity: sensitivity === 'normal' ? undefined : sensitivity,
+            }, initialContent)}
+            disabled={busy || invalid || conflict}
+            style={btnStyle((!busy && !invalid && !conflict) ? 'primary' : 'muted')}
+          >
+            {busy ? <Loader2 size={12} className="pc-spin" /> : <Plus size={12} />}
+            Add file
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function tabBtnStyle(active: boolean): React.CSSProperties {
   return {
     padding: '4px 10px',
@@ -418,6 +603,7 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
 
   const plugins = (parsed.plugins as PluginField[] | undefined) ?? [];
   const models = (parsed.models as Record<string, { preferred?: string } | string> | undefined) ?? {};
+  const configFiles = (parsed.configFiles as ConfigFileSpec[] | undefined) ?? [];
 
   const writeBack = (next: Record<string, unknown>) => {
     onChange(JSON.stringify(next, null, 2) + '\n');
@@ -434,6 +620,13 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
     const merged = { ...parsed };
     if (Object.keys(next).length === 0) delete merged.models;
     else merged.models = next;
+    writeBack(merged);
+  };
+
+  const updateConfigFiles = (next: ConfigFileSpec[]) => {
+    const merged = { ...parsed };
+    if (next.length === 0) delete merged.configFiles;
+    else merged.configFiles = next;
     writeBack(merged);
   };
 
@@ -574,8 +767,104 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
         </div>
       </section>
 
+      <section style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+          <h3 style={sectionHeading}>Config files</h3>
+          <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>files surfaced in the operator&apos;s Config tab post-install</span>
+          <button
+            onClick={() => updateConfigFiles([...configFiles, { path: '', language: 'markdown' }])}
+            style={addBtnStyle}
+          >
+            <Plus size={10} /> add file
+          </button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {configFiles.map((cf, i) => (
+            <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 4, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="text"
+                  value={cf.path}
+                  placeholder="path (e.g. SPEC.md, .harness/config.json)"
+                  onChange={(e) => {
+                    const next = [...configFiles];
+                    next[i] = { ...next[i]!, path: e.target.value };
+                    updateConfigFiles(next);
+                  }}
+                  style={inputStyle(280)}
+                />
+                <input
+                  type="text"
+                  value={cf.label ?? ''}
+                  placeholder="label (optional)"
+                  onChange={(e) => {
+                    const next = [...configFiles];
+                    const v = e.target.value.trim();
+                    next[i] = { ...next[i]!, label: v || undefined };
+                    updateConfigFiles(next);
+                  }}
+                  style={inputStyle(180)}
+                />
+                <select
+                  value={cf.language ?? 'markdown'}
+                  onChange={(e) => {
+                    const next = [...configFiles];
+                    next[i] = { ...next[i]!, language: e.target.value as ConfigFileSpec['language'] };
+                    updateConfigFiles(next);
+                  }}
+                  style={{ ...inputStyle(110), padding: '4px 6px' }}
+                >
+                  <option value="markdown">markdown</option>
+                  <option value="json">json</option>
+                  <option value="yaml">yaml</option>
+                  <option value="text">text</option>
+                </select>
+                <select
+                  value={cf.sensitivity ?? 'normal'}
+                  onChange={(e) => {
+                    const next = [...configFiles];
+                    const v = e.target.value as ConfigFileSpec['sensitivity'];
+                    next[i] = { ...next[i]!, sensitivity: v === 'normal' ? undefined : v };
+                    updateConfigFiles(next);
+                  }}
+                  style={{ ...inputStyle(100), padding: '4px 6px' }}
+                  title="Sensitivity"
+                >
+                  <option value="normal">normal</option>
+                  <option value="warn">warn</option>
+                  <option value="secret">secret</option>
+                </select>
+                <button
+                  onClick={() => {
+                    const next = [...configFiles];
+                    next.splice(i, 1);
+                    updateConfigFiles(next);
+                  }}
+                  style={removeBtnStyle}
+                  title="Remove file"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+              <input
+                type="text"
+                value={cf.description ?? ''}
+                placeholder="description (shown in the Config tab)"
+                onChange={(e) => {
+                  const next = [...configFiles];
+                  const v = e.target.value;
+                  next[i] = { ...next[i]!, description: v || undefined };
+                  updateConfigFiles(next);
+                }}
+                style={{ ...inputStyle(0), width: '100%' }}
+              />
+            </div>
+          ))}
+        </div>
+      </section>
+
       <p style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
-        Other manifest fields (configFiles, papercusp version pin, kind) are edit-only via raw JSON.
+        Other manifest fields (papercusp version pin, kind, forkedFrom) are edit-only via raw JSON.
       </p>
     </div>
   );
