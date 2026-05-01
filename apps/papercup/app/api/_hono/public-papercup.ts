@@ -4,14 +4,14 @@
 // All endpoints are GET-only; the route mount in [[...route]]/route.ts permits
 // only GET methods on this prefix.
 //
-// Strategy: read from the same internal /api/org/* and /api/harness/* sources
-// the admin UI uses, but project the result into a sanitized shape — no internal
-// IDs, no PII, no tokens, no full message bodies that might contain secrets.
+// Strategy: read from the same internal /api/harness/* sources the admin UI
+// uses, but project the result into a sanitized shape — no internal IDs, no
+// PII, no tokens, no full message bodies that might contain secrets.
 
 import { Hono } from 'hono';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { capLog, capBody, scrub, scrubFreeText, sanitizeForPublic } from './public-sanitize';
+import { capLog, capBody, scrub, scrubFreeText } from './public-sanitize';
 
 export const publicPapercup = new Hono();
 
@@ -106,11 +106,13 @@ publicPapercup.get('/harness/:slug/badge.svg', async (c) => {
 });
 
 // ─── /feed.xml ────────────────────────────────────────────
-// Atom 1.0 feed of recent inter-department messages.
+// Atom 1.0 feed of recent activity. Original source (/org/timeline) was
+// removed in the org-harness migration; the timeline now lives in the
+// Zero-synced harness_shared.audit_log table, which has no REST mirror.
+// Returns an empty (well-formed) feed until/unless we add a server-side
+// reader for the audit_log table.
 publicPapercup.get('/feed.xml', async (c) => {
-  const res = await fetchInternal<{ messages?: any[]; events?: any[] }>('/org/timeline', { messages: [], events: [] });
-  const raw = res.events ?? res.messages ?? [];
-  const items = raw.slice(0, 50);
+  const items: any[] = [];
   const updated = items[0]?.ts ? new Date(items[0].ts).toISOString() : new Date().toISOString();
   const escapeXml = (s: string) => String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]!));
@@ -237,20 +239,6 @@ const ADMIN_PROXY_ALLOWLIST = [
   /^\/harness\/[a-z0-9-]+\/archives(\?|$)/,
   // SSE — proxy as a no-op stream
   /^\/harness\/[a-z0-9-]+\/stream(\?|$)/,
-  // Org endpoints
-  /^\/org\/departments(\?|$)/,
-  /^\/org\/projects(\?|$)/,
-  /^\/org\/messages(\?|$)/,
-  /^\/org\/timeline(\?|$)/,
-  /^\/org\/charter(\?|$)/,
-  /^\/org\/directives(\?|$)/,
-  /^\/org\/directives\/[a-zA-Z0-9_-]+(\?|$)/,
-  /^\/org\/directives\/[a-zA-Z0-9_-]+\/projects(\?|$)/,
-  /^\/org\/directives\/[a-zA-Z0-9_-]+\/summaries(\?|$)/,
-  /^\/org\/[a-z0-9-]+\/inbox(\?|$)/,
-  /^\/org\/[a-z0-9-]+\/outbox(\?|$)/,
-  /^\/org\/[a-z0-9-]+\/notes(\?|$)/,
-  /^\/org\/[a-z0-9-]+\/decisions(\?|$)/,
 ];
 
 function isAllowedAdminPath(path: string): boolean {
@@ -422,7 +410,7 @@ const adminCache = new Map<string, { body: string; status: number; contentType: 
 publicPapercup.get('/healthz', async (c) => {
   const startedMs = Date.now();
   try {
-    const r = await fetch(`${INTERNAL_BASE}/org/departments`, {
+    const r = await fetch(`${INTERNAL_BASE}/harness/projects`, {
       cache: 'no-store',
       signal: AbortSignal.timeout(3_000),
     });
@@ -455,24 +443,18 @@ publicPapercup.get('/healthz', async (c) => {
 // Now exposes BOTH department harnesses (org-*) and coding harnesses (sheets, etc.).
 // `harnessKind` distinguishes them so the public UI can render appropriately.
 publicPapercup.get('/harnesses', async (c) => {
-  const [{ projects = [] }, { departments = [] }] = await Promise.all([
-    fetchInternal<{ projects: any[] }>('/harness/projects', { projects: [] }),
-    fetchInternal<{ departments: any[] }>('/org/departments', { departments: [] }),
-  ]);
-  // Only include department + bootstrapped coding harnesses (skip empty stubs).
+  const { projects = [] } = await fetchInternal<{ projects: any[] }>('/harness/projects', { projects: [] });
   const visible = projects.filter((p: any) =>
     p.harness_kind === 'department' || (p.harness_kind === 'coding' && p.hasState),
   );
-  const deptByHarness = new Map<string, any>(departments.map((d: any) => [d.harnessSlug, d]));
   const harnesses = await Promise.all(
     visible.map(async (p: any) => {
       const status = await fetchInternal<any>(`/harness/${p.slug}/status`, null);
       const health = await fetchInternal<any>(`/harness/${p.slug}/health`, null);
       const counts = status?.counts ?? {};
-      const dept = deptByHarness.get(p.slug);
       return {
         slug: p.slug,
-        harnessKind: p.harness_kind, // 'department' | 'coding'
+        harnessKind: p.harness_kind,
         director: (p.department_slug ?? p.slug).replace(/^org-/, ''),
         passed: counts.passed ?? 0,
         total: (counts.passed ?? 0) + (counts.failing ?? 0) + (counts.todo ?? 0) + (counts.in_progress ?? 0) + (counts.validating ?? 0) + (counts.blocked ?? 0),
@@ -482,12 +464,7 @@ publicPapercup.get('/harnesses', async (c) => {
         alive: health?.alive ?? status?.alive ?? false,
         lastRunMs: health?.lastRunAgeSeconds ? Date.now() - health.lastRunAgeSeconds * 1000 : null,
         costUsd: status?.missionCostUsd,
-        // Department-only fields (null for coding)
-        inboxTotal: dept?.counts?.inboxTotal ?? 0,
-        inboxPending: dept?.counts?.inboxPending ?? 0,
-        outboxTotal: dept?.counts?.outboxTotal ?? 0,
-        lastActivityMs: dept?.lastActivity ?? null,
-        mandate: dept?.name ? `${dept.name} — ${dept.mandate ?? ''}`.trim() : (p.harness_kind === 'coding' ? `${p.slug} — coding harness` : null),
+        mandate: p.harness_kind === 'coding' ? `${p.slug} — coding harness` : null,
       };
     }),
   );
@@ -638,38 +615,14 @@ publicPapercup.get('/harness/:slug/console', async (c) => {
 });
 
 // ─── /harness/:slug ───────────────────────────────────────
-// Per-harness drill-down: brainstorm + inbox + outbox.
-// Used by the public site's /harnesses/[slug]/ page.
+// Per-harness drill-down: brainstorm only.
+// Inbox/outbox were dropped in the org-harness migration (no /org/* anymore).
 publicPapercup.get('/harness/:slug', async (c) => {
   const slug = c.req.param('slug');
-  // For department-tagged harnesses (org-*), strip prefix to derive department slug.
-  const dept = slug.startsWith('org-') ? slug.slice(4) : slug;
-
-  const [brainstorm, inboxRes, outboxRes] = await Promise.all([
-    fetchInternal<{ content: string }>(`/harness/${slug}/brainstorm`, { content: '' }),
-    fetchInternal<{ messages: any[] }>(`/org/${dept}/inbox`, { messages: [] }),
-    fetchInternal<{ messages: any[] }>(`/org/${dept}/outbox`, { messages: [] }),
-  ]);
-
-  const sanitizeMsg = (m: any) => ({
-    id: m.id,
-    ts: m.ts,
-    from: m.from,
-    to: Array.isArray(m.to) ? m.to : [m.to].filter(Boolean),
-    kind: m.kind,
-    subject: m.subject,
-    body: m.body,
-    status: m.status,
-    projectId: m.projectId ?? null,
-    directiveId: m.directiveId ?? null,
-  });
-
+  const brainstorm = await fetchInternal<{ content: string }>(`/harness/${slug}/brainstorm`, { content: '' });
   return c.json({
     slug,
-    departmentSlug: dept,
     brainstorm: { content: brainstorm.content ?? '' },
-    inbox: { messages: (inboxRes.messages ?? []).map(sanitizeMsg) },
-    outbox: { messages: (outboxRes.messages ?? []).map(sanitizeMsg) },
   });
 });
 
@@ -699,7 +652,7 @@ publicPapercup.post('/chat', async (c) => {
     return c.json({ error: 'message too long (2000 char max)' }, 400);
   }
 
-  // Optional context: which director's harness is the visitor looking at?
+  // Optional context: which harness is the visitor looking at?
   const slug = typeof body.slug === 'string' ? body.slug.replace(/[^a-z0-9-]/gi, '').slice(0, 64) : '';
   let context = '';
   if (slug) {
@@ -707,15 +660,8 @@ publicPapercup.post('/chat', async (c) => {
       const r = await fetch(`${INTERNAL_BASE}/public/papercup/harness/${slug}`, { cache: 'no-store' });
       if (r.ok) {
         const j = await r.json();
-        const inboxLines = (j.inbox?.messages ?? [])
-          .slice(0, 5)
-          .map((m: any) => `- [${m.kind}] from ${m.from}: ${m.subject}`)
-          .join('\n');
-        const outboxLines = (j.outbox?.messages ?? [])
-          .slice(0, 5)
-          .map((m: any) => `- [${m.kind}] to ${(m.to ?? []).join(', ')}: ${m.subject}`)
-          .join('\n');
-        context = `\nThe visitor is looking at the ${j.departmentSlug} director's harness (${slug}).\n\nRecent inbox:\n${inboxLines || '(empty)'}\n\nRecent outbox:\n${outboxLines || '(empty)'}\n`;
+        const brainstorm = String(j.brainstorm?.content ?? '').slice(0, 800);
+        context = `\nThe visitor is looking at the ${slug} harness.\n\nBrainstorm excerpt:\n${brainstorm || '(empty)'}\n`;
       }
     } catch { /* swallow */ }
   }
