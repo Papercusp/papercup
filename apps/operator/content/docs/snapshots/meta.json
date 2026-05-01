@@ -1,0 +1,11 @@
+{
+  "title": "Snapshots",
+  "pages": [
+    "index",
+    "build-scripts",
+    "share-semantics",
+    "oauth-integration",
+    "open-questions",
+    "revisions"
+  ]
+}
