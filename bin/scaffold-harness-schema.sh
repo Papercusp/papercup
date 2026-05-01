@@ -69,7 +69,9 @@ BEGIN
       'harness_issues',
       'harness_proposals',
       'agent_runs',
-      'harness_snapshots'
+      'harness_snapshots',
+      'messages',
+      'supervisor_notes'
     ])
     LOOP
       IF EXISTS (SELECT 1 FROM information_schema.tables

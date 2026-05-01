@@ -4,6 +4,7 @@
     "status",
     "marketplace",
     "orchestrator-port",
+    "multi-harness-spawning",
     "pi-integration"
   ]
 }
