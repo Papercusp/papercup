@@ -3165,6 +3165,29 @@ harness.post('/:slug/save-as-template', async (c) => {
     'utf8',
   );
 
+  // Scaffold a README so the marketplace page has Overview content from
+  // the moment the template is published. The user can edit it via the
+  // /installed/templates/<slug>/edit page before publishing.
+  const readmePath = join(templateDir, 'README.md');
+  if (!existsSync(readmePath)) {
+    const desc = body.description?.trim() || `Template forked from ${project.slug}.`;
+    const pluginLines = pluginRecs.length > 0
+      ? pluginRecs.map((p) => `- \`${p.slug}\`${p.version ? ` v${p.version}` : ''}${p.autoEnable ? ' (auto-enable)' : ''}`).join('\n')
+      : '_(no plugins bundled)_';
+    const modelLines = configModels && Object.keys(configModels).length > 0
+      ? Object.entries(configModels)
+          .map(([role, conf]) => `- **${role}** — \`${(conf as { preferred?: string })?.preferred ?? '—'}\``)
+          .join('\n')
+      : '_(no role overrides — uses framework defaults)_';
+    const configFileLines = configFiles
+      .map((f) => `- \`${f.path}\` — ${f.description ?? ''}`)
+      .join('\n');
+
+    const readme = `# ${newSlug}\n\n${desc}\n\nForked from harness \`${project.slug}\` on ${new Date().toISOString().slice(0, 10)}.\n\n## Install\n\n\`\`\`\npapercusp install ${newSlug}@${version}\n\`\`\`\n\nOr install via the marketplace site at :3060.\n\n## What's in this template\n\n### Config files\n\nEditable after install (and via the operator's Config tab):\n\n${configFileLines}\n\n### Models\n\n${modelLines}\n\n### Plugins\n\n${pluginLines}\n\n## Customising\n\nEdit \`SPEC.md\` to point at your project's goals, then \`papercusp run\` to start the loop.\n\nSee \`AGENTS.md\` for the conventions every role applies, and \`.harness/validation-contract.md\` for what \"passing\" means in this template.\n`;
+    await writeFile(readmePath, readme, 'utf8');
+    copied.push('README.md');
+  }
+
   return c.json({
     ok: true,
     slug: newSlug,
