@@ -259,6 +259,45 @@ function attachPluginCtxExtras(
     capabilities: lp.plugin.capabilities ?? [],
     defaultCwd: ctx.pluginDataDir,
   });
+
+  // ctx.oauth.token(field): plugins that declare oauth in their manifest
+  // can call this to acquire a fresh access token. Resolution of which
+  // provider backs `field` comes from the plugin's manifest oauth[] entries.
+  const oauthDecls =
+    ((lp.plugin as unknown as { oauth?: { provider: string; scopes?: string[]; fieldName: string }[] }).oauth) ?? [];
+  ctx.oauth = {
+    async token(field: string): Promise<string | null> {
+      // Lazy-loaded to avoid a circular import at module-eval time.
+      const { getOAuthToken } = await import('@/lib/oauth/token');
+      const { fsTokenStorage } = await import('@/lib/oauth/storage-fs');
+      return getOAuthToken(
+        {
+          plugin: lp.plugin.name,
+          harness: ctx.installSlug,
+          resolveProvider: (f) => {
+            const decl = oauthDecls.find((o) => o.fieldName === f);
+            if (!decl) return null;
+            return { provider: decl.provider, scopes: decl.scopes };
+          },
+          storage: fsTokenStorage,
+        },
+        field,
+      );
+    },
+  };
+
+  // ctx.recordResource: writes a record to the provision WAL. Used by
+  // in-process plugins that don't shell out to a setup script — for
+  // example, a plugin that creates a GitHub repo from a hook handler.
+  ctx.recordResource = async (input) => {
+    const { appendWalEntry } = await import('@/lib/provision/state-store');
+    await appendWalEntry(ctx.installSlug, lp.plugin.name, {
+      kind: input.kind,
+      externalId: input.externalId,
+      recordedAt: new Date().toISOString(),
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+    });
+  };
 }
 
 async function ensureInitialized(

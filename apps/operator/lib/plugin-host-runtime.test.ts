@@ -263,6 +263,88 @@ describe('ctx.spawn capability gating', () => {
   });
 });
 
+describe('ctx.recordResource (provision WAL bridge)', () => {
+  it('appends a resource entry that readState folds into createdResources', async () => {
+    const tmp = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpDir = await tmp.mkdtemp(path.join(os.tmpdir(), 'plugin-host-record-'));
+    process.env.PAPERCUSP_HOME = tmpDir;
+    try {
+      // Reset modules so state-store + papercusp-root re-resolve PAPERCUSP_HOME.
+      const { _injectPluginHostForTests, _resetPluginHostForTests, warmUpPluginsForSlug } =
+        await import('./plugin-host-runtime');
+      const stateStore = await import('./provision/state-store');
+      _resetPluginHostForTests();
+
+      const slugArgs = {
+        installSlug: 'rec-harness',
+        projectDir: path.join(tmpDir, 'project'),
+        stateDir: path.join(tmpDir, 'project/.harness'),
+      };
+
+      const p = makePlugin({
+        name: 'recorder',
+        capabilities: [],
+        async init(ctx) {
+          await ctx.recordResource!({
+            kind: 'test.resource',
+            externalId: 'resource-id-1',
+            metadata: { foo: 'bar' },
+          });
+        },
+      });
+      _injectPluginHostForTests([p]);
+      await warmUpPluginsForSlug(slugArgs);
+
+      const state = await stateStore.readState('rec-harness', 'recorder');
+      expect(state.createdResources).toHaveLength(1);
+      expect(state.createdResources[0].kind).toBe('test.resource');
+      expect(state.createdResources[0].externalId).toBe('resource-id-1');
+      expect(state.createdResources[0].metadata?.foo).toBe('bar');
+    } finally {
+      delete process.env.PAPERCUSP_HOME;
+      await tmp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ctx.oauth.token', () => {
+  it('returns null when no token has been stored for the field', async () => {
+    const tmp = await import('node:fs/promises');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const tmpDir = await tmp.mkdtemp(path.join(os.tmpdir(), 'plugin-host-oauth-'));
+    process.env.PAPERCUSP_HOME = tmpDir;
+    try {
+      const { _injectPluginHostForTests, _resetPluginHostForTests, warmUpPluginsForSlug } =
+        await import('./plugin-host-runtime');
+      _resetPluginHostForTests();
+
+      let observed: string | null | undefined;
+      const p = makePlugin({
+        name: 'oauth-tester',
+        capabilities: [],
+        // The plugin manifest declares oauth[]; SDK type allows it as part of `Plugin`.
+        oauth: [{ provider: 'github', scopes: ['repo'], fieldName: 'github_token' }],
+        async init(ctx) {
+          observed = await ctx.oauth!.token('github_token');
+        },
+      } as Parameters<typeof makePlugin>[0]);
+      _injectPluginHostForTests([p]);
+      await warmUpPluginsForSlug({
+        installSlug: 'oauth-harness',
+        projectDir: path.join(tmpDir, 'project'),
+        stateDir: path.join(tmpDir, 'project/.harness'),
+      });
+      expect(observed).toBeNull();
+    } finally {
+      delete process.env.PAPERCUSP_HOME;
+      await tmp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('firePluginEvent (free-form bus)', () => {
   it('returns without error even when no plugin subscribes', async () => {
     _injectPluginHostForTests([]);
