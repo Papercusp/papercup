@@ -2637,6 +2637,25 @@ export default function HarnessDashboard() {
                   </div>
                 );
               })()}
+              {/* Save template + Save snapshot live up here in the stats row.
+                  Both produce reusable artifacts derived from the running harness:
+                    template = the recipe (manifest + SPEC.md / AGENTS.md / role prompts)
+                    snapshot = template + DB state + agent transcripts (the whole frozen install)
+                  Save snapshot was previously in the phase-plan-actions row; moved
+                  here per UX request 2026-05-01. Save template is new; the click
+                  handler kicks off a flow that's still being built — for now it
+                  toasts a TODO so the button is discoverable. */}
+              {activeSlug && (
+                <Tooltip label="Save current harness as a reusable template (recipe; no in-flight state). Coming soon — full editor flow under construction.">
+                  <button
+                    className="h-btn ghost"
+                    onClick={() => toast.info('Save template flow is being built. For now use papercusp publish from a template directory.')}
+                  >
+                    <Layers size={13} /> save template
+                  </button>
+                </Tooltip>
+              )}
+              {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
             </div>
 
           </div>
@@ -2700,7 +2719,6 @@ export default function HarnessDashboard() {
                   <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
                 </button>
               </Tooltip>
-              {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
               {status.alive ? (
                 <Tooltip label="Stop the autonomous loop for this harness">
                   <button className="h-btn danger" onClick={stopHarness}>
