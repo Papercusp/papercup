@@ -177,17 +177,71 @@ export function validateIdentityFields(
 
 /**
  * Idempotency check: return cached response if actionId was already
- * processed for this caller. Cache-is-authoritative; no side-effect
- * verification at replay time.
+ * processed for this caller.
+ *
+ * Default mode (cache-is-authoritative): cached response returned without
+ * verifying side effects still exist. If something out-of-band deleted the
+ * row that the verb produced, replay still returns ok.
+ *
+ * Opt-in cache-and-verify mode (set PAPERCUSP_REPLAY_VERIFY=1): re-runs a
+ * lightweight existence check on the produced side effect and, if missing,
+ * treats the cache as stale (returns null so the caller re-executes).
+ * Currently checks: send_message → message row still exists in recipient
+ * inbox; spinup_project → project row still exists; scaffold_harness →
+ * harness still in registry.
  */
+const REPLAY_VERIFY = process.env.PAPERCUSP_REPLAY_VERIFY === '1';
+
 async function getCachedAction(callerSlug: string, actionId: string): Promise<any | null> {
   const { sql } = getOrgPg();
   const schema = slugToSchema(callerSlug);
   const rows = await sql.unsafe(
-    `SELECT response FROM ${schema}.executed_actions WHERE action_id = $1 LIMIT 1`,
+    `SELECT op, target_slug, request, response FROM ${schema}.executed_actions WHERE action_id = $1 LIMIT 1`,
     [actionId],
   );
-  return rows.length > 0 ? (rows as any)[0].response : null;
+  if (rows.length === 0) return null;
+  const r = (rows as any)[0];
+  if (!REPLAY_VERIFY) return r.response;
+
+  // Cache-and-verify: lightweight existence check on the produced side effect.
+  try {
+    const stillExists = await verifyEffectExists(r.op, r.target_slug, r.request, r.response);
+    if (!stillExists) return null; // stale cache; force re-execution
+  } catch {
+    // Verification itself failed (e.g. schema dropped). Conservatively treat as stale.
+    return null;
+  }
+  return r.response;
+}
+
+async function verifyEffectExists(
+  op: string,
+  targetSlug: string | null,
+  _request: any,
+  response: any,
+): Promise<boolean> {
+  const { sql } = getOrgPg();
+  if (op === 'send_message' && targetSlug) {
+    const msgId = response?.result?.inserted?.[0]?.messageId;
+    if (!msgId) return true; // nothing to verify
+    const schema = slugToSchema(targetSlug);
+    const rows = await sql.unsafe(`SELECT 1 FROM ${schema}.messages WHERE id = $1 LIMIT 1`, [msgId]);
+    return (rows as any).length > 0;
+  }
+  if (op === 'spinup_project') {
+    const projectId = response?.result?.projectId;
+    if (!projectId) return true;
+    const rows = await sql<{ id: string }[]>`SELECT id FROM harness_shared.projects WHERE id = ${projectId} LIMIT 1`;
+    return rows.length > 0;
+  }
+  if (op === 'scaffold_harness' && targetSlug) {
+    const rows = await sql<{ harness_slug: string }[]>`
+      SELECT harness_slug FROM harness_shared.token_index WHERE harness_slug = ${targetSlug} LIMIT 1
+    `;
+    return rows.length > 0;
+  }
+  // Unknown ops: trust the cache.
+  return true;
 }
 
 async function saveAction(opts: {

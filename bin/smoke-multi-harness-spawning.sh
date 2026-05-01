@@ -321,6 +321,16 @@ else
   E9_WORK=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org-coordination/inbox?status=all&role=worker&limit=10" | jq -r --arg t "$E9_TAG" '[.messages[] | select(.subject == $t)] | length')
   [ "$E9_DIR" = "1" ] && ok "E9b inbox?role=director sees the message" || bad "E9b unexpected director-count: $E9_DIR"
   [ "$E9_WORK" = "0" ] && ok "E9c inbox?role=worker excludes the message" || bad "E9c unexpected worker-count: $E9_WORK"
+
+  # Cross-harness search
+  E10=$(curl -sS "$OPERATOR_BASE/api/harness/search?q=$E9_TAG&kind=messages&limit=5")
+  E10_COUNT=$(echo "$E10" | jq -r '.messageHits | length')
+  [ "$E10_COUNT" -ge 1 ] && ok "E10 cross-harness search finds the just-sent message ($E10_COUNT hit)" || bad "E10 unexpected: $E10"
+
+  # KPIs endpoint
+  E11=$(curl -sS "$OPERATOR_BASE/api/harness/all/kpis")
+  echo "$E11" | jq -er '.totals.harnesses != null and (.audit.actions_24h_by_op | length) > 0' >/dev/null \
+    && ok "E11 KPIs endpoint returns totals + audit op-counts" || bad "E11 unexpected: $E11"
 fi
 
 # ── Summary ──
