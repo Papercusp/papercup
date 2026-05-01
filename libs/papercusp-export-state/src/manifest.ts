@@ -22,6 +22,18 @@ export interface SnapshotPlugin {
   capabilities: string[];
   /** Plugin's per-install config, JSON-stringified. */
   configJson: string;
+  /**
+   * Per-field share-semantics descriptor (V1+). JSON-stringified
+   * `SnapshotShape` describing what was stripped from `configJson` and
+   * why. Optional for back-compat: snapshots captured before V1 omit
+   * this; the fork UI treats absent shapes as "all fields shareable".
+   */
+  shapeJson?: string;
+  /**
+   * The plugin's `pluginVersionPinned` flag at capture time. Defaults
+   * to `true` per share-semantics spec when absent.
+   */
+  pluginVersionPinned?: boolean;
 }
 
 export interface SnapshotProvenance {

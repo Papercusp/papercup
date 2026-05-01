@@ -103,6 +103,31 @@ export interface PapercuspContext {
    * Optional — `fire-hook` CLI invocations don't get a spawn surface.
    */
   spawn?: PluginSpawn;
+
+  /**
+   * OAuth helper — acquires a fresh access token for the named provider,
+   * refreshing the stored refresh-token if the access token has expired.
+   * Concurrent callers share a single in-flight refresh Promise to avoid
+   * a refresh storm. Returns null if the user has not yet connected.
+   *
+   * Spec: /docs/snapshots/oauth-integration.
+   */
+  oauth?: {
+    token(provider: string): Promise<string | null>;
+  };
+
+  /**
+   * Record a resource the plugin's setup script just created so the
+   * substrate can replay it on teardown. Idempotent on the
+   * `(kind, externalId)` pair — duplicate calls update `metadata` only.
+   *
+   * Spec: /docs/snapshots/build-scripts#recovery.
+   */
+  recordResource?(input: {
+    kind: string;
+    externalId: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<void>;
 }
 
 export interface PluginSpawnOptions {
@@ -541,8 +566,76 @@ export interface Plugin {
   /**
    * JSON-Schema describing config keys this plugin accepts under
    * the install's plugin config. Used for validation + config UIs.
+   *
+   * Field-level extensions (snapshot share semantics) — recognised by
+   * the snapshot exporter and fork UI:
+   *   - `secret: true`            credential, stripped on snapshot
+   *   - `snapshotPolicy: "strip" | "include" | "warn-and-prompt"`
+   *   - `shareable: false`        publisher-specific identifier, stripped
+   *   - `oauth: { provider, scopes }`   surface a Connect button at fork
+   *   - `aliases: (string | null)[]`    schema-evolution rename/removal
+   *
+   * Spec: /docs/snapshots/share-semantics.
    */
   configSchema?: Record<string, unknown>;
+
+  /**
+   * Provisioning scripts — the substrate runs these on the host with
+   * full visibility (xterm pane, audit log) at well-known lifecycle
+   * points. Captured by snapshots so a forker can recreate the
+   * underlying infrastructure.
+   *
+   * Spec: /docs/snapshots/build-scripts.
+   */
+  provision?: PluginProvision;
+
+  /**
+   * OAuth providers this plugin uses. The substrate offers
+   * `ctx.oauth.token(provider)` to acquire/refresh tokens.
+   *
+   * Spec: /docs/snapshots/oauth-integration.
+   */
+  oauth?: PluginOAuthRequirement[];
+
+  /**
+   * Default `true`. When `true`, snapshots forked from this plugin pin
+   * to the exact `version` they were published with.
+   *
+   * Spec: /docs/snapshots/share-semantics#schema-evolution.
+   */
+  pluginVersionPinned?: boolean;
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Provision lifecycle (build scripts)
+ * ───────────────────────────────────────────────────────────────────── */
+
+export interface PluginProvision {
+  setup?: ProvisionScript;
+  teardown?: ProvisionScript;
+  verify?: ProvisionScript;
+  cloudProvider?: { id: 'aws' | 'gcp' | 'azure' | 'cloudflare'; region?: string; regions?: string[] };
+  allowedHosts?: string[];
+  skipReprovisionOnPatch?: boolean;
+  auditLogCapMb?: number;
+}
+
+export interface ProvisionScript {
+  path: string;
+  timeoutSec?: number;
+  runAt?: 'fork' | 'install' | 'first-action';
+}
+
+/* ─────────────────────────────────────────────────────────────────────
+ * OAuth providers
+ * ───────────────────────────────────────────────────────────────────── */
+
+export interface PluginOAuthRequirement {
+  provider: string;
+  scopes?: string[];
+  fieldName: string;
+  refreshFieldName?: string;
+  expiresAtFieldName?: string;
 }
 
 
@@ -587,4 +680,4 @@ export function defineService(def: ServiceDef): ServiceDef {
  *     Plugins with `^0.1` constraint will refuse to load against `1.x`.
  * ───────────────────────────────────────────────────────────────────── */
 
-export const PAPERCUSP_RUNTIME_VERSION = '0.1.0' as const;
+export const PAPERCUSP_RUNTIME_VERSION = '0.1.1' as const;

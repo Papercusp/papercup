@@ -18,7 +18,7 @@ import { papercuspPath } from './paths';
 
 export interface ConsentSummary {
   /** Plugins enumerated by name with their union-of-caps. */
-  plugins: { name: string; version: string; caps: string[]; configJson: string }[];
+  plugins: { name: string; version: string; caps: string[]; configJson: string; shapeJson?: string; pluginVersionPinned?: boolean }[];
   /** Plugins the manifest claimed but that aren't installed locally. */
   missing: { name: string; version: string }[];
   /**
@@ -110,6 +110,8 @@ export async function buildConsentSummary(
       version: installed.version ?? sp.version,
       caps: union,
       configJson: sp.configJson,
+      ...(sp.shapeJson ? { shapeJson: sp.shapeJson } : {}),
+      ...(sp.pluginVersionPinned !== undefined ? { pluginVersionPinned: sp.pluginVersionPinned } : {}),
     });
   }
   return summary;

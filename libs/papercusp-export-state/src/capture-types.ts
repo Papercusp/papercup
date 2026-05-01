@@ -16,7 +16,7 @@ export interface CaptureRequest {
   description?: string;
   license: string;
   /** Per-harness plugin enablement at capture time. */
-  plugins: { name: string; version: string; capabilities: string[]; configJson: string }[];
+  plugins: { name: string; version: string; capabilities: string[]; configJson: string; shapeJson?: string; pluginVersionPinned?: boolean }[];
   /** Filesystem opt-ins (`.git/`, agent transcripts, operator notes). */
   capture?: CaptureOptions;
   drainMode: DrainMode;
