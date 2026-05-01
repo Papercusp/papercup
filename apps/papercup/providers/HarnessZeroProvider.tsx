@@ -1,87 +1,52 @@
 'use client';
 
 /**
- * HarnessZeroProvider — connects papercup to the harness Zero (zero-cache-harness on :4849).
+ * HarnessZeroProvider — connects papercup to the harness Zero.
  *
- * Distinct from apps/web's AppZeroProvider, which:
- *   - points at zero-cache on :4848 (the `restart` shop DB)
- *   - uses the @restart/sync wrapper with named-query registry
+ * Server URL resolution (in order):
+ *   1. window.__HARNESS_ZERO_SERVER  (server-rendered injection from layout.tsx,
+ *      driven by the HARNESS_ZERO_SERVER container env)
+ *   2. process.env.NEXT_PUBLIC_HARNESS_ZERO_SERVER  (build-time inline)
+ *   3. http://localhost:4849  (dev fallback)
  *
- * The harness Zero uses the @rocicorp/zero/react client directly because:
- *   - libs/sync's resolveQuery.ts hardcodes `import { queries } from '@restart/zero'`
- *     and isn't yet pluggable for a second schema
- *   - direct ZeroProvider gives us `useQuery(zql.<table>...)` with the harness
- *     schema, which is sufficient for the first wave of harness panel conversions
- *
- * If we later need named queries, useSyncVirtualizer, or transport-fallback
- * polling for the harness, libs/sync needs a small refactor to take the
- * registry/schema as props rather than hardcoding @restart/zero.
+ * SSR: @rocicorp's ZeroProvider only constructs Zero in useEffect (client-only)
+ * and returns null while undefined. We accept that — children that consume
+ * Zero render only after hydration. Routes that need static SSR for a shell
+ * should render outside this provider; routes that use useZero/useQuery
+ * render inside and wait for client mount.
  */
-import { useEffect, useRef, type ReactNode } from 'react';
-import { Zero } from '@rocicorp/zero';
+import { type ReactNode } from 'react';
 import { ZeroProvider } from '@rocicorp/zero/react';
 import { schema, queries } from '@restart/zero-harness';
 
-// Resolution order:
-//   1. window.__HARNESS_ZERO_SERVER  (server-rendered injection)
-//   2. NEXT_PUBLIC_HARNESS_ZERO_SERVER  (build-time env, e.g. https://zero.papercupai.com)
-//   3. http://localhost:4849  (dev default — local zero-cache-harness)
 const ENV_HARNESS_ZERO_SERVER =
-  (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_HARNESS_ZERO_SERVER) ||
-  '';
-const DEFAULT_HARNESS_ZERO_SERVER =
-  typeof window !== 'undefined'
-    ? (window as any).__HARNESS_ZERO_SERVER ?? ENV_HARNESS_ZERO_SERVER ?? 'http://localhost:4849'
-    : ENV_HARNESS_ZERO_SERVER || 'http://localhost:4849';
+  (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_HARNESS_ZERO_SERVER) || '';
 
-type CachedZero = { zero: Zero<typeof schema>; refcount: number };
-const ZERO_CACHE: Map<string, CachedZero> = (() => {
-  if (typeof window === 'undefined') return new Map();
-  const w = window as unknown as { __HARNESS_ZERO_CACHE__?: Map<string, CachedZero> };
-  if (!w.__HARNESS_ZERO_CACHE__) w.__HARNESS_ZERO_CACHE__ = new Map();
-  return w.__HARNESS_ZERO_CACHE__;
-})();
+function resolveServer(): string {
+  const fallback = ENV_HARNESS_ZERO_SERVER || 'http://localhost:4849';
+  if (typeof window !== 'undefined') {
+    return (window as any).__HARNESS_ZERO_SERVER ?? fallback;
+  }
+  return fallback;
+}
 
 export function HarnessZeroProvider({
   children,
-  // Force a fresh userID per session for now to bypass any stale CVR state
-  // from prior debug iterations. Replace with a stable per-user ID later.
-  userId = `harness-${Date.now()}`,
+  userId,
   server,
 }: {
   children: ReactNode;
   userId?: string;
   server?: string;
 }) {
-  const zeroServer = server ?? DEFAULT_HARNESS_ZERO_SERVER;
-  const cacheKey = `${userId}|${zeroServer}`;
-  const zeroRef = useRef<Zero<typeof schema> | null>(null);
-
-  let cached = ZERO_CACHE.get(cacheKey);
-  if (!cached) {
-    const zero = new Zero({
-      userID: userId,
-      server: zeroServer,
-      schema,
-      queries,
-    } as any);
-    cached = { zero, refcount: 0 };
-    ZERO_CACHE.set(cacheKey, cached);
-  }
-  zeroRef.current = cached.zero;
-
-  useEffect(() => {
-    const entry = ZERO_CACHE.get(cacheKey);
-    if (!entry) return;
-    entry.refcount += 1;
-    return () => {
-      entry.refcount -= 1;
-      if (entry.refcount <= 0) {
-        try { entry.zero.close?.(); } catch { /* ignore */ }
-        ZERO_CACHE.delete(cacheKey);
-      }
-    };
-  }, [cacheKey]);
-
-  return <ZeroProvider zero={zeroRef.current}>{children}</ZeroProvider>;
+  return (
+    <ZeroProvider
+      userID={userId ?? 'harness-public'}
+      server={server ?? resolveServer()}
+      schema={schema}
+      queries={queries as any}
+    >
+      {children}
+    </ZeroProvider>
+  );
 }

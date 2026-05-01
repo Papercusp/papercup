@@ -41,11 +41,22 @@ COPY libs/papercusp/packages/orchestrator/package.json ./libs/papercusp/packages
 RUN npm install --legacy-peer-deps
 
 # Source — copy everything needed at build time. Submodules included.
+# operator is needed because apps/papercup/app/harnesses/page.tsx imports
+# HarnessDashboard from apps/operator (relative path, not aliased).
 COPY apps/papercup/ ./apps/papercup/
+COPY apps/operator/ ./apps/operator/
 COPY libs/         ./libs/
 COPY packages/     ./packages/
 
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# next.config.js bakes rewrite destinations into routes-manifest.json at build
+# time using these envs. Falling back to localhost defaults silently broke
+# cross-app proxying on Hetzner; passing them through as build args fixes it.
+ARG PAPERCUP_PAPERCUSP_UPSTREAM=http://operator:3055
+ARG PAPERCUP_WEB_UPSTREAM=http://restart-web-1:3001
+ENV PAPERCUP_PAPERCUSP_UPSTREAM=${PAPERCUP_PAPERCUSP_UPSTREAM}
+ENV PAPERCUP_WEB_UPSTREAM=${PAPERCUP_WEB_UPSTREAM}
 
 WORKDIR /repo/apps/papercup
 RUN npm run build

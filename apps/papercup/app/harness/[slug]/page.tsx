@@ -2,9 +2,10 @@
 /**
  * Per-harness detail page.
  *
- * Reads /api/org/features-all?slug={slug} for the work queue and
- * /api/org/feature-audit?slug={slug} for the recent change feed.
- * Polls every 10s. Same shape as /features but scoped + with audit panel.
+ * Reads /api/harness/{slug}/features for the work queue (rewritten to
+ * operator on the docker network). Audit is per-feature only post-migration;
+ * the cross-feature audit feed is deferred until we add a Zero-backed reader.
+ * Polls every 10s.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'next/navigation';
@@ -169,21 +170,44 @@ export default function HarnessSlugPage() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const params = new URLSearchParams({ slug });
-      if (statusFilter) params.set('status', statusFilter);
-      if (reviewOnly) params.set('review', '1');
       try {
-        const [fres, ares] = await Promise.all([
-          fetch(`/api/org/features-all?${params}`),
-          fetch(`/api/org/feature-audit?slug=${encodeURIComponent(slug)}&limit=100`),
-        ]);
-        if (!fres.ok) throw new Error(`features HTTP ${fres.status}`);
-        if (!ares.ok) throw new Error(`audit HTTP ${ares.status}`);
-        const fpayload = (await fres.json()) as FeaturesPayload;
-        const apayload = (await ares.json()) as AuditPayload;
+        // /:slug/status returns { features: [{id, title, status, attempts, ...}], counts, ... }
+        // — flatten to the FeatureRow shape this page expects.
+        const fres = await fetch(`/api/harness/${encodeURIComponent(slug)}/status`);
+        if (!fres.ok) throw new Error(`status HTTP ${fres.status}`);
+        const raw = (await fres.json()) as {
+          features?: Array<{
+            id: string;
+            title?: string;
+            status?: string;
+            attempts?: number;
+            project_id?: string | null;
+            expected_cost_cents?: number | null;
+            needs_human_review?: boolean;
+            created_ts?: number;
+            updated_ts?: number;
+            taken_by?: string | null;
+            ts?: number;
+          }>;
+        };
+        let rows: FeatureRow[] = (raw.features ?? []).map((f) => ({
+          harness_slug: slug,
+          feature_id: f.id,
+          title: f.title ?? '',
+          status: f.status ?? 'todo',
+          attempts: f.attempts ?? 0,
+          project_id: f.project_id ?? null,
+          expected_cost_cents: f.expected_cost_cents ?? null,
+          needs_human_review: !!f.needs_human_review,
+          created_ts: f.created_ts ?? f.ts ?? 0,
+          updated_ts: f.updated_ts ?? f.ts ?? 0,
+          taken_by: f.taken_by ?? null,
+        }));
+        if (statusFilter) rows = rows.filter((r) => r.status === statusFilter);
+        if (reviewOnly) rows = rows.filter((r) => r.needs_human_review);
         if (!cancelled) {
-          setFeatures(fpayload);
-          setAudit(apayload);
+          setFeatures({ rows });
+          setAudit({ rows: [] });
           setError(null);
         }
       } catch (e) {

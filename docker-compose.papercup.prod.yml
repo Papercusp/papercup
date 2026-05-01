@@ -34,6 +34,12 @@ services:
       # Internal upstreams (resolved on the docker network)
       PAPERCUP_PAPERCUSP_UPSTREAM: http://operator:3055
       PAPERCUP_WEB_UPSTREAM: http://restart-web-1:3001
+      # Public-papercup endpoints (/healthz, /harnesses, /harness/:slug, _admin/*)
+      # use this base for self-rewrites; default 'http://localhost:3001/api' is
+      # the old Restart web app, which doesn't exist in this container.
+      # 127.0.0.1 (not localhost) — the container's `localhost` resolves to
+      # ::1 first and Next binds IPv4-only on 0.0.0.0.
+      INTERNAL_API_BASE: http://127.0.0.1:3061/api
       # Zero — server-injected as window.__HARNESS_ZERO_SERVER by app/layout.tsx
       # so the browser connects to the public Zero subdomain. Runtime-only;
       # changing this value does not require a rebuild.

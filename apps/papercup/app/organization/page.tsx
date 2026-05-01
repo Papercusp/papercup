@@ -19,11 +19,10 @@ type Project = {
   hasState?: boolean;
 };
 
-const OPERATOR = process.env.PAPERCUP_PAPERCUSP_UPSTREAM ?? 'http://localhost:3055';
-
 async function fetchHarnesses(): Promise<Project[]> {
+  const operator = process.env.PAPERCUP_PAPERCUSP_UPSTREAM ?? 'http://localhost:3055';
   try {
-    const r = await fetch(`${OPERATOR}/api/harness/projects`, { cache: 'no-store' });
+    const r = await fetch(`${operator}/api/harness/projects`, { cache: 'no-store' });
     if (!r.ok) return [];
     const data = await r.json();
     return (data.projects ?? []) as Project[];
