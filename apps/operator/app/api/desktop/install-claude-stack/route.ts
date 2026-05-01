@@ -38,13 +38,26 @@ export async function OPTIONS() {
 }
 
 export async function POST() {
+  // Track the in-flight child so we can kill it if the client disconnects
+  // mid-stream. Without this, an abandoned tab leaks a real installer
+  // process that keeps writing to ~/.claude / ~/.papercusp/runtime even
+  // though nobody is listening to the SSE log.
+  let activeChild: ReturnType<typeof spawn> | null = null;
+  let aborted = false;
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const encoder = new TextEncoder();
       const send = (event: string, data: unknown) => {
-        controller.enqueue(
-          encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
-        );
+        if (aborted) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
+          );
+        } catch {
+          // controller already closed (client disconnected); swallow.
+          aborted = true;
+        }
       };
 
       const runStreaming = (
@@ -54,12 +67,25 @@ export async function POST() {
         label: string,
       ): Promise<number> =>
         new Promise((resolve) => {
-          const child = spawn(cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+          if (aborted) return resolve(130);
+          // detached + own process group so we can SIGTERM the *whole*
+          // tree on cancel — without it, only `bash` dies and the curl
+          // + installer it spawned keep running as PPID=1 orphans.
+          const child = spawn(cmd, args, {
+            env,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            detached: true,
+          });
+          activeChild = child;
           child.stdout.on('data', (b) => send('log', { label, line: b.toString() }));
           child.stderr.on('data', (b) => send('log', { label, line: b.toString() }));
-          child.on('close', (code) => resolve(code ?? 1));
+          child.on('close', (code) => {
+            if (activeChild === child) activeChild = null;
+            resolve(code ?? 1);
+          });
           child.on('error', (e) => {
             send('log', { label, line: `error: ${e.message}\n` });
+            if (activeChild === child) activeChild = null;
             resolve(1);
           });
         });
@@ -177,6 +203,21 @@ export async function POST() {
       } catch (e: any) {
         send('done', { ok: false, reason: String(e?.message ?? e) });
         controller.close();
+      }
+    },
+    cancel() {
+      // Client disconnected (closed tab, navigated away, lost network).
+      // Kill the in-flight installer process tree so we don't keep
+      // writing to ~/.claude / ~/.papercusp/runtime with no UI watching.
+      // SIGTERM the negative pid to hit the whole process group (we
+      // spawned with `detached: true` for exactly this reason).
+      aborted = true;
+      if (activeChild?.pid) {
+        try {
+          process.kill(-activeChild.pid, 'SIGTERM');
+        } catch {
+          try { activeChild.kill('SIGTERM'); } catch { /* dead already */ }
+        }
       }
     },
   });
