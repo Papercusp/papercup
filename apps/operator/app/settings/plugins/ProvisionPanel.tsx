@@ -1,0 +1,238 @@
+/**
+ * Provision panel — consent + run/teardown/verify driver for one
+ * (harness, plugin) pair where the plugin declares a `provision` block.
+ *
+ * Surfaces:
+ *   - Setup state banner (clean / setup-stale / setup-failed)
+ *   - "Run setup" button → POST /api/provision/run with consentConfirmed
+ *   - Recorded resources list
+ *   - Audit log (last N entries)
+ *   - Teardown / verify buttons
+ *
+ * Spec: /docs/snapshots/build-scripts.
+ */
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import { toast } from 'sonner';
+
+interface ProvisionDecl {
+  setup?: { path: string; timeoutSec?: number };
+  teardown?: { path: string; timeoutSec?: number };
+  verify?: { path: string; timeoutSec?: number };
+  cloudProvider?: { id: string; region?: string; regions?: string[] };
+  allowedHosts?: string[];
+}
+
+interface RecordedResource {
+  kind: string;
+  externalId: string;
+  recordedAt: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface ProvisionState {
+  schemaVersion: 1;
+  hashes: { configHash: string; scriptHash: string; pluginVersion: string } | null;
+  createdResources: RecordedResource[];
+  outputs: Record<string, unknown>;
+  lastSetupAt: string | null;
+  lastVerifyAt: string | null;
+  setupFailed: boolean;
+  setupError?: string;
+}
+
+interface AuditEntry {
+  ts: string;
+  kind: string;
+  runId?: string;
+  data?: Record<string, unknown>;
+}
+
+interface Props {
+  harness: string;
+  plugin: string;
+  provision: ProvisionDecl;
+}
+
+export function ProvisionPanel({ harness, plugin, provision }: Props) {
+  const [state, setState] = useState<ProvisionState | null>(null);
+  const [audit, setAudit] = useState<AuditEntry[]>([]);
+  const [running, setRunning] = useState<'setup' | 'teardown' | 'verify' | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const r = await fetch(
+        `/api/provision/state?harness=${encodeURIComponent(harness)}&plugin=${encodeURIComponent(plugin)}&auditLimit=30`,
+        { cache: 'no-store' },
+      );
+      const d = await r.json();
+      if (d.ok) {
+        setState(d.state);
+        setAudit(d.audit ?? []);
+      }
+    } catch (e: any) {
+      toast.error(`provision state load failed: ${e?.message ?? e}`);
+    }
+  }, [harness, plugin]);
+
+  useEffect(() => {
+    if (harness && plugin) reload();
+  }, [harness, plugin, reload]);
+
+  async function runPhase(phase: 'setup' | 'teardown' | 'verify') {
+    setRunning(phase);
+    try {
+      const r = await fetch('/api/provision/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ harness, plugin, phase, consentConfirmed: true }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error(`${phase} failed`, { description: d.error ?? `exit ${d.exitCode}` });
+      } else {
+        toast.success(`${phase} ${d.decision === 'unchanged' ? 'unchanged (skipped)' : 'succeeded'}`);
+      }
+      await reload();
+    } catch (e: any) {
+      toast.error(`${phase} crashed: ${e?.message ?? e}`);
+    } finally {
+      setRunning(null);
+    }
+  }
+
+  return (
+    <div style={panel}>
+      <h4 style={{ margin: '0 0 8px', fontSize: 13, textTransform: 'uppercase', letterSpacing: '.04em', color: 'var(--fg-mute, #aaa)' }}>
+        Provisioning
+      </h4>
+
+      {state?.setupFailed && (
+        <div style={banner('error')}>
+          <strong>Setup failed.</strong> {state.setupError ?? 'Check the audit log below.'}
+          <div style={{ marginTop: 6 }}>
+            {provision.teardown && (
+              <button disabled={!!running} onClick={() => runPhase('teardown')} style={btn}>
+                Run teardown to clean up
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {!state?.hashes && !state?.setupFailed && (
+        <div style={banner('info')}>
+          Setup has not been run on <strong>{harness}</strong> yet.
+          {provision.cloudProvider && (
+            <div style={{ marginTop: 4, fontSize: 11 }}>
+              Cloud provider: <code>{provision.cloudProvider.id}</code>
+              {provision.cloudProvider.region && <> · region <code>{provision.cloudProvider.region}</code></>}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        {provision.setup && (
+          <button disabled={!!running} onClick={() => runPhase('setup')} style={primary}>
+            {running === 'setup' ? 'Running setup…' : state?.hashes ? 'Re-run setup' : 'Run setup'}
+          </button>
+        )}
+        {provision.verify && (
+          <button disabled={!!running} onClick={() => runPhase('verify')} style={btn}>
+            {running === 'verify' ? 'Verifying…' : 'Verify'}
+          </button>
+        )}
+        {provision.teardown && (state?.createdResources?.length ?? 0) > 0 && (
+          <button disabled={!!running} onClick={() => runPhase('teardown')} style={btnDanger}>
+            {running === 'teardown' ? 'Tearing down…' : 'Teardown'}
+          </button>
+        )}
+      </div>
+
+      {state?.createdResources && state.createdResources.length > 0 && (
+        <details style={{ marginBottom: 12 }} open>
+          <summary style={summary}>Recorded resources ({state.createdResources.length})</summary>
+          <ul style={list}>
+            {state.createdResources.map((r) => (
+              <li key={`${r.kind}:${r.externalId}`} style={li}>
+                <code style={{ color: '#7faaff' }}>{r.kind}</code>{' '}
+                <code>{r.externalId}</code>
+                <span style={{ float: 'right', fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+                  {new Date(r.recordedAt).toLocaleString()}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {audit.length > 0 && (
+        <details>
+          <summary style={summary}>Audit log ({audit.length})</summary>
+          <ul style={{ ...list, fontFamily: 'monospace', fontSize: 11 }}>
+            {audit.map((e, i) => (
+              <li key={i} style={li}>
+                <span style={{ color: 'var(--fg-mute, #888)' }}>{new Date(e.ts).toLocaleTimeString()}</span>{' '}
+                <strong style={{ color: kindColor(e.kind) }}>{e.kind}</strong>
+                {e.data && <span style={{ marginLeft: 6, color: 'var(--fg-mute, #999)' }}>{shortJson(e.data)}</span>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {state?.hashes && (
+        <div style={{ marginTop: 12, fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+          configHash <code>{state.hashes.configHash.slice(7, 19)}</code>{' · '}
+          scriptHash <code>{state.hashes.scriptHash.slice(7, 19)}</code>{' · '}
+          v<code>{state.hashes.pluginVersion}</code>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function shortJson(o: unknown): string {
+  const s = JSON.stringify(o);
+  return s.length > 120 ? s.slice(0, 117) + '…' : s;
+}
+
+function kindColor(k: string): string {
+  if (k.endsWith('-failed')) return '#ff6961';
+  if (k.endsWith('-succeeded')) return '#7fcf7f';
+  if (k === 'consent-rejected') return '#ff6961';
+  if (k === 'log-truncated') return '#e9a040';
+  return '#bbb';
+}
+
+const panel: React.CSSProperties = {
+  marginTop: 24, padding: 16, border: '1px solid var(--border, #2a2a2a)',
+  borderRadius: 6, background: 'rgba(255,255,255,.02)',
+};
+function banner(tone: 'info' | 'error'): React.CSSProperties {
+  return {
+    padding: '8px 12px', marginBottom: 12, borderRadius: 4, fontSize: 12,
+    background: tone === 'error' ? 'rgba(255,90,90,.1)' : 'rgba(88,166,255,.08)',
+    border: `1px solid ${tone === 'error' ? 'rgba(255,90,90,.3)' : 'rgba(88,166,255,.3)'}`,
+    color: tone === 'error' ? '#ffb0b0' : '#a8c8ff',
+  };
+}
+const summary: React.CSSProperties = {
+  cursor: 'pointer', fontSize: 12, fontWeight: 500, color: 'var(--fg-mute, #ccc)',
+  padding: '4px 0',
+};
+const list: React.CSSProperties = { listStyle: 'none', padding: 0, margin: '4px 0 0', fontSize: 12 };
+const li: React.CSSProperties = { padding: '4px 0', borderBottom: '1px solid rgba(255,255,255,.04)' };
+const btn: React.CSSProperties = {
+  padding: '6px 12px', background: 'transparent', color: 'var(--fg, #ddd)',
+  border: '1px solid var(--border, #2a2a2a)', borderRadius: 4, cursor: 'pointer', fontSize: 12,
+};
+const btnDanger: React.CSSProperties = {
+  ...btn, color: '#ff8080', border: '1px solid rgba(255,90,90,.3)',
+};
+const primary: React.CSSProperties = {
+  padding: '6px 14px', background: 'var(--accent, #58a6ff)', color: '#000',
+  border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12, fontWeight: 600,
+};

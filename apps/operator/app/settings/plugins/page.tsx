@@ -15,6 +15,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { ProvisionPanel } from './ProvisionPanel';
 
 interface InstalledPlugin {
   name: string;
@@ -22,6 +23,13 @@ interface InstalledPlugin {
   description?: string;
   path?: string;
   configSchema?: { type?: string; required?: string[]; properties?: Record<string, ConfigField> };
+  provision?: {
+    setup?: { path: string; timeoutSec?: number };
+    teardown?: { path: string; timeoutSec?: number };
+    verify?: { path: string; timeoutSec?: number };
+    cloudProvider?: { id: string; region?: string; regions?: string[] };
+    allowedHosts?: string[];
+  };
 }
 
 interface ConfigField {
@@ -30,6 +38,12 @@ interface ConfigField {
   description?: string;
   enum?: unknown[];
   format?: string;
+  pattern?: string;
+  /** Share-semantics annotations (V1). */
+  secret?: boolean;
+  shareable?: boolean;
+  snapshotPolicy?: 'strip' | 'include' | 'warn-and-prompt';
+  oauth?: { provider: string; scopes?: string[] };
 }
 
 interface HarnessRow {
@@ -229,17 +243,44 @@ export default function PluginSettingsPage() {
                     <div key={key} style={{ marginBottom: 16 }}>
                       <label style={lbl}>
                         {key} {required && <span style={{ color: '#ff6961' }}>*</span>}
+                        {field.shareable === false && (
+                          <span style={badgeMute} title="Stripped from snapshots — must be re-supplied at fork time">publisher-specific</span>
+                        )}
+                        {field.secret && (
+                          <span style={badgeWarn} title="Stripped from snapshots by default">secret</span>
+                        )}
+                        {field.oauth && (
+                          <span style={badgeAccent} title={`OAuth provider: ${field.oauth.provider}`}>oauth</span>
+                        )}
                       </label>
                       {field.description && (
                         <div style={{ fontSize: 12, color: 'var(--fg-mute, #999)', marginBottom: 4 }}>{field.description}</div>
                       )}
-                      {renderInput(key, field, current, (v) => setDraft({ ...draft, [key]: v }))}
+                      {field.oauth ? (
+                        <OAuthFieldEditor
+                          plugin={pluginDirSlug(activePlugin)}
+                          harness={activeHarness}
+                          field={key}
+                          provider={field.oauth.provider}
+                          scopes={field.oauth.scopes ?? []}
+                          currentValue={typeof current === 'string' ? current : ''}
+                        />
+                      ) : (
+                        renderInput(key, field, current, (v) => setDraft({ ...draft, [key]: v }))
+                      )}
                     </div>
                   );
                 })}
                 <button type="submit" disabled={saving} style={primary}>
                   {saving ? 'Saving…' : 'Save'}
                 </button>
+                {activePluginManifest.provision && enabledHere && (
+                  <ProvisionPanel
+                    harness={activeHarness}
+                    plugin={pluginDirSlug(activePlugin)}
+                    provision={activePluginManifest.provision}
+                  />
+                )}
               </form>
             )}
           </main>
@@ -320,4 +361,137 @@ const primary: React.CSSProperties = {
 const notice: React.CSSProperties = {
   marginTop: 12, padding: '8px 12px', background: 'rgba(255, 200, 50, 0.08)',
   border: '1px solid rgba(255, 200, 50, 0.3)', borderRadius: 4, fontSize: 12, color: '#cc9',
+};
+const badgeBase: React.CSSProperties = {
+  display: 'inline-block', marginLeft: 8, padding: '1px 6px', borderRadius: 3,
+  fontSize: 10, fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.04em',
+  verticalAlign: 'middle',
+};
+const badgeMute: React.CSSProperties = {
+  ...badgeBase, background: 'rgba(150,150,150,.12)', color: '#999', border: '1px solid rgba(150,150,150,.25)',
+};
+const badgeWarn: React.CSSProperties = {
+  ...badgeBase, background: 'rgba(255,140,0,.10)', color: '#e9a040', border: '1px solid rgba(255,140,0,.3)',
+};
+const badgeAccent: React.CSSProperties = {
+  ...badgeBase, background: 'rgba(88,166,255,.12)', color: '#58a6ff', border: '1px solid rgba(88,166,255,.3)',
+};
+
+/* ─── OAuth field editor — Connect button + Advanced (paste PAT with scope verify) ─── */
+
+interface OAuthFieldEditorProps {
+  plugin: string;
+  harness: string;
+  field: string;
+  provider: string;
+  scopes: string[];
+  currentValue: string;
+}
+
+function OAuthFieldEditor({ plugin, harness, field, provider, scopes, currentValue }: OAuthFieldEditorProps) {
+  const [advanced, setAdvanced] = useState(false);
+  const [pastedToken, setPastedToken] = useState('');
+  const [verifying, setVerifying] = useState(false);
+  const connected = currentValue.length > 0;
+
+  const startUrl = `/api/oauth/start?provider=${encodeURIComponent(provider)}` +
+    `&plugin=${encodeURIComponent(plugin)}` +
+    `&harness=${encodeURIComponent(harness)}` +
+    `&field=${encodeURIComponent(field)}` +
+    `&scopes=${encodeURIComponent(scopes.join(','))}`;
+
+  async function verifyPaste() {
+    if (!pastedToken) return;
+    setVerifying(true);
+    try {
+      const r = await fetch('/api/oauth/verify-paste', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          provider, plugin, harness, field,
+          token: pastedToken,
+          requiredScopes: scopes,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error(`paste rejected: ${d.error ?? `HTTP ${r.status}`}`);
+        return;
+      }
+      if (d.outcome === 'superset') {
+        toast.warning(`Token has more scopes than needed`, {
+          description: `extra: ${(d.extra ?? []).join(', ')}`,
+        });
+      } else {
+        toast.success(`Connected via paste-PAT (${d.outcome ?? 'ok'})`);
+      }
+      setPastedToken('');
+      // Reload page to refresh config display.
+      window.location.reload();
+    } catch (e: any) {
+      toast.error(`verify failed: ${e?.message ?? e}`);
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  return (
+    <div>
+      {connected ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
+          <span style={{ color: '#7fcf7f' }}>● Connected</span>
+          <a href={startUrl} style={linkBtn}>Reconnect</a>
+        </div>
+      ) : (
+        <a href={startUrl} style={connectBtn}>Connect with {provider}</a>
+      )}
+      <div style={{ marginTop: 8 }}>
+        <button type="button" onClick={() => setAdvanced((a) => !a)} style={advBtn}>
+          {advanced ? '▾' : '▸'} Advanced: paste a token
+        </button>
+      </div>
+      {advanced && (
+        <div style={advPanel}>
+          <input
+            type="password"
+            placeholder={`paste a ${provider} token (scopes: ${scopes.join(', ') || 'any'})`}
+            value={pastedToken}
+            onChange={(e) => setPastedToken(e.target.value)}
+            style={input}
+            autoComplete="off"
+          />
+          <button
+            type="button"
+            disabled={verifying || !pastedToken}
+            onClick={verifyPaste}
+            style={primary}
+          >
+            {verifying ? 'Verifying…' : 'Verify + save'}
+          </button>
+          <p style={{ fontSize: 11, color: 'var(--fg-mute, #888)', marginTop: 6 }}>
+            We'll hit the provider's introspection endpoint to confirm the
+            token has the scopes this plugin needs. Tokens with too few
+            scopes are rejected; tokens with extra scopes warn but save.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const connectBtn: React.CSSProperties = {
+  display: 'inline-block', padding: '6px 12px', background: '#58a6ff', color: '#000',
+  borderRadius: 4, textDecoration: 'none', fontSize: 13, fontWeight: 600,
+};
+const linkBtn: React.CSSProperties = {
+  fontSize: 12, color: 'var(--fg-mute, #999)', textDecoration: 'underline',
+};
+const advBtn: React.CSSProperties = {
+  background: 'transparent', border: 'none', color: 'var(--fg-mute, #888)',
+  fontSize: 12, cursor: 'pointer', padding: 0,
+};
+const advPanel: React.CSSProperties = {
+  marginTop: 8, padding: 10, border: '1px solid var(--border, #2a2a2a)',
+  borderRadius: 4, background: 'rgba(255,255,255,.02)',
+  display: 'flex', flexDirection: 'column', gap: 8,
 };

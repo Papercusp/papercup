@@ -6,6 +6,7 @@ import UpdateChip from './_components/UpdateChip';
 import { ChatwootWidget } from './_components/ChatwootWidget';
 import { OracleDock } from './_components/OracleDock';
 import TutorialButton from './_components/TutorialButton';
+import { HostCheckBanner } from './_components/HostCheckBanner';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -36,6 +37,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <WorkspaceSwitcher />
             </nav>
           </header>
+          <HostCheckBanner />
           <main>{children}</main>
           <Toaster theme="dark" position="top-right" />
           <ChatwootWidget />

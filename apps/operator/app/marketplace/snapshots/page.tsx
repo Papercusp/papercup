@@ -87,6 +87,23 @@ export default function MarketplaceSnapshotsPage() {
   useEffect(() => { void load(); }, []);
 
   const onInstantiate = async (row: SnapshotRow) => {
+    // Probe the snapshot's shape — if it has stripped fields, redirect
+    // to the rich fork-completion page; otherwise fast-path with prompt.
+    try {
+      const sR = await fetch(`/api/snapshots/${row.id}/shape`);
+      if (sR.ok) {
+        const s = await sR.json();
+        const hasStripped = (s.plugins ?? []).some((p: { shape?: { fields?: Record<string, unknown> } }) =>
+          p.shape && Object.keys(p.shape.fields ?? {}).length > 0,
+        );
+        if (hasStripped) {
+          window.location.href = `/snapshots/${row.id}/fork`;
+          return;
+        }
+      }
+    } catch {
+      // fall through to fast path
+    }
     const proposed = `${row.harnessSlug}-fork-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}`;
     const name = window.prompt('Name for the new harness? Cancel to use the auto-generated name.', proposed);
     setBusyId(row.id);
