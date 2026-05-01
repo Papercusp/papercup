@@ -22,10 +22,17 @@ import { Zero } from '@rocicorp/zero';
 import { ZeroProvider } from '@rocicorp/zero/react';
 import { schema, queries } from '@restart/zero-harness';
 
+// Resolution order:
+//   1. window.__HARNESS_ZERO_SERVER  (server-rendered injection)
+//   2. NEXT_PUBLIC_HARNESS_ZERO_SERVER  (build-time env, e.g. https://zero.papercupai.com)
+//   3. http://localhost:4849  (dev default — local zero-cache-harness)
+const ENV_HARNESS_ZERO_SERVER =
+  (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_HARNESS_ZERO_SERVER) ||
+  '';
 const DEFAULT_HARNESS_ZERO_SERVER =
   typeof window !== 'undefined'
-    ? (window as any).__HARNESS_ZERO_SERVER ?? 'http://localhost:4849'
-    : 'http://localhost:4849';
+    ? (window as any).__HARNESS_ZERO_SERVER ?? ENV_HARNESS_ZERO_SERVER ?? 'http://localhost:4849'
+    : ENV_HARNESS_ZERO_SERVER || 'http://localhost:4849';
 
 type CachedZero = { zero: Zero<typeof schema>; refcount: number };
 const ZERO_CACHE: Map<string, CachedZero> = (() => {

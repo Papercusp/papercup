@@ -29,6 +29,6 @@ export default async function PapercupRoot() {
   const registry = all.filter((p) =>
     p.harness_kind === 'coding' || p.slug.startsWith('papercup-'),
   );
-  const videoId = process.env.NEXT_PUBLIC_FEATURED_VIDEO_ID;
+  const videoId = process.env.NEXT_PUBLIC_FEATURED_VIDEO_ID ?? 'Zasxh_ubQlM';
   return <HomeClient registry={registry} videoId={videoId} />;
 }
