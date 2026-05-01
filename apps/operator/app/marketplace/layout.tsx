@@ -4,10 +4,10 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const TABS: Array<{ href: string; label: string; hint: string }> = [
-  { href: '/marketplace', label: 'Overview', hint: 'Start here' },
-  { href: '/marketplace/templates', label: 'Templates', hint: 'Harness recipes' },
-  { href: '/marketplace/plugins', label: 'Plugins', hint: 'Capabilities' },
-  { href: '/marketplace/snapshots', label: 'Snapshots', hint: 'Forkable state' },
+  { href: '/marketplace', label: 'Overview', hint: 'How it works' },
+  { href: '/marketplace/templates', label: 'Harnesses', hint: 'Ready workflows' },
+  { href: '/marketplace/plugins', label: 'Plugins', hint: 'Extra tools' },
+  { href: '/marketplace/snapshots', label: 'Snapshots', hint: 'Saved setups' },
 ];
 
 export default function MarketplaceLayout({ children }: { children: React.ReactNode }) {
