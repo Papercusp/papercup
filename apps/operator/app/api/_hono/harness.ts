@@ -3491,7 +3491,12 @@ harness.post('/:slug/triage', async (c) => {
   }
 
   await saveIssues(project, file);
-  await writeFile(join(harnessDir(project), 'pending-issues.jsonl'), '', 'utf8');
+  // Truncate the validator's pending feed only when it actually exists. The
+  // bootstrap-empty write was a remnant of the pre-DB flow; the file is
+  // append-only by the validator and shouldn't be created here. If it never
+  // existed, the post-merge state is "empty queue" by absence — same effect.
+  const pendingPath = join(harnessDir(project), 'pending-issues.jsonl');
+  if (existsSync(pendingPath)) await writeFile(pendingPath, '', 'utf8');
 
   return c.json({ ok: true, merged, deduped });
 });
@@ -4061,12 +4066,15 @@ const MEMORY_MAP: MemoryFileMeta[] = [
   // Harness state
   { path: '.harness/config.json',                 purpose: 'Models, timeouts, cost cap, memory map',   writtenBy: ['human'],                     readBy: ['run.sh'],                                       tier: 'green',  language: 'json' },
   { path: '.harness/validation-contract.md',      purpose: 'Binding contract of claims',               writtenBy: ['scoper', 'architect'],       readBy: ['orchestrator', 'worker', 'validator', 'architect'], tier: 'yellow', language: 'markdown' },
-  { path: '.harness/features.json',               purpose: 'Work queue (id, status, attempts, ...)',   writtenBy: ['scoper', 'orchestrator', 'architect'], readBy: ['orchestrator', 'worker', 'validator', 'architect'], tier: 'red',    language: 'json' },
 
-  // Validator outputs
-  { path: '.harness/issues.md',                   purpose: 'Validator prose findings (append-only)',   writtenBy: ['validator'],                 readBy: ['orchestrator', 'architect', 'curator'],        tier: 'yellow', language: 'markdown' },
-  { path: '.harness/issues.json',                 purpose: 'Structured issue tracker (curator-owned)', writtenBy: ['curator'],                   readBy: ['curator', 'UI'],                               tier: 'red',    language: 'json' },
-  { path: '.harness/pending-issues.jsonl',        purpose: 'Validator findings awaiting curation',     writtenBy: ['validator'],                 readBy: ['curator'],                                     tier: 'red',    language: 'jsonl' },
+  // NOTE: features.json, issues.md, issues.json, pending-issues.jsonl all
+  // moved to Postgres (harness_<slug>.{harness_features,harness_issues}) in
+  // the 2026-04-26 → 2026-04-27 filesystem→PG migration arc. The dashboard's
+  // dedicated panels (FeatureList, IssuesList, ProposalsPanel) read from
+  // Zero/PG directly, so the Memory tab no longer surfaces those entries.
+  // The files may still appear on disk as transient agent output until the
+  // scoper/validator/curator prompts are migrated to call the DB endpoints
+  // directly (see /docs/spec/state.mdx).
 
   // Durable memory
   { path: '.harness/memory/MEMORY.md',            purpose: 'Curated durable memory (seed)',            writtenBy: ['curator', 'human'],          readBy: ['scoper', 'worker', 'orchestrator', 'reviewer'], tier: 'green',  language: 'markdown' },
