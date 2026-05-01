@@ -1,0 +1,67 @@
+# Dockerfile.operator — apps/operator (harness backend, internal-only)
+#
+# Same monorepo install pattern as Dockerfile.papercup. Operator is the
+# harness backend; papercup proxies /api/harness/*, /api/plugins/* to it.
+# Not exposed via Traefik — papercup container reaches it at http://operator:3055
+# on the internal docker network.
+#
+# node-pty native bindings: next.config.js force-includes them in the
+# standalone tracer. Alpine ships with build-base if we need to rebuild,
+# but the @lydell/node-pty-linux-x64 prebuild matches alpine x64 directly.
+
+FROM node:20-alpine AS builder
+
+RUN apk add --no-cache git python3 make g++
+
+WORKDIR /repo
+
+COPY package.json package-lock.json ./
+COPY apps/papercup/package.json    ./apps/papercup/
+COPY apps/operator/package.json    ./apps/operator/
+COPY packages/plugin-loader/package.json ./packages/plugin-loader/
+COPY packages/plugin-sdk/package.json    ./packages/plugin-sdk/
+COPY libs/agent-chat/package.json        ./libs/agent-chat/
+COPY libs/git-graph/package.json         ./libs/git-graph/
+COPY libs/papercup-db/package.json       ./libs/papercup-db/
+COPY libs/papercup-shared/package.json   ./libs/papercup-shared/
+COPY libs/ui-primitives/package.json     ./libs/ui-primitives/
+COPY libs/zero-harness/package.json      ./libs/zero-harness/
+COPY libs/papergrid/grid-core/package.json ./libs/papergrid/grid-core/
+COPY libs/papergrid/grid/package.json      ./libs/papergrid/grid/
+COPY libs/papercusp/libs/db/package.json              ./libs/papercusp/libs/db/
+COPY libs/papercusp/packages/harness/package.json     ./libs/papercusp/packages/harness/
+COPY libs/papercusp/packages/orchestrator/package.json ./libs/papercusp/packages/orchestrator/
+
+RUN npm install --legacy-peer-deps
+
+COPY apps/operator/ ./apps/operator/
+COPY libs/         ./libs/
+COPY packages/     ./packages/
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+WORKDIR /repo/apps/operator
+RUN npm run build
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+WORKDIR /repo
+
+# Operator needs git available at runtime — many harness routes shell out.
+RUN apk add --no-cache git openssh-client bash
+
+COPY --from=builder /repo/apps/operator/.next/standalone ./
+COPY --from=builder /repo/apps/operator/.next/static ./apps/operator/.next/static
+RUN mkdir -p apps/operator/public
+COPY --from=builder /repo/apps/operator/public ./apps/operator/public
+
+ENV PORT=3055
+ENV HOSTNAME=0.0.0.0
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+EXPOSE 3055
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \
+  CMD wget -q --spider http://127.0.0.1:3055/ || exit 1
+
+CMD ["node", "apps/operator/server.js"]

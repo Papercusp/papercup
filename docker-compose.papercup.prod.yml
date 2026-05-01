@@ -1,0 +1,146 @@
+# papercupai.com — production deployment on Hetzner via Coolify.
+#
+# Three services:
+#   - papercup    → Next.js public site, Traefik Host=papercupai.com
+#   - operator    → harness backend (apps/operator), internal-only
+#   - zero-cache  → Rocicorp Zero, exposed at zero-papercup.papercupai.com
+#                   for browser-side live queries from the papercup site
+#
+# All three share the existing `restart-postgres` and the `coolify` Traefik
+# network on the same Hetzner host. Database `papercusp` (formerly
+# `restart_harness`) and schema `papercup_shared` must exist before first
+# boot — see deploy/papercup-db-init.sql.
+#
+# Coolify env vars required:
+#   PAPERCUP_DOMAIN              papercupai.com
+#   POSTGRES_PASSWORD            (same value as Restart's; we share the PG)
+#   PAPERCUP_DATABASE_URL        postgres://postgres_app:${POSTGRES_PASSWORD}@restart-postgres:5432/papercusp
+#   PAPERCUP_SHARED_DATABASE_URL postgres://postgres_app:${POSTGRES_PASSWORD}@restart-postgres:5432/restart?options=-c%20search_path=papercup_shared,public
+#   HARNESS_DATABASE_URL         (same as PAPERCUP_DATABASE_URL — read by libs/db/connection.ts)
+#   HARNESS_ADMIN_DATABASE_URL   postgres://postgres_admin:${POSTGRES_PASSWORD}@restart-postgres:5432/papercusp
+#   ZERO_ADMIN_PASSWORD          (any non-empty string; gates Zero admin endpoints)
+#   GH_DEPLOY_TOKEN              (build-time only; PAT with read access to papercupai/* submodule repos)
+
+services:
+  papercup:
+    image: papercup:latest
+    restart: unless-stopped
+    depends_on:
+      - operator
+    environment:
+      NODE_ENV: production
+      PORT: "3061"
+      HOSTNAME: 0.0.0.0
+      # Internal upstreams (resolved on the docker network)
+      PAPERCUP_PAPERCUSP_UPSTREAM: http://operator:3055
+      PAPERCUP_WEB_UPSTREAM: http://restart-web-1:3001
+      # Zero — server-injected as window.__HARNESS_ZERO_SERVER by app/layout.tsx
+      # so the browser connects to the public Zero subdomain. Runtime-only;
+      # changing this value does not require a rebuild.
+      HARNESS_ZERO_SERVER: https://zero-papercup.${PAPERCUP_DOMAIN}
+      HARNESS_ZERO_INTERNAL_SERVER: ${HARNESS_ZERO_INTERNAL_SERVER:-http://papercup-zero-cache:4848}
+      # Database
+      DATABASE_URL: ${PAPERCUP_DATABASE_URL}
+      PAPERCUP_SHARED_DATABASE_URL: ${PAPERCUP_SHARED_DATABASE_URL}
+    networks:
+      - coolify
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      # Public site: papercupai.com (+ www.→apex redirect)
+      - "traefik.http.routers.papercup.rule=Host(`${PAPERCUP_DOMAIN}`) || Host(`www.${PAPERCUP_DOMAIN}`)"
+      - "traefik.http.routers.papercup.entrypoints=https"
+      - "traefik.http.routers.papercup.tls=true"
+      - "traefik.http.routers.papercup.tls.certresolver=letsencrypt"
+      - "traefik.http.services.papercup.loadbalancer.server.port=3061"
+      - "traefik.http.middlewares.papercup-www-redirect.redirectregex.regex=^https?://www\\.${PAPERCUP_DOMAIN}/(.*)"
+      - "traefik.http.middlewares.papercup-www-redirect.redirectregex.replacement=https://${PAPERCUP_DOMAIN}/$${1}"
+      - "traefik.http.middlewares.papercup-www-redirect.redirectregex.permanent=true"
+      - "traefik.http.routers.papercup.middlewares=papercup-www-redirect,compress"
+      # Public API: api.papercupai.com — same backend (the /api/public/papercup/*
+      # routes live in apps/papercup itself), but limited to that path prefix
+      # and CORS-permissive for the papercupai.com origin.
+      - "traefik.http.routers.papercup-api.rule=Host(`api.${PAPERCUP_DOMAIN}`) && PathPrefix(`/api/public/papercup`)"
+      - "traefik.http.routers.papercup-api.entrypoints=https"
+      - "traefik.http.routers.papercup-api.tls=true"
+      - "traefik.http.routers.papercup-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.papercup-api.service=papercup"
+      - "traefik.http.middlewares.papercup-api-ratelimit.ratelimit.average=600"
+      - "traefik.http.middlewares.papercup-api-ratelimit.ratelimit.period=1m"
+      - "traefik.http.middlewares.papercup-api-ratelimit.ratelimit.burst=120"
+      - "traefik.http.middlewares.papercup-api-cors.headers.accessControlAllowOriginList=https://${PAPERCUP_DOMAIN},https://www.${PAPERCUP_DOMAIN}"
+      - "traefik.http.middlewares.papercup-api-cors.headers.accessControlAllowMethods=GET,HEAD,OPTIONS"
+      - "traefik.http.middlewares.papercup-api-cors.headers.accessControlMaxAge=600"
+      - "traefik.http.routers.papercup-api.middlewares=papercup-api-ratelimit,papercup-api-cors,compress"
+
+  operator:
+    image: operator:latest
+    restart: unless-stopped
+    volumes:
+      # Harness state migrated from local — tarball staged at host /opt/papercup-data
+      - /opt/papercup-data/projects:/papercusp-projects
+      - /opt/papercup-data/config/restart-harness-projects.json:/root/.restart-harness-projects.json:ro
+    environment:
+      NODE_ENV: production
+      PORT: "3055"
+      HOSTNAME: 0.0.0.0
+      PAPERCUSP_PAPERCUP_UPSTREAM: http://papercup:3061
+      PAPERCUSP_WEB_UPSTREAM: http://restart-web-1:3001
+      DATABASE_URL: ${PAPERCUP_DATABASE_URL}
+      PAPERCUP_SHARED_DATABASE_URL: ${PAPERCUP_SHARED_DATABASE_URL}
+      HARNESS_DATABASE_URL: ${HARNESS_DATABASE_URL}
+      HARNESS_ADMIN_DATABASE_URL: ${HARNESS_ADMIN_DATABASE_URL}
+    networks:
+      - coolify
+      - restart_internal
+    # Not exposed via Traefik — internal harness backend only.
+
+  zero-cache:
+    image: rocicorp/zero:latest # placeholder; substituted with restart-zero-cache:latest in deploy
+    container_name: papercup-zero-cache
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      ZERO_APP_ID: papercup
+      ZERO_UPSTREAM_DB: ${PAPERCUP_DATABASE_URL}
+      ZERO_CHANGE_DB: ${PAPERCUP_DATABASE_URL}
+      ZERO_REPLICA_FILE: /data/zero/replica.db
+      ZERO_APP_PUBLICATIONS: zero_harness
+      ZERO_ADMIN_PASSWORD: ${ZERO_ADMIN_PASSWORD}
+    volumes:
+      - papercup-zero-data:/data/zero
+    networks:
+      - coolify
+      - restart_internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:4848/keepalive || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=coolify"
+      - "traefik.http.routers.papercup-zero.rule=Host(`zero-papercup.${PAPERCUP_DOMAIN}`)"
+      - "traefik.http.routers.papercup-zero.entrypoints=https"
+      - "traefik.http.routers.papercup-zero.tls=true"
+      - "traefik.http.routers.papercup-zero.tls.certresolver=letsencrypt"
+      # ALPN-restrict to http/1.1 — browsers don't support WS-over-HTTP/2
+      # (Extended CONNECT, RFC 8441) reliably; Traefik 503s on those upgrades.
+      # Requires the matching TLS option file in deploy/papercup-zero-tls.yaml,
+      # placed at /data/coolify/proxy/dynamic/papercup-zero-tls.yaml on the host.
+      - "traefik.http.routers.papercup-zero.tls.options=papercup-zero@file"
+      - "traefik.http.services.papercup-zero.loadbalancer.server.port=4848"
+      # CORS for the papercup browser to connect from the apex domain.
+      - "traefik.http.middlewares.papercup-zero-cors.headers.accessControlAllowOriginList=https://${PAPERCUP_DOMAIN},https://www.${PAPERCUP_DOMAIN}"
+      - "traefik.http.middlewares.papercup-zero-cors.headers.accessControlAllowMethods=GET,POST,OPTIONS"
+      - "traefik.http.routers.papercup-zero.middlewares=papercup-zero-cors"
+
+volumes:
+  papercup-zero-data:
+
+networks:
+  coolify:
+    external: true
+  restart_internal:
+    external: true

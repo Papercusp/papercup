@@ -1,0 +1,74 @@
+# Dockerfile.papercup — apps/papercup → papercupai.com
+#
+# Multi-stage build:
+#   1. builder: install monorepo deps with submodules already checked out,
+#      build Next standalone bundle for apps/papercup.
+#   2. runner: copy standalone bundle + static assets, run on PORT 3061.
+#
+# Submodules (libs/agent-chat, libs/git-graph, libs/papergrid, libs/papercup-db,
+# libs/papercup-shared, libs/ui-primitives, libs/papercusp, libs/zero-harness)
+# must be initialized in the build context. Coolify's GitHub App does this
+# automatically when the integration has access to the submodule repos.
+
+FROM node:20-alpine AS builder
+
+# git is needed for postinstall scripts that read git metadata (build-info)
+RUN apk add --no-cache git
+
+WORKDIR /repo
+
+# Copy lockfile + every workspace package.json so `npm install` can resolve the
+# full graph before we copy source. This is the standard pattern for caching
+# dependency installs in monorepos.
+COPY package.json package-lock.json ./
+COPY apps/papercup/package.json    ./apps/papercup/
+COPY apps/operator/package.json    ./apps/operator/
+COPY packages/plugin-loader/package.json ./packages/plugin-loader/
+COPY packages/plugin-sdk/package.json    ./packages/plugin-sdk/
+COPY libs/agent-chat/package.json        ./libs/agent-chat/
+COPY libs/git-graph/package.json         ./libs/git-graph/
+COPY libs/papercup-db/package.json       ./libs/papercup-db/
+COPY libs/papercup-shared/package.json   ./libs/papercup-shared/
+COPY libs/ui-primitives/package.json     ./libs/ui-primitives/
+COPY libs/zero-harness/package.json      ./libs/zero-harness/
+COPY libs/papergrid/grid-core/package.json ./libs/papergrid/grid-core/
+COPY libs/papergrid/grid/package.json      ./libs/papergrid/grid/
+COPY libs/papercusp/libs/db/package.json              ./libs/papercusp/libs/db/
+COPY libs/papercusp/packages/harness/package.json     ./libs/papercusp/packages/harness/
+COPY libs/papercusp/packages/orchestrator/package.json ./libs/papercusp/packages/orchestrator/
+
+# --legacy-peer-deps matches the workspace convention.
+RUN npm install --legacy-peer-deps
+
+# Source — copy everything needed at build time. Submodules included.
+COPY apps/papercup/ ./apps/papercup/
+COPY libs/         ./libs/
+COPY packages/     ./packages/
+
+ENV NEXT_TELEMETRY_DISABLED=1
+
+WORKDIR /repo/apps/papercup
+RUN npm run build
+
+# ── Runtime ──────────────────────────────────────────────────────────────────
+FROM node:20-alpine AS runner
+WORKDIR /repo
+
+# Standalone bundle (self-contained — server.js + scoped node_modules).
+# outputFileTracingRoot=../.. means the bundle root is /repo, so this copy
+# preserves the apps/papercup/ subdirectory layout the server expects.
+COPY --from=builder /repo/apps/papercup/.next/standalone ./
+COPY --from=builder /repo/apps/papercup/.next/static ./apps/papercup/.next/static
+RUN mkdir -p apps/papercup/public
+COPY --from=builder /repo/apps/papercup/public ./apps/papercup/public
+
+ENV PORT=3061
+ENV HOSTNAME=0.0.0.0
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+EXPOSE 3061
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \
+  CMD wget -q --spider http://127.0.0.1:3061/ || exit 1
+
+CMD ["node", "apps/papercup/server.js"]
