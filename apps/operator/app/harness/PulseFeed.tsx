@@ -96,9 +96,11 @@ function fmtAgo(ms: number): string {
 export default function PulseFeed({
   events,
   onOpenFeature,
+  compact: _compact,
 }: {
   events: PulseEvent[];
   onOpenFeature: (id: string) => void;
+  compact?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {

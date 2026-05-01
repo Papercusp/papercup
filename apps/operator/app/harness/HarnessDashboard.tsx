@@ -47,7 +47,7 @@ const PLUGIN_ICON_MAP: Record<string, React.ComponentType<{ size?: number | stri
   Star, Tag, Terminal, TrendingUp, Upload, Video, Wrench, Zap,
 };
 function PluginIcon({ name, size = 13 }: { name?: string | null; size?: number }) {
-  const Icon = (name && PLUGIN_ICON_MAP[name]) ?? Puzzle;
+  const Icon: React.ComponentType<{ size?: number | string }> = (name && PLUGIN_ICON_MAP[name]) || Puzzle;
   return <Icon size={size} />;
 }
 
@@ -103,11 +103,20 @@ import ProposalsPanel from './ProposalsPanel';
  * nothing — there's no signal that anything went wrong, and the user
  * has to refresh the page to recover.
  */
-function dynamicWithRetry<T>(
+function dynamicWithRetry<T extends { default: React.ComponentType<any> }>(
   loader: () => Promise<T>,
   label: string,
-  pickComponent?: (mod: T) => React.ComponentType<any>,
-) {
+): React.ComponentType<React.ComponentProps<T['default']>>;
+function dynamicWithRetry<P>(
+  loader: () => Promise<any>,
+  label: string,
+  pickComponent: (mod: any) => React.ComponentType<P>,
+): React.ComponentType<P>;
+function dynamicWithRetry(
+  loader: () => Promise<any>,
+  label: string,
+  pickComponent?: (mod: any) => React.ComponentType<any>,
+): React.ComponentType<any> {
   const importer = async () => {
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -118,8 +127,8 @@ function dynamicWithRetry<T>(
         const mod = await Promise.race([
           loader(),
           new Promise((_, reject) => setTimeout(() => reject(new Error('import timeout')), 8000)),
-        ]) as T;
-        return pickComponent ? pickComponent(mod) : (mod as any);
+        ]) as any;
+        return pickComponent ? pickComponent(mod) : (mod.default ?? mod);
       } catch (e) {
         lastErr = e;
         await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
@@ -147,7 +156,7 @@ function dynamicWithRetry<T>(
         loading <em>{label}</em>…
       </div>
     ),
-  });
+  }) as unknown as React.ComponentType<any>;
 }
 
 const SpecEditor = dynamicWithRetry(() => import('./SpecEditor'), 'SpecEditor');
@@ -167,7 +176,11 @@ function GitGraphPanel({ slug }: { slug: string }) {
     />
   );
 }
-const BrainstormFull = dynamicWithRetry(() => import('./brainstorm/BrainstormFull'), 'Brainstorm', (m: any) => m.BrainstormFull);
+const BrainstormFull = dynamicWithRetry<{ slug: string }>(
+  () => import('./brainstorm/BrainstormFull'),
+  'Brainstorm',
+  (m: any) => m.BrainstormFull,
+);
 const HooksPanel = dynamicWithRetry(() => import('./HooksPanel'), 'HooksPanel');
 const FeatureEditor = dynamicWithRetry(() => import('./FeatureEditor'), 'FeatureEditor');
 const InterventionPanel = dynamicWithRetry(() => import('./InterventionPanel'), 'InterventionPanel');
@@ -180,9 +193,9 @@ const ArchivesPanel = dynamicWithRetry(() => import('./ArchivesPanel'), 'Archive
 const DecisionsPanel = dynamicWithRetry(() => import('./DecisionsPanel'), 'DecisionsPanel');
 const HealthBadge = dynamicWithRetry(() => import('./HealthBadge'), 'HealthBadge');
 const SmokeTestPanel = dynamicWithRetry(() => import('./SmokeTestPanel'), 'SmokeTestPanel');
-const IdentityPanel = dynamic(() => import('./IdentityPanel'), { ssr: false });
-const PlanReviewBanner = dynamic(() => import('./PlanReviewBanner'), { ssr: false });
-const SummaryPanel = dynamic(() => import('./SummaryPanel'), { ssr: false });
+const IdentityPanel = dynamicWithRetry(() => import('./IdentityPanel'), 'IdentityPanel');
+const PlanReviewBanner = dynamicWithRetry(() => import('./PlanReviewBanner'), 'PlanReviewBanner');
+const SummaryPanel = dynamicWithRetry(() => import('./SummaryPanel'), 'SummaryPanel');
 const ExpertsPanel = dynamicWithRetry(() => import('./ExpertsPanel'), 'ExpertsPanel');
 
 // ─── Types ─────────────────────────────────────────────────────────────
@@ -2122,7 +2135,8 @@ export default function HarnessDashboard() {
     // Wait until polling has at least one response before applying — the
     // initial empty array would clobber any polled-from-REST features.
     if (!featuresQueryName || featuresLoading || !Array.isArray(zeroFeatureRows)) return;
-    const adapted: Feature[] = (zeroFeatureRows as FeatureRow[]).map((zf) => ({
+    type LocalFeatureRow = { featureId: string; title: string; summary?: string | null; status: string; attempts: number | string; claims?: string | null };
+    const adapted: Feature[] = (zeroFeatureRows as unknown as LocalFeatureRow[]).map((zf) => ({
       id: zf.featureId,
       title: zf.title,
       summary: zf.summary ?? undefined,
@@ -2175,7 +2189,8 @@ export default function HarnessDashboard() {
   });
   useEffect(() => {
     if (!agentRunsQueryName || agentRunsLoading || !Array.isArray(zeroAgentRows)) return;
-    const adapted: AgentRun[] = (zeroAgentRows as AgentRunRow[])
+    type LocalAgentRunRow = { runId: string; role: string; ts: number | string; sizeBytes: number | string };
+    const adapted: AgentRun[] = (zeroAgentRows as unknown as LocalAgentRunRow[])
       .slice(0, 200)
       .map((r) => ({
         runId: r.runId,
