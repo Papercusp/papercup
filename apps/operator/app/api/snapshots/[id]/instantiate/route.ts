@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
-import { restore } from '@papercusp/export-state';
+import { dirname, join } from 'node:path';
+import { restore, readManifestFromTarball } from '@papercusp/export-state';
 import { findSnapshot, readRegistry } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
 import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
@@ -93,13 +93,6 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
           { status: 500 },
         );
       }
-      return NextResponse.json({
-        ok: true,
-        newSlug: userName,
-        projectDir: join(PROJECTS_DIR, userName),
-        warnings: result.warnings,
-        ambiguousSlugMatches: result.ambiguousSlugMatches,
-      });
     }
 
     const finalSlug = userName && userName !== result.newSlug ? userName : result.newSlug;
@@ -107,25 +100,35 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
     // Apply share-semantics: per-plugin overrides for stripped fields +
     // resolve schema-evolution aliases against the *current* installed
     // manifest. This lets a snapshot taken under v0.1 fork into a v0.2
-    // installation that renamed a field.
+    // installation that renamed a field. Runs against `finalSlug`, so it
+    // works whether or not the user supplied a custom name.
+    let applied: { applied: string[]; warnings: string[] } | undefined;
     if (body.pluginConfigOverrides) {
-      const applied = await applyForkOverrides(finalSlug, body.pluginConfigOverrides);
-      return NextResponse.json({
-        ok: true,
-        newSlug: finalSlug,
-        projectDir: join(PROJECTS_DIR, finalSlug),
-        warnings: [...(result.warnings ?? []), ...applied.warnings],
-        ambiguousSlugMatches: result.ambiguousSlugMatches,
-        appliedOverrides: applied.applied,
-      });
+      // Load the snapshot's preserved (post-extractShape) configs from the
+      // manifest; restore() writes them to disk under different naming
+      // conventions, so we read them back from the source-of-truth.
+      let snapshotPreservedConfigs: Record<string, Record<string, unknown>> = {};
+      try {
+        const manifest = await readManifestFromTarball(snap.tarballPath);
+        for (const p of manifest.plugins ?? []) {
+          if (!p.name) continue;
+          try {
+            snapshotPreservedConfigs[p.name] = JSON.parse(p.configJson) as Record<string, unknown>;
+          } catch { /* skip malformed */ }
+        }
+      } catch {
+        // Manifest read failed — fall through with empty preserved configs.
+      }
+      applied = await applyForkOverrides(finalSlug, body.pluginConfigOverrides, snapshotPreservedConfigs);
     }
 
     return NextResponse.json({
       ok: true,
-      newSlug: result.newSlug,
-      projectDir: result.projectDir,
-      warnings: result.warnings,
+      newSlug: finalSlug,
+      projectDir: join(PROJECTS_DIR, finalSlug),
+      warnings: [...(result.warnings ?? []), ...(applied?.warnings ?? [])],
       ambiguousSlugMatches: result.ambiguousSlugMatches,
+      ...(applied ? { appliedOverrides: applied.applied } : {}),
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -139,17 +142,21 @@ const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
 async function applyForkOverrides(
   newSlug: string,
   overrides: Record<string, Record<string, unknown>>,
+  snapshotPreservedConfigs: Record<string, Record<string, unknown>> = {},
 ): Promise<{ applied: string[]; warnings: string[] }> {
   const applied: string[] = [];
   const warnings: string[] = [];
   for (const [pluginSlug, fields] of Object.entries(overrides)) {
     const cfgPath = join(HARNESSES_DIR, newSlug, 'plugin-configs', `${pluginSlug}.json`);
-    let existing: Record<string, unknown> = {};
+    // Base = the snapshot's preserved (post-extractShape) config. The
+    // restore-written file (if any) overlays on top of this; user
+    // overrides overlay last.
+    let existing: Record<string, unknown> = snapshotPreservedConfigs[pluginSlug] ?? {};
     try {
-      existing = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
+      const onDisk = JSON.parse(await fs.readFile(cfgPath, 'utf8')) as Record<string, unknown>;
+      existing = { ...existing, ...onDisk };
     } catch {
-      // Restore may not have written this plugin's config yet (uninstalled
-      // plugin). Treat as empty.
+      // No file on disk — manifest preserved config is our only base.
     }
     // Run alias resolution against the installed manifest (not the
     // snapshot's manifest) so renames in the *current* schema take effect.
@@ -171,7 +178,9 @@ async function applyForkOverrides(
       }
     }
     const merged = { ...resolved, ...fields };
-    await fs.mkdir(join(HARNESSES_DIR, newSlug, 'plugin-configs'), { recursive: true });
+    // Plugin slugs with `/` (npm-scoped names like `@papercupai/foo`) need
+    // the nested scope directory to exist; mkdir the cfg's parent dir.
+    await fs.mkdir(dirname(cfgPath), { recursive: true });
     await fs.writeFile(cfgPath, JSON.stringify(merged, null, 2) + '\n');
     try {
       await mirrorPluginConfig(newSlug, pluginSlug, merged);
