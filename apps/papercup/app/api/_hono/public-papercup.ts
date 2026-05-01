@@ -105,50 +105,6 @@ publicPapercup.get('/harness/:slug/badge.svg', async (c) => {
   });
 });
 
-// ─── /feed.xml ────────────────────────────────────────────
-// Atom 1.0 feed of recent activity. Original source (/org/timeline) was
-// removed in the org-harness migration; the timeline now lives in the
-// Zero-synced harness_shared.audit_log table, which has no REST mirror.
-// Returns an empty (well-formed) feed until/unless we add a server-side
-// reader for the audit_log table.
-publicPapercup.get('/feed.xml', async (c) => {
-  const items: any[] = [];
-  const updated = items[0]?.ts ? new Date(items[0].ts).toISOString() : new Date().toISOString();
-  const escapeXml = (s: string) => String(s ?? '').replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]!));
-  const entries = items.map((m: any) => {
-    const id = `tag:papercupai.com,2026:msg/${m.id ?? m.ts}`;
-    const title = `[${m.kind}] ${m.subject ?? ''}`.trim();
-    const summary = `from ${m.from} to ${Array.isArray(m.to) ? m.to.join(', ') : (m.to ?? '')}`;
-    const ts = m.ts ? new Date(m.ts).toISOString() : updated;
-    return `  <entry>
-    <id>${escapeXml(id)}</id>
-    <title>${escapeXml(title)}</title>
-    <updated>${ts}</updated>
-    <summary>${escapeXml(summary)}</summary>
-    <author><name>${escapeXml(m.from ?? 'papercup')}</name></author>
-    <link rel="alternate" href="https://papercupai.com/timeline/"/>
-  </entry>`;
-  }).join('\n');
-  const feed = `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <id>https://papercupai.com/api/public/papercup/feed.xml</id>
-  <title>Papercup — Live Activity</title>
-  <link rel="self" href="https://api.papercupai.com/api/public/papercup/feed.xml"/>
-  <link rel="alternate" href="https://papercupai.com/timeline/"/>
-  <updated>${updated}</updated>
-  <author><name>Papercup</name></author>
-${entries}
-</feed>`;
-  return new Response(feed, {
-    headers: {
-      'content-type': 'application/atom+xml; charset=utf-8',
-      'cache-control': 'public, max-age=120, s-maxage=120',
-      'access-control-allow-origin': '*',
-    },
-  });
-});
-
 // ─── /_admin/* (strict-allowlist sanitized proxy) ──────────
 // Generic mirror that proxies admin endpoints, sanitizes responses, and
 // blocks all writes. Lets the public site use the EXACT admin components
