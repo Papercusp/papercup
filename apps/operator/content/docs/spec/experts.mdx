@@ -136,10 +136,25 @@ NEXT_SCOPER phase2               # re-invoke scoper to derive features
 Note the `.` separator on `NEXT_FEEDBACK` (the orchestrator regex's
 character class doesn't include `/` or `:`).
 
-The orchestrator polls `GET /api/harness/<slug>/experts` to see the
-current state and decides what to dispatch next. Workers continue to
-run in parallel with the expert flow — features whose `notes` reference
-a not-yet-final expert simply sit in `todo` until that expert finalizes.
+Both the expert and feedback roles are **one-shot per orchestrator
+iteration**. They call APIs (`POST /feedback`, `/turn`, `/end`) and exit;
+they don't emit decision verbs. The orchestrator drives the back-and-forth
+by reading `nextAction` on each expert (server-computed):
+
+| `nextAction`                | meaning                                          |
+|-----------------------------|--------------------------------------------------|
+| `"dispatch_expert"`         | invoke `NEXT_EXPERT <id>`                        |
+| `"dispatch_feedback:FB-NNN"`| invoke `NEXT_FEEDBACK <id>.FB-NNN`               |
+| `"wait"`                    | user is in chat with this expert; skip           |
+| `"done"`                    | terminal; counts toward scoper-phase-2 trigger   |
+
+The hint exists because directory-walk logic in a prompt is brittle —
+the server walks `feedback/<FB-NNN>/turn-NNN-*.md` files and tells the
+orchestrator who's next.
+
+Workers continue in parallel with the expert flow — features whose
+`notes` reference a not-yet-final expert simply sit in `todo` until
+that expert finalizes.
 
 ## Worker integration
 

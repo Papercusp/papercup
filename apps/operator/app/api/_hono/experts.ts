@@ -184,6 +184,69 @@ async function evaluateConvergence(projectDir: string, expertId: string): Promis
   return 'final';
 }
 
+/**
+ * Compute the orchestrator's next action for an expert. Returns a
+ * structured hint so the orchestrator prompt doesn't have to walk
+ * directory listings via shell pipelines (brittle in practice).
+ *
+ *   "dispatch_expert"           — invoke NEXT_EXPERT (drafting OR has feedback
+ *                                 turn waiting for the expert's response OR
+ *                                 needs to spawn the next persona)
+ *   "dispatch_feedback:<FB-id>" — invoke NEXT_FEEDBACK (latest turn is from
+ *                                 the expert; conversation waits on agent)
+ *   "wait"                      — engaged in chat, do nothing
+ *   "done"                      — terminal status; scoper-phase-2 candidate
+ */
+function computeNextAction(projectDir: string, expertId: string): string {
+  const ident = (() => {
+    try {
+      return JSON.parse(readFileSync(join(expertDir(projectDir, expertId), 'identity.json'), 'utf8'));
+    } catch { return null; }
+  })();
+  if (!ident) return 'done';
+  // Terminal status takes precedence over userEngaged — a cancelled or
+  // final expert that happens to still have userEngaged=true is `done`,
+  // not `wait`.
+  const terminal = ['final', 'max_rounds', 'cancelled', 'superseded', 'error'];
+  if (terminal.includes(ident.status)) return 'done';
+  if (ident.userEngaged) return 'wait';
+  if (ident.status === 'drafting') return 'dispatch_expert';
+
+  // Inspect each in-flight conversation.
+  const fbDir = join(expertDir(projectDir, expertId), 'feedback');
+  if (!existsSync(fbDir)) return 'dispatch_expert';
+  let fbIds: string[] = [];
+  try {
+    fbIds = readdirSync(fbDir).filter((n) => FEEDBACK_ID_RE.test(n)).sort();
+  } catch { return 'dispatch_expert'; }
+
+  let pendingExpert = false;
+  for (const fbId of fbIds) {
+    const dir = join(fbDir, fbId);
+    let verdictExists = false;
+    try { verdictExists = existsSync(join(dir, 'verdict.json')); } catch {}
+    if (verdictExists) continue; // ended
+    let turns: string[] = [];
+    try {
+      turns = readdirSync(dir).filter((n) => /^turn-\d{3}-(expert|feedback)\.md$/.test(n)).sort();
+    } catch {}
+    if (turns.length === 0) continue;
+    const latest = turns[turns.length - 1];
+    if (latest.endsWith('-expert.md')) {
+      // Conversation is waiting for the feedback agent to reply.
+      return `dispatch_feedback:${fbId}`;
+    }
+    if (latest.endsWith('-feedback.md')) {
+      // Conversation is waiting for the expert to respond or end.
+      pendingExpert = true;
+    }
+  }
+  if (pendingExpert) return 'dispatch_expert';
+  // No in-flight conversation needing immediate action → expert spawns next
+  // persona.
+  return 'dispatch_expert';
+}
+
 function readMaxAgents(projectDir: string): number {
   try {
     const cfg = JSON.parse(readFileSync(join(projectDir, '.harness', 'config.json'), 'utf8'));
@@ -252,7 +315,10 @@ export function registerExperts(harness: Hono): void {
     const projectDir = lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const ids = listExpertIds(projectDir);
-    const out: Array<Pick<Identity, 'id' | 'title' | 'status' | 'featureSize' | 'agentCount' | 'roundCount' | 'userEngaged' | 'forkedFrom' | 'createdAt' | 'updatedAt'>> = [];
+    const out: Array<
+      Pick<Identity, 'id' | 'title' | 'status' | 'featureSize' | 'agentCount' | 'roundCount' | 'userEngaged' | 'forkedFrom' | 'createdAt' | 'updatedAt'>
+      & { nextAction: string }
+    > = [];
     for (const id of ids) {
       const ident = await readIdentity(projectDir, id);
       if (!ident) continue;
@@ -267,6 +333,7 @@ export function registerExperts(harness: Hono): void {
         forkedFrom: ident.forkedFrom,
         createdAt: ident.createdAt,
         updatedAt: ident.updatedAt,
+        nextAction: computeNextAction(projectDir, ident.id),
       });
     }
     return c.json({ experts: out });
@@ -337,7 +404,8 @@ export function registerExperts(harness: Hono): void {
     let spec = '';
     try { spec = await readFile(specPath, 'utf8'); } catch {}
     const spentCents = aggregateExpertSpendCents(projectDir, expertId);
-    return c.json({ ...ident, specPath, spec, spentCents });
+    const nextAction = computeNextAction(projectDir, expertId);
+    return c.json({ ...ident, specPath, spec, spentCents, nextAction });
   });
 
   // ── Patch expert (status, userEngaged, terminationReason, agentCount, roundCount) ──

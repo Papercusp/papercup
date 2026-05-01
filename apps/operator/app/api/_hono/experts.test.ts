@@ -235,6 +235,30 @@ describe('experts API', () => {
     expect(data.content).toBe('# hello\n\n- list');
   });
 
+  it('nextAction surfaces the right hint at each lifecycle stage', async () => {
+    await call('POST', '/experts', { title: 't', highLevelSpec: 'x', budgetCents: 999_999, featureSize: 'standard' });
+    // Drafting
+    expect((await call('GET', '/experts/EXP-001')).data.nextAction).toBe('dispatch_expert');
+    // Open conversation, write expert turn → waits for feedback agent
+    await call('POST', '/experts/EXP-001/feedback', { persona: 'security' });
+    await call('POST', '/experts/EXP-001/feedback/FB-001/turn', { from: 'expert', body: 'opening' });
+    expect((await call('GET', '/experts/EXP-001')).data.nextAction).toBe('dispatch_feedback:FB-001');
+    // Feedback replies → waits for expert
+    await call('POST', '/experts/EXP-001/feedback/FB-001/turn', { from: 'feedback', body: 'critique' });
+    expect((await call('GET', '/experts/EXP-001')).data.nextAction).toBe('dispatch_expert');
+    // End conversation with substantive verdict → expert spawns next persona
+    await call('POST', '/experts/EXP-001/feedback/FB-001/end', {
+      verdict: { newIssues: [{ summary: 'x', severity: 'major' }], coversPriorIssues: [] },
+    });
+    expect((await call('GET', '/experts/EXP-001')).data.nextAction).toBe('dispatch_expert');
+    // Engage user → wait
+    await call('PATCH', '/experts/EXP-001', { userEngaged: true });
+    expect((await call('GET', '/experts/EXP-001')).data.nextAction).toBe('wait');
+    // Cancel → done
+    await call('POST', '/experts/EXP-001/cancel');
+    expect((await call('GET', '/experts/EXP-001')).data.nextAction).toBe('done');
+  });
+
   it('full choreography: orchestrator decision rules drive the multi-turn back-and-forth correctly', async () => {
     // This is the regression test for the structural bug end-to-end testing
     // exposed: the orchestrator drives the loop by inspecting which turn-NNN-*.md
