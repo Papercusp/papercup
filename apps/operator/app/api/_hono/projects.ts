@@ -238,7 +238,7 @@ export function registerProjects(harness: Hono): void {
                  updated_ts = ?
            WHERE id = ?
         `).run(spec, Date.now(), id);
-      })();
+      });
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: `failed to update spec: ${(e as Error).message}` }, 500);
@@ -280,7 +280,7 @@ export function registerProjects(harness: Hono): void {
       if (!result.ok) {
         return c.json({ error: result.error, detail: result.detail }, 500);
       }
-      return c.json({ ok: true, mode: 'sync', ...result });
+      return c.json({ mode: 'sync', ...result });
     } catch (e) {
       return c.json({ error: `failed to run PM: ${(e as Error).message}` }, 500);
     }

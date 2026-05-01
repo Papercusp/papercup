@@ -15,7 +15,8 @@ export function remarkFeatureLinks() {
     visit(tree, 'text', (node: Text, index, parent) => {
       if (!parent || typeof index !== 'number') return;
       // Don't re-link inside links or code
-      if (parent.type === 'link' || parent.type === 'inlineCode' || parent.type === 'code') return;
+      const ptype: string = parent.type;
+      if (ptype === 'link' || ptype === 'inlineCode' || ptype === 'code') return;
 
       const matches = [...node.value.matchAll(FEATURE_ID_RE)];
       if (matches.length === 0) return;

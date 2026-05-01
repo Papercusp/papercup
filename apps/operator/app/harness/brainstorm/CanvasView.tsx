@@ -26,7 +26,7 @@ interface Props { slug: string }
 export function CanvasView({ slug }: Props) {
   const [scene, setScene] = useState<SceneFile | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const saveRef = useRef<(s: SceneFile) => void>();
+  const saveRef = useRef<((s: SceneFile) => void) | undefined>(undefined);
 
   useEffect(() => {
     let aborted = false;

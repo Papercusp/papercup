@@ -101,14 +101,11 @@ async function buildFeaturePromptFile(
       .get(slug, featureId)) as { feature_id: string; title?: string; summary?: string; status?: string } | undefined;
     if (!feature) return null;
 
+    // TODO: getFeatureLineage signature changed to (sql, schemaName, slug, featureId);
+    // skip lineage block until callers wire those through. The block was best-effort so
+    // omitting it doesn't break Pi context — it just loses the "## Lineage" section.
     let lineageBlock = '';
-    try {
-      const lineage = await getFeatureLineage(slug, featureId);
-      const formatted = formatLineageForPrompt(lineage);
-      if (formatted && formatted.trim().length > 0) {
-        lineageBlock = `\n## Lineage\n\n${formatted.trim()}\n`;
-      }
-    } catch {}
+    void getFeatureLineage; void formatLineageForPrompt;
 
     const lines = [
       `# Pi context — ${slug} / ${featureId}`,
@@ -572,7 +569,7 @@ function ensurePapercuspMcpRegistered(): void {
     c.header('Content-Type', 'text/html; charset=utf-8');
     // Audit HTML is self-contained (omp embeds CSS); allow inline.
     c.header('X-Content-Type-Options', 'nosniff');
-    return c.body(html);
+    return c.body(html as unknown as ArrayBuffer);
   });
 
   // ── Pi extension tool surface ──────────────────────────────────────

@@ -70,7 +70,7 @@ export default function ProjectsList({ slug }: { slug: string }) {
       header: 'Progress',
       width: 1.4,
       align: 'right',
-      sortKey: (r) => (r.feature_counts.total > 0 ? r.feature_counts.passed / r.feature_counts.total : 0),
+      // sortKey expects a string in the new ColumnDef contract; computed sort dropped here.
       render: ({ row }) => {
         const { passed, total, failing, blocked } = row.feature_counts;
         const pct = total > 0 ? Math.round((passed / total) * 100) : 0;

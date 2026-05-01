@@ -902,7 +902,7 @@ harness.post('/:slug/features/:id/reset', async (c) => {
       .run('todo', 0, Date.now(), project.slug, id);
     auditFeatureChange(project.slug, id, 'status', existing.status, 'todo', 'api:reset');
     auditFeatureChange(project.slug, id, 'attempts', existing.attempts, 0, 'api:reset');
-  })();
+  });
   const feat = rowToFeature(await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id));
 
   // If worktree isolation is active and this feature has a stale worktree,
@@ -973,7 +973,7 @@ harness.patch('/:slug/features/:id', async (c) => {
       const oldVal = existing[field];
       auditFeatureChange(project.slug, id, field, oldVal, newVal, actor);
     }
-  })();
+  });
 
   // Phase B+ — Project Manager hook. When a feature transitions INTO 'passed'
   // (was not passed before; is passed now) AND has a project_id, enqueue a
@@ -1181,7 +1181,7 @@ harness.post('/:slug/features', async (c) => {
         now, now, now,
       );
     auditFeatureChange(project.slug, id, '__created', null, { id, title, status }, actor);
-  })();
+  });
 
   const created = rowToFeature(await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id));
   return c.json({ ok: true, feature: created });
@@ -1198,7 +1198,7 @@ harness.delete('/:slug/features/:id', async (c) => {
   await dbc.transaction(async (tx) => {
     await tx.prepare('DELETE FROM harness_features WHERE harness_slug = ? AND feature_id = ?').run(project.slug, id);
     auditFeatureChange(project.slug, id, '__deleted', rowToFeature(existing), null, actor);
-  })();
+  });
   return c.json({ ok: true, deleted: id });
 });
 
@@ -1708,7 +1708,7 @@ harness.post('/:slug/smoke-test/run', async (c) => {
     p.stdout.on('data', (d) => { stdout += d.toString(); });
     p.stderr.on('data', (d) => { stdout += d.toString(); });
     p.on('close', (code) => {
-      resolve(c.json({ ok: code === 0, rc: code, output: stdout }));
+      resolve(c.json({ ok: code === 0, rc: code, output: stdout }) as unknown as void);
     });
   });
 });
@@ -1955,7 +1955,7 @@ harness.post('/:slug/features/:id/approve-human', async (c) => {
     await tx.prepare('UPDATE harness_features SET needs_human_review = false, updated_ts = ? WHERE harness_slug = ? AND feature_id = ?')
       .run(Date.now(), project.slug, id);
     auditFeatureChange(project.slug, id, 'needs_human_review', true, false, actor);
-  })();
+  });
 
   const updated = rowToFeature(await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id));
   return c.json({ ok: true, feature: updated, approvedBy: actor });
