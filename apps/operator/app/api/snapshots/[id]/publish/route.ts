@@ -12,18 +12,27 @@
  */
 
 import { NextResponse } from 'next/server';
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
-const SECRETS_PATH = join(homedir(), '.papercusp', 'marketplace-secrets.env');
+// The marketplace secrets file moved with the workspace migration. Try the
+// active workspace first, then default, then the legacy path.
+const SECRETS_PATH = (() => {
+  const candidates = [
+    join(homedir(), '.papercusp-workspaces', 'default', '.papercusp', 'marketplace-secrets.env'),
+    papercuspPath('marketplace-secrets.env'),
+  ];
+  return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1];
+})();
 
 interface Body {
   /** Override marketplace slug. Defaults to `<harness>-snapshot-<yyyymmdd>-iter1`. */
@@ -57,7 +66,13 @@ async function publish(id: string, body: Body): Promise<NextResponse> {
   const slug = body.marketplaceSlug ?? defaultSlug(snap.harnessSlug);
   const version = body.marketplaceVersion ?? `1.0.0-ts${Date.now()}`;
 
-  const manifestPayload = buildMarketplaceManifest(snap.manifest, slug, version);
+  // Inherit the source template's icon so published snapshots render with
+  // a meaningful glyph instead of falling back to the generic "Layers"
+  // shape. Best-effort: failures (missing template, marketplace down)
+  // silently degrade to no-icon and the renderer's fallback kicks in.
+  const sourceIcon = await resolveSourceIcon(snap.manifest.template?.name);
+
+  const manifestPayload = buildMarketplaceManifest(snap.manifest, slug, version, sourceIcon);
 
   const tarballBytes = await fs.readFile(snap.tarballPath);
   const readmePath = snap.tarballPath.replace(/\.tar\.gz$/, '.README.md');
@@ -141,10 +156,27 @@ function defaultSlug(harness: string): string {
   return `${harness}-snapshot-${date}`;
 }
 
+async function resolveSourceIcon(templateName: string | undefined): Promise<string | null> {
+  if (!templateName) return null;
+  const upstream = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
+  try {
+    const r = await fetch(`${upstream}/catalog/${encodeURIComponent(templateName)}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!r.ok) return null;
+    const d = await r.json() as { latest?: { icon?: string | null } };
+    return typeof d.latest?.icon === 'string' ? d.latest.icon : null;
+  } catch {
+    return null;
+  }
+}
+
 function buildMarketplaceManifest(
   m: import('@papercusp/export-state').SnapshotManifest,
   slug: string,
   version: string,
+  sourceIcon: string | null,
 ): Record<string, unknown> {
   return {
     name: slug,
@@ -153,6 +185,7 @@ function buildMarketplaceManifest(
     papercusp: '^0.1.0',
     description: m.description ?? m.name,
     license: m.license,
+    icon: sourceIcon ?? 'Layers',
     author: 'papercusp-operator',
     snapshot: {
       sourceHarness: m.harnessSlug,

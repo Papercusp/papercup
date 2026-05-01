@@ -9,9 +9,8 @@ import { Modal } from './Modal';
 import { Tooltip } from './Tooltip';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@rocicorp/zero/react';
+import { useSyncQuery } from '@restart/sync';
 import {
-  queries,
   slugToFeaturesKey,
   slugToAgentRunsKey,
   type FeatureRow,
@@ -953,6 +952,9 @@ type HarnessToolbarAction = {
 function collectHarnessToolbarActions(installed: InstalledPluginInfo[], enabledSlugs: string[]): HarnessToolbarAction[] {
   const enabledSet = new Set(enabledSlugs);
   const toolbarActions: HarnessToolbarAction[] = [];
+  // Dedupe by (pluginName, action.name) — guards against `installed[]`
+  // accidentally containing the same plugin under two paths.
+  const seen = new Set<string>();
   for (const p of installed) {
     const dirSlug = pluginSlugFromPath(p.path, p.name);
     if (!(enabledSet.has(p.name) || enabledSet.has(dirSlug))) continue;
@@ -960,6 +962,9 @@ function collectHarnessToolbarActions(installed: InstalledPluginInfo[], enabledS
     for (const a of actions) {
       if (!a.name) continue;
       if (!Array.isArray(a.surfaces) || !a.surfaces.includes('harness-toolbar')) continue;
+      const key = `${p.name}/${a.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       toolbarActions.push({
         pluginName: p.name,
         pluginDirSlug: dirSlug,
@@ -1143,13 +1148,21 @@ function PluginsPanel({ harnessSlug, installed, enabledSlugs, onChange }: {
   onChange: () => void;
 }) {
   const enabledManifests = useMemo(() => {
+    // Dedupe by `plugin.name` — enabled-plugins.json may legitimately list
+    // the same plugin under both its scoped name (`@papercupai/foo`) and
+    // its bare dir-slug (`foo`) when CLI and operator paths get out of
+    // sync. Without dedupe, both entries resolve to the same manifest and
+    // React errors with "Encountered two children with the same key".
+    const seen = new Set<string>();
     const out: EnabledPluginManifest[] = [];
     for (const slug of enabledSlugs) {
       const m = installed.find((p) => {
         const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
         return p.name === slug || dirSlug === slug;
       });
-      if (m) out.push(m as EnabledPluginManifest);
+      if (!m || seen.has(m.name)) continue;
+      seen.add(m.name);
+      out.push(m as EnabledPluginManifest);
     }
     return out;
   }, [installed, enabledSlugs]);
@@ -1370,34 +1383,49 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
   );
 }
 
+interface PluginConfigField {
+  type?: 'string' | 'boolean' | 'number' | 'integer' | 'array';
+  default?: unknown;
+  description?: string;
+  enum?: unknown[];
+}
+
 function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, defaultConfig }: {
   harnessSlug: string;
   dirSlug: string;
   configPath: string;
-  configSchema?: { properties?: Record<string, { default?: unknown; description?: string }> };
+  configSchema?: { required?: string[]; properties?: Record<string, PluginConfigField> };
   defaultConfig?: Record<string, unknown>;
 }) {
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<'fields' | 'json'>('fields');
   const [loaded, setLoaded] = useState<Record<string, unknown> | null>(null);
-  const [draft, setDraft] = useState<string>('');
+  const [draftObj, setDraftObj] = useState<Record<string, unknown>>({});
+  const [draftJson, setDraftJson] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // Prefetch config eagerly on mount (not gated on `open`) so opening the
+  // editor is instantaneous rather than fetching-then-rendering.
   useEffect(() => {
-    if (!open || loaded !== null) return;
+    if (loaded !== null) return;
     fetch(`/api/plugins/config?harness=${encodeURIComponent(harnessSlug)}&plugin=${encodeURIComponent(dirSlug)}`, { cache: 'no-store' })
       .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then((d) => {
-        const cfg = d?.config ?? {};
+        const cfg = (d?.config ?? {}) as Record<string, unknown>;
         setLoaded(cfg);
-        setDraft(JSON.stringify(cfg, null, 2));
+        setDraftObj(cfg);
+        setDraftJson(JSON.stringify(cfg, null, 2));
       })
       .catch((e) => setError(String(e?.message ?? e)));
-  }, [open, loaded, harnessSlug, dirSlug]);
+  }, [loaded, harnessSlug, dirSlug]);
 
   function reset() {
-    if (loaded) setDraft(JSON.stringify(loaded, null, 2));
+    if (loaded) {
+      setDraftObj(loaded);
+      setDraftJson(JSON.stringify(loaded, null, 2));
+    }
     setError(null);
   }
   function loadDefaults() {
@@ -1407,19 +1435,32 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
         if (!(k in obj) && v.default !== undefined) obj[k] = v.default;
       }
     }
-    setDraft(JSON.stringify(obj, null, 2));
+    setDraftObj(obj);
+    setDraftJson(JSON.stringify(obj, null, 2));
     setError(null);
   }
 
   async function save() {
-    let parsed: unknown;
-    try { parsed = JSON.parse(draft); } catch (e: any) {
-      setError(`Invalid JSON: ${e?.message ?? e}`);
-      return;
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      setError('Config must be a JSON object.');
-      return;
+    let parsed: Record<string, unknown>;
+    if (mode === 'json') {
+      try {
+        const j = JSON.parse(draftJson);
+        if (typeof j !== 'object' || j === null || Array.isArray(j)) {
+          setError('Config must be a JSON object.');
+          return;
+        }
+        parsed = j as Record<string, unknown>;
+      } catch (e: any) {
+        setError(`Invalid JSON: ${e?.message ?? e}`);
+        return;
+      }
+    } else {
+      // Fields mode: drop empty strings (treated as "no value, fall back to default")
+      parsed = {};
+      for (const [k, v] of Object.entries(draftObj)) {
+        if (typeof v === 'string' && v.length === 0) continue;
+        parsed[k] = v;
+      }
     }
     setError(null);
     setSaving(true);
@@ -1434,7 +1475,9 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
         setError(d.error ?? `HTTP ${r.status}`);
         return;
       }
-      setLoaded(parsed as Record<string, unknown>);
+      setLoaded(parsed);
+      setDraftObj(parsed);
+      setDraftJson(JSON.stringify(parsed, null, 2));
       setSavedAt(Date.now());
       toast.success(`Config saved for ${dirSlug}`);
     } catch (e: any) {
@@ -1442,8 +1485,29 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
     } finally { setSaving(false); }
   }
 
-  const dirty = loaded !== null && draft !== JSON.stringify(loaded, null, 2);
+  // Switch modes — keep state in sync so the user doesn't lose edits.
+  function toggleMode() {
+    if (mode === 'fields') {
+      setDraftJson(JSON.stringify(draftObj, null, 2));
+      setMode('json');
+    } else {
+      try {
+        const j = JSON.parse(draftJson);
+        if (typeof j === 'object' && j !== null && !Array.isArray(j)) {
+          setDraftObj(j as Record<string, unknown>);
+        }
+      } catch { /* keep draftObj as-is */ }
+      setMode('fields');
+    }
+  }
+
+  const dirty = loaded !== null && (
+    mode === 'json'
+      ? draftJson !== JSON.stringify(loaded, null, 2)
+      : JSON.stringify(draftObj) !== JSON.stringify(loaded)
+  );
   const schemaKeys = Object.keys(configSchema?.properties ?? {});
+  const requiredSet = new Set(configSchema?.required ?? []);
 
   return (
     <div style={{
@@ -1482,21 +1546,44 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               fontSize: 11,
             }}>{error}</div>
           )}
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            spellCheck={false}
-            rows={Math.min(20, Math.max(6, draft.split('\n').length + 1))}
-            style={{
-              width: '100%', boxSizing: 'border-box',
-              fontFamily: "'SF Mono', monospace", fontSize: 12,
-              padding: 10, borderRadius: 4,
-              background: 'var(--bg-2)', color: 'var(--text-1)',
-              border: '1px solid var(--border)',
-              resize: 'vertical',
-            }}
-            placeholder='{ "key": "value" }'
-          />
+          {loaded === null ? (
+            <div style={{ padding: '16px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading config…</div>
+          ) : mode === 'fields' && schemaKeys.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 8 }}>
+              {schemaKeys.map((key) => {
+                const field = (configSchema?.properties ?? {})[key]!;
+                const required = requiredSet.has(key);
+                const current = (key in draftObj) ? draftObj[key] : (field.default ?? '');
+                return (
+                  <div key={key}>
+                    <label style={pluginFieldLabel}>
+                      {key} {required && <span style={{ color: '#ff6961' }}>*</span>}
+                    </label>
+                    {field.description && (
+                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{field.description}</div>
+                    )}
+                    {renderPluginConfigInput(key, field, current, (v) => setDraftObj({ ...draftObj, [key]: v }))}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <textarea
+              value={draftJson}
+              onChange={(e) => setDraftJson(e.target.value)}
+              spellCheck={false}
+              rows={Math.min(20, Math.max(6, draftJson.split('\n').length + 1))}
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                fontFamily: "'SF Mono', monospace", fontSize: 12,
+                padding: 10, borderRadius: 4,
+                background: 'var(--bg-2)', color: 'var(--text-1)',
+                border: '1px solid var(--border)',
+                resize: 'vertical',
+              }}
+              placeholder='{ "key": "value" }'
+            />
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <Tooltip label="Save plugin config changes">
               <button
@@ -1531,6 +1618,20 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               }}
             >Load defaults</button>
             </Tooltip>
+            {schemaKeys.length > 0 && (
+              <Tooltip label={mode === 'fields' ? 'Switch to raw JSON editing' : 'Switch back to schema-driven form'}>
+                <button
+                type="button"
+                onClick={toggleMode}
+                disabled={saving}
+                style={{
+                  fontSize: 11, padding: '4px 10px', cursor: 'pointer',
+                  background: 'transparent', color: 'var(--text-3)',
+                  border: '1px solid var(--border)', borderRadius: 4,
+                }}
+              >{mode === 'fields' ? 'Edit as JSON' : 'Edit as form'}</button>
+              </Tooltip>
+            )}
             {savedAt && !dirty && (
               <span style={{ fontSize: 10, color: '#86efac' }}>
                 ✓ saved {new Date(savedAt).toLocaleTimeString()}
@@ -1546,6 +1647,65 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
     </div>
   );
 }
+
+function renderPluginConfigInput(
+  key: string,
+  field: PluginConfigField,
+  value: unknown,
+  onChange: (v: unknown) => void,
+): React.ReactElement {
+  const baseInput: React.CSSProperties = {
+    width: '100%', padding: '4px 8px', fontSize: 12,
+    background: 'var(--bg-2)', color: 'var(--text-1)',
+    border: '1px solid var(--border)', borderRadius: 4,
+    fontFamily: 'inherit', boxSizing: 'border-box',
+  };
+  if (field.type === 'boolean') {
+    return (
+      <input
+        type="checkbox"
+        checked={!!value}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    );
+  }
+  if (field.type === 'number' || field.type === 'integer') {
+    return (
+      <input
+        type="number"
+        value={typeof value === 'number' || typeof value === 'string' ? String(value) : ''}
+        onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+        style={baseInput}
+      />
+    );
+  }
+  if (field.enum && Array.isArray(field.enum)) {
+    return (
+      <select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={baseInput}>
+        {field.enum.map((opt) => (
+          <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
+        ))}
+      </select>
+    );
+  }
+  const isSecret = /token|key|secret|password|pat\b/i.test(key);
+  return (
+    <input
+      type={isSecret ? 'password' : 'text'}
+      value={typeof value === 'string' ? value : (value == null ? '' : String(value))}
+      onChange={(e) => onChange(e.target.value)}
+      style={baseInput}
+      autoComplete="off"
+      spellCheck={false}
+    />
+  );
+}
+
+const pluginFieldLabel: React.CSSProperties = {
+  display: 'block', fontSize: 11, fontWeight: 600,
+  textTransform: 'uppercase', letterSpacing: '0.04em',
+  color: 'var(--text-2)', marginBottom: 3,
+};
 
 const sectionLabel: React.CSSProperties = {
   fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
@@ -1859,25 +2019,15 @@ export default function HarnessDashboard() {
     () => (activeSlug ? slugToFeaturesKey(activeSlug) : null),
     [activeSlug],
   );
-  const featuresQuery = useMemo(() => {
-    if (!slugKey) return null;
-    const ns = (queries as Record<string, unknown>)[slugKey] as
-      | { all: () => unknown }
-      | undefined;
-    return ns?.all() ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slugKey]);
-  const [zeroFeatureRows, zeroFeatureInfo] = useQuery(
-    (featuresQuery ?? (queries.featuresSheets.all() as unknown)) as never,
-  );
+  const featuresQueryName = slugKey ? `${slugKey}.all` : null;
+  const { data: zeroFeatureRows, loading: featuresLoading } = useSyncQuery<FeatureRow>({
+    queryName: featuresQueryName ?? 'featuresSheets.all',
+    enabled: !!featuresQueryName,
+  });
   useEffect(() => {
-    if (!featuresQuery) return;
-    // Wait until Zero finishes its initial CVR (info.type === 'complete').
-    // Before that, zeroFeatureRows is the optimistic-empty array — applying
-    // it would clobber the polled features with [].
-    const info = zeroFeatureInfo as { type?: string } | undefined;
-    if (info?.type !== 'complete') return;
-    if (!Array.isArray(zeroFeatureRows)) return;
+    // Wait until polling has at least one response before applying — the
+    // initial empty array would clobber any polled-from-REST features.
+    if (!featuresQueryName || featuresLoading || !Array.isArray(zeroFeatureRows)) return;
     const adapted: Feature[] = (zeroFeatureRows as FeatureRow[]).map((zf) => ({
       id: zf.featureId,
       title: zf.title,
@@ -1914,7 +2064,7 @@ export default function HarnessDashboard() {
       }
       return { ...prev, features: adapted };
     });
-  }, [featuresQuery, zeroFeatureRows, zeroFeatureInfo, activeSlug]);
+  }, [featuresQueryName, zeroFeatureRows, featuresLoading, activeSlug]);
 
   // ── Zero live agent_runs subscription ──────────────────────────────────
   // Replaces the polled /agents fetch. Polling still happens (in the EventSource
@@ -1924,22 +2074,13 @@ export default function HarnessDashboard() {
     () => (activeSlug ? slugToAgentRunsKey(activeSlug) : null),
     [activeSlug],
   );
-  const agentRunsQuery = useMemo(() => {
-    if (!agentRunsKey) return null;
-    const ns = (queries as Record<string, unknown>)[agentRunsKey] as
-      | { all: () => unknown }
-      | undefined;
-    return ns?.all() ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentRunsKey]);
-  const [zeroAgentRows, zeroAgentInfo] = useQuery(
-    (agentRunsQuery ?? (queries.agentRunsSheets.all() as unknown)) as never,
-  );
+  const agentRunsQueryName = agentRunsKey ? `${agentRunsKey}.all` : null;
+  const { data: zeroAgentRows, loading: agentRunsLoading } = useSyncQuery<AgentRunRow>({
+    queryName: agentRunsQueryName ?? 'agentRunsSheets.all',
+    enabled: !!agentRunsQueryName,
+  });
   useEffect(() => {
-    if (!agentRunsQuery) return;
-    const info = zeroAgentInfo as { type?: string } | undefined;
-    if (info?.type !== 'complete') return;
-    if (!Array.isArray(zeroAgentRows)) return;
+    if (!agentRunsQueryName || agentRunsLoading || !Array.isArray(zeroAgentRows)) return;
     const adapted: AgentRun[] = (zeroAgentRows as AgentRunRow[])
       .slice(0, 200)
       .map((r) => ({
@@ -1949,7 +2090,7 @@ export default function HarnessDashboard() {
         sizeBytes: Number(r.sizeBytes) || 0,
       }));
     setAgents(adapted);
-  }, [agentRunsQuery, zeroAgentRows, zeroAgentInfo]);
+  }, [agentRunsQueryName, zeroAgentRows, agentRunsLoading]);
 
   const loadAgent = useCallback(async (runId: string) => {
     const r = await fetch(`/api/harness/${activeSlug}/agents/${runId}?phase=${activePhase}`).then((r) => r.json());

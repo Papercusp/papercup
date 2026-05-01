@@ -291,16 +291,16 @@ describe('pluginHostStatus', () => {
 });
 
 describe('_resetPluginHostForTests clears require.cache', () => {
-  it('drops cached entries under ~/.papercusp/global-plugins/', async () => {
+  it('drops cached entries under the active papercusp root global-plugins/', async () => {
     const fs = await import('node:fs');
-    const os = await import('node:os');
     const path = await import('node:path');
+    const { papercuspPath } = await import('./papercusp-root');
 
-    // Place a fake plugin under the real ~/.papercusp/global-plugins dir
+    // Place a fake plugin under the active workspace's global-plugins dir
     // (test cleans it up). The reset path resolves symlinks and clears
     // matching require.cache entries — we verify by populating require.cache
     // with a key inside the global-plugins tree and checking it's gone.
-    const pluginsDir = path.join(os.homedir(), '.papercusp', 'global-plugins');
+    const pluginsDir = papercuspPath('global-plugins');
     fs.mkdirSync(pluginsDir, { recursive: true });
     const fixtureDir = fs.mkdtempSync(path.join(pluginsDir, '__cache_clear_test_'));
     const fakeEntry = path.join(fixtureDir, 'fake.js');

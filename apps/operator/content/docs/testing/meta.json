@@ -1,4 +1,4 @@
 {
   "title": "Testing",
-  "pages": ["index"]
+  "pages": ["index", "agent-e2e"]
 }

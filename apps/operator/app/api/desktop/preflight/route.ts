@@ -14,6 +14,7 @@ interface Check {
   status: CheckStatus;
   detail?: string;
   hint?: string;
+  optional?: boolean;
 }
 
 async function checkBinary(bin: string, args: string[] = ['--version']): Promise<Check> {
@@ -38,12 +39,19 @@ async function checkPi(): Promise<Check> {
   const direct = await checkBinary('omp');
   if (direct.status === 'ok') return { ...direct, name: 'pi' };
 
+  // The desktop bundle vendors omp at <sidecar>/bin/omp[.exe]. The Tauri
+  // shell prepends that dir to PATH so the direct check above succeeds,
+  // but probe the absolute path too in case some descendant process
+  // strips PATH (e.g. login-shell wrappers on macOS GUI apps).
+  const bundledOmp = process.cwd() ? `${process.cwd()}/bin/omp` : '';
   const candidates = [
+    bundledOmp,
+    `${bundledOmp}.exe`,
     '/usr/local/bin/omp',
     '/opt/homebrew/bin/omp',
     `${process.env.HOME ?? ''}/.cargo/bin/omp`,
     `${process.env.HOME ?? ''}/.local/bin/omp`,
-  ];
+  ].filter(Boolean);
   for (const path of candidates) {
     if (existsSync(path)) {
       const probe = await checkBinary(path);
@@ -59,6 +67,25 @@ async function checkPi(): Promise<Check> {
 }
 
 async function checkPostgres(): Promise<Check> {
+  // In desktop builds we ship pglite-server and Tauri main spawns it on a
+  // unix socket (PAPERCUSP_USE_PGLITE=1 is the production default). When
+  // that's the active DB, "postgres on :5432" isn't the right probe — the
+  // socket-dir env var is, and if it exists with a `.s.PGSQL.5432` socket
+  // inside, the harness has a working DB.
+  if (process.env.PAPERCUSP_USE_PGLITE === '1') {
+    const socketDir = process.env.PAPERCUSP_PGLITE_SOCKET_DIR;
+    if (socketDir && existsSync(`${socketDir}/.s.PGSQL.5432`)) {
+      return { name: 'postgres', status: 'ok', detail: `pglite (${socketDir})` };
+    }
+    return {
+      name: 'postgres',
+      status: 'missing',
+      detail: socketDir
+        ? `pglite socket not yet bound at ${socketDir}`
+        : 'PAPERCUSP_USE_PGLITE=1 but PAPERCUSP_PGLITE_SOCKET_DIR unset',
+      hint: 'pglite-server may still be starting; reload in a few seconds.',
+    };
+  }
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let settled = false;
@@ -99,18 +126,41 @@ export async function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS_HEADERS });
 }
 
+// Soft-prerequisite CLIs: harness flows shell out to these, but most
+// developer machines have them. Reported as optional so the bootstrap
+// UI can show "install these to unlock all flows" without blocking the
+// app from booting. Hints aim at the platform install command.
+const SOFT_PREREQS: Array<{ name: string; hint: string }> = [
+  { name: 'git', hint: 'Bundled on Windows; macOS: install Xcode CLT (xcode-select --install); Linux: apt/dnf install git. Required by harness worktree + version-detection flows.' },
+  { name: 'tar', hint: 'macOS/Linux ship tar by default. Windows 10+ has tar.exe — if missing, update Windows. Required by snapshot publish/fork.' },
+  { name: 'curl', hint: 'macOS/Linux ship curl by default. Windows 10+ has curl.exe. Required by harness fetch flows.' },
+  // gh, node, bash, omp, code-server are all bundled now and don't need
+  // soft-prereq surfacing — preflight's hard checks pick them up via PATH
+  // (which Tauri prepends with sidecar/bin and, on Windows, the MinGit
+  // tree). If a bundled binary fails to download at build time the
+  // hard-check status is what surfaces.
+];
+
+async function checkSoftPrereq(name: string, hint: string): Promise<Check> {
+  const probe = await checkBinary(name);
+  if (probe.status === 'ok') return { ...probe, optional: true };
+  return { ...probe, hint, optional: true };
+}
+
 export async function GET() {
-  const [node, claude, bash, postgres, pi] = await Promise.all([
+  const [node, claude, bash, postgres, pi, ...softs] = await Promise.all([
     checkBinary('node'),
     checkBinary('claude'),
     checkBinary('bash'),
     checkPostgres(),
     checkPi(),
+    ...SOFT_PREREQS.map((p) => checkSoftPrereq(p.name, p.hint)),
   ]);
   const harness = checkHarnessDir();
-  const checks = [node, postgres, claude, bash, harness, pi];
-  // pi is optional — its absence shouldn't block the app from booting.
-  const required = checks.filter((c) => c.name !== 'pi');
+  const checks = [node, postgres, claude, bash, harness, pi, ...softs];
+  // Optional checks (pi + soft prereqs) don't block boot — only the
+  // core hard deps (node/postgres/claude/bash/harness) do.
+  const required = checks.filter((c) => !c.optional && c.name !== 'pi');
   const allOk = required.every((c) => c.status === 'ok');
   return NextResponse.json({ ok: allOk, checks }, { headers: CORS_HEADERS });
 }

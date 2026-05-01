@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+import * as Lucide from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -8,6 +10,18 @@ interface PublishRecord {
   version: string;
   browseUrl: string;
   publishedAtMs: number;
+}
+
+interface CatalogSnapshot {
+  slug: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  license: string;
+  homepage?: string | null;
+  icon?: string | null;
+  retracted?: string;
 }
 
 interface SnapshotRow {
@@ -41,6 +55,7 @@ function formatDate(ms: number): string {
 
 export default function MarketplaceSnapshotsPage() {
   const [rows, setRows] = useState<SnapshotRow[]>([]);
+  const [catalog, setCatalog] = useState<CatalogSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -50,10 +65,18 @@ export default function MarketplaceSnapshotsPage() {
   const load = async () => {
     setLoading(true);
     try {
-      const r = await fetch('/api/snapshots', { cache: 'no-store' });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      setRows(d.snapshots ?? []);
+      const [snapsR, catalogR] = await Promise.all([
+        fetch('/api/snapshots', { cache: 'no-store' }),
+        fetch('/api/marketplace/catalog', { cache: 'no-store' }),
+      ]);
+      if (!snapsR.ok) throw new Error(`HTTP ${snapsR.status}`);
+      const snaps = await snapsR.json();
+      setRows(snaps.snapshots ?? []);
+      if (catalogR.ok) {
+        const cat = await catalogR.json();
+        const snapshots = (cat.catalog ?? []).filter((e: { kind?: string }) => e.kind === 'snapshot');
+        setCatalog(snapshots);
+      }
     } catch (e: unknown) {
       toast.error(`load failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -125,33 +148,62 @@ export default function MarketplaceSnapshotsPage() {
       <section className="pc-marketplace-pagehead">
         <div>
           <p className="pc-eyebrow">Snapshots</p>
-          <h1>Forkable harness state, ready to publish.</h1>
+          <h1>Fork someone else&rsquo;s working setup.</h1>
           <p>
-            Snapshots freeze project files, database state, plugin enablement, and redaction metadata so a harness can be restored, forked, or shared through the marketplace.
+            A snapshot is a frozen copy of a workflow that already runs. Fork one to start with that state instead of from scratch — files, database, plugin choices, all preserved.
           </p>
         </div>
         <div className="pc-marketplace-mini-stats" aria-label="Snapshot status">
-          <div><strong>{rows.length}</strong><span>local snapshots</span></div>
-          <div><strong>{publishedCount}</strong><span>published</span></div>
-          <div><strong>{formatBytes(totalBytes)}</strong><span>stored locally</span></div>
+          <div><strong>{catalog.length}</strong><span>available</span></div>
+          {rows.length > 0 && <div><strong>{rows.length}</strong><span>on your machine</span></div>}
+          {publishedCount > 0 && <div><strong>{publishedCount}</strong><span>published</span></div>}
         </div>
       </section>
 
-      <div className="pc-marketplace-snapshot-toolbar">
-        <div>
-          <strong>{loading ? 'Loading snapshots…' : `${rows.length} snapshot${rows.length === 1 ? '' : 's'} available`}</strong>
-          <span>Instantiate to fork, publish to share, or delete local tarballs.</span>
-        </div>
-        <button type="button" className="pc-button ghost" onClick={() => void load()} disabled={loading}>
-          {loading ? 'Refreshing…' : 'Refresh'}
-        </button>
-      </div>
+      {!loading && catalog.length > 0 && (
+        <section className="pc-marketplace-catalog-section" style={{ marginBottom: 32 }}>
+          <div className="pc-marketplace-grid">
+            {catalog.map((s) => {
+              const Icon = (s.icon && (Lucide as Record<string, unknown>)[s.icon] as React.ComponentType<{ size?: number }>) ?? Lucide.Layers;
+              return (
+                <article key={s.slug} className="pc-card pc-marketplace-card">
+                  <div className="pc-marketplace-card-head">
+                    <span className="pc-marketplace-card-icon snapshot"><Icon size={18} /></span>
+                    <div>
+                      <Link href={`/marketplace/${encodeURIComponent(s.slug)}`} className="pc-marketplace-card-title">{s.name}</Link>
+                      <span>{s.slug}</span>
+                    </div>
+                  </div>
+                  <p>{s.description}</p>
+                  <div className="pc-marketplace-meta">
+                    <span>v{s.version}</span>
+                    <span>{s.license}</span>
+                    {s.author && <span>{s.author}</span>}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
-      {!loading && rows.length === 0 && (
+      {(rows.length > 0 || (!loading && catalog.length === 0)) && (
+        <div className="pc-marketplace-snapshot-toolbar">
+          <div>
+            <strong>{loading ? 'Loading…' : rows.length > 0 ? `Your snapshots (${rows.length})` : 'Your snapshots'}</strong>
+            <span>Captured on this machine. Fork to clone the state, publish to share, delete to clear local copies.</span>
+          </div>
+          <button type="button" className="pc-button ghost" onClick={() => void load()} disabled={loading}>
+            {loading ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+      )}
+
+      {!loading && rows.length === 0 && catalog.length === 0 && (
         <div className="pc-card pc-marketplace-empty">
           <strong>No snapshots yet.</strong>
-          <span>Open a harness and click Save snapshot to create your first forkable artifact.</span>
-          <a href="/harness" className="pc-button">Open harnesses</a>
+          <span>Run a workflow, then click <em>Save snapshot</em> from any harness to capture forkable state. Or browse templates to install your first workflow.</span>
+          <a href="/marketplace/templates" className="pc-button primary">Browse templates</a>
         </div>
       )}
 

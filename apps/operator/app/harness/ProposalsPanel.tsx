@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import * as Tabs from '@radix-ui/react-tabs';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
-import { useQuery } from '@rocicorp/zero/react';
-import { queries, slugToProposalsKey, type ProposalRow } from '@restart/zero-harness';
+import { useSyncQuery } from '@restart/sync';
+import { slugToProposalsKey, type ProposalRow } from '@restart/zero-harness';
 import { Select } from './Select';
 import { Checkbox } from './Checkbox';
 
@@ -192,15 +192,11 @@ export default function ProposalsPanel({ slug }: Props) {
   // reads the markdown file). The legacy /proposals GET still exists and
   // dual-writes filesystem→PG so freshly-created proposals show up within
   // the next list call's PG sync.
-  const proposalsQuery = useMemo(() => {
-    if (!slug) return null;
-    const ns = (queries as Record<string, { all?: () => unknown }>)[slugToProposalsKey(slug)];
-    return ns?.all?.() ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
-  const [zeroRows, zeroInfo] = useQuery(
-    (proposalsQuery ?? (queries.proposalsSheets.all() as unknown)) as never,
-  );
+  const queryName = slug ? `${slugToProposalsKey(slug)}.all` : null;
+  const { data: zeroRows, loading } = useSyncQuery<ProposalRow>({
+    queryName: queryName ?? 'proposalsSheets.all',
+    enabled: !!queryName,
+  });
 
   // Trigger periodic dual-write by hitting the list endpoint — needed so
   // newly-created proposals on disk get mirrored into PG. The actual
@@ -224,11 +220,8 @@ export default function ProposalsPanel({ slug }: Props) {
   }, [slug]);
 
   useEffect(() => {
-    if (!proposalsQuery) return;
-    const info = zeroInfo as { type?: string } | undefined;
-    if (info?.type !== 'complete') return;
-    if (!Array.isArray(zeroRows)) return;
-    const adapted = (zeroRows as ProposalRow[]).map(rowToProposal);
+    if (!queryName || loading || !Array.isArray(zeroRows)) return;
+    const adapted = zeroRows.map(rowToProposal);
     setItems(adapted);
     setSelected((prev) => {
       if (prev && adapted.some((p) => p.id === prev)) return prev;
@@ -236,7 +229,7 @@ export default function ProposalsPanel({ slug }: Props) {
     });
     setChecked((prev) => new Set([...prev].filter((id) => adapted.some((p) => p.id === id && p.status === 'pending'))));
     setShortlisted((prev) => new Set([...prev].filter((id) => adapted.some((p) => p.id === id))));
-  }, [proposalsQuery, zeroRows, zeroInfo]);
+  }, [queryName, zeroRows, loading]);
 
   useEffect(() => {
     triggerSync();

@@ -8,8 +8,8 @@ import {
   ArrowUpRight, CheckCircle, XCircle, Loader2, Hammer, Inbox, Circle,
 } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
-import { useQuery } from '@rocicorp/zero/react';
-import { queries, slugToIssuesKey, type IssueRow } from '@restart/zero-harness';
+import { useSyncQuery } from '@restart/sync';
+import { slugToIssuesKey, type IssueRow } from '@restart/zero-harness';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from './types';
 import { IssueDetail } from './IssueDetail';
 import { Tooltip } from '../Tooltip';
@@ -93,25 +93,17 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
   // `pending` (validator findings awaiting curation) still lives in
   // `pending-issues.jsonl` and is fetched separately until that file is also
   // migrated to PG.
-  const issuesQuery = useMemo(() => {
-    if (!slug) return null;
-    const ns = (queries as Record<string, { all?: () => unknown }>)[slugToIssuesKey(slug)];
-    return ns?.all?.() ?? null;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [slug]);
-  const [zeroRows, zeroInfo] = useQuery(
-    (issuesQuery ?? (queries.issuesSheets.all() as unknown)) as never,
-  );
+  const queryName = slug ? `${slugToIssuesKey(slug)}.all` : null;
+  const { data: zeroRows, loading } = useSyncQuery<IssueRow>({
+    queryName: queryName ?? 'issuesSheets.all',
+    enabled: !!queryName,
+  });
 
   useEffect(() => {
-    if (!issuesQuery) return;
-    const info = zeroInfo as { type?: string } | undefined;
-    if (info?.type !== 'complete') return;
-    if (!Array.isArray(zeroRows)) return;
-    const adapted = (zeroRows as IssueRow[]).map(rowToIssue);
-    setIssues(adapted);
+    if (!queryName || loading || !Array.isArray(zeroRows)) return;
+    setIssues(zeroRows.map(rowToIssue));
     setError(null);
-  }, [issuesQuery, zeroRows, zeroInfo]);
+  }, [queryName, zeroRows, loading]);
 
   // Pending findings are file-system only; keep polling them.
   useEffect(() => {

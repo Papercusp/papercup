@@ -33,6 +33,7 @@
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "unist-util-visit": "^5.0.0",
+    "@restart/sync": "*",
     "@restart/zero-harness": "*",
     "@restart/grid-core": "*"
   },

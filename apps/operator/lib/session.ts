@@ -10,10 +10,10 @@
  * of auth state — see `lib/credentials.ts`.
  */
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const ROOT = join(homedir(), '.papercusp');
+import { papercuspRoot } from '@/lib/papercusp-root';
+const ROOT = papercuspRoot();
 const PROFILE_PATH = join(ROOT, 'profile.json');
 
 export interface Profile {

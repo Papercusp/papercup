@@ -27,14 +27,7 @@ export default function SessionIndicator() {
     }
   };
 
-  if (!status) return <span style={{ fontSize: 13, color: 'var(--fg-mute)' }}>…</span>;
-  if (!status.signedIn) {
-    return (
-      <a href="/login" style={{ fontSize: 13, color: 'var(--fg-dim)' }}>
-        Sign in
-      </a>
-    );
-  }
+  if (!status || !status.signedIn) return null;
   return (
     <span style={{ fontSize: 13, display: 'inline-flex', gap: 8, alignItems: 'center' }}>
       <span style={{ color: 'var(--fg-dim)' }}>

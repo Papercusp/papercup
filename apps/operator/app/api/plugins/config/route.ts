@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { mirrorHarness } from '../../../../lib/plugin-enables-pg';
 import { mirrorPluginConfig } from '../../../../lib/plugin-configs-pg';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -27,7 +27,7 @@ export const runtime = 'nodejs';
  * Save also bumps the harness's `enabled-plugins.json` configHash so the
  * substrate's plugin loader sees the change on next reload.
  */
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRoot();
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
 
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;

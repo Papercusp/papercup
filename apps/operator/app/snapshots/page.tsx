@@ -215,6 +215,27 @@ export default function SnapshotsPage() {
                     {row.partial && (
                       <div style={{ color: '#f59e0b', fontSize: 11 }}>partial</div>
                     )}
+                    {row.publishes.length > 0 && (
+                      <div style={{ marginTop: 4, fontSize: 11 }}>
+                        <a
+                          href={row.publishes[row.publishes.length - 1]!.browseUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          title={row.publishes.map((p) => `${p.slug}@${p.version}`).join('\n')}
+                          style={{
+                            display: 'inline-block',
+                            padding: '1px 8px',
+                            borderRadius: 999,
+                            background: '#1e3a5f',
+                            color: '#bfdbfe',
+                            textDecoration: 'none',
+                            border: '1px solid #2e5288',
+                          }}
+                        >
+                          ↗ published{row.publishes.length > 1 ? ` ×${row.publishes.length}` : ''}
+                        </a>
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '10px 6px' }}>
                     <code>{row.harnessSlug}</code>

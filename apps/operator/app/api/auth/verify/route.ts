@@ -8,17 +8,23 @@ export async function GET(req: Request) {
   const token = url.searchParams.get('token');
   if (!token) return NextResponse.json({ error: 'token required' }, { status: 400 });
 
+  // Build the redirect origin from the *Host* header, not req.url's host.
+  // Under `next dev -H 0.0.0.0`, req.url has host=0.0.0.0; redirecting there
+  // would send the user away from whichever host they actually came in on
+  // (e.g. localhost), and the Set-Cookie scoped to localhost wouldn't apply.
+  const proto = req.headers.get('x-forwarded-proto') ?? url.protocol.replace(':', '');
+  const host = req.headers.get('host') ?? url.host;
+  const origin = `${proto}://${host}`;
+
   const ua = await uaFromHeaders();
   const ip = await ipFromHeaders();
   const result = await verifyMagicLink(token, ua, ip);
   if (!result.ok) {
-    // Redirect back to /login with an error param.
-    const back = new URL('/login', url.origin);
+    const back = new URL('/login', origin);
     back.searchParams.set('error', result.reason ?? 'unknown');
     return NextResponse.redirect(back);
   }
 
   await setSessionCookie(result.sessionId!);
-  // Redirect to settings/profile so the user can fill in their preferences.
-  return NextResponse.redirect(new URL('/settings/profile', url.origin));
+  return NextResponse.redirect(new URL('/settings/profile', origin));
 }

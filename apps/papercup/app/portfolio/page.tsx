@@ -18,9 +18,8 @@
  * place, the legacy view can switch to this lib.
  */
 import { useMemo, useState } from 'react';
-import { useQuery } from '@rocicorp/zero/react';
+import { useSyncQuery } from '@restart/sync';
 import {
-  queries,
   type ProjectRow,
   type AuditLogRow,
   type DirectiveSummaryRow,
@@ -134,18 +133,32 @@ export default function PortfolioPage() {
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [projectSort, setProjectSort] = useState<RichGridSortState | null>(null);
   const [auditSort, setAuditSort] = useState<RichGridSortState | null>(null);
-  const [allProjects, projectsInfo] = useQuery(queries.projects.all());
-  const [filteredProjects] = useQuery(queries.projects.byStatus({ status: statusFilter ?? '' }));
-  const projects = statusFilter ? (filteredProjects as ProjectRow[]) : (allProjects as ProjectRow[]);
+  const { data: allProjects, loading: projectsLoading } = useSyncQuery<ProjectRow>({ queryName: 'projects.all' });
+  const { data: filteredProjects } = useSyncQuery<ProjectRow>({
+    queryName: 'projects.byStatus',
+    args: { status: statusFilter ?? '' },
+    enabled: !!statusFilter,
+  });
+  const projects = statusFilter ? filteredProjects : allProjects;
   const [subjectFilter, setSubjectFilter] = useState<string | null>(null);
-  const [recentAudit, auditInfo] = useQuery(queries.auditLog.recent({ limit: 50 }));
-  const [filteredAudit] = useQuery(queries.auditLog.bySubject({ subject: subjectFilter ?? '' }));
-  const audit = subjectFilter ? (filteredAudit as AuditLogRow[]) : (recentAudit as AuditLogRow[]);
-  const [summaries, summariesInfo] = useQuery(queries.directiveSummaries.recent({ limit: 30 }));
+  const { data: recentAudit, loading: auditLoading } = useSyncQuery<AuditLogRow>({
+    queryName: 'auditLog.recent',
+    args: { limit: 50 },
+  });
+  const { data: filteredAudit } = useSyncQuery<AuditLogRow>({
+    queryName: 'auditLog.bySubject',
+    args: { subject: subjectFilter ?? '' },
+    enabled: !!subjectFilter,
+  });
+  const audit = subjectFilter ? filteredAudit : recentAudit;
+  const { data: summaries, loading: summariesLoading } = useSyncQuery<DirectiveSummaryRow>({
+    queryName: 'directiveSummaries.recent',
+    args: { limit: 30 },
+  });
 
-  const projectsLive = projectsInfo?.type === 'complete';
-  const auditLive = auditInfo?.type === 'complete';
-  const summariesLive = summariesInfo?.type === 'complete';
+  const projectsLive = !projectsLoading;
+  const auditLive = !auditLoading;
+  const summariesLive = !summariesLoading;
 
   const sortedProjects = useMemo(() => applySort(projects as ProjectRow[], projectSort), [projects, projectSort]);
   const sortedAudit = useMemo(() => applySort(audit as AuditLogRow[], auditSort), [audit, auditSort]);

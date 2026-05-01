@@ -4,6 +4,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -133,7 +134,7 @@ async function fetchCatalogManifest(slug: string): Promise<{ kind?: string; inst
 async function lookupHarnessPath(slug: string): Promise<string | null> {
   // Try the canonical registry first, then the legacy file (kept in sync).
   const candidates = [
-    join(homedir(), '.papercusp', 'registry.json'),
+    papercuspPath('registry.json'),
     join(homedir(), '.restart-harness-projects.json'),
   ];
   for (const reg of candidates) {
@@ -167,7 +168,7 @@ async function installSubagentPack(
 
   // Source dir is in ~/.papercusp/harnesses/<slug>/agents/
   // (papercusp install drops the unpacked tarball there)
-  const harnessTemplateRoot = join(homedir(), '.papercusp', 'harnesses', slug);
+  const harnessTemplateRoot = papercuspPath('harnesses', slug);
   const agentsSrc = join(harnessTemplateRoot, 'agents');
   if (!existsSync(agentsSrc)) {
     return { ok: false, status: 500, error: `agents/ directory not found in installed template at ${agentsSrc}` };
@@ -271,7 +272,7 @@ export async function POST(req: Request) {
     let forkedSlug: string | null = null;
     let forkedPath: string | null = null;
     try {
-      const regRaw = await fs.readFile(join(homedir(), '.papercusp', 'registry.json'), 'utf8');
+      const regRaw = await fs.readFile(papercuspPath('registry.json'), 'utf8');
       const reg = JSON.parse(regRaw) as { projects?: Array<{ slug: string; path: string; addedAt?: string }> };
       // Newest entry by addedAt is the fork we just made.
       const projects = reg.projects ?? [];
@@ -331,7 +332,7 @@ export async function POST(req: Request) {
       );
     }
   } else {
-    const projectsRoot = process.env.PAPERCUSP_PROJECTS_ROOT ?? join(homedir(), '.papercusp', 'projects');
+    const projectsRoot = process.env.PAPERCUSP_PROJECTS_ROOT ?? papercuspPath('projects');
     projectPath = join(projectsRoot, projectName);
     if (existsSync(projectPath)) {
       return json(
@@ -372,6 +373,22 @@ export async function POST(req: Request) {
       },
       { status: 500 },
     );
+  }
+
+  // Fire onHarnessCreated lifecycle for every loaded plugin enabled on
+  // this new harness. Best-effort: a failing plugin (e.g. github-repo
+  // can't reach GitHub) shouldn't block the install; errors are logged
+  // by firePluginLifecycle's per-plugin try/catch.
+  try {
+    const { firePluginLifecycle } = await import('../../../../lib/plugin-host-runtime');
+    await firePluginLifecycle('onHarnessCreated', {
+      installSlug: projectName,
+      projectDir: projectPath,
+      stateDir: join(projectPath, '.harness'),
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[install] onHarnessCreated dispatch failed:', e);
   }
 
   // Best-effort: launch the desktop app if it's installed/built.

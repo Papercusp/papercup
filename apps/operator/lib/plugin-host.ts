@@ -20,7 +20,6 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, normalize, resolve } from 'node:path';
 import {
   type Capability,
@@ -55,8 +54,9 @@ import {
   slugToSchemaName,
 } from '@restart/db-org';
 
-const SECRETS_DIR = join(homedir(), '.papercusp', 'secrets');
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+import { papercuspPath, papercuspRoot } from '@/lib/papercusp-root';
+const SECRETS_DIR = papercuspPath('secrets');
+const PAPERCUSP_ROOT = papercuspRoot();
 
 class NotYetWiredError extends Error {
   constructor(method: string) {

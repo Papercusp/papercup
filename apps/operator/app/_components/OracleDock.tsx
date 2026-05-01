@@ -50,6 +50,9 @@ const WELCOME: Message = {
 
 const HISTORY_KEY = 'oracle_history_v1';
 const SEEN_KEY = 'oracle_seen_v1';
+const TUTORIAL_DONE_KEY = 'papercusp_tutorial_done_v1';
+const TUTORIAL_ACTIVE_KEY = 'oracle_tutorial_active_v1';
+const TUTORIAL_KICKOFF = 'Start the tutorial.';
 
 export function OracleDock() {
   const router = useRouter();
@@ -58,6 +61,15 @@ export function OracleDock() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tutorialActive, setTutorialActiveState] = useState(false);
+  const setTutorialActive = (v: boolean) => {
+    setTutorialActiveState(v);
+    if (typeof window === 'undefined') return;
+    try {
+      if (v) sessionStorage.setItem(TUTORIAL_ACTIVE_KEY, '1');
+      else sessionStorage.removeItem(TUTORIAL_ACTIVE_KEY);
+    } catch { /* ignore */ }
+  };
   const endRef = useRef<HTMLDivElement>(null);
 
   // First mount: restore tab-local history if present, otherwise seed the
@@ -65,6 +77,13 @@ export function OracleDock() {
   // localStorage), also auto-open the dock so they meet the Oracle.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    // Restore tutorial state FIRST — independent of history. Otherwise a
+    // history-restore early-return leaves tutorialActive=false on route
+    // changes during a tour and the dock returns null on non-app routes.
+    if (sessionStorage.getItem(TUTORIAL_ACTIVE_KEY) === '1') {
+      setTutorialActiveState(true);
+      setOpen(true);
+    }
     try {
       const raw = sessionStorage.getItem(HISTORY_KEY);
       if (raw) {
@@ -76,11 +95,40 @@ export function OracleDock() {
       }
     } catch { /* ignore corrupt history */ }
     setMessages([WELCOME]);
-    if (!localStorage.getItem(SEEN_KEY)) {
+    const firstRun = !localStorage.getItem(SEEN_KEY);
+    const tutorialDone = !!localStorage.getItem(TUTORIAL_DONE_KEY);
+    if (firstRun) {
       setOpen(true);
       localStorage.setItem(SEEN_KEY, '1');
+      if (!tutorialDone) {
+        // Defer one tick so state is committed before send() reads it.
+        setTimeout(() => startTutorial(), 0);
+      }
     }
   }, []);
+
+  // Listen for the navbar Tutorial button (or any other surface) asking us
+  // to (re)start the tutorial flow.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = () => startTutorial();
+    window.addEventListener('oracle:start-tutorial', handler);
+    return () => window.removeEventListener('oracle:start-tutorial', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const startTutorial = () => {
+    setOpen(true);
+    setError(null);
+    setInput('');
+    sessionStorage.removeItem(HISTORY_KEY);
+    setMessages([]);
+    setTutorialActive(true);
+    if (typeof window !== 'undefined') {
+      try { localStorage.setItem(TUTORIAL_DONE_KEY, '1'); } catch { /* ignore */ }
+    }
+    setTimeout(() => { void send(TUTORIAL_KICKOFF, { tutorialMode: true, baseMessages: [] }); }, 0);
+  };
 
   // Persist on every change. Skip the lone welcome state so reloads don't
   // permanently pin the welcome card after the user dismisses it via "new chat".
@@ -98,6 +146,7 @@ export function OracleDock() {
     setMessages([WELCOME]);
     setInput('');
     setError(null);
+    setTutorialActive(false);
     sessionStorage.removeItem(HISTORY_KEY);
   };
 
@@ -105,12 +154,13 @@ export function OracleDock() {
     if (open) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, open]);
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (override?: string, opts?: { tutorialMode?: boolean; baseMessages?: Message[] }) => {
+    const text = (override ?? input).trim();
     if (!text || busy) return;
-    setInput('');
+    if (override === undefined) setInput('');
     setError(null);
-    const next: Message[] = [...messages.filter((m) => m !== WELCOME), { role: 'user', content: text }, { role: 'assistant', content: '' }];
+    const base = opts?.baseMessages ?? messages;
+    const next: Message[] = [...base.filter((m) => m !== WELCOME), { role: 'user', content: text }, { role: 'assistant', content: '' }];
     setMessages(next);
     setBusy(true);
 
@@ -121,6 +171,7 @@ export function OracleDock() {
         body: JSON.stringify({
           messages: next.slice(0, -1).filter((m) => m.role !== 'assistant' || m.content),
           currentPath: typeof window !== 'undefined' ? window.location.pathname : '',
+          tutorialMode: opts?.tutorialMode ?? tutorialActive,
         }),
       });
       if (!res.ok || !res.body) {
@@ -179,8 +230,10 @@ export function OracleDock() {
                   }),
                 );
               } catch { /* ignore quota */ }
-              router.push(`/pi?harness=${encodeURIComponent(data.slug)}`);
+              router.push(`/harness/${encodeURIComponent(data.slug)}?panel=pi`);
             }
+          } else if (event === 'tutorial_end') {
+            setTutorialActive(false);
           } else if (event === 'error') {
             setError(typeof data?.message === 'string' ? data.message : 'Oracle error');
           }
@@ -192,6 +245,8 @@ export function OracleDock() {
       setBusy(false);
     }
   };
+
+
 
   return (
     <>

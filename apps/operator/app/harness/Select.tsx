@@ -26,14 +26,16 @@ const TRIGGER_DEFAULT_STYLE: CSSProperties = {
 };
 
 const CONTENT_STYLE: CSSProperties = {
-  background: 'var(--bg-2)',
-  border: '1px solid var(--border)',
-  borderRadius: 4,
-  padding: 4,
+  background: 'rgba(5, 11, 19, 0.98)',
+  color: 'var(--fg)',
+  border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)',
+  borderRadius: 10,
+  padding: 6,
   zIndex: 70,
-  boxShadow: '0 8px 24px rgba(0,0,0,0.4)',
+  boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)',
   fontSize: 12,
   minWidth: 'var(--radix-select-trigger-width)',
+  backdropFilter: 'blur(14px) saturate(150%)',
 };
 
 const ITEM_STYLE: CSSProperties = {

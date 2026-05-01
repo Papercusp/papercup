@@ -3,6 +3,7 @@ import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -15,7 +16,7 @@ export const runtime = 'nodejs';
  * Bypasses the Hono catch-all (consistent with /api/harness/projects
  * and /api/plugins/global) so the endpoint is fast under HMR churn.
  */
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRoot();
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
 const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
 const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');

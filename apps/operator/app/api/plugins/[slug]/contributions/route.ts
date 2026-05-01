@@ -3,6 +3,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -14,7 +15,7 @@ export const runtime = 'nodejs';
  * mount-walk latency on top of the actual filesystem walk). Used by
  * HarnessDashboard's tab-strip render.
  */
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRoot();
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
 const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
 const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
@@ -89,7 +90,10 @@ function resolveIframeUrl(
     const k = tab.iframeUrlConfigKey;
     const fromConfig = harnessConfig?.[k];
     const fromDefault = manifest.configSchema?.properties?.[k]?.default;
+    // Desktop bundle override — see app/api/_hono/plugins.ts for rationale.
+    const fromEnv = k === 'codeServerUrl' ? process.env.PAPERCUSP_CODE_SERVER_URL : undefined;
     if (typeof fromConfig === 'string' && fromConfig.length > 0) url = fromConfig;
+    else if (typeof fromEnv === 'string' && fromEnv.length > 0) url = fromEnv;
     else if (typeof fromDefault === 'string' && fromDefault.length > 0) url = fromDefault;
   }
   if (!url && typeof tab.iframeUrl === 'string' && tab.iframeUrl.length > 0) {

@@ -60,6 +60,7 @@ const nextConfig = {
     '@restart/papercup-shared',
     '@restart/ui-primitives',
     '@restart/zero-harness',
+    '@papercup/marketplace-public-ui',
   ],
   // node-pty's index.js does `require(<dynamic>)` to load its
   // platform-specific native binding. Turbopack can't trace that, so we

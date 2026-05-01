@@ -1,11 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQuery } from '@rocicorp/zero/react';
+import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { Checkbox } from './Checkbox';
-import { queries, slugToSnapshotsKey, type SnapshotRow } from '@restart/zero-harness';
+import { slugToSnapshotsKey, type SnapshotRow } from '@restart/zero-harness';
 
 interface Snapshot {
   id: string;
@@ -49,18 +49,15 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
   // Snapshots stream live from Zero (`harness_<slug>.harness_snapshots`).
   // Polling /api/harness/<slug>/snapshots stays as a sync ping that triggers
   // the FS scan + PG dual-write on the server.
-  const snapshotsQuery = useMemo(() => {
-    const ns = (queries as Record<string, { all?: () => unknown }>)[slugToSnapshotsKey(slug)];
-    return ns?.all?.() ?? null;
-  }, [slug]);
-  const [zeroRows, zeroInfo] = useQuery(
-    (snapshotsQuery ?? (queries.snapshotsSheets.all() as unknown)) as never,
-  );
+  // Per-harness named query: snapshotsSheets.all, snapshotsRestart.all, etc.
+  // The snapshot key resolver maps the slug to whichever registry namespace
+  // is right for that harness; the queryName follows.
+  const queryName = `${slugToSnapshotsKey(slug)}.all`;
+  const { data: zeroRows, loading } = useSyncQuery<SnapshotRow>({ queryName });
   const snapshots: Snapshot[] = useMemo(() => {
-    const info = zeroInfo as { type?: string } | undefined;
-    if (info?.type !== 'complete' || !Array.isArray(zeroRows)) return [];
-    return (zeroRows as SnapshotRow[]).map(rowToSnapshot);
-  }, [zeroRows, zeroInfo]);
+    if (loading || !Array.isArray(zeroRows)) return [];
+    return zeroRows.map(rowToSnapshot);
+  }, [zeroRows, loading]);
 
   const [selected, setSelected] = useState<Snapshot | null>(null);
   const [includeNotes, setIncludeNotes] = useState(true);

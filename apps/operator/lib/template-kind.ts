@@ -10,13 +10,13 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export type TemplateKind = 'coding' | 'org' | 'department' | string;
 
 export async function resolveTemplateKind(harnessSlug: string): Promise<TemplateKind> {
-  const root = join(homedir(), '.papercusp');
+  const root = papercuspRoot();
   try {
     const m = JSON.parse(
       await fs.readFile(join(root, 'harnesses', harnessSlug, 'papercusp.json'), 'utf8'),

@@ -20,9 +20,9 @@
 import type { Hono } from 'hono';
 import { loadPlugins, type LoadedPlugin } from '@papercusp/plugin-loader';
 import { existsSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 interface ApiRouteHandle {
   fetch: (req: Request, ...rest: any[]) => Promise<Response> | Response;
 }
@@ -32,7 +32,7 @@ function looksLikeHonoApp(x: unknown): x is ApiRouteHandle {
 }
 
 function discoverHarnessSlugs(): string[] {
-  const harnessRoot = join(homedir(), '.papercusp', 'harnesses');
+  const harnessRoot = papercuspPath('harnesses');
   if (!existsSync(harnessRoot)) return [];
   try {
     return readdirSync(harnessRoot, { withFileTypes: true })

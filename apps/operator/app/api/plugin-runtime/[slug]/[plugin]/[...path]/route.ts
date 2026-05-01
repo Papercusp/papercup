@@ -17,15 +17,15 @@
  * MissingCapabilityError; we surface that as HTTP 403.
  */
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { NextResponse, type NextRequest } from 'next/server';
 import { buildPluginRuntime } from '@/lib/plugin-host';
 import type { Capability, Plugin } from '@papercusp/plugin-sdk';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRoot();
 
 interface ManifestShape {
   name: string;

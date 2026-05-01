@@ -3,6 +3,7 @@ import { promises as fs, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, normalize, relative, dirname } from 'node:path';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -15,7 +16,7 @@ export const runtime = 'nodejs';
  * Manifest-driven instead of hardcoded so SpecEditor stays template-
  * agnostic — every config tab maps to a configFiles[] entry.
  */
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRoot();
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
 const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
 const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');

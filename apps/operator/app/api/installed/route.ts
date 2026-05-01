@@ -3,9 +3,10 @@ import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRoot();
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
 const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
 const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');

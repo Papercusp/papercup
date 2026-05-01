@@ -336,6 +336,15 @@ no project explicitly imports as a TS module). The fix is in §1.8 —
 per-project `TESTING.md` lists "what to also run when these files
 touch."
 
+<Callout type="info" title="Implementation note (vs. v1.0 spec)">
+The shipped runner is **`scripts/affected-tests.mjs`**, not raw `nx affected`.
+It reads the same git-diff signal but skips the NX CLI bootstrap (~2s
+saving per run) and adds quarantine-list support out-of-the-box. The
+npm scripts (`test:affected`, `test:affected:integration`,
+`test:all`, `test:all:integration`) are the public-facing entry
+points; `nx affected` examples below are the conceptual equivalent.
+</Callout>
+
 ## 1.8 Agent workflow + per-project `TESTING.md`
 
 Every app and lib ships a `TESTING.md` at its root. Format:
@@ -377,11 +386,15 @@ A single block added to root `CLAUDE.md` and `AGENTS.md`:
 After completing any file edit, run the affected tests before committing:
 
 ```bash
-nx affected -t test test:integration --base=$(git merge-base HEAD origin/master)
+npm run test:affected               # unit only — fast, default
+npm run test:affected:integration   # adds *.integration.test.ts
 ```
 
+The script wraps `nx affected` in spirit. Conceptual equivalent:
+`nx affected -t test test:integration --base=$(git merge-base HEAD origin/master)`.
+
 If your edit touches:
-- `libs/db/sql/**` — also run `nx run-many -t test:integration`
+- `libs/db/sql/**` — also run `npm run test:all:integration`
 - `libs/com/**` — also run `nx run-many -t test:integration`
 - `infra/**` or `Procfile*` — manually verify; no automated coverage
 

@@ -39,6 +39,7 @@ import {
   PtyError,
 } from '../../../lib/pty-bridge';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 /**
  * Attach pty endpoints to an existing Hono router (typically the harness
  * router mounted at /api/harness). We register handlers directly rather
@@ -327,7 +328,7 @@ function ensurePapercuspMcpRegistered(): void {
   // it via `-e <path>` (its standard extension hook). The extension
   // registers 7 read-only papercusp_* tools that pi can call to
   // introspect the surrounding harness.
-  const piExtensionPath = join(homedir(), '.papercusp', 'global-plugins', 'pi', 'extension.ts');
+  const piExtensionPath = papercuspPath('global-plugins', 'pi', 'extension.ts');
   const piExtensionAvailable = existsSync(piExtensionPath);
 
   // Auto-register the papercusp MCP server in ~/.omp/agent/mcp.json so
@@ -581,7 +582,7 @@ function ensurePapercuspMcpRegistered(): void {
   // is the extension file at ~/.papercusp/global-plugins/pi/extension.ts.
 
   harness.get('/:slug/pty/tools', (c) => {
-    const piExtensionPath = join(homedir(), '.papercusp', 'global-plugins', 'pi', 'extension.ts');
+    const piExtensionPath = papercuspPath('global-plugins', 'pi', 'extension.ts');
     const available = existsSync(piExtensionPath);
     if (!available) return c.json({ extensionAvailable: false, tools: [] });
 

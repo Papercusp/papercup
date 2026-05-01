@@ -1,8 +1,8 @@
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const ROOT = join(homedir(), '.papercusp');
+import { papercuspRoot } from '@/lib/papercusp-root';
+const ROOT = papercuspRoot();
 const PATH = join(ROOT, 'publish-credentials.json');
 
 export interface PublishCredentials {

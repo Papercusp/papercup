@@ -6,7 +6,7 @@ import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import { Select } from './Select';
 import { Checkbox } from './Checkbox';
-import { openFeatureChat } from './PiTerminalsDock';
+import { openFeatureChat } from '@restart/papercup-shared';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, BOARD_COLUMN_ORDER, HarnessStatus, getStatusMeta } from './theme';
 import { StatusPill, IdPill, IconButton, KbdHint } from './primitives';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';

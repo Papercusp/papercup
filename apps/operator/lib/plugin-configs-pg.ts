@@ -13,11 +13,11 @@
  *     ahead of PG, run `scripts/backfill-plugin-configs.mjs` to reconcile.
  */
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getOrgPg } from '@restart/db-org';
 
-const HARNESSES_DIR = join(homedir(), '.papercusp', 'harnesses');
+import { papercuspPath } from '@/lib/papercusp-root';
+const HARNESSES_DIR = papercuspPath('harnesses');
 
 async function readJsonFile<T>(p: string): Promise<T | null> {
   if (!existsSync(p)) return null;

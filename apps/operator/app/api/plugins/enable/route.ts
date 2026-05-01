@@ -1,7 +1,6 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mirrorHarness } from '../../../../lib/plugin-enables-pg';
 import { resolvePluginCliSlug } from '../../../../lib/plugin-slug';
@@ -11,6 +10,7 @@ import {
   resolveTemplateKind,
 } from '../../../../lib/template-kind';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -31,7 +31,7 @@ function isValidPluginSlug(s: string): boolean {
   return /^@?[a-z0-9][a-z0-9._/-]{0,127}$/i.test(s);
 }
 
-const GLOBAL_PLUGINS_DIR = join(homedir(), '.papercusp', 'global-plugins');
+const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
 
 function isValidHarnessSlug(s: string): boolean {
   return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(s);

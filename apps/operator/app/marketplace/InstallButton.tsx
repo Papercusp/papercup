@@ -79,22 +79,21 @@ export default function InstallButton({ slug, alreadyInstalled, topology, subpro
     return (
       <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', gap: 8 }}>
         <button
-          className="pc-button"
+          className="pc-button primary"
           onClick={stop(() => setMode('fresh'))}
           disabled={busy}
-          title={isMulti ? `Will create ${subprojects!.length} sub-harnesses` : undefined}
+          title={isMulti ? `Will create ${subprojects!.length} workflows` : 'Install a fresh copy of this template'}
         >
-          {isMulti ? `Install (${subprojects!.length} sub-harnesses)` : 'Fresh project'}
+          {isMulti ? `Install (${subprojects!.length} workflows)` : 'Install'}
         </button>
         {!isMulti && (
           <button
-            className="pc-button"
+            className="pc-button ghost"
             onClick={stop(() => setMode('attach'))}
             disabled={busy}
-            style={{ background: 'var(--bg-1)', color: 'var(--fg-mute)' }}
-            title="Attach the harness to an existing repo on disk"
+            title="Attach this template to an existing repo on disk (advanced)"
           >
-            Attach existing…
+            Attach to repo…
           </button>
         )}
       </div>

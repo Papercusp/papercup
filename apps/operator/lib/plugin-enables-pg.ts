@@ -15,11 +15,11 @@
  *     outside the operator UI drifted them.
  */
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getOrgPg } from '@restart/db-org';
 
-const HARNESSES_DIR = join(homedir(), '.papercusp', 'harnesses');
+import { papercuspPath } from '@/lib/papercusp-root';
+const HARNESSES_DIR = papercuspPath('harnesses');
 
 interface EnabledFile {
   enabled: Record<string, { version: string; enabledAt: string; configHash: string }>;

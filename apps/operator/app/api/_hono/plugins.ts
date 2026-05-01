@@ -22,7 +22,8 @@ import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+import { papercuspRoot } from '@/lib/papercusp-root';
+const PAPERCUSP_ROOT = papercuspRoot();
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
 const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
 const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
@@ -128,7 +129,15 @@ function resolveIframeUrl(
     const k = tab.iframeUrlConfigKey;
     const fromConfig = harnessConfig?.[k];
     const fromDefault = manifest.configSchema?.properties?.[k]?.default;
+    // Desktop bundle override: when the Tauri shell spawns the bundled
+    // code-server on a free port it surfaces the URL via env. The plugin's
+    // configSchema default (http://localhost:8082) only matches if the user
+    // happens to have an external code-server running there, so the env
+    // override beats the manifest default but still defers to per-harness
+    // config so users can point at their own install.
+    const fromEnv = k === 'codeServerUrl' ? process.env.PAPERCUSP_CODE_SERVER_URL : undefined;
     if (typeof fromConfig === 'string' && fromConfig.length > 0) url = fromConfig;
+    else if (typeof fromEnv === 'string' && fromEnv.length > 0) url = fromEnv;
     else if (typeof fromDefault === 'string' && fromDefault.length > 0) url = fromDefault;
   }
   if (!url && typeof tab.iframeUrl === 'string' && tab.iframeUrl.length > 0) {

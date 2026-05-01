@@ -15,9 +15,8 @@
 import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { useQuery } from '@rocicorp/zero/react';
+import { useSyncQuery } from '@restart/sync';
 import {
-  queries,
   type MessageRow,
   type DirectiveSummaryRow,
 } from '@restart/zero-harness';
@@ -112,9 +111,15 @@ export default function DirectiveDetailPage() {
     return () => { cancelled = true; };
   }, [id]);
 
-  // Summaries + messages: live via Zero
-  const [summaries] = useQuery(queries.directiveSummaries.forDirective({ directiveId: id }));
-  const [messages] = useQuery(queries.messages.byDirective({ directiveId: id }));
+  // Summaries + messages — REST polling via @restart/sync.
+  const { data: summaries } = useSyncQuery<DirectiveSummaryRow>({
+    queryName: 'directiveSummaries.forDirective',
+    args: { directiveId: id },
+  });
+  const { data: messages } = useSyncQuery<MessageRow>({
+    queryName: 'messages.byDirective',
+    args: { directiveId: id },
+  });
 
   const tone = useMemo(
     () => (directive ? STATUS_TONE[directive.status] ?? '#8a96ad' : '#8a96ad'),

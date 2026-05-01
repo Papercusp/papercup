@@ -85,6 +85,16 @@ export async function fetchContributions(
 }
 
 /**
+ * Static registry of plugin componentRoots known to Turbopack at build
+ * time. Each entry is a factory that bundles the package as its own
+ * chunk. New plugin component packages must register here so the
+ * bundler can include them.
+ */
+const KNOWN_ROOTS: Record<string, () => Promise<unknown>> = {
+  '@restart/papercup-shared': () => import('@restart/papercup-shared'),
+};
+
+/**
  * Resolve a (componentRoot, componentId) pair to a React.lazy()-wrapped
  * component, suitable for use inside <Suspense>.
  *
@@ -101,11 +111,20 @@ export function resolveComponent(ref: ComponentRef): ComponentType<unknown> {
   const Component = lazy(async () => {
     let mod: Record<string, unknown>;
     try {
-      // Dynamic import — webpack/turbopack will resolve componentRoot at
-      // build time IF it's listed in transpilePackages or is a regular dep.
-      // Plain runtime dynamic-import without bundler help only works for
-      // packages already present in node_modules.
-      mod = (await import(/* webpackIgnore: true */ ref.componentRoot)) as Record<string, unknown>;
+      // Static registry of known componentRoot packages so Turbopack can
+      // bundle them at build time. A bare `import(varName)` with a runtime
+      // variable specifier is unbundleable in the browser; using factory
+      // functions per known package gives the bundler a static target.
+      // To register a new plugin componentRoot: add it to KNOWN_ROOTS below.
+      const factory = KNOWN_ROOTS[ref.componentRoot];
+      if (!factory) {
+        const known = Object.keys(KNOWN_ROOTS).join(', ') || '(none)';
+        throw new Error(
+          `unknown componentRoot "${ref.componentRoot}". Known: ${known}. ` +
+            `Add it to KNOWN_ROOTS in plugin-runtime.ts.`,
+        );
+      }
+      mod = (await factory()) as Record<string, unknown>;
     } catch (err) {
       throw new Error(
         `resolveComponent: failed to import componentRoot "${ref.componentRoot}". ` +

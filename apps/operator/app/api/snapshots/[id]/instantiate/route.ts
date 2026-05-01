@@ -1,17 +1,17 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { restore } from '@papercusp/export-state';
 import { findSnapshot, readRegistry } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
 
-const PROJECTS_DIR = join(homedir(), '.papercusp', 'projects');
-const REGISTRY_PATH = join(homedir(), '.papercusp', 'registry.json');
+const PROJECTS_DIR = papercuspPath('projects');
+const REGISTRY_PATH = papercuspPath('registry.json');
 
 interface Body {
   /** Optional human-friendly slug suffix the user supplied. Defaults to the

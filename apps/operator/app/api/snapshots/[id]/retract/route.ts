@@ -26,15 +26,15 @@
  */
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
-const SECRETS_PATH = join(homedir(), '.papercusp', 'marketplace-secrets.env');
+const SECRETS_PATH = papercuspPath('marketplace-secrets.env');
 
 const VALID_ACTIONS = ['deprecate', 'undeprecate', 'withdraw', 'unwithdraw', 'yank'] as const;
 type RetractAction = (typeof VALID_ACTIONS)[number];

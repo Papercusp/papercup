@@ -15,7 +15,6 @@
  * getPluginHost()` triggers discovery so we don't wedge dev-server boot
  * behind plugin loading.
  */
-import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
@@ -36,7 +35,8 @@ import type {
   PluginSpawnResult,
 } from '@papercusp/plugin-sdk';
 
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+import { papercuspRoot } from '@/lib/papercusp-root';
+const PAPERCUSP_ROOT = papercuspRoot();
 
 interface HostState {
   loaded: LoadedPlugin[];

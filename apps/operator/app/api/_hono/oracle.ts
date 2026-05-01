@@ -19,11 +19,11 @@ import type { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-const ORACLE_DIR = join(homedir(), '.papercusp', 'oracle');
+import { papercuspPath } from '@/lib/papercusp-root';
+const ORACLE_DIR = papercuspPath('oracle');
 const PROMPT_PATH = join(ORACLE_DIR, 'prompt.md');
 const MEMORY_PATH = join(ORACLE_DIR, 'memory.md');
 const MCP_SERVER_PATH = join(process.cwd(), 'lib', 'oracle-mcp-server.mjs');
@@ -58,6 +58,104 @@ agent or page is involved.
 If the user asks about their own setup, don't fabricate state — say "I'd
 need to check" if you don't know.
 `;
+
+interface TutorialStep {
+  id: string;
+  navigate: string | null;
+  pre?: string;
+  body: string;
+  closer: string;
+}
+
+const TUTORIAL_STEPS: TutorialStep[] = [
+  {
+    id: 'greeting',
+    navigate: null,
+    body:
+      'Greet the user. In two short sentences tell them: Papercusp is an autonomous-harness framework where multi-agent crews ("harnesses") build features for them, and you\'ll show them around in 6 stops.',
+    closer: 'Ask: "Ready? Say **next** when you are."',
+  },
+  {
+    id: 'harness-list',
+    navigate: '/harness',
+    body:
+      'Explain: this is the home base. A *harness* is a project with a crew of role-scoped agents (architect, orchestrator, worker, validator, plan-gate, documenter, debugger, project_manager). From here they pick an existing harness or create a new one. Mention they can spin one up from a marketplace template later in the tour.',
+    closer: 'End with: "Say **next** to continue, or **stop** to exit."',
+  },
+  {
+    id: 'harness-console',
+    pre:
+      'Call `mcp__oracle__listHarnesses` first. Pick the first slug from the result. If the result is empty, stay on `/harness` instead and tell them they\'ll see the per-harness console once they create one.',
+    navigate: '/harness/<first-slug-or-/harness>',
+    body:
+      'Inside a harness, point out: the feature list (work the crew is doing), the agent chat dock (talk to any role on the crew), and the panel tabs (Snapshots, Decisions, Memory, Hooks, Usage, Tests).',
+    closer: 'End with: "Say **next** to continue, or **stop** to exit."',
+  },
+  {
+    id: 'marketplace-templates',
+    navigate: '/marketplace/templates',
+    body:
+      'Explain: starter harnesses they can clone. Each comes pre-wired with a SPEC, agent roster, and plugins. Clicking one brings up an install flow that creates a local harness on their machine.',
+    closer: 'End with: "Say **next** to continue, or **stop** to exit."',
+  },
+  {
+    id: 'marketplace-plugins',
+    navigate: '/marketplace/plugins',
+    body:
+      'Explain: plugins extend a harness with capabilities — publishing to Cloudflare Pages, syncing Linear issues, custom UI panels, lifecycle hooks. Plugins are enabled per harness and can ship their own UI tabs that appear inside the harness console.',
+    closer: 'End with: "Say **next** to continue, or **stop** to exit."',
+  },
+  {
+    id: 'snapshots',
+    navigate: '/snapshots',
+    body:
+      'Explain: a snapshot freezes a harness\'s full state (spec, code, history) into a portable artifact they can publish to the marketplace or fork later. This is how work travels between harnesses and machines.',
+    closer: 'End with: "Say **next** to continue, or **stop** to exit."',
+  },
+  {
+    id: 'settings-oracle',
+    navigate: '/settings/oracle',
+    body:
+      'Explain: this is where they teach *you* (the Oracle) about their workflow. The prompt and memory shown here are loaded into every conversation, so editing them changes how you respond across the whole app.',
+    closer: 'End with: "Say **next** for the wrap-up."',
+  },
+  {
+    id: 'wrap',
+    navigate: null,
+    body:
+      'Tell them the tour is done. Mention they can re-open it any time from the **Tutorial** button in the top nav. Offer to (a) take them back to `/harness` to start working, or (b) answer any question.',
+    closer: 'Wait for their answer. If they pick (a), call `navigate` with `/harness`.',
+  },
+];
+
+function buildTutorialBlock(stepIndex: number, lastUser: string): string {
+  const stop = /^(stop|exit|end|skip|that'?s enough|no thanks|quit)\b/i.test(lastUser.trim());
+  const idx = stop ? TUTORIAL_STEPS.length - 1 : Math.min(stepIndex, TUTORIAL_STEPS.length - 1);
+  const step = TUTORIAL_STEPS[idx];
+  const navLine = step.navigate
+    ? `1. Call \`mcp__oracle__navigate\` with path \`${step.navigate}\` (skip the call if the user is already on that path).\n`
+    : '1. Do not navigate this turn.\n';
+  const preLine = step.pre ? `0. ${step.pre}\n` : '';
+  return `
+
+---
+
+## Tutorial mode — Step ${idx + 1} of ${TUTORIAL_STEPS.length} (${step.id})
+
+You are running a hardcoded walkthrough of Papercusp. **Do exactly the
+step below — do not split it, do not skip it, do not invent extra
+sub-steps.** One navigate call, then 2–4 plain sentences, then the
+closer. No emoji, no marketing prose, no bullet lists.
+
+${preLine}${navLine}2. Then write 2–4 short sentences: ${step.body}
+3. ${step.closer}
+
+If the user asked a question instead of saying "next", answer it briefly
+in one sentence and then re-prompt with the closer above. Do not
+dispatch to agents during the tour.
+`;
+}
+
 
 const DEFAULT_MEMORY = `# Oracle memory
 
@@ -108,6 +206,7 @@ export function registerOracle(app: Hono) {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     if (messages.length === 0) return c.json({ error: 'messages required' }, 400);
     const currentPath = typeof body.currentPath === 'string' ? body.currentPath : '';
+    const tutorialMode = body.tutorialMode === true;
 
     const { prompt, memory } = await readConfig();
 
@@ -130,10 +229,21 @@ export function registerOracle(app: Hono) {
       ? `\n\n## Runtime context\n\nThe user is currently on path: ${currentPath}\n`
       : '';
 
+    let tutorialBlock = '';
+    let tutorialIsFinalStep = false;
+    if (tutorialMode) {
+      const userTurns = messages.filter((m: any) => m?.role === 'user').length;
+      const stepIndex = Math.max(0, userTurns - 1);
+      const stop = /^(stop|exit|end|skip|that'?s enough|no thanks|quit)\b/i.test(userContent.trim());
+      tutorialBlock = buildTutorialBlock(stepIndex, userContent);
+      tutorialIsFinalStep = stop || stepIndex >= TUTORIAL_STEPS.length - 1;
+    }
+
     const promptText = [
       prompt.trim(),
       toolBlock,
       ctxBlock,
+      tutorialBlock,
       memory.trim() ? `\n---\n\n## Persistent memory\n\n${memory.trim()}\n` : '',
       history ? `\n---\n\n## Conversation history\n\n${history}\n` : '',
       `\n---\n\n## User\n\n${userContent}\n`,
@@ -181,6 +291,10 @@ export function registerOracle(app: Hono) {
       };
 
       sessionEmitters.set(sessionId, (cmd) => { void send('ui_command', cmd); });
+
+      if (tutorialIsFinalStep) {
+        void send('tutorial_end', {});
+      }
 
       child.stdout.on('data', (chunk: Buffer) => {
         stdoutLineBuf += chunk.toString('utf8');

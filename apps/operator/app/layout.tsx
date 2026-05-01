@@ -5,6 +5,7 @@ import WorkspaceSwitcher from './_components/WorkspaceSwitcher';
 import UpdateChip from './_components/UpdateChip';
 import { ChatwootWidget } from './_components/ChatwootWidget';
 import { OracleDock } from './_components/OracleDock';
+import TutorialButton from './_components/TutorialButton';
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -30,6 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <a href="/support">Support</a>
               <a href="/settings/api-keys">Settings</a>
               <a href="https://github.com/papercupai/papercusp" target="_blank" rel="noopener noreferrer">GitHub</a>
+              <TutorialButton />
               <UpdateChip />
               <WorkspaceSwitcher />
             </nav>

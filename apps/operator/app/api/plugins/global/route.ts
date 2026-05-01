@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -12,7 +12,7 @@ export const runtime = 'nodejs';
  * import. Bypasses the Hono catch-all `[[...route]]` to avoid that route's
  * pre-existing orchestrator-import compile cost (~8-13s in dev).
  */
-const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+const PAPERCUSP_ROOT = papercuspRoot();
 const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
 
 interface PluginManifest {

@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { capture, type SnapshotPlugin } from '@papercusp/export-state';
 import { findProject } from '@/lib/snapshot-discovery';
 import { redactPluginConfig } from '@/lib/snapshot-config-redact';
 
+import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
@@ -22,7 +22,7 @@ interface CreateBody {
   acceptVerifiedSecrets?: boolean;
 }
 
-const HARNESSES_DIR = join(homedir(), '.papercusp', 'harnesses');
+const HARNESSES_DIR = papercuspPath('harnesses');
 
 export async function POST(req: Request) {
   let body: CreateBody;
@@ -100,7 +100,7 @@ async function readEnabledPlugins(slug: string): Promise<SnapshotPlugin[]> {
   }
   const out: SnapshotPlugin[] = [];
   for (const [pluginSlug, info] of Object.entries(enabled.enabled ?? {})) {
-    const dir = join(homedir(), '.papercusp', 'global-plugins', pluginSlug);
+    const dir = papercuspPath('global-plugins', pluginSlug);
     let caps: string[] = [];
     let uiSchema: unknown = undefined;
     try {

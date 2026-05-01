@@ -20,7 +20,9 @@ vi.mock('node:fs', () => {
   };
   return {
     promises,
-    default: { promises },
+    existsSync: vi.fn(() => false),
+    readFileSync: vi.fn(() => ''),
+    default: { promises, existsSync: vi.fn(() => false), readFileSync: vi.fn(() => '') },
   };
 });
 

@@ -50,6 +50,10 @@ export function ChatwootWidget() {
       locale: 'en',
       type: 'standard',
       launcherTitle: 'Papercusp Support',
+      // Force the embedded Chatwoot UI into the same dark blue-frost surface as the operator.
+      // The current SDK accepts "dark" even though older docs only mention "auto".
+      darkMode: 'dark',
+      widgetColor: '#38bdf8',
     };
 
     if (window.chatwootSDK) {

@@ -1,8 +1,8 @@
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const GLOBAL_PLUGINS_DIR = join(homedir(), '.papercusp', 'global-plugins');
+import { papercuspPath } from '@/lib/papercusp-root';
+const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
 
 /**
  * Translate whatever the UI/caller passes (manifest name, dir basename, or

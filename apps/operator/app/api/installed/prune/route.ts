@@ -24,6 +24,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
+import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 
 interface RegistryShape {
@@ -84,7 +85,7 @@ export async function POST(req: Request) {
     body = await req.json();
   } catch { /* empty body is fine */ }
 
-  const PAPERCUSP_ROOT = join(homedir(), '.papercusp');
+  const PAPERCUSP_ROOT = papercuspRoot();
   const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
   const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
 

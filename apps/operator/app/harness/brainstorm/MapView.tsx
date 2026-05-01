@@ -2,12 +2,17 @@
 
 import { useEffect, useRef } from 'react';
 import { Transformer } from 'markmap-lib';
-import { Markmap, loadCSS, loadJS } from 'markmap-view';
+import { Markmap } from 'markmap-view';
 
 interface Props {
   markdown: string;
 }
 
+// `enableFeatures: false` keeps the transformer from emitting CDN-hosted
+// asset URLs (KaTeX, Mermaid, etc.) in `features`. Desktop builds run
+// offline; pulling scripts from cdn.jsdelivr at render time would either
+// fail outright or leak metadata. Basic mind-map rendering uses only the
+// directly-imported Markmap class from `markmap-view`, no loadJS needed.
 const transformer = new Transformer();
 
 export function MapView({ markdown }: Props) {
@@ -17,10 +22,7 @@ export function MapView({ markdown }: Props) {
   useEffect(() => {
     if (!svgRef.current) return;
 
-    const { root, features } = transformer.transform(markdown || '# (empty)');
-    const { styles, scripts } = transformer.getUsedAssets(features);
-    if (styles) loadCSS(styles);
-    if (scripts) loadJS(scripts, { getMarkmap: () => ({ Markmap }) });
+    const { root } = transformer.transform(markdown || '# (empty)');
 
     if (!mmRef.current) {
       mmRef.current = Markmap.create(svgRef.current, {

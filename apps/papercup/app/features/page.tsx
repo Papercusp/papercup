@@ -12,8 +12,8 @@
  * filter avoids the round-trip the polled /features-all endpoint required.
  */
 import { useMemo, useState } from 'react';
-import { useQuery } from '@rocicorp/zero/react';
-import { queries, type FeatureConsolidatedRow } from '@restart/zero-harness';
+import { useSyncQuery } from '@restart/sync';
+import { type FeatureConsolidatedRow } from '@restart/zero-harness';
 import {
   RichGrid,
   applySort,
@@ -165,7 +165,9 @@ function rowToLegacy(r: FeatureConsolidatedRow): FeatureRow {
 }
 
 export default function FeaturesPage() {
-  const [zeroRows, zeroInfo] = useQuery(queries.featuresConsolidated.all() as never);
+  const { data: zeroRows, loading: zeroLoading } = useSyncQuery<FeatureConsolidatedRow>({
+    queryName: 'featuresConsolidated.all',
+  });
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [slugFilter, setSlugFilter] = useState<string | null>(null);
   const [reviewOnly, setReviewOnly] = useState(false);
@@ -173,10 +175,9 @@ export default function FeaturesPage() {
   const [sortState, setSortState] = useState<RichGridSortState | null>({ column: 'updated_ts', dir: 'desc' });
 
   const allRows: FeatureRow[] = useMemo(() => {
-    const info = zeroInfo as { type?: string } | undefined;
-    if (info?.type !== 'complete' || !Array.isArray(zeroRows)) return [];
-    return (zeroRows as FeatureConsolidatedRow[]).map(rowToLegacy);
-  }, [zeroRows, zeroInfo]);
+    if (zeroLoading || !Array.isArray(zeroRows)) return [];
+    return zeroRows.map(rowToLegacy);
+  }, [zeroRows, zeroLoading]);
 
   const filteredRows: FeatureRow[] = useMemo(() => {
     const needle = q.trim().toLowerCase();

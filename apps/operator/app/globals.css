@@ -2298,6 +2298,18 @@ body.h-harness-top-collapsed .pc-header {
 .oracle-dock::before {
   display: none !important;
 }
+
+/* Floating buttons (Oracle FAB/dock + Chatwoot support bubble) must clear the
+   harness shell, which promotes `<main>` to z-index: 70 in compact mode. */
+.oracle-fab,
+.oracle-dock {
+  z-index: 80 !important;
+}
+.woot-widget-holder,
+.woot--bubble-holder,
+.woot-widget-bubble {
+  z-index: 80 !important;
+}
 .oracle-body {
   background: #060d18 !important;
 }
