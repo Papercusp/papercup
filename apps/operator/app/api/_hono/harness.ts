@@ -3419,6 +3419,59 @@ harness.post('/:slug/issues', async (c) => {
   return c.json(issue);
 });
 
+/**
+ * POST /:slug/issues/append-pending — validator-facing.
+ *
+ * Replaces the validator's direct write to `.harness/pending-issues.jsonl`.
+ * Body matches one line of pending-issues.jsonl (the validator's existing
+ * structured-finding shape). The operator appends a JSONL line server-side
+ * and the next /triage call merges it into issues.json + harness_issues.
+ *
+ * Why an endpoint and not direct DB insert: the curator's merge algorithm
+ * (jaccard + codePointer dedup) is already in /triage. Routing through the
+ * pending queue keeps that dedup pass intact while removing the validator's
+ * dependency on the harness filesystem layout.
+ *
+ * Phase-3 follow-up: when the curator's merge moves into operator code
+ * (replacing /triage's file flow with a pure-DB pass), this endpoint
+ * graduates to a direct INSERT into harness_issues with status='pending'.
+ */
+harness.post('/:slug/issues/append-pending', async (c) => {
+  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const body = await c.req.json().catch(() => null) as null | {
+    title?: string;
+    severity?: 'critical' | 'major' | 'minor' | 'nit';
+    foundDuring?: string;
+    repro?: string;
+    evidence?: string;
+    suggestedFix?: string;
+    codePointer?: string;
+    linkedFeatureId?: string;
+  };
+  if (!body || typeof body.title !== 'string' || !body.title.trim()) {
+    return c.json({ error: 'title required' }, 400);
+  }
+  const line = JSON.stringify({
+    title: body.title.trim(),
+    severity: body.severity ?? 'minor',
+    source: 'validator',
+    foundAt: new Date().toISOString(),
+    foundDuring: body.foundDuring,
+    repro: body.repro,
+    evidence: body.evidence,
+    suggestedFix: body.suggestedFix,
+    codePointer: body.codePointer,
+    linkedFeatureId: body.linkedFeatureId,
+    status: 'open',
+    attempts: 1,
+    notes: [],
+  }) + '\n';
+  const path = join(harnessDir(project), 'pending-issues.jsonl');
+  await appendFile(path, line, 'utf8');
+  return c.json({ ok: true });
+});
+
 harness.post('/:slug/issues/:id/update', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
