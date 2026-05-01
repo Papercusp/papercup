@@ -830,8 +830,12 @@ function SaveTemplateButton({ slug }: { slug: string }) {
         return;
       }
       toast.success(`Saved template ${j.slug}@${j.version}`, {
-        description: `${j.copied?.length ?? 0} files + ${j.pluginRecs ?? 0} plugin recommendations → ${j.path}`,
-        duration: 6000,
+        description: `${j.copied?.length ?? 0} files + ${j.pluginRecs ?? 0} plugin recommendations`,
+        duration: 8000,
+        action: j.editPath ? {
+          label: 'edit',
+          onClick: () => window.open(j.editPath, '_blank', 'noopener'),
+        } : undefined,
       });
       setOpen(false);
     } catch (e: unknown) {

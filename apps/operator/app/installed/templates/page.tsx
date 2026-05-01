@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { Layers, ExternalLink, Loader2 } from 'lucide-react';
+import Link from 'next/link';
+import { Layers, ExternalLink, Loader2, Pencil, Trash2 } from 'lucide-react';
 import { toast, Toaster } from 'sonner';
 
 interface PublishRecord {
@@ -42,6 +43,7 @@ export default function InstalledTemplatesPage() {
   const [rows, setRows] = useState<TemplateRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [publishing, setPublishing] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -55,6 +57,29 @@ export default function InstalledTemplatesPage() {
   }, []);
 
   useEffect(() => { void load(); }, [load]);
+
+  const onDelete = async (row: TemplateRow) => {
+    const key = `${row.slug}@${row.version}`;
+    if (!confirm(`Delete local template ${key}?\n\n${row.publishedSlugs.length > 0 ? 'Note: this will not retract the published version on the marketplace.\n\n' : ''}This removes ${row.path}.`)) return;
+    setDeleting(key);
+    try {
+      const r = await fetch(
+        `/api/templates/${encodeURIComponent(row.slug)}/${encodeURIComponent(row.version)}`,
+        { method: 'DELETE' },
+      );
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        toast.error(j.error ?? `delete failed (${r.status})`);
+        return;
+      }
+      toast.success(`Deleted ${key}`);
+      await load();
+    } catch (e: unknown) {
+      toast.error(`delete error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   const onPublish = async (row: TemplateRow) => {
     const key = `${row.slug}@${row.version}`;
@@ -154,6 +179,24 @@ export default function InstalledTemplatesPage() {
                 </div>
 
                 <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <Link
+                    href={`/installed/templates/${encodeURIComponent(row.slug)}/edit?version=${encodeURIComponent(row.version)}`}
+                    style={{
+                      padding: '6px 12px',
+                      background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
+                      color: 'var(--fg)',
+                      border: '1px solid var(--border)',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      textDecoration: 'none',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    <Pencil size={12} /> edit
+                  </Link>
                   <button
                     onClick={() => onPublish(row)}
                     disabled={isPublishing}
@@ -174,6 +217,25 @@ export default function InstalledTemplatesPage() {
                     {isPublishing ? (
                       <><Loader2 size={12} className="pc-spin" /> publishing…</>
                     ) : row.publishedSlugs.length > 0 ? 'republish' : 'publish to marketplace'}
+                  </button>
+                  <button
+                    onClick={() => onDelete(row)}
+                    disabled={deleting === key}
+                    style={{
+                      padding: '6px 10px',
+                      background: 'transparent',
+                      color: '#f87171',
+                      border: '1px solid var(--border)',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      cursor: deleting === key ? 'default' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                    title="Delete local template"
+                  >
+                    {deleting === key ? <Loader2 size={12} className="pc-spin" /> : <Trash2 size={12} />}
                   </button>
 
                   {row.publishedSlugs.length > 0 ? (
