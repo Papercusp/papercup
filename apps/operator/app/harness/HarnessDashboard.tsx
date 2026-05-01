@@ -53,16 +53,11 @@ function PluginIcon({ name, size = 13 }: { name?: string | null; size?: number }
 }
 
 const CODE_SERVER_PORT = 8082;
-const DOCS_VIEWER_URL = 'http://127.0.0.1:4325';
 
 function vscodeUrl(projectPath: string): string {
   if (typeof window === 'undefined') return '#';
   const { protocol, hostname } = window.location;
   return `${protocol}//${hostname}:${CODE_SERVER_PORT}/?folder=${encodeURIComponent(projectPath)}`;
-}
-
-function docsUrl(slug: string): string {
-  return `${DOCS_VIEWER_URL}/projects/${slug}/`;
 }
 
 const VSCODE_WINDOW_NAME = 'harness-vscode';
@@ -73,7 +68,7 @@ function openInVSCode(projectPath: string) {
   window.open(url, VSCODE_WINDOW_NAME);
 }
 
-type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'docs' | 'vscode' | 'pi' | 'insights' | 'config' | `plugin:${string}`;
+type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'insights' | 'config' | `plugin:${string}`;
 
 import { Panel } from '@restart/ui-primitives';
 import { StatCard } from '@restart/ui-primitives';
@@ -97,7 +92,6 @@ import PulseFeed, { usePulse } from './PulseFeed';
 import InsightsPanel from './InsightsPanel';
 import TriageQueue from './TriageQueue';
 import ArchitectInbox from './ArchitectInbox';
-import PiTerminalsDock from './PiTerminalsDock';
 import PhaseTabs, { type Phase } from './PhaseTabs';
 import TestsTab from './TestsTab';
 import ProposalsPanel from './ProposalsPanel';
@@ -533,6 +527,16 @@ function pluginSlugFromPath(path: string | null | undefined, fallbackName: strin
   return last ?? fallbackName;
 }
 
+interface InstalledPluginAction {
+  name?: string;
+  label?: string;
+  surfaces?: string[];
+  /** Optional manifest-declared lucide icon name (e.g. "Cloud", "Database").
+   *  Resolved via PLUGIN_ICON_MAP at render time. Falls back to the plugin's
+   *  own icon, then to Puzzle. */
+  icon?: string;
+}
+
 interface InstalledPluginInfo {
   name: string;
   version?: string;
@@ -543,6 +547,7 @@ interface InstalledPluginInfo {
    *  enable/disable by (independent of scoped manifest.name). */
   path?: string;
   dashboardTabs?: Array<{ id?: string; label?: string; icon?: string }>;
+  actions?: InstalledPluginAction[];
 }
 
 /**
@@ -934,21 +939,24 @@ function SaveSnapshotButton({ slug }: { slug: string }) {
  * actually visible in the operator's main flow rather than buried inside
  * the config sub-panel.
  */
-function PluginToolbarActions({ harnessSlug, installed, enabledSlugs }: {
-  harnessSlug: string;
-  installed: InstalledPluginInfo[];
-  enabledSlugs: string[];
-}) {
-  const [busy, setBusy] = useState<string | null>(null);
-  // Build the toolbar action list: every action of every enabled plugin
-  // whose `surfaces` includes 'harness-toolbar'.
+type HarnessToolbarAction = {
+  pluginName: string;
+  pluginDirSlug: string;
+  pluginIcon: string | null;
+  /** Manifest-declared icon name from `actions[].icon`, falling back to the
+   *  plugin-level icon if absent. Resolved via PLUGIN_ICON_MAP. */
+  actionIcon: string | null;
+  name: string;
+  label: string;
+};
+
+function collectHarnessToolbarActions(installed: InstalledPluginInfo[], enabledSlugs: string[]): HarnessToolbarAction[] {
   const enabledSet = new Set(enabledSlugs);
-  const toolbarActions: Array<{ pluginName: string; pluginDirSlug: string; pluginIcon: string | null;
-    name: string; label: string; }> = [];
+  const toolbarActions: HarnessToolbarAction[] = [];
   for (const p of installed) {
     const dirSlug = pluginSlugFromPath(p.path, p.name);
     if (!(enabledSet.has(p.name) || enabledSet.has(dirSlug))) continue;
-    const actions = (p as { actions?: Array<{ name?: string; label?: string; surfaces?: string[] }> }).actions ?? [];
+    const actions = p.actions ?? [];
     for (const a of actions) {
       if (!a.name) continue;
       if (!Array.isArray(a.surfaces) || !a.surfaces.includes('harness-toolbar')) continue;
@@ -956,52 +964,98 @@ function PluginToolbarActions({ harnessSlug, installed, enabledSlugs }: {
         pluginName: p.name,
         pluginDirSlug: dirSlug,
         pluginIcon: p.icon ?? null,
+        actionIcon: a.icon ?? p.icon ?? null,
         name: a.name,
         label: a.label ?? a.name,
       });
     }
   }
-  if (toolbarActions.length === 0) return null;
+  return toolbarActions;
+}
 
-  async function invoke(action: typeof toolbarActions[number]) {
-    setBusy(action.pluginDirSlug + '/' + action.name);
+async function invokeHarnessToolbarAction(
+  harnessSlug: string,
+  action: HarnessToolbarAction,
+  params?: Record<string, unknown>,
+): Promise<{ ok: boolean; result?: string; error?: string; log?: string }> {
+  const r = await fetch('/api/plugins/invoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug: action.pluginDirSlug, action: action.name, harness: harnessSlug, params }),
+  });
+  const d = await r.json();
+  if (!r.ok || !d.ok) {
+    return { ok: false, error: d.error ?? `invoke exited ${r.status}`, log: d.log };
+  }
+  return { ok: true, result: typeof d.result === 'string' ? d.result : undefined, log: d.log };
+}
+
+/**
+ * Pure manifest-driven harness toolbar row.
+ *
+ * Renders one button per `actions[]` entry whose `surfaces` includes
+ * `harness-toolbar`, on plugins that are installed AND enabled for this
+ * harness. Icon comes from `actions[].icon` (resolved via PLUGIN_ICON_MAP),
+ * falling back to the plugin-level icon, then to Puzzle. No hardcoded list,
+ * no fallback "enable plugin" CTAs — install the plugin and the button
+ * appears; uninstall and it disappears. Same flow as `dashboardTabs[]`.
+ */
+function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs }: {
+  harnessSlug: string;
+  installed: InstalledPluginInfo[];
+  enabledSlugs: string[];
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const actions = collectHarnessToolbarActions(installed, enabledSlugs);
+
+  async function invoke(action: HarnessToolbarAction) {
+    const key = `${action.pluginDirSlug}/${action.name}`;
+    setBusy(key);
     try {
-      const r = await fetch('/api/plugins/invoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug: action.pluginDirSlug, action: action.name, harness: harnessSlug }),
-      });
-      const d = await r.json();
-      if (!r.ok || !d.ok) {
-        toast.error(`${action.label} failed`, { description: d.error ?? d.log?.slice(-300) });
+      const result = await invokeHarnessToolbarAction(harnessSlug, action);
+      if (!result.ok) {
+        toast.error(`${action.label} failed`, { description: result.error ?? result.log?.slice(-300) });
         return;
       }
-      toast.success(`${action.label} fired`, { description: typeof d.result === 'string' ? d.result.slice(0, 200) : 'Check action history.' });
+      toast.success(`${action.label} started`, {
+        description: result.result?.slice(0, 200) ?? `Handled by ${action.pluginName}.`,
+      });
     } catch (e: any) {
       toast.error(`${action.label} failed: ${e?.message ?? e}`);
-    } finally { setBusy(null); }
+    } finally {
+      setBusy(null);
+    }
   }
 
+  if (actions.length === 0) return null;
+
   return (
-    <>
-      {toolbarActions.map((a) => {
-        const key = a.pluginDirSlug + '/' + a.name;
-        return (
-          <Tooltip key={key} label={`${a.label} — from ${a.pluginName}`}>
-            <button
-              type="button"
-              className="h-btn ghost"
-              onClick={() => invoke(a)}
-              disabled={busy === key}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            >
-              <PluginIcon name={a.pluginIcon} size={13} />
-              {busy === key ? '…' : a.label}
-            </button>
-          </Tooltip>
-        );
-      })}
-    </>
+    <div className="h-quick-action-row" aria-label="Plugin actions">
+      <div className="h-quick-action-copy">
+        <span>Plugin actions</span>
+        <strong>Buttons contributed by enabled plugins.</strong>
+      </div>
+      <div className="h-quick-action-buttons">
+        {actions.map((a) => {
+          const key = `${a.pluginDirSlug}/${a.name}`;
+          const isBusy = busy === key;
+          return (
+            <Tooltip key={key} label={`${a.label} — from ${a.pluginName}`}>
+              <button
+                type="button"
+                className="h-quick-action-btn"
+                onClick={() => void invoke(a)}
+                aria-disabled={isBusy}
+              >
+                <PluginIcon name={a.actionIcon} size={14} />
+                <span>{isBusy ? 'Running…' : a.label}</span>
+                <em>{a.pluginName}</em>
+              </button>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -1622,16 +1676,12 @@ export default function HarnessDashboard() {
     })();
     return () => { cancelled = true; };
   }, [activeSlug, pluginRefreshKey]);
-  // Pattern 1 — built-in tab ids hidden when a plugin tab declares
-  // `replaces: ['<id>']`. Per-tab opt-in (replaces the previous coarse
-  // PAPERCUSP_TABS_FROM_PLUGINS env flag).
-  const replacedTabIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const t of pluginTabs) for (const r of t.replaces) set.add(r);
-    return set;
-  }, [pluginTabs]);
-  const legacyTabSuppressed = (id: 'docs' | 'vscode' | 'pi'): boolean =>
-    replacedTabIds.has(id);
+  // The legacy docs/vscode/pi tabs are removed; their replacements live in
+  // pluginTabs (rendered inline below) sourced from @papercupai/fumadocs,
+  // @papercupai/vscode-server, and @papercupai/pi-coding respectively.
+  // Other plugins that still use the older `replaces: [<id>]` field are
+  // honored by the per-plugin enable flow — there are no built-in tab ids
+  // left to suppress at this layer.
   const [status, setStatus] = useState<Status | null>(null);
   const [agents, setAgents] = useState<AgentRun[]>([]);
   const [issues, setIssues] = useState<string>('');
@@ -2329,7 +2379,7 @@ export default function HarnessDashboard() {
                 <RSelect.Icon><LChevronDown size={11} /></RSelect.Icon>
               </RSelect.Trigger>
               <RSelect.Portal>
-                <RSelect.Content position="popper" sideOffset={4} style={{ zIndex: 70, minWidth: 'var(--radix-select-trigger-width)', background: 'var(--bg-2)', border: '1px solid var(--border)', borderRadius: 4, padding: 4, boxShadow: '0 8px 24px rgba(0,0,0,0.4)', fontSize: 12 }}>
+                <RSelect.Content position="popper" sideOffset={4} style={{ zIndex: 70, minWidth: 'var(--radix-select-trigger-width)', background: 'rgba(5, 11, 19, 0.98)', color: 'var(--fg)', border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)', borderRadius: 10, padding: 6, boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)', fontSize: 12, backdropFilter: 'blur(14px) saturate(150%)' }}>
                   <RSelect.Viewport>
                     {/* Layer 3-E: group by harness_kind so the org/department hierarchy is visible. */}
                     {(['org', 'department', 'coding'] as const).map((kind) => {
@@ -2509,13 +2559,6 @@ export default function HarnessDashboard() {
                   <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
                 </button>
               </Tooltip>
-              {activeSlug && (
-                <PluginToolbarActions
-                  harnessSlug={activeSlug}
-                  installed={installedPlugins ?? []}
-                  enabledSlugs={enabledByHarness[activeSlug] ?? []}
-                />
-              )}
               {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
               {status.alive ? (
                 <Tooltip label="Stop the autonomous loop for this harness">
@@ -2533,6 +2576,14 @@ export default function HarnessDashboard() {
             </div>
           )}
         </div>
+      )}
+
+      {activeSlug && status && (
+        <HarnessQuickActionRow
+          harnessSlug={activeSlug}
+          installed={installedPlugins ?? []}
+          enabledSlugs={enabledByHarness[activeSlug] ?? []}
+        />
       )}
 
       {activeSlug && status && (
@@ -2598,27 +2649,7 @@ export default function HarnessDashboard() {
               <FileText size={13} /> summary
             </Tabs.Trigger>
           </Tooltip>
-          {legacyTabSuppressed('docs') ? null : (
-            <Tooltip label={activeSlug ? 'Project docs (requires docs-viewer on :4325)' : 'Select a project to view docs'}>
-              <Tabs.Trigger value="docs" className="h-tab" disabled={!activeSlug}>
-                <BookOpen size={13} /> docs
-              </Tabs.Trigger>
-            </Tooltip>
-          )}
-          {legacyTabSuppressed('vscode') ? null : (
-            <Tooltip label={activeSlug ? 'code-server — edit project in VSCode' : 'Select a project to open in VSCode'}>
-              <Tabs.Trigger value="vscode" className="h-tab" disabled={!activeSlug}>
-                <Code2 size={13} /> vscode
-              </Tabs.Trigger>
-            </Tooltip>
-          )}
-          {legacyTabSuppressed('pi') ? null : (
-            <Tooltip label={activeSlug ? 'consoles — terminals, agent chats, and other dock panels' : 'Select a project to open consoles'}>
-              <Tabs.Trigger value="pi" className="h-tab" disabled={!activeSlug}>
-                <Activity size={13} /> consoles
-              </Tabs.Trigger>
-            </Tooltip>
-          )}
+          {/* docs / vscode / pi tabs are now plugin-mounted (see pluginTabs below). */}
           {/* Plugin-mounted tabs. The trigger is the tab itself; a tiny ⓘ
               button next to the label opens a popover with version + a link
               to the marketplace-ops detail page so operators can inspect
@@ -2690,25 +2721,6 @@ export default function HarnessDashboard() {
               }
             }}
           />
-        )}
-        {activePanel === 'docs' && activeSlug && (
-          <iframe
-            src={docsUrl(activeSlug)}
-            title="Project docs"
-            style={{ flex: 1, border: 'none', width: '100%', height: '100%', background: 'var(--bg-2)' }}
-          />
-        )}
-        {activePanel === 'vscode' && activeSlug && status && (
-          <iframe
-            src={vscodeUrl(status.project.path)}
-            title="VSCode"
-            style={{ flex: 1, border: 'none', width: '100%', height: '100%', background: 'var(--bg-2)' }}
-          />
-        )}
-        {activePanel === 'pi' && activeSlug && (
-          <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-            <PiTerminalsDock slug={activeSlug} initialLaneId={piLaneId ?? undefined} />
-          </div>
         )}
         {/* Plugin-mounted tabs: pick whichever plugin matches the active panel
             via the plugin:<id> prefix. iframeUrl is null when the plugin's
