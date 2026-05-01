@@ -19,6 +19,7 @@ interface ExpertSummary {
 
 interface ExpertDetail extends ExpertSummary {
   budgetCents: number;
+  spentCents?: number;
   highLevelSpec: string;
   spec: string;
   specPath: string;
@@ -218,7 +219,11 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
         </div>
         <div style={{ fontSize: 16, fontWeight: 600 }}>{detail.title}</div>
         <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-          {detail.featureSize} · {detail.agentCount} agent{detail.agentCount !== 1 ? 's' : ''} · {detail.roundCount} round{detail.roundCount !== 1 ? 's' : ''} · budget {(detail.budgetCents / 100).toFixed(2)} USD
+          {detail.featureSize} · {detail.agentCount} agent{detail.agentCount !== 1 ? 's' : ''} · {detail.roundCount} round{detail.roundCount !== 1 ? 's' : ''}
+          {' · '}
+          <span title="Spent vs budget envelope. Server stops the loop when spent reaches budget.">
+            {(((detail.spentCents ?? 0) / 100)).toFixed(2)} / {(detail.budgetCents / 100).toFixed(2)} USD
+          </span>
           {detail.forkedFrom && <span> · forked from <code>{detail.forkedFrom}</code></span>}
           {detail.personasUsed.length > 0 && <span> · personas: {detail.personasUsed.join(', ')}</span>}
         </div>

@@ -193,6 +193,59 @@ function readMaxAgents(projectDir: string): number {
   return 12;
 }
 
+/**
+ * Aggregate cost (USD cents) attributed to a specific expert or feedback id
+ * by scanning .harness/logs/*.jsonl whose run_id contains the id token.
+ * Returns whole cents. Best-effort — invocation logs that didn't tag the id
+ * (e.g. legacy sessions) won't roll up.
+ */
+function aggregateExpertSpendCents(projectDir: string, expertId: string): number {
+  const logDir = join(projectDir, '.harness', 'logs');
+  if (!existsSync(logDir)) return 0;
+  let total = 0;
+  let logs: string[];
+  try { logs = readdirSync(logDir); } catch { return 0; }
+  // Match run_id suffix: <ts>-<role>-<EXP-NNN> or any FB-NNN whose run is
+  // tagged with the same expert via the parent prompt's runtime extras —
+  // for our regex, the simplest heuristic is "filename includes expertId
+  // or any FB-NNN that lives under this expert's feedback/ dir."
+  const fbDir = join(projectDir, '.harness', 'experts', expertId, 'feedback');
+  let fbIds: string[] = [];
+  try {
+    if (existsSync(fbDir)) {
+      fbIds = readdirSync(fbDir).filter((n) => FEEDBACK_ID_RE.test(n));
+    }
+  } catch {}
+  const idTokens = new Set<string>([expertId, ...fbIds]);
+  for (const f of logs) {
+    if (!f.endsWith('.jsonl')) continue;
+    let matched = false;
+    for (const tok of idTokens) {
+      if (f.includes(`-${tok}.`)) { matched = true; break; }
+    }
+    if (!matched) continue;
+    // Tail the last ~8KB and extract the result line's total_cost_usd.
+    try {
+      const raw = readFileSync(join(logDir, f), 'utf8');
+      const tail = raw.length > 8192 ? raw.slice(-8192) : raw;
+      const lines = tail.split('\n').reverse();
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t.startsWith('{')) continue;
+        try {
+          const obj = JSON.parse(t);
+          if (obj.type === 'result') {
+            const usd = Number(obj.total_cost_usd ?? 0);
+            if (Number.isFinite(usd)) total += Math.round(usd * 100);
+            break;
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+  return total;
+}
+
 export function registerExperts(harness: Hono): void {
   // ── List experts ─────────────────────────────────────────────────────
   harness.get('/:slug/experts', async (c) => {
@@ -283,7 +336,8 @@ export function registerExperts(harness: Hono): void {
     const specPath = join(dir, 'SPEC.md');
     let spec = '';
     try { spec = await readFile(specPath, 'utf8'); } catch {}
-    return c.json({ ...ident, specPath, spec });
+    const spentCents = aggregateExpertSpendCents(projectDir, expertId);
+    return c.json({ ...ident, specPath, spec, spentCents });
   });
 
   // ── Patch expert (status, userEngaged, terminationReason, agentCount, roundCount) ──
@@ -410,14 +464,23 @@ export function registerExperts(harness: Hono): void {
       try { await copyFile(specSrc, dst); } catch {}
     }
 
-    // Server-side convergence evaluation. Promote to `final` only if we're
-    // not already in a terminal state (max_rounds/cancelled/superseded etc).
+    // Server-side termination checks (in order). Promote only if not already
+    // in a terminal state.
     const terminal = new Set(['final', 'max_rounds', 'cancelled', 'superseded', 'error']);
     if (!terminal.has(ident.status)) {
-      const converged = await evaluateConvergence(projectDir, expertId);
-      if (converged === 'final') {
+      // 1. Budget exhaustion takes precedence over convergence — if we've
+      //    blown the envelope, stop even mid-loop.
+      const spentCents = aggregateExpertSpendCents(projectDir, expertId);
+      if (ident.budgetCents > 0 && spentCents >= ident.budgetCents) {
         ident.status = 'final';
-        ident.terminationReason = 'convergence: 2 consecutive non-substantive verdicts';
+        ident.terminationReason = `budget: ${spentCents}¢ spent of ${ident.budgetCents}¢ envelope`;
+      } else {
+        // 2. Convergence: 2 consecutive non-substantive verdicts.
+        const converged = await evaluateConvergence(projectDir, expertId);
+        if (converged === 'final') {
+          ident.status = 'final';
+          ident.terminationReason = 'convergence: 2 consecutive non-substantive verdicts';
+        }
       }
     }
     await writeIdentity(projectDir, ident);
