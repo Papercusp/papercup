@@ -1,8 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import Editor from '@monaco-editor/react';
 import { Tooltip } from './Tooltip';
+import MemoryBrowser from './MemoryBrowser';
+import PromptsTab from './PromptsTab';
+
+const SECTIONS = ['settings', 'memory', 'prompts'] as const;
+type Section = (typeof SECTIONS)[number];
 
 /**
  * Template-driven config editor — reads the harness's manifest.configFiles
@@ -35,6 +41,10 @@ interface Props {
 export default function ManifestSpecEditor({
   slug, projectPath, alive, onClose, configFiles, inline = false,
 }: Props) {
+  const [section, setSection] = useQueryState(
+    'configSection',
+    parseAsStringLiteral(SECTIONS).withDefault('settings'),
+  );
   const [activePath, setActivePath] = useState<string>(configFiles[0]?.path ?? '');
   const [original, setOriginal] = useState<Record<string, string | null>>({});
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -157,6 +167,46 @@ export default function ManifestSpecEditor({
         </div>
       </div>
 
+      {/* Section tabs: Settings / Memory / Prompts.
+          Restored 2026-05-01: Memory + Prompts disappeared when this template-driven
+          editor took over from <SpecEditor> for harnesses that ship configFiles. The
+          underlying state files (.harness/memory/*, .harness/prompts/<role>.md) are
+          still actively read/written by the substrate; only the UI was missing. */}
+      <div style={{ display: 'flex', gap: '0.35rem', padding: '0.5rem 1rem', borderBottom: '1px solid #1f2937', background: '#0b1018' }}>
+        {SECTIONS.map((s) => {
+          const isActive = section === s;
+          const label = s === 'settings' ? 'Settings' : s === 'memory' ? 'Memory' : 'Prompts';
+          return (
+            <button
+              key={s}
+              onClick={() => setSection(s)}
+              style={{
+                background: isActive ? '#1f2937' : 'transparent',
+                color: isActive ? '#e5e7eb' : '#9ca3af',
+                border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
+                borderRadius: 4,
+                padding: '0.4rem 0.9rem',
+                fontSize: '0.85rem',
+                fontWeight: isActive ? 600 : 500,
+                cursor: 'pointer',
+              }}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+
+      {section === 'memory' ? (
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <MemoryBrowser slug={slug} alive={alive} />
+        </div>
+      ) : section === 'prompts' ? (
+        <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+          <PromptsTab slug={slug} alive={alive} />
+        </div>
+      ) : (
+        <>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0.5rem 1rem', borderBottom: '1px solid #1f2937', background: '#0b1018' }}>
         {configFiles.map((cf) => {
           const isActive = cf.path === activePath;
@@ -225,6 +275,8 @@ export default function ManifestSpecEditor({
           />
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }
