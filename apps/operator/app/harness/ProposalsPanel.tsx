@@ -19,14 +19,20 @@ interface Proposal {
   reviewSummary?: string | null;
 }
 
-function rowToProposal(r: ProposalRow): Proposal {
+type LocalProposalRow = {
+  proposalId: string; sizeBytes: number | string; ts: number | string;
+  status: string; reviewVerdict?: string | null; reviewedAt?: number | string | null;
+  reviewSummary?: string | null;
+};
+function rowToProposal(rRaw: ProposalRow): Proposal {
+  const r = rRaw as unknown as LocalProposalRow;
   return {
     id: r.proposalId,
     sizeBytes: Number(r.sizeBytes) || 0,
     ts: Number(r.ts) || 0,
     status: r.status as Proposal['status'],
     reviewVerdict: (r.reviewVerdict ?? null) as Proposal['reviewVerdict'],
-    reviewedAt: r.reviewedAt ?? null,
+    reviewedAt: r.reviewedAt == null ? null : Number(r.reviewedAt),
     reviewSummary: r.reviewSummary ?? null,
   };
 }
@@ -383,6 +389,22 @@ export default function ProposalsPanel({ slug }: Props) {
   // Uses the existing inline JSX as the cell content, preserving all
   // CSS classes (h-proposal-pin, h-proposal-row-button, badges) so the
   // existing styling and tooltip behaviour keep working.
+  const toggleCheck = useCallback((id: string) => {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const toggleShortlist = useCallback((id: string) => {
+    setShortlisted((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
   const proposalColumns: ColumnDef<Proposal>[] = useMemo(
     () => [
       {
@@ -549,14 +571,6 @@ export default function ProposalsPanel({ slug }: Props) {
     }
   }, [slug]);
 
-  const toggleCheck = useCallback((id: string) => {
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-  }, []);
-
   const toggleVisiblePending = () => {
     setChecked((prev) => {
       const next = new Set(prev);
@@ -613,15 +627,6 @@ export default function ProposalsPanel({ slug }: Props) {
     setToast(ok ? 'proposal markdown copied' : 'copy failed');
     setTimeout(() => setToast(null), 2200);
   }, [content]);
-
-  const toggleShortlist = useCallback((id: string) => {
-    setShortlisted((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {

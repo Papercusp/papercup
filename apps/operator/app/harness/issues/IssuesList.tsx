@@ -14,7 +14,14 @@ import type { Issue, IssueSeverity, IssueSource, IssueStatus } from './types';
 import { IssueDetail } from './IssueDetail';
 import { Tooltip } from '../Tooltip';
 
-function rowToIssue(r: IssueRow): Issue {
+type LocalIssueRow = {
+  issueId: string; title: string; severity: string; source: string; status: string;
+  foundAt: number | string; foundDuring?: string | null; repro?: string | null;
+  evidence?: string | null; suggestedFix?: string | null; codePointer?: string | null;
+  linkedFeatureId?: string | null; attempts?: number | string; notes?: unknown;
+};
+function rowToIssue(rRaw: IssueRow): Issue {
+  const r = rRaw as unknown as LocalIssueRow;
   // PG TIMESTAMPTZ → zero-cache → number (epoch ms). Issue.foundAt is ISO
   // string for downstream display compat.
   const foundAtMs = typeof r.foundAt === 'number' ? r.foundAt : Date.parse(String(r.foundAt));

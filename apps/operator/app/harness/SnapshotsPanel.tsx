@@ -15,7 +15,12 @@ interface Snapshot {
   featureCounts: Record<string, number>;
 }
 
-function rowToSnapshot(r: SnapshotRow): Snapshot {
+type LocalSnapshotRow = {
+  snapshotId: string; ts: number | string; iterNum?: number | string;
+  files?: unknown; featureCounts?: unknown;
+};
+function rowToSnapshot(rRaw: SnapshotRow): Snapshot {
+  const r = rRaw as unknown as LocalSnapshotRow;
   return {
     id: r.snapshotId,
     ts: Number(r.ts) || 0,
