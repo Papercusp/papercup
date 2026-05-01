@@ -272,6 +272,16 @@ else
   E5=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/prune-executed-actions?dryRun=1" \
     -H "Authorization: Bearer $ORG_TOKEN")
   echo "$E5" | jq -er '.ok == true' >/dev/null && ok "E5 prune endpoint dryRun ok ($(echo "$E5" | jq -r '.totalDeleted // "?"') would-delete)" || bad "E5 unexpected: $E5"
+
+  # Cycle: caller tries to spawn itself
+  E6=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+    -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
+    -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"scaffold_harness\",\"projectSlug\":\"papercup-org\",\"template\":\"papercup-coding\",\"spec\":\"x\",\"goal\":\"y\",\"dryRun\":true}}")
+  echo "$E6" | jq -er '.error == "validation_error" and (.detail | tostring | contains("itself") or contains("cycle") or contains("ancestor"))' >/dev/null \
+    && ok "E6 self-spawn rejected as cycle/validation" || bad "E6 unexpected: $E6"
+
+  # Rate limit: spam send_message past the threshold (env-set low for the smoke)
+  # Skip unless PAPERCUSP_SEND_MESSAGE_RATE_LIMIT is intentionally low.
 fi
 
 # ── Summary ──

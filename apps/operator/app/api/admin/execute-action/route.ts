@@ -70,6 +70,7 @@ export async function POST(req: Request) {
     identity_mismatch: 403,
     not_found: 404,
     slug_already_in_use: 409,
+    rate_limited: 429,
     internal: 500,
   };
   const status = statusByError[result.error ?? ''] ?? 500;

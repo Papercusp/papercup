@@ -220,6 +220,28 @@ function extractTargetSlug(action: ExecuteAction): string | null {
 
 // ── Verb implementations ───────────────────────────────────────────────────
 
+// Rate limit: at most N send_message ops per caller per 60s window.
+// Default 50; configurable via PAPERCUSP_SEND_MESSAGE_RATE_LIMIT.
+const SEND_MESSAGE_RATE_LIMIT = Number(process.env.PAPERCUSP_SEND_MESSAGE_RATE_LIMIT ?? 50);
+const RATE_WINDOW_MS = 60_000;
+
+async function checkSendMessageRate(callerSlug: string): Promise<{ ok: true } | { ok: false; detail: string }> {
+  if (SEND_MESSAGE_RATE_LIMIT <= 0) return { ok: true }; // disabled
+  const { sql } = getOrgPg();
+  const schema = slugToSchema(callerSlug);
+  const since = new Date(Date.now() - RATE_WINDOW_MS).toISOString();
+  const rows = await sql.unsafe(
+    `SELECT count(*)::int AS n FROM ${schema}.executed_actions
+     WHERE op = 'send_message' AND executed_at > $1::timestamptz`,
+    [since],
+  );
+  const n = (rows as any)[0]?.n ?? 0;
+  if (n >= SEND_MESSAGE_RATE_LIMIT) {
+    return { ok: false, detail: `rate limit exceeded: ${n} send_message ops in last 60s (limit=${SEND_MESSAGE_RATE_LIMIT})` };
+  }
+  return { ok: true };
+}
+
 async function doSendMessage(
   callerSlug: string,
   action: SendMessageAction,
@@ -233,6 +255,12 @@ async function doSendMessage(
   }
   if (!action.kind || !action.subject) {
     return { ok: false, actionId: '', error: 'validation_error', detail: 'kind and subject required' };
+  }
+
+  // Rate limit by caller (sliding 60s window).
+  const rate = await checkSendMessageRate(callerSlug);
+  if (!rate.ok) {
+    return { ok: false, actionId: '', error: 'rate_limited', detail: rate.detail };
   }
 
   const placeholderFlag = PLACEHOLDER_REASON.test(reason);
@@ -355,6 +383,40 @@ async function doSpinupProject(
   };
 }
 
+// Maximum spawn depth (parent → child → grandchild → ...). Prevents runaway
+// trees + protects context size. Configurable via PAPERCUSP_MAX_SPAWN_DEPTH.
+const MAX_SPAWN_DEPTH = Number(process.env.PAPERCUSP_MAX_SPAWN_DEPTH ?? 8);
+
+async function detectCycleOrTooDeep(callerSlug: string, projectSlug: string): Promise<{ ok: true } | { ok: false; error: string; detail: string }> {
+  if (callerSlug === projectSlug) {
+    return { ok: false, error: 'validation_error', detail: 'a harness cannot spawn itself' };
+  }
+  // Walk parent_slug chain from caller upward; reject if we hit projectSlug
+  // (would create a cycle) or if depth >= MAX_SPAWN_DEPTH.
+  const { sql } = getOrgPg();
+  const visited = new Set<string>();
+  let cur: string | null = callerSlug;
+  let depth = 0;
+  while (cur && depth < MAX_SPAWN_DEPTH + 2) {
+    if (visited.has(cur)) {
+      return { ok: false, error: 'validation_error', detail: `existing parent chain already cycles at ${cur}` };
+    }
+    visited.add(cur);
+    if (cur === projectSlug) {
+      return { ok: false, error: 'validation_error', detail: `cycle: requested child ${projectSlug} is an ancestor of caller ${callerSlug}` };
+    }
+    depth++;
+    if (depth > MAX_SPAWN_DEPTH) {
+      return { ok: false, error: 'validation_error', detail: `spawn chain exceeds depth ${MAX_SPAWN_DEPTH}; refuse to deepen` };
+    }
+    const rows = await sql<{ parent_slug: string | null }[]>`
+      SELECT parent_slug FROM harness_shared.projects WHERE slug = ${cur} LIMIT 1
+    `;
+    cur = rows.length > 0 ? rows[0].parent_slug : null;
+  }
+  return { ok: true };
+}
+
 async function doScaffoldHarness(
   callerSlug: string,
   action: ScaffoldHarnessAction,
@@ -364,6 +426,12 @@ async function doScaffoldHarness(
   }
   if (!action.template || !action.spec || !action.goal) {
     return { ok: false, actionId: '', error: 'validation_error', detail: 'template, spec, goal required' };
+  }
+
+  // Cycle / depth detection — prevents runaway trees and self-spawn.
+  const cycle = await detectCycleOrTooDeep(callerSlug, action.projectSlug);
+  if (!cycle.ok) {
+    return { ok: false, actionId: '', error: cycle.error, detail: cycle.detail };
   }
 
   const { sql } = getOrgPg();
