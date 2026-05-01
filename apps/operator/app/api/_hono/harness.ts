@@ -39,6 +39,148 @@ interface RegistryFile { projects: ProjectEntry[] }
 
 const REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
 
+/* ─────────────────────────────────────────────────────────────────────
+ * Performance helpers (added 2026-05-01).
+ *
+ * `/api/harness/<slug>/{status,phases,git/log}` were the three slowest
+ * endpoints in the harness UI; together they accounted for ~3s mean
+ * response time per dashboard render. Three changes:
+ *
+ *   1. tailLastResultLine() reads the last ~8KB of a .jsonl file instead
+ *      of the whole file. Cost-aggregation is O(file count) instead of
+ *      O(total bytes).
+ *   2. aggregateCostFromLogDir() caches the aggregated cost / token
+ *      counts per logDir for ttlMs (default 5s), invalidated by the
+ *      directory's mtime. Both /status and /phases share the cache.
+ *   3. cachedGitLog() caches `git log --format=...` output keyed on
+ *      project path + HEAD sha + limit, TTL 3s. Skips the subprocess
+ *      spawn when HEAD hasn't moved.
+ * ───────────────────────────────────────────────────────────────────── */
+
+function tailLastResultLine(filePath: string, lookbackBytes = 8 * 1024): { obj: Record<string, unknown> | null } {
+  let fd = -1;
+  try {
+    const st = statSync(filePath);
+    if (st.size === 0) return { obj: null };
+    const start = Math.max(0, st.size - lookbackBytes);
+    const len = st.size - start;
+    fd = openSync(filePath, 'r');
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, start);
+    const text = buf.toString('utf8');
+    // Walk lines backwards to find the last `"type":"result"` JSON object.
+    const lines = text.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line.startsWith('{')) continue;
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        if (obj.type === 'result') return { obj };
+      } catch { /* partial line at the start of the window — skip */ }
+    }
+    return { obj: null };
+  } catch {
+    return { obj: null };
+  } finally {
+    if (fd >= 0) try { closeSync(fd); } catch {}
+  }
+}
+
+interface CostAggregate { cost: number; inputTokens: number; outputTokens: number }
+
+const __costCache = new Map<string, { sig: string; expires: number; value: CostAggregate }>();
+
+function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggregate {
+  const now = Date.now();
+  let sig = 'no-dir';
+  try {
+    if (existsSync(logDir)) {
+      const st = statSync(logDir);
+      sig = `${st.mtimeMs}:${st.size}`;
+    }
+  } catch {}
+  const cached = __costCache.get(logDir);
+  if (cached && cached.sig === sig && cached.expires > now) return cached.value;
+
+  const out: CostAggregate = { cost: 0, inputTokens: 0, outputTokens: 0 };
+  try {
+    if (existsSync(logDir)) {
+      for (const f of readdirSync(logDir)) {
+        if (!f.endsWith('.jsonl')) continue;
+        const { obj } = tailLastResultLine(join(logDir, f));
+        if (!obj) continue;
+        out.cost += Number(obj.total_cost_usd ?? 0) || 0;
+        const usage = obj.usage as { input_tokens?: number; output_tokens?: number } | undefined;
+        if (usage) {
+          out.inputTokens += Number(usage.input_tokens ?? 0) || 0;
+          out.outputTokens += Number(usage.output_tokens ?? 0) || 0;
+        }
+      }
+    }
+  } catch {}
+  __costCache.set(logDir, { sig, expires: now + ttlMs, value: out });
+  return out;
+}
+
+interface GitCommit {
+  sha: string; parents: string[]; subject: string; author: string; ts: number; refs: string[];
+}
+
+const __gitLogCache = new Map<string, { headSig: string; expires: number; commits: GitCommit[] }>();
+
+async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): Promise<GitCommit[]> {
+  const key = `${projectPath}:${limit}`;
+  const now = Date.now();
+  let headSig = '';
+  try {
+    const headPath = join(projectPath, '.git', 'HEAD');
+    const st = statSync(headPath);
+    headSig = `${st.mtimeMs}:${st.size}`;
+    // Follow `ref: refs/heads/<branch>` indirection so a commit on the
+    // current branch (which doesn't touch HEAD itself) still busts cache.
+    try {
+      const ref = readFileSync(headPath, 'utf8').trim();
+      if (ref.startsWith('ref: ')) {
+        const refPath = join(projectPath, '.git', ref.slice(5).trim());
+        if (existsSync(refPath)) {
+          const rs = statSync(refPath);
+          headSig += `|${rs.mtimeMs}`;
+        }
+      }
+    } catch {}
+  } catch {}
+  const cached = __gitLogCache.get(key);
+  if (cached && cached.headSig === headSig && cached.expires > now) return cached.commits;
+
+  const SEP = '\x1f';
+  const { stdout } = await execFileP(
+    'git',
+    [
+      '-C', projectPath,
+      'log', '--all', '--date-order',
+      `--format=%H${SEP}%P${SEP}%s${SEP}%an${SEP}%at${SEP}%D`,
+      '-n', String(limit),
+    ],
+    { maxBuffer: 16 * 1024 * 1024, timeout: 15_000 },
+  );
+  const commits: GitCommit[] = stdout
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [sha, parents, subject, author, ts, refs] = line.split(SEP);
+      return {
+        sha,
+        parents: parents ? parents.split(' ').filter(Boolean) : [],
+        subject: subject ?? '',
+        author: author ?? '',
+        ts: Number(ts) * 1000,
+        refs: refs ? refs.split(', ').filter(Boolean) : [],
+      };
+    });
+  __gitLogCache.set(key, { headSig, expires: now + ttlMs, commits });
+  return commits;
+}
+
 function loadRegistry(): RegistryFile {
   if (existsSync(REGISTRY_PATH)) {
     try { return JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')); } catch {}
@@ -252,35 +394,15 @@ harness.get('/:slug/status', async (c) => {
   // Escalation
   const escalation = safeRead(join(harnessDir(project), 'escalation.md'));
 
-  // Aggregate cost + tokens across all .jsonl files (fast: only read last
-  // "result" line of each). Parallel, bounded by fs.
-  let missionCostUsd = 0;
-  let missionInputTokens = 0;
-  let missionOutputTokens = 0;
-  try {
-    const logDir = join(harnessDir(project), 'logs');
-    if (existsSync(logDir)) {
-      for (const f of readdirSync(logDir)) {
-        if (!f.endsWith('.jsonl')) continue;
-        try {
-          const raw = readFileSync(join(logDir, f), 'utf8');
-          // Scan backward for the first `"type":"result"` line
-          const lines = raw.split('\n').filter(Boolean);
-          for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-              const obj = JSON.parse(lines[i]);
-              if (obj.type === 'result') {
-                missionCostUsd += obj.total_cost_usd ?? 0;
-                missionInputTokens += obj.usage?.input_tokens ?? 0;
-                missionOutputTokens += obj.usage?.output_tokens ?? 0;
-                break;
-              }
-            } catch {}
-          }
-        } catch {}
-      }
-    }
-  } catch {}
+  // Aggregate cost + tokens across all .jsonl files via the cached helper
+  // (tail-reads each file's last 8KB, memoizes per logDir for ~5s with
+  // mtime invalidation — see aggregateCostFromLogDir at the top of this
+  // file). Replaces the previous full-file readFileSync + split scan that
+  // ran on every dashboard poll.
+  const __agg = aggregateCostFromLogDir(join(harnessDir(project), 'logs'));
+  const missionCostUsd = __agg.cost;
+  const missionInputTokens = __agg.inputTokens;
+  const missionOutputTokens = __agg.outputTokens;
 
   // Process liveness: look for a run.sh process whose cwd is the project.
   // /proc/<pid>/cwd is a symlink to a directory — must use readlinkSync,
@@ -3046,32 +3168,8 @@ harness.get('/:slug/git/log', async (c) => {
   }
 
   const limit = Math.min(2000, Math.max(1, Number(c.req.query('limit') ?? 300)));
-  const SEP = '\x1f';
   try {
-    const { stdout } = await execFileP(
-      'git',
-      [
-        '-C', project.path,
-        'log', '--all', '--date-order',
-        `--format=%H${SEP}%P${SEP}%s${SEP}%an${SEP}%at${SEP}%D`,
-        '-n', String(limit),
-      ],
-      { maxBuffer: 16 * 1024 * 1024, timeout: 15_000 },
-    );
-    const commits = stdout
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [sha, parents, subject, author, ts, refs] = line.split(SEP);
-        return {
-          sha,
-          parents: parents ? parents.split(' ').filter(Boolean) : [],
-          subject: subject ?? '',
-          author: author ?? '',
-          ts: Number(ts) * 1000,
-          refs: refs ? refs.split(', ').filter(Boolean) : [],
-        };
-      });
+    const commits = await cachedGitLog(project.path, limit);
     return c.json({ commits });
   } catch (err: any) {
     return c.json({ error: err?.message ?? String(err) }, 500);
@@ -3484,6 +3582,9 @@ harness.post('/:slug/issues/:id/update', async (c) => {
   if (typeof body.status === 'string') issue.status = body.status as IssueStatus;
   if (typeof body.severity === 'string') issue.severity = body.severity as IssueSeverity;
   if (typeof body.title === 'string') issue.title = body.title;
+  if (typeof body.linkedFeatureId === 'string' || body.linkedFeatureId === null) {
+    issue.linkedFeatureId = body.linkedFeatureId ?? undefined;
+  }
   if (typeof body.note === 'string' && body.note.trim()) {
     issue.notes.push({ ts: new Date().toISOString(), by: body.by ?? 'human', text: body.note });
   }
@@ -4672,29 +4773,8 @@ async function computePhaseInfo(project: ProjectEntry, phase: Phase): Promise<Ph
   const passed = counts.passed ?? 0;
   const total = feats.length;
 
-  // cost: sum total_cost_usd of each run's last 'result' line
-  let cost = 0;
-  try {
-    const logDir = join(path, '.harness', 'logs');
-    if (existsSync(logDir)) {
-      for (const f of readdirSync(logDir)) {
-        if (!f.endsWith('.jsonl')) continue;
-        try {
-          const raw = readFileSync(join(logDir, f), 'utf8');
-          const lines = raw.split('\n').filter(Boolean);
-          for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-              const obj = JSON.parse(lines[i]);
-              if (obj.type === 'result') {
-                cost += obj.total_cost_usd ?? 0;
-                break;
-              }
-            } catch {}
-          }
-        } catch {}
-      }
-    }
-  } catch {}
+  // cost via the shared cached helper (same as /status uses).
+  const cost = aggregateCostFromLogDir(join(path, '.harness', 'logs')).cost;
 
   // iteration from run.log
   let iteration = 0;
