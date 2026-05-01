@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { restore } from '@papercusp/export-state';
 import { findSnapshot, readRegistry } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
+import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
+import { resolveAliases, type ConfigSchema } from '@/lib/snapshot-shape';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
@@ -19,6 +21,13 @@ interface Body {
   name?: string;
   acceptPartial?: boolean;
   rewriteAmbiguousSlugs?: boolean;
+  /**
+   * Per-plugin config overrides supplied by the fork-completion UI to
+   * fill in `shareable: false` and `secret: true` fields the snapshot
+   * stripped. Applied AFTER restore() persists the redacted base config.
+   * Map: pluginSlug → field overrides.
+   */
+  pluginConfigOverrides?: Record<string, Record<string, unknown>>;
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -93,6 +102,24 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
       });
     }
 
+    const finalSlug = userName && userName !== result.newSlug ? userName : result.newSlug;
+
+    // Apply share-semantics: per-plugin overrides for stripped fields +
+    // resolve schema-evolution aliases against the *current* installed
+    // manifest. This lets a snapshot taken under v0.1 fork into a v0.2
+    // installation that renamed a field.
+    if (body.pluginConfigOverrides) {
+      const applied = await applyForkOverrides(finalSlug, body.pluginConfigOverrides);
+      return NextResponse.json({
+        ok: true,
+        newSlug: finalSlug,
+        projectDir: join(PROJECTS_DIR, finalSlug),
+        warnings: [...(result.warnings ?? []), ...applied.warnings],
+        ambiguousSlugMatches: result.ambiguousSlugMatches,
+        appliedOverrides: applied.applied,
+      });
+    }
+
     return NextResponse.json({
       ok: true,
       newSlug: result.newSlug,
@@ -104,6 +131,56 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
     const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ ok: false, error: msg }, { status: 500 });
   }
+}
+
+const HARNESSES_DIR = papercuspPath('harnesses');
+const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
+
+async function applyForkOverrides(
+  newSlug: string,
+  overrides: Record<string, Record<string, unknown>>,
+): Promise<{ applied: string[]; warnings: string[] }> {
+  const applied: string[] = [];
+  const warnings: string[] = [];
+  for (const [pluginSlug, fields] of Object.entries(overrides)) {
+    const cfgPath = join(HARNESSES_DIR, newSlug, 'plugin-configs', `${pluginSlug}.json`);
+    let existing: Record<string, unknown> = {};
+    try {
+      existing = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
+    } catch {
+      // Restore may not have written this plugin's config yet (uninstalled
+      // plugin). Treat as empty.
+    }
+    // Run alias resolution against the installed manifest (not the
+    // snapshot's manifest) so renames in the *current* schema take effect.
+    let installedSchema: ConfigSchema | undefined;
+    try {
+      const m = JSON.parse(
+        await fs.readFile(join(GLOBAL_PLUGINS_DIR, pluginSlug, 'papercusp.json'), 'utf8'),
+      ) as { configSchema?: ConfigSchema };
+      installedSchema = m.configSchema;
+    } catch {
+      warnings.push(`plugin ${pluginSlug} not installed; overrides applied verbatim`);
+    }
+    let resolved = existing;
+    if (installedSchema) {
+      const aliasResult = resolveAliases(installedSchema, existing);
+      resolved = aliasResult.config;
+      for (const [k, action] of Object.entries(aliasResult.trace)) {
+        warnings.push(`plugin ${pluginSlug}: field "${k}" ${action}`);
+      }
+    }
+    const merged = { ...resolved, ...fields };
+    await fs.mkdir(join(HARNESSES_DIR, newSlug, 'plugin-configs'), { recursive: true });
+    await fs.writeFile(cfgPath, JSON.stringify(merged, null, 2) + '\n');
+    try {
+      await mirrorPluginConfig(newSlug, pluginSlug, merged);
+    } catch {
+      // Best-effort PG mirror; file is authoritative.
+    }
+    applied.push(pluginSlug);
+  }
+  return { applied, warnings };
 }
 
 async function renameHarness(
