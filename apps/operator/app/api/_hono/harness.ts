@@ -1404,7 +1404,7 @@ except Exception:
     print("staging")
 ')"
     fi
-    source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event)\\(\\)/,/^}/' $HARNESS_DIR/run.sh)
+    source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|notify_event|check_cost_cap|prune_logs)\\(\\)/,/^}/' $HARNESS_DIR/run.sh)
     invoke ${escapedExtra}
   `;
   return new Promise<Response>((resolve) => {
@@ -1428,20 +1428,133 @@ except Exception:
       const agentLines = stdout.split('\n').filter((l) => !/^\[20\d\d-\d\d-\d\dT/.test(l));
       const agentOutput = agentLines.join('\n').trim();
       const decisionLine = (agentOutput.split('\n')[0] ?? '').trim();
-      resolve(c.json({
-        ok: code === 0 && !timedOut,
-        slug: project.slug,
-        role,
-        decisionLine,
-        agentOutput,
-        stdout,
-        stderr,
-        exitCode: code,
-        timedOut,
-      }));
+
+      // Post-process: if the role emitted an ```actions``` block, parse and
+      // dispatch each action through /api/admin/execute-action with this
+      // harness's bearer token. /invoke direct calls bypass run.sh's
+      // process_actions_block, so we run the equivalent here.
+      (async () => {
+        let actionsResult: { count: number; results: any[] } | null = null;
+        if (code === 0 && !timedOut) {
+          try {
+            actionsResult = await dispatchActionsBlockFromOutput(project.slug, project.path, agentOutput);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn(`[invoke ${project.slug}/${role}] actions dispatch failed:`, e);
+          }
+        }
+
+        resolve(c.json({
+          ok: code === 0 && !timedOut,
+          slug: project.slug,
+          role,
+          decisionLine,
+          agentOutput,
+          stdout,
+          stderr,
+          exitCode: code,
+          timedOut,
+          actions: actionsResult,
+        }));
+      })();
     });
   });
 });
+
+/**
+ * Extract ```actions``` block from agent output and POST each entry to
+ * /api/admin/execute-action with the harness's harness_token. Returns
+ * a summary of dispatched actions or null if no block was present.
+ *
+ * `extractResult` from run.sh's invoke only returns the trailing summary
+ * text, not the full streamed response — the actions block is typically
+ * mid-response. We fall back to reassembling text from the latest
+ * .jsonl file in the harness's logs dir.
+ */
+async function dispatchActionsBlockFromOutput(
+  callerSlug: string,
+  projectPath: string,
+  output: string,
+): Promise<{ count: number; results: any[] } | null> {
+  let blockMatch = output.match(/```actions\s*\n([\s\S]*?)\n```/);
+  if (!blockMatch) {
+    // The invoke wrapper writes a "stdout: <path>" header line referencing
+    // the .out file for THIS run. Parse the path, swap .out → .jsonl,
+    // reassemble text from content_block_delta events.
+    const pathMatch = output.match(/stdout:\s*(\S+\.out)/);
+    let jsonlPath: string | null = null;
+    if (pathMatch) {
+      jsonlPath = pathMatch[1].replace(/\.out$/, '.jsonl');
+    } else {
+      // Fallback: most recent .jsonl in logs (last resort, can race with parallel runs).
+      const logsDir = join(projectPath, '.harness', 'logs');
+      if (existsSync(logsDir)) {
+        const files = readdirSync(logsDir)
+          .filter((f) => f.endsWith('.jsonl'))
+          .map((f) => ({ path: join(logsDir, f), mt: statSync(join(logsDir, f)).mtimeMs }))
+          .sort((a, b) => b.mt - a.mt);
+        if (files.length > 0) jsonlPath = files[0].path;
+      }
+    }
+    if (jsonlPath && existsSync(jsonlPath)) {
+      try {
+        const text = readFileSync(jsonlPath, 'utf8').split('\n').reduce((acc, line) => {
+          try {
+            const j = JSON.parse(line);
+            const ev = j.event || j;
+            if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
+              return acc + (ev.delta.text || '');
+            }
+          } catch { /* skip */ }
+          return acc;
+        }, '');
+        blockMatch = text.match(/```actions\s*\n([\s\S]*?)\n```/);
+      } catch { /* skip */ }
+    }
+  }
+  if (!blockMatch) return null;
+  let actions: any[];
+  try {
+    actions = JSON.parse(blockMatch[1]);
+    if (!Array.isArray(actions)) return null;
+  } catch {
+    return { count: 0, results: [{ error: 'malformed JSON in actions block' }] };
+  }
+  if (actions.length === 0) return null;
+
+  // Read the harness's bearer token.
+  const cfgPath = join(projectPath, '.harness', 'config.json');
+  if (!existsSync(cfgPath)) return null;
+  let token: string;
+  try {
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    token = cfg.harness_token;
+    if (!token) return null;
+  } catch { return null; }
+
+  const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
+  const { randomUUID } = await import('node:crypto');
+  const results: any[] = [];
+  for (const action of actions) {
+    const actionId = randomUUID();
+    try {
+      const r = await fetch(`${operatorBase}/api/admin/execute-action`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ actionId, action }),
+        signal: AbortSignal.timeout(360_000), // 6 min — covers scaffold_harness's 5-min internal timeout + slack
+      });
+      const j = await r.json().catch(() => ({}));
+      results.push({ op: action.op, ok: (j as any).ok === true, error: (j as any).error ?? null, status: r.status });
+    } catch (e: any) {
+      results.push({ op: action.op, ok: false, error: String(e?.message ?? e).slice(0, 200) });
+    }
+  }
+  return { count: actions.length, results };
+}
 
 // ─── escalation handshake ────────────────────────────────────────────
 
@@ -2413,7 +2526,7 @@ harness.post('/:slug/product-review', async (c) => {
       export HARNESS_DIR="${harnessPackageDir()}"
       export LOG_DIR="$STATE_DIR/logs"
       mkdir -p "$STATE_DIR/proposals" "$LOG_DIR"
-      source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event)\\(\\)/,/^}/' $HARNESS_DIR/run.sh)
+      source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|check_cost_cap|prune_logs)\\(\\)/,/^}/' $HARNESS_DIR/run.sh)
       invoke scoper "MODE=proposal"
     `;
     execFile('bash', ['-c', wrapper], { env: { ...process.env, CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions' }, maxBuffer: 4 * 1024 * 1024, timeout: 10 * 60_000 },

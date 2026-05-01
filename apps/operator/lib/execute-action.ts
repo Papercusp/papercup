@@ -507,19 +507,15 @@ async function doScaffoldHarness(
     return { ok: false, actionId: '', error: 'template_not_spawnable', detail: `template ${action.template} not in spawnable catalog` };
   }
 
-  // Slug uniqueness: check projects + on-disk + token_index.
-  const existsRows = await sql<{ slug: string }[]>`
-    SELECT slug FROM harness_shared.projects WHERE slug = ${action.projectSlug} LIMIT 1
-  `;
-  if (existsRows.length > 0) {
-    return { ok: false, actionId: '', error: 'slug_already_in_use', detail: `slug ${action.projectSlug} already exists` };
-  }
-
+  // Slug uniqueness for the HARNESS slug (different namespace from
+  // harness_shared.projects.slug — a project can have the same name as the
+  // harness it's scaffolded into, but two harnesses can't share a slug).
+  // Check token_index (authoritative for harness slugs) + on-disk path.
   const tokenIdxRows = await sql<{ harness_slug: string }[]>`
     SELECT harness_slug FROM harness_shared.token_index WHERE harness_slug = ${action.projectSlug} LIMIT 1
   `;
   if (tokenIdxRows.length > 0) {
-    return { ok: false, actionId: '', error: 'slug_already_in_use', detail: `slug ${action.projectSlug} has stale token-index entry` };
+    return { ok: false, actionId: '', error: 'slug_already_in_use', detail: `harness slug ${action.projectSlug} already in use` };
   }
 
   // Decide target path (default ~/.papercusp/projects/<slug>).
