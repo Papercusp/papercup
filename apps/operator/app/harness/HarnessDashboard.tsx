@@ -183,6 +183,7 @@ const SmokeTestPanel = dynamicWithRetry(() => import('./SmokeTestPanel'), 'Smoke
 const IdentityPanel = dynamic(() => import('./IdentityPanel'), { ssr: false });
 const PlanReviewBanner = dynamic(() => import('./PlanReviewBanner'), { ssr: false });
 const SummaryPanel = dynamic(() => import('./SummaryPanel'), { ssr: false });
+const ExpertsPanel = dynamicWithRetry(() => import('./ExpertsPanel'), 'ExpertsPanel');
 
 // ─── Types ─────────────────────────────────────────────────────────────
 
@@ -2912,6 +2913,11 @@ export default function HarnessDashboard() {
               }}
             />
           ))}
+          <Tooltip label={activeSlug ? 'Experts — instanced spec-authoring agents (one per high-level feature area)' : 'Select a project to view experts'}>
+            <Tabs.Trigger value="experts" className="h-tab" disabled={!activeSlug}>
+              🧠 experts
+            </Tabs.Trigger>
+          </Tooltip>
           <Tooltip label={activeSlug ? 'Insights — analytics' : 'Select a project to view insights'}>
             <Tabs.Trigger value="insights" className="h-tab" disabled={!activeSlug}>
               <TrendingUp size={13} /> insights
@@ -3010,6 +3016,12 @@ export default function HarnessDashboard() {
             totalInputTokens={status.missionInputTokens ?? 0}
             totalOutputTokens={status.missionOutputTokens ?? 0}
             iteration={status.iteration}
+            onClose={() => setActivePanel('dashboard')}
+          />
+        )}
+        {activePanel === 'experts' && activeSlug && (
+          <ExpertsPanel
+            harnessSlug={activeSlug}
             onClose={() => setActivePanel('dashboard')}
           />
         )}
