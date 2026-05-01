@@ -1,0 +1,217 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import { Layers, ExternalLink, Loader2 } from 'lucide-react';
+import { toast, Toaster } from 'sonner';
+
+interface PublishRecord {
+  slug: string;
+  version: string;
+  browseUrl?: string;
+  publishedAtMs?: number;
+}
+
+interface TemplateRow {
+  slug: string;
+  version: string;
+  path: string;
+  manifest: {
+    name?: string;
+    version?: string;
+    description?: string;
+    author?: string;
+    license?: string;
+    icon?: string;
+    plugins?: Array<string | { slug: string; version?: string; autoEnable?: boolean }>;
+    models?: Record<string, { preferred?: string }>;
+    configFiles?: Array<{ path: string }>;
+    forkedFrom?: { harness?: string; at?: string };
+  };
+  publishedSlugs: PublishRecord[];
+  savedAtMs: number;
+}
+
+function formatDate(ms?: number): string {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+export default function InstalledTemplatesPage() {
+  const [rows, setRows] = useState<TemplateRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [publishing, setPublishing] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch('/api/templates', { cache: 'no-store' });
+      const d = r.ok ? await r.json() : { templates: [] };
+      setRows(Array.isArray(d?.templates) ? d.templates : []);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const onPublish = async (row: TemplateRow) => {
+    const key = `${row.slug}@${row.version}`;
+    setPublishing(key);
+    try {
+      const r = await fetch(
+        `/api/templates/${encodeURIComponent(row.slug)}/${encodeURIComponent(row.version)}/publish`,
+        { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' },
+      );
+      const j = await r.json() as {
+        ok?: boolean;
+        slug?: string;
+        version?: string;
+        browseUrl?: string;
+        error?: string;
+      };
+      if (!r.ok || !j.ok) {
+        toast.error(j.error ?? `publish failed (${r.status})`);
+        return;
+      }
+      toast.success(`Published ${j.slug}@${j.version}`, {
+        description: j.browseUrl,
+        duration: 8000,
+        action: j.browseUrl ? {
+          label: 'open',
+          onClick: () => window.open(j.browseUrl, '_blank', 'noopener'),
+        } : undefined,
+      });
+      await load();
+    } catch (e: unknown) {
+      toast.error(`publish error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setPublishing(null);
+    }
+  };
+
+  const published = rows.filter((r) => r.publishedSlugs.length > 0).length;
+
+  return (
+    <div className="pc-shell pc-marketplace-shell">
+      <Toaster position="bottom-right" richColors />
+      <section className="pc-marketplace-pagehead">
+        <div>
+          <p className="pc-eyebrow">Installed templates</p>
+          <h1>Templates on this machine.</h1>
+          <p>Saved recipes from the &ldquo;Save template&rdquo; flow on each harness. Publish one to make it installable from the marketplace.</p>
+        </div>
+        <div className="pc-marketplace-mini-stats" aria-label="Template stats">
+          <div><strong>{rows.length}</strong><span>local</span></div>
+          {published > 0 && <div><strong>{published}</strong><span>published</span></div>}
+        </div>
+      </section>
+
+      {loading ? (
+        <div className="pc-card pc-marketplace-loading">Loading templates…</div>
+      ) : rows.length === 0 ? (
+        <div className="pc-card pc-marketplace-empty">
+          <strong>No templates yet.</strong>
+          <span>Click &ldquo;Save template&rdquo; on any running harness to fork its recipe into one.</span>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {rows.map((row) => {
+            const key = `${row.slug}@${row.version}`;
+            const isPublishing = publishing === key;
+            const pluginsCount = row.manifest.plugins?.length ?? 0;
+            const modelRoles = Object.keys(row.manifest.models ?? {}).length;
+            const configFilesCount = row.manifest.configFiles?.length ?? 0;
+            return (
+              <div key={key} className="pc-card" style={{ padding: 16 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                  <Layers size={16} style={{ color: 'var(--fg-dim)' }} />
+                  <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{row.slug}</h3>
+                  <code style={{ fontSize: 12, color: 'var(--fg-dim)' }}>v{row.version}</code>
+                  {row.manifest.forkedFrom?.harness ? (
+                    <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
+                      forked from <code>{row.manifest.forkedFrom.harness}</code>
+                    </span>
+                  ) : null}
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-dim)' }}>
+                    saved {formatDate(row.savedAtMs)}
+                  </span>
+                </div>
+
+                {row.manifest.description ? (
+                  <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--fg-muted)' }}>
+                    {row.manifest.description}
+                  </p>
+                ) : null}
+
+                <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: 'var(--fg-dim)' }}>
+                  <span>{pluginsCount} plugin{pluginsCount === 1 ? '' : 's'}</span>
+                  <span>{modelRoles} role{modelRoles === 1 ? '' : 's'}</span>
+                  <span>{configFilesCount} config file{configFilesCount === 1 ? '' : 's'}</span>
+                  {row.manifest.author ? <span>by {row.manifest.author}</span> : null}
+                  {row.manifest.license ? <span>{row.manifest.license}</span> : null}
+                </div>
+
+                <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button
+                    onClick={() => onPublish(row)}
+                    disabled={isPublishing}
+                    style={{
+                      padding: '6px 12px',
+                      background: 'var(--accent, #3b82f6)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: 4,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: isPublishing ? 'default' : 'pointer',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    {isPublishing ? (
+                      <><Loader2 size={12} className="pc-spin" /> publishing…</>
+                    ) : row.publishedSlugs.length > 0 ? 'republish' : 'publish to marketplace'}
+                  </button>
+
+                  {row.publishedSlugs.length > 0 ? (
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {row.publishedSlugs.slice(-3).reverse().map((p) => (
+                        <a
+                          key={`${p.slug}@${p.version}`}
+                          href={p.browseUrl}
+                          target="_blank"
+                          rel="noopener"
+                          style={{
+                            fontSize: 11,
+                            color: 'var(--fg-dim)',
+                            textDecoration: 'none',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            padding: '4px 8px',
+                            border: '1px solid var(--border)',
+                            borderRadius: 3,
+                          }}
+                        >
+                          <ExternalLink size={11} />
+                          {p.slug}@{p.version}
+                        </a>
+                      ))}
+                    </div>
+                  ) : null}
+
+                  <code style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-dim)' }}>
+                    {row.path}
+                  </code>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
