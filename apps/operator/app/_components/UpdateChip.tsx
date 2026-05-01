@@ -80,7 +80,21 @@ export default function UpdateChip() {
       await installUpdate();
       // The promise typically never resolves — Tauri restarts the process.
     } catch (e: any) {
-      toast.error(`install failed: ${e?.message ?? e}`);
+      // Linux currently has no AppImage swap target (CI build of AppImage is
+      // blocked by linuxdeploy/FUSE friction), so install_update fails on
+      // Linux with `no_compatible_assets`. Fall back to opening the GitHub
+      // releases page so the user can download a fresh .deb / .rpm manually.
+      const msg = String(e?.message ?? e);
+      if (msg.includes('no_compatible_assets') || msg.includes('compatible')) {
+        toast.info('Auto-install isn’t available on this platform yet — opening releases page.');
+        window.open(
+          'https://github.com/papercupai/papercusp-desktop/releases/latest',
+          '_blank',
+          'noopener,noreferrer',
+        );
+      } else {
+        toast.error(`install failed: ${msg}`);
+      }
       setInstalling(false);
     }
   };
