@@ -305,6 +305,23 @@ export const harness = new Hono();
 
 harness.get('/projects', async (c) => {
   const reg = loadRegistry();
+  const filterParentSlug = c.req.query('parent_slug');
+  // Best-effort: pull parent_slug for each registered slug from the
+  // project's own .harness/config.json. The file registry doesn't carry
+  // this field, so for newly-spawned children we read it back from disk.
+  const parentSlugByConfigByPath = new Map<string, string | null>();
+  for (const p of reg.projects) {
+    const cfgPath = join(p.path, '.harness', 'config.json');
+    let parentSlug: string | null = null;
+    try {
+      if (existsSync(cfgPath)) {
+        const txt = await import('node:fs/promises').then((fs) => fs.readFile(cfgPath, 'utf8'));
+        const j = JSON.parse(txt);
+        if (typeof j?.parent_slug === 'string' && j.parent_slug) parentSlug = j.parent_slug;
+      }
+    } catch { /* ignore */ }
+    parentSlugByConfigByPath.set(p.slug, parentSlug);
+  }
   const enriched = await Promise.all(reg.projects.map(async (p) => {
     const hDir = harnessDir(p);
     let hasState = false;
@@ -314,9 +331,13 @@ harness.get('/projects', async (c) => {
       hasState = !!row;
     } catch {}
     const hasSpec = existsSync(join(p.path, 'SPEC.md'));
-    return { ...p, hasState, hasSpec, harnessDir: hDir };
+    const parent_slug = parentSlugByConfigByPath.get(p.slug) ?? null;
+    return { ...p, hasState, hasSpec, harnessDir: hDir, parent_slug };
   }));
-  return c.json({ projects: enriched });
+  const filtered = filterParentSlug
+    ? enriched.filter((p) => p.parent_slug === filterParentSlug)
+    : enriched;
+  return c.json({ projects: filtered });
 });
 
 harness.post('/projects', async (c) => {

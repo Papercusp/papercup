@@ -16,6 +16,7 @@ import { registerAgentChats } from '../_hono/agent-chats';
 import { registerExperts } from '../_hono/experts';
 import { registerProjects } from '../_hono/projects';
 import { registerOracle } from '../_hono/oracle';
+import { registerCrossHarness } from '../_hono/cross-harness';
 import { mountPluginApiRoutes, installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
 
 export const dynamic = 'force-dynamic';
@@ -43,6 +44,7 @@ registerOperatorNotes(harness);
 registerAgentChats(harness);
 registerExperts(harness);
 registerProjects(harness);
+registerCrossHarness(harness);
 app.route('/harness', harness);
 registerOracle(app);
 

@@ -373,11 +373,12 @@ async function doScaffoldHarness(
     return { ok: false, actionId: '', error: 'slug_already_in_use', detail: `path ${projectPath} already exists on disk` };
   }
 
-  // Shell out to `papercusp init`.
+  // Shell out to `papercusp init`. Without --target, init creates the project
+  // dir under PAPERCUSP_PROJECTS_ROOT/<slug>.
   const cliPath = process.env.PAPERCUSP_CLI ?? join(homeDir, '.local/bin/papercusp');
   let initStdout = '';
   try {
-    const r = await execFileP(cliPath, ['init', action.projectSlug, '--from', action.template, '--target', projectPath], {
+    const r = await execFileP(cliPath, ['init', action.projectSlug, '--from', action.template], {
       timeout: 5 * 60 * 1000, // 5 min
       maxBuffer: 4 * 1024 * 1024,
       env: { ...process.env, PAPERCUSP_PROJECTS_ROOT: projectsRoot },
@@ -427,47 +428,41 @@ async function doScaffoldHarness(
     return { ok: false, actionId: '', error: 'internal', detail: `failed to write .harness/config.json: ${e?.message}`, result: { partialPath: projectPath } };
   }
 
-  // Register with operator (POST /api/harness/projects). The route also
-  // provisions the per-harness PG schema. Then run our migration backfill
-  // to add messages/executed_actions/etc tables (the route's scaffold uses
-  // the master template, which now includes them — but for safety we
-  // re-run the per-harness migration).
-  const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
-  let registrationOk = false;
-  let registrationDetail = '';
+  // `papercusp init` already added the harness to the file registry (which
+  // the operator reads via /api/harness/projects). What it does NOT do is
+  // provision the per-harness PG schema. Trigger that directly via the
+  // scaffold script.
+  const restartRoot = process.env.PAPERCUSP_REPO_ROOT ?? '/home/marsh-office/Restart';
+  const scaffoldScript = process.env.PAPERCUSP_SCAFFOLD_SCRIPT ??
+    join(homeDir, 'papercupai-workspace/papercup/bin/scaffold-harness-schema.sh');
   try {
-    const r = await fetch(`${operatorBase}/api/harness/projects`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ slug: action.projectSlug, path: projectPath, parent_slug: callerSlug }),
+    await execFileP('bash', [scaffoldScript, action.projectSlug], {
+      cwd: restartRoot,
+      env: {
+        ...process.env,
+        PGUSER: 'postgres_app',
+        PGPASSWORD: 'postgres',
+        PGHOST: 'localhost',
+        PGDATABASE: 'papercusp',
+      },
+      timeout: 30_000,
+      maxBuffer: 4 * 1024 * 1024,
     });
-    if (r.ok) {
-      registrationOk = true;
-    } else {
-      registrationDetail = `HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`;
-    }
   } catch (e: any) {
-    registrationDetail = `fetch failed: ${e?.message}`;
-  }
-
-  if (!registrationOk) {
     return {
       ok: false,
       actionId: '',
       error: 'internal',
-      detail: `harness registration failed: ${registrationDetail}`,
+      detail: `schema scaffold failed: ${String(e?.message ?? e).slice(0, 500)}`,
       result: { partialPath: projectPath },
     };
   }
 
-  // Mirror the token into PG. The freshly-created schema should now have
-  // the config_token + token_index plumbing from the per-harness template.
+  // Mirror the token into PG.
   const newSchema = slugToSchema(action.projectSlug);
   try {
     await sql.unsafe(`INSERT INTO ${newSchema}.config_token (token) VALUES ($1) ON CONFLICT (token) DO NOTHING`, [harnessToken]);
   } catch (e: any) {
-    // Schema may not have config_token yet (older operator that doesn't run the latest template);
-    // bail out with a clear error.
     return {
       ok: false,
       actionId: '',
@@ -479,6 +474,17 @@ async function doScaffoldHarness(
     INSERT INTO harness_shared.token_index (token, harness_slug)
     VALUES (${harnessToken}, ${action.projectSlug})
     ON CONFLICT (token) DO UPDATE SET harness_slug = EXCLUDED.harness_slug
+  `;
+
+  // Mirror parent_slug into harness_shared.projects so the registry knows
+  // who spawned this child. `papercusp init` only writes to the file
+  // registry; this is the PG-side bookkeeping. We INSERT or UPDATE since
+  // some harnesses are tracked here (those that have a project record);
+  // newly-spawned children may not yet have one — that's fine, parent_slug
+  // is null until something else inserts the project row.
+  await sql`
+    UPDATE harness_shared.projects SET parent_slug = ${callerSlug}
+    WHERE slug = ${action.projectSlug}
   `;
 
   return {
