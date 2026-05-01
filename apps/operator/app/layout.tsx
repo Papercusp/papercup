@@ -1,7 +1,6 @@
 import type { Metadata } from 'next';
 import { Toaster } from 'sonner';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
-import SessionIndicator from './_components/SessionIndicator';
 import WorkspaceSwitcher from './_components/WorkspaceSwitcher';
 import UpdateChip from './_components/UpdateChip';
 import { ChatwootWidget } from './_components/ChatwootWidget';
@@ -30,7 +29,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <a href="https://github.com/papercupai/papercusp" target="_blank" rel="noopener noreferrer">GitHub</a>
               <UpdateChip />
               <WorkspaceSwitcher />
-              <SessionIndicator />
             </nav>
           </header>
           <main>{children}</main>

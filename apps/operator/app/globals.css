@@ -2274,3 +2274,45 @@ body.papercusp-chromeless main {
   color: var(--fg-dim);
   font-weight: 400;
 }
+
+/* =========================================================================
+   Operator desktop overrides
+   ========================================================================= */
+
+/* When the harness page collapses its in-page chrome, also hide the global
+   page header to maximise vertical space. HarnessDashboard toggles
+   `h-harness-top-collapsed` on <body>. */
+body.h-harness-top-collapsed .pc-header {
+  display: none;
+}
+
+/* Oracle dock: shared marketplace styles use 0.96–0.99 alpha on every
+   layer (dock, body, header, message bubbles). Stacked layers compound
+   the residual translucency, which makes the chat text hard to read
+   against active harness panels behind it. Force fully-opaque solids
+   in the desktop operator. The colours match the original tone, just
+   without the alpha. */
+.oracle-dock {
+  background: #060d18 !important;
+}
+.oracle-dock::before {
+  display: none !important;
+}
+.oracle-body {
+  background: #060d18 !important;
+}
+.oracle-dock-header {
+  background: #07101d !important;
+}
+.oracle-msg-content {
+  background: #07101d !important;
+}
+.oracle-msg-user .oracle-msg-content {
+  background: #0b1e31 !important;
+}
+.oracle-msg-assistant .oracle-msg-content {
+  background: #060d18 !important;
+}
+.oracle-form {
+  background: #060d18 !important;
+}
