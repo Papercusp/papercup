@@ -488,6 +488,13 @@ export interface Plugin {
   papercusp: string;
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
+  /** When true, the plugin is hidden from the marketplace listing UI. The
+   *  plugin still loads, enables, and runs — this only suppresses its
+   *  appearance in the marketplace catalog cards. Use for in-development
+   *  plugins that are functional but not yet ready for public discovery. */
+  hidden?: boolean;
+  /** Optional human-readable reason shown in admin tools when `hidden` is true. */
+  hiddenReason?: string;
   /** Action declarations. Each must be registered from `init()` to be invocable. */
   actions?: ActionDefinition[];
 

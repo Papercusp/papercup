@@ -34,6 +34,8 @@ interface InstalledPluginRecord {
   description?: string;
   source: string;
   path: string;
+  /** Manifest-declared marketplace-hidden flag — see plugin-sdk Plugin.hidden. */
+  hidden?: boolean;
 }
 
 interface Props {
@@ -70,6 +72,9 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
     const bySlug = new Map(catalogForKind.map((entry) => [entry.slug, entry]));
     if (isPlugin) {
       for (const plugin of installedPlugins) {
+        // Manifest-declared marketplace-hidden plugins don't appear as catalog
+        // cards. They still load and run; this just suppresses discovery.
+        if (plugin.hidden) continue;
         if (!bySlug.has(plugin.name)) {
           bySlug.set(plugin.name, {
             slug: plugin.name,
