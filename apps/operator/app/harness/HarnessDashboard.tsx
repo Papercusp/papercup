@@ -798,6 +798,95 @@ function ManifestOrLegacySpecEditor({ slug, projectPath, alive, onClose }: {
 }
 
 /**
+ * "Save template" button — forks the current harness's recipe (manifest +
+ * SPEC.md / AGENTS.md / .harness/config.json / validation-contract.md +
+ * recommended plugins lifted from enabled-plugins.json) into
+ * ~/.papercusp/templates/<new-slug>/<version>/. The output is `papercusp init`
+ * -ready and can be edited at /installed/templates/<slug>/edit (page TBD).
+ *
+ * Distinct from SaveSnapshotButton — templates capture the recipe, not the
+ * in-flight state. No DB rows, no agent transcripts, no features.json.
+ */
+function SaveTemplateButton({ slug }: { slug: string }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [newSlug, setNewSlug] = useState(`${slug}-template`);
+  const [version, setVersion] = useState('0.1.0');
+  const [description, setDescription] = useState('');
+  const [author, setAuthor] = useState('');
+
+  const onSubmit = async () => {
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/save-as-template`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug: newSlug.trim(), version: version.trim(), description: description.trim(), author: author.trim() }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        toast.error(j.error ?? `save-as-template failed (${r.status})`);
+        return;
+      }
+      toast.success(`Saved template ${j.slug}@${j.version}`, {
+        description: `${j.copied?.length ?? 0} files + ${j.pluginRecs ?? 0} plugin recommendations → ${j.path}`,
+        duration: 6000,
+      });
+      setOpen(false);
+    } catch (e: unknown) {
+      toast.error(`save-as-template error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button className="h-btn ghost" onClick={() => setOpen(true)} disabled={busy}>
+        <Layers size={13} /> {busy ? 'saving…' : 'save template'}
+      </button>
+      {open && (
+        <div className="h-modal-bg" onClick={() => !busy && setOpen(false)}>
+          <div className="h-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
+            <h2 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Save as template</h2>
+            <p style={{ margin: '0 0 16px', fontSize: 12, color: '#9ca3af' }}>
+              Forks <strong>{slug}</strong>&rsquo;s recipe (SPEC.md / AGENTS.md / .harness/config.json / validation-contract.md + recommended plugins) into <code>~/.papercusp/templates/&lt;slug&gt;/&lt;version&gt;/</code>. No mid-mission state is included.
+            </p>
+            <label style={{ display: 'block', marginBottom: 10 }}>
+              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Slug</span>
+              <input value={newSlug} onChange={(e) => setNewSlug(e.target.value)} disabled={busy}
+                className="h-input" style={{ width: '100%', fontFamily: 'monospace', fontSize: 13 }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 10 }}>
+              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Version (semver)</span>
+              <input value={version} onChange={(e) => setVersion(e.target.value)} disabled={busy}
+                className="h-input" style={{ width: '120px', fontFamily: 'monospace', fontSize: 13 }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 10 }}>
+              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Description</span>
+              <input value={description} onChange={(e) => setDescription(e.target.value)} disabled={busy}
+                placeholder={`Template forked from ${slug}`}
+                className="h-input" style={{ width: '100%', fontSize: 13 }} />
+            </label>
+            <label style={{ display: 'block', marginBottom: 16 }}>
+              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Author (optional)</span>
+              <input value={author} onChange={(e) => setAuthor(e.target.value)} disabled={busy}
+                className="h-input" style={{ width: '100%', fontSize: 13 }} />
+            </label>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="h-btn ghost" onClick={() => setOpen(false)} disabled={busy}>cancel</button>
+              <button className="h-btn primary" onClick={onSubmit} disabled={busy || !newSlug.trim() || !version.trim()}>
+                {busy ? 'saving…' : 'save template'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
  * "Save snapshot" button — captures the current harness state to a
  * tarball under <projectDir>/.harness/snapshots/<id>.tar.gz. Then the
  * user can browse, instantiate, or publish it from the top-nav
@@ -2646,13 +2735,8 @@ export default function HarnessDashboard() {
                   handler kicks off a flow that's still being built — for now it
                   toasts a TODO so the button is discoverable. */}
               {activeSlug && (
-                <Tooltip label="Save current harness as a reusable template (recipe; no in-flight state). Coming soon — full editor flow under construction.">
-                  <button
-                    className="h-btn ghost"
-                    onClick={() => toast.info('Save template flow is being built. For now use papercusp publish from a template directory.')}
-                  >
-                    <Layers size={13} /> save template
-                  </button>
+                <Tooltip label="Save current harness as a reusable template (recipe; no in-flight state)">
+                  <SaveTemplateButton slug={activeSlug} />
                 </Tooltip>
               )}
               {activeSlug && <SaveSnapshotButton slug={activeSlug} />}

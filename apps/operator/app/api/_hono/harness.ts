@@ -13,7 +13,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { harnessPackageDir, harnessPath } from './harness-paths';
 import { firePluginLifecycle, firePluginEvent } from '../../../lib/plugin-host-runtime';
@@ -3029,6 +3029,152 @@ harness.get('/:slug/snapshots', (c) => {
     console.error(`[snapshots] PG sync failed for ${project.slug}:`, err);
   });
   return c.json({ snapshots });
+});
+
+/**
+ * POST /:slug/save-as-template — create a reusable template from a running harness.
+ *
+ * A template is a recipe (manifest + scaffolding files) that can be
+ * `papercusp init`'d into a fresh harness. Distinct from a snapshot
+ * (which freezes mid-mission state). This endpoint:
+ *
+ *   1. Reads the harness's .harness/config.json (models, timeouts, phases).
+ *   2. Reads ~/.papercusp/.../harnesses/<slug>/enabled-plugins.json for the
+ *      plugin recommendations to bake into the template.
+ *   3. Copies SPEC.md, AGENTS.md, .harness/validation-contract.md verbatim
+ *      to the template's source dir.
+ *   4. Synthesizes a papercusp.json manifest with:
+ *        - kind: "template"
+ *        - name (from body.slug, default <harness-slug>-template)
+ *        - version (from body.version, default 0.1.0)
+ *        - description, author, license, icon (from body, optional)
+ *        - models (lifted from .harness/config.json)
+ *        - plugins[] (recommendations from enabled-plugins.json)
+ *        - configFiles[] (the standard set: SPEC.md, AGENTS.md,
+ *          .harness/config.json, .harness/validation-contract.md)
+ *
+ * The template lands at ~/.papercusp/templates/<new-slug>/<version>/.
+ * Returns the path so callers can navigate to /installed/templates/<slug>/edit
+ * (the editor page is a follow-up; for now the user can edit files manually
+ * or run `papercusp publish` from the dir).
+ */
+harness.post('/:slug/save-as-template', async (c) => {
+  const project = resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+
+  const body = (await c.req.json().catch(() => ({}))) as {
+    slug?: string;
+    version?: string;
+    description?: string;
+    author?: string;
+    license?: string;
+    icon?: string;
+  };
+
+  const newSlug = (body.slug ?? `${project.slug}-template`).trim();
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(newSlug) && !/^@[a-z0-9][a-z0-9._-]+\/[a-z0-9][a-z0-9._-]+$/.test(newSlug)) {
+    return c.json({ error: `invalid slug "${newSlug}" (lowercase alphanumeric + ._- ; or scoped @owner/name)` }, 400);
+  }
+  const version = (body.version ?? '0.1.0').trim();
+  if (!/^\d+\.\d+\.\d+(-[a-z0-9.-]+)?$/.test(version)) {
+    return c.json({ error: `invalid version "${version}" (expected semver, e.g. 0.1.0)` }, 400);
+  }
+
+  // Workspace-aware root: prefer ~/.papercusp-workspaces/<current>/.papercusp
+  // (the live workspace) and fall back to ~/.papercusp for legacy installs.
+  const wsRegistry = join(homedir(), '.papercusp-workspaces', 'registry.json');
+  let rootDir = join(homedir(), '.papercusp');
+  if (existsSync(wsRegistry)) {
+    try {
+      const reg = JSON.parse(await readFile(wsRegistry, 'utf8')) as { current?: string };
+      if (reg.current) {
+        const cand = join(homedir(), '.papercusp-workspaces', reg.current, '.papercusp');
+        if (existsSync(cand)) rootDir = cand;
+      }
+    } catch {}
+  }
+
+  const templateDir = join(rootDir, 'templates', newSlug, version);
+  if (existsSync(templateDir)) {
+    return c.json({ error: `template already exists at ${templateDir} — bump version or pick a different slug` }, 409);
+  }
+  await mkdir(templateDir, { recursive: true });
+
+  // Source files to copy verbatim
+  const sourceFiles = ['SPEC.md', 'AGENTS.md', '.harness/config.json', '.harness/validation-contract.md'];
+  const copied: string[] = [];
+  const skipped: string[] = [];
+  for (const rel of sourceFiles) {
+    const src = join(project.path, rel);
+    if (!existsSync(src)) { skipped.push(rel); continue; }
+    const dst = join(templateDir, rel);
+    await mkdir(dirname(dst), { recursive: true });
+    await copyFile(src, dst);
+    copied.push(rel);
+  }
+
+  // Read .harness/config.json so we can lift its `models` into the manifest.
+  let configModels: Record<string, unknown> | undefined;
+  try {
+    const cfgRaw = await readFile(join(project.path, '.harness', 'config.json'), 'utf8');
+    const cfg = JSON.parse(cfgRaw) as { models?: Record<string, unknown> };
+    if (cfg.models && typeof cfg.models === 'object') configModels = cfg.models;
+  } catch {}
+
+  // Read enabled-plugins.json for plugin recommendations.
+  type EnabledPlugins = { enabled?: Record<string, { version?: string }> };
+  const enabledPath = join(rootDir, 'harnesses', project.slug, 'enabled-plugins.json');
+  let pluginRecs: Array<{ slug: string; autoEnable: boolean; version?: string }> = [];
+  try {
+    if (existsSync(enabledPath)) {
+      const enabled = JSON.parse(await readFile(enabledPath, 'utf8')) as EnabledPlugins;
+      pluginRecs = Object.entries(enabled.enabled ?? {}).map(([slug, info]) => ({
+        slug,
+        autoEnable: true,
+        version: info.version,
+      }));
+    }
+  } catch {}
+
+  // Standard configFiles list — what the operator's Config tab will surface
+  // when the template is instantiated. Mirrors papercup-coding's manifest.
+  const configFiles = [
+    { path: 'SPEC.md', label: 'SPEC.md', language: 'markdown', description: 'What this project should accomplish — read by every role on every iteration.' },
+    { path: 'AGENTS.md', label: 'AGENTS.md', language: 'markdown', description: 'Coding conventions, libraries to prefer, idioms to avoid — applied by the worker.' },
+    { path: '.harness/config.json', label: 'config.json', language: 'json', description: 'Phase, model preferences per role, timeouts, cost cap.' },
+    { path: '.harness/validation-contract.md', label: 'validation-contract.md', language: 'markdown', description: 'What "passing" means — the validator enforces this against every worker proposal.' },
+  ];
+
+  const manifest = {
+    name: newSlug,
+    version,
+    kind: 'template' as const,
+    description: body.description ?? `Template forked from ${project.slug}`,
+    author: body.author,
+    license: body.license ?? 'MIT',
+    icon: body.icon,
+    papercusp: '^0.1.0',
+    ...(configModels ? { models: configModels } : {}),
+    ...(pluginRecs.length > 0 ? { plugins: pluginRecs } : {}),
+    configFiles,
+    forkedFrom: { harness: project.slug, at: new Date().toISOString() },
+  };
+  await writeFile(
+    join(templateDir, 'papercusp.json'),
+    JSON.stringify(manifest, null, 2) + '\n',
+    'utf8',
+  );
+
+  return c.json({
+    ok: true,
+    slug: newSlug,
+    version,
+    path: templateDir,
+    copied,
+    skipped,
+    pluginRecs: pluginRecs.length,
+    editPath: `/installed/templates/${encodeURIComponent(newSlug)}/edit`,
+  });
 });
 
 harness.post('/:slug/snapshots/:id/restore', async (c) => {
