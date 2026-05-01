@@ -24,18 +24,22 @@ interface TemplateVersion {
   savedAtMs: number;
 }
 
+interface TemplateRow extends TemplateVersion {
+  versions: { version: string; savedAtMs: number; publishedSlugs: TemplateVersion['publishedSlugs'] }[];
+}
+
 export async function GET() {
   const root = papercuspPath('templates');
   if (!existsSync(root)) return NextResponse.json({ templates: [] });
 
   const slugs = await fs.readdir(root, { withFileTypes: true });
-  const templates: TemplateVersion[] = [];
+  const templates: TemplateRow[] = [];
 
   for (const slug of slugs) {
     if (!slug.isDirectory()) continue;
     const slugDir = join(root, slug.name);
     const versions = await fs.readdir(slugDir, { withFileTypes: true });
-    let newest: TemplateVersion | null = null;
+    const collected: TemplateVersion[] = [];
     for (const v of versions) {
       if (!v.isDirectory()) continue;
       const versionDir = join(slugDir, v.name);
@@ -46,9 +50,6 @@ export async function GET() {
         const raw = await fs.readFile(manifestPath, 'utf8');
         const manifest = JSON.parse(raw) as Record<string, unknown>;
 
-        // Read the publish sidecar if it exists, so the UI can show
-        // marketplace coordinates + skip "Publish" for already-published
-        // templates.
         const sidecar = join(versionDir, '.published.json');
         let published: TemplateVersion['publishedSlugs'] = [];
         if (existsSync(sidecar)) {
@@ -58,20 +59,29 @@ export async function GET() {
           } catch { /* malformed sidecar, ignore */ }
         }
 
-        const candidate: TemplateVersion = {
+        collected.push({
           slug: slug.name,
           version: v.name,
           path: versionDir,
           manifest,
           publishedSlugs: published,
           savedAtMs: stat.mtimeMs,
-        };
-        if (!newest || candidate.savedAtMs > newest.savedAtMs) newest = candidate;
+        });
       } catch {
-        // Skip malformed templates rather than failing the whole listing.
+        // Skip malformed versions rather than failing the whole listing.
       }
     }
-    if (newest) templates.push(newest);
+    if (collected.length === 0) continue;
+    collected.sort((a, b) => b.savedAtMs - a.savedAtMs);
+    const newest = collected[0]!;
+    templates.push({
+      ...newest,
+      versions: collected.map((v) => ({
+        version: v.version,
+        savedAtMs: v.savedAtMs,
+        publishedSlugs: v.publishedSlugs,
+      })),
+    });
   }
 
   templates.sort((a, b) => b.savedAtMs - a.savedAtMs);

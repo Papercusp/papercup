@@ -1,18 +1,51 @@
 /**
- * DELETE /api/templates/<slug>/<version>
+ * GET    /api/templates/<slug>/<version> — single template version detail.
+ * DELETE /api/templates/<slug>/<version> — remove the local copy.
  *
- * Removes a saved template directory under ~/.papercusp/templates/.
  * Best-effort — if a template has been published to the marketplace,
- * this only removes the local copy; the published version stays live
+ * delete only removes the local copy; the published version stays live
  * until retracted via the marketplace API.
  */
 
 import { NextResponse } from 'next/server';
 import { existsSync, promises as fs } from 'node:fs';
+import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+
+export async function GET(
+  _req: Request,
+  ctx: { params: Promise<{ slug: string; version: string }> },
+) {
+  const { slug, version } = await ctx.params;
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slug)) {
+    return NextResponse.json({ ok: false, error: 'invalid slug' }, { status: 400 });
+  }
+  if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(version)) {
+    return NextResponse.json({ ok: false, error: 'invalid version' }, { status: 400 });
+  }
+  const dir = papercuspPath('templates', slug, version);
+  const manifestPath = join(dir, 'papercusp.json');
+  if (!existsSync(manifestPath)) {
+    return NextResponse.json({ ok: false, error: 'template not found' }, { status: 404 });
+  }
+  const stat = await fs.stat(dir);
+  const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+  const sidecar = join(dir, '.published.json');
+  let publishedSlugs: Array<{ slug: string; version: string; browseUrl?: string; publishedAtMs?: number }> = [];
+  if (existsSync(sidecar)) {
+    try {
+      const arr = JSON.parse(await fs.readFile(sidecar, 'utf8'));
+      if (Array.isArray(arr)) publishedSlugs = arr;
+    } catch { /* ignore */ }
+  }
+  return NextResponse.json({
+    ok: true,
+    template: { slug, version, path: dir, manifest, publishedSlugs, savedAtMs: stat.mtimeMs },
+  });
+}
 
 export async function DELETE(
   _req: Request,

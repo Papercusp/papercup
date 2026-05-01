@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import * as Lucide from 'lucide-react';
+import { toast, Toaster } from 'sonner';
 
 interface PublishRecord {
   slug: string;
@@ -39,27 +40,72 @@ function formatDate(ms: number): string {
 export default function InstalledSnapshotsPage() {
   const [rows, setRows] = useState<SnapshotRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      try {
-        const r = await fetch('/api/snapshots', { cache: 'no-store' });
-        const d = r.ok ? await r.json() : { snapshots: [] };
-        if (!cancelled) setRows(Array.isArray(d?.snapshots) ? d.snapshots : []);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch('/api/snapshots', { cache: 'no-store' });
+      const d = r.ok ? await r.json() : { snapshots: [] };
+      setRows(Array.isArray(d?.snapshots) ? d.snapshots : []);
+    } finally {
+      setLoading(false);
     }
-    void load();
-    return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const onDelete = async (s: SnapshotRow) => {
+    const has = s.publishes.length > 0;
+    const note = has
+      ? '\n\nThis will not retract the published version on the marketplace — use Retract first if you also want it gone there.'
+      : '';
+    if (!confirm(`Delete snapshot ${s.id}?${note}`)) return;
+    setBusy(s.id);
+    try {
+      const r = await fetch(`/api/snapshots/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        toast.error(j.error ?? `delete failed (${r.status})`);
+        return;
+      }
+      toast.success(`Deleted ${s.id}`);
+      await load();
+    } catch (e) {
+      toast.error(`delete error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onRetract = async (s: SnapshotRow, marketplaceSlug: string) => {
+    if (!confirm(`Retract ${marketplaceSlug} from the marketplace?\n\nMarks the published version as withdrawn. The local snapshot stays intact.`)) return;
+    setBusy(`${s.id}:${marketplaceSlug}`);
+    try {
+      const r = await fetch(`/api/snapshots/${encodeURIComponent(s.id)}/retract`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ marketplaceSlug, reason: 'retracted from operator listing' }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) {
+        toast.error(j.error ?? `retract failed (${r.status})`);
+        return;
+      }
+      toast.success(`Retracted ${marketplaceSlug}`);
+      await load();
+    } catch (e) {
+      toast.error(`retract error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const published = rows.filter((r) => r.publishes.length > 0).length;
 
   return (
     <div className="pc-shell pc-marketplace-shell">
+      <Toaster position="bottom-right" richColors />
       <section className="pc-marketplace-pagehead">
         <div>
           <p className="pc-eyebrow">Installed snapshots</p>
@@ -103,10 +149,38 @@ export default function InstalledSnapshotsPage() {
                 <div className="pc-marketplace-enabled">
                   <strong>Published as</strong>
                   {s.publishes.map((p) => (
-                    <a key={p.slug} href={p.browseUrl} target="_blank" rel="noreferrer"><code>{p.slug}@{p.version}</code></a>
+                    <span key={`${p.slug}@${p.version}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <a href={p.browseUrl} target="_blank" rel="noreferrer"><code>{p.slug}@{p.version}</code></a>
+                      <button
+                        onClick={() => onRetract(s, p.slug)}
+                        disabled={busy === `${s.id}:${p.slug}`}
+                        title="Retract this published version from the marketplace"
+                        style={{
+                          padding: '2px 6px', fontSize: 10, background: 'transparent',
+                          border: '1px solid var(--border)', color: '#fbbf24', borderRadius: 3,
+                          cursor: busy === `${s.id}:${p.slug}` ? 'default' : 'pointer',
+                        }}
+                      >
+                        retract
+                      </button>
+                    </span>
                   ))}
                 </div>
               )}
+              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => onDelete(s)}
+                  disabled={busy === s.id}
+                  style={{
+                    padding: '4px 10px', background: 'transparent', color: '#f87171',
+                    border: '1px solid var(--border)', borderRadius: 4, fontSize: 11,
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    cursor: busy === s.id ? 'default' : 'pointer',
+                  }}
+                >
+                  <Lucide.Trash2 size={11} /> delete
+                </button>
+              </div>
             </article>
           ))}
         </div>

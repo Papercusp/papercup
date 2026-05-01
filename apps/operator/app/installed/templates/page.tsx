@@ -12,10 +12,17 @@ interface PublishRecord {
   publishedAtMs?: number;
 }
 
+interface VersionSummary {
+  version: string;
+  savedAtMs: number;
+  publishedSlugs: Array<{ slug: string; version: string; browseUrl?: string; publishedAtMs?: number }>;
+}
+
 interface TemplateRow {
   slug: string;
   version: string;
   path: string;
+  versions?: VersionSummary[];
   manifest: {
     name?: string;
     version?: string;
@@ -157,6 +164,11 @@ export default function InstalledTemplatesPage() {
                   {row.manifest.forkedFrom?.harness ? (
                     <span style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
                       forked from <code>{row.manifest.forkedFrom.harness}</code>
+                    </span>
+                  ) : null}
+                  {(row.versions?.length ?? 0) > 1 ? (
+                    <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
+                      {row.versions!.length} versions
                     </span>
                   ) : null}
                   <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-dim)' }}>
