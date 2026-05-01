@@ -40,19 +40,33 @@ export function registerCrossHarness(harness: Hono) {
   harness.get('/:slug/inbox', async (c) => {
     const slug = c.req.param('slug');
     const status = c.req.query('status') ?? 'pending';
+    const role = c.req.query('role'); // optional: filter to messages addressed to this role (or unaddressed)
     const limit = clampLimit(c.req.query('limit'), 20, 200);
     const schema = slugToSchema(slug);
     try {
       const { sql } = getOrgPg();
-      const rows = await sql.unsafe(
-        `SELECT id, from_slug, to_slug, kind, subject, body, parent_message_id, status, created_at, acknowledged_at
-         FROM ${schema}.messages
-         WHERE to_slug = $1 AND ($2 = 'all' OR status = $2)
-         ORDER BY created_at DESC
-         LIMIT $3`,
-        [slug, status, limit],
-      );
-      return c.json({ slug, status, messages: rows });
+      let rows: any;
+      if (role && /^[a-z][a-z0-9_-]*$/i.test(role)) {
+        rows = await sql.unsafe(
+          `SELECT id, from_slug, to_slug, to_role, kind, subject, body, parent_message_id, status, created_at, acknowledged_at
+           FROM ${schema}.messages
+           WHERE to_slug = $1 AND ($2 = 'all' OR status = $2)
+             AND (to_role IS NULL OR to_role = $3)
+           ORDER BY created_at DESC
+           LIMIT $4`,
+          [slug, status, role, limit],
+        );
+      } else {
+        rows = await sql.unsafe(
+          `SELECT id, from_slug, to_slug, to_role, kind, subject, body, parent_message_id, status, created_at, acknowledged_at
+           FROM ${schema}.messages
+           WHERE to_slug = $1 AND ($2 = 'all' OR status = $2)
+           ORDER BY created_at DESC
+           LIMIT $3`,
+          [slug, status, limit],
+        );
+      }
+      return c.json({ slug, status, role: role ?? null, messages: rows });
     } catch (e: any) {
       return c.json({ error: 'failed', detail: String(e?.message).slice(0, 300) }, 500);
     }

@@ -48,7 +48,15 @@ export type ExecuteAction =
   | ScaffoldHarnessAction
   | PauseProjectAction
   | ResumeProjectAction
-  | MarkCampaignPublishedAction;
+  | MarkCampaignPublishedAction
+  | AddDirectiveSummaryAction;
+
+export interface AddDirectiveSummaryAction {
+  op: 'add_directive_summary';
+  directiveId: string;
+  summary: string; // ≥10 chars; appended with ts + caller
+  source?: 'ceo' | 'user' | 'auditor';
+}
 
 export interface PauseProjectAction {
   op: 'pause_project';
@@ -74,6 +82,7 @@ export interface MarkCampaignPublishedAction {
 export interface SendMessageAction {
   op: 'send_message';
   to: string[];
+  toRole?: string; // optional: narrow to a specific role within each recipient
   kind: string;
   subject: string;
   body?: string;
@@ -266,15 +275,16 @@ async function doSendMessage(
   const placeholderFlag = PLACEHOLDER_REASON.test(reason);
   const { sql } = getOrgPg();
 
+  const toRole = action.toRole && /^[a-z][a-z0-9_-]*$/i.test(action.toRole) ? action.toRole : null;
   const inserted: { recipient: string; messageId: string }[] = [];
   for (const recipient of action.to) {
     const schema = slugToSchema(recipient);
-    // INSERT one message into the recipient's inbox.
+    // INSERT one message into the recipient's inbox. to_role optional.
     const rows = await sql.unsafe(
-      `INSERT INTO ${schema}.messages (from_slug, to_slug, kind, subject, body, parent_message_id, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+      `INSERT INTO ${schema}.messages (from_slug, to_slug, to_role, kind, subject, body, parent_message_id, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
        RETURNING id`,
-      [callerSlug, recipient, action.kind, action.subject, action.body ?? null, action.parentMessageId ?? null],
+      [callerSlug, recipient, toRole, action.kind, action.subject, action.body ?? null, action.parentMessageId ?? null],
     );
     const messageId = (rows as any)[0].id as string;
 
@@ -665,6 +675,32 @@ async function doResumeProject(
   return { ok: true, actionId: '', result: { project: rows[0] } };
 }
 
+async function doAddDirectiveSummary(
+  callerSlug: string,
+  action: AddDirectiveSummaryAction,
+): Promise<ExecuteActionResult> {
+  if (!action.directiveId || typeof action.summary !== 'string' || action.summary.trim().length < 10) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'directiveId and summary (≥10 chars) required' };
+  }
+  const source = action.source ?? 'ceo';
+  if (!['ceo', 'user', 'auditor'].includes(source)) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: `source must be one of ceo|user|auditor (got ${source})` };
+  }
+  const { sql } = getOrgPg();
+  const schema = slugToSchema(callerSlug);
+  const rows = await sql.unsafe(
+    `INSERT INTO ${schema}.directive_summaries (directive_id, source, summary, caller_slug)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, created_at`,
+    [action.directiveId, source, action.summary.trim(), callerSlug],
+  );
+  return {
+    ok: true,
+    actionId: '',
+    result: { id: (rows as any)[0].id, directiveId: action.directiveId, source },
+  };
+}
+
 async function doMarkCampaignPublished(
   callerSlug: string,
   action: MarkCampaignPublishedAction,
@@ -703,6 +739,7 @@ export async function dispatchAction(
     case 'pause_project': return doPauseProject(callerSlug, action);
     case 'resume_project': return doResumeProject(callerSlug, action);
     case 'mark_campaign_published': return doMarkCampaignPublished(callerSlug, action);
+    case 'add_directive_summary': return doAddDirectiveSummary(callerSlug, action);
     default: return { ok: false, actionId: '', error: 'validation_error', detail: `unknown op: ${(action as any).op}` };
   }
 }

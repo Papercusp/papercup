@@ -301,6 +301,26 @@ else
       echo "$NEW_S" | jq -er '.ok == true' >/dev/null && ok "E7c new token works for executeAction" || bad "E7c unexpected: $NEW_S"
     fi
   fi
+
+  # add_directive_summary
+  E8=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+    -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
+    -d "{\"actionId\":\"$(uuid)\",\"action\":{\"op\":\"add_directive_summary\",\"directiveId\":\"D-SMOKE-E8\",\"summary\":\"Smoke E8 directive memory: spawned 1 child smoke-a-child, all in_progress, no blockers reported.\",\"source\":\"ceo\"}}")
+  echo "$E8" | jq -er '.ok == true' >/dev/null && ok "E8 add_directive_summary persisted" || bad "E8 unexpected: $E8"
+
+  # Per-role addressing — send to specific role; verify inbox filter works
+  E9_TAG="E9-$(uuid)"
+  E9_ID=$(uuid)
+  E9_SEND=$(curl -sS -X POST "$OPERATOR_BASE/api/admin/execute-action" \
+    -H "Authorization: Bearer $ORG_TOKEN" -H 'content-type: application/json' \
+    -d "{\"actionId\":\"$E9_ID\",\"action\":{\"op\":\"send_message\",\"to\":[\"papercup-org-coordination\"],\"toRole\":\"director\",\"kind\":\"Priority\",\"subject\":\"$E9_TAG\",\"reason\":\"verify to_role addressing routes only to specified role in receiver inbox filter\"}}")
+  echo "$E9_SEND" | jq -er '.ok == true' >/dev/null && ok "E9 send_message with toRole accepted" || bad "E9 unexpected: $E9_SEND"
+
+  sleep 1
+  E9_DIR=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org-coordination/inbox?status=all&role=director&limit=10" | jq -r --arg t "$E9_TAG" '[.messages[] | select(.subject == $t)] | length')
+  E9_WORK=$(curl -sS "$OPERATOR_BASE/api/harness/papercup-org-coordination/inbox?status=all&role=worker&limit=10" | jq -r --arg t "$E9_TAG" '[.messages[] | select(.subject == $t)] | length')
+  [ "$E9_DIR" = "1" ] && ok "E9b inbox?role=director sees the message" || bad "E9b unexpected director-count: $E9_DIR"
+  [ "$E9_WORK" = "0" ] && ok "E9c inbox?role=worker excludes the message" || bad "E9c unexpected worker-count: $E9_WORK"
 fi
 
 # ── Summary ──
