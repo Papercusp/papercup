@@ -182,9 +182,32 @@ async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): P
 }
 
 function loadRegistry(): RegistryFile {
+  // The legacy registry (~/.restart-harness-projects.json) and the
+  // workspace registry (~/.papercusp-workspaces/default/.papercusp/registry.json)
+  // both carry harness rows. The CLI's `papercusp init` writes to the
+  // workspace registry; older paths and direct API calls go to the legacy
+  // registry. Merge both, preferring the legacy registry on slug collisions.
+  const merged: ProjectEntry[] = [];
+  const seen = new Set<string>();
   if (existsSync(REGISTRY_PATH)) {
-    try { return JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')); } catch {}
+    try {
+      const r = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')) as RegistryFile;
+      for (const p of r.projects ?? []) {
+        if (!seen.has(p.slug)) { seen.add(p.slug); merged.push(p); }
+      }
+    } catch {}
   }
+  // Workspace registry — papercusp-root resolver knows the right path.
+  try {
+    const wsRoot = require('@/lib/papercusp-root').papercuspPath('registry.json');
+    if (existsSync(wsRoot)) {
+      const r = JSON.parse(readFileSync(wsRoot, 'utf8')) as RegistryFile;
+      for (const p of r.projects ?? []) {
+        if (!seen.has(p.slug)) { seen.add(p.slug); merged.push(p); }
+      }
+    }
+  } catch {}
+  if (merged.length > 0) return { projects: merged };
   // Auto-discover: any known default location with a .harness/ dir
   const autos: ProjectEntry[] = [];
   for (const name of ['sheets-clone', 'Restart']) {

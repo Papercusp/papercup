@@ -551,6 +551,9 @@ export async function executeAction(
   if (!body.actionId || typeof body.actionId !== 'string') {
     return { ok: false, actionId: body.actionId ?? '', error: 'validation_error', detail: 'actionId (UUID) required' };
   }
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.actionId)) {
+    return { ok: false, actionId: body.actionId, error: 'validation_error', detail: 'actionId must be a UUID' };
+  }
   if (!body.action || typeof body.action !== 'object' || !body.action.op) {
     return { ok: false, actionId: body.actionId, error: 'validation_error', detail: 'action.op required' };
   }
