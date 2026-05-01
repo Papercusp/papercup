@@ -23,6 +23,10 @@ import type { Hono } from 'hono';
 import { stream, streamSSE } from 'hono/streaming';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectDirForSlug } from '../../../lib/operator-notes';
@@ -67,6 +71,10 @@ const VALID_ROLES = new Set([
   'documenter', 'summarizer', 'architect', 'curator', 'debugger',
   'crosscheck', 'ui-qa', 'project_manager',
   'director', 'coordinator', 'auditor',
+  // Instanced role: chat needs feature_id="EXP-NNN" to identify which expert
+  // instance is being chatted with. `feedback` is intentionally absent —
+  // ephemeral, no chat surface.
+  'expert',
 ]);
 
 /**
@@ -77,6 +85,35 @@ const activeChats = new Map<string, { startedAt: number }>();
 
 function dbForSlug(slug: string) {
   return getLegacyClient(slug);
+}
+
+/**
+ * Flip the userEngaged flag (and corresponding awaiting_user / gathering_feedback
+ * status) on an expert instance. Called when the chat opens (engaged=true) and
+ * when the chat is archived (engaged=false).
+ *
+ * Reads + writes `.harness/experts/<id>/identity.json` directly. Tolerates a
+ * missing file (no-op).
+ */
+async function flipExpertEngaged(slug: string, expertId: string, engaged: boolean): Promise<void> {
+  const home = process.env.HOME ?? homedir();
+  const reg = join(home, '.restart-harness-projects.json');
+  if (!existsSync(reg)) return;
+  const data = JSON.parse(readFileSync(reg, 'utf8'));
+  const projectDir = data.projects?.find((p: { slug?: string; path?: string }) => p.slug === slug)?.path;
+  if (!projectDir) return;
+  const identityPath = join(projectDir, '.harness', 'experts', expertId, 'identity.json');
+  if (!existsSync(identityPath)) return;
+  const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
+  const terminal = new Set(['final', 'max_rounds', 'cancelled', 'superseded', 'error']);
+  identity.userEngaged = engaged;
+  if (engaged) {
+    if (!terminal.has(identity.status)) identity.status = 'awaiting_user';
+  } else {
+    if (identity.status === 'awaiting_user') identity.status = 'gathering_feedback';
+  }
+  identity.updatedAt = new Date().toISOString();
+  await writeFile(identityPath, JSON.stringify(identity, null, 2), 'utf8');
 }
 
 /**
@@ -240,6 +277,15 @@ export function registerAgentChats(harness: Hono): void {
       ).run(id, body.role, body.feature_id ?? null, title, '[]');
       const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as any;
       const featureLock = body.feature_id ? await readFeatureLockState(slug, body.feature_id) : null;
+
+      // Expert chat-open hook: flip userEngaged + awaiting_user so the
+      // autonomous loop pauses at the next agent boundary.
+      if (body.role === 'expert' && body.feature_id && /^EXP-\d{3,}$/.test(body.feature_id)) {
+        await flipExpertEngaged(slug, body.feature_id, true).catch((err) => {
+          console.warn(`[agent-chats] failed to flip expert engaged for ${body.feature_id}:`, err?.message ?? err);
+        });
+      }
+
       return c.json({ ...rowToChat(row), feature_lock: featureLock }, 201);
     } catch (e) {
       return c.json({ error: `failed to create chat: ${(e as Error).message}` }, 500);
@@ -268,7 +314,17 @@ export function registerAgentChats(harness: Hono): void {
     const chatId = c.req.param('chatId');
     try {
       const db = dbForSlug(slug);
+      // Capture role + feature_id BEFORE archiving so we can resume the
+      // matching expert if this was an expert chat.
+      const pre = (await db
+        .prepare('SELECT role, feature_id FROM agent_chats WHERE id = ?')
+        .get(chatId)) as { role: string; feature_id: string | null } | undefined;
       await db.prepare('UPDATE agent_chats SET archived_at = now(), updated_at = now() WHERE id = ?').run(chatId);
+      if (pre?.role === 'expert' && pre.feature_id && /^EXP-\d{3,}$/.test(pre.feature_id)) {
+        await flipExpertEngaged(slug, pre.feature_id, false).catch((err) => {
+          console.warn(`[agent-chats] failed to flip expert engaged off for ${pre.feature_id}:`, err?.message ?? err);
+        });
+      }
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: `failed to archive chat: ${(e as Error).message}` }, 500);

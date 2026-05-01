@@ -4772,7 +4772,14 @@ const KNOWN_ROLES = [
   'scoper', 'worker', 'validator', 'orchestrator',
   'curator', 'architect', 'documenter', 'supervisor',
   'reviewer', 'debugger', 'crosscheck', 'ui-qa',
+  'expert', 'feedback',
 ];
+
+// Roles that should not appear in the chat-agent sidebar even though they
+// have prompt files. `feedback` is ephemeral (one conversation, then exit) —
+// there's nothing to chat with. Still listed in KNOWN_ROLES so the Prompts
+// settings tab can show its global prompt.
+const NON_CHAT_ROLES = new Set(['feedback']);
 
 function promptsDir(project: ProjectEntry): string {
   return join(harnessDir(project), 'prompts');
