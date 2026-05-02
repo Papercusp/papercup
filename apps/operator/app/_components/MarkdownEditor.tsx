@@ -26,6 +26,8 @@ export interface MarkdownEditorProps {
   minHeight?: number;
   /** Override the default toolbar config. Pass [] for no toolbar. */
   toolbar?: Array<string | object>;
+  /** Show Vditor's built-in document outline panel (left or right). */
+  outline?: false | 'left' | 'right';
   /** Forwarded as a className on the outer wrapper. */
   className?: string;
   /** Inline style on the outer wrapper. */
@@ -64,32 +66,69 @@ export function expandWikiLinks(md: string): string {
  * which renders Mermaid / KaTeX / PlantUML / Echarts / flowchart inline
  * without instantiating a full editor. Drop-in replacement for
  * `<ReactMarkdown>{md}</ReactMarkdown>`. Also expands [[wiki-links]].
+ *
+ * @param outline When true or 'left'/'right', renders a sticky table-of-contents
+ *                panel beside the rendered content using `Vditor.outlineRender`.
  */
 export function MarkdownPreview({
   value,
+  outline = false,
   className,
   style,
 }: {
   value: string;
+  outline?: boolean | 'left' | 'right';
   className?: string;
   style?: React.CSSProperties;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const outlineRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!ref.current) return;
     let cancelled = false;
     (async () => {
       const Vditor = (await import('vditor')).default;
       if (cancelled || !ref.current) return;
-      Vditor.preview(ref.current, expandWikiLinks(value ?? ''), {
+      await Vditor.preview(ref.current, expandWikiLinks(value ?? ''), {
         mode: 'dark',
         theme: { current: 'dark' },
         math: { engine: 'KaTeX' },
         anchor: 1,
       });
+      if (outline && outlineRef.current && ref.current) {
+        outlineRef.current.innerHTML = '';
+        Vditor.outlineRender(ref.current, outlineRef.current);
+      }
     })();
     return () => { cancelled = true; };
-  }, [value]);
+  }, [value, outline]);
+
+  if (outline) {
+    const position = outline === 'right' ? 'right' : 'left';
+    return (
+      <div className={className} style={{ display: 'flex', gap: 16, ...style }}>
+        {position === 'left' && (
+          <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
+        )}
+        <div
+          ref={ref}
+          className="vditor-reset pc-md-preview"
+          style={{ flex: 1, background: 'var(--bg-1, #0b0d10)', color: 'var(--text-1, #e6e6e6)', minWidth: 0 }}
+        />
+        {position === 'right' && (
+          <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
+        )}
+        <style>{`
+          .pc-md-outline ul { list-style: none; padding-left: 12px; margin: 0; }
+          .pc-md-outline > ul { padding-left: 0; }
+          .pc-md-outline li { margin: 2px 0; }
+          .pc-md-outline a { color: var(--text-2, #aaa); text-decoration: none; font-size: 12px; line-height: 1.5; display: block; padding: 1px 4px; border-radius: 2px; }
+          .pc-md-outline a:hover { color: var(--text-1, #fff); background: var(--bg-2, #15181c); }
+        `}</style>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={ref}
@@ -98,6 +137,18 @@ export function MarkdownPreview({
     />
   );
 }
+
+const outlinePanelStyle: React.CSSProperties = {
+  width: 220,
+  flexShrink: 0,
+  position: 'sticky',
+  top: 0,
+  alignSelf: 'flex-start',
+  maxHeight: 'calc(100vh - 100px)',
+  overflowY: 'auto',
+  padding: '8px 4px',
+  borderRight: '1px solid var(--border, #2a2a2a)',
+};
 
 const DEFAULT_TOOLBAR: Array<string | object> = [
   'headings', 'bold', 'italic', 'strike', '|',
@@ -114,6 +165,7 @@ export function MarkdownEditor({
   height = '100%',
   minHeight = 200,
   toolbar = DEFAULT_TOOLBAR,
+  outline = false,
   className,
   style,
   placeholder,
@@ -139,6 +191,7 @@ export function MarkdownEditor({
         minHeight,
         placeholder,
         toolbar,
+        outline: outline ? { enable: true, position: outline } : { enable: false, position: 'left' },
         preview: {
           theme: { current: 'dark' },
           math: { engine: 'KaTeX' },

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { MarkdownPreview } from '../_components/MarkdownEditor';
 import * as Tabs from '@radix-ui/react-tabs';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useSyncQuery } from '@restart/sync';
@@ -908,18 +909,14 @@ export default function ProposalsPanel({ slug }: Props) {
                   )}
                 </div>
               </div>
-              {(contentStats.outline.length > 0 || contentStats.signals > 0) && (
-                <div className="h-proposal-outline" aria-label="Proposal outline">
-                  <span>outline</span>
-                  {contentStats.outline.map((heading, index) => (
-                    <b key={`${heading}-${index}`}>{heading}</b>
-                  ))}
-                  {contentStats.signals > 0 && <em>{contentStats.signals} review signal{contentStats.signals === 1 ? '' : 's'}</em>}
+              {contentStats.signals > 0 && (
+                <div className="h-proposal-outline" aria-label="Proposal review signals">
+                  <em>{contentStats.signals} review signal{contentStats.signals === 1 ? '' : 's'}</em>
                 </div>
               )}
-              <div className="h-proposal-doc-shell">
+              <div className="h-proposal-doc-shell" style={{ overflow: 'auto' }}>
                 {content ? (
-                  <pre className="h-proposal-doc">{content}</pre>
+                  <MarkdownPreview value={content} outline="left" />
                 ) : (
                   <div className="h-proposal-loading">loading proposal…</div>
                 )}

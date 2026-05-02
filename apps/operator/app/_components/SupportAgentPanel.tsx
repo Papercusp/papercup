@@ -11,6 +11,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { MarkdownPreview } from './MarkdownEditor';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -177,8 +178,12 @@ export function SupportAgentPanel({ surface = 'operator' }: { surface?: 'public'
               >
                 {m.role === 'user' ? 'You' : 'Papercusp AI'}
               </div>
-              <div style={{ whiteSpace: 'pre-wrap', color: 'var(--fg)' }}>
-                {m.content || (busy && i === messages.length - 1 ? '…' : '')}
+              <div style={{ color: 'var(--fg)' }}>
+                {m.content
+                  ? (m.role === 'assistant'
+                      ? <MarkdownPreview value={m.content} />
+                      : <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>)
+                  : (busy && i === messages.length - 1 ? '…' : '')}
               </div>
             </div>
           ))}
@@ -234,10 +239,10 @@ export function SupportAgentPanel({ surface = 'operator' }: { surface?: 'public'
         </button>
         <button
           type="button"
-          onClick={() => window.$chatwoot?.toggle('open')}
+          onClick={() => window.dispatchEvent(new CustomEvent('papercusp:open-support'))}
           className="pc-button"
           style={{ padding: '10px 16px', background: 'var(--bg)' }}
-          title="Talk to a human via Chatwoot"
+          title="Talk to a human via Support"
         >
           👤
         </button>

@@ -344,7 +344,7 @@ function ManifestMarkdownBody({
             <MarkdownPreview value={value} />
           </div>
         ) : (
-          <MarkdownEditor value={value} onChange={onChange} mode="ir" />
+          <MarkdownEditor value={value} onChange={onChange} mode="ir" outline="left" />
         )}
       </div>
       <BacklinksPanel target={target} harness={harness} />

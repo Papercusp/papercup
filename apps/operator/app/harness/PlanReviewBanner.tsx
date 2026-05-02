@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { MarkdownPreview } from '../_components/MarkdownEditor';
 
 interface Props {
   slug: string;
@@ -80,7 +81,7 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
         <span style={{ fontWeight: 700 }}>{tone.icon} Plan review · <code style={{ fontFamily: 'ui-monospace, monospace' }}>{verdict}</code></span>
         <button
           onClick={() => setOpen((v) => !v)}
-          title={open ? 'Hide the plan-review markdown' : "Show the full plan-gate review (.harness/plan-review.md)"}
+          title={open ? 'Hide the plan-review markdown' : "Show the full reviewer output (.harness/plan-review.md)"}
           style={{ background: 'transparent', border: `1px solid ${tone.border}`, color: tone.fg, borderRadius: 3, padding: '0.2rem 0.55rem', cursor: 'pointer', fontSize: '0.7rem' }}
         >
           {open ? 'hide' : 'show details'}
@@ -99,26 +100,25 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
         </button>
       </div>
       {open && !compact && (
-        <pre style={{ margin: '0.5rem 0 0 0', padding: '0.5rem 0.75rem', background: '#0b0e14', color: '#d1d5db', fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem', borderRadius: 3, maxHeight: '30vh', overflow: 'auto', whiteSpace: 'pre-wrap' }}>
-          {content}
-        </pre>
+        <div style={{ margin: '0.5rem 0 0 0', padding: '0.5rem 0.75rem', background: '#0b0e14', borderRadius: 3, maxHeight: '30vh', overflow: 'auto' }}>
+          <MarkdownPreview value={content} />
+        </div>
       )}
     </div>
     {compact && open && popoverRect && typeof document !== 'undefined' && createPortal(
-      <pre style={{
+      <div style={{
         position: 'fixed',
         top: popoverRect.top, left: popoverRect.left,
         width: 'min(640px, 90vw)',
         margin: 0, padding: '0.5rem 0.75rem',
-        background: '#0b0e14', color: '#d1d5db',
-        fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem',
+        background: '#0b0e14',
         border: `1px solid ${tone.border}`, borderRadius: 4,
         boxShadow: '0 12px 28px rgba(0,0,0,0.45)',
-        maxHeight: '50vh', overflow: 'auto', whiteSpace: 'pre-wrap',
+        maxHeight: '50vh', overflow: 'auto',
         zIndex: 90,
       }}>
-        {content}
-      </pre>,
+        <MarkdownPreview value={content} />
+      </div>,
       document.body,
     )}
     </>
