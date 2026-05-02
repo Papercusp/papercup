@@ -98,6 +98,28 @@ export function MarkdownPreview({
       if (outline && outlineRef.current && ref.current) {
         outlineRef.current.innerHTML = '';
         Vditor.outlineRender(ref.current, outlineRef.current);
+        // Vditor's standalone outlineRender attaches a click handler that does
+        // `window.scrollTo(0, idElement.offsetTop)` — but our preview lives inside
+        // a flex container with its own overflow, so window-level scroll is wrong.
+        // Intercept and scrollIntoView() the heading instead so it scrolls
+        // whichever ancestor is actually scrollable.
+        const onClick = (event: Event) => {
+          let t = event.target as HTMLElement | null;
+          while (t && t !== outlineRef.current) {
+            const tid = t.getAttribute?.('data-target-id');
+            if (tid) {
+              const heading = ref.current?.querySelector(`#${CSS.escape(tid)}`) as HTMLElement | null;
+              if (heading) {
+                event.preventDefault();
+                event.stopPropagation();
+                heading.scrollIntoView({ block: 'start', behavior: 'smooth' });
+              }
+              return;
+            }
+            t = t.parentElement;
+          }
+        };
+        outlineRef.current.addEventListener('click', onClick, true);
       }
     })();
     return () => { cancelled = true; };
@@ -139,6 +161,9 @@ export function MarkdownPreview({
 }
 
 const outlinePanelStyle: React.CSSProperties = {
+  // Override Vditor's default `.vditor-outline { display: none }` — outlineRender
+  // adds that class to whatever element it renders into.
+  display: 'block',
   width: 220,
   flexShrink: 0,
   position: 'sticky',
@@ -203,6 +228,43 @@ export function MarkdownEditor({
           inst.setValue(initialValueRef.current ?? '');
           if (readOnly) inst.disabled();
           else inst.enable();
+          // `outline.enable: true` mounts the DOM but Vditor leaves it
+          // display:none after layout; force-show on the next frame so we
+          // run after Vditor's own post-mount layout pass.
+          //
+          // Also install a click handler that scrolls the IR pane explicitly:
+          // Vditor's built-in handler is bound on first render, gets re-run
+          // unreliably across HMR / setValue paths, and the scroll math
+          // assumes the editor is the document scroll layer (not always true
+          // once we constrain it to a container).
+          if (outline) {
+            const wireOutline = () => {
+              const panel = containerRef.current?.querySelector('.vditor-outline') as HTMLElement | null;
+              if (!panel) return;
+              panel.style.display = 'block';
+              if (panel.dataset.pcOutlineWired) return;
+              panel.dataset.pcOutlineWired = '1';
+              panel.addEventListener('click', (event) => {
+                let t = event.target as HTMLElement | null;
+                while (t && t !== panel) {
+                  const tid = t.getAttribute?.('data-target-id');
+                  if (tid) {
+                    const heading = containerRef.current?.querySelector(`#${CSS.escape(tid)}`) as HTMLElement | null;
+                    if (heading) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      heading.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                    }
+                    return;
+                  }
+                  t = t.parentElement;
+                }
+              }, true);
+            };
+            requestAnimationFrame(() => requestAnimationFrame(wireOutline));
+            setTimeout(wireOutline, 100);
+            setTimeout(wireOutline, 400);
+          }
           setReady(true);
         },
       });
@@ -243,14 +305,20 @@ export function MarkdownEditor({
       <style>{`
         /* Vditor mounts INTO the container element and adds .vditor class names
          * to it. To get internal scrolling instead of vertical-overflow, we
-         * override Vditor's inline height with !important and set the content
-         * pane to flex-grow with overflow:auto. */
+         * override Vditor's inline height with !important. The .vditor-ir
+         * element is the scroll container — Vditor's outline click handler
+         * does \`vditor.ir.element.scrollTop = …\`, so .vditor-ir MUST be the
+         * overflow:auto layer (not its inner <pre>) for outline links to work. */
         .pc-md-editor-host.vditor { display: flex !important; flex-direction: column !important; height: 100% !important; min-height: 0; }
         .pc-md-editor-host.vditor > .vditor-toolbar { flex: 0 0 auto; }
-        .pc-md-editor-host.vditor > .vditor-content { flex: 1 1 0 !important; min-height: 0 !important; overflow: auto !important; }
+        .pc-md-editor-host.vditor > .vditor-content { flex: 1 1 0 !important; min-height: 0 !important; display: flex !important; overflow: hidden !important; }
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-outline { flex: 0 0 auto; max-width: 240px; overflow: auto; }
         .pc-md-editor-host.vditor > .vditor-content > .vditor-ir,
         .pc-md-editor-host.vditor > .vditor-content > .vditor-wysiwyg,
-        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv { min-height: 100%; }
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv { flex: 1 1 0 !important; min-height: 0 !important; overflow: auto !important; }
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-ir > pre,
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-wysiwyg > pre,
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv > pre { overflow: visible !important; min-height: 100%; box-sizing: border-box; }
       `}</style>
       <div
         ref={containerRef}
