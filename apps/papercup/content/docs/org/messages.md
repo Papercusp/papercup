@@ -88,7 +88,7 @@ Supported ops:
 | `send_message` | POST a new message (charter-validated; rejects illegal kinds) |
 | `mark_message_status` | Transition status of an existing message |
 | `spinup_project` | CEO mode only: create a project + auto-fire kickoff/priority/budget |
-| `scaffold_harness` | Materialize a coding harness on disk for an existing project — creates `~/<slug>/` with SPEC.md, GOAL.md, .harness/config.json from a template (`web-app`, `mobile-app`, `service`) + registers in `~/.restart-harness-projects.json`. Pair with `spinup_project` so spun-up projects become real coding harnesses. |
+| `scaffold_harness` | Materialize a coding harness on disk for an existing project — creates `~/<slug>/` with SPEC.md, .harness/config.json from a template (`web-app`, `mobile-app`, `service`) + registers in `~/.restart-harness-projects.json`. Pair with `spinup_project` so spun-up projects become real coding harnesses. |
 | `pause_project` | Set project status to `paused`. Use when cost cap hit or scope ambiguity surfaced. Body: `projectSlug`, optional `reason`. Audited as `project.pause`. |
 | `resume_project` | Reverse of pause — sets status to `in_progress` (or `action.status` if specified). Audited as `project.resume`. |
 | `mark_campaign_published` | Marketing op: transition a `Campaign` message's metadata from draft → published. Body: `messageId`, `channels[]`, optional initial `impressions`/`clicks`/`installs`. Audited as `campaign.publish`. |

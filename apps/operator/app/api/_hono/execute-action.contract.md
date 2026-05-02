@@ -105,8 +105,8 @@ action: {
   op: 'scaffold_harness',
   projectSlug: string,     // unique; 409 if already exists
   template: string,        // must appear in spawnable catalog
-  spec: string,            // written to <projectDir>/SPEC.md
-  goal: string             // written to <projectDir>/GOAL.md
+  spec: string,            // written to <projectDir>/SPEC.md (north-star + scope)
+  goal?: string            // optional, deprecated; if present, prepended to SPEC.md
   // `parent_slug` is server-derived = derivedCallingHarness; presence in body is rejected
 }
 ```
@@ -119,7 +119,7 @@ Effects:
   - On SIGTERM/SIGKILL timeout: rollback partial directory; return `internal {timeout: true}`.
   - On non-zero exit: rollback partial directory; return `internal` with stderr.
 - After init succeeds:
-  - Write `SPEC.md` and `GOAL.md` from request body.
+  - Write `SPEC.md` from request body (north-star goal + technical scope; if both `spec` and `goal` are passed, `goal` is prepended).
   - Atomically merge `parent_slug: derivedCallingHarness` into `<projectDir>/.harness/config.json`.
   - Generate `harness_token`, write to same config.json (chmod 0600).
   - Call internal harness-projects registration (provisions per-harness PG schema, creates `config_token` + `token_index` rows).

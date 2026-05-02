@@ -49,7 +49,7 @@ description: Terms used across the harness and these docs.
 
 **Prompt cache** · Anthropic's cache of stable prompt prefixes. We design for ~99.94% cache hit rate.
 
-**Product role** · Autonomous scope-expansion role. Diffs `GOAL.md` against `SPEC.md`; writes proposals.
+**Product role** · Autonomous scope-expansion role. Reads `SPEC.md` and proposes additions when shipped features fall short of its stated north-star; writes proposals.
 
 **Raw memory** · `.harness/memory/raw.md`. Append-only one-liner observations from any role.
 

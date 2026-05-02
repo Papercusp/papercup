@@ -30,7 +30,7 @@ The four roles that compose the autonomous loop. If any of these is missing, the
 | Role | When it fires | Reads | Writes |
 |---|---|---|---|
 | **orchestrator** | Every iteration of the main loop | `validation-contract.md`, `harness_features` (PG), `issues.json`, `issues.md`, `supervisor-notes.md`, `pending_events` | Nothing directly — emits one decision verb (`DONE`, `NEXT_WORKER`, `NEXT_VALIDATOR`, `NEXT_ARCHITECT`, `NEXT_PROJECT_MANAGER`, `CONVERTED`, `CHECKPOINT`, `ESCALATE`) which the dispatcher acts on |
-| **scoper** | Mission start (`MODE=initial`); whenever scope expansion is run (`MODE=proposal`); after an accepted proposal merges into SPEC.md (`MODE=replan`) | `SPEC.md`, `GOAL.md`, `validation-contract.md`, `harness_features` | `validation-contract.md`, `harness_features` rows, `.harness/proposals/*.md` (in proposal mode) |
+| **scoper** | Mission start (`MODE=initial`); whenever scope expansion is run (`MODE=proposal`); after an accepted proposal merges into SPEC.md (`MODE=replan`) | `SPEC.md`, `validation-contract.md`, `harness_features` | `validation-contract.md`, `harness_features` rows, `.harness/proposals/*.md` (in proposal mode) |
 | **worker** | When the orchestrator emits `NEXT_WORKER F-XXX` | `SPEC.md`, contract, `harness_features`, `AGENTS.md` / `CLAUDE.md`, `knowledge.md`, `.harness/notes/<F>.md`, **project spec** (auto-injected when feature has `project_id`) | Code + tests in the worker's git worktree, atomic commit, `harness_features.status = 'validating'`, `worker-log.md` |
 | **validator** | When the orchestrator emits `NEXT_VALIDATOR F-XXX` | Claims, code, tests, worker-log.md | `harness_features.status = 'passed' | 'failing'`, `issues.md`, `pending-issues.jsonl` |
 

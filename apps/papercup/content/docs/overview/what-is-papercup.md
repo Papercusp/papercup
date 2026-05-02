@@ -27,6 +27,6 @@ A bash loop (`run.sh`) that orchestrates a small fleet of role agents. Each iter
 
 - **It runs unsupervised.** No human in the inner loop. Iterations have no upper bound except the cost cap (which is currently disabled).
 - **It admits when it's stuck.** Named checkpoints (Hermes-inspired) and validator escalations halt the run; humans grant via UI.
-- **It writes its own scope.** A `product` role periodically diffs `SPEC.md` against `GOAL.md` and proposes new features. Operators triage the proposals.
+- **It writes its own scope.** A `product` role periodically diffs the SPEC.md north-star against its current scope and proposes new features. Operators triage the proposals.
 - **It learns.** The `curator` maintains a per-role identity file (`~/autonomous-harness/identity/<role>.md`) that survives across missions.
 - **It races against itself.** Optional competition mode (Conductor-inspired) spawns N workers on the same feature; a validator picks a winner.

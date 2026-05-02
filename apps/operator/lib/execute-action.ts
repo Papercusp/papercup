@@ -111,7 +111,8 @@ export interface ScaffoldHarnessAction {
   projectSlug: string;
   template: string;
   spec: string;
-  goal: string;
+  /** @deprecated kept for callers still passing GOAL.md content; merged into spec on write. */
+  goal?: string;
   parent_slug?: string; // body-supplied; rejected (server-derived)
   dryRun?: boolean;     // if true, validate-only — no shell-out, no FS writes
 }
@@ -488,8 +489,8 @@ async function doScaffoldHarness(
   if (!action.projectSlug || !isValidProjectSlug(action.projectSlug)) {
     return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug must match /^[a-z0-9][a-z0-9-]{1,63}$/' };
   }
-  if (!action.template || !action.spec || !action.goal) {
-    return { ok: false, actionId: '', error: 'validation_error', detail: 'template, spec, goal required' };
+  if (!action.template || !action.spec) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'template, spec required' };
   }
 
   // Cycle / depth detection — prevents runaway trees and self-spawn.
@@ -570,12 +571,16 @@ async function doScaffoldHarness(
     };
   }
 
-  // Write SPEC.md and GOAL.md.
+  // Write SPEC.md (single source of truth for project intent — includes
+  // the north-star goal and the technical scope). The legacy `goal` field
+  // is folded into SPEC.md as a leading section if both are passed.
   try {
-    await fs.writeFile(join(projectPath, 'SPEC.md'), action.spec, 'utf8');
-    await fs.writeFile(join(projectPath, 'GOAL.md'), action.goal, 'utf8');
+    const specBody = action.goal && action.goal.trim()
+      ? `${action.goal.trim()}\n\n${action.spec}`
+      : action.spec;
+    await fs.writeFile(join(projectPath, 'SPEC.md'), specBody, 'utf8');
   } catch (e: any) {
-    return { ok: false, actionId: '', error: 'internal', detail: `failed to write SPEC/GOAL: ${e?.message}` };
+    return { ok: false, actionId: '', error: 'internal', detail: `failed to write SPEC: ${e?.message}` };
   }
 
   // Generate harness_token + merge into config.json (mode 0600).

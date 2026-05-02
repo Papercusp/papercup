@@ -25,8 +25,7 @@ my-template/
 │   ├── prompts/                # role prompt templates (orchestrator.md, worker.md, validator.md)
 │   ├── features.json.template  # optional: starter feature set
 │   └── enabled-plugins.json    # which plugins this template wants enabled
-├── GOAL.md.template            # the user fills this in after install
-├── SPEC.md.template            # acceptance bar for "done"
+├── ├── SPEC.md.template            # acceptance bar for "done"
 ├── AGENTS.md.template          # cross-cutting agent instructions
 └── README.md                   # what this template builds
 ```
@@ -68,7 +67,7 @@ those plugins automatically as part of `papercusp install <template>`.
 papercusp template scaffold @you/my-template --from coding
 
 # 2. Edit. Customize prompts in .harness/prompts/, set defaults in
-#    .harness/config.json, write GOAL.md.template + SPEC.md.template.
+#    .harness/config.json, write SPEC.md.template.
 
 # 3. Iterate locally — install your in-progress template into a test
 #    project and run a mission against it.

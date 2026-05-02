@@ -54,10 +54,9 @@ Charter-enforced: rejected at `executeAction` if a dept emits an op outside its 
 ### Each new coding harness gets
 
 - **`SPEC.md`** — concrete Phase-1 scope (template by vertical: `web-app` / `mobile-app` / `service`)
-- **`GOAL.md`** — north-star for that project (project-scoped analog of mission.md)
-- **`.harness/config.json`** — model defaults + scaffolding traceability
+- - **`.harness/config.json`** — model defaults + scaffolding traceability
 
-The **`product` role** inside a coding harness autonomously expands `SPEC.md` toward `GOAL.md` by writing `proposals/<ts>.md`. (Same pattern as R&D-at-the-org-layer, just project-scoped.)
+The **`product` role** inside a coding harness autonomously expands `SPEC.md` toward `SPEC.md` by writing `proposals/<ts>.md`. (Same pattern as R&D-at-the-org-layer, just project-scoped.)
 
 ### Three phases per coding harness
 
