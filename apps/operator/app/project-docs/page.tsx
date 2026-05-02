@@ -131,7 +131,7 @@ async function ProjectDocs({
       </aside>
       <main style={article} className="project-docs-article">
         <div style={breadcrumb} className="project-docs-breadcrumb">{activeRel}</div>
-        <MarkdownPreview value={content} />
+        <MarkdownPreview value={content} outline="left" />
       </main>
     </div>
   );
