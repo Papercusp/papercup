@@ -50,7 +50,6 @@ interface Props {
   onSelect: (f: Feature) => void;
   onReset: (id: string) => void;
   onEdit: (f: Feature) => void;
-  onOpenInPi?: (id: string) => void;
   onSwitchToPi?: () => void;
   onAdd: () => void;
   onBatchReset: (ids: string[]) => void;
@@ -58,7 +57,7 @@ interface Props {
 }
 
 export default function FeatureList({
-  slug, features, activeFeatureId, onSelect, onReset, onEdit, onOpenInPi, onSwitchToPi, onAdd, onBatchReset, onBatchDelete,
+  slug, features, activeFeatureId, onSelect, onReset, onEdit, onSwitchToPi, onAdd, onBatchReset, onBatchDelete,
 }: Props) {
   const [mode, setMode] = useQueryState(
     'view',
@@ -319,7 +318,6 @@ export default function FeatureList({
             onToggleSelect={(id) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; })}
             onReset={onReset}
             onEdit={onEdit}
-            onOpenInPi={onOpenInPi}
             onSwitchToPi={onSwitchToPi}
             compact={isCompact}
           />
@@ -354,7 +352,7 @@ export default function FeatureList({
 // ─── List view ─────────────────────────────────────────────────────
 
 function ListView({
-  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onOpenInPi, onSwitchToPi, compact = false,
+  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onSwitchToPi, compact = false,
 }: {
   slug: string;
   features: Feature[];
@@ -365,7 +363,6 @@ function ListView({
   onToggleSelect: (id: string) => void;
   onReset: (id: string) => void;
   onEdit: (f: Feature) => void;
-  onOpenInPi?: (id: string) => void;
   onSwitchToPi?: () => void;
   compact?: boolean;
 }) {
@@ -534,11 +531,6 @@ function ListView({
                   {chatBusy ? 'chat…' : 'chat'}
                 </button>
               </Tooltip>
-              <Tooltip label="Open this feature in the Pi console lane">
-                <button type="button" className="h-feature-row-action" onClick={() => onOpenInPi?.(row.id)}>
-                  open in pi
-                </button>
-              </Tooltip>
               <Tooltip label="Edit this feature">
                 <button type="button" className="h-feature-row-action" onClick={() => onEdit(row)}>
                   edit
@@ -555,7 +547,7 @@ function ListView({
       });
     }
     return cols;
-  }, [chatBusyId, compact, noteFeatureId, onEdit, onOpenInPi, onReset, onToggleSelect, selected, startChat]);
+  }, [chatBusyId, compact, noteFeatureId, onEdit, onReset, onToggleSelect, selected, startChat]);
 
   // Map per-row aria/data attributes + per-row background to mirror the
   // pre-RichGrid behaviour (focus ring on keyboard focus, active row tint,

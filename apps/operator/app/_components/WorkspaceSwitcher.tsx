@@ -6,7 +6,8 @@
 // one (write to registry.json + reload), and surfaces create / rename /
 // delete actions.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { useQueryState, parseAsString } from 'nuqs';
 import {
@@ -25,6 +26,9 @@ export default function WorkspaceSwitcher() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const wrapRef = useRef<HTMLSpanElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   const [, setWsParam] = useQueryState('ws', parseAsString);
 
@@ -42,10 +46,32 @@ export default function WorkspaceSwitcher() {
   useEffect(() => {
     if (!open) return;
     const onClick = (ev: MouseEvent) => {
-      if (!wrapRef.current?.contains(ev.target as Node)) setOpen(false);
+      const target = ev.target as Node;
+      if (wrapRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener('mousedown', onClick);
     return () => document.removeEventListener('mousedown', onClick);
+  }, [open]);
+
+  // Anchor the portaled menu to the trigger button. Recompute on resize/scroll
+  // so the dropdown tracks the button if the layout shifts.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const update = () => {
+      const btn = buttonRef.current;
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      setMenuPos({ top: r.bottom + 4, right: window.innerWidth - r.right });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('scroll', update, true);
+    };
   }, [open]);
 
   if (!reg || reg.workspaces.length === 0) return null;
@@ -131,6 +157,7 @@ export default function WorkspaceSwitcher() {
   return (
     <span ref={wrapRef} style={{ position: 'relative', fontSize: 13 }}>
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         style={{
@@ -148,25 +175,26 @@ export default function WorkspaceSwitcher() {
       >
         {current?.name ?? 'workspace'} <span style={{ opacity: 0.6 }}>▾</span>
       </button>
-      {open && (
+      {open && menuPos && typeof document !== 'undefined' && createPortal(
         <div
+          ref={menuRef}
           role="menu"
           style={{
-            position: 'absolute',
-            top: 'calc(100% + 4px)',
-            right: 0,
+            position: 'fixed',
+            top: menuPos.top,
+            right: menuPos.right,
             minWidth: 240,
-            // Solid hex (not a CSS-var fallback that can be overridden by
-            // a translucent token from elsewhere) and an explicit
-            // backdrop-filter: none so the parent .pc-header's blur
-            // doesn't propagate into the popdown's stacking context.
+            // Solid hex + backdrop-filter:none. Portaled to <body> so the
+            // dropdown escapes `.pc-header`'s sticky stacking context (z:50)
+            // — otherwise the OracleDock (z:80) paints over it. zIndex sits
+            // above the dock and above the harness modal default (100).
             background: '#0f1319',
             backdropFilter: 'none',
             WebkitBackdropFilter: 'none',
             border: '1px solid #2a3344',
             borderRadius: 6,
             padding: 4,
-            zIndex: 100,
+            zIndex: 200,
             boxShadow: '0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
           }}
         >
@@ -266,7 +294,8 @@ export default function WorkspaceSwitcher() {
           >
             + New workspace…
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
     </span>
   );

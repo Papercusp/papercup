@@ -66,7 +66,8 @@ export function Modal({
   closeOnEscape?: boolean;
   closeOnOutsideClick?: boolean;
 }) {
-  const z = zIndex ?? 60;
+  // Default to 100 so modals render above the persistent OracleDock (z:80).
+  const z = zIndex ?? 100;
   const overlay = { ...OVERLAY_STYLE, zIndex: z, ...overlayStyle };
   const wrap = { ...CONTENT_WRAP_STYLE, zIndex: z + 1 };
   const content = { ...CONTENT_STYLE, ...contentStyle };

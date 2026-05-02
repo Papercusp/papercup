@@ -2274,10 +2274,6 @@ export default function HarnessDashboard() {
     })();
     return () => { cancelled = true; };
   }, [activeSlug, installedPlugins, enabledByHarness]);
-  // When the user clicks "open in pi" on a feature, scope the pi pane to
-  // that feature's worktree instead of the project root. Cleared when the
-  // pane is opened from the bare 'pi' tab.
-  const [piLaneId, setPiLaneId] = useState<string | null>(null);
   const [isCompact, setIsCompact] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const searchParams = useSearchParams();
@@ -3189,10 +3185,7 @@ export default function HarnessDashboard() {
       {/* ── Main-area tab switcher ─────────────────────────────── */}
       <Tabs.Root
         value={activePanel}
-        onValueChange={(v) => {
-          if (v === 'pi') setPiLaneId(null);
-          setActivePanel(v as MainPanel);
-        }}
+        onValueChange={(v) => setActivePanel(v as MainPanel)}
         className="h-tab-strip"
       >
         <Tabs.List className="h-tabs h-main-tabs" aria-label="Harness workspace sections">
@@ -3380,7 +3373,6 @@ export default function HarnessDashboard() {
                   onSelect={(f) => setPeekFeature(f as Feature)}
                   onReset={resetFeature}
                   onEdit={(f) => setEditingFeature(f as Feature)}
-                  onOpenInPi={(id) => { setPiLaneId(id); setActivePanel('pi'); setPeekFeature(null); }}
                   onSwitchToPi={() => setActivePanel('pi')}
                   onAdd={() => setEditingFeature('new')}
                   onBatchReset={batchReset}
@@ -3483,7 +3475,6 @@ export default function HarnessDashboard() {
                       onSelect={(f) => setPeekFeature(f as Feature)}
                       onReset={resetFeature}
                       onEdit={(f) => setEditingFeature(f as Feature)}
-                      onOpenInPi={(id) => { setPiLaneId(id); setActivePanel('pi'); setPeekFeature(null); }}
                       onSwitchToPi={() => setActivePanel('pi')}
                       onAdd={() => setEditingFeature('new')}
                       onBatchReset={batchReset}
@@ -3562,7 +3553,6 @@ export default function HarnessDashboard() {
           onEdit={() => { setEditingFeature(peekFeature); setPeekFeature(null); }}
           onInspectRun={loadAgent}
           onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
-          onOpenInPi={(id) => { setPiLaneId(id); setActivePanel('pi'); setPeekFeature(null); }}
           onSwitchToPi={() => setActivePanel('pi')}
         />
       )}

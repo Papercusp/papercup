@@ -36,7 +36,6 @@ interface Props {
   onEdit: (f: Feature) => void;
   onInspectRun: (runId: string) => void;
   onSetStatus: (id: string, status: HarnessStatus) => void;
-  onOpenInPi?: (id: string) => void;
   /** Switch the harness UI to the pi tab (which hosts the dockview). */
   onSwitchToPi?: () => void;
 }
