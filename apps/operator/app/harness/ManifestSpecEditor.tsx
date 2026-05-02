@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import Editor from '@monaco-editor/react';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { BacklinksPanel } from '../_components/BacklinksPanel';
 import { Tooltip } from './Tooltip';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
@@ -272,11 +273,19 @@ export default function ManifestSpecEditor({
             </div>
           </div>
         ) : activeSpec?.language === 'markdown' ? (
-          <MarkdownEditor
-            value={activeContent ?? ''}
-            onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
-            mode="ir"
-          />
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <MarkdownEditor
+                value={activeContent ?? ''}
+                onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
+                mode="ir"
+              />
+            </div>
+            <BacklinksPanel
+              target={(activePath.split('/').pop() ?? activePath).replace(/\.md$/, '')}
+              harness={slug}
+            />
+          </div>
         ) : (
           <Editor
             height="100%"

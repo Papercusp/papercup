@@ -6,6 +6,7 @@ import { Tooltip } from './Tooltip';
 import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { BacklinksPanel } from '../_components/BacklinksPanel';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
 import { CollectionTab, type CollectionItem } from './CollectionTab';
@@ -368,11 +369,19 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
             <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>
           ) : simpleTab ? (
             tabMeta.language === 'markdown' && simpleTab !== 'env' ? (
-              <MarkdownEditor
-                value={draft[simpleTab] ?? ''}
-                onChange={(v) => setDraft((d) => ({ ...d, [simpleTab]: v }))}
-                mode="ir"
-              />
+              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <MarkdownEditor
+                    value={draft[simpleTab] ?? ''}
+                    onChange={(v) => setDraft((d) => ({ ...d, [simpleTab]: v }))}
+                    mode="ir"
+                  />
+                </div>
+                <BacklinksPanel
+                  target={tabMeta.filename.replace(/\.md$/, '')}
+                  harness={slug}
+                />
+              </div>
             ) : (
               <Editor
                 height="100%"
