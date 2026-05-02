@@ -8680,3 +8680,24 @@ body:has(.h-top-collapse-inline) main {
 .h-log-link-issue    { color: color-mix(in oklab, var(--warn), white 8%); }
 .h-log-link-snapshot { color: color-mix(in oklab, var(--accent), white 10%); }
 .h-log-link-invocation { color: color-mix(in oklab, var(--good), white 8%); }
+
+/* ── Collapsed-run badge inside h-log-line ──────────────────── */
+.h-log-collapse-badge {
+  font-size: 10.5px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: color-mix(in oklab, var(--warn), transparent 65%);
+  color: color-mix(in oklab, var(--warn), white 18%);
+  border: 1px solid color-mix(in oklab, var(--warn), transparent 55%);
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  align-self: center;
+}
+.h-log-collapse-badge:hover {
+  background: color-mix(in oklab, var(--warn), transparent 50%);
+}
+.h-log-line:has(.h-log-collapse-badge) .h-log-msg {
+  /* Slight visual cue that a row represents multiple events. */
+  opacity: 0.92;
+}
