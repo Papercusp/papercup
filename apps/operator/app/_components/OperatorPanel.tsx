@@ -486,7 +486,7 @@ export function OperatorPanel(): JSX.Element | null {
                     <details style={{ fontSize: 12, opacity: 0.7 }}>
                       <summary>Directive body</summary>
                       <div style={{ marginTop: 4 }}>
-                        <MarkdownPreview value={s.directive_body} />
+                        <MarkdownPreview value={s.directive_body} outline="left" />
                       </div>
                     </details>
                   )}

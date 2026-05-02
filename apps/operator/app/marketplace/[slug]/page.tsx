@@ -125,7 +125,7 @@ export default async function HarnessDetailPage({ params }: { params: Promise<{ 
           {isSnapshot && m.snapshot && <SnapshotMeta snap={m.snapshot} />}
           {detail.readme ? (
             <div className="pc-marketplace-detail-readme-body">
-              <MarkdownPreview value={detail.readme} />
+              <MarkdownPreview value={detail.readme} outline="left" />
             </div>
           ) : (
             <p style={{ color: 'var(--fg-mute)' }}>This package has no README.</p>

@@ -101,7 +101,7 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
       </div>
       {open && !compact && (
         <div style={{ margin: '0.5rem 0 0 0', padding: '0.5rem 0.75rem', background: '#0b0e14', borderRadius: 3, maxHeight: '30vh', overflow: 'auto' }}>
-          <MarkdownPreview value={content} />
+          <MarkdownPreview value={content} outline="left" />
         </div>
       )}
     </div>
@@ -117,7 +117,7 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
         maxHeight: '50vh', overflow: 'auto',
         zIndex: 90,
       }}>
-        <MarkdownPreview value={content} />
+        <MarkdownPreview value={content} outline="left" />
       </div>,
       document.body,
     )}

@@ -77,7 +77,7 @@ export default function OperatorSettingsPage() {
           System prompt
         </label>
         <div style={{ minHeight: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', marginBottom: 16 }}>
-          <MarkdownEditor value={prompt} onChange={setPrompt} mode="ir" minHeight={320} />
+          <MarkdownEditor value={prompt} onChange={setPrompt} mode="ir" outline="left" minHeight={320} />
         </div>
 
         <label
@@ -86,7 +86,7 @@ export default function OperatorSettingsPage() {
           Preferences notebook (workspace-scoped)
         </label>
         <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', marginBottom: 16 }}>
-          <MarkdownEditor value={preferences} onChange={setPreferences} mode="ir" minHeight={240} />
+          <MarkdownEditor value={preferences} onChange={setPreferences} mode="ir" outline="left" minHeight={240} />
         </div>
 
         <button

@@ -233,6 +233,7 @@ export default function PromptsTab({ slug, alive }: Props) {
                 value={editorValue ?? ''}
                 onChange={setDraft}
                 mode="ir"
+                outline="left"
                 readOnly={scope === 'global'}
               />
             </div>

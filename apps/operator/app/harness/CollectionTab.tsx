@@ -241,6 +241,7 @@ export function CollectionTab({
                   value={draft}
                   onChange={setDraft}
                   mode="ir"
+                  outline="left"
                   readOnly={disabled}
                 />
               ) : (

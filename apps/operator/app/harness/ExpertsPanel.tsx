@@ -341,7 +341,7 @@ function RelatedDocFiller({ harnessSlug, expertId }: { harnessSlug: string; expe
           </span>
         </div>
         <div className="experts-spec-md" style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--fg-dim)' }}>
-          <MarkdownPreview value={match.body} />
+          <MarkdownPreview value={match.body} outline="left" />
         </div>
       </div>
     </div>
@@ -362,7 +362,7 @@ function SpecView({ spec, harnessSlug, expertId }: { spec: string; harnessSlug: 
   return (
     <div style={{ padding: '16px 24px', maxWidth: 880, margin: '0 auto', color: 'var(--fg)' }}>
       <div className="experts-spec-md" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--fg)' }}>
-        <MarkdownPreview value={spec} />
+        <MarkdownPreview value={spec} outline="left" />
       </div>
       <style jsx>{`
         :global(.experts-spec-md) h1 { font-size: 22px; margin: 16px 0 8px; font-weight: 760; color: var(--fg); }
@@ -486,6 +486,7 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
                 value={highLevelSpec}
                 onChange={setHighLevelSpec}
                 mode="ir"
+                outline="left"
                 minHeight={220}
                 placeholder="Slice of SPEC.md this expert owns. The expert will turn this into a detailed spec."
               />

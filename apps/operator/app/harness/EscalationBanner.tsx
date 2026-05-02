@@ -173,6 +173,7 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
           value={response}
           onChange={setResponse}
           mode="ir"
+          outline="left"
           minHeight={180}
           placeholder="Your response — will be appended to supervisor-notes.md as the authoritative guidance for the next orchestrator/planner iteration."
         />

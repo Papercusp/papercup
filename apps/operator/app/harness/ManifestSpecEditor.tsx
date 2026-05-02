@@ -259,6 +259,7 @@ export default function ManifestSpecEditor({
                   value={activeContent ?? ''}
                   onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
                   mode="ir"
+                  outline="left"
                 />
               ) : (
                 <Editor
@@ -341,7 +342,7 @@ function ManifestMarkdownBody({
       <div style={{ flex: 1, minHeight: 0, overflow: view === 'read' ? 'auto' : 'visible' }}>
         {view === 'read' ? (
           <div style={{ padding: 16 }}>
-            <MarkdownPreview value={value} />
+            <MarkdownPreview value={value} outline="left" />
           </div>
         ) : (
           <MarkdownEditor value={value} onChange={onChange} mode="ir" outline="left" />

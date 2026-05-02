@@ -181,7 +181,7 @@ export function SupportAgentPanel({ surface = 'operator' }: { surface?: 'public'
               <div style={{ color: 'var(--fg)' }}>
                 {m.content
                   ? (m.role === 'assistant'
-                      ? <MarkdownPreview value={m.content} />
+                      ? <MarkdownPreview value={m.content} outline="left" />
                       : <div style={{ whiteSpace: 'pre-wrap' }}>{m.content}</div>)
                   : (busy && i === messages.length - 1 ? '…' : '')}
               </div>

@@ -69,14 +69,14 @@ export default function OracleSettingsPage() {
           System prompt
         </label>
         <div style={{ minHeight: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-          <MarkdownEditor value={prompt} onChange={setPrompt} mode="ir" minHeight={320} />
+          <MarkdownEditor value={prompt} onChange={setPrompt} mode="ir" outline="left" minHeight={320} />
         </div>
 
         <label style={{ display: 'block', fontWeight: 700, fontSize: 13, marginTop: 20, marginBottom: 6 }}>
           Persistent memory
         </label>
         <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-          <MarkdownEditor value={memory} onChange={setMemory} mode="ir" minHeight={240} />
+          <MarkdownEditor value={memory} onChange={setMemory} mode="ir" outline="left" minHeight={240} />
         </div>
 
         <div style={{ marginTop: 16 }}>

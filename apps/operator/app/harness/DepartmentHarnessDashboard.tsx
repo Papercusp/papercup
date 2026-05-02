@@ -547,6 +547,7 @@ function ComposeMessage({
             value={body}
             onChange={setBody}
             mode="ir"
+            outline="left"
             minHeight={240}
             placeholder="The full message body. Supports markdown."
           />
@@ -1062,6 +1063,7 @@ function NotesEditor({ departmentSlug, initialContent, onSaved }: { departmentSl
           value={content}
           onChange={(v) => { setContent(v); setDirty(true); }}
           mode="ir"
+          outline="left"
           minHeight={400}
         />
       </div>

@@ -407,6 +407,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
                 value={draftSpec}
                 onChange={setDraftSpec}
                 mode="ir"
+                outline="left"
                 minHeight={500}
                 placeholder="Markdown spec body — architectural decisions, invariants, conventions, gotchas, external dependencies."
               />
