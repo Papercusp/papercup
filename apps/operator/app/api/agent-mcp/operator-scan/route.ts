@@ -32,6 +32,7 @@ import { parseSuggestions } from '@/lib/operator-suggestion-parser';
 import { loadPreferences } from '@/lib/operator-preferences';
 import { acquireScanLock, releaseScanLock } from '@/lib/operator-scan-lock';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
+import { writeLastScan } from '@/lib/operator-last-scan';
 
 export const dynamic = 'force-dynamic';
 
@@ -168,13 +169,25 @@ export async function GET(req: NextRequest) {
             costUsd = ev.costUsd;
             recordSpend(costUsd);
             const parsed = parseSuggestions(ev.finalText || assistantText, preferences);
+            const cards: Record<string, unknown>[] = [];
             for (const block of parsed.blocks) {
-              send('suggestion', {
+              const payload = {
                 ...block.suggestion.raw,
                 actualTier: block.suggestion.actualTier,
                 auto_dispatch: block.suggestion.auto_dispatch,
                 provenanceFlags: block.suggestion.provenanceFlags,
+              };
+              cards.push(payload);
+              send('suggestion', payload);
+            }
+            try {
+              writeLastScan({
+                scanCompletedAt: new Date().toISOString(),
+                scanCostUsd: costUsd,
+                cards,
               });
+            } catch (e) {
+              console.warn('[operator-scan] writeLastScan failed:', e);
             }
             send('done', {
               costUsd,

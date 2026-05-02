@@ -59,9 +59,29 @@ interface ParsedSuggestion {
   body?: string;
 }
 
+type LifecycleState =
+  | 'pending'
+  | 'dispatched'
+  | 'consumed'
+  | 'escalated'
+  | 'rejected'
+  | 'failed'
+  | 'dismissed'
+  | 'superseded';
+
 interface SuggestionCard extends ParsedSuggestion {
-  status: 'pending' | 'dispatched' | 'dismissed' | 'failed';
+  status: LifecycleState;
   failureReason?: string;
+  /** Local time we transitioned to `dispatched`. Used for the "unconsumed" warning glyph. */
+  dispatchedAt?: number;
+  /** True when dismiss came from undo-window cancel (audit-only, no preferences entry). */
+  undoCancelled?: boolean;
+}
+
+const UNCONSUMED_AGE_MS = 4 * 60_000; // 3 × 60s cadence + 60s grace = 4 min
+
+function ageMs(card: SuggestionCard): number | null {
+  return card.dispatchedAt ? Date.now() - card.dispatchedAt : null;
 }
 
 interface DecisionRow {
@@ -234,13 +254,23 @@ export function OperatorPanel(): JSX.Element | null {
     });
     es.addEventListener('suggestion', (ev: MessageEvent) => {
       try {
-        const s = JSON.parse(ev.data) as ParsedSuggestion;
+        const raw = JSON.parse(ev.data) as ParsedSuggestion;
+        // Pause → foreground convert auto→ask BEFORE render.
+        const s: ParsedSuggestion = sharedState.paused && raw.auto_dispatch
+          ? { ...raw, auto_dispatch: false }
+          : raw;
         setSuggestions((prev) => {
-          // Server emits stable ids; supersede on collision.
           const idx = prev.findIndex((c) => c.id === s.id);
           if (idx >= 0) {
+            // Stable-id collision = supersede the prior card. Drop terminal
+            // statuses to 'superseded' so reconstruction sees the move.
             const next = prev.slice();
-            next[idx] = { ...prev[idx], ...s, status: prev[idx].status };
+            const prior = prev[idx];
+            const wasTerminal = prior.status === 'dispatched' || prior.status === 'dismissed';
+            next[idx] = wasTerminal
+              ? { ...prior, status: 'superseded' as LifecycleState }
+              : { ...prior, ...s, status: 'pending' };
+            if (wasTerminal) next.push({ ...s, status: 'pending' });
             return next;
           }
           return [...prev, { ...s, status: 'pending' }];
@@ -273,6 +303,25 @@ export function OperatorPanel(): JSX.Element | null {
       if (!r.ok) return;
       const d = await r.json();
       if (Array.isArray(d?.rows)) setDecisions(d.rows);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const hydrateFromLastScan = useCallback(async () => {
+    try {
+      const r = await fetch('/api/agent-mcp/operator-last-scan');
+      if (!r.ok) return;
+      const { snapshot } = (await r.json()) as {
+        snapshot: { cards: ParsedSuggestion[] } | null;
+      };
+      if (!snapshot?.cards?.length) return;
+      // Only hydrate when we have nothing on screen — never blow away an
+      // in-flight scan.
+      setSuggestions((prev) => {
+        if (prev.length > 0) return prev;
+        return snapshot.cards.map((c) => ({ ...c, status: 'pending' as LifecycleState }));
+      });
     } catch {
       /* ignore */
     }
@@ -312,11 +361,12 @@ export function OperatorPanel(): JSX.Element | null {
     }
     void refreshBudget();
     void refreshDecisions();
+    void hydrateFromLastScan();
     // Don't auto-scan until the user has confirmed a budget cap.
     if (!scanStarted && !state.paused && budget?.configured && !budget.exceeded) {
       startScan();
     }
-  }, [state.open, state.paused, scanStarted, startScan, refreshDecisions, refreshBudget, budget?.configured, budget?.exceeded]);
+  }, [state.open, state.paused, scanStarted, startScan, refreshDecisions, refreshBudget, hydrateFromLastScan, budget?.configured, budget?.exceeded]);
 
   // Voice mode: subscribe to final utterances while panel is open and
   // dispatch them as scan requests. Lets the user say "scan again" or
@@ -336,16 +386,35 @@ export function OperatorPanel(): JSX.Element | null {
     };
   }, [state.open, startScan]);
 
+  const logAudit = useCallback(async (cardId: string, kind: 'dispatched' | 'acked' | 'undo_cancel', context?: Record<string, unknown>) => {
+    try {
+      await fetch('/api/agent-mcp/operator-audit', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cardId, kind, context }),
+      });
+    } catch {
+      /* best-effort */
+    }
+  }, []);
+
   const dispatchSuggestion = useCallback(async (id: string) => {
     const card = suggestionsRef.current.find((c) => c.id === id);
     if (!card) return;
+    const dispatchedAt = Date.now();
     setSuggestions((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: 'dispatched' } : c)),
+      prev.map((c) => (c.id === id ? { ...c, status: 'dispatched', dispatchedAt } : c)),
     );
     setState((s) => ({ ...s, iconState: 'acting' }));
+    void logAudit(id, 'dispatched', {
+      action: card.action,
+      capability: card.capability ?? null,
+      target: card.target_harness ?? null,
+    });
     try {
       if (card.action !== 'send_directive' || !card.target_harness) {
-        // navigate / inform are advisory; mark dispatched and exit.
+        // navigate / inform are advisory; ack immediately and exit.
+        void logAudit(id, 'acked');
         return;
       }
       const r = await fetch('/api/admin/execute-action', {
@@ -367,6 +436,11 @@ export function OperatorPanel(): JSX.Element | null {
             c.id === id ? { ...c, status: 'failed', failureReason: text } : c,
           ),
         );
+      } else {
+        // Path-(b) ack: dispatch returned without error. Receiving-state
+        // ('consumed' / 'escalated' / 'rejected') is derived later from
+        // a Zero subscription on messages.status — wired in a follow-up.
+        void logAudit(id, 'acked');
       }
     } catch (err) {
       setSuggestions((prev) =>
@@ -384,18 +458,45 @@ export function OperatorPanel(): JSX.Element | null {
       setState((s) => ({ ...s, iconState: 'idle' }));
       void refreshDecisions();
     }
-  }, [refreshDecisions]);
+  }, [refreshDecisions, logAudit]);
 
   const suggestionsRef = useRef<SuggestionCard[]>([]);
   useEffect(() => {
     suggestionsRef.current = suggestions;
   }, [suggestions]);
 
+  /**
+   * Deliberate dismiss — user clicked Dismiss in the panel. Phase 4 will
+   * also append a `[USER-TYPED] [DISMISS]` entry to preferences.md; here
+   * we just transition state.
+   */
   const dismissSuggestion = useCallback((id: string) => {
     setSuggestions((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: 'dismissed' } : c)),
+      prev.map((c) =>
+        c.id === id ? { ...c, status: 'dismissed', undoCancelled: false } : c,
+      ),
     );
   }, []);
+
+  /**
+   * Undo-window cancel — user hit Cancel within 5s of a background
+   * auto-fire toast. Audit-only; explicitly DOES NOT touch preferences
+   * (per §4 decision 2). Background auto-fire toasts arrive in Phase 3;
+   * this helper is exported now so the existing UI dismiss button can
+   * share the lifecycle without confusing the two paths.
+   */
+  const undoCancelSuggestion = useCallback(
+    (id: string) => {
+      setSuggestions((prev) =>
+        prev.map((c) =>
+          c.id === id ? { ...c, status: 'dismissed', undoCancelled: true } : c,
+        ),
+      );
+      void logAudit(id, 'undo_cancel');
+    },
+    [logAudit],
+  );
+  void undoCancelSuggestion; // surfaced for Phase 3 toast wiring
 
   if (!state.open) return null;
 
@@ -629,13 +730,33 @@ export function OperatorPanel(): JSX.Element | null {
                         Dismiss
                       </button>
                     )}
-                    {s.status === 'dispatched' && (
-                      <span style={{ fontSize: 12, color: 'green' }}>✓ dispatched</span>
+                    {s.status === 'dispatched' && (() => {
+                      const age = ageMs(s);
+                      const unconsumed = age !== null && age > UNCONSUMED_AGE_MS;
+                      return unconsumed ? (
+                        <span style={{ fontSize: 12, color: '#a04' }} title={`pending for ${Math.round(age! / 60000)}m`}>
+                          ⏳ unconsumed — harness may be paused
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: 12, color: 'green' }}>✓ dispatched</span>
+                      );
+                    })()}
+                    {s.status === 'consumed' && (
+                      <span style={{ fontSize: 12, color: 'green' }}>✓ consumed</span>
+                    )}
+                    {s.status === 'escalated' && (
+                      <span style={{ fontSize: 12, color: '#a40' }}>↑ escalated</span>
+                    )}
+                    {s.status === 'rejected' && (
+                      <span style={{ fontSize: 12, color: 'red' }}>✗ rejected</span>
                     )}
                     {s.status === 'failed' && (
                       <span style={{ fontSize: 12, color: 'red' }}>
                         ✗ failed: {s.failureReason}
                       </span>
+                    )}
+                    {s.status === 'superseded' && (
+                      <span style={{ fontSize: 12, opacity: 0.5 }}>↻ superseded</span>
                     )}
                   </div>
                 </li>
