@@ -239,8 +239,16 @@ export function buildPapercuspContext(args: {
   projectDir: string;
   stateDir: string;
   log?: (msg: string) => void;
+  /**
+   * Override the default `stateDir/plugin-data/<name>/` location for the
+   * plugin's data dir. Needed when the run.log lives in one tree (the
+   * project's `.harness/`) but plugin configs live in a different tree
+   * (the workspace's `<harnessDir>/plugin-data/<scoped-slug>/`). When
+   * omitted the legacy default applies.
+   */
+  pluginDataDirOverride?: string;
 }): PapercuspContext {
-  const { pluginName, installSlug, projectDir, stateDir, log } = args;
+  const { pluginName, installSlug, projectDir, stateDir, log, pluginDataDirOverride } = args;
   const jsonlPath = jsonlPathForStateDir(stateDir);
   // Default ctx.log writes a structured event to run.log.jsonl AND mirrors
   // to stdout (which the console interceptor will also capture if we're
@@ -270,7 +278,7 @@ export function buildPapercuspContext(args: {
     // config.json at invoke time. Plugins read from ctx.pluginDataDir, so
     // both code paths must agree on this prefix or in-process invocations
     // see no config and the CLI does.
-    pluginDataDir: join(stateDir, 'plugin-data', pluginName),
+    pluginDataDir: pluginDataDirOverride ?? join(stateDir, 'plugin-data', pluginName),
     log: log ?? defaultLog,
   };
 }
@@ -445,6 +453,7 @@ export async function invokePluginAction(args: {
   installSlug: string;
   projectDir: string;
   stateDir: string;
+  pluginDataDirOverride?: string;
   params?: unknown;
   triggerSource?: 'cli' | 'ui' | 'mission-done' | 'webhook' | 'api';
   triggerId?: string;
@@ -457,6 +466,7 @@ export async function invokePluginAction(args: {
     installSlug: args.installSlug,
     projectDir: args.projectDir,
     stateDir: args.stateDir,
+    ...(args.pluginDataDirOverride ? { pluginDataDirOverride: args.pluginDataDirOverride } : {}),
   });
   await ensureInitialized(state, lp, ctx);
   const registry = state.registries.get(regKey(lp.plugin.name, args.installSlug));

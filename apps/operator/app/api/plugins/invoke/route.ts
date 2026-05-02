@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { invokePluginAction } from '@/lib/plugin-host-runtime';
 import { papercuspPath } from '@/lib/papercusp-root';
 
@@ -9,6 +12,29 @@ export const runtime = 'nodejs';
 const PLUGIN_SLUG = /^@?[a-z0-9][a-z0-9._/-]{0,127}$/i;
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const ACTION_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+
+interface ProjectRow { slug: string; path: string; harness_kind?: string; }
+
+/**
+ * Resolve the project's source-tree path. Plugins write their run.log.jsonl
+ * events into `<projectPath>/.harness/logs/run.log.jsonl` because that's
+ * where the harness's run.sh + the operator's SSE tail both look. Falls
+ * back through workspace registry → legacy file → null.
+ */
+async function resolveProjectPath(slug: string): Promise<string | null> {
+  try {
+    const reg = JSON.parse(await readFile(papercuspPath('registry.json'), 'utf8')) as { projects?: ProjectRow[] };
+    const p = reg.projects?.find((r) => r.slug === slug);
+    if (p?.path) return p.path;
+  } catch { /* fall through */ }
+  try {
+    const ancient = join(homedir(), '.restart-harness-projects.json');
+    const reg = JSON.parse(await readFile(ancient, 'utf8')) as { projects?: ProjectRow[] };
+    const p = reg.projects?.find((r) => r.slug === slug);
+    if (p?.path) return p.path;
+  } catch { /* fall through */ }
+  return null;
+}
 
 export async function POST(req: Request) {
   let body: { slug?: string; action?: string; harness?: string; params?: Record<string, unknown> };
@@ -22,30 +48,31 @@ export async function POST(req: Request) {
   if (!ACTION_ID.test(action)) return NextResponse.json({ ok: false, error: `invalid action id` }, { status: 400 });
   if (!HARNESS_SLUG.test(harness)) return NextResponse.json({ ok: false, error: `invalid harness slug` }, { status: 400 });
 
-  // Use the same harness-data root the papercusp CLI uses for plugin
-  // invocations: ~/.papercusp(-workspaces/<id>)/.papercusp/harnesses/<slug>/
-  // This is where plugin-configs are saved + mirrored to plugin-data, so
-  // the in-process invocation reads the same configs the CLI writes.
-  const harnessDir = papercuspPath('harnesses', harness);
-  if (!existsSync(harnessDir)) {
+  // Plugin-config tree (CLI's harnessDir convention) — where configs +
+  // plugin-data files live. Same as `papercusp plugin invoke` would use.
+  const harnessDataDir = papercuspPath('harnesses', harness);
+  if (!existsSync(harnessDataDir)) {
     return NextResponse.json({
-      ok: false,
-      slug, action, harness,
-      error: `harness "${harness}" data dir missing at ${harnessDir} — has it been provisioned via 'papercusp project add'?`,
+      ok: false, slug, action, harness,
+      error: `harness "${harness}" data dir missing at ${harnessDataDir} — has it been provisioned via 'papercusp project add'?`,
     }, { status: 404 });
   }
-  // Both projectDir and stateDir = harnessDir so plugin-host-runtime's
-  // pluginDataDir computation (stateDir/plugin-data/<name>) matches the
-  // CLI's path.
-  const projectDir = harnessDir;
-  const stateDir = harnessDir;
 
-  // In-process invocation: runs through plugin-host-runtime's
-  // invokePluginAction, which writes structured events to
-  // <harness>/.harness/logs/run.log.jsonl (start, ctx.log lines,
-  // console.* via AsyncLocalStorage interceptor, final result).
-  // Replaces the previous CLI shell-out — same semantics, no spawn cost,
-  // unified logging into the run.log panel.
+  // Project-source tree — where the run.log.jsonl the LogView SSE tails
+  // actually lives. Plugin events MUST land here so they appear in the
+  // run.log panel alongside harness lines. Optional: if there's no
+  // project registry entry, fall back to the harness data dir (logs go
+  // somewhere only the CLI sees, but the invocation still runs).
+  const projectPath = await resolveProjectPath(harness);
+  const stateDir = projectPath ? join(projectPath, '.harness') : harnessDataDir;
+  const projectDir = projectPath ?? harnessDataDir;
+
+  // The plugin reads its config from <pluginDataDir>/config.json. Configs
+  // live under the harness DATA dir (CLI's convention), not the project's
+  // source tree. Override pluginDataDir explicitly so the host doesn't
+  // compute it relative to stateDir.
+  const pluginDataDirOverride = join(harnessDataDir, 'plugin-data', slug);
+
   try {
     const r = await invokePluginAction({
       pluginName: slug,
@@ -53,22 +80,18 @@ export async function POST(req: Request) {
       installSlug: harness,
       projectDir,
       stateDir,
+      pluginDataDirOverride,
       params: body.params,
       triggerSource: 'ui',
     });
     if (!r.ok) {
       return NextResponse.json({
-        ok: false,
-        slug, action, harness,
+        ok: false, slug, action, harness,
         error: r.error ?? 'unknown error',
         result: r.result,
       }, { status: 500 });
     }
-    // result might be an object (the plugin returned structured data) or
-    // a string. Stringify objects for backward-compatible UI rendering.
-    const resultStr = typeof r.result === 'string'
-      ? r.result
-      : JSON.stringify(r.result, null, 2);
+    const resultStr = typeof r.result === 'string' ? r.result : JSON.stringify(r.result, null, 2);
     return NextResponse.json({
       ok: true, slug, action, harness,
       result: resultStr,
@@ -76,8 +99,7 @@ export async function POST(req: Request) {
     });
   } catch (e: any) {
     return NextResponse.json({
-      ok: false,
-      slug, action, harness,
+      ok: false, slug, action, harness,
       error: e?.message ?? String(e),
     }, { status: 500 });
   }
