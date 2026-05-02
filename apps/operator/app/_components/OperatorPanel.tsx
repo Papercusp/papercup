@@ -91,32 +91,15 @@ interface DecisionRow {
   target: string;
 }
 
-interface OperatorState {
-  open: boolean;
-  iconState: IconState;
-  paused: boolean;
-}
+import {
+  broadcastState,
+  setOperatorState,
+  sharedState,
+  subscribeOperatorState,
+  type OperatorState,
+} from './operator-shared-state';
 
-const defaultState: OperatorState = {
-  open: false,
-  iconState: 'idle',
-  paused: false,
-};
-
-// Shared state across button + panel. Both components subscribe to the
-// same source of truth so the button click that flips `open` is visible
-// to the panel and vice-versa.
-const setters = new Set<(s: Partial<OperatorState>) => void>();
-let sharedState: OperatorState = { ...defaultState };
-
-function broadcastState(partial: Partial<OperatorState>): void {
-  sharedState = { ...sharedState, ...partial };
-  for (const fn of setters) fn(partial);
-}
-
-export function setOperatorState(partial: Partial<OperatorState>): void {
-  broadcastState(partial);
-}
+export { setOperatorState };
 
 export function OperatorButton(): JSX.Element {
   const [state, setState] = useState<OperatorState>(sharedState);
@@ -124,10 +107,7 @@ export function OperatorButton(): JSX.Element {
   useEffect(() => {
     const fn = (partial: Partial<OperatorState>) =>
       setState((s) => ({ ...s, ...partial }));
-    setters.add(fn);
-    return () => {
-      setters.delete(fn);
-    };
+    return subscribeOperatorState(fn);
   }, []);
 
   useEffect(() => {
@@ -206,10 +186,7 @@ export function OperatorPanel(): JSX.Element | null {
   useEffect(() => {
     const fn = (partial: Partial<OperatorState>) =>
       setState((s) => ({ ...s, ...partial }));
-    setters.add(fn);
-    return () => {
-      setters.delete(fn);
-    };
+    return subscribeOperatorState(fn);
   }, []);
 
   // Click-outside to close.

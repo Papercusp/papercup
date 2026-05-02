@@ -4,6 +4,7 @@ import { usePathname } from 'next/navigation';
 import { ChatwootWidget } from './ChatwootWidget';
 import { OracleDock } from './OracleDock';
 import { OperatorButton, OperatorPanel } from './OperatorPanel';
+import { OperatorBackgroundScanner } from './OperatorBackgroundScanner';
 import { VoiceButton } from './voice/VoiceButton';
 import { VoiceAppBridge } from './voice/VoiceAppBridge';
 import { HostCheckBanner } from './HostCheckBanner';
@@ -71,6 +72,7 @@ export default function ChromeShell() {
       <ChatwootWidget />
       <OracleDock />
       <OperatorPanel />
+      <OperatorBackgroundScanner />
       <VoiceAppBridge />
     </>
   );

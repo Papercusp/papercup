@@ -33,6 +33,9 @@ import { loadPreferences } from '@/lib/operator-preferences';
 import { acquireScanLock, releaseScanLock } from '@/lib/operator-scan-lock';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { writeLastScan } from '@/lib/operator-last-scan';
+import { checkRate, record503, recordSuccess } from '@/lib/operator-rate-limit';
+import { canShortCircuit, writeSnapshot } from '@/lib/operator-idle-snapshot';
+import { fingerprint, readTriggerState } from '@/lib/operator-trigger-state';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +80,7 @@ const ALL_AGENT_MCP_TOOLS = [
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const requestText = url.searchParams.get('request') ?? 'Scan the workspace and surface up to 5 next-action suggestions.';
+  const isBackground = url.searchParams.get('background') === '1';
 
   const principal = loadOperatorBearer();
   if (!principal) {
@@ -94,6 +98,53 @@ export async function GET(req: NextRequest) {
 
   const sessionUser = await getSessionUser();
   const userId = sessionUser?.id ?? 'anonymous';
+
+  // Per-workspace rate limit + 503 circuit breaker — background scans only.
+  // Manual scans bypass per §4 decision 3 (errors should surface, not be silenced).
+  if (isBackground) {
+    const rate = checkRate(workspaceId);
+    if (!rate.allowed) {
+      return new Response(`Background scan throttled (${rate.reason}).`, {
+        status: 429,
+        headers: { 'retry-after': String(rate.retryAfterSec ?? 30) },
+      });
+    }
+  }
+
+  // Idle short-circuit: cached snapshot if trigger-state is unchanged AND
+  // we're inside the 30 min TTL. Background only — manual rescans always
+  // burn the LLM (user explicitly asked).
+  if (isBackground) {
+    try {
+      const state = await readTriggerState();
+      const fp = fingerprint(state);
+      const snap = canShortCircuit(fp);
+      if (snap) {
+        // Stream the cached cards as a degenerate scan response.
+        const enc = new TextEncoder();
+        const stream = new ReadableStream({
+          start(controller) {
+            const send = (event: string, data: Record<string, unknown>) => {
+              controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+            };
+            for (const card of snap.cards) send('suggestion', card);
+            send('done', { costUsd: 0, suggestions: snap.cards.length, cached: true });
+            controller.close();
+          },
+        });
+        return new Response(stream, {
+          headers: {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache, no-transform',
+            'connection': 'keep-alive',
+            'x-operator-cached': '1',
+          },
+        });
+      }
+    } catch (err) {
+      console.warn('[operator-scan] idle short-circuit unavailable:', err);
+    }
+  }
 
   const budget = checkBudget();
   if (budget.state && budget.exceeded) {
@@ -189,12 +240,25 @@ export async function GET(req: NextRequest) {
             } catch (e) {
               console.warn('[operator-scan] writeLastScan failed:', e);
             }
+            // Refresh idle snapshot so a stable workspace can short-circuit
+            // the next background scan.
+            try {
+              const state = await readTriggerState();
+              writeSnapshot(fingerprint(state), cards);
+            } catch (e) {
+              console.warn('[operator-scan] writeSnapshot failed:', e);
+            }
+            recordSuccess(workspaceId);
             send('done', {
               costUsd,
               suggestions: parsed.blocks.length,
               parseErrors: parsed.parseErrors,
             });
           } else if (ev.type === 'error') {
+            // Treat downstream 503-ish failures as breaker hits (background only).
+            if (isBackground && /503|service unavailable|connection refused|ECONNREFUSED/i.test(ev.message)) {
+              record503(workspaceId);
+            }
             send('error', { message: ev.message });
           }
         }
