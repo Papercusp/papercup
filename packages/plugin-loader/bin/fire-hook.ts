@@ -89,7 +89,9 @@ async function main(): Promise<void> {
   const plugin = result.plugin;
 
   // Build the context.
-  const pluginDataDir = join(args.stateDir, 'plugins', plugin.name);
+  // Aligned with plugin-host-runtime.ts + cli/plugin-cli.ts on
+  // 'plugin-data/<name>'. CLI mirrors configs to this path at invoke time.
+  const pluginDataDir = join(args.stateDir, 'plugin-data', plugin.name);
   await mkdir(pluginDataDir, { recursive: true });
   const ctx = {
     installSlug: args.projectSlug,

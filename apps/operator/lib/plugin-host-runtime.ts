@@ -36,7 +36,20 @@ import type {
 } from '@papercusp/plugin-sdk';
 
 import { papercuspRoot } from '@/lib/papercusp-root';
+import {
+  appendLogEventSync,
+  installConsoleInterceptor,
+  jsonlPathForStateDir,
+  runWithPluginExecCtx,
+  currentPluginExecCtx,
+} from '@/lib/log-events';
+
 const PAPERCUSP_ROOT = papercuspRoot();
+
+// Install the global console.* interceptor on first import. AsyncLocalStorage
+// scopes attribution to the active plugin handler — calls outside a plugin
+// stack pass through unchanged. Idempotent.
+installConsoleInterceptor();
 
 interface HostState {
   loaded: LoadedPlugin[];
@@ -228,12 +241,37 @@ export function buildPapercuspContext(args: {
   log?: (msg: string) => void;
 }): PapercuspContext {
   const { pluginName, installSlug, projectDir, stateDir, log } = args;
+  const jsonlPath = jsonlPathForStateDir(stateDir);
+  // Default ctx.log writes a structured event to run.log.jsonl AND mirrors
+  // to stdout (which the console interceptor will also capture if we're
+  // inside a plugin exec scope — that's deliberate; lets plugins use either
+  // ctx.log() or console.log() interchangeably).
+  const defaultLog = (msg: string): void => {
+    const exec = currentPluginExecCtx();
+    appendLogEventSync(jsonlPath, {
+      ts: new Date().toISOString(),
+      source: `plugin:${pluginName}`,
+      level: 'info',
+      msg,
+      ...(exec?.corrId ? { corrId: exec.corrId } : {}),
+    });
+    // Mirror to stdout so existing dev workflows (tail of next-server log)
+    // still see the line. The console interceptor would re-record this,
+    // so guard with the same exec context check it uses — but we already
+    // wrote the JSONL line above, so just print plain.
+    process.stdout.write(`[plugin:${pluginName}@${installSlug}] ${msg}\n`);
+  };
   return {
     installSlug,
     projectDir,
     stateDir,
-    pluginDataDir: join(stateDir, 'plugins', pluginName),
-    log: log ?? ((msg) => console.log(`[plugin:${pluginName}@${installSlug}] ${msg}`)),
+    // 'plugin-data/' (with dash) matches the convention the papercusp CLI
+    // uses when it mirrors plugin-configs/<slug>.json → plugin-data/<slug>/
+    // config.json at invoke time. Plugins read from ctx.pluginDataDir, so
+    // both code paths must agree on this prefix or in-process invocations
+    // see no config and the CLI does.
+    pluginDataDir: join(stateDir, 'plugin-data', pluginName),
+    log: log ?? defaultLog,
   };
 }
 
@@ -300,6 +338,31 @@ function attachPluginCtxExtras(
   };
 }
 
+/**
+ * Run a plugin handler under the AsyncLocalStorage scope so console.log/.warn/.error
+ * inside it (and anywhere down the async stack) get attributed to this
+ * plugin/harness pair in run.log.jsonl. Returns whatever the wrapped
+ * function returns (sync or async — handled transparently).
+ */
+async function runUnderPluginCtx<T>(
+  pluginName: string,
+  ctx: PapercuspContext,
+  corrId: string | undefined,
+  fn: () => Promise<T> | T,
+): Promise<T> {
+  return Promise.resolve(
+    runWithPluginExecCtx(
+      {
+        pluginSlug: pluginName,
+        harnessSlug: ctx.installSlug,
+        jsonlPath: jsonlPathForStateDir(ctx.stateDir),
+        ...(corrId ? { corrId } : {}),
+      },
+      fn,
+    ),
+  );
+}
+
 async function ensureInitialized(
   state: HostState,
   lp: LoadedPlugin,
@@ -341,13 +404,15 @@ async function ensureInitialized(
   attachPluginCtxExtras(ctx, lp, registry);
 
   try {
-    if (typeof lp.plugin.init === 'function') {
-      await lp.plugin.init(ctx);
-    }
-    const onLoad = lp.plugin.hooks?.onLoad;
-    if (typeof onLoad === 'function') {
-      await onLoad(ctx);
-    }
+    await runUnderPluginCtx(lp.plugin.name, ctx, undefined, async () => {
+      if (typeof lp.plugin.init === 'function') {
+        await lp.plugin.init(ctx);
+      }
+      const onLoad = lp.plugin.hooks?.onLoad;
+      if (typeof onLoad === 'function') {
+        await onLoad(ctx);
+      }
+    });
   } catch (e: any) {
     ctx.log(`init/onLoad threw: ${e?.message ?? e}`);
   } finally {
@@ -399,13 +464,44 @@ export async function invokePluginAction(args: {
   // ensureInitialized worked on its own ctx — attach the same extras to
   // this ctx (which is what the action handler will receive as its first arg).
   attachPluginCtxExtras(ctx, lp, registry);
-  return registry.invoke({
-    name: args.actionName,
-    ctx,
-    params: args.params,
-    triggerSource: args.triggerSource ?? 'api',
-    triggerId: args.triggerId ?? `${Date.now()}`,
+  // Mint a correlation id per invocation so every line emitted during
+  // this run (ctx.log + console.* + final result) is threadable in the UI.
+  const corrId = args.triggerId ?? `inv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const jsonlPath = jsonlPathForStateDir(ctx.stateDir);
+  // Mark invocation start in run.log.jsonl so the UI can scope the "this
+  // invocation only" filter chip.
+  appendLogEventSync(jsonlPath, {
+    ts: new Date().toISOString(),
+    source: `plugin:${lp.plugin.name}`,
+    level: 'info',
+    msg: `→ invoke ${args.actionName}`,
+    corrId,
+    attrs: { triggerSource: args.triggerSource ?? 'api', params: args.params },
   });
+  const result = await runUnderPluginCtx(lp.plugin.name, ctx, corrId, () =>
+    registry.invoke({
+      name: args.actionName,
+      ctx,
+      params: args.params,
+      triggerSource: args.triggerSource ?? 'api',
+      triggerId: corrId,
+    }),
+  );
+  // Final structured event: always lands in run.log.jsonl regardless of
+  // whether the plugin called ctx.log itself. This is what makes the
+  // cloudflare-pages publish URL visible in the panel even though the
+  // plugin's runPublish() doesn't emit a final ctx.log.
+  appendLogEventSync(jsonlPath, {
+    ts: new Date().toISOString(),
+    source: `plugin:${lp.plugin.name}`,
+    level: result.ok ? 'info' : 'error',
+    msg: result.ok
+      ? `✓ ${args.actionName} ok`
+      : `✗ ${args.actionName} failed: ${result.error ?? 'unknown error'}`,
+    corrId,
+    attrs: result.ok ? { result: result.result } : { error: result.error },
+  });
+  return result;
 }
 
 /**
@@ -467,10 +563,12 @@ export async function firePluginLifecycle<K extends keyof PluginHooks>(
     const registry = state.registries.get(regKey(lp.plugin.name, args.installSlug));
     if (registry) attachPluginCtxExtras(ctx, lp, registry);
     try {
-      // Cast through `any` — the conditional-type indexed handler doesn't
-      // narrow well across the Promise return inside Array#forEach style
-      // iteration; we've validated `typeof handler === 'function'`.
-      await (handler as any)(ctx, ...payload);
+      await runUnderPluginCtx(lp.plugin.name, ctx, undefined, async () => {
+        // Cast through `any` — the conditional-type indexed handler doesn't
+        // narrow well across the Promise return inside Array#forEach style
+        // iteration; we've validated `typeof handler === 'function'`.
+        await (handler as any)(ctx, ...payload);
+      });
     } catch (e: any) {
       ctx.log(`hook "${String(event)}" threw: ${e?.message ?? e}`);
     }
