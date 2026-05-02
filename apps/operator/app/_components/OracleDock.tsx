@@ -14,6 +14,38 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import {
+  Activity,
+  Bot,
+  Briefcase,
+  Bug,
+  ChartNetwork,
+  ClipboardCheck,
+  ClipboardList,
+  Compass,
+  Crown,
+  Eye,
+  FileText,
+  FlaskConical,
+  Hammer,
+  Library,
+  LifeBuoy,
+  Lock,
+  Monitor,
+  PencilRuler,
+  Plus,
+  RefreshCcw,
+  ScanSearch,
+  ScrollText,
+  Settings2,
+  SendHorizontal,
+  ShieldAlert,
+  ShieldCheck,
+  Sparkles,
+  Users,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
 interface ToolCallEntry {
@@ -55,14 +87,21 @@ const TUTORIAL_DONE_KEY = 'papercusp_tutorial_done_v1';
 const TUTORIAL_ACTIVE_KEY = 'oracle_tutorial_active_v1';
 const TUTORIAL_KICKOFF = 'Start the tutorial.';
 
-// Mirrors the role list from PiTerminalsDock so the Oracle dock can
-// fully replace that surface for ad-hoc agent chat.
-const AGENT_ROLES = [
-  'worker', 'validator', 'scoper', 'plan-gate', 'architect',
+// Roles are fetched at runtime from /api/harness/:slug/prompts (which
+// reads the global prompts dir). The hardcoded list this replaced kept
+// drifting from disk; now there's nothing to drift from.
+//
+// Roles excluded from the picker:
+//   - 'feedback' — ephemeral, not a chat surface (matches server's NON_CHAT_ROLES).
+//   - 'expert'   — instanced (one per feature area); has its own UI in the
+//                  Directives tab and isn't meaningful as a generic role chat.
+const PICKER_ROLE_EXCLUDE = new Set(['feedback', 'expert']);
+type AgentRole = string;
+const FALLBACK_AGENT_ROLES: string[] = [
+  'worker', 'validator', 'scoper', 'reviewer', 'architect',
   'orchestrator', 'documenter', 'summarizer', 'curator', 'debugger',
   'project_manager',
-] as const;
-type AgentRole = typeof AGENT_ROLES[number];
+];
 
 type ChatTarget =
   | { kind: 'oracle' }
@@ -78,18 +117,115 @@ interface ChatTab {
 const ORACLE_TARGET: ChatTarget = { kind: 'oracle' };
 const SUPPORT_TARGET: ChatTarget = { kind: 'support' };
 
-// Chatwoot widget URL — same as the SDK iframe target. Mirrors the
-// defaults in ChatwootWidget.tsx; override via env at deploy time.
+// Chatwoot support URL for the inline universal chat Support tab.
 const CHATWOOT_BASE_URL =
   process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL ?? 'https://chat.papercupai.com';
 const CHATWOOT_WEBSITE_TOKEN =
   process.env.NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN ?? 'CT5CTToo11YtPN3CVkhvbFs9';
+const CHATWOOT_WIDGET_SRC = `${CHATWOOT_BASE_URL}/widget?website_token=${encodeURIComponent(CHATWOOT_WEBSITE_TOKEN)}`;
+const CHATWOOT_WIDGET_COLOR = '#38bdf8';
+const CHATWOOT_TARGET_ORIGIN = (() => {
+  try { return new URL(CHATWOOT_BASE_URL).origin; } catch { return '*'; }
+})();
+const CHATWOOT_FRAME_THEME = {
+  event: 'config-set',
+  locale: 'en',
+  position: 'right',
+  hideMessageBubble: true,
+  showPopoutButton: false,
+  showUnreadMessagesDialog: false,
+  widgetStyle: 'flat',
+  darkMode: 'dark',
+  widgetColor: CHATWOOT_WIDGET_COLOR,
+  welcomeTitle: 'Papercusp Support',
+  welcomeDescription: 'Chat with a human from Papercusp.',
+  availableMessage: '',
+  unavailableMessage: '',
+  enableFileUpload: true,
+  enableEmojiPicker: true,
+  enableEndConversation: true,
+};
+function postChatwootFrameMessage(frame: HTMLIFrameElement | null, message: Record<string, unknown>) {
+  frame?.contentWindow?.postMessage(`chatwoot-widget:${JSON.stringify(message)}`, CHATWOOT_TARGET_ORIGIN);
+}
 
 function targetLabel(t: ChatTarget): string {
   if (t.kind === 'oracle') return 'Oracle';
   if (t.kind === 'support') return 'Support';
   return t.role;
 }
+function targetSubtitle(t: ChatTarget): string {
+  if (t.kind === 'oracle') return 'general help across Papercusp';
+  if (t.kind === 'support') return 'chat with a human from Papercusp';
+  return roleHint(t.role);
+}
+
+const ROLE_HINTS: Record<AgentRole, string> = {
+  worker: 'implement changes',
+  validator: 'check correctness',
+  scoper: 'break goals into concrete work',
+  reviewer: 'review plans and proposals before execution',
+  architect: 'shape design and tradeoffs',
+  orchestrator: 'coordinate the mission',
+  documenter: 'write docs and notes',
+  summarizer: 'condense progress and context',
+  curator: 'organize relevant context',
+  debugger: 'investigate failures',
+  project_manager: 'suggest priorities and next steps',
+};
+
+function roleLabel(role: AgentRole): string {
+  return role
+    .replace(/[_-]/g, ' ')
+    .replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function roleHint(role: AgentRole): string {
+  return ROLE_HINTS[role] ?? 'Chat directly with this agent.';
+}
+
+const ROLE_ICONS: Record<string, LucideIcon> = {
+  worker: Hammer,
+  validator: ShieldCheck,
+  scoper: Compass,
+  reviewer: Eye,
+  architect: PencilRuler,
+  orchestrator: ChartNetwork,
+  documenter: FileText,
+  summarizer: ScrollText,
+  curator: Library,
+  debugger: Bug,
+  'project-manager': Briefcase,
+  auditor: ClipboardCheck,
+  ceo: Crown,
+  coordinator: Users,
+  crosscheck: ScanSearch,
+  director: Crown,
+  monitor: Activity,
+  'plan-gate': ClipboardList,
+  'security-reviewer': ShieldAlert,
+  'test-writer': FileText,
+  tester: FlaskConical,
+  'ui-qa': Monitor,
+  expert: Sparkles,
+  feedback: Bot,
+};
+function normalizeRoleKey(role: AgentRole): string {
+  return role.toLowerCase().replace(/[_\s]+/g, '-');
+}
+function roleIcon(role: AgentRole): LucideIcon {
+  const normalized = normalizeRoleKey(role);
+  if (normalized === 'support') return LifeBuoy;
+  if (normalized === 'oracle') return Sparkles;
+  if (normalized === 'security-reviewer') return Lock;
+  return ROLE_ICONS[normalized] ?? ROLE_ICONS[normalized.replace(/^chief-/, '')] ?? Bot;
+}
+function targetIcon(t: ChatTarget): LucideIcon {
+  if (t.kind === 'oracle') return Sparkles;
+  if (t.kind === 'support') return LifeBuoy;
+  return roleIcon(t.role);
+}
+
 
 // Title shown in the tab strip. Agents from a different harness than the
 // current page get prefixed with the harness slug so users can tell which
@@ -175,15 +311,19 @@ export function OracleDock() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [supportEverOpened, setSupportEverOpened] = useState(false);
   const [pickerHarnesses, setPickerHarnesses] = useState<{ slug: string; harness_kind?: string }[] | null>(null);
+  const [agentRoles, setAgentRoles] = useState<string[]>(FALLBACK_AGENT_ROLES);
   const [pickerFocusSlug, setPickerFocusSlug] = useState<string | null>(null);
-  const [pickerSearch, setPickerSearch] = useState('');
+  const [pickerFocusRole, setPickerFocusRole] = useState<string | null>(null);
+  const [pickerMenuOpen, setPickerMenuOpen] = useState<'harness' | 'agent' | null>(null);
   const [input, setInput] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busyMap, setBusyMap] = useState<Record<string, boolean>>({});
   const [unreadMap, setUnreadMap] = useState<Record<string, boolean>>({});
   const [tutorialActive, setTutorialActiveState] = useState(false);
+  const [chatwootFrameSrc, setChatwootFrameSrc] = useState(CHATWOOT_WIDGET_SRC);
   const inFlightRef = useRef<Map<string, AbortController>>(new Map());
   const endRef = useRef<HTMLDivElement>(null);
+  const chatwootFrameRef = useRef<HTMLIFrameElement>(null);
 
   // Re-evaluated on URL changes; also refreshed when the picker opens
   // so the localStorage-backed dashboard combobox selection is picked up.
@@ -200,7 +340,7 @@ export function OracleDock() {
     let cancelled = false;
     (async () => {
       try {
-        const r = await fetch('/api/harness/projects', { cache: 'no-store' });
+        const r = await fetch('/api/harness/projects/lite', { cache: 'no-store' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d: any = await r.json();
         const list = Array.isArray(d?.projects)
@@ -214,16 +354,42 @@ export function OracleDock() {
     return () => { cancelled = true; };
   }, [pickerOpen, pickerHarnesses]);
 
+  // Lazy-load the agent role list when the picker opens. Falls back
+  // silently to FALLBACK_AGENT_ROLES on error so the picker stays usable.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const slug = activeHarnessSlug;
+    if (!slug) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/prompts`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const d: any = await r.json();
+        const all: unknown = d?.roles;
+        if (!Array.isArray(all)) return;
+        const filtered = (all as unknown[])
+          .filter((x): x is string => typeof x === 'string')
+          .filter((r) => !PICKER_ROLE_EXCLUDE.has(r));
+        if (!cancelled && filtered.length > 0) setAgentRoles(filtered);
+      } catch { /* keep fallback */ }
+    })();
+    return () => { cancelled = true; };
+  }, [pickerOpen, activeHarnessSlug]);
+
   // When the picker opens, refresh the active harness from URL +
   // localStorage and auto-expand it in the list.
   useEffect(() => {
     if (pickerOpen) {
       const fresh = slugFromUrl(pathname, searchParams);
+      const current = tabs.find((t) => t.id === activeId) ?? tabs[0];
+      const defaultSlug = current?.target.kind === 'agent' ? current.target.slug : fresh;
       setActiveHarnessSlug(fresh);
-      setPickerFocusSlug(fresh ?? null);
-      setPickerSearch('');
+      setPickerFocusSlug(defaultSlug ?? null);
+      setPickerFocusRole(current?.target.kind === 'agent' ? current.target.role : null);
+      setPickerMenuOpen(null);
     }
-  }, [pickerOpen, pathname, searchParams]);
+  }, [pickerOpen, pathname, searchParams, tabs, activeId]);
 
   // Dismiss the picker on outside click. We attach to mousedown so closing
   // wins the race against any stray click bubbling into the picker itself.
@@ -232,12 +398,27 @@ export function OracleDock() {
     const onDown = (e: MouseEvent) => {
       const target = e.target as Element | null;
       if (!target) return;
-      if (target.closest('.oracle-picker') || target.closest('.oracle-tab-add')) return;
+      if (target.closest('.oracle-picker') || target.closest('.oracle-picker-body') || target.closest('.oracle-tab-add')) return;
       setPickerOpen(false);
+      setPickerMenuOpen(null);
     };
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [pickerOpen]);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      if (pickerMenuOpen) {
+        setPickerMenuOpen(null);
+        return;
+      }
+      setPickerOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [pickerOpen, pickerMenuOpen]);
 
   const setTutorialActive = (v: boolean) => {
     setTutorialActiveState(v);
@@ -411,23 +592,24 @@ export function OracleDock() {
 
   const openTab = useCallback((target: ChatTarget) => {
     setPickerOpen(false);
-    setTabs((prev) => {
-      // Coalesce: if a tab for this exact target already exists, just activate it.
-      const existing = prev.find((t) =>
-        t.target.kind === target.kind &&
-        (target.kind === 'oracle' || target.kind === 'support' ||
-          (t.target.kind === 'agent' && t.target.slug === target.slug && t.target.role === target.role))
-      );
-      if (existing) { setActiveId(existing.id); return prev; }
-      const fresh: ChatTab = {
-        id: newId(),
-        target,
-        messages: target.kind === 'oracle' ? [WELCOME] : [],
-      };
-      setActiveId(fresh.id);
-      return [...prev, fresh];
-    });
-  }, []);
+    setPickerMenuOpen(null);
+    const sameTarget = (t: ChatTab) =>
+      t.target.kind === target.kind &&
+      (target.kind === 'oracle' || target.kind === 'support' ||
+        (t.target.kind === 'agent' && t.target.slug === target.slug && t.target.role === target.role));
+    const existing = tabs.find(sameTarget);
+    if (existing) {
+      setActiveId(existing.id);
+      return;
+    }
+    const fresh: ChatTab = {
+      id: newId(),
+      target,
+      messages: target.kind === 'oracle' ? [WELCOME] : [],
+    };
+    setTabs((prev) => (prev.some(sameTarget) ? prev : [...prev, fresh]));
+    setActiveId(fresh.id);
+  }, [tabs]);
 
   // Resolve (creating if necessary) the agent-chat id for an agent tab.
   const ensureAgentChatId = async (slug: string, role: AgentRole): Promise<string> => {
@@ -497,7 +679,7 @@ export function OracleDock() {
     };
 
     try {
-      let res: Response;
+      let res: Response | null = null;
       if (tab.target.kind === 'oracle') {
         res = await fetch('/api/oracle/chat', {
           method: 'POST',
@@ -548,6 +730,7 @@ export function OracleDock() {
         }
       }
 
+      if (!res) return;
       if (!res.ok || !res.body) {
         const errText = await res.text().catch(() => `HTTP ${res.status}`);
         setError(tabId, errText);
@@ -583,7 +766,7 @@ export function OracleDock() {
               // Oracle's openChat now opens a tab in the dock instead of
               // routing to /harness/<slug>?panel=pi.
               const role = data.role as AgentRole;
-              if ((AGENT_ROLES as readonly string[]).includes(role)) {
+              if (agentRoles.includes(role)) {
                 openTab({ kind: 'agent', slug: data.slug, role });
                 if (typeof data.chatId === 'string') {
                   // Pin the server's chosen chat as our cached chat for this
@@ -610,12 +793,54 @@ export function OracleDock() {
   };
 
   const supportActive = activeTab?.target.kind === 'support';
+  const supportFrameReady = chatwootFrameSrc.includes('cw_conversation=');
+
+  const sendChatwootFrameTheme = useCallback(() => {
+    const frame = chatwootFrameRef.current;
+    postChatwootFrameMessage(frame, CHATWOOT_FRAME_THEME);
+    postChatwootFrameMessage(frame, { event: 'set-color-scheme', darkMode: 'dark' });
+  }, []);
+
+  useEffect(() => {
+    if (!supportActive || !supportEverOpened) return;
+    const timer = window.setTimeout(sendChatwootFrameTheme, 350);
+    return () => window.clearTimeout(timer);
+  }, [supportActive, supportEverOpened, sendChatwootFrameTheme]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (typeof event.data !== 'string' || !event.data.startsWith('chatwoot-widget:')) return;
+      try {
+        const message = JSON.parse(event.data.replace('chatwoot-widget:', ''));
+        if (message?.event === 'loaded') sendChatwootFrameTheme();
+      } catch {
+        /* ignore malformed widget messages */
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [sendChatwootFrameTheme]);
 
   // Lazy-mount the Chatwoot iframe the first time Support is shown, then
   // keep it mounted (display toggled) so the conversation isn't lost when
   // the user switches tabs.
   useEffect(() => {
     if (supportActive && !supportEverOpened) setSupportEverOpened(true);
+  }, [supportActive, supportEverOpened]);
+
+  useEffect(() => {
+    if (!supportActive && !supportEverOpened) return;
+    const findSdkConversationUrl = () => {
+      const frames = Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe[src*="/widget"]'));
+      const sdkFrame = frames.find((frame) => {
+        if (frame === chatwootFrameRef.current) return false;
+        return frame.src.includes(CHATWOOT_WEBSITE_TOKEN) && frame.src.includes('cw_conversation=');
+      });
+      if (sdkFrame?.src) setChatwootFrameSrc((prev) => (prev === sdkFrame.src ? prev : sdkFrame.src));
+    };
+    findSdkConversationUrl();
+    const timer = window.setInterval(findSdkConversationUrl, 750);
+    return () => window.clearInterval(timer);
   }, [supportActive, supportEverOpened]);
 
   // Mounted-marker + event bridge so SupportChatButton (and anything else
@@ -650,6 +875,161 @@ export function OracleDock() {
   const lastMsg = active.messages[active.messages.length - 1];
   const showThinking = activeBusy && lastMsg && lastMsg.role === 'assistant' && !lastMsg.content && !lastMsg.tools?.length;
   const headerLabel = targetLabel(active.target);
+  const ActiveTargetIcon = targetIcon(active.target);
+  const headerSubtitle = targetSubtitle(active.target);
+
+  const pickerView = pickerOpen ? (() => {
+    const allHarnesses = pickerHarnesses ?? [];
+    const realHarnesses = allHarnesses.filter((h) => !isTestHarness(h.slug));
+    const sortedHarnesses = [...realHarnesses].sort((a, b) => {
+      if (a.slug === harnessSlug) return -1;
+      if (b.slug === harnessSlug) return 1;
+      return a.slug.localeCompare(b.slug);
+    });
+    const roles = agentRoles;
+    const inferredSlug = pickerFocusSlug ?? harnessSlug ?? null;
+    const displayHarnesses = sortedHarnesses.length > 0
+      ? sortedHarnesses
+      : inferredSlug ? [{ slug: inferredSlug }] : [];
+    const selectedSlugBase = inferredSlug ?? displayHarnesses[0]?.slug ?? null;
+    const selectedSlug = selectedSlugBase && displayHarnesses.some((h) => h.slug === selectedSlugBase)
+      ? selectedSlugBase
+      : displayHarnesses[0]?.slug ?? selectedSlugBase;
+    const selectedRole = pickerFocusRole && roles.includes(pickerFocusRole)
+      ? pickerFocusRole
+      : roles[0] ?? null;
+    const preferredRoleOrder = ['worker', 'architect', 'validator', 'scoper', 'project_manager', 'orchestrator'];
+    const orderedRoles = [...roles].sort((a, b) => {
+      if (selectedRole && a === selectedRole) return -1;
+      if (selectedRole && b === selectedRole) return 1;
+      const ai = preferredRoleOrder.indexOf(a);
+      const bi = preferredRoleOrder.indexOf(b);
+      if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+      return roleLabel(a).localeCompare(roleLabel(b));
+    });
+    const SelectedRoleIcon = selectedRole ? roleIcon(selectedRole) : Bot;
+    return (
+      <div className="oracle-picker-body" role="dialog" aria-label="Start a new chat">
+        <div className="oracle-picker-simple oracle-picker-form">
+          <div className="oracle-picker-field">
+            <label htmlFor="oracle-picker-harness-trigger">Harness</label>
+            {pickerHarnesses === null ? (
+              <div className="oracle-picker-empty compact">
+                <strong>Loading harnesses…</strong>
+              </div>
+            ) : displayHarnesses.length === 0 ? (
+              <div className="oracle-picker-empty compact">
+                <strong>No harnesses</strong>
+              </div>
+            ) : (
+              <>
+                <button
+                  id="oracle-picker-harness-trigger"
+                  type="button"
+                  className="oracle-picker-select-trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={pickerMenuOpen === 'harness'}
+                  onClick={() => setPickerMenuOpen((v) => (v === 'harness' ? null : 'harness'))}
+                >
+                  <span>{selectedSlug}{selectedSlug === harnessSlug ? ' · current' : ''}</span>
+                  <em>⌄</em>
+                </button>
+                {pickerMenuOpen === 'harness' && (
+                  <div className="oracle-picker-menu" role="listbox" aria-label="Choose a harness">
+                    {displayHarnesses.map((h) => {
+                      const isSelected = h.slug === selectedSlug;
+                      return (
+                        <button
+                          key={h.slug}
+                          type="button"
+                          role="option"
+                          aria-selected={isSelected}
+                          className={`oracle-picker-menu-option${isSelected ? ' is-selected' : ''}`}
+                          onClick={() => {
+                            setPickerFocusSlug(h.slug);
+                            setPickerMenuOpen(null);
+                          }}
+                        >
+                          <span>{h.slug}</span>
+                          {h.slug === harnessSlug && <small>current</small>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          <div className="oracle-picker-field">
+            <label htmlFor="oracle-picker-role-trigger">Agent</label>
+            <button
+              id="oracle-picker-role-trigger"
+              type="button"
+              className="oracle-picker-select-trigger"
+              aria-haspopup="listbox"
+              aria-expanded={pickerMenuOpen === 'agent'}
+              disabled={roles.length === 0}
+              onClick={() => setPickerMenuOpen((v) => (v === 'agent' ? null : 'agent'))}
+            >
+              <span className="oracle-picker-trigger-role">
+                <span className="oracle-picker-role-icon-wrap">
+                  <SelectedRoleIcon aria-hidden="true" className="oracle-picker-role-icon" />
+                </span>
+                <span className="oracle-picker-trigger-role-label">
+                  {selectedRole ? roleLabel(selectedRole) : 'No agents'}
+                </span>
+              </span>
+              <em>⌄</em>
+            </button>
+            {pickerMenuOpen === 'agent' && roles.length > 0 && (
+              <div className="oracle-picker-menu" role="listbox" aria-label="Choose an agent">
+                {orderedRoles.map((role) => {
+                  const isSelected = role === selectedRole;
+                  const RoleIcon = roleIcon(role);
+                  return (
+                    <button
+                      key={role}
+                      type="button"
+                      role="option"
+                      aria-selected={isSelected}
+                      className={`oracle-picker-menu-option${isSelected ? ' is-selected' : ''}`}
+                      onClick={() => {
+                        setPickerFocusRole(role);
+                        setPickerMenuOpen(null);
+                      }}
+                    >
+                      <span className="oracle-picker-option-line">
+                        <span className="oracle-picker-role-icon-wrap">
+                          <RoleIcon aria-hidden="true" className="oracle-picker-role-icon" />
+                        </span>
+                        <span className="oracle-picker-option-title">{roleLabel(role)}</span>
+                      </span>
+                      <small>{roleHint(role)}</small>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {selectedRole && <span className="oracle-picker-field-hint">{roleHint(selectedRole)}</span>}
+          </div>
+          <button
+            type="button"
+            className="oracle-picker-start"
+            disabled={!selectedSlug || !selectedRole}
+            onClick={() => {
+              if (selectedSlug && selectedRole) openTab({ kind: 'agent', slug: selectedSlug, role: selectedRole });
+            }}
+          >
+            Chat with {selectedRole ? roleLabel(selectedRole) : 'agent'}
+          </button>
+          <div className="oracle-picker-secondary">
+            <button type="button" className="oracle-picker-shortcut oracle-picker-shortcut-oracle" onClick={() => openTab(ORACLE_TARGET)}><Sparkles aria-hidden="true" className="oracle-picker-shortcut-icon" />Oracle</button>
+            <button type="button" className="oracle-picker-shortcut oracle-picker-shortcut-support" onClick={() => openTab(SUPPORT_TARGET)}><LifeBuoy aria-hidden="true" className="oracle-picker-shortcut-icon" />Support</button>
+          </div>
+        </div>
+      </div>
+    );
+  })() : null;
 
   return (
     <>
@@ -662,16 +1042,21 @@ export function OracleDock() {
       )}
 
       {open && (
-        <div className="oracle-dock" role="dialog" aria-label="Oracle">
+        <div className="oracle-dock" data-oracle-dock role="dialog" aria-label="Oracle">
           <header className="oracle-dock-header">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-              <img src="/mascot.svg" alt="" height={24} style={{ display: 'block' }} />
-              <strong style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{headerLabel}</strong>
+            <div className="oracle-header-main">
+              <span className="oracle-header-badge">
+                <ActiveTargetIcon aria-hidden="true" className="oracle-header-icon" />
+              </span>
+              <div className="oracle-header-copy">
+                <strong>{headerLabel}</strong>
+                <span>{headerSubtitle}</span>
+              </div>
             </div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <button onClick={newOracleChat} aria-label="Reset this chat" title="Reset this chat" className="oracle-link" style={{ background: 'transparent', border: 0, padding: '2px 6px', cursor: 'pointer', font: 'inherit' }}>↻</button>
-              <Link href="/settings/oracle" className="oracle-link" title="Configure">⚙</Link>
-              <button onClick={() => setOpen(false)} aria-label="Close" className="oracle-close">×</button>
+            <div className="oracle-header-actions">
+              <button onClick={newOracleChat} aria-label="Reset this chat" title="Reset this chat" className="oracle-icon-button"><RefreshCcw aria-hidden="true" className="oracle-header-action-icon" /></button>
+              <Link href="/settings/oracle" className="oracle-icon-button" title="Configure" aria-label="Configure"><Settings2 aria-hidden="true" className="oracle-header-action-icon" /></Link>
+              <button onClick={() => setOpen(false)} aria-label="Close" className="oracle-icon-button oracle-icon-button-close"><X aria-hidden="true" className="oracle-header-action-icon" /></button>
             </div>
           </header>
 
@@ -681,6 +1066,7 @@ export function OracleDock() {
               const isActive = t.id === active.id;
               const tabBusy = !!busyMap[t.id];
               const unread = !!unreadMap[t.id];
+              const TabIcon = targetIcon(t.target);
               return (
                 <div
                   key={t.id}
@@ -689,7 +1075,10 @@ export function OracleDock() {
                   className={`oracle-tab${isActive ? ' is-active' : ''}`}
                   onClick={() => setActiveId(t.id)}
                 >
-                  <span className="oracle-tab-label">{tabTitle(t.target, tabs, harnessSlug)}</span>
+                  <span className="oracle-tab-label-wrap">
+                    <TabIcon aria-hidden="true" className="oracle-tab-icon" />
+                    <span className="oracle-tab-label">{tabTitle(t.target, tabs, harnessSlug)}</span>
+                  </span>
                   {tabBusy && <span className="oracle-tab-dot oracle-tab-dot-busy" aria-label="thinking" />}
                   {!tabBusy && unread && <span className="oracle-tab-dot oracle-tab-dot-unread" aria-label="unread" />}
                   <button
@@ -698,198 +1087,110 @@ export function OracleDock() {
                     aria-label={`Close ${targetLabel(t.target)}`}
                     title="Close"
                     onClick={(e) => { e.stopPropagation(); closeTab(t.id); }}
-                  >×</button>
+                  ><X aria-hidden="true" className="oracle-tab-close-icon" /></button>
                 </div>
               );
             })}
-            <div style={{ position: 'relative' }}>
+            <div style={{ position: 'relative', flex: 1, display: 'flex', justifyContent: 'flex-end' }}>
               <button
                 type="button"
-                className="oracle-tab-add"
+                className={`oracle-tab-add${pickerOpen ? ' is-open' : ''}` }
                 aria-label="New chat"
                 title="New chat"
                 onClick={() => setPickerOpen((v) => !v)}
-              >＋</button>
-              {pickerOpen && (() => {
-                const allHarnesses = pickerHarnesses ?? [];
-                const realHarnesses = allHarnesses.filter((h) => !isTestHarness(h.slug));
-                const sortedHarnesses = [...realHarnesses].sort((a, b) => {
-                  if (a.slug === harnessSlug) return -1;
-                  if (b.slug === harnessSlug) return 1;
-                  return a.slug.localeCompare(b.slug);
-                });
-                const q = pickerSearch.trim().toLowerCase();
-                const expandedSlug = pickerFocusSlug ?? harnessSlug ?? null;
-                // Search mode flattens to a single ranked list of matches.
-                const flatMatches: ChatTarget[] = [];
-                if (q) {
-                  if ('oracle'.includes(q)) flatMatches.push(ORACLE_TARGET);
-                  if ('support'.includes(q) || 'human'.includes(q) || 'help'.includes(q)) flatMatches.push(SUPPORT_TARGET);
-                  for (const h of sortedHarnesses) {
-                    for (const role of AGENT_ROLES) {
-                      const hay = `${h.slug}/${role}`;
-                      if (hay.toLowerCase().includes(q)) {
-                        flatMatches.push({ kind: 'agent', slug: h.slug, role });
-                      }
-                    }
-                  }
-                }
-                return (
-                  <div className="oracle-picker oracle-picker-wide" role="menu">
-                    <div className="oracle-picker-search">
-                      <input
-                        autoFocus
-                        type="text"
-                        value={pickerSearch}
-                        onChange={(e) => setPickerSearch(e.target.value)}
-                        placeholder="Search harness or role…"
-                      />
-                    </div>
-                    {q ? (
-                      <div className="oracle-picker-results">
-                        {flatMatches.length === 0 && (
-                          <div className="oracle-picker-section" style={{ opacity: 0.7 }}>No matches.</div>
-                        )}
-                        {flatMatches.map((t, i) => (
-                          <button
-                            key={i}
-                            type="button"
-                            className="oracle-picker-item"
-                            onClick={() => openTab(t)}
-                          >
-                            {t.kind === 'oracle'
-                              ? <><strong>Oracle</strong><span className="oracle-picker-hint">general help</span></>
-                              : t.kind === 'support'
-                                ? <><strong>Support</strong><span className="oracle-picker-hint">chat with a human</span></>
-                                : <><strong>{t.role}</strong><span className="oracle-picker-hint">{t.slug}</span></>}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="oracle-picker-list">
-                        <button
-                          type="button"
-                          className="oracle-picker-row"
-                          onClick={() => openTab(ORACLE_TARGET)}
-                        >
-                          <strong>Oracle</strong>
-                          <span className="oracle-picker-hint">general help</span>
-                        </button>
-                        <button
-                          type="button"
-                          className="oracle-picker-row"
-                          onClick={() => openTab(SUPPORT_TARGET)}
-                        >
-                          <strong>Support</strong>
-                          <span className="oracle-picker-hint">chat with a human</span>
-                        </button>
-                        <div className="oracle-picker-section">Harnesses</div>
-                        {pickerHarnesses === null && (
-                          <div className="oracle-picker-section" style={{ opacity: 0.7 }}>Loading…</div>
-                        )}
-                        {pickerHarnesses !== null && sortedHarnesses.length === 0 && (
-                          <div className="oracle-picker-section" style={{ opacity: 0.7 }}>No harnesses.</div>
-                        )}
-                        {sortedHarnesses.map((h) => {
-                          const isExpanded = h.slug === expandedSlug;
-                          return (
-                            <div key={h.slug} className={`oracle-picker-group${isExpanded ? ' is-expanded' : ''}`}>
-                              <button
-                                type="button"
-                                className="oracle-picker-row oracle-picker-harness-row"
-                                aria-expanded={isExpanded}
-                                onClick={() => setPickerFocusSlug(isExpanded ? null : h.slug)}
-                              >
-                                <span className="oracle-picker-caret" aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
-                                <strong>{h.slug}</strong>
-                                {h.slug === harnessSlug && <span className="oracle-picker-hint">current</span>}
-                              </button>
-                              {isExpanded && (
-                                <div className="oracle-picker-roles">
-                                  {AGENT_ROLES.map((role) => (
-                                    <button
-                                      key={role}
-                                      type="button"
-                                      className="oracle-picker-row oracle-picker-role-row"
-                                      onClick={() => openTab({ kind: 'agent', slug: h.slug, role })}
-                                    >
-                                      {role}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
+              ><Plus aria-hidden="true" className="oracle-tab-add-icon" /></button>
             </div>
           </div>
 
-          <div className="oracle-body" style={supportActive ? { display: 'none' } : undefined}>
-            {active.messages.length === 0 ? (
-              <div style={{ color: 'var(--fg-mute)', fontSize: 13, padding: 16, textAlign: 'center' }}>
-                {active.target.kind === 'oracle'
-                  ? 'Ask me anything about Papercusp.'
-                  : active.target.kind === 'support'
-                    ? 'Connecting you to a human…'
-                    : `Send a message to the ${active.target.role}.`}
-              </div>
-            ) : (
-              active.messages.map((m, i) => (
-                <div key={i} className={`oracle-msg oracle-msg-${m.role}`}>
-                  <div className="oracle-msg-role">{m.role === 'user' ? 'You' : headerLabel}</div>
-                  {m.tools?.map((t, ti) => {
-                    const summary = summarizeToolInput(t.input);
+          {pickerView ?? (
+            <>
+              <div className="oracle-body" style={supportActive ? { display: 'none' } : undefined}>
+                {active.messages.length === 0 ? (
+                  <div className="oracle-empty-state">
+                    <span className="oracle-empty-state-icon">
+                      <ActiveTargetIcon aria-hidden="true" className="oracle-empty-state-glyph" />
+                    </span>
+                    <strong className="oracle-empty-state-title">{headerLabel}</strong>
+                    <span className="oracle-empty-state-text">
+                      {active.target.kind === 'oracle'
+                        ? 'Ask me anything about Papercusp.'
+                        : active.target.kind === 'support'
+                          ? 'Connecting you to a human…'
+                          : `Send a message to the ${active.target.role}.`}
+                    </span>
+                  </div>
+                ) : (
+                  active.messages.map((m, i) => {
+                    const MessageIcon = m.role === 'user' ? Users : ActiveTargetIcon;
+                    const messageLabel = m.role === 'user' ? 'You' : headerLabel;
                     return (
-                      <div key={ti} className="oracle-tool-chip" title={summary}>
-                        🔧 <strong>{t.name}</strong>
-                        {summary && <span className="oracle-tool-args">({summary})</span>}
+                      <div key={i} className={`oracle-msg oracle-msg-${m.role}`}>
+                        <span className="oracle-msg-avatar" aria-hidden="true">
+                          <MessageIcon className="oracle-msg-icon" />
+                        </span>
+                        <div className="oracle-msg-stack">
+                          <div className="oracle-msg-role">{messageLabel}</div>
+                          {m.tools?.map((t, ti) => {
+                            const summary = summarizeToolInput(t.input);
+                            return (
+                              <div key={ti} className="oracle-tool-chip" title={summary}>
+                                🔧 <strong>{t.name}</strong>
+                                {summary && <span className="oracle-tool-args">({summary})</span>}
+                              </div>
+                            );
+                          })}
+                          {m.content && <div className="oracle-msg-content">{m.content}</div>}
+                        </div>
                       </div>
                     );
-                  })}
-                  {m.content && <div className="oracle-msg-content">{m.content}</div>}
-                </div>
-              ))
-            )}
-            {showThinking && (
-              <div className="oracle-thinking-row" aria-live="polite">
-                <span>{headerLabel} is thinking</span>
-                <span className="oracle-thinking-dots"><span /><span /><span /></span>
+                  })
+                )}
+                {showThinking && (
+                  <div className="oracle-thinking-row" aria-live="polite">
+                    <span>{headerLabel} is thinking</span>
+                    <span className="oracle-thinking-dots"><span /><span /><span /></span>
+                  </div>
+                )}
+                {activeError && <div className="oracle-error">⚠ {activeError}</div>}
+                <div ref={endRef} />
               </div>
-            )}
-            {activeError && <div className="oracle-error">⚠ {activeError}</div>}
-            <div ref={endRef} />
-          </div>
 
-          {/* Chatwoot widget rendered inline. Mounted lazily on first
-              Support activation, then kept mounted so the conversation
-              survives tab switches. The iframe handles its own input so
-              we suppress the native dock form for this tab. */}
-          {supportEverOpened && (
-            <iframe
-              className="oracle-chatwoot-frame"
-              src={`${CHATWOOT_BASE_URL}/widget?website_token=${encodeURIComponent(CHATWOOT_WEBSITE_TOKEN)}`}
-              title="Papercusp Support chat"
-              style={supportActive ? undefined : { display: 'none' }}
-              allow="clipboard-read; clipboard-write; microphone; camera"
-            />
-          )}
-          {!supportActive && (
-            <form className="oracle-form" onSubmit={(e) => { e.preventDefault(); void send(active.id); }}>
-              <input
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                placeholder={activeBusy ? 'thinking…' : (active.target.kind === 'agent' ? `Message ${active.target.role}…` : 'Ask the Oracle…')}
-                disabled={activeBusy}
-              />
-              <button type="submit" disabled={activeBusy || !input.trim()} className="pc-button">
-                {activeBusy ? '…' : 'Send'}
-              </button>
-            </form>
+              {/* Chatwoot widget rendered inline. Mounted lazily on first
+                  Support activation, then kept mounted so the conversation
+                  survives tab switches. The iframe handles its own input so
+                  we suppress the native dock form for this tab. */}
+              {supportActive && !supportFrameReady && (
+                <div className="oracle-support-loading">Connecting to support…</div>
+              )}
+              {supportEverOpened && supportFrameReady && (
+                <iframe
+                  ref={chatwootFrameRef}
+                  className="oracle-chatwoot-frame"
+                  src={chatwootFrameSrc}
+                  title="Papercusp Support chat"
+                  style={supportActive ? undefined : { display: 'none' }}
+                  onLoad={sendChatwootFrameTheme}
+                  allow="clipboard-read; clipboard-write; microphone; camera"
+                />
+              )}
+              {!supportActive && (
+                <form className="oracle-form" onSubmit={(e) => { e.preventDefault(); void send(active.id); }}>
+                  <div className="oracle-input-shell">
+                    <ActiveTargetIcon aria-hidden="true" className="oracle-input-icon" />
+                    <input
+                      value={input}
+                      onChange={(e) => setInput(e.target.value)}
+                      placeholder={activeBusy ? 'thinking…' : (active.target.kind === 'agent' ? `Message ${active.target.role}…` : 'Ask the Oracle…')}
+                      disabled={activeBusy}
+                    />
+                  </div>
+                  <button type="submit" disabled={activeBusy || !input.trim()} className="pc-button oracle-send-button">
+                    <span>{activeBusy ? '…' : 'Send'}</span>
+                    {!activeBusy && <SendHorizontal aria-hidden="true" className="oracle-send-icon" />}
+                  </button>
+                </form>
+              )}
+            </>
           )}
         </div>
       )}

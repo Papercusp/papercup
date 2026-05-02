@@ -51,7 +51,22 @@ export interface PtyHandle {
   onData: Set<(chunk: Buffer) => void>;
   /** Fired once the underlying process exits. */
   onExit: Set<(code: number, signal: number) => void>;
+  /**
+   * Bytes received before any SSE subscriber connected. Used by the
+   * prewarm path: a handle is spawned eagerly, runs for a few hundred
+   * ms producing the omp banner + initial prompt, and only later does
+   * the UI's SSE consumer attach. Without replay, that early output is
+   * dropped and the user sees an empty pane.
+   *
+   * Capped at REPLAY_CAP_BYTES — once exceeded we drop the oldest
+   * chunk. Cleared after first subscribe.
+   */
+  replayBuffer: Buffer[];
+  replayBytes: number;
+  replayClosed: boolean;
 }
+
+const REPLAY_CAP_BYTES = 256 * 1024;
 
 const MAX_CONCURRENT_PTYS = 16;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -133,12 +148,23 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
     exitCode: null,
     onData: new Set(),
     onExit: new Set(),
+    replayBuffer: [],
+    replayBytes: 0,
+    replayClosed: false,
   };
   handles.set(id, handle);
 
   pty.onData((chunk) => {
     handle.lastActivityMs = Date.now();
     const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
+    if (!handle.replayClosed) {
+      handle.replayBuffer.push(buf);
+      handle.replayBytes += buf.length;
+      while (handle.replayBytes > REPLAY_CAP_BYTES && handle.replayBuffer.length > 1) {
+        const dropped = handle.replayBuffer.shift()!;
+        handle.replayBytes -= dropped.length;
+      }
+    }
     for (const sub of handle.onData) {
       try { sub(buf); } catch { /* subscriber threw — drop it next loop */ }
     }
@@ -198,6 +224,23 @@ export function killPty(id: string): boolean {
 export function markActive(id: string): void {
   const handle = handles.get(id);
   if (handle) handle.lastActivityMs = Date.now();
+}
+
+/**
+ * Drain the replay buffer (bytes produced before any SSE subscriber
+ * connected) and stop further buffering. Returns the merged Buffer or
+ * null if there's nothing buffered. Idempotent — second call returns
+ * null.
+ */
+export function consumeReplay(id: string): Buffer | null {
+  const handle = handles.get(id);
+  if (!handle || handle.replayClosed) return null;
+  handle.replayClosed = true;
+  if (handle.replayBuffer.length === 0) return null;
+  const merged = Buffer.concat(handle.replayBuffer);
+  handle.replayBuffer = [];
+  handle.replayBytes = 0;
+  return merged;
 }
 
 /** Stats for an `/api/desktop/pty/stats` debug endpoint or similar. */

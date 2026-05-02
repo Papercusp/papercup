@@ -19,7 +19,8 @@
  * the caller's `lockMode` choice.
  */
 import { spawn } from 'node:child_process';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient, withWorkspaceLegacy } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectDirForSlug } from './operator-notes';
 
@@ -145,7 +146,20 @@ async function releaseProjectLock(db: ReturnType<typeof getLegacyClient>, projec
 
 export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult | RunPmError> {
   const { slug, projectId, claudeCmd = process.env.CLAUDE_CMD ?? 'claude', bypassDebounce = false } = opts;
-  const db = getLegacyClient(slug);
+  // Wrap the entire PM run in a workspace-scoped tx so harness_shared.*
+  // queries pass RLS predicates. Note: the advisory lock + sub-transactions
+  // run within this outer transaction. claude spawn happens inside but PG
+  // operations after the spawn must still be inside the transaction window.
+  return withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
+    return await runProjectManagerInner(opts, db);
+  });
+}
+
+async function runProjectManagerInner(
+  opts: RunPmOptions,
+  db: ReturnType<typeof getLegacyClient>,
+): Promise<RunPmResult | RunPmError> {
+  const { slug, projectId, claudeCmd = process.env.CLAUDE_CMD ?? 'claude', bypassDebounce = false } = opts;
 
   // 1. Acquire the per-project advisory lock so concurrent PM runs for the
   // same project serialize.

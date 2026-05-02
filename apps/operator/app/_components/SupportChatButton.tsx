@@ -1,10 +1,10 @@
 'use client';
 
 /**
- * Programmatic trigger for the Chatwoot widget.
+ * Programmatic trigger for the integrated Support tab in the universal chat.
  *
- * Calls $chatwoot.toggle('open') if the widget is loaded; falls back to a
- * mailto link if not (e.g. NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN unset).
+ * Chatwoot is embedded inside OracleDock as the `Support` agent, so support
+ * entry points should open that tab instead of launching a separate bubble.
  */
 
 import type { ReactNode } from 'react';
@@ -12,29 +12,22 @@ import type { ReactNode } from 'react';
 interface Props {
   children?: ReactNode;
   className?: string;
-  /** Optional pre-fill message that opens with the widget. */
+  /** Optional message copied for the user before opening Support. */
   message?: string;
 }
 
 export function SupportChatButton({ children, className, message }: Props) {
   const onClick = () => {
     if (typeof window === 'undefined') return;
-    if (window.$chatwoot) {
-      window.$chatwoot.toggle('open');
-      // Pre-fill is best-effort; not all Chatwoot SDK versions expose this.
-      // Keep the optional ts-cast minimal.
-      const cw = window.$chatwoot as unknown as { setUnreadView?: () => void };
-      cw.setUnreadView?.();
-      if (message) {
-        // Chatwoot's SDK doesn't expose a public "set draft" API. Copy the
-        // suggested message to clipboard instead so the user pastes it.
-        navigator.clipboard?.writeText(message).catch(() => {});
-      }
-      return;
+    if (message) {
+      navigator.clipboard?.writeText(message).catch(() => {});
     }
-    // Fallback: open a fresh email if widget isn't configured. Better than
-    // a dead button.
-    window.location.href = `mailto:support@papercusp.com?subject=Papercusp%20support${message ? '&body=' + encodeURIComponent(message) : ''}`;
+    window.dispatchEvent(new CustomEvent('papercusp:open-support'));
+    window.setTimeout(() => {
+      if (!document.querySelector('[data-oracle-dock]')) {
+        window.location.href = '/support';
+      }
+    }, 250);
   };
 
   return (

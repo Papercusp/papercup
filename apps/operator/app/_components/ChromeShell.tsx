@@ -4,15 +4,17 @@ import { usePathname } from 'next/navigation';
 import { ChatwootWidget } from './ChatwootWidget';
 import { OracleDock } from './OracleDock';
 import { OperatorButton, OperatorPanel } from './OperatorPanel';
+import { VoiceButton } from './voice/VoiceButton';
+import { VoiceAppBridge } from './voice/VoiceAppBridge';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
 import UpdateChip from './UpdateChip';
 import TutorialButton from './TutorialButton';
 
 /**
- * Renders the operator's global chrome (header, oracle dock, chatwoot
- * widget, host-check banner) ONLY for routes that aren't designed to be
- * embedded in iframes.
+ * Renders the operator's global chrome (header, Oracle dock, hidden
+ * Chatwoot SDK bridge, host-check banner) ONLY for routes that aren't
+ * designed to be embedded in iframes.
  *
  * Why this exists: operator routes like `/pi` and `/project-docs` are
  * mounted inside iframes by harness plugin tabs (pi-coding, fumadocs).
@@ -46,8 +48,12 @@ export default function ChromeShell() {
           <img src="/wordmark.svg" alt="papercusp" height={22} style={{ display: 'block' }} />
         </a>
         <span className="pc-header-quote">Nothing is so painful to the human mind as a great and sudden change</span>
-        <a href="/harness" className="pc-header-cta" aria-label="Mission Control">Mission Control</a>
+        <a href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Mission Control">
+          <span className="pc-header-cta-orb" aria-hidden="true" />
+          <span className="pc-header-cta-label">Mission Control</span>
+        </a>
         <OperatorButton />
+        <VoiceButton />
         <nav aria-label="Primary navigation">
           <a href="/marketplace/">Marketplace</a>
           <a href="/installed/harnesses">Harnesses</a>
@@ -65,6 +71,7 @@ export default function ChromeShell() {
       <ChatwootWidget />
       <OracleDock />
       <OperatorPanel />
+      <VoiceAppBridge />
     </>
   );
 }

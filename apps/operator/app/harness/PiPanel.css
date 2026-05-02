@@ -227,11 +227,38 @@
   padding: 12px 8px;
 }
 
+.pi-panel__term-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
 .pi-panel__term {
   flex: 1 1 auto;
   min-height: 0;
   padding: 6px 8px 0;
   background: #0a0a0a;
+}
+
+.pi-panel__loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(10, 10, 10, 0.92);
+  color: #888;
+  font-size: 12px;
+  font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.pi-panel__loading-spin {
+  color: #6ea8ff;
+  animation: chat-spin 1s linear infinite;
 }
 
 /* xterm.js itself has internal padding; ensure scrollbar styling matches dark theme. */

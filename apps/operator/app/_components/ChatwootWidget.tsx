@@ -46,15 +46,18 @@ export function ChatwootWidget() {
     if (!websiteToken) return;
 
     window.chatwootSettings = {
-      hideMessageBubble: false,
+      hideMessageBubble: true,
       position: 'right',
       locale: 'en',
       type: 'standard',
       launcherTitle: 'Papercusp Support',
-      // Force the embedded Chatwoot UI into the same dark blue-frost surface as the operator.
-      // The current SDK accepts "dark" even though older docs only mention "auto".
+      // Keep the SDK available as a hidden bridge; Support is opened through
+      // OracleDock's integrated Support tab, not a separate floating button.
       darkMode: 'dark',
       widgetColor: '#38bdf8',
+      widgetStyle: 'flat',
+      showUnreadMessagesDialog: false,
+      showPopoutButton: false,
     };
 
     if (window.chatwootSDK) {

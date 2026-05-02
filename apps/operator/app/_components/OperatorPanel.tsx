@@ -126,13 +126,15 @@ export function OperatorButton(): JSX.Element {
 
   return (
     <button
-      className="pc-header-cta"
+      className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}`}
       aria-label="Operator"
       onClick={toggle}
       style={{ marginLeft: 8 }}
     >
-      <span style={{ marginRight: 6, fontFamily: 'monospace' }}>{glyph}</span>
-      Operator
+      <span className="pc-header-cta-orb" aria-hidden="true">
+        <span className="pc-header-cta-glyph">{glyph}</span>
+      </span>
+      <span className="pc-header-cta-label">Operator</span>
     </button>
   );
 }

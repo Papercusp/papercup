@@ -15,6 +15,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { getOrgPg } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 const CLAIM_TTL_SEC = 90;
 
@@ -59,6 +60,7 @@ export async function ensureClaimsTable(): Promise<void> {
       script_hash  TEXT NOT NULL,
       claimed_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
       expires_at   TIMESTAMPTZ NOT NULL,
+      workspace_id TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (harness_slug, plugin_slug)
     )
   `;
@@ -71,10 +73,15 @@ export async function acquireClaim(
 ): Promise<ClaimAcquisitionResult> {
   await ensureClaimsTable();
   const { sql } = getOrgPg();
+  // Backwards-compat: ensure workspace_id column exists for older installs.
+  try {
+    await sql.unsafe(`ALTER TABLE harness_shared.operator_claims ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''`);
+  } catch { /* column may already exist with non-default constraints */ }
   const lockKey = advisoryLockKey(harness, plugin);
   const runId = randomBytes(8).toString('hex');
   const me = machineId();
   const pid = process.pid;
+  const ws = activeWorkspaceId();
 
   // Acquire advisory xact lock (released at txn end automatically).
   return (await sql.begin(async (tx) => {
@@ -117,10 +124,10 @@ export async function acquireClaim(
       `;
       await tx`
         INSERT INTO harness_shared.operator_claims (
-          harness_slug, plugin_slug, machine_id, pid, run_id, script_hash, expires_at
+          harness_slug, plugin_slug, machine_id, pid, run_id, script_hash, expires_at, workspace_id
         ) VALUES (
           ${harness}, ${plugin}, ${me}, ${pid}, ${runId}, ${scriptHash},
-          now() + (${CLAIM_TTL_SEC} || ' seconds')::interval
+          now() + (${CLAIM_TTL_SEC} || ' seconds')::interval, ${ws}
         )
       `;
       return {
@@ -139,10 +146,10 @@ export async function acquireClaim(
     }
     await tx`
       INSERT INTO harness_shared.operator_claims (
-        harness_slug, plugin_slug, machine_id, pid, run_id, script_hash, expires_at
+        harness_slug, plugin_slug, machine_id, pid, run_id, script_hash, expires_at, workspace_id
       ) VALUES (
         ${harness}, ${plugin}, ${me}, ${pid}, ${runId}, ${scriptHash},
-        now() + (${CLAIM_TTL_SEC} || ' seconds')::interval
+        now() + (${CLAIM_TTL_SEC} || ' seconds')::interval, ${ws}
       )
     `;
     return { ok: true, runId };

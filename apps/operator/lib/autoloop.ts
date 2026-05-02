@@ -17,6 +17,7 @@
  * Operator startup wires the ticker via `startAutoLoopOnce()`. Idempotent.
  */
 import { getOrgPg } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -48,12 +49,13 @@ async function ensureTable(): Promise<void> {
       last_fired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       last_status TEXT,
       consecutive_errors INT NOT NULL DEFAULT 0,
+      workspace_id TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (harness_slug, role)
     )
   `;
-  // Backwards-compat: add `role` column if upgrading from the older
-  // single-role-per-harness shape.
+  // Backwards-compat: add `role` and `workspace_id` columns if upgrading.
   await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'director'`);
+  await sql.unsafe(`ALTER TABLE harness_shared.autoloop_state ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT ''`);
 }
 
 async function listHarnesses(operatorBase: string): Promise<HarnessRow[]> {
@@ -90,23 +92,26 @@ async function shouldFire(slug: string, role: string, intervalSeconds: number): 
 
 async function recordFire(slug: string, role: string, status: string, errorBumped: boolean): Promise<void> {
   const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
   if (errorBumped) {
     await sql`
-      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors)
-      VALUES (${slug}, ${role}, now(), ${status}, 1)
+      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id)
+      VALUES (${slug}, ${role}, now(), ${status}, 1, ${ws})
       ON CONFLICT (harness_slug, role) DO UPDATE
         SET last_fired_at = now(),
             last_status = EXCLUDED.last_status,
-            consecutive_errors = harness_shared.autoloop_state.consecutive_errors + 1
+            consecutive_errors = harness_shared.autoloop_state.consecutive_errors + 1,
+            workspace_id = EXCLUDED.workspace_id
     `;
   } else {
     await sql`
-      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors)
-      VALUES (${slug}, ${role}, now(), ${status}, 0)
+      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id)
+      VALUES (${slug}, ${role}, now(), ${status}, 0, ${ws})
       ON CONFLICT (harness_slug, role) DO UPDATE
         SET last_fired_at = now(),
             last_status = EXCLUDED.last_status,
-            consecutive_errors = 0
+            consecutive_errors = 0,
+            workspace_id = EXCLUDED.workspace_id
     `;
   }
 }

@@ -17,23 +17,27 @@
  */
 import { NextResponse } from 'next/server';
 import { getOrgPg } from '@restart/db-org';
+import { routeWithWorkspace } from '@/lib/route-workspace';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET() {
+  // Workspace-scoped reads: only this workspace's projects + per-harness
+  // schemas are visible.
+  const [schemas, projTotals] = await routeWithWorkspace(async (tx) => {
+    const sch = await tx<{ nspname: string }[]>`
+      SELECT 'harness_' || REPLACE(slug, '-', '_') AS nspname
+        FROM harness_shared.projects WHERE slug IS NOT NULL
+    `;
+    const pt = await tx<{ status: string; n: number }[]>`
+      SELECT status, count(*)::int AS n FROM harness_shared.projects GROUP BY status
+    `;
+    return [sch, pt] as const;
+  });
+
+  // Admin client for per-schema scans (per-harness schemas are scoped by name).
   const { sql } = getOrgPg();
-
-  // Schemas for per-harness queries.
-  const schemas = await sql<{ nspname: string }[]>`
-    SELECT nspname FROM pg_namespace
-    WHERE nspname LIKE 'harness\\_%' AND nspname <> 'harness_shared'
-  `;
-
-  // ── Totals ─────────────────────────────────────────────────────────
-  const projTotals = await sql<{ status: string; n: number }[]>`
-    SELECT status, count(*)::int AS n FROM harness_shared.projects GROUP BY status
-  `;
   const projectsByStatus: Record<string, number> = {};
   let projectsTotal = 0;
   for (const r of projTotals) {
@@ -66,13 +70,16 @@ export async function GET() {
   }
 
   // ── Parent harnesses (those with at least one child via parent_slug) ──
-  const parents = await sql<{ slug: string; children: number }[]>`
-    SELECT parent_slug AS slug, count(*)::int AS children
-    FROM harness_shared.projects
-    WHERE parent_slug IS NOT NULL
-    GROUP BY parent_slug
-    ORDER BY children DESC
-  `;
+  // Workspace-scoped read.
+  const parents = await routeWithWorkspace(async (tx) => {
+    return await tx<{ slug: string; children: number }[]>`
+      SELECT parent_slug AS slug, count(*)::int AS children
+        FROM harness_shared.projects
+       WHERE parent_slug IS NOT NULL
+       GROUP BY parent_slug
+       ORDER BY children DESC
+    `;
+  });
   const parentsDetail = parents.map((p) => ({
     slug: p.slug,
     children_count: p.children,

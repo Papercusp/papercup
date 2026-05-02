@@ -69,7 +69,7 @@ This is the most common path: a feature is acting up, you want to interrogate th
 1. Click the **consoles** tab in the dashboard tab strip.
 2. In the dock header, click **`+ chat`** (next to **`+ terminal`**).
 3. A popover appears with:
-   - **Role** dropdown — orchestrator, scoper, worker, validator, plan-gate, architect, debugger, crosscheck, ui-qa, documenter, summarizer, curator, project_manager
+   - **Role** dropdown — populated from `/api/harness/<slug>/prompts` so it always reflects the prompt files on disk. Typical entries: orchestrator, scoper, worker, validator, reviewer, architect, debugger, crosscheck, ui-qa, documenter, summarizer, curator, project_manager.
    - **Feature ID** field (optional — only relevant for worker/validator/architect/debugger)
    - **Title** field (optional — defaults to `<role> · <featureId>` or just `<role>`)
 4. Click **create**. New dock panel opens.

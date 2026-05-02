@@ -1,0 +1,15 @@
+/**
+ * Get a single harness by slug.
+ *
+ * Summary returns slug + status + name + last activity. Full returns
+ * the entire `harness_shared.projects` row plus aggregate feature counts.
+ */
+import { z } from 'zod';
+declare const _default: import("../..").ToolDefinition<z.ZodObject<{
+    slug: z.ZodString;
+    detail: z.ZodDefault<z.ZodEnum<{
+        summary: "summary";
+        full: "full";
+    }>>;
+}, z.core.$strip>>;
+export default _default;

@@ -14,6 +14,7 @@
  */
 import { NextResponse } from 'next/server';
 import { getOrgPg } from '@restart/db-org';
+import { routeWithWorkspace } from '@/lib/route-workspace';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -58,7 +59,10 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'kind must be messages|features|all' }, { status: 400 });
   }
 
-  const { sql } = getOrgPg();
+  const messageHits: MessageHit[] = [];
+  const featureHits: FeatureHit[] = [];
+  const errors: string[] = [];
+  const pattern = `%${q.replace(/[%_\\]/g, '\\  const { sql } = getOrgPg();
   const messageHits: MessageHit[] = [];
   const featureHits: FeatureHit[] = [];
   const errors: string[] = [];
@@ -71,7 +75,25 @@ export async function GET(req: Request) {
     const schemas = await sql<{ nspname: string }[]>`
       SELECT nspname FROM pg_namespace
       WHERE nspname LIKE 'harness\\_%' AND nspname <> 'harness_shared'
+    `;')}%`;
+
+  // Workspace-scope the schema enumeration: only harnesses whose
+  // projects row is in the active workspace are queried. The pg_namespace
+  // scan would otherwise include schemas from other workspaces' harnesses.
+  const schemas = await routeWithWorkspace(async (tx) => {
+    return await tx<{ nspname: string }[]>`
+      SELECT 'harness_' || REPLACE(slug, '-', '_') AS nspname
+        FROM harness_shared.projects
+       WHERE slug IS NOT NULL
     `;
+  }).catch(() => [] as { nspname: string }[]);
+
+  // Use the admin connection for the per-schema reads (per-harness
+  // schemas are scoped by name, not RLS).
+  const { sql } = getOrgPg();
+
+  if (kind === 'messages' || kind === 'all') {
+    // Per-harness scan: enumerate workspace-filtered schemas, query each.
     for (const { nspname } of schemas) {
       try {
         const exists = await sql<{ exists: boolean }[]>`
@@ -102,18 +124,21 @@ export async function GET(req: Request) {
   }
 
   if (kind === 'features' || kind === 'all') {
-    // Use the cross-harness consolidated view if it exists; fall back to a
-    // per-schema scan otherwise.
+    // Workspace-scoped: read through the harness_shared.harness_features_consolidated
+    // table inside the active workspace's GUC. RLS filters cross-workspace
+    // rows. Falls back to all_features view if consolidated isn't backfilled.
     try {
-      const rows = await sql<any[]>`
-        SELECT harness_slug, feature_id, title, summary, status, notes, updated_ts
-        FROM harness_shared.all_features
-        WHERE title ILIKE ${pattern} ESCAPE '\\'
-           OR summary ILIKE ${pattern} ESCAPE '\\'
-           OR notes ILIKE ${pattern} ESCAPE '\\'
-        ORDER BY updated_ts DESC
-        LIMIT ${limitN}
-      `;
+      const rows = await routeWithWorkspace(async (tx) => {
+        return await tx<any[]>`
+          SELECT harness_slug, feature_id, title, summary, status, notes, updated_ts
+            FROM harness_shared.harness_features_consolidated
+           WHERE title ILIKE ${pattern} ESCAPE '\\'
+              OR summary ILIKE ${pattern} ESCAPE '\\'
+              OR notes ILIKE ${pattern} ESCAPE '\\'
+           ORDER BY updated_ts DESC
+           LIMIT ${limitN}
+        `;
+      });
       for (const r of rows) {
         featureHits.push({ kind: 'feature', ...r });
       }

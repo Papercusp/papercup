@@ -15,6 +15,7 @@
  * in-process to fire follow-up send_messages within a single transaction.
  */
 import { getOrgPg } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { promises as fs, existsSync } from 'node:fs';
@@ -403,11 +404,15 @@ async function doSpinupProject(
   const subActions: { op: string; ok: boolean; messageId?: string; recipient?: string; error?: string }[] = [];
   try {
     await sql.begin(async (tx) => {
+      // Workspace_id derived from active workspace at action time.
+      // The bearer-derived caller's workspace is set in the operator's
+      // registry; cross-workspace dispatch is not supported in v1.
+      const ws = activeWorkspaceId();
       await tx.unsafe(
-        `INSERT INTO harness_shared.projects (id, name, status, slug, budget_cents, owning_dept, vertical, created_ts, updated_ts, parent_slug)
-         VALUES ($1, $2, 'in_progress', $3, $4, $5, $6, $7, $7, $8)
+        `INSERT INTO harness_shared.projects (id, name, status, slug, budget_cents, owning_dept, vertical, created_ts, updated_ts, parent_slug, workspace_id)
+         VALUES ($1, $2, 'in_progress', $3, $4, $5, $6, $7, $7, $8, $9)
          ON CONFLICT (id) DO NOTHING`,
-        [projectId, action.projectName, projectSlug, action.projectBudgetCents, action.departments[0] ?? null, action.projectVertical, now, callerSlug],
+        [projectId, action.projectName, projectSlug, action.projectBudgetCents, action.departments[0] ?? null, action.projectVertical, now, callerSlug, ws],
       );
 
       // Auto-fire follow-up messages to each department.
@@ -646,9 +651,12 @@ async function doScaffoldHarness(
     };
   }
   await sql`
-    INSERT INTO harness_shared.token_index (token, harness_slug)
-    VALUES (${harnessToken}, ${action.projectSlug})
-    ON CONFLICT (token) DO UPDATE SET harness_slug = EXCLUDED.harness_slug
+    INSERT INTO harness_shared.token_index (token, kind, harness_slug, workspace_id)
+    VALUES (${harnessToken}, 'harness', ${action.projectSlug}, ${activeWorkspaceId()})
+    ON CONFLICT (token) DO UPDATE
+      SET kind = 'harness',
+          harness_slug = EXCLUDED.harness_slug,
+          workspace_id = EXCLUDED.workspace_id
   `;
 
   // Mirror parent_slug into harness_shared.projects so the registry knows

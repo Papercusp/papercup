@@ -118,7 +118,7 @@ const TOOLS = [
       'on the user\'s behalf. The user is navigated to the harness dashboard and the chat panel opens ' +
       'automatically so they can watch the agent respond. Use this when the user asks you to "ask the architect ' +
       'to ...", "have the orchestrator do ...", etc. Common roles: architect, orchestrator, scoper, worker, ' +
-      'validator, plan-gate, documenter, debugger, project_manager.',
+      'validator, reviewer, documenter, debugger, project_manager.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -126,9 +126,9 @@ const TOOLS = [
         role: {
           type: 'string',
           description:
-            'Agent role to chat with. One of: orchestrator, scoper, worker, validator, plan-gate, ' +
+            'Agent role to chat with. One of: orchestrator, scoper, worker, validator, reviewer, ' +
             'documenter, summarizer, architect, curator, debugger, crosscheck, ui-qa, project_manager, ' +
-            'director, coordinator, auditor.',
+            'director, coordinator, auditor, tester, test-writer, security-reviewer, monitor.',
         },
         message: { type: 'string', description: 'The first message to send the agent.' },
         featureId: {

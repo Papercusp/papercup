@@ -289,6 +289,20 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
     };
   }, [slug]);
 
+  // Prewarm a pty as soon as the dock mounts. The server reserves it under
+  // <slug>|<laneId>|<command> for ~60s; PiPanel's /pty/spawn POST adopts
+  // it instead of forking fresh, eliminating omp's startup from the
+  // user-visible critical path. Fire-and-forget; failures (slug missing,
+  // pty cap reached) are surfaced when /spawn falls through to a real
+  // spawn.
+  useEffect(() => {
+    fetch(`/api/harness/${encodeURIComponent(slug)}/pty/prewarm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ laneId: initialLaneId }),
+    }).catch(() => { /* best-effort */ });
+  }, [slug, initialLaneId]);
+
   // Listen for cross-component "open chat" events. The dispatcher
   // (openFeatureChat) has already created the chat row AND pushed the
   // detail onto pendingOpens. If the dock is mounted, this handler

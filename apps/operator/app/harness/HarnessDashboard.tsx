@@ -8,6 +8,8 @@ import * as RTooltip from '@radix-ui/react-tooltip';
 import { Check as LCheck, ChevronDown as LChevronDown, ChevronUp as LChevronUp } from 'lucide-react';
 import { Modal } from './Modal';
 import { Tooltip } from './Tooltip';
+import { Checkbox } from './Checkbox';
+import { Select } from './Select';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSyncQuery } from '@restart/sync';
@@ -24,7 +26,7 @@ import dynamic from 'next/dynamic';
 import { Toaster, toast } from 'sonner';
 import { Group as PanelGroup, Panel as RPanel, Separator } from 'react-resizable-panels';
 import {
-  Activity, Play, Square, SlidersHorizontal, RotateCcw,
+  Activity, Play, Square, SlidersHorizontal, RotateCcw, RefreshCw,
   Coins, TrendingUp, CheckCircle2, AlertTriangle, Loader2, Wrench, ArrowRight,
   Code2, BookOpen, LayoutDashboard, Lightbulb, FileText,
   // Icons available to plugin manifests via dashboardTabs[].icon
@@ -1412,51 +1414,58 @@ function ConfigPanel({
     const tooltip = needsSetup
       ? `${missing!.map((f) => `${f} is empty`).join(' · ')}`
       : label;
+    const selected = pane === id;
     return (
-      <button
-        type="button"
-        onClick={() => setPane(id)}
-        className="h-tab"
-        aria-pressed={pane === id}
-        title={tooltip}
-        style={{
-          background: pane === id ? 'var(--bg-1)' : 'transparent',
-          border: '1px solid',
-          borderColor: pane === id ? 'var(--border)' : 'transparent',
-          color: pane === id ? 'var(--text-1)' : 'var(--text-3)',
-          padding: '4px 12px',
-          fontSize: 13,
-          cursor: 'pointer',
-          display: 'inline-flex', alignItems: 'center', gap: 6,
-          borderRadius: 6,
-          whiteSpace: 'nowrap',
-          maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis',
-        }}
-      >
-        {icon}
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-        {needsSetup && (
-          <span
-            aria-label="needs setup"
-            style={{
-              display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
-              background: '#dc2626', flex: '0 0 auto',
-            }}
-          />
-        )}
-      </button>
+      <Tooltip label={tooltip}>
+        <button
+          type="button"
+          onClick={() => setPane(id)}
+          className={`h-tab h-config-tab${selected ? ' is-active' : ''}${needsSetup ? ' needs-setup' : ''}`}
+          aria-pressed={selected}
+          style={{
+            background: selected ? 'color-mix(in oklab, var(--accent), transparent 88%)' : 'transparent',
+            border: 0,
+            borderBottom: '2px solid',
+            borderBottomColor: selected ? 'var(--accent)' : 'transparent',
+            color: selected ? 'var(--text-1)' : 'var(--text-3)',
+            padding: '6px 10px 5px',
+            fontSize: 11,
+            cursor: 'pointer',
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            borderRadius: 0,
+            whiteSpace: 'nowrap',
+            maxWidth: 190, overflow: 'hidden', textOverflow: 'ellipsis',
+            minHeight: 31,
+            boxShadow: 'none',
+            transition: 'background 120ms ease, border-color 120ms ease, color 120ms ease',
+          }}
+        >
+          {icon}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+          {needsSetup && (
+            <span
+              aria-label="needs setup"
+              style={{
+                display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+                background: '#dc2626', flex: '0 0 auto',
+              }}
+            />
+          )}
+        </button>
+      </Tooltip>
     );
   };
 
   const activePlugin = enabledManifests.find((p) => p.name === pane);
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '10px 20px',
+    <div className="h-config-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div className="h-config-rail" style={{
+        display: 'flex', alignItems: 'stretch', gap: 2,
+        padding: '0 18px',
         borderBottom: '1px solid var(--border)',
         overflowX: 'auto',
+        minHeight: 32,
       }}>
         <TabBtn id={HARNESS_PANE} label="Harness" icon={<SlidersHorizontal size={13} />} />
         {enabledManifests.map((p) => {
@@ -1474,7 +1483,7 @@ function ConfigPanel({
           );
         })}
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
+      <div className="h-config-body" style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
         {pane === HARNESS_PANE ? (
           <ManifestOrLegacySpecEditor
             slug={harnessSlug}
@@ -1483,7 +1492,7 @@ function ConfigPanel({
             onClose={onClose}
           />
         ) : activePlugin ? (
-          <div style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--text-1)' }}>
+          <div className="h-config-plugin-pane" style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--text-1)' }}>
             <PluginPanelCard
               plugin={activePlugin}
               harnessSlug={harnessSlug}
@@ -1563,9 +1572,9 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
   }
 
   return (
-    <div className="pc-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
-        <span style={{
+    <div className="pc-card h-plugin-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="h-plugin-card-head" style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+        <span className="h-plugin-card-icon" style={{
           flex: '0 0 auto', width: 40, height: 40, borderRadius: 8,
           background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc',
           border: '1px solid rgba(99, 102, 241, 0.3)',
@@ -1573,14 +1582,14 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
         }}>
           <PluginIcon name={tabIcon} size={20} />
         </span>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-            <h3 style={{ margin: 0, fontSize: 16 }}>{plugin.name}</h3>
-            <span style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: "'SF Mono', monospace" }}>
+        <div className="h-plugin-card-main" style={{ flex: 1, minWidth: 0 }}>
+          <div className="h-plugin-card-title-row" style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+            <h3 className="h-plugin-card-title" style={{ margin: 0, fontSize: 16 }}>{plugin.name}</h3>
+            <span className="h-plugin-card-version" style={{ fontSize: 11, color: 'var(--text-3)', fontFamily: "'SF Mono', monospace" }}>
               v{plugin.version}
             </span>
             {(plugin.dashboardTabs?.length ?? 0) === 0 && (
-              <span style={{
+              <span className="h-plugin-card-badge" style={{
                 fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em',
                 padding: '2px 6px', borderRadius: 4,
                 background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc',
@@ -1588,7 +1597,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
             )}
           </div>
           {plugin.description && (
-            <p style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            <p className="h-plugin-card-description" style={{ margin: '6px 0 0', fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>
               {plugin.description}
             </p>
           )}
@@ -1606,19 +1615,19 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
       </div>
 
       {(plugin.actions?.length ?? 0) > 0 && (
-        <div>
-          <div style={sectionLabel}>Actions</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="h-plugin-section">
+          <div className="h-plugin-section-label" style={sectionLabel}>Actions</div>
+          <div className="h-plugin-action-list" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {plugin.actions!.map((a) => {
               const id = a.id ?? a.name ?? '?';
               return (
-                <div key={id} style={{
+                <div key={id} className="h-plugin-action-row" style={{
                   display: 'flex', alignItems: 'center', gap: 12,
                   padding: '8px 12px', background: 'var(--bg-1)', borderRadius: 6,
                   border: '1px solid var(--border)',
                 }}>
-                  <code style={{ fontSize: 12, fontFamily: "'SF Mono', monospace", flex: '0 0 auto' }}>{id}</code>
-                  <span style={{ flex: 1, fontSize: 12, color: 'var(--text-3)' }}>
+                  <code className="h-plugin-action-id" style={{ fontSize: 12, fontFamily: "'SF Mono', monospace", flex: '0 0 auto' }}>{id}</code>
+                  <span className="h-plugin-action-label" style={{ flex: 1, fontSize: 12, color: 'var(--text-3)' }}>
                     {a.label ?? a.description ?? ''}
                   </span>
                   <Tooltip label="Manually invoke this hook now">
@@ -1639,30 +1648,30 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
       )}
 
       {eventListens.length > 0 && (
-        <div>
-          <div style={sectionLabel}>Listens to events</div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div className="h-plugin-section">
+          <div className="h-plugin-section-label" style={sectionLabel}>Listens to events</div>
+          <div className="h-plugin-tags" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {eventListens.map((c) => (
-              <span key={c} style={tagStyle}>{c.replace('events:listen:', '')}</span>
+              <span key={c} className="h-plugin-tag" style={tagStyle}>{c.replace('events:listen:', '')}</span>
             ))}
           </div>
         </div>
       )}
 
       {(secretCaps.length > 0 || httpFetches.length > 0) && (
-        <div>
-          <div style={sectionLabel}>Required capabilities</div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <div className="h-plugin-section">
+          <div className="h-plugin-section-label" style={sectionLabel}>Required capabilities</div>
+          <div className="h-plugin-tags" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {secretCaps.map((c) => {
               const key = c.replace('secrets:read:', '');
-              return <span key={c} style={{ ...tagStyle, color: '#fbbf24', borderColor: 'rgba(251, 191, 36, 0.3)', background: 'rgba(251, 191, 36, 0.1)' }} title={`Set this with: papercusp secrets set ${key} <value>`}>secret: {key}</span>;
+              return <span key={c} className="h-plugin-tag h-plugin-tag-secret" style={{ ...tagStyle, color: '#fbbf24', borderColor: 'rgba(251, 191, 36, 0.3)', background: 'rgba(251, 191, 36, 0.1)' }} title={`Set this with: papercusp secrets set ${key} <value>`}>secret: {key}</span>;
             })}
             {httpFetches.map((c) => (
-              <span key={c} style={tagStyle}>http: {c.replace('http:fetch:', '')}</span>
+              <span key={c} className="h-plugin-tag" style={tagStyle}>http: {c.replace('http:fetch:', '')}</span>
             ))}
           </div>
           {secretCaps.length > 0 && (
-            <p style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
+            <p className="h-plugin-cli-hint" style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)' }}>
               Set secrets via the CLI:{' '}
               <code style={inlineCode}>papercusp secrets set {secretCaps[0]!.replace('secrets:read:', '')} &lt;value&gt;</code>
             </p>
@@ -1808,36 +1817,38 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
   const requiredSet = new Set(configSchema?.required ?? []);
 
   return (
-    <div style={{
+    <div className="h-plugin-config-editor" style={{
       marginTop: 4, padding: '8px 12px', background: 'var(--bg-1)', borderRadius: 6,
       border: '1px solid var(--border)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <div style={{ fontSize: 11, color: 'var(--text-3)' }}>
-          <span style={{ fontWeight: 600, color: 'var(--text-2)', marginRight: 8 }}>Config</span>
-          <code style={{ fontFamily: "'SF Mono', monospace", fontSize: 11 }}>{configPath}</code>
+      <div className="h-plugin-config-editor-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+        <div className="h-plugin-config-editor-meta" style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          <span className="h-plugin-config-title" style={{ fontWeight: 600, color: 'var(--text-2)', marginRight: 8 }}>Config</span>
+          <code className="h-plugin-config-path" style={{ fontFamily: "'SF Mono', monospace", fontSize: 11 }}>{configPath}</code>
           {schemaKeys.length > 0 && (
-            <span style={{ marginLeft: 12, color: 'var(--text-3)' }}>
-              keys: {schemaKeys.map((k) => <code key={k} style={{ ...inlineCode, fontSize: 10, marginLeft: 4 }}>{k}</code>)}
+            <span className="h-plugin-config-keys" style={{ marginLeft: 12, color: 'var(--text-3)' }}>
+              keys: {schemaKeys.map((k) => <code key={k} className="h-plugin-config-key" style={{ ...inlineCode, fontSize: 10, marginLeft: 4 }}>{k}</code>)}
             </span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={() => setOpen(!open)}
-          title={open ? 'Close the plugin config editor' : 'Open the plugin config editor'}
-          style={{
-            fontSize: 11, padding: '2px 10px', cursor: 'pointer',
-            background: 'transparent', color: 'var(--text-2)',
-            border: '1px solid var(--border)', borderRadius: 4,
-          }}
-        >{open ? 'Close editor' : 'Edit config'}</button>
+        <Tooltip label={open ? 'Close the plugin config editor' : 'Open the plugin config editor'}>
+          <button
+            className="h-plugin-config-toggle"
+            type="button"
+            onClick={() => setOpen(!open)}
+            style={{
+              fontSize: 11, padding: '3px 11px', cursor: 'pointer',
+              background: open ? 'var(--bg-2)' : 'transparent', color: 'var(--text-2)',
+              border: '1px solid var(--border)', borderRadius: 5,
+            }}
+          >{open ? 'Close editor' : 'Edit config'}</button>
+        </Tooltip>
       </div>
 
       {open && (
-        <div style={{ marginTop: 10 }}>
+        <div className="h-plugin-config-content" style={{ marginTop: 10 }}>
           {error && (
-            <div style={{
+            <div className="h-plugin-config-error" style={{
               marginBottom: 8, padding: '6px 10px',
               background: '#450a0a', color: '#fca5a5',
               border: '1px solid #7f1d1d', borderRadius: 4,
@@ -1845,20 +1856,20 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
             }}>{error}</div>
           )}
           {loaded === null ? (
-            <div style={{ padding: '16px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading config…</div>
+            <div className="h-plugin-config-loading" style={{ padding: '16px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading config…</div>
           ) : mode === 'fields' && schemaKeys.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 8 }}>
+            <div className="h-plugin-config-fields" style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 8 }}>
               {schemaKeys.map((key) => {
                 const field = (configSchema?.properties ?? {})[key]!;
                 const required = requiredSet.has(key);
                 const current = (key in draftObj) ? draftObj[key] : (field.default ?? '');
                 return (
-                  <div key={key}>
-                    <label style={pluginFieldLabel}>
+                  <div key={key} className="h-config-field">
+                    <label className="h-plugin-config-field-label" style={pluginFieldLabel}>
                       {key} {required && <span style={{ color: '#ff6961' }}>*</span>}
                     </label>
                     {field.description && (
-                      <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{field.description}</div>
+                      <div className="h-plugin-config-field-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{field.description}</div>
                     )}
                     {renderPluginConfigInput(key, field, current, (v) => setDraftObj({ ...draftObj, [key]: v }))}
                   </div>
@@ -1866,7 +1877,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               })}
             </div>
           ) : (
-            <div style={{ height: Math.min(420, Math.max(160, (draftJson.split('\n').length + 1) * 18)), border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+            <div className="h-plugin-config-json" style={{ height: Math.min(420, Math.max(160, (draftJson.split('\n').length + 1) * 18)), border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
               <MonacoEditor
                 height="100%"
                 language="json"
@@ -1885,7 +1896,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               />
             </div>
           )}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <div className="h-plugin-config-footer" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <Tooltip label="Save plugin config changes">
               <button
               type="button"
@@ -1934,11 +1945,11 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               </Tooltip>
             )}
             {savedAt && !dirty && (
-              <span style={{ fontSize: 10, color: '#86efac' }}>
+              <span className="h-plugin-config-saved" style={{ fontSize: 10, color: '#86efac' }}>
                 ✓ saved {new Date(savedAt).toLocaleTimeString()}
               </span>
             )}
-            <span style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-3)' }}>
+            <span className="h-plugin-config-cli" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-3)' }}>
               CLI:{' '}
               <code style={inlineCode}>papercusp plugin config {dirSlug} --harness {harnessSlug}</code>
             </span>
@@ -1956,17 +1967,19 @@ function renderPluginConfigInput(
   onChange: (v: unknown) => void,
 ): React.ReactElement {
   const baseInput: React.CSSProperties = {
-    width: '100%', padding: '4px 8px', fontSize: 12,
+    width: '100%', padding: '6px 9px', fontSize: 12,
     background: 'var(--bg-2)', color: 'var(--text-1)',
-    border: '1px solid var(--border)', borderRadius: 4,
+    border: '1px solid var(--border)', borderRadius: 5,
     fontFamily: 'inherit', boxSizing: 'border-box',
+    minHeight: 30,
   };
   if (field.type === 'boolean') {
     return (
-      <input
-        type="checkbox"
+      <Checkbox
         checked={!!value}
-        onChange={(e) => onChange(e.target.checked)}
+        onChange={onChange}
+        ariaLabel={key}
+        style={{ width: 16, height: 16 }}
       />
     );
   }
@@ -1981,12 +1994,20 @@ function renderPluginConfigInput(
     );
   }
   if (field.enum && Array.isArray(field.enum)) {
+    const EMPTY_ENUM_VALUE = '__empty_enum_value__';
+    const current = String(value ?? '');
     return (
-      <select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={baseInput}>
-        {field.enum.map((opt) => (
-          <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
-        ))}
-      </select>
+      <Select
+        value={current === '' ? EMPTY_ENUM_VALUE : current}
+        onChange={(next) => onChange(next === EMPTY_ENUM_VALUE ? '' : next)}
+        options={field.enum.map((opt) => {
+          const stringValue = String(opt);
+          return { value: stringValue === '' ? EMPTY_ENUM_VALUE : stringValue, label: stringValue };
+        })}
+        ariaLabel={key}
+        triggerStyle={{ ...baseInput, justifyContent: 'space-between' }}
+        contentStyle={{ zIndex: 90 }}
+      />
     );
   }
   const isSecret = /token|key|secret|password|pat\b/i.test(key);
@@ -2299,7 +2320,7 @@ export default function HarnessDashboard() {
     return () => document.body.classList.remove('h-harness-top-collapsed');
   }, [topChromeCollapsed]);
   useEffect(() => {
-    fetch('/api/harness/projects')
+    fetch('/api/harness/projects/lite')
       .then((r) => r.json())
       .then((d) => {
         const nextProjects = d.projects ?? [];
@@ -2546,6 +2567,33 @@ export default function HarnessDashboard() {
     }
   }, [activeSlug]);
 
+  const replanHarness = useCallback(async () => {
+    if (!activeSlug) return;
+    try {
+      const res = await fetch(`/api/harness/${activeSlug}/replan`, { method: 'POST' });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      toast.success('Replan started', {
+        description: 'Scoper is folding new SPEC.md bullets into the work queue. Updates will appear in a few minutes.',
+      });
+    } catch (e) {
+      toast.error('Replan failed', { description: String(e) });
+    }
+  }, [activeSlug]);
+
+  const cleanupHarness = useCallback(async () => {
+    if (!activeSlug) return;
+    if (!confirm('Run cleanup? Scoper will deprecate features whose claims no longer match SPEC.md and modify partial-matches. No new features will be added. Code is not auto-removed.')) return;
+    try {
+      const res = await fetch(`/api/harness/${activeSlug}/cleanup`, { method: 'POST' });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      toast.success('Cleanup started', {
+        description: 'Scoper is comparing existing features against SPEC.md. Updates will appear in a few minutes.',
+      });
+    } catch (e) {
+      toast.error('Cleanup failed', { description: String(e) });
+    }
+  }, [activeSlug]);
+
   const stopHarness = useCallback(async () => {
     if (!activeSlug) return;
     if (!confirm(`Send SIGTERM to the harness process for ${activeSlug}?`)) return;
@@ -2695,6 +2743,22 @@ export default function HarnessDashboard() {
       } else {
         cs.push({ id: 'start', section: 'Control', title: 'Start harness', icon: '▶', perform: launchHarness });
       }
+      cs.push({
+        id: 'replan',
+        section: 'Control',
+        title: 'Replan — fold new SPEC.md bullets into the work queue',
+        icon: '🔄',
+        keywords: 'replan rescope refresh queue spec scoper',
+        perform: replanHarness,
+      });
+      cs.push({
+        id: 'cleanup',
+        section: 'Control',
+        title: 'Cleanup — deprecate or modify features that no longer match SPEC.md',
+        icon: '🧹',
+        keywords: 'cleanup deprecate prune retire scoper stale orphan',
+        perform: cleanupHarness,
+      });
       cs.push({ id: 'config', section: 'Control', title: 'Edit config / spec', icon: '✎', keywords: 'spec agents contract', perform: () => setActivePanel('config') });
       cs.push({ id: 'vscode', section: 'Control', title: 'Open current project in VSCode', icon: '</>', keywords: 'vscode code editor open folder', perform: () => openInVSCode(status.project.path) });
       cs.push({ id: 'triage', section: 'Control', title: 'Triage — stuck/blocked/failing features', icon: '🔺', keywords: 'escalation blocked', perform: () => setShowTriage(true) });
@@ -3120,6 +3184,16 @@ export default function HarnessDashboard() {
                   onClick={() => setShowTriage(true)}
                 >
                   <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
+                </button>
+              </Tooltip>
+              <Tooltip label="Replan — fold new SPEC.md bullets into the work queue without restarting the harness">
+                <button className="h-btn ghost" onClick={replanHarness}>
+                  <RefreshCw size={13} /> replan
+                </button>
+              </Tooltip>
+              <Tooltip label="Cleanup — deprecate or modify existing features that no longer match SPEC.md (won't add new ones)">
+                <button className="h-btn ghost" onClick={cleanupHarness}>
+                  <Wrench size={13} /> cleanup
                 </button>
               </Tooltip>
               {status.alive ? (

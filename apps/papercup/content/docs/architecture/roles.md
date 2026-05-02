@@ -57,6 +57,17 @@ Synthesise what's been built into different artifacts for different audiences. T
 | **project_manager** | When one or more features in a project transition to `passed` (orchestrator emits `NEXT_PROJECT_MANAGER PROJ-X`; coalesces all queued `pm_due` events for that project into one batch). Also via `POST /api/harness/<slug>/projects/<id>/regenerate-spec`. | Recently-passed features for the project, current `projects.spec`, recent `project_spec_revisions`, optional `MEMORY.md` for cross-project lessons | `projects.spec` (the new curated body) + a `project_spec_revisions` audit row recording include/exclude decisions per feature with reasoning. **Cannot** modify `SPEC.md`, `validation-contract.md`, or feature rows — strict curator boundary. |
 | **summarizer** | *Department harnesses only today.* Per iteration, compresses recent dept activity. Not invoked in single-harness coding installs. | `supervisor-notes.md` (dept inbox), outbox, `decision-log.md` | Activity summary in markdown |
 
+### Spec authoring (instanced)
+
+Two on-demand roles that scoper(initial) can spawn — one expert per high-level feature area in staging mode — to produce concrete specs before any feature gets written. Surfaced in the operator's **Directives** tab.
+
+| Role | When it fires | Reads | Writes |
+|---|---|---|---|
+| **expert** | Spawned by scoper(initial) phase 1 in staging, or manually via `POST /api/harness/<slug>/experts`. One instance per feature area (id `EXP-NNN`). State machine: `drafting` → `gathering_feedback` → `awaiting_user` → `final` / `max_rounds` / `superseded` / `cancelled`. | The high-level spec slice, persona feedback rounds, prior drafts | `.harness/experts/<id>/SPEC.md` (the canonical spec for this area), `.harness/experts/<id>/feedback/decision-log.md`. Scoper phase 2 picks finalized experts up later and derives features. |
+| **feedback** | Inside an expert's `gathering_feedback` round, one persona invocation per round. Ephemeral — single conversation, no chat surface. | The expert's current draft, the persona definition | A single feedback turn appended to `feedback/<round>/<persona>.md`; never modifies the SPEC directly. |
+
+Experts are the only **instanced** role today (everything else is one-per-harness). The `feedback` role is intentionally not in the chat picker — it has no standalone surface.
+
 ### Phase-specific roles
 
 When a harness install declares `phase=testing` or `phase=production`, the resolver picks up an additional role set.

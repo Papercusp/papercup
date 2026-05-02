@@ -41,6 +41,7 @@ const _STATUS_TABLE = {
   failing:     { solid: '#ef4444', bg: 'rgba(239,68,68,0.15)',    text: '#fca5a5', label: 'Failing' },
   blocked:     { solid: '#f59e0b', bg: 'rgba(245,158,11,0.15)',   text: '#fcd34d', label: 'Blocked' },
   passed:      { solid: '#10b981', bg: 'rgba(16,185,129,0.15)',   text: '#6ee7b7', label: 'Passed' },
+  deprecated:  { solid: '#52525b', bg: 'rgba(82,82,91,0.18)',     text: '#a1a1aa', label: 'Deprecated' },
 } as const;
 
 const _STATUS_FALLBACK = { solid: '#6b7280', bg: 'rgba(107,114,128,0.15)', text: '#9ca3af', label: 'Unknown' } as const;
@@ -54,15 +55,16 @@ export const STATUS = new Proxy(_STATUS_TABLE as Record<string, { solid: string;
 export type HarnessStatus = keyof typeof _STATUS_TABLE;
 
 // Ordering used for list sort.
-// Active work first, terminal states last.
+// Active work first, terminal states last. `deprecated` is a soft-retired
+// state — sorts to the very end so it doesn't crowd active work.
 export const STATUS_ORDER: HarnessStatus[] = [
-  'in_progress', 'validating', 'failing', 'todo', 'blocked', 'passed',
+  'in_progress', 'validating', 'failing', 'todo', 'blocked', 'passed', 'deprecated',
 ];
 
 // Ordering used for board column layout (left → right).
 // Read like a workflow: queue → in motion → blocked → done.
 export const BOARD_COLUMN_ORDER: HarnessStatus[] = [
-  'todo', 'in_progress', 'validating', 'failing', 'blocked', 'passed',
+  'todo', 'in_progress', 'validating', 'failing', 'blocked', 'passed', 'deprecated',
 ];
 
 export const ROLE = {

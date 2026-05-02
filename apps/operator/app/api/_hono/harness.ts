@@ -31,7 +31,9 @@ import {
   consumeEvents,
   getFeatureLineage,
   formatLineageForPrompt,
+  withWorkspaceLegacy,
 } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 const getOrgDbClient = () => getLegacyClient();
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
@@ -243,6 +245,7 @@ function rowToFeature(r: any): any {
     tags: r.tags ?? undefined,
     needs_human_review: !!r.needs_human_review,
     ts: r.ts == null ? undefined : (typeof r.ts === 'bigint' ? Number(r.ts) : r.ts),
+    deprecation_reason: r.deprecation_reason ?? undefined,
   };
 }
 
@@ -285,7 +288,7 @@ function tailFile(path: string, maxBytes = 64 * 1024): string {
  * mid-replan, and it never respawns experts. Detached background spawn;
  * caller does not block on the agent invocation.
  */
-function invokeScoperBackground(project: ProjectEntry, mode: 'proposal' | 'replan'): void {
+function invokeScoperBackground(project: ProjectEntry, mode: 'proposal' | 'replan' | 'cleanup'): void {
   const { spawn } = require('node:child_process');
   const harnessScript = harnessPath('run.sh');
   const wrapper = `
@@ -329,16 +332,25 @@ export const harness = new Hono();
 
 // ─── registry ─────────────────────────────────────────────────────────
 
-// Lightweight registry-only listing — no filesystem reads, no DB hits.
-// Used by surfaces that just need slug+kind to populate a picker (e.g.
-// OracleDock). The full /projects endpoint is ~50× slower because it
-// reads every harness's config.json and opens a per-slug Postgres pool.
+// Lightweight listing — registry + cheap filesystem checks (existsSync),
+// but no per-slug Postgres pool creation. The full /projects endpoint
+// is ~50× slower because it opens a connection per harness to query
+// harness_features for each one. Sufficient for surfaces that just need
+// to render a picker / dashboard (slug, path, hasSpec, hasState
+// approximated from disk).
 harness.get('/projects/lite', async (c) => {
   const reg = loadRegistry();
-  const projects = reg.projects.map((p) => ({
-    slug: p.slug,
-    harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
-  }));
+  const projects = reg.projects.map((p) => {
+    const hDir = harnessDir(p);
+    return {
+      slug: p.slug,
+      path: p.path,
+      harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
+      hasState: existsSync(hDir),
+      hasSpec: existsSync(join(p.path, 'SPEC.md')),
+      harnessDir: hDir,
+    };
+  });
   return c.json({ projects });
 });
 
@@ -949,7 +961,7 @@ harness.patch('/:slug/features/:id', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
-  const body = await c.req.json() as { title?: string; claims?: string[]; status?: string; attempts?: number; project_id?: string; expected_cost_cents?: number; tags?: string[]; needs_human_review?: boolean; metadata?: any };
+  const body = await c.req.json() as { title?: string; summary?: string; claims?: string[]; status?: string; attempts?: number; project_id?: string; expected_cost_cents?: number; tags?: string[]; needs_human_review?: boolean; metadata?: any; notes?: string; deprecation_reason?: string };
   const actor = c.req.header('x-actor') ?? 'api';
 
   const dbc = dbcFor(project.slug);
@@ -978,6 +990,25 @@ harness.patch('/:slug/features/:id', async (c) => {
   if (body.tags !== undefined) updates.tags = body.tags == null ? null : JSON.stringify(body.tags); // jsonb — serialize for Postgres
   if (body.needs_human_review !== undefined) updates.needs_human_review = !!body.needs_human_review;
   if (body.metadata !== undefined) updates.metadata = body.metadata == null ? null : JSON.stringify(body.metadata); // jsonb
+  if (body.summary !== undefined) {
+    if (body.summary !== null && typeof body.summary !== 'string') return c.json({ error: 'summary must be a string or null' }, 400);
+    updates.summary = body.summary;
+  }
+  if (body.notes !== undefined) {
+    if (body.notes !== null && typeof body.notes !== 'string') return c.json({ error: 'notes must be a string or null' }, 400);
+    updates.notes = body.notes;
+  }
+  if (body.deprecation_reason !== undefined) {
+    if (body.deprecation_reason !== null && typeof body.deprecation_reason !== 'string') return c.json({ error: 'deprecation_reason must be a string or null' }, 400);
+    updates.deprecation_reason = body.deprecation_reason;
+  }
+  // Auto-clear deprecation_reason when un-deprecating, auto-require when deprecating.
+  if (updates.status === 'deprecated' && updates.deprecation_reason === undefined && !existing.deprecation_reason) {
+    return c.json({ error: 'deprecation_reason required when transitioning to status=deprecated' }, 400);
+  }
+  if (updates.status !== undefined && updates.status !== 'deprecated' && existing.deprecation_reason && updates.deprecation_reason === undefined) {
+    updates.deprecation_reason = null;
+  }
 
   if (Object.keys(updates).length === 0) return c.json({ ok: true, feature: rowToFeature(existing), changes: 0 });
 
@@ -1003,11 +1034,15 @@ harness.patch('/:slug/features/:id', async (c) => {
   if (transitionedToPassed && projectIdForPm) {
     try {
       const eventId = `pm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await dbc.prepare(`
-        INSERT INTO harness_shared.pending_events
-          (id, install_slug, kind, target_role, payload, due_at)
-        VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now())
-      `).run(eventId, project.slug, JSON.stringify({ project_id: projectIdForPm, feature_id: id, source: 'feature_passed' }));
+      // Workspace-scoped: pending_events insert tagged with the active
+      // workspace so RLS predicates pass + the row is visible to listeners.
+      await withWorkspaceLegacy(project.slug, activeWorkspaceId(), async (db) => {
+        await db.prepare(`
+          INSERT INTO harness_shared.pending_events
+            (id, install_slug, kind, target_role, payload, due_at, workspace_id)
+          VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now(), ?)
+        `).run(eventId, project.slug, JSON.stringify({ project_id: projectIdForPm, feature_id: id, source: 'feature_passed' }), activeWorkspaceId());
+      });
     } catch {
       // pending_events table absent or insert failed — best-effort, do not
       // fail the PATCH response over PM scheduling.
@@ -2518,6 +2553,15 @@ interface ProposalListEntry {
   reviewVerdict: 'accept' | 'reject' | 'defer' | null;
   reviewedAt: number | null;
   reviewSummary: string | null;
+  appliedAt: number | null;
+  rejectedAt: number | null;
+}
+
+function parseFooterTs(body: string, key: 'appliedAt' | 'rejectedAt'): number | null {
+  const m = body.match(new RegExp(`^${key}:\\s*(\\S+)`, 'm'));
+  if (!m) return null;
+  const t = Date.parse(m[1]);
+  return Number.isNaN(t) ? null : t;
 }
 
 function scanProposalsDir(project: ProjectEntry): ProposalListEntry[] {
@@ -2535,6 +2579,8 @@ function scanProposalsDir(project: ProjectEntry): ProposalListEntry[] {
       const applied = /^applied:\s*true/m.test(body);
       const rejected = /^rejected:\s*true/m.test(body);
       const status: ProposalListEntry['status'] = applied ? 'applied' : rejected ? 'rejected' : 'pending';
+      const appliedAt = applied ? (parseFooterTs(body, 'appliedAt') ?? ts) : null;
+      const rejectedAt = rejected ? (parseFooterTs(body, 'rejectedAt') ?? ts) : null;
 
       const reviewName = `${f.replace(/\.md$/, '')}.review.md`;
       let reviewVerdict: ProposalListEntry['reviewVerdict'] = null;
@@ -2555,7 +2601,7 @@ function scanProposalsDir(project: ProjectEntry): ProposalListEntry[] {
           .find((l) => l.length > 0 && !/^VERDICT:/i.test(l) && !/^#/.test(l));
         reviewSummary = summaryLine ? summaryLine.slice(0, 240) : null;
       }
-      return { id: f, sizeBytes: size, ts, status, reviewVerdict, reviewedAt, reviewSummary };
+      return { id: f, sizeBytes: size, ts, status, reviewVerdict, reviewedAt, reviewSummary, appliedAt, rejectedAt };
     })
     .sort((a, b) => b.ts - a.ts);
 }
@@ -2580,18 +2626,22 @@ async function syncProposalsToPg(project: ProjectEntry, items: ProposalListEntry
       review_verdict: p.reviewVerdict ?? null,
       review_summary: p.reviewSummary ?? null,
       reviewed_at: p.reviewedAt ?? null,
+      applied_at: p.appliedAt ?? null,
+      rejected_at: p.rejectedAt ?? null,
       ts: p.ts,
       created_ts: now,
       updated_ts: now,
     }));
     await sql`
-      INSERT INTO harness_proposals ${sql(rows, 'harness_slug', 'proposal_id', 'size_bytes', 'status', 'review_verdict', 'review_summary', 'reviewed_at', 'ts', 'created_ts', 'updated_ts')}
+      INSERT INTO harness_proposals ${sql(rows, 'harness_slug', 'proposal_id', 'size_bytes', 'status', 'review_verdict', 'review_summary', 'reviewed_at', 'applied_at', 'rejected_at', 'ts', 'created_ts', 'updated_ts')}
       ON CONFLICT (harness_slug, proposal_id) DO UPDATE SET
         size_bytes      = EXCLUDED.size_bytes,
         status          = EXCLUDED.status,
         review_verdict  = EXCLUDED.review_verdict,
         review_summary  = EXCLUDED.review_summary,
         reviewed_at     = EXCLUDED.reviewed_at,
+        applied_at      = EXCLUDED.applied_at,
+        rejected_at     = EXCLUDED.rejected_at,
         ts              = EXCLUDED.ts,
         updated_ts      = EXCLUDED.updated_ts
     `;
@@ -2619,18 +2669,15 @@ harness.get('/:slug/proposals', (c) => {
     console.warn(`[proposals] PG sync failed for ${project.slug}:`, err?.message ?? err);
   });
 
-  // Tell the UI whether the harness is configured to auto-replan on accept,
-  // so it can suppress the "run /replan now" prompt that would otherwise
-  // double-fire on top of automatic replan. Canonical key is
-  // `reviewer.replanOnAccept`; legacy `product.replanOnAccept` is honored when
-  // the canonical one is unset. Default false (auto-replan is opt-in).
-  let replanOnAccept = false;
+  // Tell the UI whether the harness is configured to auto-replan on
+  // accept. Default true: accept means accept. Set explicitly to false
+  // to opt out.
+  let replanOnAccept = true;
   try {
     const cfgRaw = safeRead(join(harnessDir(project), 'config.json'));
     if (cfgRaw) {
       const cfg = JSON.parse(cfgRaw);
-      if (cfg?.reviewer?.replanOnAccept === true) replanOnAccept = true;
-      else if (cfg?.reviewer?.replanOnAccept === undefined && cfg?.product?.replanOnAccept === true) replanOnAccept = true;
+      if (cfg?.reviewer?.replanOnAccept === false) replanOnAccept = false;
     }
   } catch {}
 
@@ -2695,7 +2742,11 @@ harness.post('/:slug/proposals/:id/accept', async (c) => {
   let replanFired = false;
   try {
     const cfg = JSON.parse(readFileSync(join(harnessDir(project), 'config.json'), 'utf8'));
-    const wantReplan = cfg?.reviewer?.replanOnAccept === true;
+    // Default true: accept means accept. The legacy false default existed
+    // when replan was destructive (forced MODE=initial, respawned experts);
+    // the unified MODE=replan path is non-destructive, so there's no reason
+    // to gate it. Set explicitly to false to opt out.
+    const wantReplan = cfg?.reviewer?.replanOnAccept !== false;
     if (wantReplan) {
       // Non-destructive: invoke scoper MODE=replan to delta-merge the new
       // SPEC.md bullets into the existing harness_features queue without
@@ -2747,6 +2798,24 @@ harness.post('/:slug/replan', (c) => {
   const project = resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   invokeScoperBackground(project, 'replan');
+  return c.json({ ok: true });
+});
+
+/**
+ * Cleanup pass — the inverse of replan. Reads SPEC.md and the existing
+ * work queue, then PATCHes features to better match the spec:
+ *   - features whose claims have no SPEC support → status='deprecated'
+ *     with a deprecation_reason
+ *   - features whose claims partially match → modified (title/claims/notes)
+ *     to align with the SPEC; status preserved
+ *   - features that match cleanly → left alone
+ * Never adds features (that's /replan's job). Code is not auto-removed;
+ * deprecation is metadata-only.
+ */
+harness.post('/:slug/cleanup', (c) => {
+  const project = resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  invokeScoperBackground(project, 'cleanup');
   return c.json({ ok: true });
 });
 

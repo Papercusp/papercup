@@ -24,6 +24,7 @@
     "auth-and-identity",
     "system-and-pi-principals",
     "workspace-scoping",
+    "voice-mode",
     "scaffold-failure-recovery",
     "marketplace-versioning",
     "reference-runtime",

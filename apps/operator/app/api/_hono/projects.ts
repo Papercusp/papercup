@@ -19,7 +19,8 @@
  */
 import type { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
-import { getLegacyClient } from '@restart/db-org';
+import { getLegacyClient, withWorkspaceLegacy } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { runProjectManager } from '../../../lib/pm-dispatch';
 
 interface ProjectRow {
@@ -98,16 +99,18 @@ export function registerProjects(harness: Hono): void {
   harness.get('/:slug/projects', async (c) => {
     const slug = c.req.param('slug');
     try {
-      const db = dbForSlug(slug);
-      // Limit to projects that have at least one feature in this harness.
-      const rows = (await db.prepare(`
-        SELECT p.* FROM harness_shared.projects p
-        WHERE EXISTS (
-          SELECT 1 FROM harness_features f
-          WHERE f.harness_slug = ? AND f.project_id = p.id
-        )
-        ORDER BY p.updated_ts DESC
-      `).all(slug)) as any[];
+      // Workspace-scoped: opens a tx with `app.workspace_id` set so RLS
+      // predicates pass on the active workspace's projects rows.
+      const rows = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
+        return (await db.prepare(`
+          SELECT p.* FROM harness_shared.projects p
+          WHERE EXISTS (
+            SELECT 1 FROM harness_features f
+            WHERE f.harness_slug = ? AND f.project_id = p.id
+          )
+          ORDER BY p.updated_ts DESC
+        `).all(slug)) as any[];
+      });
       const projects: ProjectWithCounts[] = await Promise.all(
         rows.map(async (r) => ({
           ...rowToProject(r),
@@ -125,23 +128,25 @@ export function registerProjects(harness: Hono): void {
     const slug = c.req.param('slug');
     const id = c.req.param('id');
     try {
-      const db = dbForSlug(slug);
-      const row = (await db.prepare('SELECT * FROM harness_shared.projects WHERE id = ?').get(id)) as any;
-      if (!row) return c.json({ error: 'project not found' }, 404);
-      const project = rowToProject(row);
+      const result = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
+        const row = (await db.prepare('SELECT * FROM harness_shared.projects WHERE id = ?').get(id)) as any;
+        if (!row) return null;
+        const lastRev = (await db.prepare(
+          'SELECT id, summary, author_role, ts FROM harness_shared.project_spec_revisions WHERE project_id = ? ORDER BY ts DESC LIMIT 1',
+        ).get(id)) as any;
+        return { row, lastRev };
+      });
+      if (!result) return c.json({ error: 'project not found' }, 404);
+      const project = rowToProject(result.row);
       const counts = await projectFeatureCounts(slug, id);
-      // Most recent revision for transparency
-      const lastRev = (await db.prepare(
-        'SELECT id, summary, author_role, ts FROM harness_shared.project_spec_revisions WHERE project_id = ? ORDER BY ts DESC LIMIT 1',
-      ).get(id)) as any;
       return c.json({
         ...project,
         feature_counts: counts,
-        last_spec_revision: lastRev ? {
-          id: typeof lastRev.id === 'bigint' ? Number(lastRev.id) : lastRev.id,
-          summary: lastRev.summary,
-          author_role: lastRev.author_role,
-          ts: lastRev.ts,
+        last_spec_revision: result.lastRev ? {
+          id: typeof result.lastRev.id === 'bigint' ? Number(result.lastRev.id) : result.lastRev.id,
+          summary: result.lastRev.summary,
+          author_role: result.lastRev.author_role,
+          ts: result.lastRev.ts,
         } : null,
       });
     } catch (e) {
@@ -155,14 +160,15 @@ export function registerProjects(harness: Hono): void {
     const slug = c.req.param('slug');
     const limit = Math.min(parseInt(c.req.query('limit') ?? '20', 10), 100);
     try {
-      const db = dbForSlug(slug);
-      const rows = (await db.prepare(
-        `SELECT id, summary, author_role, author, ts, include_decisions, tokens_in, tokens_out, cost_usd_cents
-           FROM harness_shared.project_spec_revisions
-          WHERE project_id = ?
-          ORDER BY ts DESC
-          LIMIT ?`,
-      ).all(id, limit)) as any[];
+      const rows = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
+        return (await db.prepare(
+          `SELECT id, summary, author_role, author, ts, include_decisions, tokens_in, tokens_out, cost_usd_cents
+             FROM harness_shared.project_spec_revisions
+            WHERE project_id = ?
+            ORDER BY ts DESC
+            LIMIT ?`,
+        ).all(id, limit)) as any[];
+      });
       const revisions = rows.map((r) => ({
         id: typeof r.id === 'bigint' ? Number(r.id) : r.id,
         summary: r.summary,
@@ -188,10 +194,11 @@ export function registerProjects(harness: Hono): void {
     const slug = c.req.param('slug');
     const revId = c.req.param('revId');
     try {
-      const db = dbForSlug(slug);
-      const row = (await db.prepare(
-        'SELECT * FROM harness_shared.project_spec_revisions WHERE project_id = ? AND id = ?',
-      ).get(id, parseInt(revId, 10))) as any;
+      const row = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
+        return (await db.prepare(
+          'SELECT * FROM harness_shared.project_spec_revisions WHERE project_id = ? AND id = ?',
+        ).get(id, parseInt(revId, 10))) as any;
+      });
       if (!row) return c.json({ error: 'revision not found' }, 404);
       return c.json({
         id: typeof row.id === 'bigint' ? Number(row.id) : row.id,
@@ -220,17 +227,17 @@ export function registerProjects(harness: Hono): void {
     const author = body.author ?? 'user';
 
     try {
-      const db = dbForSlug(slug);
-      const existing = (await db.prepare('SELECT id FROM harness_shared.projects WHERE id = ?').get(id)) as any;
-      if (!existing) return c.json({ error: 'project not found' }, 404);
-      // Persist as a revision and update the current pointer atomically.
-      await db.transaction(async (tx: ReturnType<typeof getLegacyClient>) => {
-        await tx.prepare(`
+      const ok = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
+        const existing = (await db.prepare('SELECT id FROM harness_shared.projects WHERE id = ?').get(id)) as any;
+        if (!existing) return false;
+        // Persist as a revision and update the current pointer atomically
+        // (we're already inside withWorkspaceLegacy's transaction).
+        await db.prepare(`
           INSERT INTO harness_shared.project_spec_revisions
             (project_id, spec, summary, author_role, author)
           VALUES (?, ?, ?, 'user', ?)
         `).run(id, spec, summary, author);
-        await tx.prepare(`
+        await db.prepare(`
           UPDATE harness_shared.projects
              SET spec = ?,
                  spec_updated_at = now(),
@@ -238,7 +245,9 @@ export function registerProjects(harness: Hono): void {
                  updated_ts = ?
            WHERE id = ?
         `).run(spec, Date.now(), id);
+        return true;
       });
+      if (!ok) return c.json({ error: 'project not found' }, 404);
       return c.json({ ok: true });
     } catch (e) {
       return c.json({ error: `failed to update spec: ${(e as Error).message}` }, 500);
@@ -257,30 +266,36 @@ export function registerProjects(harness: Hono): void {
     const asyncMode = c.req.query('async') === '1';
 
     try {
-      const db = dbForSlug(slug);
-      const existing = (await db.prepare('SELECT id FROM harness_shared.projects WHERE id = ?').get(id)) as any;
-      if (!existing) return c.json({ error: 'project not found' }, 404);
+      const result = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
+        const existing = (await db.prepare('SELECT id FROM harness_shared.projects WHERE id = ?').get(id)) as any;
+        if (!existing) return { found: false as const };
 
-      if (asyncMode) {
-        // Insert a pending_events row of kind='pm_due' that the orchestrator's
-        // NEXT_PROJECT_MANAGER decision will pick up on its next tick.
-        const eventId = randomUUID();
-        await db.prepare(`
-          INSERT INTO harness_shared.pending_events
-            (id, install_slug, kind, target_role, payload, due_at)
-          VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now())
-        `).run(eventId, slug, JSON.stringify({ project_id: id, source: 'manual' }));
-        return c.json({ ok: true, mode: 'async', event_id: eventId });
+        if (asyncMode) {
+          // Insert a pending_events row of kind='pm_due' that the orchestrator's
+          // NEXT_PROJECT_MANAGER decision will pick up on its next tick.
+          const eventId = randomUUID();
+          await db.prepare(`
+            INSERT INTO harness_shared.pending_events
+              (id, install_slug, kind, target_role, payload, due_at, workspace_id)
+            VALUES (?, ?, 'pm_due', 'project_manager', ?::jsonb, now(), ?)
+          `).run(eventId, slug, JSON.stringify({ project_id: id, source: 'manual' }), activeWorkspaceId());
+          return { found: true as const, asyncMode: true as const, eventId };
+        }
+        return { found: true as const, asyncMode: false as const };
+      });
+      if (!result.found) return c.json({ error: 'project not found' }, 404);
+      if (result.asyncMode) {
+        return c.json({ ok: true, mode: 'async', event_id: result.eventId });
       }
 
       // Sync mode: spawn claude, parse, persist, return.
-      const result = await runProjectManager({
+      const pmResult = await runProjectManager({
         slug, projectId: id, bypassDebounce: true,
       });
-      if (!result.ok) {
-        return c.json({ error: result.error, detail: result.detail }, 500);
+      if (!pmResult.ok) {
+        return c.json({ error: pmResult.error, detail: pmResult.detail }, 500);
       }
-      return c.json({ mode: 'sync', ...result });
+      return c.json({ mode: 'sync', ...pmResult });
     } catch (e) {
       return c.json({ error: `failed to run PM: ${(e as Error).message}` }, 500);
     }

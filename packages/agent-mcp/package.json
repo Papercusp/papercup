@@ -1,0 +1,28 @@
+{
+  "name": "@papercusp/agent-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server exposing workspace-knowledge tools to in-app concierges (Operator, Oracle) and out-of-process pi sessions.",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts",
+    "./define-tool": "./src/define-tool.ts",
+    "./registry": "./src/registry.ts",
+    "./provisioning": "./src/provisioning.ts",
+    "./auth": "./src/auth.ts"
+  },
+  "scripts": {
+    "test": "vitest",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "*",
+    "postgres": "*",
+    "zod": "*",
+    "zod-to-json-schema": "*"
+  },
+  "peerDependencies": {
+    "@restart/papercusp-db": "workspace:*"
+  }
+}

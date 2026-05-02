@@ -18,7 +18,8 @@
  * /api/admin/execute-action with their own bearer.
  */
 import type { Hono } from 'hono';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, withWorkspace } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -138,10 +139,12 @@ export function registerCrossHarness(harness: Hono) {
       return c.json({ error: 'validation_error', detail: 'to[], kind, subject required' }, 400);
     }
     // Read the sender's token from PG (we have it indexed already).
-    const { sql } = getOrgPg();
-    const rows = await sql<{ token: string }[]>`
-      SELECT token FROM harness_shared.token_index WHERE harness_slug = ${fromSlug} LIMIT 1
-    `;
+    // Workspace-scoped: only tokens belonging to the active workspace.
+    const rows = await withWorkspace(activeWorkspaceId(), async (tx) => {
+      return await tx<{ token: string }[]>`
+        SELECT token FROM harness_shared.token_index WHERE harness_slug = ${fromSlug} LIMIT 1
+      `;
+    });
     if (rows.length === 0) {
       return c.json({ error: 'not_found', detail: `harness ${fromSlug} has no token registered` }, 404);
     }
@@ -172,21 +175,23 @@ export function registerCrossHarness(harness: Hono) {
   // ── Global recent activity feed (Tier 3) ──────────────────────────────
   harness.get('/all/recent-activity', async (c) => {
     const limit = clampLimit(c.req.query('limit'), 20, 200);
-    const { sql } = getOrgPg();
     try {
-      const rows = await sql<{
-        ts: string; harness_slug: string; action: string; subject: string | null;
-        actor: string | null;
-      }[]>`
-        SELECT to_char(ts, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS ts,
-               harness_slug,
-               action,
-               subject,
-               actor
-        FROM harness_shared.audit_log
-        ORDER BY ts DESC
-        LIMIT ${limit}
-      `;
+      // Workspace-scoped: only this workspace's audit rows.
+      const rows = await withWorkspace(activeWorkspaceId(), async (tx) => {
+        return await tx<{
+          ts: string; harness_slug: string; action: string; subject: string | null;
+          actor: string | null;
+        }[]>`
+          SELECT to_char(ts, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS ts,
+                 harness_slug,
+                 action,
+                 subject,
+                 actor
+            FROM harness_shared.audit_log
+           ORDER BY ts DESC
+           LIMIT ${limit}
+        `;
+      });
       return c.json({ events: rows });
     } catch (e: any) {
       return c.json({ error: 'failed', detail: String(e?.message).slice(0, 300) }, 500);

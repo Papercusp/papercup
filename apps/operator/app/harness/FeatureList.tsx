@@ -41,6 +41,7 @@ const BUILT_IN_VIEWS: SavedView[] = [
   { id: 'blocked', name: 'Blocked', filter: { statuses: ['blocked', 'failing'] } },
   { id: 'todo', name: 'Todo', filter: { statuses: ['todo'] } },
   { id: 'done', name: 'Passed', filter: { statuses: ['passed'] } },
+  { id: 'deprecated', name: 'Deprecated', filter: { statuses: ['deprecated'] } },
 ];
 
 interface Props {
@@ -85,6 +86,11 @@ export default function FeatureList({
 
   const filtered = useMemo(() => {
     let out = features;
+    // Hide deprecated by default. The dedicated "Deprecated" view opts
+    // back in by listing it explicitly in `view.filter.statuses`.
+    if (!view.filter.statuses?.includes('deprecated')) {
+      out = out.filter((f) => f.status !== 'deprecated');
+    }
     if (view.filter.statuses) out = out.filter((f) => view.filter.statuses!.includes(f.status));
     if (view.filter.minAttempts != null) out = out.filter((f) => f.attempts >= view.filter.minAttempts!);
     if (projectFilter !== 'all') {

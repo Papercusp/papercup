@@ -1,15 +1,22 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsString } from 'nuqs';
 import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
-const KNOWN_HOOKS = ['pre-worker', 'post-worker', 'pre-validator', 'post-validator', 'on-escalate', 'on-feature-passed', 'on-feature-failing'] as const;
-type HookName = (typeof KNOWN_HOOKS)[number];
+// Hook names come from the server (which greps run.sh). The client never
+// has its own list — eliminating the parallel-list drift the previous
+// shared-import attempt couldn't prevent.
+type HookName = string;
 
-const PLACEHOLDERS: Record<HookName, string> = {
+const DEFAULT_PLACEHOLDER = `#!/usr/bin/env bash
+# Custom harness hook. Env: PROJECT_DIR, STATE_DIR, plus hook-specific vars.
+# Non-zero exit codes are warned but don't halt the mission.
+`;
+
+const PLACEHOLDERS: Record<string, string> = {
   'pre-worker': `#!/usr/bin/env bash
 # pre-worker — runs before each worker invocation.
 # Env: ROLE=worker, FEATURE_ID, PROJECT_DIR, STATE_DIR
@@ -97,12 +104,10 @@ interface Props {
 }
 
 export default function HooksPanel({ slug, alive, onClose }: Props) {
-  const [tab, setTab] = useQueryState(
-    'hookTab',
-    parseAsStringEnum<HookName>([...KNOWN_HOOKS]).withDefault('pre-worker'),
-  );
+  const [tab, setTab] = useQueryState('hookTab', parseAsString.withDefault(''));
   const [hooks, setHooks] = useState<Record<HookName, HookEntry> | null>(null);
-  const [draft, setDraft] = useState<Record<HookName, string>>(() => Object.fromEntries(KNOWN_HOOKS.map((n) => [n, ''])) as Record<HookName, string>);
+  const [hookNames, setHookNames] = useState<string[]>([]);
+  const [draft, setDraft] = useState<Record<HookName, string>>({});
   const [saving, setSaving] = useState<HookName | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [runs, setRuns] = useState<HookRun[]>([]);
@@ -111,18 +116,28 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
 
   const load = useCallback(async () => {
     const d = await fetch(`/api/harness/${slug}/hooks`).then((r) => r.json());
-    const map = Object.fromEntries(d.hooks.map((h: HookEntry) => [h.name, h])) as Record<HookName, HookEntry>;
+    const list = (d.hooks ?? []) as HookEntry[];
+    const names = list.map((h) => h.name);
+    const map = Object.fromEntries(list.map((h) => [h.name, h])) as Record<HookName, HookEntry>;
     setHooks(map);
+    setHookNames(names);
     setDraft((prev) => {
-      const next = { ...prev };
-      for (const name of KNOWN_HOOKS) {
-        next[name] = map[name]?.content ?? '';
-      }
+      const next: Record<string, string> = {};
+      for (const name of names) next[name] = prev[name] ?? map[name]?.content ?? '';
       return next;
     });
   }, [slug]);
 
   useEffect(() => { load().catch((e) => setToast(`load: ${e}`)); }, [load]);
+
+  // Initialize the active tab once we know what hooks exist. Prefer the
+  // user's URL-state choice if it's still valid; otherwise pick the first
+  // hook the server returned.
+  useEffect(() => {
+    if (hookNames.length === 0) return;
+    if (tab && hookNames.includes(tab)) return;
+    setTab(hookNames[0]);
+  }, [hookNames, tab, setTab]);
 
   const loadRuns = useCallback(async () => {
     try {
@@ -154,12 +169,12 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
   const dirty = useMemo(() => {
     if (!hooks) return new Set<HookName>();
     const d = new Set<HookName>();
-    for (const name of KNOWN_HOOKS) {
+    for (const name of hookNames) {
       const orig = hooks[name]?.content ?? '';
       if ((draft[name] ?? '') !== orig) d.add(name);
     }
     return d;
-  }, [hooks, draft]);
+  }, [hooks, draft, hookNames]);
 
   const save = useCallback(async (name: HookName) => {
     setSaving(name);
@@ -202,7 +217,7 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
   }, [slug, load]);
 
   const insertPlaceholder = useCallback((name: HookName) => {
-    setDraft((d) => ({ ...d, [name]: PLACEHOLDERS[name] }));
+    setDraft((d) => ({ ...d, [name]: PLACEHOLDERS[name] ?? DEFAULT_PLACEHOLDER }));
   }, []);
 
   // Cmd+S save active tab
@@ -277,7 +292,7 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: '0.25rem', padding: '0.35rem 1rem', borderBottom: '1px solid #1f2937', background: '#0f141f' }}>
-          {KNOWN_HOOKS.map((name) => {
+          {hookNames.map((name) => {
             const isActive = name === tab;
             const isDirty = dirty.has(name);
             const entry = hooks?.[name];

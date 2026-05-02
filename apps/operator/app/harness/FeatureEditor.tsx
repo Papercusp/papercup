@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Select } from './Select';
 
-const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked'] as const;
+const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'] as const;
 type Status = (typeof VALID_STATUSES)[number];
 
 interface Feature {
@@ -13,6 +13,7 @@ interface Feature {
   claims?: string[];
   status: Status;
   attempts: number;
+  deprecation_reason?: string;
 }
 
 interface Props {
@@ -29,6 +30,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
   const [claimsText, setClaimsText] = useState((feature?.claims ?? []).join('\n'));
   const [status, setStatus] = useState<Status>(feature?.status ?? 'todo');
   const [attempts, setAttempts] = useState<number>(feature?.attempts ?? 0);
+  const [deprecationReason, setDeprecationReason] = useState<string>(feature?.deprecation_reason ?? '');
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -39,6 +41,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
       setClaimsText((feature.claims ?? []).join('\n'));
       setStatus(feature.status);
       setAttempts(feature.attempts);
+      setDeprecationReason(feature.deprecation_reason ?? '');
     }
   }, [feature]);
 
@@ -46,6 +49,11 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
     setSaving(true);
     try {
       const claims = claimsText.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (status === 'deprecated' && deprecationReason.trim() === '') {
+        setToast('Deprecation reason is required when status is "deprecated".');
+        setSaving(false);
+        return;
+      }
       if (isCreate) {
         const r = await fetch(`/api/harness/${slug}/features`, {
           method: 'POST',
@@ -54,10 +62,12 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
         });
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
       } else {
+        const body: Record<string, unknown> = { title, claims, status, attempts };
+        if (status === 'deprecated') body.deprecation_reason = deprecationReason.trim();
         const r = await fetch(`/api/harness/${slug}/features/${id}`, {
           method: 'PATCH',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ title, claims, status, attempts }),
+          body: JSON.stringify(body),
         });
         if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
       }
@@ -241,6 +251,30 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
               </div>
             )}
           </div>
+
+          {status === 'deprecated' && (
+            <div>
+              <label style={{ display: 'block', fontSize: '0.75rem', color: '#9ca3af', marginBottom: '0.25rem' }}>
+                Deprecation reason <span style={{ color: '#f87171' }}>(required)</span>
+              </label>
+              <textarea
+                value={deprecationReason}
+                onChange={(e) => setDeprecationReason(e.target.value)}
+                placeholder="e.g. SPEC.md no longer asks for JWT cookie rotation; replaced by F-AUTH-012 (session cookies)."
+                rows={3}
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: '#111827', color: '#e5e7eb',
+                  border: '1px solid #374151', borderRadius: 3,
+                  padding: '0.45rem 0.6rem', fontSize: '0.85rem',
+                  fontFamily: 'inherit', resize: 'vertical',
+                }}
+              />
+              <p style={{ margin: '0.35rem 0 0', fontSize: '0.7rem', color: '#9ca3af' }}>
+                Code is not auto-removed when a feature is deprecated; the row stays for audit and is hidden from default queue views.
+              </p>
+            </div>
+          )}
         </div>
       </Modal>
   );

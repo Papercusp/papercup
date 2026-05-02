@@ -36,6 +36,7 @@ import {
   spawnPty,
   writePty,
   getPty,
+  consumeReplay,
   PtyError,
 } from '../../../lib/pty-bridge';
 
@@ -267,6 +268,91 @@ function ensurePapercuspMcpRegistered(): void {
   writeFileSync(mcpPath, JSON.stringify(cfg, null, 2));
 }
 
+  /**
+   * Prewarm pool. Keyed by `<slug>|<laneId>|<command>` so a /pty/prewarm
+   * call from PiTerminalsDock.onReady reserves a pty whose env/cwd/args
+   * exactly match what /pty/spawn would build for the same dock. Spawn
+   * then adopts the warm handle instead of forking fresh, eliminating
+   * the ~500–1500 ms omp startup from the user-visible critical path.
+   *
+   * If a prewarmed handle isn't claimed within PREWARM_TTL_MS we kill
+   * it from a one-shot timer so we don't accumulate orphans on tab
+   * navigations away from the dock.
+   */
+  const prewarmed = new Map<string, { handle: Awaited<ReturnType<typeof spawnPty>>; reaper: NodeJS.Timeout }>();
+  const PREWARM_TTL_MS = 60_000;
+
+  function prewarmKey(slug: string, laneId: string | undefined, command: string): string {
+    return `${slug}|${laneId ?? ''}|${command}`;
+  }
+
+  /**
+   * Build the spawn config (cwd, args, env) for a given slug/laneId.
+   * Shared between /pty/spawn and /pty/prewarm so prewarmed handles
+   * match exactly what spawn would have built.
+   */
+  async function buildSpawnConfig(opts: {
+    slug: string;
+    body: SpawnBody;
+    requestUrl: string;
+  }): Promise<{ kind: 'ok'; command: string; args: readonly string[]; cwd: string; env: Record<string, string>; sd: string | null } | { kind: 'unknown-slug' }> {
+    const { slug, body, requestUrl } = opts;
+    const command = body.command ?? resolvePiBinary();
+
+    const projectDir = projectDirForSlug(slug);
+    if (!projectDir) return { kind: 'unknown-slug' };
+
+    let cwd = projectDir;
+    const sd = stateDirForSlug(slug);
+    if (body.laneId && sd) {
+      const wt = join(sd, 'worktrees', body.laneId);
+      if (existsSync(wt)) cwd = wt;
+    }
+
+    const env: Record<string, string> = {};
+    if (sd) env.PI_CODING_AGENT_DIR = join(sd, 'pi-sessions');
+    env.PAPERCUSP_HARNESS_SLUG = slug;
+    try {
+      const u = new URL(requestUrl);
+      env.PAPERCUSP_API_BASE = `${u.protocol}//${u.host}`;
+    } catch { /* non-URL request */ }
+
+    const piExtensionPath = papercuspPath('global-plugins', 'pi', 'extension.ts');
+    const piExtensionAvailable = existsSync(piExtensionPath);
+
+    if (command.includes('omp')) {
+      try { ensurePapercuspMcpRegistered(); } catch { /* best-effort */ }
+    }
+
+    let args: readonly string[];
+    if (body.args) {
+      args = body.args;
+    } else {
+      const baseArgs: string[] = ['--no-pty'];
+      if (command.includes('omp') && piExtensionAvailable) {
+        baseArgs.push('-e', piExtensionPath);
+      }
+      if (body.laneId && sd && command.includes('omp')) {
+        const promptPath = await buildFeaturePromptFile(slug, body.laneId, sd);
+        if (promptPath) baseArgs.push(`--append-system-prompt=${promptPath}`);
+      }
+      args = baseArgs;
+    }
+
+    return { kind: 'ok', command, args, cwd, env: { ...env, ...body.env }, sd };
+  }
+
+  function attachAuditExport(handle: ReturnType<typeof spawnPty>, sd: string | null, command: string, laneId?: string): void {
+    if (!sd || !command.includes('omp')) return;
+    const agentDir = join(sd, 'pi-sessions');
+    const auditDir = join(sd, 'audit', 'pi-sessions');
+    const tagPrefix = laneId ?? `pid${handle.pty.pid}`;
+    const startedAtMs = handle.startedAtMs;
+    handle.onExit.add(() => {
+      exportPiSessions({ agentDir, auditDir, startedAtMs, ompBin: command, tagPrefix });
+    });
+  }
+
   harness.post('/:slug/pty/spawn', async (c) => {
   const slug = c.req.param('slug') ?? '';
   let body: SpawnBody;
@@ -276,105 +362,44 @@ function ensurePapercuspMcpRegistered(): void {
     body = {};
   }
 
-  const command = body.command ?? resolvePiBinary();
   const cols = Math.max(20, Math.min(500, Math.floor(body.cols ?? 80)));
   const rows = Math.max(5, Math.min(200, Math.floor(body.rows ?? 24)));
 
-  const projectDir = projectDirForSlug(slug);
-  if (!projectDir) {
+  const cfg = await buildSpawnConfig({ slug, body, requestUrl: c.req.url });
+  if (cfg.kind === 'unknown-slug') {
     return c.json({ error: 'unknown harness slug', slug }, 404);
   }
 
-  let cwd = projectDir;
-  const sd = stateDirForSlug(slug);
-  if (body.laneId) {
-    if (sd) {
-      const wt = join(sd, 'worktrees', body.laneId);
-      if (existsSync(wt)) cwd = wt;
-    }
-  }
-
-  // Default env additions: scope pi's session storage to the harness state
-  // dir so per-harness sessions don't pollute ~/.omp/agent/. Plus identity
-  // env that the papercusp pi-plugin tools read to call back into this
-  // sidecar (PAPERCUSP_HARNESS_SLUG + PAPERCUSP_API_BASE).
-  const defaultEnv: Record<string, string> = {};
-  if (sd) {
-    defaultEnv.PI_CODING_AGENT_DIR = join(sd, 'pi-sessions');
-  }
-  defaultEnv.PAPERCUSP_HARNESS_SLUG = slug;
-  // The plugin tools call back into this same sidecar; derive the base
-  // URL from the incoming request so it works against any port (dev :3055,
-  // Tauri's random prod port, etc.).
-  try {
-    const u = new URL(c.req.url);
-    defaultEnv.PAPERCUSP_API_BASE = `${u.protocol}//${u.host}`;
-  } catch { /* non-URL request — fall back to localhost in plugin */ }
-
-  // Locate the papercusp pi-extension (auto-included on omp launches).
-  // It lives at ~/.papercusp/global-plugins/pi/extension.ts — created
-  // by `papercusp install` or seeded by the desktop bundle. omp loads
-  // it via `-e <path>` (its standard extension hook). The extension
-  // registers 7 read-only papercusp_* tools that pi can call to
-  // introspect the surrounding harness.
-  const piExtensionPath = papercuspPath('global-plugins', 'pi', 'extension.ts');
-  const piExtensionAvailable = existsSync(piExtensionPath);
-
-  // Auto-register the papercusp MCP server in ~/.omp/agent/mcp.json so
-  // omp's LLM sees mcp_papercusp_* tools. Idempotent: only writes if
-  // missing or pointing at a stale path. The extension above is now
-  // redundant given the MCP server but kept for back-compat.
-  if (command.includes('omp')) {
-    try { ensurePapercuspMcpRegistered(); } catch { /* best-effort */ }
-  }
-
-  // Build args. If caller didn't pass an explicit args array, start from
-  // the canonical defaults and append --append-system-prompt when we have
-  // a feature scope. Caller-provided args override entirely.
-  let args: readonly string[];
-  if (body.args) {
-    args = body.args;
-  } else {
-    const baseArgs: string[] = ['--no-pty'];
-    if (command.includes('omp') && piExtensionAvailable) {
-      baseArgs.push('-e', piExtensionPath);
-    }
-    if (body.laneId && sd && command.includes('omp')) {
-      const promptPath = await buildFeaturePromptFile(slug, body.laneId, sd);
-      if (promptPath) baseArgs.push(`--append-system-prompt=${promptPath}`);
-    }
-    args = baseArgs;
+  // Try to adopt a prewarmed handle for this slug+laneId+command. The
+  // prewarm path uses the same buildSpawnConfig output, so cwd/args/env
+  // already match. Resize the pty to the caller's dims before handing it
+  // off — the prewarmed shell was started at default 80x24.
+  const key = prewarmKey(slug, body.laneId, cfg.command);
+  const reserved = prewarmed.get(key);
+  if (reserved && !reserved.handle.killed) {
+    prewarmed.delete(key);
+    clearTimeout(reserved.reaper);
+    try { reserved.handle.pty.resize(cols, rows); } catch { /* ignore */ }
+    return c.json({
+      id: reserved.handle.id,
+      command: reserved.handle.command,
+      args: reserved.handle.args,
+      cwd: reserved.handle.cwd,
+      pid: reserved.handle.pty.pid,
+      prewarmed: true,
+    });
   }
 
   try {
     const handle = spawnPty({
-      command,
-      args,
-      cwd,
+      command: cfg.command,
+      args: cfg.args,
+      cwd: cfg.cwd,
       cols,
       rows,
-      env: { ...defaultEnv, ...body.env },
+      env: cfg.env,
     });
-
-    // Audit export — when this pty exits, dump any pi/omp session jsonls
-    // created during its lifetime to HTML under <stateDir>/audit/pi-sessions/.
-    // Best-effort; failures don't surface to the client.
-    if (sd && command.includes('omp')) {
-      const agentDir = defaultEnv.PI_CODING_AGENT_DIR ?? join(homedir(), '.omp', 'agent');
-      const auditDir = join(sd, 'audit', 'pi-sessions');
-      const tagPrefix = body.laneId ?? `pid${handle.pty.pid}`;
-      const startedAtMs = handle.startedAtMs;
-      handle.onExit.add(() => {
-        exportPiSessions({
-          agentDir,
-          auditDir,
-          startedAtMs,
-          ompBin: command,
-          tagPrefix,
-        });
-      });
-    }
-
+    attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
     return c.json({
       id: handle.id,
       command: handle.command,
@@ -389,6 +414,61 @@ function ensurePapercuspMcpRegistered(): void {
     return c.json({ error: (err as Error).message, code: 'UNKNOWN' }, 500);
   }
 });
+
+  /**
+   * Reserve a hot pty for an upcoming /pty/spawn call. The dock fires this
+   * on mount so omp's startup overlaps with xterm.js initialization in the
+   * browser. No-op (200) if a handle is already reserved for this key, so
+   * the dock can call it idempotently on every render.
+   */
+  harness.post('/:slug/pty/prewarm', async (c) => {
+    const slug = c.req.param('slug') ?? '';
+    let body: SpawnBody;
+    try { body = (await c.req.json<SpawnBody>()) ?? {}; } catch { body = {}; }
+
+    const cfg = await buildSpawnConfig({ slug, body, requestUrl: c.req.url });
+    if (cfg.kind === 'unknown-slug') {
+      return c.json({ error: 'unknown harness slug', slug }, 404);
+    }
+
+    const key = prewarmKey(slug, body.laneId, cfg.command);
+    const existing = prewarmed.get(key);
+    if (existing && !existing.handle.killed) {
+      return c.json({ reserved: true, reused: true });
+    }
+    if (existing) {
+      // Stale entry from a prior killed handle — drop and re-spawn.
+      clearTimeout(existing.reaper);
+      prewarmed.delete(key);
+    }
+
+    try {
+      const handle = spawnPty({
+        command: cfg.command,
+        args: cfg.args,
+        cwd: cfg.cwd,
+        cols: 80,
+        rows: 24,
+        env: cfg.env,
+      });
+      attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
+      const reaper = setTimeout(() => {
+        // Caller never claimed this handle — kill so it doesn't hold a
+        // pty slot. spawnPty's own idle reaper would eventually catch
+        // this too, but at 5min that's too lax for a pre-warm.
+        if (prewarmed.get(key)?.handle === handle) prewarmed.delete(key);
+        try { handle.pty.kill(); } catch { /* ignore */ }
+      }, PREWARM_TTL_MS);
+      reaper.unref?.();
+      prewarmed.set(key, { handle, reaper });
+      return c.json({ reserved: true });
+    } catch (err) {
+      if (err instanceof PtyError) {
+        return c.json({ error: err.message, code: err.code }, 503);
+      }
+      return c.json({ error: (err as Error).message, code: 'UNKNOWN' }, 500);
+    }
+  });
 
   harness.get('/:slug/pty/:id/stream', (c) => {
   const id = c.req.param('id');
@@ -419,6 +499,14 @@ function ensurePapercuspMcpRegistered(): void {
       s.write(`event: exit\ndata: ${payload}\n\n`).catch(() => {});
       closed = true;
     };
+
+    // Drain anything emitted before this subscriber attached (only
+    // non-empty for prewarmed handles where omp printed its banner
+    // while the browser was still loading xterm).
+    const replay = consumeReplay(id);
+    if (replay && replay.length > 0) {
+      try { onData(replay); } catch { /* see onData */ }
+    }
 
     handle.onData.add(onData);
     handle.onExit.add(onExit);

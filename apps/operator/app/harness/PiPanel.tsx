@@ -17,6 +17,11 @@
  * pure browser-side component.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import '@xterm/xterm/css/xterm.css';
+import { Loader2 } from 'lucide-react';
 import { Tooltip } from './Tooltip';
 import './PiPanel.css';
 
@@ -135,90 +140,101 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
   useEffect(() => {
     let cancelled = false;
     let mounted = true;
+    let resizeObs: ResizeObserver | null = null;
 
-    (async () => {
-      // 1. Dynamically import xterm — server bundle shouldn't pull it.
-      const [{ Terminal }, { FitAddon }, { WebLinksAddon }] = await Promise.all([
-        import('@xterm/xterm'),
-        import('@xterm/addon-fit'),
-        import('@xterm/addon-web-links'),
-      ]);
-      if (cancelled || !containerRef.current) return;
-
-      // 2. Build the terminal.
-      const term = new Terminal({
-        cursorBlink: true,
-        fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace',
-        fontSize: 13,
-        lineHeight: 1.2,
-        theme: DARK_THEME,
-        scrollback: 5000,
-        allowProposedApi: true,
-      });
-      const fit = new FitAddon();
-      term.loadAddon(fit);
-      term.loadAddon(new WebLinksAddon());
-      term.open(containerRef.current);
-      // fit.fit() can throw `TypeError: Cannot read properties of undefined
-      // (reading 'scrollBarWidth')` when the container has 0 dimensions at
-      // the moment of the call — happens reliably under dockview when a
-      // panel is freshly added to a tab strip and hasn't been laid out
-      // yet. Without the try/catch the throw escapes this async IIFE as
-      // an unhandled rejection, which silently kills the spawn fetch
-      // below — the user sees an empty terminal that never starts.
-      // Swallow + retry on next animation frame, by which time the
-      // container has been measured.
-      try { fit.fit(); }
-      catch { /* see comment — container not yet sized; will retry below */ }
-      requestAnimationFrame(() => {
-        if (cancelled) return;
-        try { fit.fit(); } catch { /* still 0×0 — give up; user can resize manually */ }
-      });
-      termRef.current = term;
-      fitAddonRef.current = fit;
-
-      // 3. Spawn the pty.
-      const initCols = term.cols;
-      const initRows = term.rows;
-      let handle: PtyHandle;
+    // Critical-path: kick the pty spawn POST in parallel with terminal
+    // construction so the slow side (omp startup ~500–1500 ms) overlaps
+    // with the cheap side (xterm DOM mount). The dock has likely already
+    // POSTed /pty/prewarm on its own mount, in which case the server
+    // adopts a hot handle and this returns near-instantly. We use a
+    // conservative default 80×24 — a resize() POST follows once xterm
+    // has measured the container.
+    const spawnPromise = (async () => {
       try {
         const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/pty/spawn`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            command,
-            args,
-            laneId,
-            cols: initCols,
-            rows: initRows,
-          }),
+          body: JSON.stringify({ command, args, laneId, cols: 80, rows: 24 }),
         });
         if (!res.ok) {
           const errBody = await res.json().catch(() => ({} as { error?: string }));
-          if (mounted) setState({ kind: 'error', message: errBody?.error ?? `spawn failed: HTTP ${res.status}` });
-          return;
+          return { ok: false as const, error: errBody?.error ?? `spawn failed: HTTP ${res.status}` };
         }
-        handle = (await res.json()) as PtyHandle;
-        handleIdRef.current = handle.id;
+        return { ok: true as const, handle: (await res.json()) as PtyHandle };
       } catch (err) {
-        if (mounted) setState({ kind: 'error', message: `spawn failed: ${(err as Error).message}` });
-        return;
+        return { ok: false as const, error: `spawn failed: ${(err as Error).message}` };
       }
+    })();
+
+    if (!containerRef.current) return;
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace',
+      fontSize: 13,
+      lineHeight: 1.2,
+      theme: DARK_THEME,
+      scrollback: 5000,
+      allowProposedApi: true,
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon());
+    term.open(containerRef.current);
+    // fit.fit() can throw `TypeError: Cannot read properties of undefined
+    // (reading 'scrollBarWidth')` when the container has 0 dimensions at
+    // the moment of the call — happens reliably under dockview when a
+    // panel is freshly added to a tab strip and hasn't been laid out
+    // yet. Swallow + retry on next animation frame, by which time the
+    // container has been measured.
+    try { fit.fit(); } catch { /* not yet sized */ }
+    requestAnimationFrame(() => {
+      if (cancelled) return;
+      try { fit.fit(); } catch { /* still 0×0 — user can resize manually */ }
+    });
+    termRef.current = term;
+    fitAddonRef.current = fit;
+
+    // Now wait on the spawn that's been racing in the background.
+    spawnPromise.then((result) => {
       if (cancelled) {
-        postKill(handle.id);
+        if (result.ok) postKill(result.handle.id);
         return;
       }
+      if (!result.ok) {
+        if (mounted) setState({ kind: 'error', message: result.error });
+        return;
+      }
+      const handle = result.handle;
+      handleIdRef.current = handle.id;
       if (mounted) setState({ kind: 'running', handle });
 
-      // 4. Open the SSE stream and wire it to the terminal.
+      // Push the post-fit dims to the pty if they differ from the 80×24
+      // we asked for at spawn. Best-effort.
+      if (term.cols !== 80 || term.rows !== 24) {
+        fetch(`/api/harness/${encodeURIComponent(slug)}/pty/${handle.id}/resize`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cols: term.cols, rows: term.rows }),
+        }).catch(() => { /* ignore */ });
+      }
+
+      // SSE stream — bytes are base64'd UTF-8 from the server. xterm.write
+      // takes either string (already-decoded code points, no UTF-8 decode)
+      // or Uint8Array (decoded as UTF-8). atob returns a binary string of
+      // raw bytes, so feed those as a Uint8Array — otherwise multi-byte
+      // glyphs (powerline triangles, box-drawing) get mis-rendered as
+      // Latin-1 chars and the C1 bytes (0x80–0x9F) trigger spurious
+      // cursor moves.
       const es = new EventSource(
         `/api/harness/${encodeURIComponent(slug)}/pty/${handle.id}/stream`,
       );
       eventSourceRef.current = es;
-
       es.addEventListener('data', (ev) => {
         try {
-          const bytes = atob((ev as MessageEvent).data);
+          const bin = atob((ev as MessageEvent).data);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
           term.write(bytes);
         } catch { /* malformed event — drop */ }
       });
@@ -236,18 +252,16 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
         // the browser retry. Hard errors surface as exit events.
       };
 
-      // 5. Forward keystrokes.
       term.onData((data) => {
         const b64 = btoa(unescape(encodeURIComponent(data)));
         fetch(`/api/harness/${encodeURIComponent(slug)}/pty/${handle.id}/input`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ data: b64 }),
-        }).catch(() => { /* best-effort; retry happens implicitly via xterm input loop */ });
+        }).catch(() => { /* best-effort */ });
       });
 
-      // 6. Forward resizes.
-      const ro = new ResizeObserver(() => {
+      resizeObs = new ResizeObserver(() => {
         try {
           fit.fit();
           fetch(`/api/harness/${encodeURIComponent(slug)}/pty/${handle.id}/resize`, {
@@ -257,23 +271,18 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
           }).catch(() => { /* ignore */ });
         } catch { /* term not ready yet */ }
       });
-      if (containerRef.current) ro.observe(containerRef.current);
-
-      // Cleanup function.
-      return () => {
-        ro.disconnect();
-      };
-    })();
+      if (containerRef.current) resizeObs.observe(containerRef.current);
+    });
 
     return () => {
       cancelled = true;
       mounted = false;
+      resizeObs?.disconnect();
       const es = eventSourceRef.current;
       if (es) es.close();
       const id = handleIdRef.current;
       if (id) postKill(id);
-      const term = termRef.current as { dispose?: () => void } | null;
-      try { term?.dispose?.(); } catch { /* ignore */ }
+      try { term.dispose(); } catch { /* ignore */ }
       termRef.current = null;
       fitAddonRef.current = null;
       handleIdRef.current = null;
@@ -398,7 +407,15 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
         </div>
       )}
 
-      <div className="pi-panel__term" ref={containerRef} />
+      <div className="pi-panel__term-wrap">
+        <div className="pi-panel__term" ref={containerRef} />
+        {state.kind === 'starting' && (
+          <div className="pi-panel__loading" aria-live="polite">
+            <Loader2 size={18} className="pi-panel__loading-spin" />
+            <span>starting pi…</span>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

@@ -127,6 +127,7 @@ export default function ManifestSpecEditor({
 
   return (
     <div
+      className="h-manifest-editor"
       onClick={(e) => e.stopPropagation()}
       style={{
         background: '#0b0e14',
@@ -137,21 +138,52 @@ export default function ManifestSpecEditor({
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
       }}
     >
-      <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-        <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>
+      <div className="h-manifest-editor-head" style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+        {/* Section tabs: Settings / Memory / Prompts.
+            Restored 2026-05-01: Memory + Prompts disappeared when this template-driven
+            editor took over from <SpecEditor> for harnesses that ship configFiles. The
+            underlying state files (.harness/memory/*, .harness/prompts/<role>.md) are
+            still actively read/written by the substrate; only the UI was missing. */}
+        <div className="h-manifest-section-tabs" style={{ display: 'flex', gap: '0.35rem', padding: 0, borderBottom: 'none', background: 'transparent' }}>
+          {SECTIONS.map((s) => {
+            const isActive = section === s;
+            const label = s === 'settings' ? 'Settings' : s === 'memory' ? 'Memory' : 'Prompts';
+            return (
+              <button
+                key={s}
+                className={`h-manifest-section-tab${isActive ? ' is-active' : ''}`}
+                onClick={() => setSection(s)}
+                style={{
+                  background: isActive ? '#1f2937' : 'transparent',
+                  color: isActive ? '#e5e7eb' : '#9ca3af',
+                  border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
+                  borderRadius: 4,
+                  padding: '0.4rem 0.9rem',
+                  fontSize: '0.85rem',
+                  fontWeight: isActive ? 600 : 500,
+                  cursor: 'pointer',
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+        <span className="h-manifest-path" style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>
           {projectPath}/{activePath}
         </span>
         {alive && (
-          <span style={{ color: '#f59e0b', fontSize: '0.8rem' }}>
+          <span className="h-manifest-live-note" style={{ color: '#f59e0b', fontSize: '0.8rem' }}>
             ⚠ harness is running — edits take effect on the next agent invocation
           </span>
         )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
+        <div className="h-manifest-actions" style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem' }}>
           {toast && (
             <span style={{ color: toast.startsWith('saved') ? '#10b981' : '#ef4444', fontSize: '0.8rem', alignSelf: 'center' }}>{toast}</span>
           )}
           <Tooltip label="Revert active tab to last-saved state">
             <button
+              className="h-manifest-action"
               onClick={() => setDraft((d) => ({ ...d, [activePath]: original[activePath] ?? '' }))}
               disabled={!activeDirty}
               style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: activeDirty ? 'pointer' : 'not-allowed', opacity: activeDirty ? 1 : 0.5 }}
@@ -159,6 +191,7 @@ export default function ManifestSpecEditor({
           </Tooltip>
           <Tooltip label="Save all dirty files (⌘/Ctrl+S)">
             <button
+              className="h-manifest-action h-manifest-action-primary"
               onClick={save}
               disabled={dirty.length === 0 || saving}
               style={{ background: dirty.length ? '#2563eb' : '#374151', color: 'white', border: 'none', borderRadius: 3, padding: '0.35rem 0.9rem', cursor: dirty.length ? 'pointer' : 'not-allowed', fontWeight: 600 }}
@@ -167,35 +200,6 @@ export default function ManifestSpecEditor({
         </div>
       </div>
 
-      {/* Section tabs: Settings / Memory / Prompts.
-          Restored 2026-05-01: Memory + Prompts disappeared when this template-driven
-          editor took over from <SpecEditor> for harnesses that ship configFiles. The
-          underlying state files (.harness/memory/*, .harness/prompts/<role>.md) are
-          still actively read/written by the substrate; only the UI was missing. */}
-      <div style={{ display: 'flex', gap: '0.35rem', padding: '0.5rem 1rem', borderBottom: '1px solid #1f2937', background: '#0b1018' }}>
-        {SECTIONS.map((s) => {
-          const isActive = section === s;
-          const label = s === 'settings' ? 'Settings' : s === 'memory' ? 'Memory' : 'Prompts';
-          return (
-            <button
-              key={s}
-              onClick={() => setSection(s)}
-              style={{
-                background: isActive ? '#1f2937' : 'transparent',
-                color: isActive ? '#e5e7eb' : '#9ca3af',
-                border: '1px solid ' + (isActive ? '#4b5563' : 'transparent'),
-                borderRadius: 4,
-                padding: '0.4rem 0.9rem',
-                fontSize: '0.85rem',
-                fontWeight: isActive ? 600 : 500,
-                cursor: 'pointer',
-              }}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
 
       {section === 'memory' ? (
         <div style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
@@ -207,7 +211,7 @@ export default function ManifestSpecEditor({
         </div>
       ) : (
         <>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0.5rem 1rem', borderBottom: '1px solid #1f2937', background: '#0b1018' }}>
+      <div className="h-manifest-file-tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0.5rem 1rem', borderBottom: '1px solid #1f2937', background: '#0b1018' }}>
         {configFiles.map((cf) => {
           const isActive = cf.path === activePath;
           const cfDirty = dirty.includes(cf.path);
@@ -216,6 +220,7 @@ export default function ManifestSpecEditor({
             <Tooltip key={cf.path} label={cf.description ?? cf.path}>
               <button
                 onClick={() => setActivePath(cf.path)}
+                className={`h-manifest-file-tab${isActive ? ' is-active' : ''}${cfDirty ? ' is-dirty' : ''}${cfMissing ? ' is-missing' : ''}`}
                 style={{
                   background: isActive ? '#1f2937' : 'transparent',
                   color: isActive ? '#e5e7eb' : (cfMissing ? '#6b7280' : '#9ca3af'),
@@ -236,13 +241,13 @@ export default function ManifestSpecEditor({
         })}
       </div>
 
-      {activeSpec?.description && (
-        <div style={{ padding: '8px 14px', borderBottom: '1px solid #1f2937', fontSize: 12, color: '#9ca3af', background: '#0b1018' }}>
+      {activeSpec?.description && activeSpec.language !== 'markdown' && (
+        <div className="h-manifest-description" style={{ padding: '8px 14px', borderBottom: '1px solid #1f2937', fontSize: 12, color: '#9ca3af', background: '#0b1018' }}>
           {activeSpec.description}
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+      <div className="h-manifest-editor-body" style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         {loading ? (
           <div style={{ padding: 24, color: '#9ca3af' }}>Loading…</div>
         ) : activeMissing ? (
@@ -279,6 +284,7 @@ export default function ManifestSpecEditor({
             onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
             target={(activePath.split('/').pop() ?? activePath).replace(/\.md$/, '')}
             harness={slug}
+            description={activeSpec.description}
           />
         ) : (
           <Editor
@@ -299,45 +305,53 @@ export default function ManifestSpecEditor({
 
 /** Edit/read toggle + Vditor + backlinks panel for a manifest-driven markdown tab. */
 function ManifestMarkdownBody({
-  value, onChange, target, harness,
+  value, onChange, target, harness, description,
 }: {
   value: string;
   onChange: (v: string) => void;
   target: string;
   harness: string;
+  description?: string;
 }) {
   const [view, setView] = useQueryState(
     'specView',
     parseAsStringLiteral(['edit', 'read'] as const).withDefault('edit'),
   );
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      <div style={{
-        display: 'flex', gap: 4, padding: '6px 12px',
+    <div className="h-manifest-markdown-body" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div className="h-manifest-view-bar" style={{
+        display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px',
         borderBottom: '1px solid var(--border, #2a2a2a)',
         background: 'var(--bg-2, #15181c)',
       }}>
-        {(['edit', 'read'] as const).map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => void setView(m)}
-            style={{
-              background: view === m ? 'var(--bg, #0b0d10)' : 'transparent',
-              border: '1px solid ' + (view === m ? '#4a90e2' : 'transparent'),
-              color: view === m ? '#fff' : 'var(--text-2, #aaa)',
-              padding: '3px 10px',
-              borderRadius: 3,
-              fontSize: 11,
-              cursor: 'pointer',
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-            }}
-            title={m === 'read' ? 'Reading view (resolves [[wiki-links]])' : 'Editing view'}
-          >
-            {m === 'edit' ? '✎ Edit' : '👁 Read'}
-          </button>
-        ))}
+        <div className="h-manifest-view-toggle" style={{ display: 'flex', gap: 4 }}>
+          {(['edit', 'read'] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => void setView(m)}
+              style={{
+                background: view === m ? 'var(--bg, #0b0d10)' : 'transparent',
+                border: '1px solid ' + (view === m ? '#4a90e2' : 'transparent'),
+                color: view === m ? '#fff' : 'var(--text-2, #aaa)',
+                padding: '3px 10px',
+                borderRadius: 3,
+                fontSize: 11,
+                cursor: 'pointer',
+                textTransform: 'uppercase',
+                letterSpacing: '0.05em',
+              }}
+              title={m === 'read' ? 'Reading view (resolves [[wiki-links]])' : 'Editing view'}
+            >
+              {m === 'edit' ? '✎ Edit' : '👁 Read'}
+            </button>
+          ))}
+        </div>
+        {description && (
+          <div className="h-manifest-view-description" style={{ fontSize: 12, color: '#9ca3af' }}>
+            {description}
+          </div>
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: view === 'read' ? 'auto' : 'visible' }}>
         {view === 'read' ? (
