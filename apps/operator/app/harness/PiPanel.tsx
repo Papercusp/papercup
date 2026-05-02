@@ -159,7 +159,21 @@ export default function PiPanel({ slug, laneId, command, args }: PiPanelProps) {
       term.loadAddon(fit);
       term.loadAddon(new WebLinksAddon());
       term.open(containerRef.current);
-      fit.fit();
+      // fit.fit() can throw `TypeError: Cannot read properties of undefined
+      // (reading 'scrollBarWidth')` when the container has 0 dimensions at
+      // the moment of the call — happens reliably under dockview when a
+      // panel is freshly added to a tab strip and hasn't been laid out
+      // yet. Without the try/catch the throw escapes this async IIFE as
+      // an unhandled rejection, which silently kills the spawn fetch
+      // below — the user sees an empty terminal that never starts.
+      // Swallow + retry on next animation frame, by which time the
+      // container has been measured.
+      try { fit.fit(); }
+      catch { /* see comment — container not yet sized; will retry below */ }
+      requestAnimationFrame(() => {
+        if (cancelled) return;
+        try { fit.fit(); } catch { /* still 0×0 — give up; user can resize manually */ }
+      });
       termRef.current = term;
       fitAddonRef.current = fit;
 
