@@ -1184,6 +1184,168 @@ p {
 }
  .oracle-msg-user .oracle-msg-role { color: var(--accent); }
  .oracle-msg-content { white-space: pre-wrap; color: var(--fg); }
+
+/* Thinking indicator — three bouncing dots shown while a response is
+   in flight but no content has streamed yet. Visible enough to confirm
+   the request landed and the assistant is working. */
+.oracle-thinking-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 4px;
+  font-size: 12px;
+  color: var(--fg-mute);
+}
+.oracle-thinking-dots {
+  display: inline-flex;
+  gap: 4px;
+}
+.oracle-thinking-dots span {
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: oracle-thinking-bounce 1.2s infinite ease-in-out both;
+}
+.oracle-thinking-dots span:nth-child(2) { animation-delay: 0.16s; }
+.oracle-thinking-dots span:nth-child(3) { animation-delay: 0.32s; }
+@keyframes oracle-thinking-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+/* Tab strip — sits below the dock header. Tabs scroll horizontally if
+   they overflow; the "+" stays pinned at the right via flex order. */
+.oracle-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.18);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.oracle-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  font-size: 12px;
+  color: var(--fg-mute);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  position: relative;
+  top: 1px;
+}
+.oracle-tab:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
+.oracle-tab.is-active {
+  background: var(--bg-elev);
+  border-color: var(--border);
+  color: var(--fg);
+  font-weight: 600;
+}
+.oracle-tab-label { line-height: 1; }
+.oracle-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.oracle-tab-dot-busy {
+  background: var(--accent);
+  animation: oracle-thinking-bounce 1.2s infinite ease-in-out both;
+}
+.oracle-tab-dot-unread { background: var(--good); }
+.oracle-tab-close {
+  background: transparent;
+  border: none;
+  color: var(--fg-mute);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.oracle-tab-close:hover { background: rgba(255, 90, 90, 0.18); color: #fecdd3; }
+.oracle-tab-add {
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  color: var(--fg-mute);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px 10px;
+  cursor: pointer;
+  margin-left: 4px;
+  position: relative;
+  top: 1px;
+}
+.oracle-tab-add:hover { color: var(--fg); border-color: var(--border-strong); }
+
+/* Picker popover — opens from the "+" button. */
+.oracle-picker {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 200px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 200;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.oracle-picker-section {
+  padding: 6px 10px 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-mute);
+}
+.oracle-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: transparent;
+  border: none;
+  color: var(--fg);
+  padding: 6px 10px;
+  font-size: 13px;
+  text-align: left;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+.oracle-picker-item:hover { background: rgba(56, 189, 248, 0.10); }
+.oracle-picker-hint { font-size: 10px; color: var(--fg-mute); }
+
+/* FAB unread badge — small dot on the closed FAB to indicate any tab
+   has unread output. */
+.oracle-fab-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  background: var(--good);
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.4);
+}
+
  .oracle-error {
   padding: 10px;
   background: rgba(251, 113, 133, 0.10);

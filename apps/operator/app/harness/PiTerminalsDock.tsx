@@ -20,7 +20,7 @@ import {
   type IDockviewPanelProps,
 } from 'dockview';
 import 'dockview-react/dist/styles/dockview.css';
-import { MessageSquarePlus, Plus, TerminalSquare } from 'lucide-react';
+import { Plus, TerminalSquare } from "lucide-react";
 import PiPanel from './PiPanel';
 import ChatPanel from './ChatPanel';
 import { Tooltip } from './Tooltip';
@@ -193,136 +193,6 @@ function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: strin
   );
 }
 
-const VALID_CHAT_ROLES = [
-  'worker', 'validator', 'scoper', 'plan-gate', 'architect',
-  'orchestrator', 'documenter', 'summarizer', 'curator', 'debugger',
-  'project_manager',
-] as const;
-
-/** Header action: "+" to start a new ad-hoc chat from the dock. */
-function AddChatAction({ api, slug }: { api: DockviewApi | null; slug: string }) {
-  const [open, setOpen] = useState(false);
-  const [role, setRole] = useState<string>('worker');
-  const [featureId, setFeatureId] = useState<string>('');
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const create = useCallback(async () => {
-    if (!api) return;
-    setCreating(true);
-    setError(null);
-    try {
-      const fid = featureId.trim();
-      if (fid && !/^F-[A-Z0-9-]+$/i.test(fid)) {
-        setError(`Invalid feature id (expected F-XXX): ${fid}`);
-        setCreating(false);
-        return;
-      }
-      const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/agent-chats`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, feature_id: fid || undefined }),
-      });
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({} as { error?: string }));
-        setError(body.error ?? `HTTP ${r.status}`);
-        setCreating(false);
-        return;
-      }
-      const chat = await r.json();
-      const title = chat.title ?? (fid ? `${role} · ${fid}` : role);
-      api.addPanel({
-        id: `chat-${chat.id}`,
-        component: 'chat',
-        title,
-        params: { slug, chatId: chat.id } satisfies ChatPanelParams,
-      });
-      setOpen(false);
-      setFeatureId('');
-      setRole('worker');
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setCreating(false);
-    }
-  }, [api, slug, role, featureId]);
-
-  return (
-    <div style={{ position: 'relative' }}>
-      <Tooltip label="Start a new chat with an agent">
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          className="pi-dock__add-btn"
-        >
-          <MessageSquarePlus size={13} />
-          <span>chat</span>
-        </button>
-      </Tooltip>
-      {open && (
-        <div className="pi-dock__chat-popover" role="dialog" aria-label="New chat">
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
-            <span>role</span>
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value)}
-              style={{
-                background: '#0a0a0a', color: '#e7e7e7',
-                border: '1px solid #2a2a2a', borderRadius: 4,
-                padding: '4px 6px', fontSize: 12,
-              }}
-            >
-              {VALID_CHAT_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 11 }}>
-            <span>feature (optional)</span>
-            <input
-              value={featureId}
-              onChange={(e) => setFeatureId(e.target.value)}
-              placeholder="F-001"
-              style={{
-                background: '#0a0a0a', color: '#e7e7e7',
-                border: '1px solid #2a2a2a', borderRadius: 4,
-                padding: '4px 6px', fontSize: 12, fontFamily: 'ui-monospace, Menlo, monospace',
-              }}
-              onKeyDown={(e) => { if (e.key === 'Enter' && !creating) void create(); }}
-            />
-          </label>
-          {error && (
-            <div style={{ color: '#fca5a5', fontSize: 11 }}>{error}</div>
-          )}
-          <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              disabled={creating}
-              title="Cancel without creating a chat"
-              style={{
-                padding: '4px 10px', fontSize: 11,
-                background: 'transparent', color: '#888',
-                border: '1px solid #2a2a2a', borderRadius: 4,
-                cursor: 'pointer',
-              }}
-            >cancel</button>
-            <button
-              type="button"
-              onClick={() => void create()}
-              disabled={creating}
-              title="Create a new chat panel with the selected role"
-              style={{
-                padding: '4px 10px', fontSize: 11,
-                background: '#1d2533', color: '#6ea8ff',
-                border: '1px solid #3a5070', borderRadius: 4,
-                cursor: creating ? 'wait' : 'pointer',
-              }}
-            >{creating ? 'creating…' : 'create'}</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDockProps) {
   const apiRef = useRef<DockviewApi | null>(null);
@@ -442,7 +312,8 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
           <TerminalSquare size={13} /> consoles
         </span>
         <AddTerminalAction api={api} slug={slug} />
-        <AddChatAction api={api} slug={slug} />
+        {/* Agent chat now lives in the floating Oracle dock (tab + picker).
+            Use the chat bubble's "+" to start a new agent chat. */}
       </div>
       <div className="pi-dock__body">
         <DockviewReact
