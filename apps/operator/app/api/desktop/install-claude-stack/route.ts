@@ -65,6 +65,12 @@ export async function POST() {
         args: string[],
         env: NodeJS.ProcessEnv,
         label: string,
+        // Per-step deadline. A hung claude installer (network stall) or
+        // npm install (lockfile contention) shouldn't keep the SSE
+        // stream open forever, blocking the user's "Install" button.
+        // 8 min covers the slowest realistic case (cold meridian install
+        // with claude-code postinstall on slow links) with margin.
+        timeoutMs: number = 8 * 60 * 1000,
       ): Promise<number> =>
         new Promise((resolve) => {
           if (aborted) return resolve(130);
@@ -77,13 +83,36 @@ export async function POST() {
             detached: true,
           });
           activeChild = child;
+
+          const watchdog = setTimeout(() => {
+            send('log', {
+              label,
+              line: `error: ${label} step timed out after ${timeoutMs / 1000}s — killing\n`,
+            });
+            try {
+              if (child.pid) process.kill(-child.pid, 'SIGTERM');
+              else child.kill('SIGTERM');
+            } catch { /* dead already */ }
+            // Escalate to SIGKILL after a short grace period if SIGTERM
+            // doesn't take. Some installers trap SIGTERM and try to
+            // unwind; we don't want to wait minutes more.
+            setTimeout(() => {
+              try {
+                if (child.pid) process.kill(-child.pid, 'SIGKILL');
+                else child.kill('SIGKILL');
+              } catch { /* dead */ }
+            }, 5000);
+          }, timeoutMs);
+
           child.stdout.on('data', (b) => send('log', { label, line: b.toString() }));
           child.stderr.on('data', (b) => send('log', { label, line: b.toString() }));
           child.on('close', (code) => {
+            clearTimeout(watchdog);
             if (activeChild === child) activeChild = null;
             resolve(code ?? 1);
           });
           child.on('error', (e) => {
+            clearTimeout(watchdog);
             send('log', { label, line: `error: ${e.message}\n` });
             if (activeChild === child) activeChild = null;
             resolve(1);
