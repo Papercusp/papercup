@@ -157,11 +157,21 @@ export function OperatorButton(): JSX.Element {
   }, []);
 
   const glyph = state.paused ? ICON_GLYPH.paused : ICON_GLYPH[state.iconState];
+  const titleByState: Record<IconState, string> = {
+    idle: 'Operator — idle',
+    scanning: 'Operator — scanning workspace',
+    thinking: 'Operator — composing suggestions',
+    acting: 'Operator — dispatching',
+    paused: 'Operator — paused (autonomous actions disabled)',
+    'awaiting-input': 'Operator — awaiting your decision on pending suggestions',
+  };
+  const title = state.paused ? titleByState.paused : titleByState[state.iconState];
 
   return (
     <button
       className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}`}
-      aria-label="Operator"
+      aria-label={title}
+      title={title}
       onClick={toggle}
       style={{ marginLeft: 8 }}
     >
@@ -284,7 +294,11 @@ export function OperatorPanel(): JSX.Element | null {
       }
     });
     es.addEventListener('done', () => {
-      setState((s) => ({ ...s, iconState: 'idle' }));
+      // If any cards landed ask-first, the user owes us a decision.
+      const askFirstPending = suggestionsRef.current.some(
+        (c) => c.status === 'pending' && !c.auto_dispatch,
+      );
+      setState((s) => ({ ...s, iconState: askFirstPending ? 'awaiting-input' : 'idle' }));
       es.close();
       evtSrcRef.current = null;
       void refreshDecisions();
