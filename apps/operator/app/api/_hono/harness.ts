@@ -12,6 +12,9 @@
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
+import { getKnownRoles } from '@/lib/known-roles';
+import { getKnownHooks } from '@/lib/known-hooks';
+import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -325,6 +328,19 @@ function launchRun(project: ProjectEntry, extra?: string): { ok: true; logPath: 
 export const harness = new Hono();
 
 // ─── registry ─────────────────────────────────────────────────────────
+
+// Lightweight registry-only listing — no filesystem reads, no DB hits.
+// Used by surfaces that just need slug+kind to populate a picker (e.g.
+// OracleDock). The full /projects endpoint is ~50× slower because it
+// reads every harness's config.json and opens a per-slug Postgres pool.
+harness.get('/projects/lite', async (c) => {
+  const reg = loadRegistry();
+  const projects = reg.projects.map((p) => ({
+    slug: p.slug,
+    harness_kind: (p as { harness_kind?: string }).harness_kind ?? null,
+  }));
+  return c.json({ projects });
+});
 
 harness.get('/projects', async (c) => {
   const reg = loadRegistry();
@@ -2400,7 +2416,7 @@ harness.get('/:slug/decisions', (c) => {
   let currentIter: number | null = null;
   const iterRe = /^\[([^\]]+)\] ── iteration (\d+) ──/;
   const decRe = /^\[([^\]]+)\] ORCH decision:\s*(\S*)\s*(.*)$/;
-  const KNOWN_VERBS = new Set(['NEXT_WORKER', 'NEXT_VALIDATOR', 'NEXT_ARCHITECT', 'ESCALATE', 'CONVERTED', 'DONE']);
+  const KNOWN_VERBS = new Set<string>(DECISION_VERBS);
   for (const line of runLog.split('\n')) {
     const im = line.match(iterRe);
     if (im) { currentIter = Number(im[2]); continue; }
@@ -2725,8 +2741,13 @@ harness.post('/:slug/proposals/:id/reject', async (c) => {
 harness.post('/:slug/product-review', async (c) => {
   const project = resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
+  // GOAL.md was the legacy north-star file. SPEC.md now holds both
+  // north-star + scope, so accept either being present.
+  const specPath = join(project.path, 'SPEC.md');
   const goalPath = join(project.path, 'GOAL.md');
-  if (!existsSync(goalPath)) return c.json({ error: 'GOAL.md not found in project root' }, 400);
+  if (!existsSync(specPath) && !existsSync(goalPath)) {
+    return c.json({ error: 'SPEC.md not found in project root' }, 400);
+  }
 
   return new Promise((resolve) => {
     const { execFile } = require('node:child_process');
@@ -2755,11 +2776,17 @@ harness.post('/:slug/product-review', async (c) => {
   }) as Promise<Response>;
 });
 
+// Legacy alias: GOAL.md and SPEC.md were once separate. SPEC.md is now
+// the single source of truth; the /goal endpoints read/write SPEC.md and
+// fall back to GOAL.md only if the former is missing (back-compat for
+// harnesses created before the consolidation).
 harness.get('/:slug/goal', (c) => {
   const project = resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const p = join(project.path, 'GOAL.md');
-  return c.json({ content: safeRead(p) });
+  const specPath = join(project.path, 'SPEC.md');
+  const legacyGoal = join(project.path, 'GOAL.md');
+  const content = safeRead(specPath) ?? safeRead(legacyGoal);
+  return c.json({ content });
 });
 
 harness.put('/:slug/goal', async (c) => {
@@ -2767,7 +2794,7 @@ harness.put('/:slug/goal', async (c) => {
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({})) as { content?: string };
   if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  const dest = join(project.path, 'GOAL.md');
+  const dest = join(project.path, 'SPEC.md');
   const tmp = `${dest}.tmp.${Date.now()}`;
   await writeFile(tmp, body.content, 'utf8');
   await rename(tmp, dest);
@@ -3653,8 +3680,10 @@ harness.post('/:slug/resume', async (c) => {
 
 // ─── hooks (.harness/hooks/<name>.sh) ─────────────────────────────────
 
-const KNOWN_HOOKS = ['pre-worker', 'post-worker', 'pre-validator', 'post-validator', 'on-escalate', 'on-feature-passed', 'on-feature-failing'] as const;
-type HookName = (typeof KNOWN_HOOKS)[number];
+// Hook list comes from getKnownHooks() in lib/known-hooks.ts, which
+// greps `run_hook <name>` invocations out of run.sh. The script is the
+// source of truth — the UI fetches hook names via GET /:slug/hooks
+// rather than maintaining a parallel client copy.
 
 function hookPath(project: ProjectEntry, name: string): string {
   return join(harnessDir(project), 'hooks', `${name}.sh`);
@@ -3663,7 +3692,7 @@ function hookPath(project: ProjectEntry, name: string): string {
 harness.get('/:slug/hooks', (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const hooks = KNOWN_HOOKS.map((name) => {
+  const hooks = getKnownHooks().map((name) => {
     const path = hookPath(project, name);
     let exists = false;
     let executable = false;
@@ -3683,7 +3712,7 @@ harness.put('/:slug/hooks/:name', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = c.req.param('name');
-  if (!(KNOWN_HOOKS as readonly string[]).includes(name)) {
+  if (!getKnownHooks().includes(name)) {
     return c.json({ error: `unknown hook: ${name}` }, 400);
   }
   const body = await c.req.json() as { content?: string };
@@ -3704,7 +3733,7 @@ harness.delete('/:slug/hooks/:name', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = c.req.param('name');
-  if (!(KNOWN_HOOKS as readonly string[]).includes(name)) {
+  if (!getKnownHooks().includes(name)) {
     return c.json({ error: `unknown hook: ${name}` }, 400);
   }
   try {
@@ -4875,6 +4904,12 @@ const MEMORY_MAP: MemoryFileMeta[] = [
   { path: '.harness/brainstorm.md',               purpose: 'Freeform user brainstorm',                 writtenBy: ['human'],                     readBy: [],                                              tier: 'green',  language: 'markdown', optional: true },
 ];
 
+// Non-role attributions allowed in MEMORY_MAP.writtenBy / readBy. Anything
+// else must be a real role (i.e. have a prompt file on disk) or the
+// operator refuses to boot. The actual fail-closed check runs after
+// getKnownRoles() is defined further down the file.
+const MEMORY_ATTRIBUTION_META = new Set(['human', 'all', 'run.sh', 'UI']);
+
 function resolveMemoryPath(project: ProjectEntry, rel: string): { abs: string } | null {
   // Sanitize: normalize, reject .., only allow within projectPath
   const normalized = rel.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\/+/, '');
@@ -5160,15 +5195,33 @@ harness.post('/:slug/supervisor-notes/append', async (c) => {
 });
 
 // ─── Per-project prompt overrides (.harness/prompts/<role>.md) ──────
-// Known roles (matches ~/autonomous-harness/prompts/ + the architect added
-// by Paperclip agents). The UI surfaces this set.
+// Role list lives in lib/known-roles.ts (single source of truth, used
+// by every server-side surface that validates a role name).
 
-const KNOWN_ROLES = [
-  'scoper', 'worker', 'validator', 'orchestrator',
-  'curator', 'architect', 'documenter', 'supervisor',
-  'reviewer', 'debugger', 'crosscheck', 'ui-qa',
-  'expert', 'feedback',
-];
+// Fail-closed guard: every role mentioned in MEMORY_MAP.writtenBy/readBy
+// must either be a real role (prompt file on disk) or a meta-actor in
+// MEMORY_ATTRIBUTION_META. Otherwise the operator refuses to boot —
+// drift can never reach the Memory tab silently.
+(function validateMemoryMapAttributions() {
+  const validRoles = new Set(getKnownRoles());
+  const offenders: { path: string; field: 'writtenBy' | 'readBy'; role: string }[] = [];
+  for (const entry of MEMORY_MAP) {
+    for (const field of ['writtenBy', 'readBy'] as const) {
+      for (const role of entry[field]) {
+        if (validRoles.has(role) || MEMORY_ATTRIBUTION_META.has(role)) continue;
+        offenders.push({ path: entry.path, field, role });
+      }
+    }
+  }
+  if (offenders.length > 0) {
+    const lines = offenders.map((o) => `  - ${o.path} ${o.field}: '${o.role}'`).join('\n');
+    throw new Error(
+      `MEMORY_MAP references roles that don't exist on disk (${offenders.length} bad reference${offenders.length === 1 ? '' : 's'}):\n${lines}\n` +
+      `Either add the missing prompt file at libs/papercusp/packages/harness/prompts/<role>.md, ` +
+      `remove the attribution, or add the value to MEMORY_ATTRIBUTION_META if it's a non-role meta-actor.`,
+    );
+  }
+})();
 
 // Roles that should not appear in the chat-agent sidebar even though they
 // have prompt files. `feedback` is ephemeral (one conversation, then exit) —
@@ -5181,7 +5234,7 @@ function promptsDir(project: ProjectEntry): string {
 }
 
 function safeRole(role: string): string | null {
-  if (!KNOWN_ROLES.includes(role)) return null;
+  if (!getKnownRoles().includes(role)) return null;
   return role;
 }
 
@@ -5195,11 +5248,11 @@ harness.get('/:slug/prompts', (c) => {
       overrides = readdirSync(dir)
         .filter((f) => f.endsWith('.md'))
         .map((f) => f.replace(/\.md$/, ''))
-        .filter((r) => KNOWN_ROLES.includes(r))
+        .filter((r) => getKnownRoles().includes(r))
         .sort();
     }
   } catch {}
-  return c.json({ roles: KNOWN_ROLES, overrides });
+  return c.json({ roles: getKnownRoles(), overrides });
 });
 
 harness.get('/:slug/prompts/:role', (c) => {
