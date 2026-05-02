@@ -84,9 +84,14 @@ export async function deleteWorkspace(id: string): Promise<void> {
  * page so client-side state (cached fetches, plugin host snapshots in
  * the panels) doesn't lag behind.
  */
-export async function switchWorkspace(id: string): Promise<void> {
+export async function switchWorkspace(id: string, opts?: { resetTo?: string }): Promise<void> {
   const t = tauri();
   if (t) return t.invoke<void>('workspaces_switch', { id });
   await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
-  if (typeof window !== 'undefined') window.location.reload();
+  if (typeof window !== 'undefined') {
+    // Navigate to a clean URL so panel/modal/filter URL state from the
+    // previous workspace doesn't carry over (e.g. ?panel=experts pointing
+    // at a panel that doesn't exist in the new workspace).
+    window.location.href = opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`;
+  }
 }

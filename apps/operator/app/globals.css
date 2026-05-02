@@ -156,7 +156,7 @@ pre, .pc-code {
   padding-left: 16px;
   border-left: 1px solid rgba(125, 211, 252, 0.16);
   color: var(--fg-mute);
-  font-size: 12px;
+  font-size: 11pt;
   font-weight: 650;
   letter-spacing: 0.015em;
   line-height: 1.25;
@@ -1446,8 +1446,32 @@ p {
 .oracle-picker-item:hover { background: rgba(56, 189, 248, 0.10); }
 .oracle-picker-hint { font-size: 10px; color: var(--fg-mute); }
 
-/* Wide two-pane picker variant. */
-.oracle-picker-wide { min-width: 420px; max-height: 420px; padding: 0; gap: 0; }
+/* Wide single-pane picker variant. */
+.oracle-picker-wide {
+  min-width: 280px;
+  max-width: 320px;
+  max-height: 480px;
+  padding: 0;
+  gap: 0;
+  display: flex;
+  flex-direction: column;
+}
+.oracle-picker-list {
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  overflow-y: auto; scrollbar-width: thin; min-height: 0; flex: 1;
+}
+.oracle-picker-group { display: flex; flex-direction: column; }
+.oracle-picker-harness-row { display: flex; gap: 8px; }
+.oracle-picker-caret {
+  display: inline-block; width: 10px; opacity: 0.7; font-size: 10px;
+  flex-shrink: 0;
+}
+.oracle-picker-roles {
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 2px 0 4px 22px; border-left: 1px solid var(--border);
+  margin-left: 14px;
+}
+.oracle-picker-role-row { font-size: 12px; padding: 4px 8px; opacity: 0.92; }
 .oracle-picker-search {
   padding: 8px; border-bottom: 1px solid var(--border); background: rgba(0, 0, 0, 0.18);
 }

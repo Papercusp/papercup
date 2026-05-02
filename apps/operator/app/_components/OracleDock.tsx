@@ -66,6 +66,7 @@ type AgentRole = typeof AGENT_ROLES[number];
 
 type ChatTarget =
   | { kind: 'oracle' }
+  | { kind: 'support' }
   | { kind: 'agent'; slug: string; role: AgentRole };
 
 interface ChatTab {
@@ -75,15 +76,29 @@ interface ChatTab {
 }
 
 const ORACLE_TARGET: ChatTarget = { kind: 'oracle' };
+const SUPPORT_TARGET: ChatTarget = { kind: 'support' };
+
+// Chatwoot widget URL — same as the SDK iframe target. Mirrors the
+// defaults in ChatwootWidget.tsx; override via env at deploy time.
+const CHATWOOT_BASE_URL =
+  process.env.NEXT_PUBLIC_CHATWOOT_BASE_URL ?? 'https://chat.papercupai.com';
+const CHATWOOT_WEBSITE_TOKEN =
+  process.env.NEXT_PUBLIC_CHATWOOT_WEBSITE_TOKEN ?? 'CT5CTToo11YtPN3CVkhvbFs9';
 
 function targetLabel(t: ChatTarget): string {
-  return t.kind === 'oracle' ? 'Oracle' : t.role;
+  if (t.kind === 'oracle') return 'Oracle';
+  if (t.kind === 'support') return 'Support';
+  return t.role;
 }
 
-// Title shown in the tab strip — tab disambiguates same-role tabs across
-// different harnesses by appending a short slug suffix.
-function tabTitle(t: ChatTarget, allTabs: ChatTab[]): string {
+// Title shown in the tab strip. Agents from a different harness than the
+// current page get prefixed with the harness slug so users can tell which
+// crew they're talking to. Same-role tabs within one harness still get
+// disambiguated by a short slug suffix.
+function tabTitle(t: ChatTarget, allTabs: ChatTab[], currentSlug: string | null): string {
   if (t.kind === 'oracle') return 'Oracle';
+  if (t.kind === 'support') return 'Support';
+  if (t.slug !== currentSlug) return `${t.slug}/${t.role}`;
   const sameRole = allTabs.filter((x) => x.target.kind === 'agent' && x.target.role === t.role);
   if (sameRole.length <= 1) return t.role;
   return `${t.role}·${t.slug.slice(0, 6)}`;
@@ -112,8 +127,9 @@ function clearChatId(slug: string, role: AgentRole) {
 
 // Derive the harness slug from the URL — "+" only exposes agent
 // targets when the user is on a route that's scoped to a harness.
-// Operator uses two patterns: path-based (/harness/<slug>/...) and
-// query-based (?harness=<slug> on the /pi route, ?slug=<slug> elsewhere).
+// Operator uses three patterns: path-based (/harness/<slug>/...),
+// query-based (?harness=<slug> on the /pi route, ?slug=<slug> elsewhere),
+// and the dashboard combobox which only writes to localStorage.
 function slugFromUrl(pathname: string | null, query: URLSearchParams | null): string | null {
   if (pathname) {
     const m = pathname.match(/^\/harness\/([^/]+)/);
@@ -123,7 +139,26 @@ function slugFromUrl(pathname: string | null, query: URLSearchParams | null): st
     const q = query.get('harness') ?? query.get('slug');
     if (q) return q;
   }
+  try {
+    const v = typeof window !== 'undefined' ? window.localStorage.getItem('harness.activeProject') : null;
+    if (v) return v;
+  } catch { /* ignore */ }
   return null;
+}
+
+// Test/smoke harnesses fill the registry; hide them from the picker so
+// the user only sees real ones. Tweak the patterns here when more
+// fixture-name conventions land.
+const TEST_HARNESS_PATTERNS = [
+  /^smoke[-_]/i,
+  /^v1[_-](test|e2e|final|fork)/i,
+  /^bclp[-_]/i,
+  /[-_]fork[-_]/i,
+  /^r30[-_]?test$/i,
+  /^test$/i,
+];
+function isTestHarness(slug: string): boolean {
+  return TEST_HARNESS_PATTERNS.some((re) => re.test(slug));
 }
 
 function defaultOracleTab(): ChatTab {
@@ -138,6 +173,10 @@ export function OracleDock() {
   const [tabs, setTabs] = useState<ChatTab[]>([]);
   const [activeId, setActiveId] = useState<string>('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [supportEverOpened, setSupportEverOpened] = useState(false);
+  const [pickerHarnesses, setPickerHarnesses] = useState<{ slug: string; harness_kind?: string }[] | null>(null);
+  const [pickerFocusSlug, setPickerFocusSlug] = useState<string | null>(null);
+  const [pickerSearch, setPickerSearch] = useState('');
   const [input, setInput] = useState('');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [busyMap, setBusyMap] = useState<Record<string, boolean>>({});
@@ -146,7 +185,59 @@ export function OracleDock() {
   const inFlightRef = useRef<Map<string, AbortController>>(new Map());
   const endRef = useRef<HTMLDivElement>(null);
 
-  const harnessSlug = slugFromUrl(pathname, searchParams);
+  // Re-evaluated on URL changes; also refreshed when the picker opens
+  // so the localStorage-backed dashboard combobox selection is picked up.
+  const [activeHarnessSlug, setActiveHarnessSlug] = useState<string | null>(null);
+  useEffect(() => {
+    setActiveHarnessSlug(slugFromUrl(pathname, searchParams));
+  }, [pathname, searchParams]);
+  const harnessSlug = activeHarnessSlug;
+
+  // Lazy-load harness list the first time the picker opens. Cached for
+  // the dock's lifetime; reopening the picker is instant after that.
+  useEffect(() => {
+    if (!pickerOpen || pickerHarnesses !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/harness/projects', { cache: 'no-store' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d: any = await r.json();
+        const list = Array.isArray(d?.projects)
+          ? (d.projects as any[]).map((p) => ({ slug: String(p.slug), harness_kind: p.harness_kind }))
+          : [];
+        if (!cancelled) setPickerHarnesses(list);
+      } catch {
+        if (!cancelled) setPickerHarnesses([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pickerOpen, pickerHarnesses]);
+
+  // When the picker opens, refresh the active harness from URL +
+  // localStorage and auto-expand it in the list.
+  useEffect(() => {
+    if (pickerOpen) {
+      const fresh = slugFromUrl(pathname, searchParams);
+      setActiveHarnessSlug(fresh);
+      setPickerFocusSlug(fresh ?? null);
+      setPickerSearch('');
+    }
+  }, [pickerOpen, pathname, searchParams]);
+
+  // Dismiss the picker on outside click. We attach to mousedown so closing
+  // wins the race against any stray click bubbling into the picker itself.
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target as Element | null;
+      if (!target) return;
+      if (target.closest('.oracle-picker') || target.closest('.oracle-tab-add')) return;
+      setPickerOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [pickerOpen]);
 
   const setTutorialActive = (v: boolean) => {
     setTutorialActiveState(v);
@@ -318,23 +409,25 @@ export function OracleDock() {
     });
   };
 
-  const openTab = (target: ChatTarget) => {
+  const openTab = useCallback((target: ChatTarget) => {
     setPickerOpen(false);
-    // Coalesce: if a tab for this exact target already exists, just activate it.
-    const existing = tabs.find((t) =>
-      t.target.kind === target.kind &&
-      (target.kind === 'oracle' ||
-        (t.target.kind === 'agent' && t.target.slug === target.slug && t.target.role === target.role))
-    );
-    if (existing) { setActiveId(existing.id); return; }
-    const fresh: ChatTab = {
-      id: newId(),
-      target,
-      messages: target.kind === 'oracle' ? [WELCOME] : [],
-    };
-    setTabs((prev) => [...prev, fresh]);
-    setActiveId(fresh.id);
-  };
+    setTabs((prev) => {
+      // Coalesce: if a tab for this exact target already exists, just activate it.
+      const existing = prev.find((t) =>
+        t.target.kind === target.kind &&
+        (target.kind === 'oracle' || target.kind === 'support' ||
+          (t.target.kind === 'agent' && t.target.slug === target.slug && t.target.role === target.role))
+      );
+      if (existing) { setActiveId(existing.id); return prev; }
+      const fresh: ChatTab = {
+        id: newId(),
+        target,
+        messages: target.kind === 'oracle' ? [WELCOME] : [],
+      };
+      setActiveId(fresh.id);
+      return [...prev, fresh];
+    });
+  }, []);
 
   // Resolve (creating if necessary) the agent-chat id for an agent tab.
   const ensureAgentChatId = async (slug: string, role: AgentRole): Promise<string> => {
@@ -416,7 +509,7 @@ export function OracleDock() {
           }),
           signal: ctrl.signal,
         });
-      } else {
+      } else if (tab.target.kind === 'agent') {
         const { slug, role } = tab.target;
         let chatId: string;
         try {
@@ -516,6 +609,30 @@ export function OracleDock() {
     }
   };
 
+  const supportActive = activeTab?.target.kind === 'support';
+
+  // Lazy-mount the Chatwoot iframe the first time Support is shown, then
+  // keep it mounted (display toggled) so the conversation isn't lost when
+  // the user switches tabs.
+  useEffect(() => {
+    if (supportActive && !supportEverOpened) setSupportEverOpened(true);
+  }, [supportActive, supportEverOpened]);
+
+  // Mounted-marker + event bridge so SupportChatButton (and anything else
+  // on the page) can pop open the Support tab without importing the dock.
+  useEffect(() => {
+    (window as unknown as { __papercuspDockMounted?: boolean }).__papercuspDockMounted = true;
+    const onOpenSupport = () => {
+      setOpen(true);
+      openTab(SUPPORT_TARGET);
+    };
+    window.addEventListener('papercusp:open-support', onOpenSupport);
+    return () => {
+      window.removeEventListener('papercusp:open-support', onOpenSupport);
+      (window as unknown as { __papercuspDockMounted?: boolean }).__papercuspDockMounted = false;
+    };
+  }, [openTab]);
+
   // ── Render ────────────────────────────────────────────────────────────
   if (tabs.length === 0) {
     // Pre-bootstrap; render only the FAB so we never flash an empty dock.
@@ -572,7 +689,7 @@ export function OracleDock() {
                   className={`oracle-tab${isActive ? ' is-active' : ''}`}
                   onClick={() => setActiveId(t.id)}
                 >
-                  <span className="oracle-tab-label">{tabTitle(t.target, tabs)}</span>
+                  <span className="oracle-tab-label">{tabTitle(t.target, tabs, harnessSlug)}</span>
                   {tabBusy && <span className="oracle-tab-dot oracle-tab-dot-busy" aria-label="thinking" />}
                   {!tabBusy && unread && <span className="oracle-tab-dot oracle-tab-dot-unread" aria-label="unread" />}
                   <button
@@ -593,38 +710,133 @@ export function OracleDock() {
                 title="New chat"
                 onClick={() => setPickerOpen((v) => !v)}
               >＋</button>
-              {pickerOpen && (
-                <div className="oracle-picker" role="menu" onMouseLeave={() => setPickerOpen(false)}>
-                  <button type="button" className="oracle-picker-item" onClick={() => openTab(ORACLE_TARGET)}>
-                    <strong>Oracle</strong>
-                    <span className="oracle-picker-hint">general help</span>
-                  </button>
-                  {harnessSlug ? (
-                    <>
-                      <div className="oracle-picker-section">{harnessSlug} agents</div>
-                      {AGENT_ROLES.map((role) => (
+              {pickerOpen && (() => {
+                const allHarnesses = pickerHarnesses ?? [];
+                const realHarnesses = allHarnesses.filter((h) => !isTestHarness(h.slug));
+                const sortedHarnesses = [...realHarnesses].sort((a, b) => {
+                  if (a.slug === harnessSlug) return -1;
+                  if (b.slug === harnessSlug) return 1;
+                  return a.slug.localeCompare(b.slug);
+                });
+                const q = pickerSearch.trim().toLowerCase();
+                const expandedSlug = pickerFocusSlug ?? harnessSlug ?? null;
+                // Search mode flattens to a single ranked list of matches.
+                const flatMatches: ChatTarget[] = [];
+                if (q) {
+                  if ('oracle'.includes(q)) flatMatches.push(ORACLE_TARGET);
+                  if ('support'.includes(q) || 'human'.includes(q) || 'help'.includes(q)) flatMatches.push(SUPPORT_TARGET);
+                  for (const h of sortedHarnesses) {
+                    for (const role of AGENT_ROLES) {
+                      const hay = `${h.slug}/${role}`;
+                      if (hay.toLowerCase().includes(q)) {
+                        flatMatches.push({ kind: 'agent', slug: h.slug, role });
+                      }
+                    }
+                  }
+                }
+                return (
+                  <div className="oracle-picker oracle-picker-wide" role="menu">
+                    <div className="oracle-picker-search">
+                      <input
+                        autoFocus
+                        type="text"
+                        value={pickerSearch}
+                        onChange={(e) => setPickerSearch(e.target.value)}
+                        placeholder="Search harness or role…"
+                      />
+                    </div>
+                    {q ? (
+                      <div className="oracle-picker-results">
+                        {flatMatches.length === 0 && (
+                          <div className="oracle-picker-section" style={{ opacity: 0.7 }}>No matches.</div>
+                        )}
+                        {flatMatches.map((t, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            className="oracle-picker-item"
+                            onClick={() => openTab(t)}
+                          >
+                            {t.kind === 'oracle'
+                              ? <><strong>Oracle</strong><span className="oracle-picker-hint">general help</span></>
+                              : t.kind === 'support'
+                                ? <><strong>Support</strong><span className="oracle-picker-hint">chat with a human</span></>
+                                : <><strong>{t.role}</strong><span className="oracle-picker-hint">{t.slug}</span></>}
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="oracle-picker-list">
                         <button
-                          key={role}
                           type="button"
-                          className="oracle-picker-item"
-                          onClick={() => openTab({ kind: 'agent', slug: harnessSlug, role })}
-                        >{role}</button>
-                      ))}
-                    </>
-                  ) : (
-                    <div className="oracle-picker-section" style={{ opacity: 0.7 }}>open a /harness/&lt;slug&gt; page to chat with agents</div>
-                  )}
-                </div>
-              )}
+                          className="oracle-picker-row"
+                          onClick={() => openTab(ORACLE_TARGET)}
+                        >
+                          <strong>Oracle</strong>
+                          <span className="oracle-picker-hint">general help</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="oracle-picker-row"
+                          onClick={() => openTab(SUPPORT_TARGET)}
+                        >
+                          <strong>Support</strong>
+                          <span className="oracle-picker-hint">chat with a human</span>
+                        </button>
+                        <div className="oracle-picker-section">Harnesses</div>
+                        {pickerHarnesses === null && (
+                          <div className="oracle-picker-section" style={{ opacity: 0.7 }}>Loading…</div>
+                        )}
+                        {pickerHarnesses !== null && sortedHarnesses.length === 0 && (
+                          <div className="oracle-picker-section" style={{ opacity: 0.7 }}>No harnesses.</div>
+                        )}
+                        {sortedHarnesses.map((h) => {
+                          const isExpanded = h.slug === expandedSlug;
+                          return (
+                            <div key={h.slug} className={`oracle-picker-group${isExpanded ? ' is-expanded' : ''}`}>
+                              <button
+                                type="button"
+                                className="oracle-picker-row oracle-picker-harness-row"
+                                aria-expanded={isExpanded}
+                                onClick={() => setPickerFocusSlug(isExpanded ? null : h.slug)}
+                              >
+                                <span className="oracle-picker-caret" aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
+                                <strong>{h.slug}</strong>
+                                {h.slug === harnessSlug && <span className="oracle-picker-hint">current</span>}
+                              </button>
+                              {isExpanded && (
+                                <div className="oracle-picker-roles">
+                                  {AGENT_ROLES.map((role) => (
+                                    <button
+                                      key={role}
+                                      type="button"
+                                      className="oracle-picker-row oracle-picker-role-row"
+                                      onClick={() => openTab({ kind: 'agent', slug: h.slug, role })}
+                                    >
+                                      {role}
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
-          <div className="oracle-body">
+          <div className="oracle-body" style={supportActive ? { display: 'none' } : undefined}>
             {active.messages.length === 0 ? (
               <div style={{ color: 'var(--fg-mute)', fontSize: 13, padding: 16, textAlign: 'center' }}>
                 {active.target.kind === 'oracle'
                   ? 'Ask me anything about Papercusp.'
-                  : `Send a message to the ${active.target.role}.`}
+                  : active.target.kind === 'support'
+                    ? 'Connecting you to a human…'
+                    : `Send a message to the ${active.target.role}.`}
               </div>
             ) : (
               active.messages.map((m, i) => (
@@ -653,17 +865,32 @@ export function OracleDock() {
             <div ref={endRef} />
           </div>
 
-          <form className="oracle-form" onSubmit={(e) => { e.preventDefault(); void send(active.id); }}>
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={activeBusy ? 'thinking…' : (active.target.kind === 'oracle' ? 'Ask the Oracle…' : `Message ${active.target.role}…`)}
-              disabled={activeBusy}
+          {/* Chatwoot widget rendered inline. Mounted lazily on first
+              Support activation, then kept mounted so the conversation
+              survives tab switches. The iframe handles its own input so
+              we suppress the native dock form for this tab. */}
+          {supportEverOpened && (
+            <iframe
+              className="oracle-chatwoot-frame"
+              src={`${CHATWOOT_BASE_URL}/widget?website_token=${encodeURIComponent(CHATWOOT_WEBSITE_TOKEN)}`}
+              title="Papercusp Support chat"
+              style={supportActive ? undefined : { display: 'none' }}
+              allow="clipboard-read; clipboard-write; microphone; camera"
             />
-            <button type="submit" disabled={activeBusy || !input.trim()} className="pc-button">
-              {activeBusy ? '…' : 'Send'}
-            </button>
-          </form>
+          )}
+          {!supportActive && (
+            <form className="oracle-form" onSubmit={(e) => { e.preventDefault(); void send(active.id); }}>
+              <input
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                placeholder={activeBusy ? 'thinking…' : (active.target.kind === 'agent' ? `Message ${active.target.role}…` : 'Ask the Oracle…')}
+                disabled={activeBusy}
+              />
+              <button type="submit" disabled={activeBusy || !input.trim()} className="pc-button">
+                {activeBusy ? '…' : 'Send'}
+              </button>
+            </form>
+          )}
         </div>
       )}
     </>

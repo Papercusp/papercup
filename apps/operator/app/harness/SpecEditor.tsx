@@ -221,7 +221,6 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
     >
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <strong style={{ color: '#e5e7eb' }}>Edit config — {slug}</strong>
           {onSettings && (
             <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>{tabMeta.path(projectPath)}</span>
           )}
@@ -258,12 +257,6 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
                 </Tooltip>
               </>
             )}
-            <button
-              onClick={onClose}
-              style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer' }}
-            >
-              close
-            </button>
           </div>
         </div>
 

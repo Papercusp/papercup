@@ -19,9 +19,9 @@ description: Runbook for partial scaffold failures (timeout, init failed, regist
 - **State**: SIGTERM → SIGKILL fired. Partial directory rolled back. Same as case 1.
 - **Recovery**: same as case 1. If the install is genuinely too slow (heavy `npm install`, `git clone`), re-publish the template with smaller dependencies, or move heavy work to the role's first iteration.
 
-### 3. SPEC.md / GOAL.md write failed
+### 3. SPEC.md write failed
 
-- **Symptom**: `internal { detail: "failed to write SPEC/GOAL: ..." }`.
+- **Symptom**: `internal { detail: "failed to write SPEC: ..." }`.
 - **State**: `papercusp init` succeeded, dir exists, registry has the row. Token + schema NOT yet written.
 - **Recovery**:
   ```bash

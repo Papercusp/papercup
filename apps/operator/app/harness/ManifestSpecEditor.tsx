@@ -136,7 +136,6 @@ export default function ManifestSpecEditor({
       }}
     >
       <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-        <strong style={{ color: '#e5e7eb' }}>Edit config — {slug}</strong>
         <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>
           {projectPath}/{activePath}
         </span>
@@ -163,7 +162,6 @@ export default function ManifestSpecEditor({
               style={{ background: dirty.length ? '#2563eb' : '#374151', color: 'white', border: 'none', borderRadius: 3, padding: '0.35rem 0.9rem', cursor: dirty.length ? 'pointer' : 'not-allowed', fontWeight: 600 }}
             >{saving ? 'saving…' : `save${dirty.length ? ` (${dirty.length})` : ''}`}</button>
           </Tooltip>
-          <button onClick={onClose} style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer' }}>close</button>
         </div>
       </div>
 

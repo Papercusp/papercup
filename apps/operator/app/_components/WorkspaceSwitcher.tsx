@@ -8,6 +8,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { useQueryState, parseAsString } from 'nuqs';
 import {
   Workspace,
   WorkspaceRegistry,
@@ -25,11 +26,18 @@ export default function WorkspaceSwitcher() {
   const [renameValue, setRenameValue] = useState('');
   const wrapRef = useRef<HTMLSpanElement | null>(null);
 
+  const [, setWsParam] = useQueryState('ws', parseAsString);
+
   useEffect(() => {
     listWorkspaces()
-      .then(setReg)
+      .then((r) => {
+        setReg(r);
+        // Mirror the active workspace into the URL so refreshes/share-links
+        // surface which workspace this view belongs to.
+        if (r?.current) void setWsParam(r.current);
+      })
       .catch((e) => toast.error(`workspaces: ${e?.message ?? e}`));
-  }, []);
+  }, [setWsParam]);
 
   useEffect(() => {
     if (!open) return;
@@ -68,7 +76,7 @@ export default function WorkspaceSwitcher() {
       return;
     }
     try {
-      await switchWorkspace(id);
+      await switchWorkspace(id, { resetTo: `/harness?ws=${encodeURIComponent(id)}` });
       // The promise above never actually resolves — the Tauri shell calls
       // app.restart() before responding. If we get here, the call returned
       // before the restart took effect; do nothing (the reload is coming).

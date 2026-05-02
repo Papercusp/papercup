@@ -299,7 +299,7 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
     return <div className="h-empty"><span style={{ color: 'var(--bad)' }}>{error}</span></div>;
   }
   if (!issues) {
-    return <div className="h-empty"><Loader2 size={16} className="h-empty-icon h-spin" /><span>loading issues…</span></div>;
+    return <div className="h-empty"><span>No issues.</span></div>;
   }
 
   return (

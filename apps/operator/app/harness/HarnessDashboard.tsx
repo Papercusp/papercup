@@ -584,6 +584,26 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
   const [busy, setBusy] = useState<string | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
+  // Marketplace catalog (plugins not yet installed in this workspace) —
+  // fetched lazily on first popover open so the user can install + enable
+  // in one click without leaving the dashboard.
+  const [marketplace, setMarketplace] = useState<Array<{ name: string; version?: string; description?: string; icon?: string | null }> | null>(null);
+  const [marketplaceError, setMarketplaceError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open || marketplace !== null) return;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 8000);
+    fetch('/api/marketplace/catalog', { cache: 'no-store', signal: ac.signal })
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d) => {
+        const items = Array.isArray(d?.catalog) ? d.catalog : [];
+        setMarketplace(items.filter((m: { kind?: string }) => (m.kind ?? 'template') === 'plugin'));
+        setMarketplaceError(null);
+      })
+      .catch((e) => setMarketplaceError(e?.name === 'AbortError' ? 'Marketplace timed out' : String(e?.message ?? e)))
+      .finally(() => clearTimeout(t));
+    return () => { clearTimeout(t); ac.abort(); };
+  }, [open, marketplace]);
 
   useEffect(() => {
     if (!open || !btnRef.current) return;
@@ -624,6 +644,47 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
     }),
     [installed, alreadyEnabled],
   );
+  const marketplaceCandidates = useMemo(
+    () => (marketplace ?? []).filter((m) => {
+      if (alreadyEnabled.has(m.name)) return false;
+      return !(installed ?? []).some((p) => p.name === m.name);
+    }),
+    [marketplace, installed, alreadyEnabled],
+  );
+
+  async function installAndEnable(name: string) {
+    if (!activeSlug) return;
+    setBusy(name);
+    try {
+      const r = await fetch('/api/marketplace/install-plugin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: name }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        toast.error(`Install failed: ${name}`, { description: d.log?.slice(-300) ?? d.error ?? 'unknown' });
+        return;
+      }
+      const er = await fetch('/api/plugins/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug: name, harnesses: [activeSlug] }),
+      });
+      const ed = await er.json();
+      if (!er.ok || !ed.ok) {
+        toast.error(`Enable failed: ${name}`, { description: ed.results?.[0]?.log?.slice(-300) ?? ed.error ?? 'installed but not enabled' });
+        return;
+      }
+      toast.success(`${name} installed and enabled in ${activeSlug}`);
+      setOpen(false);
+      onEnabled();
+    } catch (e: any) {
+      toast.error(`Install failed: ${name}`, { description: String(e?.message ?? e) });
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function enable(plugin: InstalledPluginInfo) {
     if (!activeSlug) return;
@@ -714,49 +775,100 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
             </div>
           ) : installed === null ? (
             <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>
-          ) : candidates.length === 0 ? (
-            <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
-              {(installed?.length ?? 0) === 0
-                ? <>No plugins installed. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse plugins →</a></>
-                : <>All installed plugins are already enabled here. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse marketplace →</a></>}
-            </div>
           ) : (
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 320, overflowY: 'auto' }}>
+            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 360, overflowY: 'auto' }}>
+              {candidates.length > 0 && (
+                <li style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-3)', padding: '6px 10px 2px' }}>Installed</li>
+              )}
               {candidates.map((p) => {
                 const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
                 return (
-                  <li key={p.name}>
+                  <li key={`installed:${p.name}`}>
                     <Tooltip label="Enable this plugin in the active harness">
                       <button
-                      type="button"
-                      onClick={() => enable(p)}
-                      disabled={busy !== null}
-                      style={{
-                        width: '100%', textAlign: 'left', padding: '8px 10px',
-                        background: 'transparent', border: 'none', cursor: 'pointer',
-                        color: 'var(--text-1)', fontSize: 12, borderRadius: 4,
-                        display: 'flex', alignItems: 'flex-start', gap: 10,
-                      }}
-                      onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-2)')}
-                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                    >
-                      <span style={{
-                        flex: '0 0 auto', width: 22, height: 22, borderRadius: 4,
-                        background: 'var(--bg-2)', display: 'inline-flex',
-                        alignItems: 'center', justifyContent: 'center',
-                        color: '#a5b4fc',
-                      }}>
-                        <PluginIcon name={tabIcon} size={14} />
-                      </span>
-                      <span style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 500 }}>{p.name}{p.version ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> @{p.version}</span> : null}</div>
-                        {p.description && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{p.description}</div>}
-                      </span>
-                    </button>
+                        type="button"
+                        onClick={() => enable(p)}
+                        disabled={busy !== null}
+                        style={{
+                          width: '100%', textAlign: 'left', padding: '8px 10px',
+                          background: 'transparent', border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
+                          color: 'var(--text-1)', fontSize: 12, borderRadius: 4,
+                          display: 'flex', alignItems: 'flex-start', gap: 10,
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-2)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <span style={{
+                          flex: '0 0 auto', width: 22, height: 22, borderRadius: 4,
+                          background: 'var(--bg-2)', display: 'inline-flex',
+                          alignItems: 'center', justifyContent: 'center',
+                          color: '#a5b4fc',
+                        }}>
+                          <PluginIcon name={tabIcon} size={14} />
+                        </span>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 500 }}>{p.name}{p.version ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> @{p.version}</span> : null}</div>
+                          {p.description && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{p.description}</div>}
+                        </span>
+                      </button>
                     </Tooltip>
                   </li>
                 );
               })}
+              {marketplace === null && marketplaceError === null && (
+                <li style={{ padding: '8px 10px', fontSize: 11, color: 'var(--text-3)' }}>Loading marketplace…</li>
+              )}
+              {marketplaceCandidates.length > 0 && (
+                <li style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-3)', padding: '10px 10px 2px', borderTop: candidates.length > 0 ? '1px solid var(--border)' : 'none', marginTop: candidates.length > 0 ? 4 : 0 }}>Marketplace</li>
+              )}
+              {marketplaceCandidates.map((m) => {
+                const isBusy = busy === m.name;
+                return (
+                  <li key={`market:${m.name}`}>
+                    <Tooltip label="Install from marketplace and enable in the active harness">
+                      <button
+                        type="button"
+                        onClick={() => void installAndEnable(m.name)}
+                        disabled={busy !== null}
+                        style={{
+                          width: '100%', textAlign: 'left', padding: '8px 10px',
+                          background: 'transparent', border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
+                          color: 'var(--text-1)', fontSize: 12, borderRadius: 4,
+                          display: 'flex', alignItems: 'flex-start', gap: 10,
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg-2)')}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      >
+                        <span style={{
+                          flex: '0 0 auto', width: 22, height: 22, borderRadius: 4,
+                          background: 'var(--bg-2)', display: 'inline-flex',
+                          alignItems: 'center', justifyContent: 'center',
+                          color: '#a5b4fc',
+                        }}>
+                          <PluginIcon name={m.icon ?? null} size={14} />
+                        </span>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <span>{m.name}{m.version ? <span style={{ color: 'var(--text-3)', fontWeight: 400 }}> @{m.version}</span> : null}</span>
+                            <span style={{ fontSize: 9, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em', padding: '1px 5px', borderRadius: 3, background: 'rgba(99, 102, 241, 0.15)', color: '#a5b4fc' }}>{isBusy ? 'installing…' : 'install'}</span>
+                          </div>
+                          {m.description && <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 2, lineHeight: 1.4 }}>{m.description}</div>}
+                        </span>
+                      </button>
+                    </Tooltip>
+                  </li>
+                );
+              })}
+              {candidates.length === 0 && marketplaceCandidates.length === 0 && marketplace !== null && (
+                <li style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>
+                  {(installed?.length ?? 0) === 0
+                    ? <>Marketplace catalog empty. {marketplaceError && <span style={{ color: '#fca5a5' }}>({marketplaceError})</span>} <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse →</a></>
+                    : <>All installed plugins are already enabled here. <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>Browse marketplace →</a></>}
+                </li>
+              )}
+              {marketplaceError && marketplace === null && (
+                <li style={{ padding: '8px 10px', fontSize: 11, color: '#fca5a5' }}>Marketplace unreachable: {marketplaceError}</li>
+              )}
             </ul>
           )}
         </div>
@@ -2068,6 +2180,37 @@ export default function HarnessDashboard() {
   const [activePanel, setActivePanel] = useQueryState('panel', parseAsString.withDefault('dashboard'));
   const [configPane, setConfigPane] = useQueryState('configPane', parseAsString.withDefault('harness'));
   const [topChromeCollapsed, setTopChromeCollapsed] = useQueryState('chromeCollapsed', parseAsBoolean.withDefault(false));
+
+  /**
+   * Empty-SPEC bootstrap: when the active harness has no SPEC.md (or just
+   * whitespace), the harness has nothing to plan against — auto-route the
+   * user to Config → Harness → SPEC.md so they fill it in. One-shot per
+   * slug; we don't keep re-routing if they intentionally leave the editor.
+   */
+  const [specPromptShownFor, setSpecPromptShownFor] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeSlug || specPromptShownFor === activeSlug) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/harness/${encodeURIComponent(activeSlug)}/spec`, { cache: 'no-store' });
+        if (!r.ok) return;
+        const d = await r.json() as { spec?: string | null };
+        if (cancelled) return;
+        const empty = !d.spec || !d.spec.trim();
+        setSpecPromptShownFor(activeSlug);
+        if (empty) {
+          void setActivePanel('config');
+          void setConfigPane('harness');
+          toast.message(`Define ${activeSlug}'s goal`, {
+            description: 'SPEC.md is empty — describe what this project should accomplish so the harness can start planning.',
+            duration: 8000,
+          });
+        }
+      } catch { /* network blip — try again next slug change */ }
+    })();
+    return () => { cancelled = true; };
+  }, [activeSlug, specPromptShownFor, setActivePanel, setConfigPane]);
   /**
    * Map of pluginName → list of `required` field names that are absent
    * or empty in the user's per-harness config. Drives the red-tint on
@@ -2674,7 +2817,6 @@ export default function HarnessDashboard() {
 
   const recentAgentsContent = agents.length === 0 ? (
     <div className="h-empty">
-      <Loader2 size={20} className="h-empty-icon h-spin" />
       <span>No agent runs yet.</span>
     </div>
   ) : (
@@ -3059,7 +3201,7 @@ export default function HarnessDashboard() {
               <Lightbulb size={13} /> brainstorm
             </Tabs.Trigger>
           </Tooltip>
-          <Tooltip label={activeSlug ? `Product proposals — scope expansion from GOAL.md${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
+          <Tooltip label={activeSlug ? `Product proposals — scope expansion from SPEC.md${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
             <Tabs.Trigger value="proposals" className="h-tab" disabled={!activeSlug}>
               🪄 proposals
               {pendingProposals > 0 && <span className="h-tab-count">{pendingProposals}</span>}
