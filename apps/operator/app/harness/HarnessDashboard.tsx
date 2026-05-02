@@ -3273,7 +3273,20 @@ export default function HarnessDashboard() {
 
               <div className="h-dashboard-panel-anchor" data-dashboard-panel="logs" tabIndex={-1}>
                 <Panel title="run.log" count="live">
-                <LogView events={logEvents} contextId={activeSlug ?? undefined} />
+                <LogView
+                  events={logEvents}
+                  contextId={activeSlug ?? undefined}
+                  onLoadOlder={async (before) => {
+                    if (!activeSlug) return { hasMore: false };
+                    const r = await fetch(
+                      `/api/harness/${activeSlug}/log/history?before=${encodeURIComponent(before)}&limit=500`,
+                    );
+                    if (!r.ok) throw new Error(`history fetch ${r.status}`);
+                    const d = await r.json() as { events: import('@restart/ui-primitives').LogEvent[]; hasMore: boolean };
+                    setLogEvents((prev) => [...d.events, ...prev]);
+                    return { hasMore: d.hasMore };
+                  }}
+                />
               </Panel>
               </div>
 
@@ -3359,7 +3372,20 @@ export default function HarnessDashboard() {
                   <RPanel defaultSize="50%" minSize="20%">
                     <div className="h-dashboard-panel-anchor" data-dashboard-panel="logs" tabIndex={-1}>
                       <Panel title="run.log" count="live">
-                        <LogView events={logEvents} contextId={activeSlug ?? undefined} />
+                        <LogView
+                          events={logEvents}
+                          contextId={activeSlug ?? undefined}
+                          onLoadOlder={async (before) => {
+                            if (!activeSlug) return { hasMore: false };
+                            const r = await fetch(
+                              `/api/harness/${activeSlug}/log/history?before=${encodeURIComponent(before)}&limit=500`,
+                            );
+                            if (!r.ok) throw new Error(`history fetch ${r.status}`);
+                            const d = await r.json() as { events: import('@restart/ui-primitives').LogEvent[]; hasMore: boolean };
+                            setLogEvents((prev) => [...d.events, ...prev]);
+                            return { hasMore: d.hasMore };
+                          }}
+                        />
                       </Panel>
                     </div>
                   </RPanel>

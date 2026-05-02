@@ -1313,6 +1313,77 @@ harness.get('/:slug/stream', (c) => {
 // Old `/:slug/stream` stays around for any external consumers; the
 // operator UI migrates to this endpoint.
 
+/**
+ * Paginated read into older log history. Reads run.log.jsonl plus its
+ * rotated .N.gz peers, returns the chunk of `limit` events ending at
+ * the given `before` timestamp (or the latest in current when omitted).
+ *
+ * Used by the LogView's "load more" button to backfill older events that
+ * fell outside the SSE backfill window or live in rotations.
+ *
+ * Query: ?before=<ISO ts>&limit=N (default 500, capped at 5000).
+ */
+harness.get('/:slug/log/history', async (c) => {
+  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const before = c.req.query('before') || null;
+  const limit = Math.min(Math.max(parseInt(c.req.query('limit') ?? '500', 10) || 500, 1), 5000);
+  const logsDir = join(harnessDir(project), 'logs');
+
+  // Read the current run.log.jsonl + every rotated .N.gz, parse each
+  // line into a LogEvent, sort descending by ts, slice the window.
+  // O(n) over the union — fine for the 50 MB cap.
+  const events: Array<{ ts: string; raw: string }> = [];
+  const fs = require('node:fs') as typeof import('node:fs');
+  const zlib = require('node:zlib') as typeof import('node:zlib');
+
+  const sources: Array<{ path: string; gz: boolean }> = [];
+  if (fs.existsSync(join(logsDir, 'run.log.jsonl'))) {
+    sources.push({ path: join(logsDir, 'run.log.jsonl'), gz: false });
+  }
+  for (let i = 1; i <= 20; i++) {
+    const p = join(logsDir, `run.log.jsonl.${i}.gz`);
+    if (fs.existsSync(p)) sources.push({ path: p, gz: true });
+  }
+
+  for (const src of sources) {
+    let content: string;
+    try {
+      const buf = fs.readFileSync(src.path);
+      content = src.gz ? zlib.gunzipSync(buf).toString('utf8') : buf.toString('utf8');
+    } catch {
+      continue;
+    }
+    for (const line of content.split('\n')) {
+      if (!line.trim()) continue;
+      // Cheap ts extraction without full JSON parse — saves CPU on the 50 MB scan.
+      const m = line.match(/"ts":"([^"]+)"/);
+      if (!m) continue;
+      events.push({ ts: m[1], raw: line });
+    }
+  }
+  events.sort((a, b) => b.ts.localeCompare(a.ts));
+
+  const filtered = before
+    ? events.filter((e) => e.ts < before)
+    : events;
+  const slice = filtered.slice(0, limit).reverse(); // ascending for the UI prepend
+
+  // Parse the slice fully now that we've scoped it.
+  const parsed: unknown[] = [];
+  for (const e of slice) {
+    try { parsed.push(JSON.parse(e.raw)); } catch { /* skip malformed */ }
+  }
+
+  return c.json({
+    events: parsed,
+    hasMore: filtered.length > limit,
+    oldest: parsed[0] && typeof (parsed[0] as { ts?: string }).ts === 'string'
+      ? (parsed[0] as { ts: string }).ts
+      : null,
+  });
+});
+
 harness.get('/:slug/log/stream', (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
