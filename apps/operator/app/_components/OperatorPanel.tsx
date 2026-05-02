@@ -32,20 +32,34 @@ const ICON_GLYPH: Record<IconState, string> = {
   'awaiting-input': '◆',
 };
 
+interface ProvenanceFlags {
+  tierMismatch?: boolean;
+  capabilityUnknown?: boolean;
+  oversizedTitle?: boolean;
+  oversizedWhy?: boolean;
+}
+
 interface ParsedSuggestion {
+  id: string;
   title: string;
   why: string;
-  action: 'send_directive' | 'open' | 'draft' | 'advise';
-  target_harness: string | null;
-  directive_kind: 'Directive' | 'Decision' | 'Priority' | null;
-  directive_subject: string;
-  directive_body: string;
-  auto_dispatch: boolean;
   reason: string;
+  tier: 'low' | 'medium' | 'high';
+  actualTier: 'low' | 'medium' | 'high';
+  auto_dispatch: boolean;
+  provenanceFlags: ProvenanceFlags;
+  action: 'send_directive' | 'navigate' | 'inform';
+  // Discriminated fields (only populated for matching action variant):
+  capability?: 'messages:write' | null;
+  target_harness?: string;
+  directive_kind?: 'Directive' | 'Decision' | 'Priority';
+  directive_subject?: string;
+  directive_body?: string;
+  target_resource?: string;
+  body?: string;
 }
 
 interface SuggestionCard extends ParsedSuggestion {
-  id: string;
   status: 'pending' | 'dispatched' | 'dismissed' | 'failed';
   failureReason?: string;
 }
@@ -212,10 +226,16 @@ export function OperatorPanel(): JSX.Element | null {
     es.addEventListener('suggestion', (ev: MessageEvent) => {
       try {
         const s = JSON.parse(ev.data) as ParsedSuggestion;
-        setSuggestions((prev) => [
-          ...prev,
-          { ...s, id: `${prev.length}-${Date.now()}`, status: 'pending' },
-        ]);
+        setSuggestions((prev) => {
+          // Server emits stable ids; supersede on collision.
+          const idx = prev.findIndex((c) => c.id === s.id);
+          if (idx >= 0) {
+            const next = prev.slice();
+            next[idx] = { ...prev[idx], ...s, status: prev[idx].status };
+            return next;
+          }
+          return [...prev, { ...s, status: 'pending' }];
+        });
         // Voice mode: speak the suggestion title + why-line.
         if (getVoiceState().mode !== 'off') {
           speak(`${s.title}. ${s.why}`, 'system:operator');
@@ -290,16 +310,12 @@ export function OperatorPanel(): JSX.Element | null {
     setState((s) => ({ ...s, iconState: 'acting' }));
     try {
       if (card.action !== 'send_directive' || !card.target_harness) {
-        // Other action types are advisory; mark dispatched and exit.
+        // navigate / inform are advisory; mark dispatched and exit.
         return;
       }
       const r = await fetch('/api/admin/execute-action', {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          // Bearer is set server-side via the operator's stored credential
-          // when operator is the caller; for this UI we rely on session auth.
-        },
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           op: 'send_message',
           to: [card.target_harness],
@@ -480,17 +496,46 @@ export function OperatorPanel(): JSX.Element | null {
                     <span style={{ fontSize: 11, opacity: 0.6 }}>
                       {s.action}
                       {s.target_harness ? ` → ${s.target_harness}` : ''}
+                      {' · '}
+                      <span title={`tier=${s.actualTier}`}>
+                        {s.actualTier}
+                      </span>
                       {s.auto_dispatch ? ' · auto' : ' · ask first'}
+                      {s.provenanceFlags?.tierMismatch && (
+                        <span title="LLM-claimed tier overridden by substrate" style={{ color: '#a04' }}>
+                          {' · ⚠tier'}
+                        </span>
+                      )}
+                      {s.provenanceFlags?.capabilityUnknown && (
+                        <span title="Unknown capability — forced high (fail-safe)" style={{ color: '#a04' }}>
+                          {' · ⚠cap'}
+                        </span>
+                      )}
                     </span>
                   </div>
                   <p style={{ fontSize: 13, opacity: 0.8, margin: '6px 0' }}>{s.why}</p>
-                  {s.directive_body && (
+                  {s.action === 'send_directive' && s.directive_body && (
                     <details style={{ fontSize: 12, opacity: 0.7 }}>
                       <summary>Directive body</summary>
                       <div style={{ marginTop: 4 }}>
                         <MarkdownPreview value={s.directive_body} outline="left" />
                       </div>
                     </details>
+                  )}
+                  {s.action === 'inform' && s.body && (
+                    <div style={{ fontSize: 12, marginTop: 4 }}>
+                      <MarkdownPreview value={s.body} outline="left" />
+                    </div>
+                  )}
+                  {s.action === 'navigate' && s.target_resource && (
+                    <a
+                      href={s.target_resource}
+                      style={{ fontSize: 12 }}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open {s.target_resource}
+                    </a>
                   )}
                   <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
                     {s.action === 'send_directive' && s.status === 'pending' && (

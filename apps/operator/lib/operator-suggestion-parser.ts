@@ -1,33 +1,38 @@
-/**
- * Parses Operator's response stream for `<suggestion>` blocks.
- *
- * Operator emits one or more <suggestion>...</suggestion> blocks in its
- * final response. Each block contains a JSON object matching the schema
- * documented in `operator-prompt.ts`. This parser is tolerant of
- * surrounding prose and malformed blocks (skipped with a warning).
- */
-
-export interface ParsedSuggestion {
-  title: string;
-  why: string;
-  action: 'send_directive' | 'open' | 'draft' | 'advise';
-  target_harness: string | null;
-  directive_kind: 'Directive' | 'Decision' | 'Priority' | null;
-  directive_subject: string;
-  directive_body: string;
-  auto_dispatch: boolean;
-  reason: string;
-}
-
-export interface ParseResult {
-  suggestions: ParsedSuggestion[];
-  parseErrors: string[];
-}
+import {
+  SuggestionSchema,
+  clampSuggestion,
+  resolveActualTier,
+  type EnrichedSuggestion,
+  type ProvenanceFlags,
+  type Suggestion,
+} from './operator-suggestion-schema';
+import type { OperatorPreferences } from './operator-preferences';
 
 const SUGGESTION_RE = /<suggestion>\s*([\s\S]*?)\s*<\/suggestion>/gi;
 
-export function parseSuggestions(text: string): ParseResult {
-  const result: ParseResult = { suggestions: [], parseErrors: [] };
+export interface ParsedBlock {
+  /** Server-enriched, lifecycle-ready suggestion. */
+  suggestion: EnrichedSuggestion;
+}
+
+export interface ParseResult {
+  blocks: ParsedBlock[];
+  parseErrors: string[];
+}
+
+/**
+ * Parse `<suggestion>` blocks out of the LLM's stream, validate via Zod,
+ * resolve authoritative tier from the substrate table, and derive
+ * `auto_dispatch` from `(actualTier, preferences)`.
+ *
+ * Malformed blocks are surfaced as `parseErrors`; the rest stream through.
+ */
+export function parseSuggestions(
+  text: string,
+  preferences: OperatorPreferences,
+): ParseResult {
+  const result: ParseResult = { blocks: [], parseErrors: [] };
+  const seenIds = new Set<string>();
   for (const match of text.matchAll(SUGGESTION_RE)) {
     const raw = match[1];
     if (!raw) continue;
@@ -40,34 +45,63 @@ export function parseSuggestions(text: string): ParseResult {
       );
       continue;
     }
-    if (!isParsedSuggestion(json)) {
+    const validated = SuggestionSchema.safeParse(json);
+    if (!validated.success) {
       result.parseErrors.push(
-        `block did not match schema: ${JSON.stringify(json).slice(0, 120)}…`,
+        `schema mismatch: ${validated.error.issues
+          .map((i) => `${i.path.join('.')}: ${i.message}`)
+          .join('; ')}`,
       );
       continue;
     }
-    if (json.reason && json.reason.length < 10) {
-      result.parseErrors.push(`suggestion reason too short (<10 chars); skipping`);
-      continue;
-    }
-    result.suggestions.push(json);
+    const enriched = enrich(validated.data, preferences);
+    if (seenIds.has(enriched.raw.id)) continue; // de-dup within one scan
+    seenIds.add(enriched.raw.id);
+    result.blocks.push({ suggestion: enriched });
   }
   return result;
 }
 
-function isParsedSuggestion(x: unknown): x is ParsedSuggestion {
-  if (!x || typeof x !== 'object') return false;
-  const o = x as Record<string, unknown>;
-  return (
-    typeof o.title === 'string' &&
-    typeof o.why === 'string' &&
-    typeof o.action === 'string' &&
-    ['send_directive', 'open', 'draft', 'advise'].includes(o.action as string) &&
-    (o.target_harness === null || typeof o.target_harness === 'string') &&
-    (o.directive_kind === null || typeof o.directive_kind === 'string') &&
-    typeof o.directive_subject === 'string' &&
-    typeof o.directive_body === 'string' &&
-    typeof o.auto_dispatch === 'boolean' &&
-    typeof o.reason === 'string'
+/**
+ * Lift a Zod-validated suggestion into the enriched form the panel
+ * reducer consumes: clamp oversized strings, resolve authoritative tier,
+ * derive `auto_dispatch`, attach provenance flags.
+ */
+export function enrich(
+  raw: Suggestion,
+  preferences: OperatorPreferences,
+): EnrichedSuggestion {
+  const clamp = clampSuggestion(raw);
+  const tierResult = resolveActualTier(clamp.s);
+  const provenanceFlags: ProvenanceFlags = {};
+  if (tierResult.tier !== clamp.s.tier) provenanceFlags.tierMismatch = true;
+  if (tierResult.capabilityUnknown) provenanceFlags.capabilityUnknown = true;
+  if (clamp.oversizedTitle) provenanceFlags.oversizedTitle = true;
+  if (clamp.oversizedWhy) provenanceFlags.oversizedWhy = true;
+  const auto_dispatch = deriveAutoDispatch(clamp.s, tierResult.tier, preferences);
+  return {
+    raw: clamp.s,
+    actualTier: tierResult.tier,
+    auto_dispatch,
+    provenanceFlags,
+  };
+}
+
+/**
+ * Single source of truth for `auto_dispatch`:
+ *   tier=low     → true
+ *   tier=medium  → true ONLY if a standing approval matches
+ *   tier=high    → false always
+ */
+export function deriveAutoDispatch(
+  s: Suggestion,
+  actualTier: 'low' | 'medium' | 'high',
+  preferences: OperatorPreferences,
+): boolean {
+  if (actualTier === 'high') return false;
+  if (actualTier === 'low') return true;
+  if (s.action !== 'send_directive') return true;
+  return preferences.standingApprovals.some(
+    (a) => a.capability === s.capability && a.targetHarness === s.target_harness,
   );
 }

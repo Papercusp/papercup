@@ -1,28 +1,38 @@
 /**
- * Operator prompt assembly.
+ * Operator prompt assembly (v5).
  *
- * Builds the full prompt sent to Claude when the user opens the Operator
- * panel and triggers a scan, or interacts via the conversation thread.
- *
- * Composition (top to bottom):
- *   1. The first-run intro block (only if it's the user's first interaction
- *      with Operator in this workspace — gated by a marker file).
- *   2. The user-editable system prompt (apps/operator/api/agent-mcp/operator-config).
- *   3. The user-editable preferences notebook (workspace-scoped).
- *   4. A short auth/identity reminder.
- *   5. Tool catalog summary (so the LLM doesn't have to call tools/list).
- *   6. The current request — typically "scan the workspace, suggest next
- *      actions" or a freeform user message.
+ * Composition (top-to-bottom):
+ *   1. First-run intro block (only on first interaction in a workspace,
+ *      gated by per-(workspace, user) marker).
+ *   2. Substrate-owned `prompt-system.md` — tier table, schema, anti-patterns.
+ *      Shipped with the substrate; the user CANNOT edit it from settings.
+ *   3. User-editable `prompt-user.md` — voice, tone, free-form preferences.
+ *   4. `preferences.md` — workspace-scoped learned preferences with
+ *      provenance tags.
+ *   5. The current request — typically "scan the workspace…" or a
+ *      freeform user message.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { papercuspPath } from './papercusp-root';
+import { loadPreferences } from './operator-preferences';
+import { OPERATOR_SUBSTRATE_PROMPT } from './operator-prompt-system';
 
-function OPERATOR_DIR() { return papercuspPath('system', 'operator'); }
-const PROMPT_PATH = join(OPERATOR_DIR(), 'prompt.md');
-const PREFS_PATH = join(OPERATOR_DIR(), 'preferences.md');
-const FIRST_RUN_MARKER = join(OPERATOR_DIR(), '.first-run-shown');
+function OPERATOR_DIR() {
+  return papercuspPath('system', 'operator');
+}
+function USER_PROMPT_PATH() {
+  return join(OPERATOR_DIR(), 'prompt-user.md');
+}
+function FIRST_RUN_MARKER_PATH() {
+  return join(OPERATOR_DIR(), 'first-run.json');
+}
 
 const FIRST_RUN_INTRO = `\
 Hi, I'm the Operator. I have full write authority across all harnesses
@@ -33,15 +43,16 @@ you before proceeding. I'll learn your preferences through our
 interactions, so please correct me if I behave in a way you didn't like
 so I can adjust for next time.
 
-You can also edit my system prompt directly, and I keep a separate
-notebook of preferences I've learned about you in this workspace —
-both are editable from my settings page (/settings/operator).
+You can edit my voice/tone in prompt-user.md, and I keep a separate
+notebook of preferences I've learned about you in this workspace. Both
+are editable from my settings page (/settings/operator). My substrate
+prompt (tier rules and schema) is read-only.
 `;
 
-function read(p: string, def: string): string {
-  if (!existsSync(p)) return def;
+function readOr(path: string, def: string): string {
+  if (!existsSync(path)) return def;
   try {
-    return readFileSync(p, 'utf8');
+    return readFileSync(path, 'utf8');
   } catch {
     return def;
   }
@@ -50,7 +61,9 @@ function read(p: string, def: string): string {
 export interface BuildPromptArgs {
   /** The user's request, or 'scan' for an unprompted scan. */
   request: string;
-  /** Force the first-run intro even if the marker exists. */
+  /** The active user id (used to gate the first-run intro). */
+  userId: string;
+  /** Force the first-run intro even if the marker already lists this user. */
   showFirstRun?: boolean;
 }
 
@@ -60,70 +73,59 @@ export interface BuildPromptResult {
 }
 
 export function buildOperatorPrompt(args: BuildPromptArgs): BuildPromptResult {
-  const isFirstRun = args.showFirstRun ?? !existsSync(FIRST_RUN_MARKER);
+  const isFirstRun = args.showFirstRun ?? !hasShownFirstRunFor(args.userId);
 
-  const userPrompt = read(PROMPT_PATH, '');
-  const prefs = read(PREFS_PATH, '').trim();
+  const systemPrompt = OPERATOR_SUBSTRATE_PROMPT;
+  const userPrompt = readOr(USER_PROMPT_PATH(), '').trim();
+  const prefs = loadPreferences().raw.trim();
 
   const sections: string[] = [];
-
-  if (isFirstRun) {
-    sections.push(FIRST_RUN_INTRO);
-  }
-
-  if (userPrompt.trim()) {
-    sections.push(userPrompt.trim());
-  }
-
-  if (prefs) {
-    sections.push(`## Preferences (workspace-scoped, learned)\n\n${prefs}`);
-  }
-
-  sections.push(`\
-## How to act
-
-- Use the Agent MCP tools to scan workspace state. Start with
-  \`harness:list\`, \`tasks:list\`, and \`pending_events:list\`.
-- Compose suggestions as JSON cards in your final response, one per
-  \`<suggestion>\` block. Schema:
-
-  <suggestion>
-  {
-    "title": "short imperative",
-    "why": "one or two sentences citing what state triggered this",
-    "action": "send_directive" | "open" | "draft" | "advise",
-    "target_harness": "<slug>" | null,
-    "directive_kind": "Directive" | "Decision" | "Priority" | null,
-    "directive_subject": "<short>",
-    "directive_body": "<full directive body>",
-    "auto_dispatch": true | false,
-    "reason": "why I'm classifying this as auto vs ask-first (>= 10 chars)"
-  }
-  </suggestion>
-
-- Dispatch by emitting auto_dispatch=true with a non-empty
-  directive_body. The operator app will route this through the
-  \`messages:write\` tool with kind='Directive'.
-- For underspecified or far-reaching actions, set auto_dispatch=false;
-  the user will approve in the panel.
-- After the suggestion blocks, write a short status sentence (no JSON).
-  Example: "Scanned 7 harnesses, surfaced 3 suggestions, 1 would auto-dispatch."
-
-## Identity
-
-You are running as principal "system:operator" in workspace "<workspace_id>".
-Your bearer token is supplied via env (you don't need to use it directly;
-your tools handle auth).
-`);
-
+  if (isFirstRun) sections.push(FIRST_RUN_INTRO);
+  sections.push(systemPrompt);
+  if (userPrompt) sections.push(`## User-editable prompt\n\n${userPrompt}`);
+  if (prefs) sections.push(`## Preferences (workspace-scoped, learned)\n\n${prefs}`);
   sections.push(`## Request\n\n${args.request}`);
 
-  const promptText = sections.join('\n\n---\n\n');
-  return { promptText, isFirstRun };
+  return { promptText: sections.join('\n\n---\n\n'), isFirstRun };
 }
 
-/** Mark first-run as shown so subsequent calls don't repeat the intro. */
-export function markFirstRunShown(): void {
-  mkdirSync(dirname(FIRST_RUN_MARKER), { recursive: true });
-  writeFileSync(FIRST_RUN_MARKER, new Date().toISOString());
+interface FirstRunMarker {
+  shownAt: string; // ISO of first time intro was shown in this workspace
+  shownToUserIds: string[];
+}
+
+function readFirstRunMarker(): FirstRunMarker | null {
+  const path = FIRST_RUN_MARKER_PATH();
+  if (!existsSync(path)) return null;
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<FirstRunMarker>;
+    if (!raw || typeof raw !== 'object') return null;
+    return {
+      shownAt: typeof raw.shownAt === 'string' ? raw.shownAt : new Date().toISOString(),
+      shownToUserIds: Array.isArray(raw.shownToUserIds) ? raw.shownToUserIds.filter((u) => typeof u === 'string') : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function hasShownFirstRunFor(userId: string): boolean {
+  const marker = readFirstRunMarker();
+  return !!marker && marker.shownToUserIds.includes(userId);
+}
+
+/** Mark first-run as shown for the given user. Idempotent. */
+export function markFirstRunShown(userId: string): void {
+  const path = FIRST_RUN_MARKER_PATH();
+  mkdirSync(dirname(path), { recursive: true });
+  const existing = readFirstRunMarker();
+  const next: FirstRunMarker = existing
+    ? {
+        shownAt: existing.shownAt,
+        shownToUserIds: existing.shownToUserIds.includes(userId)
+          ? existing.shownToUserIds
+          : [...existing.shownToUserIds, userId],
+      }
+    : { shownAt: new Date().toISOString(), shownToUserIds: [userId] };
+  writeFileSync(path, JSON.stringify(next, null, 2));
 }

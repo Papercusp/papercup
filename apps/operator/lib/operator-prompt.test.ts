@@ -1,35 +1,41 @@
 import { describe, it, expect } from 'vitest';
 import { buildOperatorPrompt } from './operator-prompt';
 
-describe('buildOperatorPrompt', () => {
-  it('includes the request text in the prompt', () => {
-    const r = buildOperatorPrompt({ request: 'Test request', showFirstRun: false });
+describe('buildOperatorPrompt (v5)', () => {
+  it('includes the request text', () => {
+    const r = buildOperatorPrompt({ request: 'Test request', userId: 'u1', showFirstRun: false });
     expect(r.promptText).toContain('Test request');
   });
 
-  it('marks isFirstRun=true when showFirstRun is forced', () => {
-    const r = buildOperatorPrompt({ request: 'x', showFirstRun: true });
+  it('marks isFirstRun=true when forced', () => {
+    const r = buildOperatorPrompt({ request: 'x', userId: 'u1', showFirstRun: true });
     expect(r.isFirstRun).toBe(true);
     expect(r.promptText).toContain("I'm the Operator");
   });
 
-  it('includes the suggestion schema', () => {
-    const r = buildOperatorPrompt({ request: 'scan', showFirstRun: false });
+  it('includes the substrate prompt with the suggestion schema', () => {
+    const r = buildOperatorPrompt({ request: 'scan', userId: 'u1', showFirstRun: false });
     expect(r.promptText).toContain('<suggestion>');
-    expect(r.promptText).toContain('auto_dispatch');
-    expect(r.promptText).toContain('directive_body');
+    expect(r.promptText).toContain('send_directive');
+    expect(r.promptText).toContain('navigate');
+    expect(r.promptText).toContain('inform');
+  });
+
+  it('includes the canonical tier table', () => {
+    const r = buildOperatorPrompt({ request: 'x', userId: 'u1', showFirstRun: false });
+    expect(r.promptText).toContain('messages:write');
+    expect(r.promptText).toContain('harness:dispatch:*');
+    expect(r.promptText).toContain('high (fail-safe)');
   });
 
   it('includes the principal identity hint', () => {
-    const r = buildOperatorPrompt({ request: 'x', showFirstRun: false });
+    const r = buildOperatorPrompt({ request: 'x', userId: 'u1', showFirstRun: false });
     expect(r.promptText).toContain('system:operator');
   });
 
-  it('includes the dispatch action types', () => {
-    const r = buildOperatorPrompt({ request: 'x', showFirstRun: false });
-    expect(r.promptText).toContain('send_directive');
-    expect(r.promptText).toContain('open');
-    expect(r.promptText).toContain('draft');
-    expect(r.promptText).toContain('advise');
+  it('does NOT include the v4 advise/draft variants', () => {
+    const r = buildOperatorPrompt({ request: 'x', userId: 'u1', showFirstRun: false });
+    expect(r.promptText).not.toContain('"advise"');
+    expect(r.promptText).not.toContain('"draft"');
   });
 });

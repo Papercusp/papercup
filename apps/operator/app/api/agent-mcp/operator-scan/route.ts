@@ -23,11 +23,13 @@ import { join } from 'node:path';
 import { runClaudeChat } from '@/lib/claude-chat-stream';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { getSessionUser } from '@/lib/auth';
 import {
   buildOperatorPrompt,
   markFirstRunShown,
 } from '@/lib/operator-prompt';
 import { parseSuggestions } from '@/lib/operator-suggestion-parser';
+import { loadPreferences } from '@/lib/operator-preferences';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,7 +89,10 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const { promptText, isFirstRun } = buildOperatorPrompt({ request: requestText });
+  const sessionUser = await getSessionUser();
+  const userId = sessionUser?.id ?? 'anonymous';
+  const { promptText, isFirstRun } = buildOperatorPrompt({ request: requestText, userId });
+  const preferences = loadPreferences();
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -132,20 +137,25 @@ export async function GET(req: NextRequest) {
             send('tool_call', { name: ev.name, input: ev.input });
           } else if (ev.type === 'result') {
             costUsd = ev.costUsd;
-            const parsed = parseSuggestions(ev.finalText || assistantText);
-            for (const s of parsed.suggestions) {
-              send('suggestion', s as unknown as Record<string, unknown>);
+            const parsed = parseSuggestions(ev.finalText || assistantText, preferences);
+            for (const block of parsed.blocks) {
+              send('suggestion', {
+                ...block.suggestion.raw,
+                actualTier: block.suggestion.actualTier,
+                auto_dispatch: block.suggestion.auto_dispatch,
+                provenanceFlags: block.suggestion.provenanceFlags,
+              });
             }
             send('done', {
               costUsd,
-              suggestions: parsed.suggestions.length,
+              suggestions: parsed.blocks.length,
               parseErrors: parsed.parseErrors,
             });
           } else if (ev.type === 'error') {
             send('error', { message: ev.message });
           }
         }
-        if (isFirstRun) markFirstRunShown();
+        if (isFirstRun) markFirstRunShown(userId);
       } catch (err) {
         send('error', { message: err instanceof Error ? err.message : String(err) });
       } finally {

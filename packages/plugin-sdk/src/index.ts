@@ -681,3 +681,15 @@ export function defineService(def: ServiceDef): ServiceDef {
  * ───────────────────────────────────────────────────────────────────── */
 
 export const PAPERCUSP_RUNTIME_VERSION = '0.1.1' as const;
+
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Capability tier table — substrate-known capabilities → tier.
+ *
+ * Used by the Operator pipeline to derive auto_dispatch authoritatively
+ * (LLM's `tier` is sanity-check only). Unknown capabilities resolve to
+ * `null`; the Operator forces `high` (fail-safe → always ask).
+ * ───────────────────────────────────────────────────────────────────── */
+
+export { lookupTier, TIER_TABLE } from './tier-table';
+export type { CapabilityTier } from './tier-table';
