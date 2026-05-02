@@ -1,9 +1,12 @@
 // Browser-side wrapper around the workspace tauri commands defined in
-// papercusp-desktop/src-tauri/src/main.rs. The operator UI is built in two
-// modes: web (papercuspai.com — no Tauri runtime) and desktop (Tauri shell
-// injects __TAURI_INTERNALS__). All exports are no-ops in web mode so the
-// operator can render its workspace switcher conditionally without breaking
-// the web build.
+// papercusp-desktop/src-tauri/src/main.rs.
+//
+// Two modes:
+//   - desktop (Tauri shell injects __TAURI_INTERNALS__): use the native
+//     commands, which also kill the sidecar + pglite-server on switch.
+//   - webapp (no Tauri runtime): fall back to the operator's
+//     /api/workspaces HTTP endpoints, which write the same registry.json
+//     and let papercuspRoot() pick up the change on its next call.
 
 export interface Workspace {
   id: string;
@@ -30,37 +33,60 @@ export function isDesktop(): boolean {
   return tauri() !== null;
 }
 
+async function http<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(path, {
+    ...init,
+    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) },
+    cache: 'no-store',
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(((j as { error?: string }).error) ?? `HTTP ${r.status}`);
+  return j as T;
+}
+
 export async function listWorkspaces(): Promise<WorkspaceRegistry> {
   const t = tauri();
-  if (!t) return { current: '', workspaces: [] };
-  return t.invoke<WorkspaceRegistry>('workspaces_list');
+  if (t) return t.invoke<WorkspaceRegistry>('workspaces_list');
+  return http<WorkspaceRegistry>('/api/workspaces');
 }
 
 export async function createWorkspace(name: string): Promise<Workspace> {
   const t = tauri();
-  if (!t) throw new Error('not in desktop mode');
-  return t.invoke<Workspace>('workspaces_create', { name });
+  if (t) return t.invoke<Workspace>('workspaces_create', { name });
+  return http<Workspace>('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) });
 }
 
 export async function renameWorkspace(id: string, name: string): Promise<void> {
   const t = tauri();
-  if (!t) throw new Error('not in desktop mode');
-  return t.invoke<void>('workspaces_rename', { id, name });
+  if (t) return t.invoke<void>('workspaces_rename', { id, name });
+  await http<unknown>(`/api/workspaces/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  });
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {
   const t = tauri();
-  if (!t) throw new Error('not in desktop mode');
-  return t.invoke<void>('workspaces_delete', { id });
+  if (t) return t.invoke<void>('workspaces_delete', { id });
+  await http<unknown>(`/api/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 /**
- * Switch to a different workspace. The Tauri shell will kill the sidecar
- * and pglite-server, then call app.restart() — so the returned promise
- * never actually resolves; the page reloads under us.
+ * Switch to a different workspace.
+ *
+ * In desktop mode, the Tauri shell kills the sidecar + pglite-server and
+ * then calls app.restart() — the returned promise never resolves; the
+ * page reloads under us.
+ *
+ * In webapp mode, just write the new `current` to registry.json. The
+ * operator's papercuspRoot() invalidates on registry mtime, so the next
+ * request transparently reads from the new workspace. We then reload the
+ * page so client-side state (cached fetches, plugin host snapshots in
+ * the panels) doesn't lag behind.
  */
 export async function switchWorkspace(id: string): Promise<void> {
   const t = tauri();
-  if (!t) throw new Error('not in desktop mode');
-  return t.invoke<void>('workspaces_switch', { id });
+  if (t) return t.invoke<void>('workspaces_switch', { id });
+  await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
+  if (typeof window !== 'undefined') window.location.reload();
 }

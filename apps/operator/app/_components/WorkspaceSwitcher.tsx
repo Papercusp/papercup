@@ -1,10 +1,10 @@
 'use client';
 
-// Workspace switcher dropdown. Renders only when running inside the Tauri
-// desktop shell (web mode returns null). Lists workspaces from
-// `workspaces_list`, lets the user pick one (triggers `workspaces_switch`,
-// which kills the sidecar and restarts the app), and surfaces create /
-// rename / delete actions.
+// Workspace switcher dropdown. Renders in both desktop and webapp modes:
+// the underlying wrapper falls back to /api/workspaces HTTP endpoints
+// when there's no Tauri runtime. Lists workspaces, lets the user pick
+// one (write to registry.json + reload), and surfaces create / rename /
+// delete actions.
 
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
@@ -13,14 +13,12 @@ import {
   WorkspaceRegistry,
   createWorkspace,
   deleteWorkspace,
-  isDesktop,
   listWorkspaces,
   renameWorkspace,
   switchWorkspace,
 } from '../../lib/workspaces-tauri';
 
 export default function WorkspaceSwitcher() {
-  const [desktop, setDesktop] = useState(false);
   const [reg, setReg] = useState<WorkspaceRegistry | null>(null);
   const [open, setOpen] = useState(false);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -28,15 +26,10 @@ export default function WorkspaceSwitcher() {
   const wrapRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
-    setDesktop(isDesktop());
-  }, []);
-
-  useEffect(() => {
-    if (!desktop) return;
     listWorkspaces()
       .then(setReg)
       .catch((e) => toast.error(`workspaces: ${e?.message ?? e}`));
-  }, [desktop]);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -47,7 +40,7 @@ export default function WorkspaceSwitcher() {
     return () => document.removeEventListener('mousedown', onClick);
   }, [open]);
 
-  if (!desktop || !reg) return null;
+  if (!reg || reg.workspaces.length === 0) return null;
 
   const current = reg.workspaces.find((w) => w.id === reg.current) ?? reg.workspaces[0];
 
