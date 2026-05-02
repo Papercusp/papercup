@@ -299,7 +299,8 @@
 .h-log-line {
   position: relative;
   display: grid;
-  grid-template-columns: 34px 88px minmax(50px, auto) minmax(0, 1fr);
+  /* number | ts | source(opt) | tag | msg */
+  grid-template-columns: 38px 96px minmax(0, auto) minmax(50px, auto) minmax(0, 1fr);
   align-items: start;
   gap: 8px;
   min-height: 23px;
@@ -307,6 +308,16 @@
   border-left: 3px solid transparent;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.h-log-line .h-log-source {
+  font-size: 10.5px;
+  color: color-mix(in oklab, var(--accent), white 12%);
+  background: color-mix(in oklab, var(--accent), transparent 86%);
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 70%);
+  border-radius: 3px;
+  padding: 0 5px;
+  user-select: none;
+  white-space: nowrap;
 }
 
 .h-log-line:nth-child(2n) {
@@ -8368,4 +8379,279 @@ body:has(.h-top-collapse-inline) main {
     width: 154px !important;
     min-width: 154px !important;
   }
+}
+
+/* Refined collapse / expand chrome: polished drawer-tab control. Must live last to override restoration blocks above. */
+.h-top-collapse-row {
+  padding: 12px 0 8px !important;
+}
+
+.h-top-collapse-btn.h-top-collapse-inline,
+.h-top-collapse-btn.h-top-collapse-floating {
+  position: relative;
+  isolation: isolate;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  width: auto !important;
+  min-width: 0 !important;
+  min-height: 30px !important;
+  height: 30px !important;
+  padding: 0 14px 0 9px !important;
+  border-radius: 999px !important;
+  overflow: hidden !important;
+  white-space: nowrap !important;
+  color: color-mix(in oklab, var(--accent-cool), white 8%) !important;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(224, 247, 255, 0.18), transparent 34%),
+    linear-gradient(180deg, rgba(15, 35, 55, 0.92), rgba(6, 15, 28, 0.96)) !important;
+  border: 1px solid rgba(125, 211, 252, 0.36) !important;
+  box-shadow:
+    0 12px 30px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(3, 8, 16, 0.48),
+    0 0 22px rgba(56, 189, 248, 0.10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    inset 0 -1px 0 rgba(3, 8, 16, 0.42) !important;
+  font-size: 10px !important;
+  font-weight: 820 !important;
+  letter-spacing: 0.095em !important;
+  line-height: 1 !important;
+  text-transform: uppercase !important;
+  cursor: pointer !important;
+  backdrop-filter: blur(16px) saturate(155%) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(155%) !important;
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease,
+    box-shadow 150ms ease,
+    color 150ms ease !important;
+}
+
+.h-top-collapse-btn.h-top-collapse-inline {
+  position: absolute !important;
+  top: -15px !important;
+  left: 50% !important;
+  z-index: 60 !important;
+  transform: translateX(-50%) !important;
+}
+
+.h-top-collapse-btn.h-top-collapse-floating {
+  position: relative !important;
+  transform: none !important;
+}
+
+.h-top-collapse-btn::before {
+  content: '' !important;
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 0 !important;
+  border-radius: inherit !important;
+  pointer-events: none !important;
+  background:
+    linear-gradient(110deg, transparent 0 28%, rgba(255, 255, 255, 0.12) 42%, transparent 58%),
+    radial-gradient(circle at 50% 100%, rgba(56, 189, 248, 0.16), transparent 48%) !important;
+  opacity: 0.82 !important;
+  transition: transform 180ms ease, opacity 150ms ease !important;
+}
+
+.h-top-collapse-btn::after {
+  content: '' !important;
+  position: absolute !important;
+  z-index: 0 !important;
+  left: 13px !important;
+  right: 13px !important;
+  bottom: 2px !important;
+  height: 1px !important;
+  border-radius: 999px !important;
+  pointer-events: none !important;
+  background: rgba(125, 211, 252, 0.72) !important;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.32) !important;
+}
+
+.h-top-collapse-btn:hover {
+  color: #f2fbff !important;
+  border-color: rgba(186, 230, 253, 0.58) !important;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(224, 247, 255, 0.24), transparent 36%),
+    linear-gradient(180deg, rgba(20, 47, 72, 0.96), rgba(7, 19, 34, 0.98)) !important;
+  box-shadow:
+    0 16px 38px rgba(0, 0, 0, 0.46),
+    0 0 0 1px rgba(56, 189, 248, 0.16),
+    0 0 28px rgba(56, 189, 248, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(3, 8, 16, 0.40) !important;
+}
+
+.h-top-collapse-btn:hover::before {
+  opacity: 1 !important;
+  transform: translateX(8%) !important;
+}
+
+.h-top-collapse-btn.h-top-collapse-inline:hover {
+  transform: translateX(-50%) translateY(-1px) !important;
+}
+
+.h-top-collapse-btn.h-top-collapse-floating:hover {
+  transform: translateY(-1px) !important;
+}
+
+.h-top-collapse-btn:focus-visible {
+  outline: 2px solid rgba(125, 211, 252, 0.74) !important;
+  outline-offset: 3px !important;
+}
+
+.h-top-collapse-btn:active {
+  transform: translateY(0) !important;
+}
+
+.h-top-collapse-btn.h-top-collapse-inline:active {
+  transform: translateX(-50%) !important;
+}
+
+.h-top-collapse-icon {
+  position: relative !important;
+  z-index: 1 !important;
+  flex: 0 0 auto !important;
+  width: 16px !important;
+  height: 16px !important;
+  padding: 2px !important;
+  border-radius: 999px !important;
+  color: #d7f3ff !important;
+  background: rgba(56, 189, 248, 0.16) !important;
+  border: 1px solid rgba(125, 211, 252, 0.26) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10), 0 0 12px rgba(56, 189, 248, 0.14) !important;
+  opacity: 0.96 !important;
+}
+
+.h-top-collapse-label {
+  position: relative !important;
+  top: 0.5px !important;
+  z-index: 1 !important;
+}
+
+@media (max-width: 720px) {
+  .h-top-collapse-row {
+    padding: 10px 0 6px !important;
+  }
+
+  .h-top-collapse-btn.h-top-collapse-inline,
+  .h-top-collapse-btn.h-top-collapse-floating {
+    min-height: 28px !important;
+    height: 28px !important;
+    padding: 0 11px 0 8px !important;
+    font-size: 9px !important;
+    letter-spacing: 0.075em !important;
+  }
+
+  .h-top-collapse-icon {
+    width: 15px !important;
+    height: 15px !important;
+  }
+}
+/* ── LogView container + tabs + pause/counter ───────────────── */
+.h-log-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.h-log-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 6px 0 6px;
+  background: color-mix(in oklab, var(--bg-2), black 4%);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.h-log-tabs-spacer { flex: 1; min-width: 8px; }
+.h-log-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+  white-space: nowrap;
+  user-select: none;
+}
+.h-log-tab:hover {
+  background: color-mix(in oklab, var(--accent), transparent 92%);
+  color: var(--fg);
+}
+.h-log-tab.active {
+  background: var(--bg-2);
+  color: var(--fg);
+  border-color: var(--border);
+  border-bottom-color: var(--bg-2);
+  margin-bottom: -1px;
+  position: relative;
+  z-index: 1;
+}
+.h-log-tab-count {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--fg-dim), transparent 75%);
+  color: var(--fg-dim);
+  min-width: 18px;
+  text-align: center;
+}
+.h-log-tab.active .h-log-tab-count {
+  background: color-mix(in oklab, var(--accent), transparent 70%);
+  color: var(--fg);
+}
+.h-log-pause-toggle {
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  user-select: none;
+  align-self: center;
+  margin: 0 4px 4px 4px;
+}
+.h-log-pause-toggle:hover { color: var(--fg); border-color: color-mix(in oklab, var(--accent), transparent 60%); }
+.h-log-pause-toggle.paused {
+  background: color-mix(in oklab, var(--warn), transparent 80%);
+  border-color: color-mix(in oklab, var(--warn), transparent 60%);
+  color: var(--warn);
+}
+.h-log-body {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.h-log-unseen-pill {
+  position: absolute;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 12px;
+  padding: 5px 14px;
+  border-radius: 14px;
+  background: color-mix(in oklab, var(--accent), black 25%);
+  color: white;
+  border: 1px solid color-mix(in oklab, var(--accent), white 5%);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 0 1px color-mix(in oklab, var(--accent), transparent 50%);
+  cursor: pointer;
+  z-index: 2;
+  user-select: none;
+  animation: hPillPulse 1.5s ease-in-out infinite;
+}
+@keyframes hPillPulse {
+  0%, 100% { box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 0 1px color-mix(in oklab, var(--accent), transparent 50%); }
+  50%      { box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 4px color-mix(in oklab, var(--accent), transparent 75%); }
 }

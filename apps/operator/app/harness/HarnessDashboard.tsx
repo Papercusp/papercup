@@ -4,7 +4,7 @@ import './harness.css';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as RSelect from '@radix-ui/react-select';
 import * as RTooltip from '@radix-ui/react-tooltip';
-import { Check as LCheck, ChevronDown as LChevronDown } from 'lucide-react';
+import { Check as LCheck, ChevronDown as LChevronDown, ChevronUp as LChevronUp } from 'lucide-react';
 import { Modal } from './Modal';
 import { Tooltip } from './Tooltip';
 
@@ -84,6 +84,7 @@ function preloadGitLog(slug: string, limit = 300) {
 
 // Linear-inspired extensions (palette, peek, pulse, insights, triage).
 import CommandPalette, { Command } from './CommandPalette';
+import { slugSchema, semverSchema, fieldError } from '../../lib/validators';
 import PluginReactTab from '../../lib/PluginReactTab';
 import FeatureList from './FeatureList';
 import FeaturePeekPanel from './FeaturePeekPanel';
@@ -829,6 +830,10 @@ function SaveTemplateButton({ slug }: { slug: string }) {
   const [description, setDescription] = useState('');
   const [author, setAuthor] = useState('');
 
+  const slugErr = fieldError(slugSchema, newSlug);
+  const versionErr = fieldError(semverSchema, version);
+  const formInvalid = slugErr !== null || versionErr !== null;
+
   const onSubmit = async () => {
     setBusy(true);
     try {
@@ -858,48 +863,86 @@ function SaveTemplateButton({ slug }: { slug: string }) {
     }
   };
 
+  const labelStyle: React.CSSProperties = { display: 'block', fontSize: 11, color: 'var(--fg-mute)', marginBottom: 4 };
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '6px 8px', background: 'var(--bg-1)',
+    border: '1px solid var(--border)', borderRadius: 4, color: 'var(--fg)', fontSize: 13,
+  };
+
   return (
     <>
       <button className="h-btn ghost" onClick={() => setOpen(true)} disabled={busy}>
         <Layers size={13} /> {busy ? 'saving…' : 'save template'}
       </button>
-      {open && (
-        <div className="h-modal-bg" onClick={() => !busy && setOpen(false)}>
-          <div className="h-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
-            <h2 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Save as template</h2>
-            <p style={{ margin: '0 0 16px', fontSize: 12, color: '#9ca3af' }}>
-              Forks <strong>{slug}</strong>&rsquo;s recipe (SPEC.md / AGENTS.md / .harness/config.json / validation-contract.md + recommended plugins) into <code>~/.papercusp/templates/&lt;slug&gt;/&lt;version&gt;/</code>. No mid-mission state is included.
-            </p>
-            <label style={{ display: 'block', marginBottom: 10 }}>
-              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Slug</span>
-              <input value={newSlug} onChange={(e) => setNewSlug(e.target.value)} disabled={busy}
-                className="h-input" style={{ width: '100%', fontFamily: 'monospace', fontSize: 13 }} />
-            </label>
-            <label style={{ display: 'block', marginBottom: 10 }}>
-              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Version (semver)</span>
-              <input value={version} onChange={(e) => setVersion(e.target.value)} disabled={busy}
-                className="h-input" style={{ width: '120px', fontFamily: 'monospace', fontSize: 13 }} />
-            </label>
-            <label style={{ display: 'block', marginBottom: 10 }}>
-              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Description</span>
-              <input value={description} onChange={(e) => setDescription(e.target.value)} disabled={busy}
-                placeholder={`Template forked from ${slug}`}
-                className="h-input" style={{ width: '100%', fontSize: 13 }} />
-            </label>
-            <label style={{ display: 'block', marginBottom: 16 }}>
-              <span style={{ fontSize: 11, color: '#9ca3af', display: 'block', marginBottom: 4 }}>Author (optional)</span>
-              <input value={author} onChange={(e) => setAuthor(e.target.value)} disabled={busy}
-                className="h-input" style={{ width: '100%', fontSize: 13 }} />
-            </label>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="h-btn ghost" onClick={() => setOpen(false)} disabled={busy}>cancel</button>
-              <button className="h-btn primary" onClick={onSubmit} disabled={busy || !newSlug.trim() || !version.trim()}>
-                {busy ? 'saving…' : 'save template'}
-              </button>
-            </div>
-          </div>
+      <Modal
+        open={open}
+        onOpenChange={(v) => { if (!busy) setOpen(v); }}
+        title="Save as template"
+        description="Fork the harness recipe (SPEC, AGENTS, config, recommended plugins) into ~/.papercusp/templates/."
+        contentStyle={{ width: 480, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6, padding: 20 }}
+      >
+        <h2 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Save as template</h2>
+        <div style={{ color: 'var(--fg-mute)', fontSize: 12, marginBottom: 16 }}>
+          Forks <strong>{slug}</strong>&rsquo;s recipe (SPEC.md / AGENTS.md / .harness/config.json / validation-contract.md + recommended plugins) into <code>~/.papercusp/templates/&lt;slug&gt;/&lt;version&gt;/</code>. No mid-mission state is included.
         </div>
-      )}
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Slug</label>
+          <input
+            value={newSlug}
+            onChange={(e) => setNewSlug(e.target.value)}
+            disabled={busy}
+            aria-invalid={slugErr !== null}
+            style={{
+              ...inputStyle,
+              fontFamily: 'monospace',
+              border: slugErr ? '1px solid var(--bad, #fb7185)' : inputStyle.border,
+            }}
+          />
+          {slugErr && (
+            <div style={{ color: 'var(--bad, #fb7185)', fontSize: 11, marginTop: 4 }}>{slugErr}</div>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Version (semver)</label>
+          <input
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+            disabled={busy}
+            aria-invalid={versionErr !== null}
+            style={{
+              ...inputStyle,
+              width: 140,
+              fontFamily: 'monospace',
+              border: versionErr ? '1px solid var(--bad, #fb7185)' : inputStyle.border,
+            }}
+          />
+          {versionErr && (
+            <div style={{ color: 'var(--bad, #fb7185)', fontSize: 11, marginTop: 4 }}>{versionErr}</div>
+          )}
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Description</label>
+          <input value={description} onChange={(e) => setDescription(e.target.value)} disabled={busy}
+            placeholder={`Template forked from ${slug}`}
+            style={inputStyle} />
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <label style={labelStyle}>Author (optional)</label>
+          <input value={author} onChange={(e) => setAuthor(e.target.value)} disabled={busy}
+            style={inputStyle} />
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+          <button type="button" className="h-btn ghost" onClick={() => setOpen(false)} disabled={busy}>Cancel</button>
+          <button type="button" className="h-btn" onClick={() => void onSubmit()} disabled={busy || formInvalid}>
+            {busy ? 'Saving…' : 'Save template'}
+          </button>
+        </div>
+      </Modal>
     </>
   );
 }
@@ -1987,7 +2030,12 @@ export default function HarnessDashboard() {
   const [status, setStatus] = useState<Status | null>(null);
   const [agents, setAgents] = useState<AgentRun[]>([]);
   const [issues, setIssues] = useState<string>('');
-  const [logLines, setLogLines] = useState<string[]>([]);
+  // Structured log events from /api/harness/:slug/log/stream. Each event
+  // carries source/level/corrId so the LogView can tab + filter without
+  // round-tripping to the server. Capped at 5000 client-side; older
+  // events drop off the bottom of scrollback. (Persistent backfill from
+  // run.log.jsonl rotations is a follow-up commit.)
+  const [logEvents, setLogEvents] = useState<import('@restart/ui-primitives').LogEvent[]>([]);
   const [selectedAgent, setSelectedAgent] = useState<AgentDetail | null>(null);
   const agentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -2151,7 +2199,7 @@ export default function HarnessDashboard() {
     setStatus(null);
     setAgents([]);
     setIssues('');
-    setLogLines([]);
+    setLogEvents([]);
     setSelectedAgent(null);
     preloadGitLog(activeSlug, 300);
     // Warm the dynamic GitGraphPanel chunk so the first left-pane click doesn't pay Turbopack compile cost.
@@ -2160,32 +2208,41 @@ export default function HarnessDashboard() {
     const loadAll = async () => {
       try {
         const q = `?phase=${activePhase}`;
-        const [statusRes, agentsRes, issuesRes, logRes] = await Promise.all([
+        const [statusRes, agentsRes, issuesRes] = await Promise.all([
           fetch(`/api/harness/${activeSlug}/status${q}`).then((r) => r.json()),
           fetch(`/api/harness/${activeSlug}/agents${q}`).then((r) => r.json()),
           fetch(`/api/harness/${activeSlug}/issues${q}`).then((r) => r.json()),
-          fetch(`/api/harness/${activeSlug}/logs/run${q}`).then((r) => r.json()),
         ]);
         if (statusRes.error) throw new Error(statusRes.error);
         setStatus(statusRes);
         setAgents(agentsRes.runs ?? []);
         setIssues(issuesRes.issues ?? '');
-        setLogLines((logRes.log ?? '').split('\n').filter(Boolean));
+        // logEvents are populated by the SSE stream below — backfill is
+        // server-side via /log/stream's ?tail=N replay.
       } catch (e) {
         toast.error(String(e));
       }
     };
     loadAll();
 
-    const es = new EventSource(`/api/harness/${activeSlug}/stream?phase=${activePhase}`);
+    // Subscribe to the structured JSONL stream. Server backfills the last
+    // 500 events on connect, then live-tails via fs.watch.
+    const es = new EventSource(`/api/harness/${activeSlug}/log/stream?phase=${activePhase}&tail=500`);
     esRef.current = es;
 
     es.addEventListener('log', (ev) => {
-      const chunk = (ev as MessageEvent).data as string;
-      setLogLines((prev) => {
-        const next = [...prev, ...chunk.split('\n').filter(Boolean)];
-        return next.length > 5000 ? next.slice(-5000) : next;
-      });
+      try {
+        const evt = JSON.parse((ev as MessageEvent).data) as import('@restart/ui-primitives').LogEvent;
+        setLogEvents((prev) => {
+          const next = [...prev, evt];
+          return next.length > 5000 ? next.slice(-5000) : next;
+        });
+      } catch { /* ignore malformed event */ }
+    });
+
+    es.addEventListener('rotated', () => {
+      // Server signaled run.log.jsonl was rotated; clear stale events.
+      setLogEvents([]);
     });
 
     es.addEventListener('features', (ev) => {
@@ -2640,7 +2697,8 @@ export default function HarnessDashboard() {
           onClick={() => setTopChromeCollapsed(true)}
           aria-expanded={!topChromeCollapsed}
         >
-          Collapse top section
+          <LChevronUp className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
+          <span className="h-top-collapse-label">Collapse top section</span>
         </button>
         </Tooltip>
         <div className="h-header-main">
@@ -2979,7 +3037,8 @@ export default function HarnessDashboard() {
             onClick={() => setTopChromeCollapsed(false)}
             aria-expanded={!topChromeCollapsed}
           >
-            Expand top section
+            <LChevronDown className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
+            <span className="h-top-collapse-label">Expand top section</span>
           </button>
           </Tooltip>
         </div>
@@ -3214,7 +3273,7 @@ export default function HarnessDashboard() {
 
               <div className="h-dashboard-panel-anchor" data-dashboard-panel="logs" tabIndex={-1}>
                 <Panel title="run.log" count="live">
-                <LogView lines={logLines} />
+                <LogView events={logEvents} />
               </Panel>
               </div>
 
@@ -3300,7 +3359,7 @@ export default function HarnessDashboard() {
                   <RPanel defaultSize="50%" minSize="20%">
                     <div className="h-dashboard-panel-anchor" data-dashboard-panel="logs" tabIndex={-1}>
                       <Panel title="run.log" count="live">
-                        <LogView lines={logLines} />
+                        <LogView events={logEvents} />
                       </Panel>
                     </div>
                   </RPanel>
