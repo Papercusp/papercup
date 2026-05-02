@@ -1126,7 +1126,15 @@ function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs }: {
     try {
       const result = await invokeHarnessToolbarAction(harnessSlug, action);
       if (!result.ok) {
-        toast.error(`${action.label} failed`, { description: result.error ?? result.log?.slice(-300) });
+        // Prefer the log over the wrapper error: the wrapper is just
+        // "invoke exited 1", the log has the actual reason (plugin not
+        // enabled, missing credentials, etc.). Strip ANSI escapes the
+        // CLI emits — they render as garbage in the toast.
+        const stripped = (result.log ?? '').replace(/\[[0-9;]*m/g, '').trim();
+        const description = stripped.length > 0
+          ? stripped.slice(-400)
+          : result.error;
+        toast.error(`${action.label} failed`, { description, duration: 12000 });
         return;
       }
       toast.success(`${action.label} started`, {
