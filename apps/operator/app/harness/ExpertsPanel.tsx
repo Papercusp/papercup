@@ -88,12 +88,12 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
   }, [experts, selectedId]);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#fff' }}>
+    <div className="experts-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg)', color: 'var(--fg)' }}>
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '8px 12px', borderBottom: '1px solid #e5e7eb', background: '#f9fafb',
+        padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'linear-gradient(180deg, var(--bg-2), rgba(255,255,255,0.02))',
       }}>
-        <div style={{ fontWeight: 600, fontSize: 13 }}>Experts</div>
+        <div style={{ fontWeight: 700, fontSize: 13, color: 'var(--fg)', letterSpacing: '0.02em', textTransform: 'uppercase' }}>Experts</div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={() => setShowSpawn(true)} style={btnPrimary}>+ spawn expert</button>
           <button onClick={() => setRefreshKey((k) => k + 1)} style={btnSecondary}>refresh</button>
@@ -113,12 +113,12 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
         />
       )}
 
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <div style={{ width: 280, borderRight: '1px solid #e5e7eb', overflow: 'auto' }}>
-          {error && <div style={{ padding: 12, color: '#dc2626' }}>{error}</div>}
-          {!experts && !error && <div style={{ padding: 12, color: '#6b7280' }}>loading…</div>}
+      <div style={{ display: 'flex', flex: 1, minHeight: 0, background: 'rgba(4, 10, 20, 0.32)' }}>
+        <div style={{ width: 280, borderRight: '1px solid var(--border)', overflow: 'auto', background: 'rgba(6, 13, 24, 0.46)' }}>
+          {error && <div style={{ padding: 12, color: 'var(--bad)' }}>{error}</div>}
+          {!experts && !error && <div style={{ padding: 12, color: 'var(--fg-mute)' }}>loading…</div>}
           {experts && experts.length === 0 && (
-            <div style={{ padding: 12, color: '#6b7280', fontSize: 12 }}>
+            <div style={{ padding: 12, color: 'var(--fg-dim)', fontSize: 12, lineHeight: 1.5 }}>
               No experts yet. The scoper spawns them automatically when{' '}
               <code>scoper.useExperts: true</code> is set in <code>.harness/config.json</code>,
               or you can spawn one manually with the button above.
@@ -129,7 +129,7 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
           ))}
         </div>
 
-        <div style={{ flex: 1, overflow: 'hidden', minWidth: 0, display: 'flex' }}>
+        <div style={{ flex: 1, overflow: 'hidden', minWidth: 0, display: 'flex', background: 'linear-gradient(180deg, rgba(11, 18, 32, 0.78), rgba(4, 10, 20, 0.58))' }}>
           {selectedId ? (
             <ExpertDetailView
               key={selectedId}
@@ -138,7 +138,7 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
               onChange={() => setRefreshKey((k) => k + 1)}
             />
           ) : (
-            <div style={{ padding: 24, color: '#6b7280' }}>Select an expert.</div>
+            <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Select an expert.</div>
           )}
         </div>
       </div>
@@ -153,18 +153,18 @@ function ExpertRow({ expert, selected, onSelect }: { expert: ExpertSummary; sele
       onClick={onSelect}
       style={{
         width: '100%', textAlign: 'left', padding: '10px 12px',
-        border: 'none', background: selected ? '#eff6ff' : 'transparent',
-        borderLeft: selected ? '2px solid #2563eb' : '2px solid transparent',
-        borderBottom: '1px solid #f3f4f6', cursor: 'pointer',
+        border: 'none', background: selected ? 'rgba(56, 189, 248, 0.12)' : 'transparent',
+        borderLeft: selected ? '2px solid var(--accent)' : '2px solid transparent',
+        borderBottom: '1px solid var(--border)', cursor: 'pointer',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: '#6b7280' }}>{expert.id}</span>
+        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--fg-mute)' }}>{expert.id}</span>
         <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, background: color, color: '#fff' }}>{expert.status}</span>
         {expert.userEngaged && <span title="user is engaged" style={{ fontSize: 11 }}>👤</span>}
       </div>
-      <div style={{ fontSize: 13, fontWeight: 500, color: '#111' }}>{expert.title}</div>
-      <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2 }}>
+      <div style={{ fontSize: 13, fontWeight: 650, color: 'var(--fg)' }}>{expert.title}</div>
+      <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 2 }}>
         {expert.featureSize} · {expert.agentCount} agent{expert.agentCount !== 1 ? 's' : ''} · {expert.roundCount} round{expert.roundCount !== 1 ? 's' : ''}
       </div>
     </button>
@@ -204,21 +204,21 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
     onChange();
   };
 
-  if (error) return <div style={{ padding: 24, color: '#dc2626' }}>{error}</div>;
-  if (!detail) return <div style={{ padding: 24, color: '#6b7280' }}>loading…</div>;
+  if (error) return <div style={{ padding: 24, color: 'var(--bad)' }}>{error}</div>;
+  if (!detail) return <div style={{ padding: 24, color: 'var(--fg-mute)' }}>loading…</div>;
 
   const statusColor = STATUS_COLOR[detail.status] ?? '#6b7280';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', flex: 1, minWidth: 0 }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid #e5e7eb' }}>
+      <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'rgba(6, 13, 24, 0.42)' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
-          <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: '#6b7280' }}>{detail.id}</span>
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--fg-mute)' }}>{detail.id}</span>
           <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, background: statusColor, color: '#fff' }}>{detail.status}</span>
-          {detail.terminationReason && <span style={{ fontSize: 11, color: '#6b7280' }}>· {detail.terminationReason}</span>}
+          {detail.terminationReason && <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>· {detail.terminationReason}</span>}
         </div>
-        <div style={{ fontSize: 16, fontWeight: 600 }}>{detail.title}</div>
-        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--fg)' }}>{detail.title}</div>
+        <div style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 2 }}>
           {detail.featureSize} · {detail.agentCount} agent{detail.agentCount !== 1 ? 's' : ''} · {detail.roundCount} round{detail.roundCount !== 1 ? 's' : ''}
           {' · '}
           <span title="Spent vs budget envelope. Server stops the loop when spent reaches budget.">
@@ -233,18 +233,42 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
           )}
           <button onClick={onFork} style={btnSecondary}>fork</button>
         </div>
+        {detail.highLevelSpec && detail.highLevelSpec.trim().length > 0 ? (
+          <details style={{ marginTop: 10 }}>
+            <summary style={{
+              fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer',
+              textTransform: 'uppercase', letterSpacing: '0.05em',
+            }}>
+              High-level brief (from scoper)
+            </summary>
+            <div style={{
+              marginTop: 6, padding: '8px 10px',
+              background: 'rgba(255,255,255,0.04)',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              fontSize: 12,
+              color: 'var(--fg-dim)',
+              lineHeight: 1.5,
+              whiteSpace: 'pre-wrap',
+              maxHeight: 240,
+              overflowY: 'auto',
+            }}>
+              {detail.highLevelSpec}
+            </div>
+          </details>
+        ) : null}
       </div>
 
-      <div style={{ display: 'flex', borderBottom: '1px solid #e5e7eb', background: '#f9fafb' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)' }}>
         {(['spec', 'feedback', 'chat', 'identity'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             style={{
-              padding: '8px 14px', border: 'none', background: 'transparent',
-              borderBottom: tab === t ? '2px solid #2563eb' : '2px solid transparent',
-              fontSize: 12, fontWeight: 500, cursor: 'pointer',
-              color: tab === t ? '#2563eb' : '#374151',
+              padding: '8px 14px', border: 'none', background: tab === t ? 'rgba(56, 189, 248, 0.10)' : 'transparent',
+              borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
+              fontSize: 12, fontWeight: 650, cursor: 'pointer',
+              color: tab === t ? 'var(--accent-cool)' : 'var(--fg-dim)',
             }}
           >
             {t === 'spec' ? 'SPEC.md' : t === 'feedback' ? `feedback (${feedback?.length ?? 0})` : t === 'chat' ? 'chat' : 'identity'}
@@ -253,7 +277,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-        {tab === 'spec' && <SpecView spec={detail.spec} />}
+        {tab === 'spec' && <SpecView spec={detail.spec} harnessSlug={harnessSlug} expertId={expertId} />}
         {tab === 'feedback' && <FeedbackList feedback={feedback} />}
         {tab === 'chat' && <ExpertChat harnessSlug={harnessSlug} expertId={expertId} />}
         {tab === 'identity' && (
@@ -266,69 +290,131 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
   );
 }
 
-function SpecView({ spec }: { spec: string }) {
+interface RelatedDocMatch {
+  title: string;
+  slug: string;
+  score: number;
+  body: string;
+  mtimeMs: number;
+}
+
+function RelatedDocFiller({ harnessSlug, expertId }: { harnessSlug: string; expertId: string }) {
+  const [match, setMatch] = useState<RelatedDocMatch | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setMatch(null); setLoading(true);
+    fetch(`/api/harness/${harnessSlug}/experts/${expertId}/related-docs`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((d) => { if (!cancelled) { setMatch(d?.match ?? null); setLoading(false); } })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [harnessSlug, expertId]);
+
+  if (loading) return null;
+  if (!match) return null;
+
+  return (
+    <div style={{ padding: '20px 24px 24px', maxWidth: 880, margin: '0 auto', color: 'var(--fg)' }}>
+      <div style={{
+        fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.06em',
+        color: 'var(--fg-dim)', marginBottom: 8,
+      }}>
+        Background reading · matched to this expert's title
+      </div>
+      <div style={{
+        padding: '14px 18px',
+        border: '1px solid var(--border)',
+        borderLeft: '3px solid var(--accent-cool)',
+        borderRadius: 6,
+        background: 'rgba(56, 189, 248, 0.04)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--fg)' }}>{match.title}</span>
+          <a
+            href={`/docs/${match.slug}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: 11, color: 'var(--fg-dim)', textDecoration: 'underline' }}
+          >open in docs ↗</a>
+          <span style={{ fontSize: 10, color: 'var(--fg-mute)', marginLeft: 'auto' }}>
+            relevance score: {match.score}
+          </span>
+        </div>
+        <div className="experts-spec-md" style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--fg-dim)' }}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{match.body}</ReactMarkdown>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SpecView({ spec, harnessSlug, expertId }: { spec: string; harnessSlug: string; expertId: string }) {
   if (!spec || !spec.trim()) {
     return (
-      <div style={{ padding: 24, color: '#6b7280', fontSize: 13 }}>
-        SPEC.md is empty — the expert hasn't drafted anything yet.
+      <div style={{ height: '100%', overflow: 'auto' }}>
+        <div style={{ padding: '20px 24px 0', color: 'var(--fg-mute)', fontSize: 13, maxWidth: 880, margin: '0 auto' }}>
+          SPEC.md is empty — the expert hasn't drafted anything yet.
+        </div>
+        <RelatedDocFiller harnessSlug={harnessSlug} expertId={expertId} />
       </div>
     );
   }
   return (
-    <div style={{ padding: '16px 24px', maxWidth: 880, margin: '0 auto' }}>
-      <div className="experts-spec-md" style={{ fontSize: 14, lineHeight: 1.6, color: '#111' }}>
+    <div style={{ padding: '16px 24px', maxWidth: 880, margin: '0 auto', color: 'var(--fg)' }}>
+      <div className="experts-spec-md" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--fg)' }}>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{spec}</ReactMarkdown>
       </div>
       <style jsx>{`
-        :global(.experts-spec-md) h1 { font-size: 22px; margin: 16px 0 8px; font-weight: 700; }
-        :global(.experts-spec-md) h2 { font-size: 18px; margin: 14px 0 6px; font-weight: 600; }
-        :global(.experts-spec-md) h3 { font-size: 15px; margin: 12px 0 4px; font-weight: 600; }
+        :global(.experts-spec-md) h1 { font-size: 22px; margin: 16px 0 8px; font-weight: 760; color: var(--fg); }
+        :global(.experts-spec-md) h2 { font-size: 18px; margin: 14px 0 6px; font-weight: 720; color: var(--fg); }
+        :global(.experts-spec-md) h3 { font-size: 15px; margin: 12px 0 4px; font-weight: 680; color: var(--fg); }
         :global(.experts-spec-md) p { margin: 8px 0; }
         :global(.experts-spec-md) ul, :global(.experts-spec-md) ol { padding-left: 22px; margin: 6px 0; }
         :global(.experts-spec-md) li { margin: 2px 0; }
-        :global(.experts-spec-md) code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12px; font-family: ui-monospace, monospace; }
-        :global(.experts-spec-md) pre { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 10px 12px; overflow-x: auto; }
+        :global(.experts-spec-md) code { background: rgba(125, 211, 252, 0.11); color: var(--accent-cool); padding: 1px 5px; border-radius: 4px; font-size: 12px; font-family: ui-monospace, monospace; }
+        :global(.experts-spec-md) pre { background: rgba(4, 10, 20, 0.58); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
         :global(.experts-spec-md) pre code { background: transparent; padding: 0; }
-        :global(.experts-spec-md) a { color: #2563eb; text-decoration: underline; }
-        :global(.experts-spec-md) blockquote { border-left: 3px solid #d1d5db; padding-left: 10px; color: #6b7280; margin: 8px 0; }
+        :global(.experts-spec-md) a { color: var(--accent-strong); text-decoration: underline; }
+        :global(.experts-spec-md) blockquote { border-left: 3px solid rgba(125, 211, 252, 0.35); padding-left: 10px; color: var(--fg-dim); margin: 8px 0; }
         :global(.experts-spec-md) table { border-collapse: collapse; margin: 8px 0; }
-        :global(.experts-spec-md) th, :global(.experts-spec-md) td { border: 1px solid #e5e7eb; padding: 6px 10px; text-align: left; }
-        :global(.experts-spec-md) th { background: #f9fafb; font-weight: 600; }
+        :global(.experts-spec-md) th, :global(.experts-spec-md) td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+        :global(.experts-spec-md) th { background: rgba(125, 211, 252, 0.08); font-weight: 650; }
       `}</style>
     </div>
   );
 }
 
 function FeedbackList({ feedback }: { feedback: FeedbackEntry[] | null }) {
-  if (!feedback) return <div style={{ padding: 16, color: '#6b7280' }}>loading…</div>;
-  if (feedback.length === 0) return <div style={{ padding: 16, color: '#6b7280' }}>No feedback agents have been spawned yet.</div>;
+  if (!feedback) return <div style={{ padding: 16, color: 'var(--fg-mute)' }}>loading…</div>;
+  if (feedback.length === 0) return <div style={{ padding: 16, color: 'var(--fg-mute)' }}>No feedback agents have been spawned yet.</div>;
   return (
     <div>
       {feedback.map((fb) => (
-        <div key={fb.id} style={{ padding: '12px 16px', borderBottom: '1px solid #f3f4f6' }}>
+        <div key={fb.id} style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-            <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: '#6b7280' }}>{fb.id}</span>
-            <span style={{ fontSize: 12, fontWeight: 500 }}>{fb.persona}</span>
-            <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, background: fb.ended ? '#16a34a' : '#d97706', color: '#fff' }}>
+            <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--fg-mute)' }}>{fb.id}</span>
+            <span style={{ fontSize: 12, fontWeight: 650, color: 'var(--fg)' }}>{fb.persona}</span>
+            <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 999, background: fb.ended ? 'var(--good)' : 'var(--warn)', color: '#051827' }}>
               {fb.ended ? 'ended' : 'in progress'}
             </span>
           </div>
           {fb.verdict && (
-            <div style={{ fontSize: 12, color: '#374151' }}>
+            <div style={{ fontSize: 12, color: 'var(--fg-dim)' }}>
               {fb.verdict.newIssues && fb.verdict.newIssues.length > 0 ? (
                 <ul style={{ margin: 0, paddingLeft: 18 }}>
                   {fb.verdict.newIssues.map((iss, i) => (
                     <li key={i} style={{ marginBottom: 2 }}>
                       <span style={{ fontWeight: 500 }}>[{iss.severity}]</span> {iss.summary}
-                      {iss.specLines && <span style={{ color: '#6b7280' }}> ({iss.specLines})</span>}
+                      {iss.specLines && <span style={{ color: 'var(--fg-mute)' }}> ({iss.specLines})</span>}
                     </li>
                   ))}
                 </ul>
               ) : (
-                <span style={{ color: '#16a34a' }}>no new issues — convergence signal</span>
+                <span style={{ color: 'var(--good)' }}>no new issues — convergence signal</span>
               )}
               {fb.verdict.coversPriorIssues && fb.verdict.coversPriorIssues.length > 0 && (
-                <div style={{ fontSize: 11, color: '#6b7280', marginTop: 4 }}>
+                <div style={{ fontSize: 11, color: 'var(--fg-mute)', marginTop: 4 }}>
                   also independently raised: {fb.verdict.coversPriorIssues.join(', ')}
                 </div>
               )}
@@ -376,14 +462,14 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
 
   return (
     <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+      position: 'fixed', inset: 0, background: 'rgba(2, 6, 12, 0.64)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, backdropFilter: 'blur(6px)',
     }}>
       <div style={{
-        background: '#fff', borderRadius: 8, width: 520, maxWidth: '90vw', maxHeight: '90vh',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        background: 'linear-gradient(180deg, rgba(11,18,32,0.98), rgba(4,10,20,0.98))', borderRadius: 14, width: 520, maxWidth: '90vw', maxHeight: '90vh',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid var(--border)', boxShadow: '0 24px 70px rgba(0,0,0,0.42)', color: 'var(--fg)',
       }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid #e5e7eb', fontWeight: 600 }}>Spawn expert</div>
+        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontWeight: 700, background: 'rgba(255,255,255,0.035)' }}>Spawn expert</div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
           <label style={{ fontSize: 12, fontWeight: 500 }}>
             Title
@@ -553,12 +639,12 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
     }
   };
 
-  if (error) return <div style={{ padding: 16, color: '#dc2626' }}>{error}</div>;
-  if (chat === null) return <div style={{ padding: 16, color: '#6b7280' }}>loading…</div>;
+  if (error) return <div style={{ padding: 16, color: 'var(--bad)' }}>{error}</div>;
+  if (chat === null) return <div style={{ padding: 16, color: 'var(--fg-mute)' }}>loading…</div>;
   if (chat === 'none') {
     return (
       <div style={{ padding: 24 }}>
-        <div style={{ fontSize: 13, color: '#374151', marginBottom: 12 }}>
+        <div style={{ fontSize: 13, color: 'var(--fg-dim)', marginBottom: 12 }}>
           No chat open with this expert yet. Opening a chat pauses the expert's autonomous loop
           (status → <code>awaiting_user</code>) until you close it.
         </div>
@@ -569,15 +655,15 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: '6px 12px', borderBottom: '1px solid #f3f4f6', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#fefce8' }}>
-        <div style={{ fontSize: 11, color: '#78350f' }}>
+      <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--warn-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--warn-bg)' }}>
+        <div style={{ fontSize: 11, color: 'var(--warn)' }}>
           ⏸ Autonomous loop paused while this chat is open.
         </div>
         <button onClick={archiveChat} style={btnSecondary}>close chat</button>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: '8px 16px' }}>
         {chat.transcript.length === 0 && (
-          <div style={{ color: '#6b7280', fontSize: 13, padding: 16, textAlign: 'center' }}>
+          <div style={{ color: 'var(--fg-mute)', fontSize: 13, padding: 16, textAlign: 'center' }}>
             Send a message to start.
           </div>
         )}
@@ -588,11 +674,11 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
           <ChatTurnView turn={{ role: 'assistant', content: streamText, ts: new Date().toISOString() }} streaming />
         )}
         {streaming && !streamText && (
-          <div style={{ padding: '6px 12px', color: '#6b7280', fontSize: 12 }}>thinking…</div>
+          <div style={{ padding: '6px 12px', color: 'var(--fg-mute)', fontSize: 12 }}>thinking…</div>
         )}
         <div ref={transcriptEndRef} />
       </div>
-      <div style={{ borderTop: '1px solid #e5e7eb', padding: 8, display: 'flex', gap: 6 }}>
+      <div style={{ borderTop: '1px solid var(--border)', padding: 8, display: 'flex', gap: 6 }}>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -602,7 +688,7 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
           placeholder="Type a message…  (⌘↵ to send)"
           rows={2}
           disabled={streaming}
-          style={{ flex: 1, fontSize: 13, padding: 8, border: '1px solid #d1d5db', borderRadius: 4, fontFamily: 'inherit', resize: 'vertical' }}
+          style={{ flex: 1, fontSize: 13, padding: 8, border: '1px solid var(--border)', borderRadius: 8, fontFamily: 'inherit', resize: 'vertical', background: 'rgba(4,10,20,0.58)', color: 'var(--fg)' }}
         />
         <button onClick={send} disabled={!draft.trim() || streaming} style={{ ...btnPrimary, alignSelf: 'flex-end', opacity: !draft.trim() || streaming ? 0.5 : 1 }}>
           send
@@ -619,9 +705,9 @@ function ChatTurnView({ turn, streaming }: { turn: ChatTurn; streaming?: boolean
       <div
         style={{
           maxWidth: '80%',
-          background: isUser ? '#2563eb' : '#f3f4f6',
-          color: isUser ? '#fff' : '#111',
-          padding: '8px 12px', borderRadius: 8, fontSize: 13, lineHeight: 1.5,
+          background: isUser ? 'linear-gradient(135deg, var(--accent), var(--accent-strong))' : 'rgba(125, 211, 252, 0.10)',
+          color: isUser ? 'var(--accent-ink)' : 'var(--fg)',
+          padding: '8px 12px', borderRadius: 10, fontSize: 13, lineHeight: 1.5,
           whiteSpace: 'pre-wrap', wordBreak: 'break-word',
           opacity: streaming ? 0.85 : 1,
         }}
@@ -635,14 +721,15 @@ function ChatTurnView({ turn, streaming }: { turn: ChatTurn; streaming?: boolean
 // ─── Styles ──────────────────────────────────────────────────────────────
 
 const btnSecondary: React.CSSProperties = {
-  padding: '4px 10px', fontSize: 11, border: '1px solid #d1d5db',
-  background: '#fff', borderRadius: 4, cursor: 'pointer', color: '#374151',
+  padding: '4px 10px', fontSize: 11, border: '1px solid var(--border)',
+  background: 'rgba(255,255,255,0.045)', borderRadius: 8, cursor: 'pointer', color: 'var(--fg-dim)',
 };
 const btnPrimary: React.CSSProperties = {
-  padding: '4px 10px', fontSize: 11, border: 'none',
-  background: '#2563eb', borderRadius: 4, cursor: 'pointer', color: '#fff', fontWeight: 500,
+  padding: '4px 10px', fontSize: 11, border: '1px solid rgba(125,211,252,0.48)',
+  background: 'linear-gradient(135deg, var(--accent-strong), var(--accent))', borderRadius: 8, cursor: 'pointer', color: 'var(--accent-ink)', fontWeight: 700,
 };
 const inputStyle: React.CSSProperties = {
-  display: 'block', marginTop: 4, padding: '6px 8px', fontSize: 13,
-  border: '1px solid #d1d5db', borderRadius: 4, width: '100%', fontFamily: 'inherit',
+  display: 'block', marginTop: 4, padding: '7px 9px', fontSize: 13,
+  border: '1px solid var(--border)', borderRadius: 8, width: '100%', fontFamily: 'inherit',
+  background: 'rgba(4,10,20,0.58)', color: 'var(--fg)',
 };
