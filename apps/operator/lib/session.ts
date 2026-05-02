@@ -13,8 +13,8 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 
 import { papercuspRoot } from '@/lib/papercusp-root';
-const ROOT = papercuspRoot();
-const PROFILE_PATH = join(ROOT, 'profile.json');
+
+function PROFILE_PATH() { return join(papercuspRoot(), 'profile.json'); }
 
 export interface Profile {
   email?: string;
@@ -33,7 +33,7 @@ export interface Profile {
 
 export async function readProfile(): Promise<Profile> {
   try {
-    const raw = await fs.readFile(PROFILE_PATH, 'utf8');
+    const raw = await fs.readFile(PROFILE_PATH(), 'utf8');
     const parsed = JSON.parse(raw);
     return typeof parsed === 'object' && parsed ? parsed : {};
   } catch (e: any) {
@@ -43,11 +43,11 @@ export async function readProfile(): Promise<Profile> {
 }
 
 export async function writeProfile(profile: Profile): Promise<Profile> {
-  await fs.mkdir(ROOT, { recursive: true, mode: 0o700 });
+  await fs.mkdir(papercuspRoot(), { recursive: true, mode: 0o700 });
   const next: Profile = { ...profile, updated_at: new Date().toISOString() };
-  await fs.writeFile(PROFILE_PATH, JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
-  await fs.chmod(PROFILE_PATH, 0o600);
+  await fs.writeFile(PROFILE_PATH(), JSON.stringify(next, null, 2), { encoding: 'utf8', mode: 0o600 });
+  await fs.chmod(PROFILE_PATH(), 0o600);
   return next;
 }
 
-export const PROFILE_PATH_CONST = PROFILE_PATH;
+export function PROFILE_PATH_CONST() { return PROFILE_PATH(); }

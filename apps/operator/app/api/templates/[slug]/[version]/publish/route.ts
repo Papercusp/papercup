@@ -21,13 +21,10 @@ const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localho
 const MARKETPLACE_SITE_URL =
   process.env.PAPERCUSP_MARKETPLACE_SITE_URL ?? 'http://localhost:3060';
 
-const SECRETS_PATH = (() => {
-  const candidates = [
-    join(homedir(), '.papercusp-workspaces', 'default', '.papercusp', 'marketplace-secrets.env'),
-    papercuspPath('marketplace-secrets.env'),
-  ];
-  return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1];
-})();
+// Marketplace secrets are per-workspace; resolve at call time.
+function secretsPath(): string {
+  return papercuspPath('marketplace-secrets.env');
+}
 
 interface Body {
   marketplaceSlug?: string;
@@ -179,7 +176,7 @@ async function recordPublish(dir: string, rec: PublishRecord): Promise<void> {
 
 async function readServiceToken(): Promise<string | null> {
   try {
-    const raw = await fs.readFile(SECRETS_PATH, 'utf8');
+    const raw = await fs.readFile(secretsPath(), 'utf8');
     for (const line of raw.split('\n')) {
       const m = /^PAPERCUSP_MARKETPLACE_SERVICE_TOKENS\s*=\s*'(.+?)'\s*$/.exec(line.trim());
       if (m) {

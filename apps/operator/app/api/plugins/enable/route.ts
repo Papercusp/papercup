@@ -31,7 +31,7 @@ function isValidPluginSlug(s: string): boolean {
   return /^@?[a-z0-9][a-z0-9._/-]{0,127}$/i.test(s);
 }
 
-const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
+function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 
 function isValidHarnessSlug(s: string): boolean {
   return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(s);
@@ -61,7 +61,7 @@ export async function POST(req: Request) {
   // `requiresTemplateKinds[]` excludes any of the target harnesses' kinds.
   // Disabling is always allowed regardless of kind.
   if (verb === 'enable') {
-    const required = await readPluginRequiresTemplateKinds(join(GLOBAL_PLUGINS_DIR, cliSlug));
+    const required = await readPluginRequiresTemplateKinds(join(GLOBAL_PLUGINS_DIR(), cliSlug));
     if (required && required.length > 0) {
       const incompatible: { harness: string; kind: string }[] = [];
       for (const h of harnesses) {

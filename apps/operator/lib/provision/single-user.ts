@@ -115,11 +115,11 @@ function signatureOf(signals: DetectionSignals): string {
   return `a:${a}|c:${c}`;
 }
 
-const ACK_PATH = papercuspPath('single-user-acknowledged');
+function ACK_PATH() { return papercuspPath('single-user-acknowledged'); }
 
 export async function readAcknowledgement(): Promise<AckRecord | null> {
   try {
-    const raw = await fs.readFile(ACK_PATH, 'utf8');
+    const raw = await fs.readFile(ACK_PATH(), 'utf8');
     return JSON.parse(raw) as AckRecord;
   } catch {
     return null;
@@ -127,12 +127,12 @@ export async function readAcknowledgement(): Promise<AckRecord | null> {
 }
 
 export async function writeAcknowledgement(signals: DetectionSignals): Promise<void> {
-  await fs.mkdir(join(ACK_PATH, '..'), { recursive: true });
+  await fs.mkdir(join(ACK_PATH(), '..'), { recursive: true });
   const record: AckRecord = {
     acknowledgedAt: new Date().toISOString(),
     signature: signatureOf(signals),
   };
-  await fs.writeFile(ACK_PATH, JSON.stringify(record, null, 2));
+  await fs.writeFile(ACK_PATH(), JSON.stringify(record, null, 2));
 }
 
 /**

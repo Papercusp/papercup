@@ -23,10 +23,10 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { papercuspRoot } from '@/lib/papercusp-root';
-const PAPERCUSP_ROOT = papercuspRoot();
-const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
-const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
-const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
+
+function HARNESSES_DIR() { return join(papercuspRoot(), 'harnesses'); }
+function GLOBAL_PLUGINS_DIR() { return join(papercuspRoot(), 'global-plugins'); }
+function REGISTRY_PATH() { return join(papercuspRoot(), 'registry.json'); }
 
 
 /**
@@ -301,7 +301,7 @@ plugins.post('/runtime/fire-event', async (c) => {
 });
 
 plugins.get('/global', async (c) => {
-  const items = await listPluginsIn(GLOBAL_PLUGINS_DIR, 'global');
+  const items = await listPluginsIn(GLOBAL_PLUGINS_DIR(), 'global');
   return c.json({ plugins: items });
 });
 
@@ -321,14 +321,14 @@ plugins.get('/:slug/installed', async (c) => {
   // --from <X>`, those plugins were copied; but if a project is registered
   // independently, we still want to surface what plugins exist for the
   // harness templates the user has installed.)
-  if (existsSync(HARNESSES_DIR)) {
-    const harnessDirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true }).catch(() => []);
+  if (existsSync(HARNESSES_DIR())) {
+    const harnessDirs = await fs.readdir(HARNESSES_DIR(), { withFileTypes: true }).catch(() => []);
     for (const h of harnessDirs) {
       if (!h.isDirectory()) continue;
-      sources.push({ name: h.name, dir: join(HARNESSES_DIR, h.name, 'plugins'), source: 'harness' });
+      sources.push({ name: h.name, dir: join(HARNESSES_DIR(), h.name, 'plugins'), source: 'harness' });
     }
   }
-  sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR, source: 'global' });
+  sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR(), source: 'global' });
 
   const seen = new Set<string>();
   const items: Array<PluginManifest & { source: string; path: string }> = [];
@@ -352,14 +352,14 @@ plugins.get('/:slug/installed', async (c) => {
  */
 plugins.get('/', async (c) => {
   const sources: Array<{ dir: string; source: 'project' | 'harness' | 'global' }> = [];
-  if (existsSync(HARNESSES_DIR)) {
-    const harnessDirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true }).catch(() => []);
+  if (existsSync(HARNESSES_DIR())) {
+    const harnessDirs = await fs.readdir(HARNESSES_DIR(), { withFileTypes: true }).catch(() => []);
     for (const h of harnessDirs) {
       if (!h.isDirectory()) continue;
-      sources.push({ dir: join(HARNESSES_DIR, h.name, 'plugins'), source: 'harness' });
+      sources.push({ dir: join(HARNESSES_DIR(), h.name, 'plugins'), source: 'harness' });
     }
   }
-  sources.push({ dir: GLOBAL_PLUGINS_DIR, source: 'global' });
+  sources.push({ dir: GLOBAL_PLUGINS_DIR(), source: 'global' });
 
   const seen = new Set<string>();
   const items: Array<PluginManifest & { source: string; path: string }> = [];
@@ -390,14 +390,14 @@ plugins.get('/:slug/contributions', async (c) => {
   if (projectPath) {
     sources.push({ name: slug, dir: join(projectPath, 'plugins'), source: 'project' });
   }
-  if (existsSync(HARNESSES_DIR)) {
-    const harnessDirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true }).catch(() => []);
+  if (existsSync(HARNESSES_DIR())) {
+    const harnessDirs = await fs.readdir(HARNESSES_DIR(), { withFileTypes: true }).catch(() => []);
     for (const h of harnessDirs) {
       if (!h.isDirectory()) continue;
-      sources.push({ name: h.name, dir: join(HARNESSES_DIR, h.name, 'plugins'), source: 'harness' });
+      sources.push({ name: h.name, dir: join(HARNESSES_DIR(), h.name, 'plugins'), source: 'harness' });
     }
   }
-  sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR, source: 'global' });
+  sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR(), source: 'global' });
 
   // Per-harness opt-in (Phase D): only surface plugins that are explicitly
   // enabled in <harness>/enabled-plugins.json. Plugins bundled inside the
@@ -406,7 +406,7 @@ plugins.get('/:slug/contributions', async (c) => {
   // install. Only `source=global` is gated.
   type EnabledFile = { enabled: Record<string, { version: string }> };
   const enabledFile = await readJson<EnabledFile>(
-    join(HARNESSES_DIR, slug, 'enabled-plugins.json'),
+    join(HARNESSES_DIR(), slug, 'enabled-plugins.json'),
   );
   const enabledSet = new Set<string>(enabledFile ? Object.keys(enabledFile.enabled) : []);
 
@@ -434,7 +434,7 @@ plugins.get('/:slug/contributions', async (c) => {
       const pluginRoot = (p as PluginManifest & { componentRoot?: string }).componentRoot;
       // Per-harness plugin config (operator overrides for iframeUrlConfigKey).
       const harnessConfig = await readJson<Record<string, unknown>>(
-        join(HARNESSES_DIR, slug, 'plugin-configs', `${p.name}.json`),
+        join(HARNESSES_DIR(), slug, 'plugin-configs', `${p.name}.json`),
       );
       for (const tab of p.dashboardTabs ?? []) {
         const resolvedIframeUrl = resolveIframeUrl(p, tab, harnessConfig, slug);

@@ -23,9 +23,9 @@ import { randomUUID } from 'node:crypto';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { runClaudeChat } from '@/lib/claude-chat-stream';
-const ORACLE_DIR = papercuspPath('oracle');
-const PROMPT_PATH = join(ORACLE_DIR, 'prompt.md');
-const MEMORY_PATH = join(ORACLE_DIR, 'memory.md');
+function ORACLE_DIR() { return papercuspPath('oracle'); }
+function PROMPT_PATH() { return join(ORACLE_DIR(), 'prompt.md'); }
+function MEMORY_PATH() { return join(ORACLE_DIR(), 'memory.md'); }
 const MCP_SERVER_PATH = join(process.cwd(), 'lib', 'oracle-mcp-server.mjs');
 
 /**
@@ -79,7 +79,7 @@ const TUTORIAL_STEPS: TutorialStep[] = [
     id: 'harness-list',
     navigate: '/harness',
     body:
-      'Explain: this is the home base. A *harness* is a project with a crew of role-scoped agents (architect, orchestrator, worker, validator, plan-gate, documenter, debugger, project_manager). From here they pick an existing harness or create a new one. Mention they can spin one up from a marketplace template later in the tour.',
+      'Explain: this is the home base. A *harness* is a project with a crew of role-scoped agents (architect, orchestrator, worker, validator, reviewer, documenter, debugger, project_manager). From here they pick an existing harness or create a new one. Mention they can spin one up from a marketplace template later in the tour.',
     closer: 'End with: "Say **next** to continue, or **stop** to exit."',
   },
   {
@@ -167,10 +167,10 @@ Examples:
 `;
 
 async function ensureDefaults() {
-  await fs.mkdir(ORACLE_DIR, { recursive: true, mode: 0o700 });
+  await fs.mkdir(ORACLE_DIR(), { recursive: true, mode: 0o700 });
   for (const [path, content] of [
-    [PROMPT_PATH, DEFAULT_PROMPT],
-    [MEMORY_PATH, DEFAULT_MEMORY],
+    [PROMPT_PATH(), DEFAULT_PROMPT],
+    [MEMORY_PATH(), DEFAULT_MEMORY],
   ] as const) {
     try { await fs.access(path); }
     catch { await fs.writeFile(path, content, { mode: 0o600 }); }
@@ -180,10 +180,10 @@ async function ensureDefaults() {
 async function readConfig() {
   await ensureDefaults();
   const [prompt, memory] = await Promise.all([
-    fs.readFile(PROMPT_PATH, 'utf8'),
-    fs.readFile(MEMORY_PATH, 'utf8'),
+    fs.readFile(PROMPT_PATH(), 'utf8'),
+    fs.readFile(MEMORY_PATH(), 'utf8'),
   ]);
-  return { prompt, memory, prompt_path: PROMPT_PATH, memory_path: MEMORY_PATH };
+  return { prompt, memory, prompt_path: PROMPT_PATH(), memory_path: MEMORY_PATH() };
 }
 
 export function registerOracle(app: Hono) {
@@ -193,10 +193,10 @@ export function registerOracle(app: Hono) {
     const body = await c.req.json().catch(() => ({}));
     await ensureDefaults();
     if (typeof body.prompt === 'string') {
-      await fs.writeFile(PROMPT_PATH, body.prompt, { mode: 0o600 });
+      await fs.writeFile(PROMPT_PATH(), body.prompt, { mode: 0o600 });
     }
     if (typeof body.memory === 'string') {
-      await fs.writeFile(MEMORY_PATH, body.memory, { mode: 0o600 });
+      await fs.writeFile(MEMORY_PATH(), body.memory, { mode: 0o600 });
     }
     return c.json(await readConfig());
   });
@@ -221,7 +221,7 @@ export function registerOracle(app: Hono) {
       `  - mcp__oracle__navigate({ path }): navigate the user's browser to a path (e.g. "/harness", "/marketplace/templates"). Don't ask permission — just navigate and tell them where you went.\n` +
       `  - mcp__oracle__listHarnesses(): list all registered harnesses (slug, path, hasState, hasSpec). Use to answer "what harnesses do I have" or to look up a slug before navigating.\n` +
       `  - mcp__oracle__getHarnessStatus({ slug }): get the current state of a harness — feature counts by status, recent features, and a summary excerpt. Use for "what's the state of <slug>", "is X done", "what is X working on".\n` +
-      `  - mcp__oracle__dispatchToAgent({ slug, role, message, featureId? }): start a chat with a role-scoped agent in a harness and send the first message. Roles include architect, orchestrator, scoper, worker, validator, plan-gate, documenter, debugger, project_manager. The user is auto-navigated to the harness and the chat opens. Use when the user says things like "ask the architect to ..." or "have the orchestrator do ...".\n` +
+      `  - mcp__oracle__dispatchToAgent({ slug, role, message, featureId? }): start a chat with a role-scoped agent in a harness and send the first message. Roles include architect, orchestrator, scoper, worker, validator, reviewer, documenter, debugger, project_manager. The user is auto-navigated to the harness and the chat opens. Use when the user says things like "ask the architect to ..." or "have the orchestrator do ...".\n` +
       `  - mcp__oracle__listChats({ slug, role? }): list recent chats in a harness (id, role, title, message_count, updated_at), optionally filtered by role. Use before resumeChat to find a chatId, or to answer "what chats have I had with X".\n` +
       `  - mcp__oracle__resumeChat({ slug, chatId }): re-open an existing chat (use listChats to discover the id).\n`;
 
@@ -266,30 +266,83 @@ export function registerOracle(app: Hono) {
 
       let costUsd = 0;
       try {
+        // Oracle gets two MCP servers:
+        //   1. `oracle` — UI-routing tools (navigate, resumeChat,
+        //      dispatchToAgent's UI side). Lives in lib/oracle-mcp-server.mjs.
+        //   2. `agentmcp` — workspace-state reads (tasks, goals, harness
+        //      status, audit, hindsight, search) shared with Operator and pi.
+        //      Bearer is loaded from the system:oracle config file if
+        //      provisioned; absent, agentmcp tools are simply unavailable.
+        let oracleBearer: string | null = null;
+        try {
+          const oraclePrincipalPath = papercuspPath('system', 'oracle', 'config.json');
+          if ((await import('node:fs')).existsSync(oraclePrincipalPath)) {
+            const cfg = JSON.parse(
+              (await import('node:fs')).readFileSync(oraclePrincipalPath, 'utf8'),
+            ) as { bearer?: string };
+            oracleBearer = cfg.bearer ?? null;
+          }
+        } catch {
+          oracleBearer = null;
+        }
+        const agentMcpPath = join(
+          process.cwd(),
+          'packages/agent-mcp/src/server-entry.ts',
+        );
+        const tsxBin = join(process.cwd(), 'node_modules/.bin/tsx');
+        const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
+          oracle: {
+            command: 'node',
+            args: [MCP_SERVER_PATH],
+            env: { ORACLE_SESSION_ID: sessionId, ORACLE_BASE: oracleBase },
+          },
+        };
+        if (oracleBearer) {
+          mcpServers.agentmcp = {
+            command: tsxBin,
+            args: [agentMcpPath],
+            env: {
+              AGENT_MCP_BEARER: oracleBearer,
+              OPERATOR_BASE_URL: oracleBase,
+            },
+          };
+        }
+        const allowedTools = [
+          'mcp__oracle__navigate',
+          'mcp__oracle__listHarnesses',
+          'mcp__oracle__dispatchToAgent',
+          'mcp__oracle__getHarnessStatus',
+          'mcp__oracle__listChats',
+          'mcp__oracle__resumeChat',
+        ];
+        if (oracleBearer) {
+          allowedTools.push(
+            'mcp__agentmcp__harness:list',
+            'mcp__agentmcp__harness:get',
+            'mcp__agentmcp__harness:status',
+            'mcp__agentmcp__tasks:list',
+            'mcp__agentmcp__tasks:get',
+            'mcp__agentmcp__goals:list',
+            'mcp__agentmcp__goals:get',
+            'mcp__agentmcp__messages:inbox',
+            'mcp__agentmcp__messages:outbox',
+            'mcp__agentmcp__audit:list',
+            'mcp__agentmcp__hindsight:recall',
+            'mcp__agentmcp__search:query',
+          );
+        }
         const stream = runClaudeChat({
           promptText,
-          mcpConfig: {
-            mcpServers: {
-              oracle: {
-                command: 'node',
-                args: [MCP_SERVER_PATH],
-                env: { ORACLE_SESSION_ID: sessionId, ORACLE_BASE: oracleBase },
-              },
-            },
-          },
-          allowedTools: [
-            'mcp__oracle__navigate',
-            'mcp__oracle__listHarnesses',
-            'mcp__oracle__dispatchToAgent',
-            'mcp__oracle__getHarnessStatus',
-            'mcp__oracle__listChats',
-            'mcp__oracle__resumeChat',
-          ],
-          // Strip the mcp__oracle__ prefix when surfacing tool_call events,
-          // so the dock shows "navigate" / "listHarnesses" rather than the
+          mcpConfig: { mcpServers },
+          allowedTools,
+          // Strip the mcp__<server>__ prefix when surfacing tool_call events,
+          // so the dock shows "navigate" / "harness:list" rather than the
           // full MCP-mangled name.
-          toolEventFilter: (raw) =>
-            raw.startsWith('mcp__oracle__') ? raw.replace(/^mcp__oracle__/, '') : null,
+          toolEventFilter: (raw) => {
+            if (raw.startsWith('mcp__oracle__')) return raw.replace(/^mcp__oracle__/, '');
+            if (raw.startsWith('mcp__agentmcp__')) return raw.replace(/^mcp__agentmcp__/, '');
+            return null;
+          },
           permissionMode: 'bypassPermissions',
         });
 

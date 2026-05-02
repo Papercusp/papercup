@@ -28,9 +28,9 @@ export const runtime = 'nodejs';
  * Save also bumps the harness's `enabled-plugins.json` configHash so the
  * substrate's plugin loader sees the change on next reload.
  */
-const PAPERCUSP_ROOT = papercuspRoot();
-const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
-const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
+
+function HARNESSES_DIR() { return join(papercuspRoot(), 'harnesses'); }
+function GLOBAL_PLUGINS_DIR() { return join(papercuspRoot(), 'global-plugins'); }
 
 /**
  * Strip any field whose value equals the manifest's schema default. Mirrors
@@ -77,8 +77,8 @@ async function findPluginManifest(harness: string, inputSlug: string): Promise<{
   canonicalName: string;
 } | null> {
   const sources = [
-    join(HARNESSES_DIR, harness, 'plugins'),
-    GLOBAL_PLUGINS_DIR,
+    join(HARNESSES_DIR(), harness, 'plugins'),
+    GLOBAL_PLUGINS_DIR(),
   ];
   for (const dir of sources) {
     const items = await listPluginsIn(dir, 'global');
@@ -121,8 +121,8 @@ export async function GET(req: Request) {
   const canonicalSlug = m?.canonicalName ?? plugin;
   // Read canonical first; fall back to whatever the caller named (handles
   // back-compat with files written under dir-basename before canonicalisation).
-  const canonicalPath = join(HARNESSES_DIR, harness, 'plugin-configs', `${canonicalSlug}.json`);
-  const fallbackPath = join(HARNESSES_DIR, harness, 'plugin-configs', `${plugin}.json`);
+  const canonicalPath = join(HARNESSES_DIR(), harness, 'plugin-configs', `${canonicalSlug}.json`);
+  const fallbackPath = join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`);
   const config =
     (await readJson<Record<string, unknown>>(canonicalPath))
     ?? (await readJson<Record<string, unknown>>(fallbackPath))
@@ -147,12 +147,12 @@ export async function PUT(req: Request) {
   const canonicalSlug = m?.canonicalName ?? plugin;
   const pruned = pruneSchemaDefaults(cfg as Record<string, unknown>, m?.schema ?? null);
 
-  const configPath = join(HARNESSES_DIR, harness, 'plugin-configs', `${canonicalSlug}.json`);
+  const configPath = join(HARNESSES_DIR(), harness, 'plugin-configs', `${canonicalSlug}.json`);
   await writeJson(configPath, pruned);
   // Migrate-on-write: if the caller used a non-canonical slug and a file
   // exists at that legacy path, retire it now to prevent drift.
   if (canonicalSlug !== plugin) {
-    const legacyPath = join(HARNESSES_DIR, harness, 'plugin-configs', `${plugin}.json`);
+    const legacyPath = join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`);
     if (existsSync(legacyPath)) {
       try { await fs.unlink(legacyPath); } catch (e) {
         console.warn('[plugins/config] failed to unlink legacy path', legacyPath, e);
@@ -164,7 +164,7 @@ export async function PUT(req: Request) {
   }
 
   // Bump enabled-plugins.json configHash so the substrate sees the change.
-  const enabledPath = join(HARNESSES_DIR, harness, 'enabled-plugins.json');
+  const enabledPath = join(HARNESSES_DIR(), harness, 'enabled-plugins.json');
   const enabled = (await readJson<{ enabled: Record<string, { version: string; enabledAt: string; configHash: string }> }>(enabledPath))
     ?? { enabled: {} };
   // enabled-plugins.json may key by either canonical or legacy slug; bump

@@ -12,8 +12,8 @@ export const runtime = 'nodejs';
  * import. Bypasses the Hono catch-all `[[...route]]` to avoid that route's
  * pre-existing orchestrator-import compile cost (~8-13s in dev).
  */
-const PAPERCUSP_ROOT = papercuspRoot();
-const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
+
+function GLOBAL_PLUGINS_DIR() { return join(papercuspRoot(), 'global-plugins'); }
 
 interface PluginManifest {
   name: string;
@@ -29,18 +29,18 @@ async function readJson<T>(path: string): Promise<T | null> {
 }
 
 export async function GET() {
-  if (!existsSync(GLOBAL_PLUGINS_DIR)) return NextResponse.json({ plugins: [] });
-  const entries = await fs.readdir(GLOBAL_PLUGINS_DIR, { withFileTypes: true }).catch(() => []);
+  if (!existsSync(GLOBAL_PLUGINS_DIR())) return NextResponse.json({ plugins: [] });
+  const entries = await fs.readdir(GLOBAL_PLUGINS_DIR(), { withFileTypes: true }).catch(() => []);
   const plugins: Array<PluginManifest & { source: string; path: string }> = [];
   for (const e of entries) {
     if (e.name.startsWith('.')) continue;
     let isDirOrLinkToDir = e.isDirectory();
     if (!isDirOrLinkToDir && e.isSymbolicLink()) {
-      const stat = await fs.stat(join(GLOBAL_PLUGINS_DIR, e.name)).catch(() => null);
+      const stat = await fs.stat(join(GLOBAL_PLUGINS_DIR(), e.name)).catch(() => null);
       isDirOrLinkToDir = stat?.isDirectory() ?? false;
     }
     if (!isDirOrLinkToDir) continue;
-    const dir = join(GLOBAL_PLUGINS_DIR, e.name);
+    const dir = join(GLOBAL_PLUGINS_DIR(), e.name);
     const m = await readJson<PluginManifest>(join(dir, 'papercusp.json'));
     if (m?.name && m?.version) {
       plugins.push({ ...m, source: 'global', path: dir });

@@ -12,8 +12,7 @@
  */
 
 import { NextResponse } from 'next/server';
-import { existsSync, promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
+import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
@@ -24,15 +23,12 @@ export const runtime = 'nodejs';
 export const maxDuration = 600;
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
-// The marketplace secrets file moved with the workspace migration. Try the
-// active workspace first, then default, then the legacy path.
-const SECRETS_PATH = (() => {
-  const candidates = [
-    join(homedir(), '.papercusp-workspaces', 'default', '.papercusp', 'marketplace-secrets.env'),
-    papercuspPath('marketplace-secrets.env'),
-  ];
-  return candidates.find((p) => existsSync(p)) ?? candidates[candidates.length - 1];
-})();
+// Marketplace secrets are per-workspace. Resolve at call time so workspace
+// switches take effect without an operator restart, and so we never fall
+// through to another workspace's identity.
+function secretsPath(): string {
+  return papercuspPath('marketplace-secrets.env');
+}
 
 interface Body {
   /** Override marketplace slug. Defaults to `<harness>-snapshot-<yyyymmdd>-iter1`. */
@@ -205,7 +201,7 @@ function buildMarketplaceManifest(
 
 async function readServiceToken(): Promise<string | null> {
   try {
-    const raw = await fs.readFile(SECRETS_PATH, 'utf8');
+    const raw = await fs.readFile(secretsPath(), 'utf8');
     // Format example:
     //   PAPERCUSP_MARKETPLACE_SERVICE_TOKENS='[{"token":"...","login":"papercupai"}]'
     for (const line of raw.split('\n')) {

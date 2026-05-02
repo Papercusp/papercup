@@ -48,13 +48,13 @@ export interface TrustStore {
   blocklist: string[];
 }
 
-const TRUST_PATH = papercuspPath('trust.json');
+function TRUST_PATH() { return papercuspPath('trust.json'); }
 
 const EMPTY: TrustStore = { entries: [], rotations: [], blocklist: [] };
 
 export async function readTrustStore(): Promise<TrustStore> {
   try {
-    const raw = await fs.readFile(TRUST_PATH, 'utf8');
+    const raw = await fs.readFile(TRUST_PATH(), 'utf8');
     const j = JSON.parse(raw) as Partial<TrustStore>;
     return { ...EMPTY, ...j };
   } catch {
@@ -63,8 +63,8 @@ export async function readTrustStore(): Promise<TrustStore> {
 }
 
 async function writeTrustStore(store: TrustStore): Promise<void> {
-  await fs.mkdir(join(TRUST_PATH, '..'), { recursive: true });
-  await fs.writeFile(TRUST_PATH, JSON.stringify(store, null, 2), { mode: 0o600 });
+  await fs.mkdir(join(TRUST_PATH(), '..'), { recursive: true });
+  await fs.writeFile(TRUST_PATH(), JSON.stringify(store, null, 2), { mode: 0o600 });
 }
 
 /**

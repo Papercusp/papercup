@@ -34,7 +34,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
-const SECRETS_PATH = papercuspPath('marketplace-secrets.env');
+function SECRETS_PATH() { return papercuspPath('marketplace-secrets.env'); }
 
 const VALID_ACTIONS = ['deprecate', 'undeprecate', 'withdraw', 'unwithdraw', 'yank'] as const;
 type RetractAction = (typeof VALID_ACTIONS)[number];
@@ -132,7 +132,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
 async function readServiceToken(): Promise<string | null> {
   try {
-    const raw = await fs.readFile(SECRETS_PATH, 'utf8');
+    const raw = await fs.readFile(SECRETS_PATH(), 'utf8');
     for (const line of raw.split('\n')) {
       const m = /^PAPERCUSP_MARKETPLACE_SERVICE_TOKENS\s*=\s*'(.+?)'\s*$/.exec(line.trim());
       if (m) {

@@ -2,8 +2,8 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 
 import { papercuspRoot } from '@/lib/papercusp-root';
-const ROOT = papercuspRoot();
-const CREDS_PATH = join(ROOT, 'credentials.json');
+
+function CREDS_PATH() { return join(papercuspRoot(), 'credentials.json'); }
 
 export interface Credentials {
   anthropic_api_key?: string;
@@ -14,7 +14,7 @@ export interface Credentials {
 
 export async function readCredentials(): Promise<Credentials> {
   try {
-    const raw = await fs.readFile(CREDS_PATH, 'utf8');
+    const raw = await fs.readFile(CREDS_PATH(), 'utf8');
     const parsed = JSON.parse(raw);
     return typeof parsed === 'object' && parsed ? parsed : {};
   } catch (e: any) {
@@ -24,11 +24,11 @@ export async function readCredentials(): Promise<Credentials> {
 }
 
 export async function writeCredentials(creds: Credentials): Promise<Credentials> {
-  await fs.mkdir(ROOT, { recursive: true, mode: 0o700 });
+  await fs.mkdir(papercuspRoot(), { recursive: true, mode: 0o700 });
   const next: Credentials = { ...creds, updated_at: new Date().toISOString() };
   const body = JSON.stringify(next, null, 2);
-  await fs.writeFile(CREDS_PATH, body, { encoding: 'utf8', mode: 0o600 });
-  await fs.chmod(CREDS_PATH, 0o600);
+  await fs.writeFile(CREDS_PATH(), body, { encoding: 'utf8', mode: 0o600 });
+  await fs.chmod(CREDS_PATH(), 0o600);
   return next;
 }
 
@@ -47,8 +47,8 @@ export function maskCredentials(creds: Credentials) {
     openai_api_key: maskSecret(creds.openai_api_key),
     github_pat: maskSecret(creds.github_pat),
     updated_at: creds.updated_at ?? null,
-    path: CREDS_PATH,
+    path: CREDS_PATH(),
   };
 }
 
-export const CREDENTIALS_PATH = CREDS_PATH;
+export function CREDENTIALS_PATH() { return CREDS_PATH(); }

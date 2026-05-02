@@ -55,8 +55,7 @@ import {
 } from '@restart/db-org';
 
 import { papercuspPath, papercuspRoot } from '@/lib/papercusp-root';
-const SECRETS_DIR = papercuspPath('secrets');
-const PAPERCUSP_ROOT = papercuspRoot();
+function SECRETS_DIR() { return papercuspPath('secrets'); }
 
 class NotYetWiredError extends Error {
   constructor(method: string) {
@@ -70,7 +69,7 @@ class NotYetWiredError extends Error {
  * ───────────────────────────────────────────────────────────────────── */
 
 function defaultProjectDir(slug: string): string {
-  return join(PAPERCUSP_ROOT, 'harnesses', slug);
+  return join(papercuspRoot(), 'harnesses', slug);
 }
 
 function defaultStateDir(slug: string): string {
@@ -204,6 +203,8 @@ function realRoutinesService(slug: string): RoutinesService {
   return {
     list: async () => {
       // Direct query — no list-all helper in db-org yet.
+      // Workspace-scoped via withWorkspace would be cleaner; for now we
+      // rely on harness_admin (RLS-bypass) and the install_slug filter.
       const rows = await sql<any[]>`
         SELECT id, name, trigger_kind, target_role, next_fire_at, active
           FROM harness_shared.routines
@@ -261,7 +262,7 @@ function realSecretsService(): SecretsService {
   return {
     read: async (name) => {
       const safe = name.replace(/[^A-Z0-9_]/gi, '_');
-      const path = join(SECRETS_DIR, safe);
+      const path = join(SECRETS_DIR(), safe);
       try {
         const v = await fs.readFile(path, 'utf8');
         return v.trimEnd();

@@ -2,7 +2,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { papercuspPath } from '@/lib/papercusp-root';
-const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
+function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 
 /**
  * Translate whatever the UI/caller passes (manifest name, dir basename, or
@@ -17,12 +17,12 @@ const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
  */
 export async function resolvePluginCliSlug(input: string): Promise<string> {
   if (!input) return input;
-  if (existsSync(join(GLOBAL_PLUGINS_DIR, input))) return input;
-  if (!existsSync(GLOBAL_PLUGINS_DIR)) return input;
-  const entries = await fs.readdir(GLOBAL_PLUGINS_DIR, { withFileTypes: true }).catch(() => []);
+  if (existsSync(join(GLOBAL_PLUGINS_DIR(), input))) return input;
+  if (!existsSync(GLOBAL_PLUGINS_DIR())) return input;
+  const entries = await fs.readdir(GLOBAL_PLUGINS_DIR(), { withFileTypes: true }).catch(() => []);
   for (const e of entries) {
     if (!e.isDirectory() && !e.isSymbolicLink()) continue;
-    const dir = join(GLOBAL_PLUGINS_DIR, e.name);
+    const dir = join(GLOBAL_PLUGINS_DIR(), e.name);
     try {
       const m = JSON.parse(await fs.readFile(join(dir, 'papercusp.json'), 'utf8'));
       if (m?.name === input) return e.name;

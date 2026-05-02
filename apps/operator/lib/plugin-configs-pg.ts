@@ -14,10 +14,11 @@
  */
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { withWorkspace } from '@restart/db-org';
 
 import { papercuspPath } from '@/lib/papercusp-root';
-const HARNESSES_DIR = papercuspPath('harnesses');
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
 async function readJsonFile<T>(p: string): Promise<T | null> {
   if (!existsSync(p)) return null;
@@ -30,25 +31,28 @@ export async function mirrorPluginConfig(
   plugin: string,
   cfg: Record<string, unknown> | null = null,
 ): Promise<void> {
-  const { sql } = getOrgPg();
   if (cfg === null) {
     // Re-read from disk (caller may have just written it).
-    const path = join(HARNESSES_DIR, harness, 'plugin-configs', `${plugin}.json`);
+    const path = join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`);
     cfg = (await readJsonFile<Record<string, unknown>>(path)) ?? {};
   }
-  await sql`
-    INSERT INTO harness_shared.plugin_configs (harness_slug, plugin_slug, config, updated_at)
-    VALUES (${harness}, ${plugin}, ${sql.json(cfg)}, now())
-    ON CONFLICT (harness_slug, plugin_slug) DO UPDATE
-      SET config = EXCLUDED.config, updated_at = now()
-  `;
+  const cfgValue = cfg;
+  await withWorkspace(activeWorkspaceId(), async (tx) => {
+    await tx`
+      INSERT INTO harness_shared.plugin_configs (harness_slug, plugin_slug, config, updated_at, workspace_id)
+      VALUES (${harness}, ${plugin}, ${tx.json(cfgValue)}, now(), ${activeWorkspaceId()})
+      ON CONFLICT (harness_slug, plugin_slug) DO UPDATE
+        SET config = EXCLUDED.config, updated_at = now(), workspace_id = EXCLUDED.workspace_id
+    `;
+  });
 }
 
 /** Drop a plugin-config row (used when a plugin is disabled/uninstalled). */
 export async function deletePluginConfig(harness: string, plugin: string): Promise<void> {
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.plugin_configs
-    WHERE harness_slug = ${harness} AND plugin_slug = ${plugin}
-  `;
+  await withWorkspace(activeWorkspaceId(), async (tx) => {
+    await tx`
+      DELETE FROM harness_shared.plugin_configs
+      WHERE harness_slug = ${harness} AND plugin_slug = ${plugin}
+    `;
+  });
 }

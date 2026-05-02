@@ -12,8 +12,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
 
-const PROJECTS_DIR = papercuspPath('projects');
-const REGISTRY_PATH = papercuspPath('registry.json');
+function PROJECTS_DIR() { return papercuspPath('projects'); }
+function REGISTRY_PATH() { return papercuspPath('registry.json'); }
 
 interface Body {
   /** Optional human-friendly slug suffix the user supplied. Defaults to the
@@ -67,7 +67,7 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
   try {
     const result = await restore({
       snapshotPath: snap.tarballPath,
-      targetProjectsDir: PROJECTS_DIR,
+      targetProjectsDir: PROJECTS_DIR(),
       substrateVersion: '0.0.1',
       schemaVersionDb: 0,
       acceptPartial: !!body.acceptPartial,
@@ -125,7 +125,7 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
     return NextResponse.json({
       ok: true,
       newSlug: finalSlug,
-      projectDir: join(PROJECTS_DIR, finalSlug),
+      projectDir: join(PROJECTS_DIR(), finalSlug),
       warnings: [...(result.warnings ?? []), ...(applied?.warnings ?? [])],
       ambiguousSlugMatches: result.ambiguousSlugMatches,
       ...(applied ? { appliedOverrides: applied.applied } : {}),
@@ -136,8 +136,8 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
   }
 }
 
-const HARNESSES_DIR = papercuspPath('harnesses');
-const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
+function HARNESSES_DIR() { return papercuspPath('harnesses'); }
+function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 
 async function applyForkOverrides(
   newSlug: string,
@@ -147,7 +147,7 @@ async function applyForkOverrides(
   const applied: string[] = [];
   const warnings: string[] = [];
   for (const [pluginSlug, fields] of Object.entries(overrides)) {
-    const cfgPath = join(HARNESSES_DIR, newSlug, 'plugin-configs', `${pluginSlug}.json`);
+    const cfgPath = join(HARNESSES_DIR(), newSlug, 'plugin-configs', `${pluginSlug}.json`);
     // Base = the snapshot's preserved (post-extractShape) config. The
     // restore-written file (if any) overlays on top of this; user
     // overrides overlay last.
@@ -163,7 +163,7 @@ async function applyForkOverrides(
     let installedSchema: ConfigSchema | undefined;
     try {
       const m = JSON.parse(
-        await fs.readFile(join(GLOBAL_PLUGINS_DIR, pluginSlug, 'papercusp.json'), 'utf8'),
+        await fs.readFile(join(GLOBAL_PLUGINS_DIR(), pluginSlug, 'papercusp.json'), 'utf8'),
       ) as { configSchema?: ConfigSchema };
       installedSchema = m.configSchema;
     } catch {
@@ -208,14 +208,14 @@ async function renameHarness(
     await sql.end({ timeout: 5 });
   }
 
-  const newDir = join(PROJECTS_DIR, newSlug);
+  const newDir = join(PROJECTS_DIR(), newSlug);
   await fs.rename(oldProjectDir, newDir).catch(async () => {
     // Cross-device fallback: copy then unlink
     await copyDir(oldProjectDir, newDir);
     await fs.rm(oldProjectDir, { recursive: true, force: true });
   });
 
-  const reg = JSON.parse(await fs.readFile(REGISTRY_PATH, 'utf8')) as {
+  const reg = JSON.parse(await fs.readFile(REGISTRY_PATH(), 'utf8')) as {
     projects: { slug: string; path: string }[];
   };
   for (const p of reg.projects) {
@@ -224,7 +224,7 @@ async function renameHarness(
       p.path = newDir;
     }
   }
-  await fs.writeFile(REGISTRY_PATH, JSON.stringify(reg, null, 2) + '\n');
+  await fs.writeFile(REGISTRY_PATH(), JSON.stringify(reg, null, 2) + '\n');
 }
 
 async function copyDir(src: string, dest: string): Promise<void> {

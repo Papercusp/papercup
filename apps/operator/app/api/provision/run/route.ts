@@ -20,8 +20,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 900;
 
-const HARNESSES_DIR = papercuspPath('harnesses');
-const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
+function HARNESSES_DIR() { return papercuspPath('harnesses'); }
+function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
 
 interface Body {
   harness?: string;
@@ -73,7 +73,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'invalid phase' }, { status: 400 });
   }
 
-  const pluginDir = join(GLOBAL_PLUGINS_DIR, plugin);
+  const pluginDir = join(GLOBAL_PLUGINS_DIR(), plugin);
   const manifest = await readJson<PluginManifest>(join(pluginDir, 'papercusp.json'));
   if (!manifest) {
     return NextResponse.json(
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
 
   const config =
     (await readJson<Record<string, unknown>>(
-      join(HARNESSES_DIR, harness, 'plugin-configs', `${plugin}.json`),
+      join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`),
     )) ?? {};
 
   const result = await runPhase(phase, {

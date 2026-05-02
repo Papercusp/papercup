@@ -47,10 +47,10 @@ export interface ProvisionState {
   setupError?: string;
 }
 
-const HARNESSES_DIR = papercuspPath('harnesses');
+function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
 export function provisionDir(harness: string, plugin: string): string {
-  return join(HARNESSES_DIR, harness, 'provision', plugin);
+  return join(HARNESSES_DIR(), harness, 'provision', plugin);
 }
 
 function statePath(harness: string, plugin: string): string {

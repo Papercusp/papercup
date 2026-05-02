@@ -25,7 +25,6 @@ import type { Capability, Plugin } from '@papercusp/plugin-sdk';
 import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 
-const PAPERCUSP_ROOT = papercuspRoot();
 
 interface ManifestShape {
   name: string;
@@ -38,8 +37,8 @@ interface ManifestShape {
 async function readManifestForPlugin(slug: string, pluginName: string): Promise<ManifestShape | null> {
   // Search order matches the plugin loader: project > harness > global.
   const candidates = [
-    join(PAPERCUSP_ROOT, 'harnesses', slug, 'plugins', pluginName, 'papercusp.json'),
-    join(PAPERCUSP_ROOT, 'global-plugins', pluginName, 'papercusp.json'),
+    join(papercuspRoot(), 'harnesses', slug, 'plugins', pluginName, 'papercusp.json'),
+    join(papercuspRoot(), 'global-plugins', pluginName, 'papercusp.json'),
   ];
   for (const path of candidates) {
     try {

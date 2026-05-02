@@ -12,10 +12,10 @@ import { papercuspPath } from '@/lib/papercusp-root';
 import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
 import type { TokenStorage } from './token';
 
-const HARNESSES_DIR = papercuspPath('harnesses');
+function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
 function configPath(plugin: string, harness: string): string {
-  return join(HARNESSES_DIR, harness, 'plugin-configs', `${plugin}.json`);
+  return join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`);
 }
 
 export const fsTokenStorage: TokenStorage = {
@@ -37,7 +37,7 @@ export const fsTokenStorage: TokenStorage = {
       // file might not exist yet
     }
     const next = { ...existing, ...patch };
-    await fs.mkdir(join(HARNESSES_DIR, harness, 'plugin-configs'), { recursive: true });
+    await fs.mkdir(join(HARNESSES_DIR(), harness, 'plugin-configs'), { recursive: true });
     await fs.writeFile(path, JSON.stringify(next, null, 2) + '\n', 'utf8');
     try {
       await mirrorPluginConfig(harness, plugin, next);

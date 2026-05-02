@@ -25,7 +25,7 @@ interface CreateBody {
   includeSecretsConfirmed?: boolean;
 }
 
-const HARNESSES_DIR = papercuspPath('harnesses');
+function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
 export async function POST(req: Request) {
   let body: CreateBody;
@@ -85,7 +85,7 @@ export async function POST(req: Request) {
 
 async function readTemplate(slug: string): Promise<{ name: string; version: string }> {
   try {
-    const raw = await fs.readFile(join(HARNESSES_DIR, slug, 'papercusp.json'), 'utf8');
+    const raw = await fs.readFile(join(HARNESSES_DIR(), slug, 'papercusp.json'), 'utf8');
     const m = JSON.parse(raw) as { name?: string; version?: string };
     return { name: m.name ?? slug, version: m.version ?? '0.0.0' };
   } catch {
@@ -97,7 +97,7 @@ async function readEnabledPlugins(
   slug: string,
   opts: { includeSecretsConfirmed: boolean },
 ): Promise<SnapshotPlugin[]> {
-  const enabledPath = join(HARNESSES_DIR, slug, 'enabled-plugins.json');
+  const enabledPath = join(HARNESSES_DIR(), slug, 'enabled-plugins.json');
   let enabled: { enabled: Record<string, { version: string }> };
   try {
     enabled = JSON.parse(await fs.readFile(enabledPath, 'utf8'));
@@ -132,7 +132,7 @@ async function readEnabledPlugins(
     let configJson = '{}';
     try {
       configJson = await fs.readFile(
-        join(HARNESSES_DIR, slug, 'plugin-configs', `${pluginSlug}.json`),
+        join(HARNESSES_DIR(), slug, 'plugin-configs', `${pluginSlug}.json`),
         'utf8',
       );
     } catch { /* empty */ }
