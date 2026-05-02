@@ -1112,10 +1112,14 @@ async function invokeHarnessToolbarAction(
  * no fallback "enable plugin" CTAs — install the plugin and the button
  * appears; uninstall and it disappears. Same flow as `dashboardTabs[]`.
  */
-function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs }: {
+function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs, pluginsMissing, onGoToPluginConfig }: {
   harnessSlug: string;
   installed: InstalledPluginInfo[];
   enabledSlugs: string[];
+  /** pluginName → list of required fields that are absent or empty. */
+  pluginsMissing: Record<string, string[]>;
+  /** Click-handler when the user clicks a "needs setup" red button. */
+  onGoToPluginConfig: (pluginName: string) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const actions = collectHarnessToolbarActions(installed, enabledSlugs);
@@ -1159,15 +1163,29 @@ function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs }: {
         {actions.map((a) => {
           const key = `${a.pluginDirSlug}/${a.name}`;
           const isBusy = busy === key;
+          const missing = pluginsMissing[a.pluginName] ?? [];
+          const needsSetup = missing.length > 0;
+          // Tooltip names each missing field per spec: "github_token is empty".
+          const tooltip = needsSetup
+            ? `${missing.map((f) => `${f} is empty`).join(' · ')} — click to fix in Config`
+            : `${a.label} — from ${a.pluginName}`;
           return (
-            <Tooltip key={key} label={`${a.label} — from ${a.pluginName}`}>
+            <Tooltip key={key} label={tooltip}>
               <button
                 type="button"
-                className="h-quick-action-btn"
-                onClick={() => void invoke(a)}
+                className={`h-quick-action-btn${needsSetup ? ' needs-setup' : ''}`}
+                onClick={() => needsSetup ? onGoToPluginConfig(a.pluginName) : void invoke(a)}
                 aria-disabled={isBusy}
+                aria-invalid={needsSetup ? true : undefined}
+                style={needsSetup ? {
+                  background: 'rgba(220, 38, 38, .12)',
+                  border: '1px solid rgba(220, 38, 38, .45)',
+                  color: '#ff8a8a',
+                } : undefined}
               >
-                <PluginIcon name={a.actionIcon} size={14} />
+                {needsSetup
+                  ? <AlertTriangle size={14} aria-hidden />
+                  : <PluginIcon name={a.actionIcon} size={14} />}
                 <span>{isBusy ? 'Running…' : a.label}</span>
                 <em>{a.pluginName}</em>
               </button>
@@ -1188,6 +1206,7 @@ function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs }: {
 function ConfigPanel({
   harnessSlug, projectPath, alive, onClose,
   installedPlugins, enabledSlugs, onPluginsChange,
+  activePane, onPaneChange, pluginsMissing,
 }: {
   harnessSlug: string;
   projectPath: string;
@@ -1197,10 +1216,16 @@ function ConfigPanel({
   enabledSlugs: string[];
   pluginCount: number;
   onPluginsChange: () => void;
+  /** Active pane ('harness' or a plugin name). URL-synced via parent. */
+  activePane: string;
+  onPaneChange: (p: string) => void;
+  /** pluginName → list of required fields absent/empty. */
+  pluginsMissing: Record<string, string[]>;
 }) {
   // 'harness' = the legacy spec editor; otherwise pane === plugin.name.
   const HARNESS_PANE = 'harness' as const;
-  const [pane, setPane] = useState<string>(HARNESS_PANE);
+  const pane = activePane;
+  const setPane = onPaneChange;
 
   const enabledManifests = useMemo(() => {
     // Dedupe by `plugin.name` — enabled-plugins.json may legitimately
@@ -1226,31 +1251,46 @@ function ConfigPanel({
     if (!enabledManifests.some((p) => p.name === pane)) setPane(HARNESS_PANE);
   }, [pane, enabledManifests]);
 
-  const TabBtn = ({ id, label, icon }: { id: string; label: string; icon: React.ReactNode }) => (
-    <button
-      type="button"
-      onClick={() => setPane(id)}
-      className="h-tab"
-      aria-pressed={pane === id}
-      title={label}
-      style={{
-        background: pane === id ? 'var(--bg-1)' : 'transparent',
-        border: '1px solid',
-        borderColor: pane === id ? 'var(--border)' : 'transparent',
-        color: pane === id ? 'var(--text-1)' : 'var(--text-3)',
-        padding: '4px 12px',
-        fontSize: 13,
-        cursor: 'pointer',
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        borderRadius: 6,
-        whiteSpace: 'nowrap',
-        maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis',
-      }}
-    >
-      {icon}
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
-    </button>
-  );
+  const TabBtn = ({ id, label, icon, missing }: { id: string; label: string; icon: React.ReactNode; missing?: string[] }) => {
+    const needsSetup = (missing?.length ?? 0) > 0;
+    const tooltip = needsSetup
+      ? `${missing!.map((f) => `${f} is empty`).join(' · ')}`
+      : label;
+    return (
+      <button
+        type="button"
+        onClick={() => setPane(id)}
+        className="h-tab"
+        aria-pressed={pane === id}
+        title={tooltip}
+        style={{
+          background: pane === id ? 'var(--bg-1)' : 'transparent',
+          border: '1px solid',
+          borderColor: pane === id ? 'var(--border)' : 'transparent',
+          color: pane === id ? 'var(--text-1)' : 'var(--text-3)',
+          padding: '4px 12px',
+          fontSize: 13,
+          cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          borderRadius: 6,
+          whiteSpace: 'nowrap',
+          maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis',
+        }}
+      >
+        {icon}
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
+        {needsSetup && (
+          <span
+            aria-label="needs setup"
+            style={{
+              display: 'inline-block', width: 6, height: 6, borderRadius: '50%',
+              background: '#dc2626', flex: '0 0 auto',
+            }}
+          />
+        )}
+      </button>
+    );
+  };
 
   const activePlugin = enabledManifests.find((p) => p.name === pane);
 
@@ -1273,6 +1313,7 @@ function ConfigPanel({
               id={p.name}
               label={display}
               icon={<PluginIcon name={tabIcon} size={13} />}
+              missing={pluginsMissing[p.name]}
             />
           );
         })}
@@ -1977,7 +2018,71 @@ export default function HarnessDashboard() {
   const [lanes, setLanes] = useState<{ lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }>; max: number } | null>(null);
   const [pendingProposals, setPendingProposals] = useState(0);
   const [activePanel, setActivePanel] = useQueryState('panel', parseAsString.withDefault('dashboard'));
+  const [configPane, setConfigPane] = useQueryState('configPane', parseAsString.withDefault('harness'));
   const [topChromeCollapsed, setTopChromeCollapsed] = useQueryState('chromeCollapsed', parseAsBoolean.withDefault(false));
+  /**
+   * Map of pluginName → list of `required` field names that are absent
+   * or empty in the user's per-harness config. Drives the red-tint on
+   * harness-toolbar action buttons and the per-plugin Config tab badges.
+   * Refetched whenever the active harness or its enabled plugins change.
+   */
+  const [pluginsMissing, setPluginsMissing] = useState<Record<string, string[]>>({});
+  /**
+   * Refresh the missing-required-config map when the active harness or
+   * its enabled-plugin list changes. Fetches each enabled plugin's
+   * config in parallel and intersects against `configSchema.required`.
+   */
+  useEffect(() => {
+    if (!activeSlug || !installedPlugins) return;
+    const enabled = enabledByHarness[activeSlug] ?? [];
+    if (enabled.length === 0) {
+      setPluginsMissing({});
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const out: Record<string, string[]> = {};
+      await Promise.all(
+        enabled.map(async (slug) => {
+          const manifest = installedPlugins.find((p) => {
+            const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
+            return p.name === slug || dirSlug === slug;
+          });
+          if (!manifest) return;
+          const schema = (manifest as { configSchema?: { required?: string[]; properties?: Record<string, { default?: unknown }> } }).configSchema;
+          const required = schema?.required ?? [];
+          if (required.length === 0) return;
+          const dirSlug = manifest.path ? pluginSlugFromPath(manifest.path, manifest.name) : manifest.name;
+          let cfg: Record<string, unknown> = {};
+          try {
+            const r = await fetch(
+              `/api/plugins/config?harness=${encodeURIComponent(activeSlug)}&plugin=${encodeURIComponent(dirSlug)}`,
+              { cache: 'no-store' },
+            );
+            if (r.ok) {
+              const d = await r.json();
+              cfg = d?.config ?? {};
+            }
+          } catch {
+            // Best effort — leave cfg empty so all required fields show as missing
+          }
+          const missing = required.filter((field) => {
+            const v = cfg[field];
+            // A field with a non-empty user value is fine. A field that's
+            // absent or empty-string IS missing — but a `default` in the
+            // schema doesn't count as user-supplied (defaults render in
+            // the UI as placeholders, not as written values).
+            if (v === undefined || v === null) return true;
+            if (typeof v === 'string' && v.length === 0) return true;
+            return false;
+          });
+          if (missing.length > 0) out[manifest.name] = missing;
+        }),
+      );
+      if (!cancelled) setPluginsMissing(out);
+    })();
+    return () => { cancelled = true; };
+  }, [activeSlug, installedPlugins, enabledByHarness]);
   // When the user clicks "open in pi" on a feature, scope the pi pane to
   // that feature's worktree instead of the project root. Cleared when the
   // pane is opened from the bare 'pi' tab.
@@ -2840,6 +2945,11 @@ export default function HarnessDashboard() {
           harnessSlug={activeSlug}
           installed={installedPlugins ?? []}
           enabledSlugs={enabledByHarness[activeSlug] ?? []}
+          pluginsMissing={pluginsMissing}
+          onGoToPluginConfig={(pluginName) => {
+            void setConfigPane(pluginName);
+            void setActivePanel('config');
+          }}
         />
       )}
 
@@ -3051,6 +3161,9 @@ export default function HarnessDashboard() {
               setPluginRefreshKey((k) => k + 1);
               setInstalledPluginsRefreshKey((k) => k + 1);
             }}
+            activePane={configPane}
+            onPaneChange={(p) => void setConfigPane(p)}
+            pluginsMissing={pluginsMissing}
           />
         )}
         {activePanel === 'dashboard' && (
