@@ -1,6 +1,5 @@
 import * as Lucide from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 
 interface DetailResponse {
   slug: string;
@@ -126,7 +125,7 @@ export default async function HarnessDetailPage({ params }: { params: Promise<{ 
           {isSnapshot && m.snapshot && <SnapshotMeta snap={m.snapshot} />}
           {detail.readme ? (
             <div className="pc-marketplace-detail-readme-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.readme}</ReactMarkdown>
+              <MarkdownPreview value={detail.readme} />
             </div>
           ) : (
             <p style={{ color: 'var(--fg-mute)' }}>This package has no README.</p>

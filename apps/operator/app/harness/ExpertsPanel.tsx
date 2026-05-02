@@ -1,9 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 
 interface ExpertSummary {
   id: string;
@@ -343,7 +341,7 @@ function RelatedDocFiller({ harnessSlug, expertId }: { harnessSlug: string; expe
           </span>
         </div>
         <div className="experts-spec-md" style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--fg-dim)' }}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{match.body}</ReactMarkdown>
+          <MarkdownPreview value={match.body} />
         </div>
       </div>
     </div>
@@ -364,7 +362,7 @@ function SpecView({ spec, harnessSlug, expertId }: { spec: string; harnessSlug: 
   return (
     <div style={{ padding: '16px 24px', maxWidth: 880, margin: '0 auto', color: 'var(--fg)' }}>
       <div className="experts-spec-md" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--fg)' }}>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{spec}</ReactMarkdown>
+        <MarkdownPreview value={spec} />
       </div>
       <style jsx>{`
         :global(.experts-spec-md) h1 { font-size: 22px; margin: 16px 0 8px; font-weight: 760; color: var(--fg); }

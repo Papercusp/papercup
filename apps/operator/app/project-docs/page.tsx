@@ -15,8 +15,7 @@
 import { promises as fs, existsSync } from 'node:fs';
 import { join, normalize, relative, resolve as resolvePath, sep } from 'node:path';
 import { Suspense } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 import Link from 'next/link';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 
@@ -103,7 +102,7 @@ async function ProjectDocs({
     <div style={layout} className="project-docs-shell">
       <style>{projectDocsCss}</style>
       <aside style={sidebar} className="project-docs-sidebar">
-        <div style={projectHeader}>
+        <div style={projectHeader} className="project-docs-project-header">
           <strong>{slug}</strong>
           <div style={{ color: 'var(--fg-mute, #999)', fontSize: 11 }}>{normalize(projectPath)}</div>
         </div>
@@ -118,6 +117,7 @@ async function ProjectDocs({
                     <Link
                       href={`${linkBase}${encodeURIComponent(f)}`}
                       className={isActive ? 'project-docs-nav-link active' : 'project-docs-nav-link'}
+                      aria-current={isActive ? 'page' : undefined}
                       style={isActive ? linkActive : linkIdle}
                     >
                       {basenameNoExt(f)}
@@ -130,8 +130,8 @@ async function ProjectDocs({
         ))}
       </aside>
       <main style={article} className="project-docs-article">
-        <div style={breadcrumb}>{activeRel}</div>
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        <div style={breadcrumb} className="project-docs-breadcrumb">{activeRel}</div>
+        <MarkdownPreview value={content} />
       </main>
     </div>
   );
@@ -167,7 +167,7 @@ function Empty({ title, body }: { title: string; body: string }) {
 
 const layout: React.CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: 'minmax(230px, 280px) minmax(0, 1fr)',
+  gridTemplateColumns: 'minmax(220px, 248px) minmax(0, 1fr)',
   height: '100vh',
   background: 'linear-gradient(180deg, rgba(8, 19, 34, 0.98), var(--bg-1, #0b1220))',
   color: 'var(--fg, #ddd)',
@@ -180,6 +180,10 @@ const sidebar: React.CSSProperties = {
   background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.025))',
 };
 const projectHeader: React.CSSProperties = {
+  position: 'sticky',
+  top: 0,
+  zIndex: 2,
+  background: 'rgba(15, 28, 45, 0.96)',
   padding: '0 16px 14px',
   borderBottom: '1px solid var(--border, #2a2a2a)',
   marginBottom: 10,
@@ -219,6 +223,17 @@ const breadcrumb: React.CSSProperties = {
 };
 const projectDocsCss = `
   .project-docs-sidebar { scrollbar-color: rgba(125, 211, 252, 0.30) transparent; }
+  .project-docs-project-header { backdrop-filter: blur(10px); }
+  .project-docs-project-header strong { display: block; font-size: 14px; letter-spacing: .01em; }
+  .project-docs-breadcrumb {
+    display: inline-flex;
+    align-items: center;
+    width: fit-content;
+    padding: 2px 8px;
+    border: 1px solid rgba(125, 211, 252, 0.12);
+    border-radius: 999px;
+    background: rgba(125, 211, 252, 0.055);
+  }
   .project-docs-nav-link { transition: background 140ms ease, color 140ms ease, border-color 140ms ease; }
   .project-docs-nav-link:hover,
   .project-docs-nav-link:focus-visible {
@@ -254,12 +269,14 @@ const projectDocsCss = `
   .project-docs-article table {
     width: 100%;
     margin: 16px 0 28px;
-    border-collapse: collapse;
+    border-collapse: separate;
+    border-spacing: 0;
     border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
     border-radius: 10px;
     overflow: hidden;
     background: rgba(255,255,255,0.025);
     font-size: 13px;
+    box-shadow: 0 14px 34px rgba(0, 0, 0, 0.14);
   }
   .project-docs-article th,
   .project-docs-article td {
@@ -272,8 +289,25 @@ const projectDocsCss = `
     font-size: 11px;
     letter-spacing: .04em;
     background: rgba(125, 211, 252, 0.075);
+    position: sticky;
+    top: 0;
+    z-index: 1;
   }
   .project-docs-article tbody tr:hover { background: rgba(125, 211, 252, 0.045); }
+  .project-docs-article tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.012); }
+  .project-docs-article th:first-child,
+  .project-docs-article td:first-child,
+  .project-docs-article th:nth-child(3),
+  .project-docs-article td:nth-child(3),
+  .project-docs-article th:nth-child(4),
+  .project-docs-article td:nth-child(4) {
+    white-space: nowrap;
+  }
+  .project-docs-article td:first-child {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--fg, #e7f7ff);
+    font-size: 12px;
+  }
   .project-docs-article a { color: var(--accent-strong, #7dd3fc); }
   .project-docs-article a:hover,
   .project-docs-article a:focus-visible { color: var(--accent-cool, #d7f3ff); text-decoration: underline; outline: none; }
@@ -283,6 +317,27 @@ const projectDocsCss = `
     border-radius: 5px;
     background: rgba(125, 211, 252, 0.08);
     color: #d9f3ff;
+  }
+  .project-docs-article :where(ul, ol) {
+    max-width: 76ch;
+    color: var(--fg-dim, #b9d4e8);
+    line-height: 1.68;
+  }
+  .project-docs-article li + li { margin-top: 0.28rem; }
+  .project-docs-article blockquote {
+    max-width: 76ch;
+    margin: 18px 0;
+    padding: 10px 14px;
+    border-left: 2px solid var(--accent, #38bdf8);
+    border-radius: 0 8px 8px 0;
+    background: rgba(125, 211, 252, 0.06);
+    color: var(--fg-dim, #b9d4e8);
+  }
+  .project-docs-article pre {
+    max-width: 100%;
+    border: 1px solid rgba(125, 211, 252, 0.14);
+    border-radius: 10px;
+    background: rgba(3, 9, 18, 0.58);
   }
   @media (max-width: 760px) {
     .project-docs-shell { grid-template-columns: 1fr !important; }
