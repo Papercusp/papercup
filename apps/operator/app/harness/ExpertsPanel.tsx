@@ -248,11 +248,11 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
               fontSize: 12,
               color: 'var(--fg-dim)',
               lineHeight: 1.5,
-              whiteSpace: 'pre-wrap',
               maxHeight: 240,
               overflowY: 'auto',
+              padding: '8px 12px',
             }}>
-              {detail.highLevelSpec}
+              <MarkdownPreview value={detail.highLevelSpec} />
             </div>
           </details>
         ) : null}

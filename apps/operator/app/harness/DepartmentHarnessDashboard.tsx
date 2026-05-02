@@ -10,7 +10,7 @@ import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { toast, Toaster } from 'sonner';
 import { Inbox, Send, FileText, NotebookPen, Workflow, Cpu, Brain } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
-import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 
 type MemoryEntry = {
   filename: string;
@@ -1006,7 +1006,9 @@ function MemoryPanel({ departmentSlug }: { departmentSlug: string }) {
                 <button type="button" style={{ background: 'none', border: 'none', padding: 0, fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer', textAlign: 'left' }}>Raw text injected into prompt</button>
               </Collapsible.Trigger>
               <Collapsible.Content>
-                <pre style={{ marginTop: 8, padding: 10, background: 'var(--bg-2)', borderRadius: 4, overflow: 'auto', fontSize: 11, whiteSpace: 'pre-wrap', color: 'var(--fg)' }}>{memory.text}</pre>
+                <div style={{ marginTop: 8, padding: 10, background: 'var(--bg-2)', borderRadius: 4, overflow: 'auto', maxHeight: 360 }}>
+                  <MarkdownPreview value={memory.text} />
+                </div>
               </Collapsible.Content>
             </div>
           </Collapsible.Root>

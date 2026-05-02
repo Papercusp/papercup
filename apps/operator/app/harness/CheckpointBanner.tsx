@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
+import { MarkdownPreview } from '../_components/MarkdownEditor';
 
 interface Checkpoint {
   name: string;
@@ -125,16 +126,14 @@ export default function CheckpointBanner({ slug, onGranted }: Props) {
                 </span>
               </div>
               <Collapsible.Content>
-                <pre style={{
+                <div style={{
                   margin: 0,
-                  fontFamily: 'ui-monospace, monospace', fontSize: '0.75rem',
-                  color: '#e5e7eb', background: 'rgba(0,0,0,0.3)',
+                  background: 'rgba(0,0,0,0.3)',
                   padding: '0.6rem 0.8rem', borderRadius: 3,
-                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                   maxHeight: 240, overflow: 'auto',
                 }}>
-                  {cp.content || '(no content)'}
-                </pre>
+                  <MarkdownPreview value={cp.content || '(no content)'} />
+                </div>
               </Collapsible.Content>
             </div>
           </Collapsible.Root>

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Drawer } from 'vaul';
 import { X, ArrowUpRight, MessageSquarePlus } from 'lucide-react';
+import { MarkdownPreview } from '../../_components/MarkdownEditor';
 import { toast } from 'sonner';
 import type { Issue } from './types';
 
@@ -86,17 +87,17 @@ export function IssueDetail({
 
           {issue.evidence && (
             <Section title="Evidence">
-              <pre className="h-issue-pre">{issue.evidence}</pre>
+              <MarkdownPreview value={issue.evidence} />
             </Section>
           )}
           {issue.repro && (
             <Section title="Reproduction">
-              <pre className="h-issue-pre">{issue.repro}</pre>
+              <MarkdownPreview value={issue.repro} />
             </Section>
           )}
           {issue.suggestedFix && (
             <Section title="Suggested fix">
-              <pre className="h-issue-pre">{issue.suggestedFix}</pre>
+              <MarkdownPreview value={issue.suggestedFix} />
             </Section>
           )}
 

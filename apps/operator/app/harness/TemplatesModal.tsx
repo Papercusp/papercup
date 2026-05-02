@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Checkbox } from './Checkbox';
+import { MarkdownPreview } from '../_components/MarkdownEditor';
 
 interface Template {
   id: string;
@@ -152,9 +153,9 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
                   SPEC.md preview
                   {previewLoading && <span style={{ color: '#6b7280' }}>loading…</span>}
                 </div>
-                <pre style={{ flex: 1, overflow: 'auto', margin: 0, padding: '0.75rem 1rem', fontSize: '0.75rem', fontFamily: 'ui-monospace, monospace', color: '#d1d5db', whiteSpace: 'pre-wrap' }}>
-                  {preview?.content ?? '(preview unavailable)'}
-                </pre>
+                <div style={{ flex: 1, overflow: 'auto', padding: '0.75rem 1rem' }}>
+                  <MarkdownPreview value={preview?.content ?? '(preview unavailable)'} outline="left" />
+                </div>
                 <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #1f2937', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer' }}>
                     <Checkbox checked={overwrite} onChange={setOverwrite} ariaLabel="Overwrite existing files" />
