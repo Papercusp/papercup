@@ -17,12 +17,12 @@
  */
 import type { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { runClaudeChat } from '@/lib/claude-chat-stream';
 const ORACLE_DIR = papercuspPath('oracle');
 const PROMPT_PATH = join(ORACLE_DIR, 'prompt.md');
 const MEMORY_PATH = join(ORACLE_DIR, 'memory.md');
@@ -250,40 +250,8 @@ export function registerOracle(app: Hono) {
     ].join('');
 
     return streamSSE(c, async (sseStream) => {
-      const claudeCmd = process.env.CLAUDE_CMD ?? 'claude';
       const sessionId = randomUUID();
       const oracleBase = process.env.ORACLE_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
-
-      const mcpConfig = JSON.stringify({
-        mcpServers: {
-          oracle: {
-            command: 'node',
-            args: [MCP_SERVER_PATH],
-            env: { ORACLE_SESSION_ID: sessionId, ORACLE_BASE: oracleBase },
-          },
-        },
-      });
-
-      const args = [
-        '-p',
-        '--output-format', 'stream-json',
-        '--verbose',
-        '--include-partial-messages',
-        '--mcp-config', mcpConfig,
-        '--allowed-tools', 'mcp__oracle__navigate mcp__oracle__listHarnesses mcp__oracle__dispatchToAgent mcp__oracle__getHarnessStatus mcp__oracle__listChats mcp__oracle__resumeChat',
-        '--permission-mode', 'bypassPermissions',
-      ];
-      const child = spawn(claudeCmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
-
-      let stderrBuf = '';
-      let stdoutLineBuf = '';
-      let costUsd = 0;
-
-      // Track in-flight tool_use content blocks so we can pair the name
-      // (from content_block_start) with the streamed input json
-      // (input_json_delta) and emit one tool_call event per call when the
-      // block stops.
-      const liveTools = new Map<number, { name: string; input: string }>();
 
       const send = async (event: string, data: Record<string, unknown>) => {
         try { await sseStream.writeSSE({ event, data: JSON.stringify(data) }); }
@@ -296,73 +264,51 @@ export function registerOracle(app: Hono) {
         void send('tutorial_end', {});
       }
 
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdoutLineBuf += chunk.toString('utf8');
-        let nl: number;
-        // eslint-disable-next-line no-cond-assign
-        while ((nl = stdoutLineBuf.indexOf('\n')) >= 0) {
-          const line = stdoutLineBuf.slice(0, nl).trim();
-          stdoutLineBuf = stdoutLineBuf.slice(nl + 1);
-          if (!line) continue;
-          try {
-            const ev = JSON.parse(line);
-            const inner = ev.type === 'stream_event' ? ev.event : ev;
-            if (inner?.type === 'content_block_delta' && inner.delta?.type === 'text_delta') {
-              void send('delta', { text: inner.delta.text ?? '' });
-            } else if (
-              inner?.type === 'content_block_start' &&
-              inner.content_block?.type === 'tool_use' &&
-              typeof inner.content_block.name === 'string' &&
-              inner.content_block.name.startsWith('mcp__oracle__') &&
-              typeof inner.index === 'number'
-            ) {
-              liveTools.set(inner.index, {
-                name: inner.content_block.name.replace(/^mcp__oracle__/, ''),
-                input: '',
-              });
-            } else if (
-              inner?.type === 'content_block_delta' &&
-              inner.delta?.type === 'input_json_delta' &&
-              typeof inner.index === 'number' &&
-              liveTools.has(inner.index)
-            ) {
-              const entry = liveTools.get(inner.index)!;
-              entry.input += inner.delta.partial_json ?? '';
-            } else if (
-              inner?.type === 'content_block_stop' &&
-              typeof inner.index === 'number' &&
-              liveTools.has(inner.index)
-            ) {
-              const entry = liveTools.get(inner.index)!;
-              liveTools.delete(inner.index);
-              let parsed: unknown;
-              try { parsed = entry.input ? JSON.parse(entry.input) : {}; } catch { parsed = entry.input; }
-              void send('tool_call', { name: entry.name, input: parsed });
-            } else if (ev.type === 'result') {
-              if (typeof ev.total_cost_usd === 'number') costUsd = ev.total_cost_usd;
-            }
-          } catch { /* non-JSON */ }
+      let costUsd = 0;
+      try {
+        const stream = runClaudeChat({
+          promptText,
+          mcpConfig: {
+            mcpServers: {
+              oracle: {
+                command: 'node',
+                args: [MCP_SERVER_PATH],
+                env: { ORACLE_SESSION_ID: sessionId, ORACLE_BASE: oracleBase },
+              },
+            },
+          },
+          allowedTools: [
+            'mcp__oracle__navigate',
+            'mcp__oracle__listHarnesses',
+            'mcp__oracle__dispatchToAgent',
+            'mcp__oracle__getHarnessStatus',
+            'mcp__oracle__listChats',
+            'mcp__oracle__resumeChat',
+          ],
+          // Strip the mcp__oracle__ prefix when surfacing tool_call events,
+          // so the dock shows "navigate" / "listHarnesses" rather than the
+          // full MCP-mangled name.
+          toolEventFilter: (raw) =>
+            raw.startsWith('mcp__oracle__') ? raw.replace(/^mcp__oracle__/, '') : null,
+          permissionMode: 'bypassPermissions',
+        });
+
+        for await (const ev of stream) {
+          if (ev.type === 'delta') {
+            await send('delta', { text: ev.text });
+          } else if (ev.type === 'tool_call') {
+            await send('tool_call', { name: ev.name, input: ev.input });
+          } else if (ev.type === 'result') {
+            costUsd = ev.costUsd;
+            await send('done', { costUsd });
+          } else if (ev.type === 'error') {
+            await send('error', { message: ev.message, stderr: ev.stderr });
+          }
         }
-      });
-
-      child.stderr.on('data', (chunk: Buffer) => { stderrBuf += chunk.toString('utf8'); });
-
-      child.stdin.write(promptText);
-      child.stdin.end();
-
-      const exitCode: number = await new Promise((resolve) => {
-        child.on('exit', (code) => resolve(code ?? 1));
-        child.on('error', () => resolve(1));
-      });
-
-      sessionEmitters.delete(sessionId);
-
-      if (exitCode !== 0) {
-        await send('error', { message: `claude exited ${exitCode}`, stderr: stderrBuf.slice(-800) });
-      } else {
-        await send('done', { costUsd });
+      } finally {
+        sessionEmitters.delete(sessionId);
+        await sseStream.close();
       }
-      await sseStream.close();
     });
   });
 

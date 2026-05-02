@@ -21,7 +21,6 @@
  */
 import type { Hono } from 'hono';
 import { stream, streamSSE } from 'hono/streaming';
-import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -29,6 +28,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
+import { runClaudeChat } from '@/lib/claude-chat-stream';
 import { projectDirForSlug } from '../../../lib/operator-notes';
 
 interface TranscriptTurn {
@@ -451,79 +451,54 @@ export function registerAgentChats(harness: Hono): void {
     activeChats.set(chatId, { startedAt: Date.now() });
 
     return streamSSE(c, async (sseStream) => {
-      const claudeCmd = process.env.CLAUDE_CMD ?? 'claude';
-      const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
-      // Spawn claude with cwd set to the harness project directory so its
-      // session-scoped path restriction allows reading harness state and
-      // feature docs. Without this, claude is locked to the dev-server's
-      // cwd and cannot read any of the inputs the role prompt references.
-      const projectDir = projectDirForSlug(slug);
-      const child = spawn(claudeCmd, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: projectDir ?? undefined });
-
-      let assistantText = '';
-      let tokensIn = 0;
-      let tokensOut = 0;
-      let costUsd = 0;
-      let stderrBuf = '';
-      let stdoutLineBuf = '';
-
       const send = async (event: string, data: Record<string, unknown>) => {
         try { await sseStream.writeSSE({ event, data: JSON.stringify(data) }); }
         catch { /* client disconnected — best effort */ }
       };
 
-      child.stdout.on('data', (chunk: Buffer) => {
-        stdoutLineBuf += chunk.toString('utf8');
-        let nl: number;
-        // eslint-disable-next-line no-cond-assign
-        while ((nl = stdoutLineBuf.indexOf('\n')) >= 0) {
-          const line = stdoutLineBuf.slice(0, nl).trim();
-          stdoutLineBuf = stdoutLineBuf.slice(nl + 1);
-          if (!line) continue;
-          try {
-            const ev = JSON.parse(line);
-            // Stream-json: text deltas come as content_block_delta with text_delta.
-            // Newer claude CLI versions wrap these inside `{type:"stream_event", event:{...}}`;
-            // unwrap so we still pick them up.
-            const inner = ev.type === 'stream_event' && ev.event ? ev.event : ev;
-            if (inner.type === 'content_block_delta' && inner.delta?.type === 'text_delta') {
-              const delta = inner.delta.text ?? '';
-              assistantText += delta;
-              void send('delta', { text: delta });
-            } else if (ev.type === 'result') {
-              if (ev.usage) {
-                tokensIn = ev.usage.input_tokens ?? tokensIn;
-                tokensOut = ev.usage.output_tokens ?? tokensOut;
-              }
-              if (typeof ev.total_cost_usd === 'number') costUsd = ev.total_cost_usd;
-              if (typeof ev.result === 'string' && ev.result.length > assistantText.length) {
-                assistantText = ev.result;
-              }
-            }
-          } catch { /* non-JSON line — ignore */ }
-        }
-      });
+      // Spawn claude with cwd set to the harness project directory so its
+      // session-scoped path restriction allows reading harness state and
+      // feature docs. Without this, claude is locked to the dev-server's
+      // cwd and cannot read any of the inputs the role prompt references.
+      const projectDir = projectDirForSlug(slug);
 
-      child.stderr.on('data', (chunk: Buffer) => {
-        stderrBuf += chunk.toString('utf8');
-      });
+      let assistantText = '';
+      let tokensIn = 0;
+      let tokensOut = 0;
+      let costUsd = 0;
+      let lastErrorMessage: string | null = null;
+      let lastErrorStderr: string | undefined;
 
-      // Pipe the prompt to stdin and close.
-      child.stdin.write(assembled.text);
-      child.stdin.end();
-
-      const exitCode: number = await new Promise((resolve) => {
-        child.on('exit', (code) => resolve(code ?? 1));
-        child.on('error', () => resolve(1));
-      });
-
-      activeChats.delete(chatId);
-
-      if (exitCode !== 0) {
-        await send('error', {
-          message: `claude exited ${exitCode}`,
-          stderr: stderrBuf.slice(-800),
+      try {
+        const stream = runClaudeChat({
+          promptText: assembled.text,
+          cwd: projectDir ?? undefined,
         });
+        for await (const ev of stream) {
+          if (ev.type === 'delta') {
+            assistantText += ev.text;
+            await send('delta', { text: ev.text });
+          } else if (ev.type === 'result') {
+            tokensIn = ev.tokensIn;
+            tokensOut = ev.tokensOut;
+            costUsd = ev.costUsd;
+            if (ev.finalText.length > assistantText.length) {
+              assistantText = ev.finalText;
+            }
+          } else if (ev.type === 'error') {
+            lastErrorMessage = ev.message;
+            lastErrorStderr = ev.stderr;
+          }
+          // tool_call events from agent-chats are not surfaced today —
+          // role-scoped agents don't have an MCP config attached. If a
+          // future role spawns with tools, add a forwarder here.
+        }
+      } finally {
+        activeChats.delete(chatId);
+      }
+
+      if (lastErrorMessage) {
+        await send('error', { message: lastErrorMessage, stderr: lastErrorStderr });
         await sseStream.close();
         return;
       }
