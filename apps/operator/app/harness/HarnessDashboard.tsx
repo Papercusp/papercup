@@ -12,6 +12,7 @@ import { Checkbox } from './Checkbox';
 import { Select } from './Select';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useSyncQuery } from '@restart/sync';
 import {
   slugToFeaturesKey,
@@ -637,7 +638,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
           <Plus size={14} /> Add plugin
         </button>
       </Tooltip>
-      {open && coords ? (
+      {open && coords && typeof document !== 'undefined' ? createPortal(
         <div
           data-add-plugin-popover
           style={{
@@ -766,7 +767,8 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
               )}
             </ul>
           )}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
