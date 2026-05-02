@@ -155,12 +155,18 @@ export default function WorkspaceSwitcher() {
             top: 'calc(100% + 4px)',
             right: 0,
             minWidth: 240,
-            background: 'var(--bg-elev, #1a1a1a)',
-            border: '1px solid var(--border, #2a2a2a)',
-            borderRadius: 4,
+            // Solid hex (not a CSS-var fallback that can be overridden by
+            // a translucent token from elsewhere) and an explicit
+            // backdrop-filter: none so the parent .pc-header's blur
+            // doesn't propagate into the popdown's stacking context.
+            background: '#0f1319',
+            backdropFilter: 'none',
+            WebkitBackdropFilter: 'none',
+            border: '1px solid #2a3344',
+            borderRadius: 6,
             padding: 4,
             zIndex: 100,
-            boxShadow: '0 6px 20px rgba(0,0,0,0.4)',
+            boxShadow: '0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
           }}
         >
           <div style={{ padding: '4px 8px', color: 'var(--fg-mute, #777)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
