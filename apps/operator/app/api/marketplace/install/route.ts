@@ -132,22 +132,8 @@ async function fetchCatalogManifest(slug: string): Promise<{ kind?: string; inst
 }
 
 async function lookupHarnessPath(slug: string): Promise<string | null> {
-  // Try the canonical registry first, then the legacy file (kept in sync).
-  const candidates = [
-    papercuspPath('registry.json'),
-    join(homedir(), '.restart-harness-projects.json'),
-  ];
-  for (const reg of candidates) {
-    try {
-      const raw = await fs.readFile(reg, 'utf8');
-      const parsed = JSON.parse(raw) as { projects?: Array<{ slug?: string; path?: string }> };
-      const found = parsed.projects?.find((p) => p?.slug === slug);
-      if (found?.path) return found.path;
-    } catch {
-      // try next
-    }
-  }
-  return null;
+  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 async function installSubagentPack(

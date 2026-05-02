@@ -18,15 +18,10 @@
  * its next dispatch. No new agent invocation; no new UI surface beyond a
  * write endpoint. Phase B (real-time chat) is a separate primitive.
  */
-import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, appendFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/** Honor `process.env.HOME` overrides (tests, env-scoped setup); fall back to `os.homedir()`. */
-function resolveHomeDir(): string {
-  return process.env.HOME ?? homedir();
-}
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export interface OperatorNoteBlock {
   /** Author identifier — typically 'user' but could be a tool slug. */
@@ -44,22 +39,9 @@ export interface ReadOperatorNotesResult {
   blocks: OperatorNoteBlock[];
 }
 
-interface RegistryFile { projects: Array<{ slug: string; path: string }> }
-
-function registryPath(): string {
-  return join(resolveHomeDir(), '.restart-harness-projects.json');
-}
-
 /** Resolve harness slug → project directory via the registry file. */
 export function projectDirForSlug(slug: string): string | null {
-  const path = registryPath();
-  if (!existsSync(path)) return null;
-  try {
-    const reg = JSON.parse(readFileSync(path, 'utf8')) as RegistryFile;
-    return reg.projects?.find((p) => p.slug === slug)?.path ?? null;
-  } catch {
-    return null;
-  }
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 /** `<projectDir>/.harness/notes/<featureId>.md` — the canonical location. */

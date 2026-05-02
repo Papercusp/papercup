@@ -20,11 +20,9 @@
  * already not the deployment topology).
  */
 import { NextResponse } from 'next/server';
-import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
 
-import { papercuspRoot } from '@/lib/papercusp-root';
+import { loadHarnessRegistry, saveHarnessRegistry } from '@/lib/harness-registry';
 export const dynamic = 'force-dynamic';
 
 interface RegistryShape {
@@ -71,38 +69,17 @@ export function pruneRegistry(
   return { removed, kept };
 }
 
-async function readJson<T>(path: string): Promise<T | null> {
-  try {
-    return JSON.parse(await fs.readFile(path, 'utf8')) as T;
-  } catch {
-    return null;
-  }
-}
-
 export async function POST(req: Request) {
   let body: PruneOptions = {};
   try {
     body = await req.json();
   } catch { /* empty body is fine */ }
 
-  const PAPERCUSP_ROOT = papercuspRoot();
-  const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
-  const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
-
-  // Prefer the canonical registry; fall back to legacy. We always write
-  // back to the canonical path, so this also migrates legacy installs.
-  const fromCanonical = await readJson<RegistryShape>(REGISTRY_PATH);
-  const reg = fromCanonical ?? (await readJson<RegistryShape>(LEGACY_REGISTRY_PATH)) ?? { projects: [] };
-
+  const reg = loadHarnessRegistry();
   const { removed, kept } = pruneRegistry(reg, body);
 
   if (!body.dryRun && removed.length > 0) {
-    await fs.mkdir(dirname(REGISTRY_PATH), { recursive: true });
-    await fs.writeFile(
-      REGISTRY_PATH,
-      JSON.stringify({ projects: kept }, null, 2),
-      'utf8',
-    );
+    await saveHarnessRegistry({ projects: kept });
   }
 
   return NextResponse.json({

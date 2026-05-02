@@ -197,7 +197,8 @@ async function readClientSecret(entry: OAuthAppsFile[string]): Promise<string> {
  * registrations.
  */
 export async function loadAndRegisterProvidersFromDisk(rootDir?: string): Promise<string[]> {
-  const root = rootDir ?? process.env.PAPERCUSP_HOME ?? join(homedir(), '.papercusp');
+  const { papercuspRoot } = await import('@/lib/papercusp-root');
+  const root = rootDir ?? papercuspRoot();
   const path = join(root, 'oauth-apps.json');
   let raw: string;
   try {

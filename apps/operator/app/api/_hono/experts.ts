@@ -26,20 +26,11 @@ import type { Hono } from 'hono';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, writeFile, readFile, copyFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { homedir } from 'node:os';
-
-interface ProjectEntry { slug: string; path: string }
-interface RegistryFile { projects?: ProjectEntry[] }
+import { getKnownRoles } from '@/lib/known-roles';
 
 function lookupProjectDir(slug: string): string | null {
-  const reg = join(process.env.HOME ?? homedir(), '.restart-harness-projects.json');
-  if (!existsSync(reg)) return null;
-  try {
-    const data = JSON.parse(readFileSync(reg, 'utf8')) as RegistryFile;
-    return data.projects?.find((p) => p.slug === slug)?.path ?? null;
-  } catch {
-    return null;
-  }
+  const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 function expertsRoot(projectDir: string): string {
@@ -680,14 +671,11 @@ export function registerExperts(harness: Hono): void {
     const projectDir = lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
 
-    // Static roles — match the chat agent-chats VALID_ROLES set, minus
-    // feedback. Source of truth for "what shows in sidebar."
-    const staticRoles = [
-      'orchestrator', 'scoper', 'worker', 'validator',
-      'plan-gate', 'documenter', 'summarizer', 'architect',
-      'curator', 'debugger', 'crosscheck', 'ui-qa', 'project_manager',
-      'director', 'coordinator', 'auditor',
-    ];
+    // Roles come from the shared on-disk source via getKnownRoles().
+    // We exclude `feedback` (ephemeral, no chat) and `expert` (handled
+    // separately as instanced agents below) to match agent-chats's chat
+    // surface.
+    const staticRoles = getKnownRoles().filter((r) => r !== 'feedback' && r !== 'expert');
     const agents: Array<{ role: string; instanceId?: string; title?: string; status?: string }> = [];
     for (const role of staticRoles) agents.push({ role });
 

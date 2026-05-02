@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { promises as fs, existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { promises as fs, existsSync } from 'node:fs';
 import { join, normalize, relative, dirname } from 'node:path';
 
-import { papercuspRoot } from '@/lib/papercusp-root';
+import { papercuspPath } from '@/lib/papercusp-root';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -16,23 +16,9 @@ export const runtime = 'nodejs';
  * Manifest-driven instead of hardcoded so SpecEditor stays template-
  * agnostic — every config tab maps to a configFiles[] entry.
  */
-const PAPERCUSP_ROOT = papercuspRoot();
-const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
-const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
-const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
-
-interface ProjectEntry { slug: string; path: string }
-interface RegistryShape { projects: ProjectEntry[] }
 interface ConfigFile { path: string; language?: string; label?: string }
 
-function loadRegistry(): RegistryShape {
-  for (const p of [REGISTRY_PATH, LEGACY_REGISTRY_PATH]) {
-    if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, 'utf8')) as RegistryShape; } catch { /* fall through */ }
-    }
-  }
-  return { projects: [] };
-}
+const loadRegistry = loadHarnessRegistry;
 
 async function loadAllowlist(projectPath: string): Promise<string[]> {
   const projectManifest = join(projectPath, '.harness', 'papercusp.json');
@@ -42,11 +28,12 @@ async function loadAllowlist(projectPath: string): Promise<string[]> {
   }
   // Fallback: scan installed templates for a configFiles list.
   if (!manifest || !Array.isArray(manifest.configFiles)) {
-    const dirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true }).catch(() => []);
+    const harnessesDir = papercuspPath('harnesses');
+    const dirs = await fs.readdir(harnessesDir, { withFileTypes: true }).catch(() => []);
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
       try {
-        const m = JSON.parse(await fs.readFile(join(HARNESSES_DIR, d.name, 'papercusp.json'), 'utf8'));
+        const m = JSON.parse(await fs.readFile(join(harnessesDir, d.name, 'papercusp.json'), 'utf8'));
         if (m && Array.isArray(m.configFiles)) { manifest = m; break; }
       } catch { /* skip */ }
     }

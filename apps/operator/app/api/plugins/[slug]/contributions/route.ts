@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
 import { papercuspRoot } from '@/lib/papercusp-root';
@@ -15,11 +14,9 @@ export const runtime = 'nodejs';
  * mount-walk latency on top of the actual filesystem walk). Used by
  * HarnessDashboard's tab-strip render.
  */
-const PAPERCUSP_ROOT = papercuspRoot();
-const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
-const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
-const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
-const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
+// Resolved per-call so workspace switches take effect without a restart.
+function HARNESSES_DIR() { return join(papercuspRoot(), 'harnesses'); }
+function GLOBAL_PLUGINS_DIR() { return join(papercuspRoot(), 'global-plugins'); }
 
 interface DashboardTabManifest {
   id: string; label: string; icon?: string;
@@ -95,13 +92,9 @@ async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'gl
   return out;
 }
 
-interface RegistryShape { projects: Array<{ slug: string; path: string }> }
-
 async function resolveProjectPath(slug: string): Promise<string | null> {
-  const reg = (await readJson<RegistryShape>(REGISTRY_PATH))
-    ?? (await readJson<RegistryShape>(LEGACY_REGISTRY_PATH))
-    ?? { projects: [] };
-  return reg.projects.find((p) => p.slug === slug)?.path ?? null;
+  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 function resolveIframeUrl(
@@ -139,19 +132,19 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   if (projectPath) {
     sources.push({ name: slug, dir: join(projectPath, 'plugins'), source: 'project' });
   }
-  if (existsSync(HARNESSES_DIR)) {
-    const harnessDirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true }).catch(() => []);
+  if (existsSync(HARNESSES_DIR())) {
+    const harnessDirs = await fs.readdir(HARNESSES_DIR(), { withFileTypes: true }).catch(() => []);
     for (const h of harnessDirs) {
       if (!h.isDirectory()) continue;
-      sources.push({ name: h.name, dir: join(HARNESSES_DIR, h.name, 'plugins'), source: 'harness' });
+      sources.push({ name: h.name, dir: join(HARNESSES_DIR(), h.name, 'plugins'), source: 'harness' });
     }
   }
-  sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR, source: 'global' });
+  sources.push({ name: 'global', dir: GLOBAL_PLUGINS_DIR(), source: 'global' });
 
   // Per-harness opt-in for global plugins.
   type EnabledFile = { enabled: Record<string, { version: string }> };
   const enabledFile = await readJson<EnabledFile>(
-    join(HARNESSES_DIR, slug, 'enabled-plugins.json'),
+    join(HARNESSES_DIR(), slug, 'enabled-plugins.json'),
   );
   const enabledSet = new Set<string>(enabledFile ? Object.keys(enabledFile.enabled) : []);
 
@@ -171,7 +164,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
       seen.add(p.name);
       const pluginRoot = (p as PluginManifest & { componentRoot?: string }).componentRoot;
       const harnessConfig = await readJson<Record<string, unknown>>(
-        join(HARNESSES_DIR, slug, 'plugin-configs', `${p.name}.json`),
+        join(HARNESSES_DIR(), slug, 'plugin-configs', `${p.name}.json`),
       );
       for (const tab of p.dashboardTabs ?? []) {
         const resolvedIframeUrl = resolveIframeUrl(p, tab, harnessConfig, slug);

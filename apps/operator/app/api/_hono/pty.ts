@@ -40,6 +40,7 @@ import {
 } from '../../../lib/pty-bridge';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 /**
  * Attach pty endpoints to an existing Hono router (typically the harness
  * router mounted at /api/harness). We register handlers directly rather
@@ -64,16 +65,7 @@ interface SpawnBody {
 
 /** Resolve the harness's project directory by reading its registry. */
 function projectDirForSlug(slug: string): string | null {
-  const registry = join(homedir(), '.restart-harness-projects.json');
-  if (!existsSync(registry)) return null;
-  try {
-    const data = JSON.parse(readFileSync(registry, 'utf8'));
-    const projects = (data?.projects ?? []) as Array<{ slug?: string; path?: string }>;
-    const match = projects.find((p) => p.slug === slug);
-    return match?.path ?? null;
-  } catch {
-    return null;
-  }
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 /** Resolve the harness's state directory. */

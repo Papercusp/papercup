@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { invokePluginAction } from '@/lib/plugin-host-runtime';
 import { papercuspPath } from '@/lib/papercusp-root';
@@ -13,7 +11,6 @@ const PLUGIN_SLUG = /^@?[a-z0-9][a-z0-9._/-]{0,127}$/i;
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 const ACTION_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
 
-interface ProjectRow { slug: string; path: string; harness_kind?: string; }
 
 /**
  * Resolve the project's source-tree path. Plugins write their run.log.jsonl
@@ -22,18 +19,8 @@ interface ProjectRow { slug: string; path: string; harness_kind?: string; }
  * back through workspace registry → legacy file → null.
  */
 async function resolveProjectPath(slug: string): Promise<string | null> {
-  try {
-    const reg = JSON.parse(await readFile(papercuspPath('registry.json'), 'utf8')) as { projects?: ProjectRow[] };
-    const p = reg.projects?.find((r) => r.slug === slug);
-    if (p?.path) return p.path;
-  } catch { /* fall through */ }
-  try {
-    const ancient = join(homedir(), '.restart-harness-projects.json');
-    const reg = JSON.parse(await readFile(ancient, 'utf8')) as { projects?: ProjectRow[] };
-    const p = reg.projects?.find((r) => r.slug === slug);
-    if (p?.path) return p.path;
-  } catch { /* fall through */ }
-  return null;
+  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 export async function POST(req: Request) {

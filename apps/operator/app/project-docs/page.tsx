@@ -12,35 +12,18 @@
  * /docs route (which serves the Papercusp specification — operator-owned
  * content, not harness-owned).
  */
-import { promises as fs, existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { promises as fs, existsSync } from 'node:fs';
 import { join, normalize, relative, resolve as resolvePath, sep } from 'node:path';
 import { Suspense } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import Link from 'next/link';
-import { papercuspRoot } from '@/lib/papercusp-root';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export const dynamic = 'force-dynamic';
 
-interface ProjectEntry { slug: string; path: string }
-interface RegistryShape { projects: ProjectEntry[] }
-
-function loadRegistry(): RegistryShape {
-  const candidates = [
-    join(papercuspRoot(), 'registry.json'),
-    join(homedir(), '.restart-harness-projects.json'),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, 'utf8')) as RegistryShape; } catch { /* ignore */ }
-    }
-  }
-  return { projects: [] };
-}
-
 function resolveProjectPath(slug: string): string | null {
-  return loadRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 async function listDocs(docsRoot: string): Promise<string[]> {
@@ -117,8 +100,9 @@ async function ProjectDocs({
   const grouped = groupByDir(files);
 
   return (
-    <div style={layout}>
-      <aside style={sidebar}>
+    <div style={layout} className="project-docs-shell">
+      <style>{projectDocsCss}</style>
+      <aside style={sidebar} className="project-docs-sidebar">
         <div style={projectHeader}>
           <strong>{slug}</strong>
           <div style={{ color: 'var(--fg-mute, #999)', fontSize: 11 }}>{normalize(projectPath)}</div>
@@ -133,6 +117,7 @@ async function ProjectDocs({
                   <li key={f} style={listItem}>
                     <Link
                       href={`${linkBase}${encodeURIComponent(f)}`}
+                      className={isActive ? 'project-docs-nav-link active' : 'project-docs-nav-link'}
                       style={isActive ? linkActive : linkIdle}
                     >
                       {basenameNoExt(f)}
@@ -144,7 +129,7 @@ async function ProjectDocs({
           </section>
         ))}
       </aside>
-      <main style={article}>
+      <main style={article} className="project-docs-article">
         <div style={breadcrumb}>{activeRel}</div>
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
       </main>
@@ -182,38 +167,129 @@ function Empty({ title, body }: { title: string; body: string }) {
 
 const layout: React.CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: '260px 1fr',
+  gridTemplateColumns: 'minmax(230px, 280px) minmax(0, 1fr)',
   height: '100vh',
-  background: 'var(--bg-1, #1a1a1a)',
+  background: 'linear-gradient(180deg, rgba(8, 19, 34, 0.98), var(--bg-1, #0b1220))',
   color: 'var(--fg, #ddd)',
   fontFamily: 'system-ui, -apple-system, "Segoe UI", sans-serif',
 };
 const sidebar: React.CSSProperties = {
   borderRight: '1px solid var(--border, #2a2a2a)',
   overflowY: 'auto',
-  padding: '12px 0',
-  background: 'var(--bg-2, #141414)',
+  padding: '14px 0',
+  background: 'linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.025))',
 };
-const projectHeader: React.CSSProperties = { padding: '0 16px 12px', borderBottom: '1px solid var(--border, #2a2a2a)', marginBottom: 8 };
+const projectHeader: React.CSSProperties = {
+  padding: '0 16px 14px',
+  borderBottom: '1px solid var(--border, #2a2a2a)',
+  marginBottom: 10,
+};
 const dirHeader: React.CSSProperties = {
-  padding: '4px 16px', fontSize: 11, textTransform: 'uppercase',
-  letterSpacing: '.06em', color: 'var(--fg-mute, #999)',
+  padding: '8px 16px 5px', fontSize: 10.5, textTransform: 'uppercase',
+  letterSpacing: '.07em', color: 'var(--fg-mute, #999)',
 };
 const list: React.CSSProperties = { listStyle: 'none', margin: 0, padding: 0 };
 const listItem: React.CSSProperties = { margin: 0 };
 const linkBaseStyle: React.CSSProperties = {
-  display: 'block', padding: '4px 16px', fontSize: 13, textDecoration: 'none',
+  display: 'block',
+  padding: '6px 16px',
+  fontSize: 13,
+  lineHeight: 1.25,
+  textDecoration: 'none',
+  borderLeft: '2px solid transparent',
 };
-const linkIdle: React.CSSProperties = { ...linkBaseStyle, color: 'var(--fg, #ddd)' };
-const linkActive: React.CSSProperties = { ...linkBaseStyle, color: 'var(--accent, #58a6ff)', background: 'var(--bg-1, #1a1a1a)' };
+const linkIdle: React.CSSProperties = { ...linkBaseStyle, color: 'var(--fg-dim, #b9d4e8)' };
+const linkActive: React.CSSProperties = {
+  ...linkBaseStyle,
+  color: 'var(--accent-strong, #7dd3fc)',
+  background: 'rgba(56, 189, 248, 0.10)',
+  borderLeftColor: 'var(--accent, #38bdf8)',
+};
 const article: React.CSSProperties = {
-  overflowY: 'auto', padding: '24px 32px', maxWidth: 880, margin: '0 auto',
-  width: '100%', boxSizing: 'border-box',
+  overflowY: 'auto',
+  padding: '28px clamp(28px, 5vw, 56px) 48px',
+  maxWidth: 960,
+  margin: '0 auto',
+  width: '100%',
+  boxSizing: 'border-box',
 };
 const breadcrumb: React.CSSProperties = {
-  fontSize: 11, color: 'var(--fg-mute, #999)', marginBottom: 16,
+  fontSize: 11, color: 'var(--fg-mute, #999)', marginBottom: 18,
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
 };
+const projectDocsCss = `
+  .project-docs-sidebar { scrollbar-color: rgba(125, 211, 252, 0.30) transparent; }
+  .project-docs-nav-link { transition: background 140ms ease, color 140ms ease, border-color 140ms ease; }
+  .project-docs-nav-link:hover,
+  .project-docs-nav-link:focus-visible {
+    color: var(--accent-cool, #d7f3ff) !important;
+    background: rgba(125, 211, 252, 0.08);
+    outline: none;
+  }
+  .project-docs-nav-link:focus-visible { box-shadow: inset 3px 0 0 var(--accent, #38bdf8); }
+  .project-docs-article { scrollbar-color: rgba(125, 211, 252, 0.30) transparent; }
+  .project-docs-article :where(h1, h2, h3) {
+    color: var(--fg, #e7f7ff);
+    letter-spacing: -0.035em;
+    line-height: 1.08;
+    text-wrap: balance;
+  }
+  .project-docs-article h1 {
+    margin: 0 0 16px;
+    font-size: clamp(2.15rem, 4.2vw, 3.05rem);
+    max-width: 24ch;
+  }
+  .project-docs-article h2 { margin: 28px 0 12px; font-size: clamp(1.55rem, 2.6vw, 2.2rem); }
+  .project-docs-article h3 { margin: 22px 0 10px; font-size: 1.25rem; }
+  .project-docs-article p {
+    max-width: 76ch;
+    color: var(--fg-dim, #b9d4e8);
+    line-height: 1.7;
+  }
+  .project-docs-article hr {
+    margin: 10px 0 16px;
+    border: 0;
+    border-top: 1px solid var(--border-strong, rgba(125, 211, 252, 0.32));
+  }
+  .project-docs-article table {
+    width: 100%;
+    margin: 16px 0 28px;
+    border-collapse: collapse;
+    border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.025);
+    font-size: 13px;
+  }
+  .project-docs-article th,
+  .project-docs-article td {
+    padding: 7px 12px;
+    border-bottom: 1px solid rgba(125, 211, 252, 0.10);
+    vertical-align: top;
+  }
+  .project-docs-article th {
+    color: var(--fg, #e7f7ff);
+    font-size: 11px;
+    letter-spacing: .04em;
+    background: rgba(125, 211, 252, 0.075);
+  }
+  .project-docs-article tbody tr:hover { background: rgba(125, 211, 252, 0.045); }
+  .project-docs-article a { color: var(--accent-strong, #7dd3fc); }
+  .project-docs-article a:hover,
+  .project-docs-article a:focus-visible { color: var(--accent-cool, #d7f3ff); text-decoration: underline; outline: none; }
+  .project-docs-article :not(pre) > code {
+    padding: 0.08rem 0.28rem;
+    border: 1px solid rgba(125, 211, 252, 0.14);
+    border-radius: 5px;
+    background: rgba(125, 211, 252, 0.08);
+    color: #d9f3ff;
+  }
+  @media (max-width: 760px) {
+    .project-docs-shell { grid-template-columns: 1fr !important; }
+    .project-docs-sidebar { max-height: 34vh; border-right: 0; border-bottom: 1px solid var(--border, #2a2a2a); }
+    .project-docs-article { padding: 24px 20px 40px !important; }
+  }
+`;
 
 export default function Page(props: { searchParams: Promise<{ harness?: string; path?: string }> }) {
   return (

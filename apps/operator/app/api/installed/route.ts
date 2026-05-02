@@ -1,15 +1,10 @@
 import { NextResponse } from 'next/server';
 import { promises as fs, existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import { papercuspRoot } from '@/lib/papercusp-root';
+import { papercuspPath } from '@/lib/papercusp-root';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 export const dynamic = 'force-dynamic';
-
-const PAPERCUSP_ROOT = papercuspRoot();
-const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
-const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
-const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
 
 interface RegistryShape {
   projects: Array<{ slug: string; path: string; harnessKind?: string; addedAt?: string }>;
@@ -37,13 +32,14 @@ async function readJson<T>(path: string): Promise<T | null> {
 }
 
 async function listInstalledHarnesses(): Promise<Array<{ slug: string; version: string | null; description: string | null }>> {
+  const harnessesDir = papercuspPath('harnesses');
   try {
-    const dirs = await fs.readdir(HARNESSES_DIR, { withFileTypes: true });
+    const dirs = await fs.readdir(harnessesDir, { withFileTypes: true });
     const out: Array<{ slug: string; version: string | null; description: string | null }> = [];
     for (const d of dirs) {
       if (!d.isDirectory()) continue;
       const manifest = await readJson<{ name: string; version: string; description?: string }>(
-        join(HARNESSES_DIR, d.name, 'papercusp.json'),
+        join(harnessesDir, d.name, 'papercusp.json'),
       );
       out.push({
         slug: d.name,
@@ -70,9 +66,7 @@ export function annotateProjectExistence(
 }
 
 export async function GET() {
-  const reg = (await readJson<RegistryShape>(REGISTRY_PATH))
-    ?? (await readJson<RegistryShape>(LEGACY_REGISTRY_PATH))
-    ?? { projects: [] };
+  const reg = loadHarnessRegistry();
   const { annotated, staleCount } = annotateProjectExistence(reg.projects);
   const harnesses = await listInstalledHarnesses();
   return NextResponse.json({

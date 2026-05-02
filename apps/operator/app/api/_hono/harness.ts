@@ -37,10 +37,13 @@ const dbcFor = (slug: string) => getLegacyClient(slug);
 
 const execFileP = promisify(execFile);
 
-interface ProjectEntry { slug: string; path: string }
-interface RegistryFile { projects: ProjectEntry[] }
-
-const REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
+import { papercuspRoot } from '@/lib/papercusp-root';
+import {
+  loadHarnessRegistry,
+  saveHarnessRegistry,
+  type HarnessRegistry as RegistryFile,
+  type ProjectEntry,
+} from '@/lib/harness-registry';
 
 /* ─────────────────────────────────────────────────────────────────────
  * Performance helpers (added 2026-05-01).
@@ -184,47 +187,12 @@ async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): P
   return commits;
 }
 
-function loadRegistry(): RegistryFile {
-  // The legacy registry (~/.restart-harness-projects.json) and the
-  // workspace registry (~/.papercusp-workspaces/default/.papercusp/registry.json)
-  // both carry harness rows. The CLI's `papercusp init` writes to the
-  // workspace registry; older paths and direct API calls go to the legacy
-  // registry. Merge both, preferring the legacy registry on slug collisions.
-  const merged: ProjectEntry[] = [];
-  const seen = new Set<string>();
-  if (existsSync(REGISTRY_PATH)) {
-    try {
-      const r = JSON.parse(readFileSync(REGISTRY_PATH, 'utf8')) as RegistryFile;
-      for (const p of r.projects ?? []) {
-        if (!seen.has(p.slug)) { seen.add(p.slug); merged.push(p); }
-      }
-    } catch {}
-  }
-  // Workspace registry — papercusp-root resolver knows the right path.
-  try {
-    const wsRoot = require('@/lib/papercusp-root').papercuspPath('registry.json');
-    if (existsSync(wsRoot)) {
-      const r = JSON.parse(readFileSync(wsRoot, 'utf8')) as RegistryFile;
-      for (const p of r.projects ?? []) {
-        if (!seen.has(p.slug)) { seen.add(p.slug); merged.push(p); }
-      }
-    }
-  } catch {}
-  if (merged.length > 0) return { projects: merged };
-  // Auto-discover: any known default location with a .harness/ dir
-  const autos: ProjectEntry[] = [];
-  for (const name of ['sheets-clone', 'Restart']) {
-    const p = join(homedir(), name);
-    if (existsSync(join(p, '.harness'))) {
-      autos.push({ slug: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), path: p });
-    }
-  }
-  return { projects: autos };
-}
-
-async function saveRegistry(reg: RegistryFile): Promise<void> {
-  await writeFile(REGISTRY_PATH, JSON.stringify(reg, null, 2));
-}
+// Single source of truth: the per-workspace registry at
+// papercuspPath('registry.json'). NEVER read or write the legacy
+// ~/.restart-harness-projects.json from operator code — see
+// content/docs/spec/operator-architecture-decisions.mdx for the rule.
+const loadRegistry = loadHarnessRegistry;
+const saveRegistry = saveHarnessRegistry;
 
 function resolveProject(slug: string): ProjectEntry | null {
   const reg = loadRegistry();
@@ -305,6 +273,38 @@ function tailFile(path: string, maxBytes = 64 * 1024): string {
     const fd = readFileSync(path, 'utf8');
     return fd.slice(fd.length - maxBytes);
   } catch { return ''; }
+}
+
+/**
+ * Background-invoke a single scoper mode (proposal | replan) without
+ * going through run.sh's full pre-loop. Used by /product-review (manual
+ * "Propose now") and the accept handler's replanOnAccept path.
+ *
+ * Sources only the helper functions from run.sh — does NOT enter the
+ * orchestrator loop or run plan-review. So it can't accidentally exit 7
+ * mid-replan, and it never respawns experts. Detached background spawn;
+ * caller does not block on the agent invocation.
+ */
+function invokeScoperBackground(project: ProjectEntry, mode: 'proposal' | 'replan'): void {
+  const { spawn } = require('node:child_process');
+  const harnessScript = harnessPath('run.sh');
+  const wrapper = `
+    set -e
+    export PROJECT_DIR="${project.path}"
+    export STATE_DIR="${project.path}/.harness"
+    export HARNESS_DIR="${harnessPackageDir()}"
+    export LOG_DIR="$STATE_DIR/logs"
+    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR"
+    source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|check_cost_cap|prune_logs)\\(\\)/,/^}/' "$HARNESS_DIR/run.sh")
+    invoke scoper "MODE=${mode}"
+  `;
+  const child = spawn('bash', ['-c', wrapper], {
+    cwd: project.path,
+    env: { ...process.env, CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions' },
+    detached: true,
+    stdio: ['ignore', 'ignore', 'ignore'],
+  });
+  child.unref();
 }
 
 function launchRun(project: ProjectEntry, extra?: string): { ok: true; logPath: string } | { ok: false; error: string } {
@@ -2689,34 +2689,20 @@ harness.post('/:slug/proposals/:id/accept', async (c) => {
   }, `proposals/${id}`);
   void firePluginEvent('proposal.accepted', { proposalId: id, installSlug: project.slug });
 
-  // Optional auto-replan: if config.reviewer.replanOnAccept (canonical) or the
-  // legacy config.product.replanOnAccept is true, fire-and-forget. The API does
-  // NOT block on replan (it's a multi-minute agent invocation).
+  // Optional auto-replan: if config.reviewer.replanOnAccept is true,
+  // delta-merge the new bullets via scoper MODE=replan. Fire-and-forget;
+  // the API does NOT block on replan (it's a multi-minute agent invocation).
   let replanFired = false;
   try {
     const cfg = JSON.parse(readFileSync(join(harnessDir(project), 'config.json'), 'utf8'));
-    const wantReplan = cfg?.reviewer?.replanOnAccept === true
-      || (cfg?.reviewer?.replanOnAccept === undefined && cfg?.product?.replanOnAccept === true);
+    const wantReplan = cfg?.reviewer?.replanOnAccept === true;
     if (wantReplan) {
-      const { spawn } = require('node:child_process');
-      const runScript = harnessPath('run.sh');
-      // Move existing plan artifacts to backup dir so scoper MODE=initial re-runs.
-      const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
-      await mkdir(backupDir, { recursive: true });
-      for (const f of ['features.json', 'validation-contract.md']) {
-        const p = join(harnessDir(project), f);
-        if (existsSync(p)) {
-          const { rename: renameFn } = await import('node:fs/promises');
-          await renameFn(p, join(backupDir, f));
-        }
-      }
-      const child = spawn('bash', ['-c', `MAX_ITERATIONS=0 ${runScript} >> /tmp/harness-replan-${project.slug}.log 2>&1 &`], {
-        cwd: project.path,
-        env: { ...process.env, CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions' },
-        detached: true,
-        stdio: 'ignore',
-      });
-      child.unref();
+      // Non-destructive: invoke scoper MODE=replan to delta-merge the new
+      // SPEC.md bullets into the existing harness_features queue without
+      // disturbing in-flight features. Matches run.sh's review_pending_
+      // proposals replan path; replaces the prior MAX_ITERATIONS=0 hack
+      // that respawned experts.
+      invokeScoperBackground(project, 'replan');
       replanFired = true;
     }
   } catch {}
@@ -2741,39 +2727,27 @@ harness.post('/:slug/proposals/:id/reject', async (c) => {
 harness.post('/:slug/product-review', async (c) => {
   const project = resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  // GOAL.md was the legacy north-star file. SPEC.md now holds both
-  // north-star + scope, so accept either being present.
   const specPath = join(project.path, 'SPEC.md');
-  const goalPath = join(project.path, 'GOAL.md');
-  if (!existsSync(specPath) && !existsSync(goalPath)) {
+  if (!existsSync(specPath)) {
     return c.json({ error: 'SPEC.md not found in project root' }, 400);
   }
 
-  return new Promise((resolve) => {
-    const { execFile } = require('node:child_process');
-    const harnessScript = harnessPath('run.sh');
-    // Direct invocation: use MAX_ITERATIONS=0 and a forced product trigger via
-    // ad-hoc wrapper. Simplest: write a one-liner that sources invoke() only.
-    // For now we shell out to a small bash wrapper that sources run.sh pieces.
-    const wrapper = `
-      set -e
-      export PROJECT_DIR="${project.path}"
-      export STATE_DIR="${project.path}/.harness"
-      export HARNESS_DIR="${harnessPackageDir()}"
-      export LOG_DIR="$STATE_DIR/logs"
-      mkdir -p "$STATE_DIR/proposals" "$LOG_DIR"
-      source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|check_cost_cap|prune_logs)\\(\\)/,/^}/' $HARNESS_DIR/run.sh)
-      invoke scoper "MODE=proposal"
-    `;
-    execFile('bash', ['-c', wrapper], { env: { ...process.env, CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions' }, maxBuffer: 4 * 1024 * 1024, timeout: 10 * 60_000 },
-      (err: any, stdout: string, stderr: string) => {
-        if (err) {
-          resolve(c.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr: stderr?.slice(0, 500) ?? '' }, 500));
-          return;
-        }
-        resolve(c.json({ ok: true, stdout: stdout.slice(-2048), stderr: stderr.slice(-1024) }));
-      });
-  }) as Promise<Response>;
+  invokeScoperBackground(project, 'proposal');
+  return c.json({ ok: true });
+});
+
+/**
+ * Manual scope-replan trigger. Invokes scoper MODE=replan in the
+ * background to delta-merge any new SPEC.md bullets into the work queue
+ * without restarting the harness. Useful when the user has hand-edited
+ * SPEC.md and wants the queue updated without waiting for the next
+ * orchestrator tick.
+ */
+harness.post('/:slug/replan', (c) => {
+  const project = resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  invokeScoperBackground(project, 'replan');
+  return c.json({ ok: true });
 });
 
 // Legacy alias: GOAL.md and SPEC.md were once separate. SPEC.md is now
@@ -3479,20 +3453,7 @@ harness.post('/:slug/save-as-template', async (c) => {
     return c.json({ error: `invalid version "${version}" (expected semver, e.g. 0.1.0)` }, 400);
   }
 
-  // Workspace-aware root: prefer ~/.papercusp-workspaces/<current>/.papercusp
-  // (the live workspace) and fall back to ~/.papercusp for legacy installs.
-  const wsRegistry = join(homedir(), '.papercusp-workspaces', 'registry.json');
-  let rootDir = join(homedir(), '.papercusp');
-  if (existsSync(wsRegistry)) {
-    try {
-      const reg = JSON.parse(await readFile(wsRegistry, 'utf8')) as { current?: string };
-      if (reg.current) {
-        const cand = join(homedir(), '.papercusp-workspaces', reg.current, '.papercusp');
-        if (existsSync(cand)) rootDir = cand;
-      }
-    } catch {}
-  }
-
+  const rootDir = papercuspRoot();
   const templateDir = join(rootDir, 'templates', newSlug, version);
   if (existsSync(templateDir)) {
     return c.json({ error: `template already exists at ${templateDir} — bump version or pick a different slug` }, 409);

@@ -24,11 +24,11 @@ import { stream, streamSSE } from 'hono/streaming';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { getKnownRoles } from '@/lib/known-roles';
 import { projectDirForSlug } from '../../../lib/operator-notes';
 
 interface TranscriptTurn {
@@ -65,17 +65,14 @@ interface FeatureLockState {
   active: boolean;
 }
 
-const VALID_ROLES = new Set([
-  'orchestrator', 'scoper', 'worker', 'validator',
-  'plan-gate', 'reviewer', // 'reviewer' is the legacy alias for 'plan-gate'; both accepted during deprecation
-  'documenter', 'summarizer', 'architect', 'curator', 'debugger',
-  'crosscheck', 'ui-qa', 'project_manager',
-  'director', 'coordinator', 'auditor',
-  // Instanced role: chat needs feature_id="EXP-NNN" to identify which expert
-  // instance is being chatted with. `feedback` is intentionally absent —
-  // ephemeral, no chat surface.
-  'expert',
-]);
+// Roles allowed for /agent-chats: derived from the global prompts dir
+// (lib/known-roles.ts walks every subdir). `feedback` is intentionally
+// excluded — ephemeral, no chat surface. Everything else with a prompt
+// file is chat-capable; expert chats additionally require feature_id.
+function isValidChatRole(role: string): boolean {
+  if (role === 'feedback') return false;
+  return getKnownRoles().includes(role);
+}
 
 /**
  * Per-chat in-memory lock. A second message POST while a prior one is
@@ -96,11 +93,8 @@ function dbForSlug(slug: string) {
  * missing file (no-op).
  */
 async function flipExpertEngaged(slug: string, expertId: string, engaged: boolean): Promise<void> {
-  const home = process.env.HOME ?? homedir();
-  const reg = join(home, '.restart-harness-projects.json');
-  if (!existsSync(reg)) return;
-  const data = JSON.parse(readFileSync(reg, 'utf8'));
-  const projectDir = data.projects?.find((p: { slug?: string; path?: string }) => p.slug === slug)?.path;
+  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+  const projectDir = loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path;
   if (!projectDir) return;
   const identityPath = join(projectDir, '.harness', 'experts', expertId, 'identity.json');
   if (!existsSync(identityPath)) return;
@@ -148,21 +142,12 @@ async function readFeatureLockState(slug: string, featureId: string): Promise<Fe
  */
 function readChatCostCap(slug: string): { perChatUsd?: number; aggregateUsd?: number } {
   try {
-    const projectDir = (() => {
-      const fs = require('node:fs');
-      const path = require('node:path');
-      const home = process.env.HOME ?? require('node:os').homedir();
-      const reg = path.join(home, '.restart-harness-projects.json');
-      if (!fs.existsSync(reg)) return null;
-      const data = JSON.parse(fs.readFileSync(reg, 'utf8'));
-      return data.projects?.find((p: { slug?: string; path?: string }) => p.slug === slug)?.path ?? null;
-    })();
+    const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
+    const projectDir = loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
     if (!projectDir) return {};
-    const fs = require('node:fs');
-    const path = require('node:path');
-    const cfgPath = path.join(projectDir, '.harness', 'config.json');
-    if (!fs.existsSync(cfgPath)) return {};
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+    const cfgPath = join(projectDir, '.harness', 'config.json');
+    if (!existsSync(cfgPath)) return {};
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
     const out: { perChatUsd?: number; aggregateUsd?: number } = {};
     if (typeof cfg.maxChatCostUsd === 'number' && cfg.maxChatCostUsd > 0) out.perChatUsd = cfg.maxChatCostUsd;
     if (typeof cfg.maxAggregateChatCostUsd === 'number' && cfg.maxAggregateChatCostUsd > 0) out.aggregateUsd = cfg.maxAggregateChatCostUsd;
@@ -180,17 +165,12 @@ function readChatCostCap(slug: string): { perChatUsd?: number; aggregateUsd?: nu
  */
 function readChatLockPolicy(slug: string): boolean {
   try {
-    const fs = require('node:fs');
-    const path = require('node:path');
-    const home = process.env.HOME ?? require('node:os').homedir();
-    const reg = path.join(home, '.restart-harness-projects.json');
-    if (!fs.existsSync(reg)) return false;
-    const data = JSON.parse(fs.readFileSync(reg, 'utf8'));
-    const projectDir = data.projects?.find((p: { slug?: string; path?: string }) => p.slug === slug)?.path ?? null;
+    const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
+    const projectDir = loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
     if (!projectDir) return false;
-    const cfgPath = path.join(projectDir, '.harness', 'config.json');
-    if (!fs.existsSync(cfgPath)) return false;
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
+    const cfgPath = join(projectDir, '.harness', 'config.json');
+    if (!existsSync(cfgPath)) return false;
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as Record<string, unknown>;
     const parallelChat = cfg.parallelChat as Record<string, unknown> | undefined;
     return parallelChat?.respectFeatureLocks === true;
   } catch {
@@ -255,8 +235,8 @@ export function registerAgentChats(harness: Hono): void {
     } catch {
       return c.json({ error: 'invalid JSON body' }, 400);
     }
-    if (!body.role || !VALID_ROLES.has(body.role)) {
-      return c.json({ error: `role must be one of: ${[...VALID_ROLES].join(', ')}` }, 400);
+    if (!body.role || !isValidChatRole(body.role)) {
+      return c.json({ error: `role must be one of: ${getKnownRoles().filter((r) => r !== 'feedback').join(', ')}` }, 400);
     }
     // Accept any uppercase-prefixed alphanumeric+hyphen ID. Different
     // harness templates use different prefixes (F-NNN for coding, BRIEF-BRF-NNN

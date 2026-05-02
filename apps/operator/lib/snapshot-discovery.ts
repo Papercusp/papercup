@@ -1,7 +1,8 @@
-import { existsSync, promises as fs, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { snapshotsDir, readManifestFromTarball, type SnapshotManifest } from '@papercusp/export-state';
+
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export interface RegisteredProject {
   slug: string;
@@ -9,55 +10,8 @@ export interface RegisteredProject {
   harness_kind?: string;
 }
 
-/**
- * Resolve the active project-registry path. The substrate moved to
- * workspace-scoped registries (~/.papercusp-workspaces/<id>/.papercusp/),
- * but legacy installs still keep the registry at ~/.papercusp/ or even
- * the original ~/.restart-harness-projects.json. Try in order.
- *
- * Override with PAPERCUSP_REGISTRY_PATH for non-default deployments.
- */
-function findRegistryPath(): string {
-  const override = process.env.PAPERCUSP_REGISTRY_PATH;
-  if (override) return override;
-
-  // 1. Active workspace per ~/.papercusp-workspaces/registry.json
-  const wsIndex = join(homedir(), '.papercusp-workspaces', 'registry.json');
-  if (existsSync(wsIndex)) {
-    try {
-      const raw = readFileSync(wsIndex, 'utf8');
-      const parsed = JSON.parse(raw) as { current?: string };
-      if (parsed.current) {
-        const wsReg = join(homedir(), '.papercusp-workspaces', parsed.current, '.papercusp', 'registry.json');
-        if (existsSync(wsReg)) return wsReg;
-      }
-    } catch { /* fall through */ }
-  }
-
-  // 2. Default workspace explicitly
-  const defaultWs = join(homedir(), '.papercusp-workspaces', 'default', '.papercusp', 'registry.json');
-  if (existsSync(defaultWs)) return defaultWs;
-
-  // 3. Legacy ~/.papercusp/registry.json (pre-workspaces)
-  const legacy = join(homedir(), '.papercusp', 'registry.json');
-  if (existsSync(legacy)) return legacy;
-
-  // 4. Oldest pre-Papercusp path
-  const ancient = join(homedir(), '.restart-harness-projects.json');
-  if (existsSync(ancient)) return ancient;
-
-  // Nothing exists yet — return the legacy path; the read will return [].
-  return legacy;
-}
-
 export async function readRegistry(): Promise<{ projects: RegisteredProject[] }> {
-  try {
-    const raw = await fs.readFile(findRegistryPath(), 'utf8');
-    const parsed = JSON.parse(raw) as { projects?: RegisteredProject[] };
-    return { projects: parsed.projects ?? [] };
-  } catch {
-    return { projects: [] };
-  }
+  return { projects: loadHarnessRegistry().projects as RegisteredProject[] };
 }
 
 export async function findProject(slug: string): Promise<RegisteredProject | null> {

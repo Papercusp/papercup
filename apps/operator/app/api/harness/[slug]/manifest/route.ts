@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server';
-import { promises as fs, existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { papercuspRoot } from '@/lib/papercusp-root';
+import { papercuspPath } from '@/lib/papercusp-root';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -16,29 +16,13 @@ export const runtime = 'nodejs';
  * Bypasses the Hono catch-all (consistent with /api/harness/projects
  * and /api/plugins/global) so the endpoint is fast under HMR churn.
  */
-const PAPERCUSP_ROOT = papercuspRoot();
-const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
-const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
-const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
-
-interface ProjectEntry { slug: string; path: string; harness_kind?: string; department_slug?: string }
-interface RegistryShape { projects: ProjectEntry[] }
-
-function loadRegistry(): RegistryShape {
-  for (const p of [REGISTRY_PATH, LEGACY_REGISTRY_PATH]) {
-    if (existsSync(p)) {
-      try { return JSON.parse(readFileSync(p, 'utf8')) as RegistryShape; } catch { /* fall through */ }
-    }
-  }
-  return { projects: [] };
-}
 
 export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }> }) {
   const { slug } = await ctx.params;
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slug)) {
     return NextResponse.json({ error: 'invalid slug' }, { status: 400 });
   }
-  const reg = loadRegistry();
+  const reg = loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === slug);
   if (!project) return NextResponse.json({ error: 'unknown project' }, { status: 404 });
 
@@ -56,7 +40,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   if (!manifest) {
     // Walk every installed harness template's manifest and match against
     // this project's harness_kind or registered template — best-effort.
-    const harnessesDir = HARNESSES_DIR;
+    const harnessesDir = papercuspPath('harnesses');
     if (existsSync(harnessesDir)) {
       const dirs = await fs.readdir(harnessesDir, { withFileTypes: true }).catch(() => []);
       for (const d of dirs) {

@@ -27,7 +27,7 @@ const PAPERCUSP_ROOT = papercuspRoot();
 const HARNESSES_DIR = join(PAPERCUSP_ROOT, 'harnesses');
 const GLOBAL_PLUGINS_DIR = join(PAPERCUSP_ROOT, 'global-plugins');
 const REGISTRY_PATH = join(PAPERCUSP_ROOT, 'registry.json');
-const LEGACY_REGISTRY_PATH = join(homedir(), '.restart-harness-projects.json');
+
 
 /**
  * Phase 6a: contribution metadata declared in `papercusp.json`. Components
@@ -203,10 +203,8 @@ interface RegistryShape {
 }
 
 async function resolveProjectPath(slug: string): Promise<string | null> {
-  const reg = (await readJson<RegistryShape>(REGISTRY_PATH))
-    ?? (await readJson<RegistryShape>(LEGACY_REGISTRY_PATH))
-    ?? { projects: [] };
-  return reg.projects.find((p) => p.slug === slug)?.path ?? null;
+  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 export const plugins = new Hono();
@@ -244,12 +242,8 @@ plugins.post('/runtime/invoke-action', async (c) => {
   if (!plugin || !action || !slug) {
     return c.json({ error: 'plugin, action, slug are all required' }, 400);
   }
-  const project = (() => {
-    try {
-      const reg = JSON.parse(require('node:fs').readFileSync(require('node:os').homedir() + '/.restart-harness-projects.json', 'utf8'));
-      return (reg.projects ?? []).find((p: any) => p.slug === slug) ?? null;
-    } catch { return null; }
-  })();
+  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+  const project = loadHarnessRegistry().projects.find((p) => p.slug === slug) ?? null;
   const projectDir = project?.path ?? '/tmp';
   const stateDir = project ? `${project.path}/.harness` : '/tmp';
   const { invokePluginAction } = await import('../../../lib/plugin-host-runtime');
@@ -287,12 +281,8 @@ plugins.post('/runtime/fire-event', async (c) => {
         try { return require('node:fs').readdirSync(require('node:os').homedir() + '/.papercusp/harnesses'); }
         catch { return []; }
       })();
-      const project = (() => {
-        try {
-          const reg = JSON.parse(require('node:fs').readFileSync(require('node:os').homedir() + '/.restart-harness-projects.json', 'utf8'));
-          return (reg.projects ?? []).find((p: any) => p.slug === slug) ?? null;
-        } catch { return null; }
-      })();
+      const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+      const project = loadHarnessRegistry().projects.find((p) => p.slug === slug) ?? null;
       const ctxArgs = {
         installSlug: slug,
         projectDir: project?.path ?? '/tmp',
