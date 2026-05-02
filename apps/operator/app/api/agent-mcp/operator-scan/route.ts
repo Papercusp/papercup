@@ -30,6 +30,8 @@ import {
 } from '@/lib/operator-prompt';
 import { parseSuggestions } from '@/lib/operator-suggestion-parser';
 import { loadPreferences } from '@/lib/operator-preferences';
+import { acquireScanLock, releaseScanLock } from '@/lib/operator-scan-lock';
+import { checkBudget, recordSpend } from '@/lib/operator-budget';
 
 export const dynamic = 'force-dynamic';
 
@@ -91,6 +93,33 @@ export async function GET(req: NextRequest) {
 
   const sessionUser = await getSessionUser();
   const userId = sessionUser?.id ?? 'anonymous';
+
+  const budget = checkBudget();
+  if (budget.state && budget.exceeded) {
+    return new Response(
+      `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
+      { status: 402 },
+    );
+  }
+
+  // Multi-tab dedup: refuse if another holder has a fresh lock.
+  let lock: { holderId: string };
+  try {
+    const acq = await acquireScanLock();
+    if (!acq.acquired) {
+      return new Response('Another scan is in progress for this workspace.', {
+        status: 429,
+        headers: { 'retry-after': String(acq.retryAfterSec ?? 30) },
+      });
+    }
+    lock = { holderId: acq.holderId! };
+  } catch (err) {
+    // Migration not yet applied or PG transient — fail open with a hint.
+    // This keeps dev environments unblocked until 014 is applied.
+    console.warn('[operator-scan] scan-lock unavailable, proceeding without dedup:', err);
+    lock = { holderId: '' };
+  }
+
   const { promptText, isFirstRun } = buildOperatorPrompt({ request: requestText, userId });
   const preferences = loadPreferences();
 
@@ -137,6 +166,7 @@ export async function GET(req: NextRequest) {
             send('tool_call', { name: ev.name, input: ev.input });
           } else if (ev.type === 'result') {
             costUsd = ev.costUsd;
+            recordSpend(costUsd);
             const parsed = parseSuggestions(ev.finalText || assistantText, preferences);
             for (const block of parsed.blocks) {
               send('suggestion', {
@@ -159,8 +189,14 @@ export async function GET(req: NextRequest) {
       } catch (err) {
         send('error', { message: err instanceof Error ? err.message : String(err) });
       } finally {
+        if (lock.holderId) await releaseScanLock(lock.holderId);
         controller.close();
       }
+    },
+    async cancel() {
+      // Client closed the SSE — release the lock so a follow-up scan
+      // doesn't block on the dead one until TTL.
+      if (lock.holderId) await releaseScanLock(lock.holderId);
     },
   });
 

@@ -153,6 +153,13 @@ export function OperatorButton(): JSX.Element {
   );
 }
 
+interface BudgetSnapshot {
+  configured: boolean;
+  dailyCapUsd: number;
+  todaySpendUsd: number;
+  exceeded: boolean;
+}
+
 export function OperatorPanel(): JSX.Element | null {
   const [state, setState] = useState<OperatorState>(sharedState);
   const [suggestions, setSuggestions] = useState<SuggestionCard[]>([]);
@@ -160,6 +167,8 @@ export function OperatorPanel(): JSX.Element | null {
   const [streamLog, setStreamLog] = useState<string[]>([]);
   const [scanStarted, setScanStarted] = useState(false);
   const [firstRun, setFirstRun] = useState(false);
+  const [budget, setBudget] = useState<BudgetSnapshot | null>(null);
+  const [budgetSaving, setBudgetSaving] = useState(false);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<EventSource | null>(null);
 
@@ -269,6 +278,30 @@ export function OperatorPanel(): JSX.Element | null {
     }
   }, []);
 
+  const refreshBudget = useCallback(async () => {
+    try {
+      const r = await fetch('/api/agent-mcp/operator-budget');
+      if (!r.ok) return;
+      setBudget((await r.json()) as BudgetSnapshot);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const setBudgetCap = useCallback(async (cap: number) => {
+    setBudgetSaving(true);
+    try {
+      await fetch('/api/agent-mcp/operator-budget', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dailyCapUsd: cap }),
+      });
+      await refreshBudget();
+    } finally {
+      setBudgetSaving(false);
+    }
+  }, [refreshBudget]);
+
   useEffect(() => {
     if (!state.open) {
       if (evtSrcRef.current) {
@@ -277,11 +310,13 @@ export function OperatorPanel(): JSX.Element | null {
       }
       return;
     }
-    if (!scanStarted && !state.paused) {
+    void refreshBudget();
+    void refreshDecisions();
+    // Don't auto-scan until the user has confirmed a budget cap.
+    if (!scanStarted && !state.paused && budget?.configured && !budget.exceeded) {
       startScan();
     }
-    void refreshDecisions();
-  }, [state.open, state.paused, scanStarted, startScan, refreshDecisions]);
+  }, [state.open, state.paused, scanStarted, startScan, refreshDecisions, refreshBudget, budget?.configured, budget?.exceeded]);
 
   // Voice mode: subscribe to final utterances while panel is open and
   // dispatch them as scan requests. Lets the user say "scan again" or
@@ -417,6 +452,52 @@ export function OperatorPanel(): JSX.Element | null {
         </div>
       </div>
 
+      {budget && !budget.configured && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(255,255,255,0.96)',
+            zIndex: 1,
+            display: 'grid',
+            placeItems: 'center',
+            padding: 32,
+          }}
+        >
+          <div style={{ maxWidth: 420, fontSize: 14, lineHeight: 1.5 }}>
+            <h3 style={{ margin: '0 0 8px' }}>Pick a daily budget for Operator</h3>
+            <p style={{ opacity: 0.7, margin: '0 0 16px' }}>
+              Operator stops scanning automatically when today&apos;s spend reaches the cap.
+              You can change this any time at <a href="/settings/operator">/settings/operator</a>.
+            </p>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {[
+                { label: 'Light', cap: 5, blurb: '~50 scans/day with default model' },
+                { label: 'Active', cap: 20, blurb: 'recommended for daily use' },
+                { label: 'Heavy', cap: 50, blurb: 'large workspaces or always-on background' },
+              ].map(({ label, cap, blurb }) => (
+                <button
+                  key={cap}
+                  type="button"
+                  disabled={budgetSaving}
+                  onClick={() => setBudgetCap(cap)}
+                  style={{
+                    textAlign: 'left',
+                    padding: 12,
+                    border: '1px solid rgba(0,0,0,0.12)',
+                    borderRadius: 8,
+                    background: '#fff',
+                    cursor: budgetSaving ? 'wait' : 'pointer',
+                  }}
+                >
+                  <strong>{label} — ${cap}/day</strong>
+                  <div style={{ fontSize: 12, opacity: 0.7 }}>{blurb}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       <div
         style={{
           display: 'grid',
