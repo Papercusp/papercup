@@ -34,10 +34,36 @@ export interface MarkdownEditorProps {
 }
 
 /**
+ * Pre-process Obsidian-style `[[wiki-link]]` syntax into standard markdown
+ * links pointing at `/wiki?target=...`. Applied in <MarkdownPreview> only;
+ * editor surfaces show `[[X]]` as literal text.
+ *
+ *   [[knowledge]]              → [knowledge](/wiki?target=knowledge)
+ *   [[sheets/knowledge]]       → [sheets/knowledge](/wiki?target=knowledge&harness=sheets)
+ *   [[supervisor-notes|notes]] → [notes](/wiki?target=supervisor-notes)
+ */
+export function expandWikiLinks(md: string): string {
+  return (md ?? '').replace(/\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]/g, (_m, raw, label) => {
+    const t = raw.trim();
+    let target = t;
+    let harness: string | null = null;
+    const slash = t.indexOf('/');
+    if (slash > 0) {
+      harness = t.slice(0, slash);
+      target = t.slice(slash + 1);
+    }
+    const display = (label ?? t).trim();
+    const params = new URLSearchParams({ target });
+    if (harness) params.set('harness', harness);
+    return `[${display}](/wiki?${params.toString()})`;
+  });
+}
+
+/**
  * Read-only renderer for markdown — uses Vditor's static `preview()` API,
  * which renders Mermaid / KaTeX / PlantUML / Echarts / flowchart inline
  * without instantiating a full editor. Drop-in replacement for
- * `<ReactMarkdown>{md}</ReactMarkdown>`.
+ * `<ReactMarkdown>{md}</ReactMarkdown>`. Also expands [[wiki-links]].
  */
 export function MarkdownPreview({
   value,
@@ -55,7 +81,7 @@ export function MarkdownPreview({
     (async () => {
       const Vditor = (await import('vditor')).default;
       if (cancelled || !ref.current) return;
-      Vditor.preview(ref.current, value ?? '', {
+      Vditor.preview(ref.current, expandWikiLinks(value ?? ''), {
         mode: 'dark',
         theme: { current: 'dark' },
         math: { engine: 'KaTeX' },
