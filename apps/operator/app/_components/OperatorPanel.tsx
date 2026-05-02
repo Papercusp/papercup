@@ -20,6 +20,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { MarkdownPreview } from './MarkdownEditor';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
+import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
 
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
@@ -80,10 +81,22 @@ interface SuggestionCard extends ParsedSuggestion {
   messageId?: string;
 }
 
-const UNCONSUMED_AGE_MS = 4 * 60_000; // 3 × 60s cadence + 60s grace = 4 min
+const UNCONSUMED_AGE_MS = 4 * 60_000; // 3 × 60s cadence + 60s grace = 4 min — fallback
 
 function ageMs(card: SuggestionCard): number | null {
   return card.dispatchedAt ? Date.now() - card.dispatchedAt : null;
+}
+
+interface AckLatencyTable {
+  perHarness: Record<string, number>;
+  fallbackMs: number;
+}
+
+function unconsumedThresholdFor(card: SuggestionCard, table: AckLatencyTable | null): number {
+  if (!table) return UNCONSUMED_AGE_MS;
+  const target = card.target_harness;
+  if (target && table.perHarness[target]) return table.perHarness[target];
+  return table.fallbackMs;
 }
 
 interface DecisionRow {
@@ -181,6 +194,7 @@ export function OperatorPanel(): JSX.Element | null {
   const [firstRun, setFirstRun] = useState(false);
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null);
   const [budgetSaving, setBudgetSaving] = useState(false);
+  const [ackLatency, setAckLatency] = useState<AckLatencyTable | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<EventSource | null>(null);
 
@@ -269,6 +283,22 @@ export function OperatorPanel(): JSX.Element | null {
             if (wasTerminal) next.push({ ...s, status: 'pending' });
             return next;
           }
+          // Fuzzy dedup: titles that paraphrase a still-pending card
+          // collapse rather than stack. Only collapse against pending —
+          // dispatched/dismissed cards have user-visible decisions we
+          // shouldn't mask.
+          const candidates = prev
+            .filter((c) => c.status === 'pending')
+            .map((c) => ({ id: c.id, title: c.title }));
+          const fuzzy = findFuzzyDuplicate(s.title, candidates);
+          if (fuzzy) {
+            const fIdx = prev.findIndex((c) => c.id === fuzzy.matchedId);
+            if (fIdx >= 0) {
+              const dup = prev.slice();
+              dup[fIdx] = { ...prev[fIdx], ...s, id: prev[fIdx].id, status: 'pending' };
+              return dup;
+            }
+          }
           return [...prev, { ...s, status: 'pending' }];
         });
         // Voice mode: speak the suggestion title + why-line.
@@ -328,12 +358,14 @@ export function OperatorPanel(): JSX.Element | null {
           rows: { messageId: string; receivingState: 'dispatched' | 'consumed' | 'escalated' | 'rejected' }[];
         };
         if (cancelled || !rows.length) return;
-        const byId = new Map(rows.map((r) => [r.messageId, r.receivingState]));
+        const byMsgId = new Map(rows.map((r) => [r.messageId, r.receivingState]));
         setSuggestions((prev) =>
           prev.map((c) => {
             if (!c.messageId || c.status !== 'dispatched') return c;
-            const next = byId.get(c.messageId);
+            const next = byMsgId.get(c.messageId);
             if (!next || next === 'dispatched') return c;
+            // Lifecycle telemetry: log the receiving-state transition.
+            void logAudit(c.id, next as 'consumed' | 'escalated' | 'rejected');
             return { ...c, status: next };
           }),
         );
@@ -343,6 +375,27 @@ export function OperatorPanel(): JSX.Element | null {
     };
     void tick();
     const t = setInterval(() => void tick(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [state.open]);
+
+  // Adaptive unconsumed thresholds: refresh on open + every 30 min.
+  useEffect(() => {
+    if (!state.open) return;
+    let cancelled = false;
+    const fetchOnce = async () => {
+      try {
+        const r = await fetch('/api/agent-mcp/operator-ack-latency');
+        if (!r.ok || cancelled) return;
+        setAckLatency((await r.json()) as AckLatencyTable);
+      } catch {
+        /* keep last */
+      }
+    };
+    void fetchOnce();
+    const t = setInterval(() => void fetchOnce(), 30 * 60_000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -441,7 +494,7 @@ export function OperatorPanel(): JSX.Element | null {
     };
   }, [state.open, startScan]);
 
-  const logAudit = useCallback(async (cardId: string, kind: 'dispatched' | 'acked' | 'undo_cancel', context?: Record<string, unknown>) => {
+  const logAudit = useCallback(async (cardId: string, kind: 'dispatched' | 'acked' | 'undo_cancel' | 'consumed' | 'escalated' | 'rejected' | 'failed' | 'dismissed' | 'superseded', context?: Record<string, unknown>) => {
     try {
       await fetch('/api/agent-mcp/operator-audit', {
         method: 'POST',
@@ -551,6 +604,8 @@ export function OperatorPanel(): JSX.Element | null {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
     });
+    // Lifecycle telemetry: dismissed (deliberate, not undo-cancel).
+    void logAudit(id, 'dismissed');
     if (!card) return;
     const reason = typeof window !== 'undefined'
       ? window.prompt('Why dismiss this? (optional — leave blank to skip learning)')
@@ -826,9 +881,10 @@ export function OperatorPanel(): JSX.Element | null {
                     )}
                     {s.status === 'dispatched' && (() => {
                       const age = ageMs(s);
-                      const unconsumed = age !== null && age > UNCONSUMED_AGE_MS;
+                      const threshold = unconsumedThresholdFor(s, ackLatency);
+                      const unconsumed = age !== null && age > threshold;
                       return unconsumed ? (
-                        <span style={{ fontSize: 12, color: '#a04' }} title={`pending for ${Math.round(age! / 60000)}m`}>
+                        <span style={{ fontSize: 12, color: '#a04' }} title={`pending for ${Math.round(age! / 60000)}m (threshold ${Math.round(threshold / 60000)}m)`}>
                           ⏳ unconsumed — harness may be paused
                         </span>
                       ) : (

@@ -56,6 +56,8 @@ export interface ProvenanceFlags {
   capabilityUnknown?: boolean;
   oversizedTitle?: boolean;
   oversizedWhy?: boolean;
+  /** True when the suggestion came from a plugin's contributeOperatorSuggestions hook. */
+  pluginAuthored?: boolean;
 }
 
 /**
@@ -76,15 +78,24 @@ export interface EnrichedSuggestion {
  * capability (`navigate`, `inform`) are always `low` — they don't dispatch.
  * `send_directive` looks the capability up in the substrate table; an
  * unknown capability falls through to `high` (fail-safe).
+ *
+ * Optional `pluginLookup` consults plugin manifests for plugin-defined
+ * caps. When omitted (or returns null for the cap), the fail-safe `high`
+ * result still applies.
  */
-export function resolveActualTier(s: Suggestion): {
+export function resolveActualTier(
+  s: Suggestion,
+  pluginLookup?: (cap: string) => CapabilityTier | null,
+): {
   tier: CapabilityTier;
   capabilityUnknown: boolean;
 } {
   if (s.action !== 'send_directive') return { tier: 'low', capabilityUnknown: false };
-  const looked = lookupTier(s.capability);
-  if (looked === null) return { tier: 'high', capabilityUnknown: true };
-  return { tier: looked, capabilityUnknown: false };
+  const substrate = lookupTier(s.capability);
+  if (substrate !== null) return { tier: substrate, capabilityUnknown: false };
+  const plugin = pluginLookup?.(s.capability) ?? null;
+  if (plugin !== null) return { tier: plugin, capabilityUnknown: false };
+  return { tier: 'high', capabilityUnknown: true };
 }
 
 /**

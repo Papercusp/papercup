@@ -228,7 +228,65 @@ export interface PluginHooks {
   onPostWorker?(ctx: PapercuspContext, featureId: string): Promise<void>;
   /** Fires after a validator role completes. */
   onPostValidator?(ctx: PapercuspContext, featureId: string, status: 'passed' | 'failing'): Promise<void>;
+
+  /**
+   * Operator suggestion source. Fires when the Operator scans a
+   * workspace; plugins can return additional suggestions to merge into
+   * the LLM's output. Each returned object follows the operator
+   * suggestion schema (3 variants: send_directive | navigate | inform);
+   * the Operator pipeline tier-classifies + de-dupes them like LLM
+   * output, and applies the same auto_dispatch policy.
+   *
+   * Plugins use this to surface deterministic prompts (e.g. "Linear
+   * has 3 unanswered comments on F-001") without relying on the LLM
+   * to notice. Tier=high results land as ask-first by default; the
+   * user can grant a standing approval to auto-dispatch.
+   */
+  contributeOperatorSuggestions?(
+    ctx: PapercuspContext,
+  ): Promise<PluginOperatorSuggestion[]>;
 }
+
+/**
+ * Shape a plugin returns from `contributeOperatorSuggestions`. The host
+ * normalizes these into the same `<suggestion>` JSON the LLM emits.
+ * `id` should be deterministic so a re-scan dedups against the prior.
+ */
+export type PluginOperatorSuggestion =
+  | {
+      action: 'send_directive';
+      id: string;
+      title: string;
+      why: string;
+      reason: string;
+      tier: 'low' | 'medium' | 'high';
+      capability: 'messages:write';
+      target_harness: string;
+      directive_kind: 'Directive' | 'Decision' | 'Priority';
+      directive_subject: string;
+      directive_body: string;
+    }
+  | {
+      action: 'navigate';
+      id: string;
+      title: string;
+      why: string;
+      reason: string;
+      tier: 'low' | 'medium' | 'high';
+      capability: null;
+      target_harness: string;
+      target_resource: string;
+    }
+  | {
+      action: 'inform';
+      id: string;
+      title: string;
+      why: string;
+      reason: string;
+      tier: 'low' | 'medium' | 'high';
+      capability: null;
+      body: string;
+    };
 
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -533,6 +591,26 @@ export interface Plugin {
 
   /** Declarative permission manifest. Loader enforces these at every API call. */
   capabilities: Capability[];
+
+  /**
+   * Optional per-capability tier overrides for the Operator.
+   *
+   * The Operator pipeline classifies a capability into low/medium/high
+   * via `lookupTier()` against the substrate `tier-table.json`. For
+   * plugin-defined caps not in the substrate table, the Operator
+   * defaults to `high` (fail-safe → always ask). A plugin can declare
+   * a more permissive tier here for caps it owns:
+   *
+   *   tierMap: {
+   *     'http:fetch:slack.com': 'low',          // safe webhook
+   *     'compute:exec:my-validator': 'medium',  // common, batched
+   *   }
+   *
+   * High-tier substrate caps cannot be downgraded — the Operator
+   * pipeline ignores any entry that maps a substrate cap to a lower
+   * tier than the substrate table specifies.
+   */
+  tierMap?: Partial<Record<string, 'low' | 'medium' | 'high'>>;
 
   /** Lifecycle init — runs once on plugin load. */
   init?(ctx: PapercuspContext): Promise<void>;

@@ -9,7 +9,17 @@ import { writeOperatorAudit, type OperatorAuditKind } from '@/lib/operator-audit
 
 export const dynamic = 'force-dynamic';
 
-const ALLOWED: ReadonlySet<OperatorAuditKind> = new Set(['dispatched', 'acked', 'undo_cancel']);
+const ALLOWED: ReadonlySet<OperatorAuditKind> = new Set([
+  'dispatched',
+  'acked',
+  'undo_cancel',
+  'consumed',
+  'escalated',
+  'rejected',
+  'failed',
+  'dismissed',
+  'superseded',
+]);
 
 export async function POST(req: NextRequest) {
   let body: { cardId?: unknown; kind?: unknown; context?: unknown } = {};
@@ -21,7 +31,7 @@ export async function POST(req: NextRequest) {
   const cardId = typeof body.cardId === 'string' ? body.cardId : '';
   const kind = body.kind as OperatorAuditKind;
   if (!cardId || !ALLOWED.has(kind)) {
-    return new Response('cardId and kind required (kind ∈ dispatched|acked|undo_cancel)', { status: 400 });
+    return new Response('cardId and kind required (see OperatorAuditKind)', { status: 400 });
   }
   await writeOperatorAudit({
     cardId,

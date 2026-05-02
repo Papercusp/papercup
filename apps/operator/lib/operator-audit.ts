@@ -18,7 +18,16 @@
 import { withWorkspace } from '@restart/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 
-export type OperatorAuditKind = 'dispatched' | 'acked' | 'undo_cancel';
+export type OperatorAuditKind =
+  | 'dispatched'
+  | 'acked'
+  | 'undo_cancel'
+  | 'consumed'
+  | 'escalated'
+  | 'rejected'
+  | 'failed'
+  | 'dismissed'
+  | 'superseded';
 
 export interface OperatorAuditEvent {
   cardId: string;

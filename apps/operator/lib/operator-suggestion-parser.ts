@@ -8,6 +8,7 @@ import {
 } from './operator-suggestion-schema';
 import type { OperatorPreferences } from './operator-preferences';
 import { isOnCooldown } from './operator-dismissed-cache';
+import { resolvePluginAwareTierSync } from './operator-plugin-tier';
 
 const SUGGESTION_RE = /<suggestion>\s*([\s\S]*?)\s*<\/suggestion>/gi;
 
@@ -74,7 +75,7 @@ export function enrich(
   preferences: OperatorPreferences,
 ): EnrichedSuggestion {
   const clamp = clampSuggestion(raw);
-  const tierResult = resolveActualTier(clamp.s);
+  const tierResult = resolveActualTier(clamp.s, resolvePluginAwareTierSync);
   const provenanceFlags: ProvenanceFlags = {};
   if (tierResult.tier !== clamp.s.tier) provenanceFlags.tierMismatch = true;
   if (tierResult.capabilityUnknown) provenanceFlags.capabilityUnknown = true;

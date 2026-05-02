@@ -36,6 +36,10 @@ import { writeLastScan } from '@/lib/operator-last-scan';
 import { checkRate, record503, recordSuccess } from '@/lib/operator-rate-limit';
 import { canShortCircuit, writeSnapshot } from '@/lib/operator-idle-snapshot';
 import { fingerprint, readTriggerState } from '@/lib/operator-trigger-state';
+import { resolvePluginAwareTier } from '@/lib/operator-plugin-tier';
+import { refreshDismissedFromPg } from '@/lib/operator-dismissed-cache';
+import { gatherPluginSuggestions } from '@/lib/operator-plugin-suggestions';
+import { enrich } from '@/lib/operator-suggestion-parser';
 
 export const dynamic = 'force-dynamic';
 
@@ -174,6 +178,10 @@ export async function GET(req: NextRequest) {
 
   const { promptText, isFirstRun } = buildOperatorPrompt({ request: requestText, userId });
   const preferences = loadPreferences();
+  // Warm the plugin-tier cache so the (sync) parser can consult it
+  // when classifying plugin-defined caps from this scan's suggestions.
+  await resolvePluginAwareTier('__warm__').catch(() => {});
+  await refreshDismissedFromPg().catch(() => {});
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -230,6 +238,25 @@ export async function GET(req: NextRequest) {
               };
               cards.push(payload);
               send('suggestion', payload);
+            }
+            // Plugin-authored suggestions: enriched through the same
+            // pipeline so tier-classification + auto_dispatch are
+            // identical to LLM output.
+            try {
+              const pluginRaw = await gatherPluginSuggestions();
+              for (const raw of pluginRaw) {
+                const enriched = enrich(raw, preferences);
+                const payload = {
+                  ...enriched.raw,
+                  actualTier: enriched.actualTier,
+                  auto_dispatch: enriched.auto_dispatch,
+                  provenanceFlags: { ...enriched.provenanceFlags, pluginAuthored: true },
+                };
+                cards.push(payload);
+                send('suggestion', payload);
+              }
+            } catch (e) {
+              console.warn('[operator-scan] plugin suggestions failed:', e);
             }
             try {
               writeLastScan({
