@@ -165,48 +165,183 @@ pre, .pc-code {
   text-overflow: ellipsis;
 }
 
+.pc-header-quote-current {
+  font-family: Charter, "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-weight: 650;
+  letter-spacing: -0.006em;
+  color: color-mix(in oklab, var(--fg-dim), white 8%);
+}
+
+
 .pc-header-cta {
   flex: 0 0 auto;
+  position: relative;
+  isolation: isolate;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 18px;
+  justify-content: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 9px 18px 9px 13px;
   border-radius: 999px;
-  background: linear-gradient(135deg, #6ea8ff 0%, #4f7fe6 100%);
-  color: #ffffff;
+  overflow: hidden;
+  color: #031827;
   font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
+  font-weight: 850;
+  letter-spacing: 0.01em;
+  line-height: 1;
   text-decoration: none;
-  border: 1px solid rgba(125, 211, 252, 0.4);
-  box-shadow: 0 6px 18px rgba(78, 127, 230, 0.32),
-              inset 0 1px 0 rgba(255, 255, 255, 0.18);
-  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
-}
-
-.pc-header-cta:hover {
-  background: linear-gradient(135deg, #80b6ff 0%, #5e8cf0 100%);
-  box-shadow: 0 10px 26px rgba(78, 127, 230, 0.45),
-              inset 0 1px 0 rgba(255, 255, 255, 0.24);
-  transform: translateY(-1px);
-}
-
-.pc-header-cta:active {
-  transform: translateY(0);
-  box-shadow: 0 3px 12px rgba(78, 127, 230, 0.34),
-              inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  white-space: nowrap;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.44);
+  border: 1px solid rgba(224, 247, 255, 0.82);
+  background:
+    radial-gradient(circle at 16% 18%, rgba(255, 255, 255, 0.92), transparent 24%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.14) 42%, rgba(255, 255, 255, 0.02) 100%),
+    linear-gradient(135deg, #ecfeff 0%, #a5f3fc 30%, #38bdf8 66%, #2dd4bf 100%);
+  box-shadow:
+    0 14px 34px rgba(14, 165, 233, 0.32),
+    0 0 0 1px rgba(56, 189, 248, 0.14),
+    0 2px 10px rgba(45, 212, 191, 0.20),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.34);
+  backdrop-filter: blur(14px) saturate(145%);
+  -webkit-backdrop-filter: blur(14px) saturate(145%);
+  transition:
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease,
+    color 150ms ease;
 }
 
 .pc-header-cta::before {
   content: '';
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #34d399;
-  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.22);
+  position: absolute;
+  inset: -30% -18%;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(255, 255, 255, 0.86), transparent 23%),
+    linear-gradient(110deg, transparent 0 30%, rgba(255, 255, 255, 0.48) 43%, transparent 58%);
+  opacity: 0.58;
+  transform: translateX(-18%);
+  transition: transform 220ms ease, opacity 160ms ease;
+}
+
+.pc-header-cta::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  z-index: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+    inset 0 -10px 18px rgba(3, 105, 161, 0.16);
+}
+
+.pc-header-cta-icon,
+.pc-header-cta-text {
+  position: relative;
+  z-index: 1;
+}
+
+.pc-header-cta-icon {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 42% 36%, #f0fdfa 0 28%, #86efac 29% 47%, #22c55e 48% 100%);
+  box-shadow:
+    0 0 0 3px rgba(4, 120, 87, 0.18),
+    0 0 16px rgba(34, 197, 94, 0.56);
   flex: 0 0 auto;
 }
 
+.pc-header-cta-icon::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: inherit;
+  border: 1px solid rgba(34, 197, 94, 0.42);
+  opacity: 0.72;
+  animation: pc-header-cta-pulse 1.8s ease-out infinite;
+}
+
+.pc-header-cta-text {
+  top: -0.5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pc-header-cta-text::after {
+  content: '↗';
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  opacity: 0.72;
+  transform: translateY(-0.5px);
+  transition: transform 150ms ease, opacity 150ms ease;
+}
+
+.pc-header-cta:hover {
+  color: #031522;
+  border-color: rgba(240, 253, 255, 0.98);
+  transform: translateY(-1px);
+  background:
+    radial-gradient(circle at 16% 18%, rgba(255, 255, 255, 0.98), transparent 25%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.66), rgba(255, 255, 255, 0.17) 42%, rgba(255, 255, 255, 0.03) 100%),
+    linear-gradient(135deg, #f0fdff 0%, #bef2ff 32%, #56ccf2 66%, #5eead4 100%);
+  box-shadow:
+    0 18px 42px rgba(14, 165, 233, 0.40),
+    0 0 0 1px rgba(186, 230, 253, 0.24),
+    0 4px 16px rgba(45, 212, 191, 0.26),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.30);
+}
+
+.pc-header-cta:hover::before {
+  opacity: 0.78;
+  transform: translateX(18%);
+}
+
+.pc-header-cta:hover .pc-header-cta-text::after {
+  opacity: 1;
+  transform: translate(2px, -0.5px);
+}
+
+.pc-header-cta:focus-visible {
+  outline: 2px solid rgba(224, 247, 255, 0.94);
+  outline-offset: 3px;
+}
+
+.pc-header-cta:active {
+  transform: translateY(0);
+  box-shadow:
+    0 8px 22px rgba(14, 165, 233, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.58),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.34);
+}
+
+@keyframes pc-header-cta-pulse {
+  0% {
+    opacity: 0.62;
+    transform: scale(0.72);
+  }
+  72%,
+  100% {
+    opacity: 0;
+    transform: scale(1.7);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-header-cta-icon::after {
+    animation: none;
+  }
+}
 .pc-header nav {
   display: flex;
   gap: 16px;
@@ -1236,6 +1371,123 @@ p {
   margin-top: 8px;
 }
 
+/* Tab strip — sits below the dock header. Tabs scroll horizontally if
+   they overflow; the "+" stays pinned at the right via flex order. */
+.oracle-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.18);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.oracle-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  font-size: 12px;
+  color: var(--fg-mute);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  position: relative;
+  top: 1px;
+}
+.oracle-tab:hover { color: var(--fg); background: rgba(255, 255, 255, 0.04); }
+.oracle-tab.is-active {
+  background: var(--bg-elev, #0b1220);
+  border-color: var(--border);
+  color: var(--fg);
+  font-weight: 600;
+}
+.oracle-tab-label { line-height: 1; }
+.oracle-tab-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+.oracle-tab-dot-busy { background: var(--accent); animation: oracle-thinking-bounce 1.2s infinite ease-in-out both; }
+.oracle-tab-dot-unread { background: var(--good, #22d3ee); }
+.oracle-tab-close {
+  background: transparent; border: none; color: var(--fg-mute);
+  font-size: 14px; line-height: 1; padding: 0 4px; cursor: pointer; border-radius: 3px;
+}
+.oracle-tab-close:hover { background: rgba(255, 90, 90, 0.18); color: #fecdd3; }
+.oracle-tab-add {
+  background: transparent; border: 1px dashed var(--border); border-bottom: none;
+  border-radius: 8px 8px 0 0; color: var(--fg-mute); font-size: 14px; line-height: 1;
+  padding: 4px 10px; cursor: pointer; margin-left: 4px; position: relative; top: 1px;
+}
+.oracle-tab-add:hover { color: var(--fg); border-color: var(--border-strong, var(--border)); }
+
+/* Picker popover — opens from the "+" button. */
+.oracle-picker {
+  position: absolute; top: 100%; right: 0; margin-top: 4px;
+  min-width: 200px;
+  background: var(--bg-elev, #0b1220);
+  border: 1px solid var(--border); border-radius: 8px; padding: 4px;
+  z-index: 200;
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.55);
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 380px; overflow-y: auto;
+}
+.oracle-picker-section {
+  padding: 6px 10px 4px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.6px; color: var(--fg-mute);
+}
+.oracle-picker-item {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  background: transparent; border: none; color: var(--fg);
+  padding: 6px 10px; font-size: 13px; text-align: left;
+  border-radius: 4px; cursor: pointer; font: inherit;
+}
+.oracle-picker-item:hover { background: rgba(56, 189, 248, 0.10); }
+.oracle-picker-hint { font-size: 10px; color: var(--fg-mute); }
+
+/* Wide two-pane picker variant. */
+.oracle-picker-wide { min-width: 420px; max-height: 420px; padding: 0; gap: 0; }
+.oracle-picker-search {
+  padding: 8px; border-bottom: 1px solid var(--border); background: rgba(0, 0, 0, 0.18);
+}
+.oracle-picker-search input {
+  width: 100%; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--fg); font: inherit; font-size: 12px;
+  padding: 6px 8px; outline: none;
+}
+.oracle-picker-search input:focus { border-color: var(--accent); }
+.oracle-picker-panes { display: flex; min-height: 0; flex: 1; }
+.oracle-picker-col {
+  display: flex; flex-direction: column; gap: 1px; padding: 4px;
+  overflow-y: auto; scrollbar-width: thin;
+}
+.oracle-picker-col-left {
+  flex: 0 0 180px; border-right: 1px solid var(--border); background: rgba(0, 0, 0, 0.10);
+}
+.oracle-picker-col-right { flex: 1; min-width: 0; }
+.oracle-picker-results {
+  display: flex; flex-direction: column; gap: 1px; padding: 4px; overflow-y: auto;
+}
+.oracle-picker-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  background: transparent; border: none; color: var(--fg);
+  padding: 6px 10px; font-size: 13px; text-align: left;
+  border-radius: 4px; cursor: pointer; font: inherit; white-space: nowrap;
+}
+.oracle-picker-row:hover { background: rgba(56, 189, 248, 0.10); }
+.oracle-picker-row.is-active { background: rgba(56, 189, 248, 0.16); color: var(--fg); }
+
+/* Inline Chatwoot widget — fills the dock body when Support tab is active. */
+.oracle-chatwoot-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  display: block;
+}
+
 .oracle-form {
   display: flex;
   gap: 8px;
@@ -2056,6 +2308,7 @@ p {
 
 }
 
+
 @media (max-width: 760px) {
   .pc-shell {
     width: min(100% - 28px, 1120px);
@@ -2073,16 +2326,20 @@ p {
     display: none;
   }
 
+
+
   .pc-header-cta {
     margin-left: auto;
-    padding: 6px 14px;
+    min-height: 34px;
+    padding: 7px 12px 7px 10px;
     font-size: 12px;
+    gap: 8px;
   }
 
-  .pc-header-cta::before {
-    width: 6px;
-    height: 6px;
-    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.22);
+  .pc-header-cta-icon {
+    width: 7px;
+    height: 7px;
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.12), 0 0 10px rgba(52, 211, 153, 0.28);
   }
 
   .pc-header .brand img {

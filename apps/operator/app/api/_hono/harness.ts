@@ -1302,6 +1302,150 @@ harness.get('/:slug/stream', (c) => {
   });
 });
 
+// ─── SSE: structured JSONL log stream ──────────────────────────────
+//
+// Replaces the legacy text-stream `/:slug/stream` for the new LogView UI.
+// Tails run.log.jsonl with fs.watch (no polling), parses each line into a
+// LogEvent {ts, source, level, msg, corrId?, attrs?}, and emits one SSE
+// event per line. On connect, backfills the last `tail` (default 500)
+// events so the UI has scrollback.
+//
+// Old `/:slug/stream` stays around for any external consumers; the
+// operator UI migrates to this endpoint.
+
+harness.get('/:slug/log/stream', (c) => {
+  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const jsonlPath = join(harnessDir(project), 'logs', 'run.log.jsonl');
+  const tailSize = Math.min(Math.max(parseInt(c.req.query('tail') ?? '500', 10) || 500, 1), 5000);
+
+  const remoteIP = (c.req.header('x-forwarded-for')?.split(',')[0].trim())
+    ?? c.req.header('x-real-ip')
+    ?? c.req.header('cf-connecting-ip')
+    ?? 'unknown';
+  const streamKey = `jsonl|${remoteIP}|${project.slug}`;
+  if (!activeStreams.has(streamKey) && activeStreams.size >= HARNESS_STREAM_TOTAL_CAP) {
+    return c.json({ error: 'too many active streams', cap: HARNESS_STREAM_TOTAL_CAP }, 503);
+  }
+  const previous = activeStreams.get(streamKey);
+  if (previous) previous.abort();
+
+  return streamSSE(c, async (stream) => {
+    let ownAborted = false;
+    const token: StreamToken = {
+      abort: () => { ownAborted = true; },
+      createdAt: Date.now(),
+      remoteIP,
+      slug: project.slug,
+    };
+    activeStreams.set(streamKey, token);
+
+    let lastSize = 0;
+    let lineBuf = '';
+
+    // Emit each parseable JSONL line as one SSE event. Tolerates broken
+    // lines silently (rotation can race with write).
+    const emitLines = async (chunk: string) => {
+      lineBuf += chunk;
+      let nl: number;
+      while ((nl = lineBuf.indexOf('\n')) >= 0) {
+        const raw = lineBuf.slice(0, nl);
+        lineBuf = lineBuf.slice(nl + 1);
+        if (!raw.trim()) continue;
+        try {
+          const evt = JSON.parse(raw);
+          await stream.writeSSE({ event: 'log', data: JSON.stringify(evt) });
+        } catch {
+          /* malformed line — skip rather than break the stream */
+        }
+      }
+    };
+
+    // Backfill: read the tail of the file and replay the last N lines so
+    // the client has immediate context on connect.
+    const backfill = async () => {
+      try {
+        const stat = statSync(jsonlPath);
+        // Read up to last 1 MiB or whole file. Larger backfills risk
+        // the SSE connection blocking on the initial flush.
+        const start = Math.max(0, stat.size - 1024 * 1024);
+        const fd = readFileSync(jsonlPath, 'utf8');
+        lastSize = stat.size;
+        const allLines = fd.slice(start).split('\n').filter(Boolean);
+        const toReplay = allLines.slice(-tailSize);
+        for (const raw of toReplay) {
+          try {
+            const evt = JSON.parse(raw);
+            await stream.writeSSE({ event: 'log', data: JSON.stringify(evt) });
+          } catch { /* skip malformed */ }
+        }
+        await stream.writeSSE({ event: 'backfill-done', data: String(toReplay.length) });
+      } catch {
+        // File doesn't exist yet — the harness hasn't run. That's fine;
+        // signal an empty backfill so the client can render its empty state.
+        await stream.writeSSE({ event: 'backfill-done', data: '0' });
+      }
+    };
+
+    await backfill();
+
+    // fs.watch fires per filesystem event. We re-stat + re-read the
+    // delta on each event. Note: fs.watch doesn't guarantee one event per
+    // append; back-to-back writes may coalesce or fire duplicates. The
+    // size-tracking loop tolerates both.
+    let watcher: import('node:fs').FSWatcher | null = null;
+    const tickSinceLastEvent = setInterval(() => {
+      // Belt-and-suspenders fallback: some filesystems (e.g. some
+      // overlayfs setups, network mounts) drop fs.watch events. A 5s
+      // poll guarantees we never go silent for longer than that.
+      void readDelta();
+    }, 5_000);
+    tickSinceLastEvent.unref();
+
+    const readDelta = async () => {
+      try {
+        const stat = statSync(jsonlPath);
+        if (stat.size > lastSize) {
+          const fd = readFileSync(jsonlPath, 'utf8');
+          const chunk = fd.slice(lastSize);
+          lastSize = stat.size;
+          await emitLines(chunk);
+        } else if (stat.size < lastSize) {
+          // File rotated — restart from the beginning. Send a synthetic
+          // event so the UI knows to clear its buffer of "old run" data.
+          lastSize = 0;
+          await stream.writeSSE({ event: 'rotated', data: 'true' });
+          await readDelta();
+        }
+      } catch {
+        // File disappeared mid-watch (rotation in progress); next tick
+        // will pick it up.
+      }
+    };
+
+    try {
+      const fs = require('node:fs') as typeof import('node:fs');
+      try {
+        watcher = fs.watch(jsonlPath, () => { void readDelta(); });
+      } catch {
+        // File may not exist yet — fall through to polling.
+      }
+      while (true) {
+        if (stream.aborted || ownAborted) break;
+        // Lower-frequency tick than the legacy stream; fs.watch carries
+        // most of the load. The 1.5s sleep is just a back-pressure pause.
+        await stream.sleep(1500);
+      }
+    } finally {
+      clearInterval(tickSinceLastEvent);
+      try { watcher?.close(); } catch { /* ignore */ }
+      if (activeStreams.get(streamKey) === token) {
+        activeStreams.delete(streamKey);
+      }
+    }
+  });
+});
+
 // ─── launch / stop (optional, safer to run manually for now) ─────────
 
 harness.post('/:slug/launch', async (c) => {
