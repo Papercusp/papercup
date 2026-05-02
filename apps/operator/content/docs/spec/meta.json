@@ -22,12 +22,15 @@
     "spawning-harnesses",
     "cross-harness-coordination",
     "auth-and-identity",
+    "system-and-pi-principals",
+    "workspace-scoping",
     "scaffold-failure-recovery",
     "marketplace-versioning",
     "reference-runtime",
     "compared",
     "what-not",
     "open-questions",
-    "cli-pluggability"
+    "cli-pluggability",
+    "operator-architecture-decisions"
   ]
 }
