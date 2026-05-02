@@ -300,7 +300,7 @@
   position: relative;
   display: grid;
   /* number | ts | source(opt) | tag | msg */
-  grid-template-columns: 38px 96px minmax(0, auto) minmax(50px, auto) minmax(0, 1fr);
+  grid-template-columns: 18px 38px 96px minmax(0, auto) minmax(50px, auto) minmax(0, 1fr);
   align-items: start;
   gap: 8px;
   min-height: 23px;
@@ -8726,3 +8726,114 @@ body:has(.h-top-collapse-inline) main {
   border-color: color-mix(in oklab, var(--accent), transparent 60%);
 }
 .h-log-toolbar .h-log-pause-toggle { margin: 0; }
+
+/* ── Timeline density scrubber ─────────────────────────────── */
+.h-log-scrubber {
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 22px;
+  padding: 2px 4px;
+  background: color-mix(in oklab, var(--bg-2), black 6%);
+  border-bottom: 1px solid var(--border);
+}
+.h-log-scrubber-bar {
+  flex: 1;
+  min-width: 2px;
+  height: 0%;
+  background: color-mix(in oklab, var(--accent), transparent 55%);
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: background 80ms ease, transform 80ms ease;
+  border-radius: 1px;
+}
+.h-log-scrubber-bar:hover:not(:disabled) {
+  background: var(--accent);
+  transform: scaleY(1.08);
+}
+.h-log-scrubber-bar.has-errors {
+  background: color-mix(in oklab, var(--err), transparent 30%);
+}
+.h-log-scrubber-bar.has-errors:hover {
+  background: var(--err);
+}
+.h-log-scrubber-bar:disabled {
+  background: transparent;
+  cursor: default;
+}
+
+/* ── Pin button + bookmarks strip ──────────────────────────── */
+.h-log-pin {
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: color-mix(in oklab, var(--fg-dim), transparent 50%);
+  user-select: none;
+  align-self: center;
+  width: 16px;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 80ms ease, color 80ms ease;
+}
+.h-log-line:hover .h-log-pin,
+.h-log-pin.active {
+  opacity: 1;
+}
+.h-log-pin.active {
+  color: color-mix(in oklab, var(--accent), white 16%);
+}
+.h-log-pin:hover {
+  color: color-mix(in oklab, var(--accent), white 25%);
+}
+.h-log-line.bookmarked {
+  background: color-mix(in oklab, var(--accent), transparent 92%) !important;
+}
+
+.h-log-bookmarks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  background: color-mix(in oklab, var(--bg-2), black 4%);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.h-log-bookmarks-label {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.h-log-bookmark-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 65%);
+  background: color-mix(in oklab, var(--accent), transparent 88%);
+  color: var(--fg);
+  border-radius: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 280px;
+  overflow: hidden;
+}
+.h-log-bookmark-chip:hover {
+  background: color-mix(in oklab, var(--accent), transparent 75%);
+}
+.h-log-bookmark-ts {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+}
+.h-log-bookmark-msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
