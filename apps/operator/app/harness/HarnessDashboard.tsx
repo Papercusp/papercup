@@ -153,13 +153,12 @@ function dynamicWithRetry(
     );
     return Fallback as any;
   };
+  // Pre-warm: kick off the import immediately so Turbopack compiles the chunk
+  // before the user clicks the tab. No-op on error (retry happens on render).
+  if (typeof window !== 'undefined') void loader().catch(() => {});
   return dynamic(importer, {
     ssr: false,
-    loading: () => (
-      <div className="h-dynamic-loading" role="status">
-        loading <em>{label}</em>…
-      </div>
-    ),
+    loading: () => null,
   }) as unknown as React.ComponentType<any>;
 }
 
@@ -340,11 +339,9 @@ function safeParseClaims(raw: unknown): string[] | undefined {
 // ─── Component ─────────────────────────────────────────────────────────
 
 /**
- * Plugin tab trigger with a settings popover. Click the ⓘ adornment to see
- * version + a link to the marketplace-ops audit page. The popover closes on
- * Escape or click-outside.
+ * Plugin tab trigger.
  */
-function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activeSlug, onDisabled }: {
+function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activeSlug }: {
   pluginSlug: string;
   pluginVersion: string;
   tabId: string;
@@ -353,117 +350,12 @@ function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activ
   activeSlug: string | null;
   onDisabled: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  async function disable() {
-    if (!activeSlug) return;
-    if (!confirm(`Disable ${pluginSlug} in ${activeSlug}?\n\nThe plugin's config will be preserved.`)) return;
-    setBusy(true);
-    try {
-      const r = await fetch('/api/plugins/enable', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug: pluginSlug, harnesses: [activeSlug], disable: true }),
-      });
-      const d = await r.json();
-      if (!r.ok || !d.ok) {
-        toast.error('Disable failed', { description: d.results?.[0]?.log?.slice(-300) ?? d.error });
-        return;
-      }
-      toast.success(`${pluginSlug} disabled in ${activeSlug}`);
-      setOpen(false);
-      onDisabled();
-    } catch (e: any) {
-      toast.error(`Disable failed: ${e?.message ?? e}`);
-    } finally { setBusy(false); }
-  }
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
-    const onClick = (e: MouseEvent) => {
-      const t = e.target as HTMLElement;
-      if (!t.closest('[data-plugin-popover]')) setOpen(false);
-    };
-    window.addEventListener('keydown', onKey);
-    window.addEventListener('click', onClick);
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      window.removeEventListener('click', onClick);
-    };
-  }, [open]);
   return (
-    <div data-plugin-popover style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
-      <Tooltip label={`${label} — from ${pluginSlug}@${pluginVersion}`}>
-        <Tabs.Trigger value={`plugin:${tabId}`} className="h-tab" disabled={!activeSlug}>
-          <PluginIcon name={icon} /> {label}
-        </Tabs.Trigger>
-      </Tooltip>
-      <Tooltip label="Plugin info">
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); e.preventDefault(); setOpen(!open); }}
-          style={{
-            marginLeft: -4, padding: '0 4px', background: 'transparent',
-            border: 'none', color: 'var(--text-3)', cursor: 'pointer',
-            fontSize: 11, lineHeight: 1,
-          }}
-        >ⓘ</button>
-      </Tooltip>
-      {open ? (
-        <div
-          data-plugin-popover
-          style={{
-            position: 'absolute', top: '100%', right: 0, marginTop: 4,
-            zIndex: 100, minWidth: 240,
-            background: 'var(--bg-1)', color: 'var(--text-1)',
-            border: '1px solid var(--border-1)', borderRadius: 6,
-            boxShadow: '0 4px 12px rgba(0,0,0,0.18)',
-            padding: 12, fontSize: 12,
-          }}
-        >
-          <div style={{ fontWeight: 600, marginBottom: 4, fontFamily: "'SF Mono', monospace", wordBreak: 'break-all' }}>
-            {pluginSlug}
-          </div>
-          <div style={{ color: 'var(--text-2)', marginBottom: 8 }}>
-            v{pluginVersion} · contributes &ldquo;{label}&rdquo; tab
-          </div>
-          <a
-            href={`http://localhost:3001/papercusp-marketplace-ops/plugins/${encodeURIComponent(pluginSlug)}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ display: 'block', color: 'var(--accent-1, #0ea5e9)', fontSize: 11, marginBottom: 4, textDecoration: 'none' }}
-            onClick={() => setOpen(false)}
-          >
-            View audit log on Marketplace Ops →
-          </a>
-          <a
-            href={`http://localhost:3001/papercusp-marketplace-ops/explore/${encodeURIComponent(pluginSlug)}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{ display: 'block', color: 'var(--accent-1, #0ea5e9)', fontSize: 11, textDecoration: 'none', marginBottom: 8 }}
-            onClick={() => setOpen(false)}
-          >
-            View README + signature →
-          </a>
-          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-            <Tooltip label="Disable this plugin in the active harness (config preserved)">
-              <button
-              type="button"
-              onClick={disable}
-              disabled={busy || !activeSlug}
-              style={{
-                width: '100%', padding: '6px 10px', fontSize: 12, cursor: 'pointer',
-                background: 'transparent', color: '#fca5a5',
-                border: '1px solid var(--border)', borderRadius: 4,
-              }}
-            >
-              {busy ? 'Disabling…' : `Disable in ${activeSlug ?? '…'}`}
-            </button>
-            </Tooltip>
-          </div>
-        </div>
-      ) : null}
-    </div>
+    <Tooltip label={`${label} — from ${pluginSlug}@${pluginVersion}`}>
+      <Tabs.Trigger value={`plugin:${tabId}`} className="h-tab" disabled={!activeSlug}>
+        <PluginIcon name={icon} /> {label}
+      </Tabs.Trigger>
+    </Tooltip>
   );
 }
 
@@ -1704,7 +1596,11 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
   configSchema?: { required?: string[]; properties?: Record<string, PluginConfigField> };
   defaultConfig?: Record<string, unknown>;
 }) {
-  const [open, setOpen] = useState(false);
+  // Plugin config editor is always-open in the per-plugin Config tab —
+  // there is no read-only "summary" view to collapse back to. The previous
+  // open/close toggle confused users who expected the form to just be
+  // available.
+  const open = true;
   const [mode, setMode] = useState<'fields' | 'json'>('fields');
   const [loaded, setLoaded] = useState<Record<string, unknown> | null>(null);
   const [draftObj, setDraftObj] = useState<Record<string, unknown>>({});
@@ -1713,8 +1609,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
-  // Prefetch config eagerly on mount (not gated on `open`) so opening the
-  // editor is instantaneous rather than fetching-then-rendering.
+  // Prefetch config eagerly on mount.
   useEffect(() => {
     if (loaded !== null) return;
     fetch(`/api/plugins/config?harness=${encodeURIComponent(harnessSlug)}&plugin=${encodeURIComponent(dirSlug)}`, { cache: 'no-store' })
@@ -1831,18 +1726,6 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
             </span>
           )}
         </div>
-        <Tooltip label={open ? 'Close the plugin config editor' : 'Open the plugin config editor'}>
-          <button
-            className="h-plugin-config-toggle"
-            type="button"
-            onClick={() => setOpen(!open)}
-            style={{
-              fontSize: 11, padding: '3px 11px', cursor: 'pointer',
-              background: open ? 'var(--bg-2)' : 'transparent', color: 'var(--text-2)',
-              border: '1px solid var(--border)', borderRadius: 5,
-            }}
-          >{open ? 'Close editor' : 'Edit config'}</button>
-        </Tooltip>
       </div>
 
       {open && (

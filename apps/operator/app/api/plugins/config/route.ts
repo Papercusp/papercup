@@ -96,7 +96,10 @@ async function findPluginManifest(harness: string, inputSlug: string): Promise<{
 }
 
 const HARNESS_SLUG = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-const PLUGIN_DIR_SLUG = /^[a-z0-9][a-z0-9._/-]{0,127}$/i;
+// Accepts both scoped npm names (`@papercupai/cloudflare-pages`) and plain
+// dir basenames (`fumadocs`). Scoped names are produced by
+// `pluginSlugFromPath` whenever a plugin lives under a `@scope/` directory.
+const PLUGIN_DIR_SLUG = /^@?[a-z0-9][a-z0-9@._/-]{0,127}$/i;
 
 function configHash(config: Record<string, unknown>): string {
   return 'sha256-' + createHash('sha256').update(JSON.stringify(config)).digest('hex').slice(0, 32);
