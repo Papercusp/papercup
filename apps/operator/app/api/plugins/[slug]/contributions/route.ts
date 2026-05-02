@@ -47,7 +47,32 @@ interface PluginManifest {
 }
 
 async function readJson<T>(path: string): Promise<T | null> {
-  try { return JSON.parse(await fs.readFile(path, 'utf8')) as T; } catch { return null; }
+  let raw: string;
+  try {
+    raw = await fs.readFile(path, 'utf8');
+  } catch {
+    // File not present — that's a normal state, e.g. a harness with no
+    // plugins enabled. Caller's "no plugins" branch handles it.
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as T;
+  } catch (e) {
+    // Tolerate the most common hand-edit mistake: trailing comma before
+    // a closing `}` or `]`. A malformed enabled-plugins.json otherwise
+    // silently nukes every plugin tab on the dashboard, which is a much
+    // worse failure mode than this one-line recovery.
+    const stripped = raw.replace(/,(\s*[\]}])/g, '$1');
+    try {
+      return JSON.parse(stripped) as T;
+    } catch {
+      console.warn(
+        `[plugins/contributions] failed to parse ${path} — file is malformed JSON, treating as empty. Original error:`,
+        (e as Error).message,
+      );
+      return null;
+    }
+  }
 }
 
 async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'global'): Promise<Array<PluginManifest & { source: string; path: string }>> {
