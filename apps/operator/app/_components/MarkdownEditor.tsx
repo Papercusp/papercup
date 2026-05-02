@@ -186,11 +186,25 @@ export function MarkdownEditor({
   }, [readOnly, ready]);
 
   return (
-    <div
-      ref={containerRef}
-      className={className}
-      style={{ height, width: '100%', ...style }}
-    />
+    <>
+      <style>{`
+        /* Vditor mounts INTO the container element and adds .vditor class names
+         * to it. To get internal scrolling instead of vertical-overflow, we
+         * override Vditor's inline height with !important and set the content
+         * pane to flex-grow with overflow:auto. */
+        .pc-md-editor-host.vditor { display: flex !important; flex-direction: column !important; height: 100% !important; min-height: 0; }
+        .pc-md-editor-host.vditor > .vditor-toolbar { flex: 0 0 auto; }
+        .pc-md-editor-host.vditor > .vditor-content { flex: 1 1 0 !important; min-height: 0 !important; overflow: auto !important; }
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-ir,
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-wysiwyg,
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv { min-height: 100%; }
+      `}</style>
+      <div
+        ref={containerRef}
+        className={`pc-md-editor-host ${className ?? ''}`}
+        style={{ height, width: '100%', minHeight: 0, ...style }}
+      />
+    </>
   );
 }
 
