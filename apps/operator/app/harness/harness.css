@@ -8655,3 +8655,28 @@ body:has(.h-top-collapse-inline) main {
   0%, 100% { box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 0 1px color-mix(in oklab, var(--accent), transparent 50%); }
   50%      { box-shadow: 0 6px 18px rgba(0,0,0,0.45), 0 0 0 4px color-mix(in oklab, var(--accent), transparent 75%); }
 }
+
+/* ── LogView link styling ───────────────────────────────────── */
+.h-log-link {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--accent), transparent 50%);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  word-break: break-all;
+}
+.h-log-link:hover {
+  color: color-mix(in oklab, var(--accent), white 12%);
+  text-decoration-color: var(--accent);
+}
+.h-log-link.h-log-link-app {
+  background: transparent;
+  border: 0;
+  font: inherit;
+  padding: 0;
+  margin: 0;
+}
+.h-log-link-feature  { color: color-mix(in oklab, var(--info), white 14%); }
+.h-log-link-issue    { color: color-mix(in oklab, var(--warn), white 8%); }
+.h-log-link-snapshot { color: color-mix(in oklab, var(--accent), white 10%); }
+.h-log-link-invocation { color: color-mix(in oklab, var(--good), white 8%); }
