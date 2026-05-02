@@ -20,6 +20,12 @@ export interface TriggerState {
   unconsumedEvents: number;
   projects: { slug: string; status: string }[];
   operatorInboxCount: number;
+  /**
+   * Per-harness one-liner snapshot for the idle status pane (Phase 5).
+   * NOT included in the fingerprint — purely for display so cosmetic
+   * tweaks don't churn the cache.
+   */
+  perHarness?: { slug: string; status: string; lastTouched: string | null }[];
 }
 
 export async function readTriggerState(): Promise<TriggerState> {
@@ -47,10 +53,33 @@ export async function readTriggerState(): Promise<TriggerState> {
     } catch {
       // message_recipients table may not exist in every workspace; treat as 0.
     }
+
+    // Per-harness one-liners. Best-effort — uses the same projects rows
+    // plus a left-join on harnesses for last-touched. If the harnesses
+    // table differs across deploys, just omit perHarness.
+    let perHarness: { slug: string; status: string; lastTouched: string | null }[] | undefined;
+    try {
+      const rows = await tx<{ slug: string; status: string; last_touched: string | null }[]>`
+        SELECT p.slug, p.status,
+               (SELECT MAX(ts)::text FROM harness_shared.audit_log a
+                 WHERE a.subject = p.slug) AS last_touched
+          FROM harness_shared.projects p
+         ORDER BY p.slug
+      `;
+      perHarness = rows.map((r) => ({
+        slug: r.slug,
+        status: r.status,
+        lastTouched: r.last_touched,
+      }));
+    } catch {
+      /* leave undefined */
+    }
+
     return {
       unconsumedEvents: events[0]?.count ?? 0,
       projects,
       operatorInboxCount: inbox,
+      perHarness,
     };
   });
 }

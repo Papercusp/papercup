@@ -76,6 +76,8 @@ interface SuggestionCard extends ParsedSuggestion {
   dispatchedAt?: number;
   /** True when dismiss came from undo-window cancel (audit-only, no preferences entry). */
   undoCancelled?: boolean;
+  /** Set after a successful send_message dispatch — drives receiving-state polling. */
+  messageId?: string;
 }
 
 const UNCONSUMED_AGE_MS = 4 * 60_000; // 3 × 60s cadence + 60s grace = 4 min
@@ -306,19 +308,74 @@ export function OperatorPanel(): JSX.Element | null {
     }
   }, []);
 
+  // Receiving-state polling: while the panel is open, every 10s ask the
+  // server for the current message.status of any 'dispatched' card with a
+  // tracked messageId. Flip the card's lifecycle when the recipient picks
+  // it up.
+  useEffect(() => {
+    if (!state.open) return;
+    let cancelled = false;
+    const tick = async () => {
+      const cards = suggestionsRef.current.filter(
+        (c) => c.status === 'dispatched' && c.messageId,
+      );
+      if (!cards.length) return;
+      const ids = cards.map((c) => c.messageId!).join(',');
+      try {
+        const r = await fetch(`/api/agent-mcp/operator-message-status?ids=${encodeURIComponent(ids)}`);
+        if (!r.ok || cancelled) return;
+        const { rows } = (await r.json()) as {
+          rows: { messageId: string; receivingState: 'dispatched' | 'consumed' | 'escalated' | 'rejected' }[];
+        };
+        if (cancelled || !rows.length) return;
+        const byId = new Map(rows.map((r) => [r.messageId, r.receivingState]));
+        setSuggestions((prev) =>
+          prev.map((c) => {
+            if (!c.messageId || c.status !== 'dispatched') return c;
+            const next = byId.get(c.messageId);
+            if (!next || next === 'dispatched') return c;
+            return { ...c, status: next };
+          }),
+        );
+      } catch {
+        /* network blip — try again next tick */
+      }
+    };
+    void tick();
+    const t = setInterval(() => void tick(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [state.open]);
+
   const hydrateFromLastScan = useCallback(async () => {
     try {
       const r = await fetch('/api/agent-mcp/operator-last-scan');
       if (!r.ok) return;
       const { snapshot } = (await r.json()) as {
-        snapshot: { cards: ParsedSuggestion[] } | null;
+        snapshot: {
+          cards: (ParsedSuggestion & {
+            _status?: LifecycleState;
+            _dispatchedAt?: number;
+            _undoCancelled?: boolean;
+          })[];
+        } | null;
       };
       if (!snapshot?.cards?.length) return;
       // Only hydrate when we have nothing on screen — never blow away an
       // in-flight scan.
       setSuggestions((prev) => {
         if (prev.length > 0) return prev;
-        return snapshot.cards.map((c) => ({ ...c, status: 'pending' as LifecycleState }));
+        return snapshot.cards.map((c) => {
+          const { _status, _dispatchedAt, _undoCancelled, ...rest } = c;
+          return {
+            ...rest,
+            status: (_status ?? 'pending') as LifecycleState,
+            dispatchedAt: _dispatchedAt,
+            undoCancelled: _undoCancelled,
+          };
+        });
       });
     } catch {
       /* ignore */
@@ -435,9 +492,21 @@ export function OperatorPanel(): JSX.Element | null {
           ),
         );
       } else {
-        // Path-(b) ack: dispatch returned without error. Receiving-state
-        // ('consumed' / 'escalated' / 'rejected') is derived later from
-        // a Zero subscription on messages.status — wired in a follow-up.
+        // Path-(b) ack: dispatch returned without error. Capture the
+        // messageId so receiving-state polling can flip 'dispatched' →
+        // 'consumed' once the recipient harness picks it up.
+        let messageId: string | undefined;
+        try {
+          const data = await r.clone().json();
+          messageId = data?.result?.inserted?.[0]?.messageId;
+        } catch {
+          /* response wasn't JSON — that's fine */
+        }
+        if (messageId) {
+          setSuggestions((prev) =>
+            prev.map((c) => (c.id === id ? { ...c, messageId } : c)),
+          );
+        }
         void logAudit(id, 'acked');
       }
     } catch (err) {
@@ -649,6 +718,7 @@ export function OperatorPanel(): JSX.Element | null {
               </p>
             </div>
           )}
+          <PerHarnessStatus />
           <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
             Stream
           </h3>
@@ -833,6 +903,48 @@ export function OperatorPanel(): JSX.Element | null {
         <span>Cmd/Ctrl+K then O to toggle • Click outside to close</span>
         <span>Operator MCP v0.1.0</span>
       </div>
+    </div>
+  );
+}
+
+interface HarnessOneLiner {
+  slug: string;
+  status: string;
+  lastTouched: string | null;
+}
+
+function PerHarnessStatus(): JSX.Element | null {
+  const [rows, setRows] = useState<HarnessOneLiner[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/agent-mcp/operator-trigger-state')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d?.state?.perHarness) return;
+        setRows(d.state.perHarness);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!rows?.length) return null;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
+        Harnesses
+      </h3>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 4, fontSize: 12 }}>
+        {rows.slice(0, 8).map((h) => (
+          <li key={h.slug} style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <span style={{ fontFamily: 'var(--mono, monospace)' }}>{h.slug}</span>
+            <span style={{ opacity: 0.6 }}>{h.status}</span>
+          </li>
+        ))}
+        {rows.length > 8 && (
+          <li style={{ opacity: 0.5 }}>+{rows.length - 8} more</li>
+        )}
+      </ul>
     </div>
   );
 }
