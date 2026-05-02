@@ -7,6 +7,7 @@ import {
   type Suggestion,
 } from './operator-suggestion-schema';
 import type { OperatorPreferences } from './operator-preferences';
+import { isOnCooldown } from './operator-dismissed-cache';
 
 const SUGGESTION_RE = /<suggestion>\s*([\s\S]*?)\s*<\/suggestion>/gi;
 
@@ -56,6 +57,7 @@ export function parseSuggestions(
     }
     const enriched = enrich(validated.data, preferences);
     if (seenIds.has(enriched.raw.id)) continue; // de-dup within one scan
+    if (isOnCooldown(enriched.raw.id)) continue; // dismissed-cooldown
     seenIds.add(enriched.raw.id);
     result.blocks.push({ suggestion: enriched });
   }

@@ -189,18 +189,25 @@ export function OperatorPanel(): JSX.Element | null {
     return subscribeOperatorState(fn);
   }, []);
 
-  // Click-outside to close.
+  // Click-outside or Escape to close.
   useEffect(() => {
     if (!state.open) return;
     const onDocClick = (e: MouseEvent) => {
       if (!panelRef.current) return;
       if (panelRef.current.contains(e.target as Node)) return;
       const target = e.target as HTMLElement;
-      if (target.closest('[aria-label="Operator"]')) return;
+      if (target.closest('[aria-label^="Operator"]')) return;
       broadcastState({ open: false });
     };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') broadcastState({ open: false });
+    };
     document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
   }, [state.open]);
 
   // Kick off a scan when the panel opens.
@@ -469,6 +476,12 @@ export function OperatorPanel(): JSX.Element | null {
         c.id === id ? { ...c, status: 'dismissed', undoCancelled: false } : c,
       ),
     );
+    // Record dismissal for the cooldown filter (so re-scans don't re-emit).
+    void fetch('/api/agent-mcp/operator-dismissed', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id }),
+    });
     if (!card) return;
     const reason = typeof window !== 'undefined'
       ? window.prompt('Why dismiss this? (optional — leave blank to skip learning)')
@@ -665,10 +678,17 @@ export function OperatorPanel(): JSX.Element | null {
               {scanStarted ? 'Scanning…' : 'No scan started.'}
             </p>
           ) : (
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 12 }}>
+            <ul
+              role="list"
+              aria-label="Operator suggestions"
+              style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 12 }}
+            >
               {suggestions.map((s) => (
                 <li
                   key={s.id}
+                  role="article"
+                  aria-label={`${s.title} — ${s.actualTier} tier, ${s.auto_dispatch ? 'auto-dispatched' : 'awaiting your decision'}`}
+                  tabIndex={0}
                   style={{
                     border: '1px solid rgba(0,0,0,0.1)',
                     borderRadius: 8,
