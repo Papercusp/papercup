@@ -5,7 +5,7 @@ import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
-import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 import { BacklinksPanel } from '../_components/BacklinksPanel';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
@@ -369,19 +369,12 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
             <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>
           ) : simpleTab ? (
             tabMeta.language === 'markdown' && simpleTab !== 'env' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-                <div style={{ flex: 1, minHeight: 0 }}>
-                  <MarkdownEditor
-                    value={draft[simpleTab] ?? ''}
-                    onChange={(v) => setDraft((d) => ({ ...d, [simpleTab]: v }))}
-                    mode="ir"
-                  />
-                </div>
-                <BacklinksPanel
-                  target={tabMeta.filename.replace(/\.md$/, '')}
-                  harness={slug}
-                />
-              </div>
+              <MarkdownTabBody
+                value={draft[simpleTab] ?? ''}
+                onChange={(v) => setDraft((d) => ({ ...d, [simpleTab]: v }))}
+                target={tabMeta.filename.replace(/\.md$/, '')}
+                harness={slug}
+              />
             ) : (
               <Editor
                 height="100%"
@@ -421,5 +414,66 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
     >
       {inner}
     </Modal>
+  );
+}
+
+/**
+ * Body of a markdown tab: edit/read toggle + Vditor + backlinks panel.
+ * Edit mode mounts <MarkdownEditor>; read mode mounts <MarkdownPreview>
+ * which expands [[wiki-links]] into clickable resolver routes. The toggle
+ * preference is persisted via nuqs so navigating away/back keeps the view.
+ */
+function MarkdownTabBody({
+  value, onChange, target, harness,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  target: string;
+  harness: string;
+}) {
+  const [view, setView] = useQueryState(
+    'specView',
+    parseAsStringEnum<'edit' | 'read'>(['edit', 'read']).withDefault('edit'),
+  );
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div style={{
+        display: 'flex', gap: 4, padding: '6px 12px',
+        borderBottom: '1px solid var(--border, #2a2a2a)',
+        background: 'var(--bg-2, #15181c)',
+      }}>
+        {(['edit', 'read'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => void setView(m)}
+            style={{
+              background: view === m ? 'var(--bg, #0b0d10)' : 'transparent',
+              border: '1px solid ' + (view === m ? '#4a90e2' : 'transparent'),
+              color: view === m ? '#fff' : 'var(--text-2, #aaa)',
+              padding: '3px 10px',
+              borderRadius: 3,
+              fontSize: 11,
+              cursor: 'pointer',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}
+            title={m === 'read' ? 'Reading view (resolves [[wiki-links]])' : 'Editing view'}
+          >
+            {m === 'edit' ? '✎ Edit' : '👁 Read'}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: view === 'read' ? 'auto' : 'visible' }}>
+        {view === 'read' ? (
+          <div style={{ padding: 16 }}>
+            <MarkdownPreview value={value} />
+          </div>
+        ) : (
+          <MarkdownEditor value={value} onChange={onChange} mode="ir" />
+        )}
+      </div>
+      <BacklinksPanel target={target} harness={harness} />
+    </div>
   );
 }

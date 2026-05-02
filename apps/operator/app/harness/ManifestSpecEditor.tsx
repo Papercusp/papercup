@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import Editor from '@monaco-editor/react';
-import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 import { BacklinksPanel } from '../_components/BacklinksPanel';
 import { Tooltip } from './Tooltip';
 import MemoryBrowser from './MemoryBrowser';
@@ -273,19 +273,12 @@ export default function ManifestSpecEditor({
             </div>
           </div>
         ) : activeSpec?.language === 'markdown' ? (
-          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <MarkdownEditor
-                value={activeContent ?? ''}
-                onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
-                mode="ir"
-              />
-            </div>
-            <BacklinksPanel
-              target={(activePath.split('/').pop() ?? activePath).replace(/\.md$/, '')}
-              harness={slug}
-            />
-          </div>
+          <ManifestMarkdownBody
+            value={activeContent ?? ''}
+            onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
+            target={(activePath.split('/').pop() ?? activePath).replace(/\.md$/, '')}
+            harness={slug}
+          />
         ) : (
           <Editor
             height="100%"
@@ -299,6 +292,62 @@ export default function ManifestSpecEditor({
       </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** Edit/read toggle + Vditor + backlinks panel for a manifest-driven markdown tab. */
+function ManifestMarkdownBody({
+  value, onChange, target, harness,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  target: string;
+  harness: string;
+}) {
+  const [view, setView] = useQueryState(
+    'specView',
+    parseAsStringLiteral(['edit', 'read'] as const).withDefault('edit'),
+  );
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      <div style={{
+        display: 'flex', gap: 4, padding: '6px 12px',
+        borderBottom: '1px solid var(--border, #2a2a2a)',
+        background: 'var(--bg-2, #15181c)',
+      }}>
+        {(['edit', 'read'] as const).map((m) => (
+          <button
+            key={m}
+            type="button"
+            onClick={() => void setView(m)}
+            style={{
+              background: view === m ? 'var(--bg, #0b0d10)' : 'transparent',
+              border: '1px solid ' + (view === m ? '#4a90e2' : 'transparent'),
+              color: view === m ? '#fff' : 'var(--text-2, #aaa)',
+              padding: '3px 10px',
+              borderRadius: 3,
+              fontSize: 11,
+              cursor: 'pointer',
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}
+            title={m === 'read' ? 'Reading view (resolves [[wiki-links]])' : 'Editing view'}
+          >
+            {m === 'edit' ? '✎ Edit' : '👁 Read'}
+          </button>
+        ))}
+      </div>
+      <div style={{ flex: 1, minHeight: 0, overflow: view === 'read' ? 'auto' : 'visible' }}>
+        {view === 'read' ? (
+          <div style={{ padding: 16 }}>
+            <MarkdownPreview value={value} />
+          </div>
+        ) : (
+          <MarkdownEditor value={value} onChange={onChange} mode="ir" />
+        )}
+      </div>
+      <BacklinksPanel target={target} harness={harness} />
     </div>
   );
 }
