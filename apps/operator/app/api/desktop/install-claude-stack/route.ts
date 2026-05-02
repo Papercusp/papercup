@@ -25,7 +25,7 @@ import { join } from 'node:path';
  * Streams progress as Server-Sent Events so the UI can show a live log.
  */
 
-const MERIDIAN_VERSION = '1.40.0';
+const MERIDIAN_VERSION = '1.41.1';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
