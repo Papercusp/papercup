@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { MarkdownEditor } from '../../_components/MarkdownEditor';
 
 interface OracleConfig {
   prompt: string;
@@ -67,44 +68,16 @@ export default function OracleSettingsPage() {
         <label style={{ display: 'block', fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
           System prompt
         </label>
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          rows={14}
-          style={{
-            width: '100%',
-            padding: 12,
-            background: 'var(--bg)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            color: 'var(--fg)',
-            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-            fontSize: 13,
-            lineHeight: 1.5,
-            resize: 'vertical',
-          }}
-        />
+        <div style={{ minHeight: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+          <MarkdownEditor value={prompt} onChange={setPrompt} mode="ir" minHeight={320} />
+        </div>
 
         <label style={{ display: 'block', fontWeight: 700, fontSize: 13, marginTop: 20, marginBottom: 6 }}>
           Persistent memory
         </label>
-        <textarea
-          value={memory}
-          onChange={(e) => setMemory(e.target.value)}
-          rows={10}
-          style={{
-            width: '100%',
-            padding: 12,
-            background: 'var(--bg)',
-            border: '1px solid var(--border)',
-            borderRadius: 6,
-            color: 'var(--fg)',
-            fontFamily: 'ui-monospace, SFMono-Regular, monospace',
-            fontSize: 13,
-            lineHeight: 1.5,
-            resize: 'vertical',
-          }}
-        />
+        <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+          <MarkdownEditor value={memory} onChange={setMemory} mode="ir" minHeight={240} />
+        </div>
 
         <div style={{ marginTop: 16 }}>
           <button type="submit" disabled={saving} className="pc-button">

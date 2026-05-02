@@ -10,6 +10,7 @@ import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { toast, Toaster } from 'sonner';
 import { Inbox, Send, FileText, NotebookPen, Workflow, Cpu, Brain } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
 
 type MemoryEntry = {
   filename: string;
@@ -541,17 +542,15 @@ function ComposeMessage({
       </div>
       <div style={{ marginBottom: 12 }}>
         <label style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', marginBottom: 4, textTransform: 'uppercase', letterSpacing: 0.5 }}>Body (markdown)</label>
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={10}
-          style={{
-            width: '100%', boxSizing: 'border-box', padding: '8px', background: 'var(--bg)',
-            color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 13,
-            fontFamily: 'ui-monospace, monospace', lineHeight: 1.5,
-          }}
-          placeholder="The full message body. Supports markdown."
-        />
+        <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+          <MarkdownEditor
+            value={body}
+            onChange={setBody}
+            mode="ir"
+            minHeight={240}
+            placeholder="The full message body. Supports markdown."
+          />
+        </div>
       </div>
       <button
         onClick={send}
@@ -1058,16 +1057,14 @@ function NotesEditor({ departmentSlug, initialContent, onSaved }: { departmentSl
           </button>
         </div>
       </div>
-      <textarea
-        value={content}
-        onChange={(e) => { setContent(e.target.value); setDirty(true); }}
-        rows={20}
-        style={{
-          width: '100%', boxSizing: 'border-box', padding: 12, background: 'var(--bg)', color: 'var(--fg)',
-          border: '1px solid var(--border)', borderRadius: 4, fontSize: 12, lineHeight: 1.6,
-          fontFamily: 'ui-monospace, monospace', resize: 'vertical', minHeight: 400,
-        }}
-      />
+      <div style={{ minHeight: 400, border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+        <MarkdownEditor
+          value={content}
+          onChange={(v) => { setContent(v); setDirty(true); }}
+          mode="ir"
+          minHeight={400}
+        />
+      </div>
     </div>
   );
 }

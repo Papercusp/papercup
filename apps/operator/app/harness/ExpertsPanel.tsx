@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
 
 interface ExpertSummary {
   id: string;
@@ -482,12 +483,15 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
           </label>
           <label style={{ fontSize: 12, fontWeight: 500 }}>
             High-level spec
-            <textarea
-              value={highLevelSpec} onChange={(e) => setHighLevelSpec(e.target.value)}
-              placeholder="Slice of SPEC.md this expert owns. The expert will turn this into a detailed spec."
-              rows={6}
-              style={{ ...inputStyle, fontFamily: 'inherit', resize: 'vertical' }}
-            />
+            <div style={{ minHeight: 220, border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden', marginTop: 4 }}>
+              <MarkdownEditor
+                value={highLevelSpec}
+                onChange={setHighLevelSpec}
+                mode="ir"
+                minHeight={220}
+                placeholder="Slice of SPEC.md this expert owns. The expert will turn this into a detailed spec."
+              />
+            </div>
           </label>
           <div style={{ display: 'flex', gap: 12 }}>
             <label style={{ fontSize: 12, fontWeight: 500, flex: 1 }}>

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import Editor from '@monaco-editor/react';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { Plus, Trash2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -235,23 +236,32 @@ export function CollectionTab({
               </div>
             </div>
             <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-              <Editor
-                height="100%"
-                language={language}
-                theme="vs-dark"
-                value={draft}
-                onChange={(v) => setDraft(v ?? '')}
-                options={{
-                  minimap: { enabled: false },
-                  fontSize: 12.5,
-                  wordWrap: 'on',
-                  lineNumbers: 'on',
-                  scrollBeyondLastLine: false,
-                  automaticLayout: true,
-                  tabSize: 2,
-                  readOnly: disabled,
-                }}
-              />
+              {language === 'markdown' ? (
+                <MarkdownEditor
+                  value={draft}
+                  onChange={setDraft}
+                  mode="ir"
+                  readOnly={disabled}
+                />
+              ) : (
+                <Editor
+                  height="100%"
+                  language={language}
+                  theme="vs-dark"
+                  value={draft}
+                  onChange={(v) => setDraft(v ?? '')}
+                  options={{
+                    minimap: { enabled: false },
+                    fontSize: 12.5,
+                    wordWrap: 'on',
+                    lineNumbers: 'on',
+                    scrollBeyondLastLine: false,
+                    automaticLayout: true,
+                    tabSize: 2,
+                    readOnly: disabled,
+                  }}
+                />
+              )}
               {showFallback && (
                 <div style={{
                   position: 'absolute', top: 10, right: 10,

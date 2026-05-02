@@ -5,6 +5,7 @@ import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
 import { CollectionTab, type CollectionItem } from './CollectionTab';
@@ -366,22 +367,30 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
           ) : loading ? (
             <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>
           ) : simpleTab ? (
-            <Editor
-              height="100%"
-              language={tabMeta.language}
-              theme="vs-dark"
-              value={draft[simpleTab]}
-              onChange={(v) => setDraft((d) => ({ ...d, [simpleTab]: v ?? '' }))}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 13,
-                wordWrap: 'on',
-                lineNumbers: 'on',
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                tabSize: 2,
-              }}
-            />
+            tabMeta.language === 'markdown' && simpleTab !== 'env' ? (
+              <MarkdownEditor
+                value={draft[simpleTab] ?? ''}
+                onChange={(v) => setDraft((d) => ({ ...d, [simpleTab]: v }))}
+                mode="ir"
+              />
+            ) : (
+              <Editor
+                height="100%"
+                language={tabMeta.language}
+                theme="vs-dark"
+                value={draft[simpleTab]}
+                onChange={(v) => setDraft((d) => ({ ...d, [simpleTab]: v ?? '' }))}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  wordWrap: 'on',
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                }}
+              />
+            )
           ) : null}
           {onSettings && missing && simpleTab && !dirty.includes(simpleTab) && !isCollectionTab && (
             <div style={{ position: 'absolute', top: '0.75rem', right: '0.75rem', background: '#111827', border: '1px solid #374151', padding: '0.35rem 0.65rem', borderRadius: 3, fontSize: '0.75rem', color: '#9ca3af' }}>

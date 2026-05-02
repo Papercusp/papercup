@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Tooltip } from './Tooltip';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
 
 interface EscalationPayload {
   escalation: string | null;
@@ -167,24 +168,15 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
         </div>
       )}
 
-      <textarea
-        value={response}
-        onChange={(e) => setResponse(e.target.value)}
-        placeholder="Your response — will be appended to supervisor-notes.md as the authoritative guidance for the next orchestrator/planner iteration."
-        rows={4}
-        style={{
-          width: '100%',
-          background: '#1c0f02',
-          color: '#fde68a',
-          border: '1px solid #78350f',
-          borderRadius: 3,
-          padding: '0.5rem',
-          fontSize: '0.8rem',
-          fontFamily: 'ui-monospace, monospace',
-          resize: 'vertical',
-          boxSizing: 'border-box',
-        }}
-      />
+      <div style={{ minHeight: 180, border: '1px solid #78350f', borderRadius: 3, overflow: 'hidden' }}>
+        <MarkdownEditor
+          value={response}
+          onChange={setResponse}
+          mode="ir"
+          minHeight={180}
+          placeholder="Your response — will be appended to supervisor-notes.md as the authoritative guidance for the next orchestrator/planner iteration."
+        />
+      </div>
 
       <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem', alignItems: 'center' }}>
         <button

@@ -1,6 +1,7 @@
 'use client';
 
 import './harness.css';
+import MonacoEditor from '@monaco-editor/react';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as RSelect from '@radix-ui/react-select';
 import * as RTooltip from '@radix-ui/react-tooltip';
@@ -1865,21 +1866,24 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               })}
             </div>
           ) : (
-            <textarea
-              value={draftJson}
-              onChange={(e) => setDraftJson(e.target.value)}
-              spellCheck={false}
-              rows={Math.min(20, Math.max(6, draftJson.split('\n').length + 1))}
-              style={{
-                width: '100%', boxSizing: 'border-box',
-                fontFamily: "'SF Mono', monospace", fontSize: 12,
-                padding: 10, borderRadius: 4,
-                background: 'var(--bg-2)', color: 'var(--text-1)',
-                border: '1px solid var(--border)',
-                resize: 'vertical',
-              }}
-              placeholder='{ "key": "value" }'
-            />
+            <div style={{ height: Math.min(420, Math.max(160, (draftJson.split('\n').length + 1) * 18)), border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+              <MonacoEditor
+                height="100%"
+                language="json"
+                theme="vs-dark"
+                value={draftJson}
+                onChange={(v) => setDraftJson(v ?? '')}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 12,
+                  wordWrap: 'on',
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                }}
+              />
+            </div>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
             <Tooltip label="Save plugin config changes">

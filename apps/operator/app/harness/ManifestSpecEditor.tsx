@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import Editor from '@monaco-editor/react';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { Tooltip } from './Tooltip';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
@@ -252,16 +253,30 @@ export default function ManifestSpecEditor({
               Type below — saving will create it.
             </p>
             <div style={{ marginTop: 12, height: 'calc(100% - 80px)', minHeight: 300 }}>
-              <Editor
-                height="100%"
-                language={activeSpec?.language ?? 'text'}
-                theme="vs-dark"
-                value={activeContent}
-                onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v ?? '' }))}
-                options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: 'on' }}
-              />
+              {activeSpec?.language === 'markdown' ? (
+                <MarkdownEditor
+                  value={activeContent ?? ''}
+                  onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
+                  mode="ir"
+                />
+              ) : (
+                <Editor
+                  height="100%"
+                  language={activeSpec?.language ?? 'text'}
+                  theme="vs-dark"
+                  value={activeContent}
+                  onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v ?? '' }))}
+                  options={{ minimap: { enabled: false }, fontSize: 13, wordWrap: 'on' }}
+                />
+              )}
             </div>
           </div>
+        ) : activeSpec?.language === 'markdown' ? (
+          <MarkdownEditor
+            value={activeContent ?? ''}
+            onChange={(v) => setDraft((d) => ({ ...d, [activePath]: v }))}
+            mode="ir"
+          />
         ) : (
           <Editor
             height="100%"

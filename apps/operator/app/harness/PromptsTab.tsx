@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { Tooltip } from './Tooltip';
-import Editor from '@monaco-editor/react';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { Trash2, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -229,22 +229,11 @@ export default function PromptsTab({ slug, alive }: Props) {
               </div>
             )}
             <div style={{ flex: 1, minHeight: 0 }}>
-              <Editor
-                height="100%"
-                language="markdown"
-                theme="vs-dark"
-                value={editorValue}
-                onChange={(v) => setDraft(v ?? '')}
-                options={{
-                  minimap: { enabled: false },
-                  fontSize: 12.5,
-                  wordWrap: 'on',
-                  lineNumbers: 'on',
-                  scrollBeyondLastLine: false,
-                  automaticLayout: true,
-                  tabSize: 2,
-                  readOnly: scope === 'global',
-                }}
+              <MarkdownEditor
+                value={editorValue ?? ''}
+                onChange={setDraft}
+                mode="ir"
+                readOnly={scope === 'global'}
               />
             </div>
           </>

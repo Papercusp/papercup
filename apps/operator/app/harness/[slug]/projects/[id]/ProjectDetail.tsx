@@ -19,6 +19,7 @@ import {
   Coins, Clock, Hammer, History as HistoryIcon, FileText,
 } from 'lucide-react';
 import { MarkdownView } from '@restart/ui-primitives';
+import { MarkdownEditor } from '../../../../_components/MarkdownEditor';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../../theme';
 import { Tooltip } from '../../../Tooltip';
@@ -401,18 +402,15 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
           ) : null}
 
           {editing ? (
-            <textarea
-              value={draftSpec}
-              onChange={(e) => setDraftSpec(e.target.value)}
-              rows={28}
-              style={{
-                width: '100%',
-                fontFamily: FONTS.mono, fontSize: SIZES.sm, color: COLORS.text,
-                background: COLORS.bg, border: `1px solid ${COLORS.borderSubtle}`, borderRadius: RADIUS.sm,
-                padding: 12, resize: 'vertical', minHeight: 300, outline: 'none',
-              }}
-              placeholder="Markdown spec body — architectural decisions, invariants, conventions, gotchas, external dependencies."
-            />
+            <div style={{ minHeight: 500, border: `1px solid ${COLORS.borderSubtle}`, borderRadius: RADIUS.sm, overflow: 'hidden' }}>
+              <MarkdownEditor
+                value={draftSpec}
+                onChange={setDraftSpec}
+                mode="ir"
+                minHeight={500}
+                placeholder="Markdown spec body — architectural decisions, invariants, conventions, gotchas, external dependencies."
+              />
+            </div>
           ) : (
             <SpecBody spec={activeRevision ? activeRevision.spec : project.spec} />
           )}
