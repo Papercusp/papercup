@@ -457,16 +457,29 @@ export function OperatorPanel(): JSX.Element | null {
   }, [suggestions]);
 
   /**
-   * Deliberate dismiss — user clicked Dismiss in the panel. Phase 4 will
-   * also append a `[USER-TYPED] [DISMISS]` entry to preferences.md; here
-   * we just transition state.
+   * Deliberate dismiss — user clicked Dismiss in the panel. Optionally
+   * collect a reason so Operator can learn from the dismissal (Phase 4a).
+   * Skipping the reason still records the dismissal in card state but
+   * leaves preferences.md untouched.
    */
   const dismissSuggestion = useCallback((id: string) => {
+    const card = suggestionsRef.current.find((c) => c.id === id);
     setSuggestions((prev) =>
       prev.map((c) =>
         c.id === id ? { ...c, status: 'dismissed', undoCancelled: false } : c,
       ),
     );
+    if (!card) return;
+    const reason = typeof window !== 'undefined'
+      ? window.prompt('Why dismiss this? (optional — leave blank to skip learning)')
+      : '';
+    if (!reason || !reason.trim()) return;
+    const entry = `- [USER-TYPED] [DISMISS] "${card.title.replace(/"/g, '\\"')}" — reason: "${reason.trim().replace(/"/g, '\\"')}"`;
+    void fetch('/api/agent-mcp/operator-preferences', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ entry }),
+    });
   }, []);
 
   /**

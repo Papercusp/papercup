@@ -57,4 +57,12 @@ export async function writeOperatorAudit(ev: OperatorAuditEvent): Promise<void> 
     // Best-effort; never block the panel on a missing audit row.
     console.warn(`[operator-audit] failed to write ${ev.kind} for ${ev.cardId}:`, err);
   }
+
+  // After every dispatched event, refresh the standing-approval candidates
+  // file so the settings page reflects new patterns. Best-effort, async.
+  if (ev.kind === 'dispatched') {
+    void import('./operator-standing-candidates')
+      .then((m) => m.refreshCandidates())
+      .catch(() => {});
+  }
 }
