@@ -44,7 +44,7 @@ import {
   currentPluginExecCtx,
 } from '@/lib/log-events';
 
-const PAPERCUSP_ROOT = papercuspRoot();
+// papercuspRoot() invalidates on registry mtime, so call it per-use.
 
 // Install the global console.* interceptor on first import. AsyncLocalStorage
 // scopes attribution to the active plugin handler — calls outside a plugin
@@ -62,13 +62,13 @@ interface HostState {
 }
 
 const __key = '__papercuspPluginHostRuntime';
-type Globals = { [__key]?: { promise: Promise<HostState> | null; state: HostState | null } };
+type Globals = { [__key]?: { promise: Promise<HostState> | null; state: HostState | null; rootAtCache: string | null } };
 const __globals = globalThis as Globals;
-if (!__globals[__key]) __globals[__key] = { promise: null, state: null };
+if (!__globals[__key]) __globals[__key] = { promise: null, state: null, rootAtCache: null };
 const __cache = __globals[__key]!;
 
 function discoverHarnessSlugs(): string[] {
-  const dir = join(PAPERCUSP_ROOT, 'harnesses');
+  const dir = join(papercuspRoot(), 'harnesses');
   if (!existsSync(dir)) return [];
   try {
     // dynamic require to keep the module import-side-effect-free
@@ -217,7 +217,23 @@ function makePluginSpawn(args: {
 }
 
 export function getPluginHost(): Promise<HostState> {
+  // Workspace-switch invalidation: if papercuspRoot() resolves to a
+  // different path than when the cache was populated, re-discover.
+  // Tauri's app.restart() handles this in production by replacing the
+  // entire process; this branch covers dev/web mode where workspaces
+  // can flip via registry edits without a process restart.
+  //
+  // The check is against rootAtCache being NOT EQUAL to rootNow (rather
+  // than rootAtCache being truthy) so it correctly invalidates when the
+  // global cache survived a Next HMR cycle but rootAtCache wasn't yet
+  // tracked by the prior module instance.
+  const rootNow = papercuspRoot();
+  if (__cache.promise && __cache.rootAtCache !== rootNow) {
+    _resetPluginHostForTests();
+    __cache.rootAtCache = null;
+  }
   if (__cache.promise) return __cache.promise;
+  __cache.rootAtCache = rootNow;
   __cache.promise = (async () => {
     const state = await discover();
     __cache.state = state;
@@ -633,7 +649,7 @@ export function _resetPluginHostForTests(): void {
   // Symlinks under ~/.papercusp/global-plugins/ are followed to their real
   // paths before being cached, so we match against the resolved targets.
   try {
-    const root = join(PAPERCUSP_ROOT, 'global-plugins');
+    const root = join(papercuspRoot(), 'global-plugins');
     const fs = require('node:fs') as typeof import('node:fs');
     const resolvedRoots = new Set<string>();
     const collectRealpaths = (dir: string, depth: number): void => {
@@ -713,7 +729,7 @@ const __watchGlobals = globalThis as WatchGlobals;
 
 export function watchPluginsForReload(opts: { dir?: string } = {}): { dispose: () => void } {
   if (__watchGlobals[__watchKey]) return __watchGlobals[__watchKey]!;
-  const dir = opts.dir ?? join(PAPERCUSP_ROOT, 'global-plugins');
+  const dir = opts.dir ?? join(papercuspRoot(), 'global-plugins');
   const fs = require('node:fs') as typeof import('node:fs');
   if (!existsSync(dir)) {
     const noop = { dispose: () => {} };

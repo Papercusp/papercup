@@ -23,19 +23,63 @@ import { basename, dirname, join, resolve } from 'node:path';
  * storage at ~/.papercusp-workspaces/<id>/.papercusp/. This mirrors the
  * resolver used in the operator and CLI so the loader picks up plugins
  * from the right location regardless of where it's invoked from.
+ *
+ * Cached per-call with mtime invalidation: if registry.json changes (the
+ * Tauri shell rewrites it on workspace switch), the next call picks up
+ * the new `current` workspace without a process restart. Mirrors the
+ * mtime-aware caching in apps/operator/lib/papercusp-root.ts.
  */
+import { statSync } from 'node:fs';
+interface __RootCache { mtime: number; content: string | null; env: string | undefined; value: string }
+let __rootCache: __RootCache | null = null;
+
 function papercuspRootResolved(): string {
-  if (process.env.PAPERCUSP_HOME) return process.env.PAPERCUSP_HOME;
+  // Build the current cache key.
   const wsIndex = join(homedir(), '.papercusp-workspaces', 'registry.json');
-  if (existsSync(wsIndex)) {
+  let mtime = 0;
+  let content: string | null = null;
+  try {
+    mtime = statSync(wsIndex).mtimeMs;
+    content = readFileSync(wsIndex, 'utf8');
+  } catch { /* missing — both stay zero/null */ }
+  const env = process.env.PAPERCUSP_HOME;
+  if (
+    __rootCache
+    && __rootCache.mtime === mtime
+    && __rootCache.content === content
+    && __rootCache.env === env
+  ) {
+    return __rootCache.value;
+  }
+
+  let value: string;
+  if (env) {
+    value = env;
+  } else if (content) {
     try {
-      const parsed = JSON.parse(readFileSync(wsIndex, 'utf8')) as { current?: string };
+      const parsed = JSON.parse(content) as { current?: string };
       if (parsed.current) {
         const cand = join(homedir(), '.papercusp-workspaces', parsed.current, '.papercusp');
-        if (existsSync(cand)) return cand;
+        if (existsSync(cand)) {
+          value = cand;
+        } else {
+          value = fallbackRoot();
+        }
+      } else {
+        value = fallbackRoot();
       }
-    } catch { /* fall through */ }
+    } catch {
+      value = fallbackRoot();
+    }
+  } else {
+    value = fallbackRoot();
   }
+
+  __rootCache = { mtime, content, env, value };
+  return value;
+}
+
+function fallbackRoot(): string {
   const def = join(homedir(), '.papercusp-workspaces', 'default', '.papercusp');
   if (existsSync(def)) return def;
   return join(homedir(), '.papercusp');
@@ -79,7 +123,9 @@ export interface LoaderOptions {
   globalPluginsDir?: string; // override ~/.papercusp/global-plugins/
 }
 
-const PAPERCUSP_ROOT = papercuspRootResolved();
+// PAPERCUSP_ROOT is intentionally NOT cached at module-load — see
+// papercuspRootResolved() above. Each loadPlugins() call resolves fresh
+// (with mtime cache) so workspace switches don't need a server restart.
 
 interface ManifestShape {
   name: string;
@@ -249,11 +295,11 @@ export async function loadPlugins(opts: LoaderOptions = {}): Promise<{
     }
   }
   for (const slug of opts.harnessSlugs ?? []) {
-    for (const d of await listSubdirs(join(PAPERCUSP_ROOT, 'harnesses', slug, 'plugins'))) {
+    for (const d of await listSubdirs(join(papercuspRootResolved(), 'harnesses', slug, 'plugins'))) {
       candidates.push({ dir: d, source: 'harness' });
     }
   }
-  const globalDir = opts.globalPluginsDir ?? join(PAPERCUSP_ROOT, 'global-plugins');
+  const globalDir = opts.globalPluginsDir ?? join(papercuspRootResolved(), 'global-plugins');
   for (const d of await listSubdirs(globalDir)) {
     // npm-style scope dirs (`@papercupai/`) hold one or more plugins; treat
     // each child dir as a candidate, not the scope itself. The scope dir
