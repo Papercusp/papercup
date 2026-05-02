@@ -3273,7 +3273,7 @@ export default function HarnessDashboard() {
 
               <div className="h-dashboard-panel-anchor" data-dashboard-panel="logs" tabIndex={-1}>
                 <Panel title="run.log" count="live">
-                <LogView events={logEvents} />
+                <LogView events={logEvents} contextId={activeSlug ?? undefined} />
               </Panel>
               </div>
 
@@ -3359,7 +3359,7 @@ export default function HarnessDashboard() {
                   <RPanel defaultSize="50%" minSize="20%">
                     <div className="h-dashboard-panel-anchor" data-dashboard-panel="logs" tabIndex={-1}>
                       <Panel title="run.log" count="live">
-                        <LogView events={logEvents} />
+                        <LogView events={logEvents} contextId={activeSlug ?? undefined} />
                       </Panel>
                     </div>
                   </RPanel>

@@ -8540,14 +8540,15 @@ body:has(.h-top-collapse-inline) main {
   .h-top-collapse-btn.h-top-collapse-floating {
     min-height: 28px !important;
     height: 28px !important;
-    padding: 0 11px 0 8px !important;
+    padding: 0 10px 0 7px !important;
     font-size: 9px !important;
-    letter-spacing: 0.075em !important;
+    letter-spacing: 0.06em !important;
   }
 
   .h-top-collapse-icon {
-    width: 15px !important;
-    height: 15px !important;
+    width: 14px !important;
+    height: 14px !important;
+    padding: 1.5px !important;
   }
 }
 /* ── LogView container + tabs + pause/counter ───────────────── */
@@ -8701,3 +8702,27 @@ body:has(.h-top-collapse-inline) main {
   /* Slight visual cue that a row represents multiple events. */
   opacity: 0.92;
 }
+
+/* ── Log toolbar (export + permalink + pause) ──────────────── */
+.h-log-toolbar {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 0 4px 4px 4px;
+}
+.h-log-toolbar-btn {
+  font-size: 11px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.h-log-toolbar-btn:hover {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--accent), transparent 60%);
+}
+.h-log-toolbar .h-log-pause-toggle { margin: 0; }
