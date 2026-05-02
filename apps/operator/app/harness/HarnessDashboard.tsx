@@ -1180,14 +1180,14 @@ function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs }: {
 }
 
 /**
- * Config tab body. Sub-nav between "Spec" (SPEC.md / AGENTS.md / config.json
- * editor) and "Plugins" (per-harness plugin list with actions, events,
- * required capabilities, and disable/invoke controls). Replaces the older
- * plain-SpecEditor body so action-only plugins have a visible home.
+ * Config tab body. First-level sub-nav between "Harness" (SPEC.md /
+ * AGENTS.md / config.json editor) and one tab per enabled plugin. Each
+ * plugin tab shows that single plugin's actions/capabilities/disable
+ * controls — replaces the older single "Plugins" composite tab.
  */
 function ConfigPanel({
   harnessSlug, projectPath, alive, onClose,
-  installedPlugins, enabledSlugs, pluginCount, onPluginsChange,
+  installedPlugins, enabledSlugs, onPluginsChange,
 }: {
   harnessSlug: string;
   projectPath: string;
@@ -1198,14 +1198,41 @@ function ConfigPanel({
   pluginCount: number;
   onPluginsChange: () => void;
 }) {
-  type SubPane = 'spec' | 'plugins';
-  const [pane, setPane] = useState<SubPane>('spec');
-  const TabBtn = ({ id, label, count }: { id: SubPane; label: string; count?: number }) => (
+  // 'harness' = the legacy spec editor; otherwise pane === plugin.name.
+  const HARNESS_PANE = 'harness' as const;
+  const [pane, setPane] = useState<string>(HARNESS_PANE);
+
+  const enabledManifests = useMemo(() => {
+    // Dedupe by `plugin.name` — enabled-plugins.json may legitimately
+    // list the same plugin under both its scoped and bare-dir names.
+    const seen = new Set<string>();
+    const out: EnabledPluginManifest[] = [];
+    for (const slug of enabledSlugs) {
+      const m = installedPlugins.find((p) => {
+        const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
+        return p.name === slug || dirSlug === slug;
+      });
+      if (!m || seen.has(m.name)) continue;
+      seen.add(m.name);
+      out.push(m as EnabledPluginManifest);
+    }
+    return out;
+  }, [installedPlugins, enabledSlugs]);
+
+  // If the active pane points at a plugin that just got disabled, fall
+  // back to the harness pane.
+  useEffect(() => {
+    if (pane === HARNESS_PANE) return;
+    if (!enabledManifests.some((p) => p.name === pane)) setPane(HARNESS_PANE);
+  }, [pane, enabledManifests]);
+
+  const TabBtn = ({ id, label, icon }: { id: string; label: string; icon: React.ReactNode }) => (
     <button
       type="button"
       onClick={() => setPane(id)}
       className="h-tab"
       aria-pressed={pane === id}
+      title={label}
       style={{
         background: pane === id ? 'var(--bg-1)' : 'transparent',
         border: '1px solid',
@@ -1216,103 +1243,62 @@ function ConfigPanel({
         cursor: 'pointer',
         display: 'inline-flex', alignItems: 'center', gap: 6,
         borderRadius: 6,
+        whiteSpace: 'nowrap',
+        maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis',
       }}
     >
-      {id === 'spec' ? <SlidersHorizontal size={13} /> : <Puzzle size={13} />}
-      {label}
-      {typeof count === 'number' && count > 0 && (
-        <span className="h-tab-count" style={{ marginLeft: 4 }}>{count}</span>
-      )}
+      {icon}
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</span>
     </button>
   );
+
+  const activePlugin = enabledManifests.find((p) => p.name === pane);
+
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8,
         padding: '10px 20px',
         borderBottom: '1px solid var(--border)',
+        overflowX: 'auto',
       }}>
-        <TabBtn id="spec" label="Spec" />
-        <TabBtn id="plugins" label="Plugins" count={pluginCount} />
+        <TabBtn id={HARNESS_PANE} label="Harness" icon={<SlidersHorizontal size={13} />} />
+        {enabledManifests.map((p) => {
+          const tabIcon = p.dashboardTabs?.[0]?.icon ?? p.icon ?? null;
+          // Display name: strip @scope/ prefix for compactness.
+          const display = p.name.includes('/') ? p.name.split('/').pop()! : p.name;
+          return (
+            <TabBtn
+              key={p.name}
+              id={p.name}
+              label={display}
+              icon={<PluginIcon name={tabIcon} size={13} />}
+            />
+          );
+        })}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
-        {pane === 'spec' ? (
+        {pane === HARNESS_PANE ? (
           <ManifestOrLegacySpecEditor
             slug={harnessSlug}
             projectPath={projectPath}
             alive={alive}
             onClose={onClose}
           />
+        ) : activePlugin ? (
+          <div style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--text-1)' }}>
+            <PluginPanelCard
+              plugin={activePlugin}
+              harnessSlug={harnessSlug}
+              onChange={onPluginsChange}
+            />
+          </div>
         ) : (
-          <PluginsPanel
-            harnessSlug={harnessSlug}
-            installed={installedPlugins}
-            enabledSlugs={enabledSlugs}
-            onChange={onPluginsChange}
-          />
+          <div style={{ flex: 1, padding: 32, color: 'var(--text-3)' }}>
+            Plugin not found.
+          </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function PluginsPanel({ harnessSlug, installed, enabledSlugs, onChange }: {
-  harnessSlug: string;
-  installed: InstalledPluginInfo[];
-  enabledSlugs: string[];
-  onChange: () => void;
-}) {
-  const enabledManifests = useMemo(() => {
-    // Dedupe by `plugin.name` — enabled-plugins.json may legitimately list
-    // the same plugin under both its scoped name (`@papercupai/foo`) and
-    // its bare dir-slug (`foo`) when CLI and operator paths get out of
-    // sync. Without dedupe, both entries resolve to the same manifest and
-    // React errors with "Encountered two children with the same key".
-    const seen = new Set<string>();
-    const out: EnabledPluginManifest[] = [];
-    for (const slug of enabledSlugs) {
-      const m = installed.find((p) => {
-        const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
-        return p.name === slug || dirSlug === slug;
-      });
-      if (!m || seen.has(m.name)) continue;
-      seen.add(m.name);
-      out.push(m as EnabledPluginManifest);
-    }
-    return out;
-  }, [installed, enabledSlugs]);
-
-  return (
-    <div style={{ flex: 1, padding: '20px 28px', overflowY: 'auto', color: 'var(--text-1)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-        <Puzzle size={20} />
-        <h2 style={{ margin: 0, fontSize: 22 }}>Plugins enabled in {harnessSlug}</h2>
-      </div>
-      <p style={{ color: 'var(--text-3)', marginTop: 0, marginBottom: 24, fontSize: 13 }}>
-        Every plugin currently active in this harness. Use the <code style={inlineCode}>+ plugin</code> button
-        in the tab strip to enable more.
-      </p>
-
-      {enabledManifests.length === 0 ? (
-        <div style={{ padding: 32, textAlign: 'center', border: '1px dashed var(--border)', borderRadius: 8, color: 'var(--text-3)' }}>
-          <p style={{ margin: 0, fontSize: 14 }}>No plugins enabled in this harness yet.</p>
-          <p style={{ margin: '8px 0 0', fontSize: 12 }}>
-            Click the <code style={inlineCode}>+ plugin</code> button in the tab strip to add one,
-            or browse <a href="/marketplace/plugins" style={{ color: 'var(--accent)' }}>the marketplace</a>.
-          </p>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {enabledManifests.map((p) => (
-            <PluginPanelCard
-              key={p.name}
-              plugin={p}
-              harnessSlug={harnessSlug}
-              onChange={onChange}
-            />
-          ))}
-        </div>
-      )}
     </div>
   );
 }
@@ -2637,7 +2623,7 @@ export default function HarnessDashboard() {
                 <RSelect.Icon><LChevronDown size={11} /></RSelect.Icon>
               </RSelect.Trigger>
               <RSelect.Portal>
-                <RSelect.Content position="popper" sideOffset={4} style={{ zIndex: 70, minWidth: 'var(--radix-select-trigger-width)', background: 'rgba(5, 11, 19, 0.98)', color: 'var(--fg)', border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)', borderRadius: 10, padding: 6, boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)', fontSize: 12, backdropFilter: 'blur(14px) saturate(150%)' }}>
+                <RSelect.Content position="popper" sideOffset={4} style={{ zIndex: 70, minWidth: 'var(--radix-select-trigger-width)', background: '#0b1220', color: 'var(--fg)', border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)', borderRadius: 10, padding: 6, boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)', fontSize: 12 }}>
                   <RSelect.Viewport>
                     {/* Layer 3-E: group by harness_kind so the org/department hierarchy is visible. */}
                     {(['org', 'department', 'coding'] as const).map((kind) => {
