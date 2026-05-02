@@ -9,9 +9,13 @@
 # standalone tracer. Alpine ships with build-base if we need to rebuild,
 # but the @lydell/node-pty-linux-x64 prebuild matches alpine x64 directly.
 
-FROM node:20-alpine AS builder
+FROM node:20-bookworm-slim AS builder
 
-RUN apk add --no-cache git python3 make g++
+# build-essential for native bindings (@lydell/node-pty needs to compile
+# against glibc, not musl).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git python3 build-essential ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /repo
 
@@ -26,6 +30,10 @@ COPY libs/papercup-db/package.json       ./libs/papercup-db/
 COPY libs/papercup-shared/package.json   ./libs/papercup-shared/
 COPY libs/ui-primitives/package.json     ./libs/ui-primitives/
 COPY libs/zero-harness/package.json      ./libs/zero-harness/
+COPY libs/marketplace-public-ui/package.json ./libs/marketplace-public-ui/
+COPY libs/papercusp-export-state/package.json ./libs/papercusp-export-state/
+COPY libs/papercusp-publish-auth/package.json ./libs/papercusp-publish-auth/
+COPY libs/sync/package.json ./libs/sync/
 COPY libs/papergrid/grid-core/package.json ./libs/papergrid/grid-core/
 COPY libs/papergrid/grid/package.json      ./libs/papergrid/grid/
 COPY libs/papercusp/libs/db/package.json              ./libs/papercusp/libs/db/
@@ -44,21 +52,49 @@ WORKDIR /repo/apps/operator
 RUN npm run build
 
 # ── Runtime ──────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:20-bookworm-slim AS runner
 WORKDIR /repo
 
-# Operator needs git available at runtime — many harness routes shell out.
-RUN apk add --no-cache git openssh-client bash
+# Runtime tools the harness shells out to. Debian here so node-pty's glibc
+# native binding loads without a re-compile dance.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git openssh-client bash curl jq ripgrep ca-certificates gnupg python3 postgresql-client \
+ && (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /usr/share/keyrings/githubcli-archive-keyring.gpg > /dev/null \
+     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+     && apt-get update && apt-get install -y --no-install-recommends gh) \
+ && rm -rf /var/lib/apt/lists/*
+
+# claude CLI + tsx (for the papercusp CLI wrapper) installed globally.
+RUN npm install -g @anthropic-ai/claude-code tsx
 
 COPY --from=builder /repo/apps/operator/.next/standalone ./
 COPY --from=builder /repo/apps/operator/.next/static ./apps/operator/.next/static
 RUN mkdir -p apps/operator/public
 COPY --from=builder /repo/apps/operator/public ./apps/operator/public
 
+# node-pty's native binding ships as a prebuild in
+# @lydell/node-pty-linux-x64/prebuilds. Next's tracer doesn't pick up .node
+# files; copy the prebuild into the standalone tree so the runtime resolver
+# finds it.
+COPY --from=builder /repo/node_modules/@lydell/node-pty-linux-x64/prebuilds \
+     ./node_modules/@lydell/node-pty-linux-x64/prebuilds
+
+# Harness package — run.sh, prompts, templates. PAPERCUSP_HARNESS_DIR
+# (set in compose) points operator's harness-paths.ts at this location.
+COPY --from=builder /repo/libs/papercusp/packages/harness /opt/harness
+
+# papercusp CLI — symlinked into PATH. The wrapper script finds tsx
+# globally (installed above) so it doesn't need a local node_modules.
+COPY --from=builder /repo/libs/papercusp /opt/papercusp
+RUN ln -sf /opt/papercusp/packages/cli/bin/papercusp /usr/local/bin/papercusp \
+ && chmod +x /opt/papercusp/packages/cli/bin/papercusp
+
 ENV PORT=3055
 ENV HOSTNAME=0.0.0.0
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV PAPERCUSP_HARNESS_DIR=/opt/harness
 EXPOSE 3055
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \

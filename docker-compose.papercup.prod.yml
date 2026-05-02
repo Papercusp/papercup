@@ -83,9 +83,15 @@ services:
     image: operator:latest
     restart: unless-stopped
     volumes:
-      # Harness state migrated from local — tarball staged at host /opt/papercup-data
+      # Harness working trees — bind from host so state survives container restarts.
       - /opt/papercup-data/projects:/papercusp-projects
       - /opt/papercup-data/config/restart-harness-projects.json:/root/.restart-harness-projects.json:ro
+      # claude CLI auth — OAuth credentials portable from the local laptop.
+      # File staged at /opt/papercup-data/claude-credentials.json on the host
+      # (mode 0600). Mounted read-only into the container's $HOME/.claude.
+      - /opt/papercup-data/claude-credentials.json:/root/.claude/.credentials.json:ro
+      # gh CLI auth — token-based, stored at /opt/papercup-data/gh-token.
+      - /opt/papercup-data/gh-token:/root/.config/gh/hosts.yml:ro
     environment:
       NODE_ENV: production
       PORT: "3055"
@@ -96,6 +102,12 @@ services:
       PAPERCUP_SHARED_DATABASE_URL: ${PAPERCUP_SHARED_DATABASE_URL}
       HARNESS_DATABASE_URL: ${HARNESS_DATABASE_URL}
       HARNESS_ADMIN_DATABASE_URL: ${HARNESS_ADMIN_DATABASE_URL}
+      # Harness runtime — set so apps/operator/app/api/_hono/harness-paths.ts
+      # finds run.sh + prompts inside the image (not ~/autonomous-harness).
+      PAPERCUSP_HARNESS_DIR: /opt/harness
+      # ANTHROPIC_API_KEY is optional when claude OAuth credentials are
+      # mounted; fall back to it if the OAuth file is missing.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     networks:
       - coolify
       - restart_internal
