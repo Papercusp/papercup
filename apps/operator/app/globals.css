@@ -165,6 +165,48 @@ pre, .pc-code {
   text-overflow: ellipsis;
 }
 
+.pc-header-cta {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #6ea8ff 0%, #4f7fe6 100%);
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  border: 1px solid rgba(125, 211, 252, 0.4);
+  box-shadow: 0 6px 18px rgba(78, 127, 230, 0.32),
+              inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.pc-header-cta:hover {
+  background: linear-gradient(135deg, #80b6ff 0%, #5e8cf0 100%);
+  box-shadow: 0 10px 26px rgba(78, 127, 230, 0.45),
+              inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  transform: translateY(-1px);
+}
+
+.pc-header-cta:active {
+  transform: translateY(0);
+  box-shadow: 0 3px 12px rgba(78, 127, 230, 0.34),
+              inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.pc-header-cta::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 0 3px rgba(52, 211, 153, 0.22);
+  flex: 0 0 auto;
+}
+
 .pc-header nav {
   display: flex;
   gap: 16px;
@@ -2028,11 +2070,19 @@ p {
   }
 
   .pc-header-quote {
-    flex: 1 1 0;
-    min-width: 0;
-    max-width: calc(100vw - 170px);
-    padding-left: 10px;
-    font-size: 11px;
+    display: none;
+  }
+
+  .pc-header-cta {
+    margin-left: auto;
+    padding: 6px 14px;
+    font-size: 12px;
+  }
+
+  .pc-header-cta::before {
+    width: 6px;
+    height: 6px;
+    box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.22);
   }
 
   .pc-header .brand img {

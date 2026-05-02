@@ -24,6 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <img src="/wordmark.svg" alt="papercusp" height={22} style={{ display: 'block' }} />
             </a>
             <span className="pc-header-quote">Nothing is so painful to the human mind as a great and sudden change</span>
+            <a href="/harness" className="pc-header-cta" aria-label="Mission Control">Mission Control</a>
             <nav aria-label="Primary navigation">
               <a href="/marketplace/">Marketplace</a>
               <a href="/installed/harnesses">Harnesses</a>
