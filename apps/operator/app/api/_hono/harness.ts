@@ -2819,31 +2819,6 @@ harness.post('/:slug/cleanup', (c) => {
   return c.json({ ok: true });
 });
 
-// Legacy alias: GOAL.md and SPEC.md were once separate. SPEC.md is now
-// the single source of truth; the /goal endpoints read/write SPEC.md and
-// fall back to GOAL.md only if the former is missing (back-compat for
-// harnesses created before the consolidation).
-harness.get('/:slug/goal', (c) => {
-  const project = resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const specPath = join(project.path, 'SPEC.md');
-  const legacyGoal = join(project.path, 'GOAL.md');
-  const content = safeRead(specPath) ?? safeRead(legacyGoal);
-  return c.json({ content });
-});
-
-harness.put('/:slug/goal', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json().catch(() => ({})) as { content?: string };
-  if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  const dest = join(project.path, 'SPEC.md');
-  const tmp = `${dest}.tmp.${Date.now()}`;
-  await writeFile(tmp, body.content, 'utf8');
-  await rename(tmp, dest);
-  return c.json({ ok: true });
-});
-
 harness.get('/:slug/plan-review', (c) => {
   const project = resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
