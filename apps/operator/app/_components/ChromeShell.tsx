@@ -7,6 +7,8 @@ import { OperatorButton, OperatorPanel } from './OperatorPanel';
 import { OperatorBackgroundScanner } from './OperatorBackgroundScanner';
 import { VoiceButton } from './voice/VoiceButton';
 import { VoiceAppBridge } from './voice/VoiceAppBridge';
+import { AriaLiveRegions } from './voice/AriaLiveRegions';
+import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
 import UpdateChip from './UpdateChip';
@@ -74,6 +76,8 @@ export default function ChromeShell() {
       <OperatorPanel />
       <OperatorBackgroundScanner />
       <VoiceAppBridge />
+      <VoiceLeaderBootstrap />
+      <AriaLiveRegions />
     </>
   );
 }

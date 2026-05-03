@@ -33,6 +33,15 @@ export interface StandingCandidate {
   count: number;
   /** ISO of the most recent qualifying dispatch. */
   lastSeenAt: string;
+  /**
+   * ISO of when this candidate was first surfaced in the UI. Required
+   * non-null for `operator approve <slug>` voice eligibility per
+   * voice-mode-plan-v4 §5d. Implementer note: each NEW candidate id
+   * MUST start `null` — do NOT copy from a prior candidate with the
+   * same (capability, targetHarness) pair. Re-proposed = user hasn't
+   * seen this round.
+   */
+  firstShownAt: string | null;
 }
 
 export function readCandidates(): StandingCandidate[] {
@@ -94,6 +103,18 @@ export async function refreshCandidates(): Promise<StandingCandidate[]> {
     loadPreferences().standingApprovals.map((a) => `${a.capability}::${a.targetHarness}`),
   );
 
+  // Preserve firstShownAt across recomputations: if the same
+  // (capability, targetHarness) pair already had a non-null
+  // firstShownAt in the prior list, carry it forward. The plan §5d
+  // implementer-comment exception: this preservation is keyed on
+  // (cap, target) NOT on candidate id, so a re-proposed pair after a
+  // dismissal carries forward only when the pair was previously shown.
+  const prior = readCandidates();
+  const priorShown = new Map<string, string>();
+  for (const p of prior) {
+    if (p.firstShownAt) priorShown.set(`${p.capability}::${p.targetHarness}`, p.firstShownAt);
+  }
+
   const candidates: StandingCandidate[] = [];
   for (const [key, g] of groups) {
     if (g.count < SILENT_DISPATCH_THRESHOLD) continue;
@@ -103,9 +124,31 @@ export async function refreshCandidates(): Promise<StandingCandidate[]> {
       targetHarness: g.target,
       count: g.count,
       lastSeenAt: new Date(g.lastSeenMs).toISOString(),
+      firstShownAt: priorShown.get(key) ?? null,
     });
   }
 
   writeCandidates(candidates);
   return candidates;
+}
+
+/**
+ * Mark a candidate as having been shown in the UI (sets firstShownAt
+ * to now, idempotent — only sets if currently null). Settings page
+ * calls this when rendering a candidate row for the first time.
+ *
+ * Voice-approve eligibility (per v4 §2f) requires firstShownAt to be
+ * non-null, so the user can only voice-grant something they've actually
+ * seen.
+ */
+export function markCandidateShown(capability: string, targetHarness: string): void {
+  const all = readCandidates();
+  let changed = false;
+  for (const c of all) {
+    if (c.capability === capability && c.targetHarness === targetHarness && !c.firstShownAt) {
+      c.firstShownAt = new Date().toISOString();
+      changed = true;
+    }
+  }
+  if (changed) writeCandidates(all);
 }

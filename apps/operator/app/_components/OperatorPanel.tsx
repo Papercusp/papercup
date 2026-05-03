@@ -75,6 +75,8 @@ interface SuggestionCard extends ParsedSuggestion {
   failureReason?: string;
   /** Local time we transitioned to `dispatched`. Used for the "unconsumed" warning glyph. */
   dispatchedAt?: number;
+  /** Local deadline for foreground auto-dispatch affordance. */
+  autoDispatchAt?: number;
   /** True when dismiss came from undo-window cancel (audit-only, no preferences entry). */
   undoCancelled?: boolean;
   /** Set after a successful send_message dispatch — drives receiving-state polling. */
@@ -97,6 +99,53 @@ function unconsumedThresholdFor(card: SuggestionCard, table: AckLatencyTable | n
   const target = card.target_harness;
   if (target && table.perHarness[target]) return table.perHarness[target];
   return table.fallbackMs;
+}
+
+function lifecycleLabel(status: LifecycleState): string {
+  switch (status) {
+    case 'pending':
+      return 'Needs decision';
+    case 'dispatched':
+      return 'In flight';
+    case 'consumed':
+      return 'Consumed';
+    case 'escalated':
+      return 'Escalated';
+    case 'rejected':
+      return 'Rejected';
+    case 'failed':
+      return 'Failed';
+    case 'dismissed':
+      return 'Dismissed';
+    case 'superseded':
+      return 'Superseded';
+    default:
+      return status;
+  }
+}
+
+function tierLabel(tier: SuggestionCard['actualTier']): string {
+  return tier === 'high' ? 'High safety' : tier === 'medium' ? 'Medium safety' : 'Low safety';
+}
+
+type FeedFilter = 'all' | 'suggestions' | 'activity';
+type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error';
+
+function lifecycleLabelForCard(card: SuggestionCard): string {
+  if (card.action === 'inform' && card.status === 'pending') return 'Informational';
+  if (card.auto_dispatch && card.status === 'pending') return 'Auto-fire pending';
+  return lifecycleLabel(card.status);
+}
+
+function lifecycleClassForCard(card: SuggestionCard): string {
+  if (card.action === 'inform' && card.status === 'pending') return 'inform';
+  if (card.auto_dispatch && card.status === 'pending') return 'auto';
+  return card.status;
+}
+
+function autoDispatchSeconds(card: SuggestionCard, now: number): number {
+  if (!card.autoDispatchAt) return 0;
+  return Math.max(0, Math.ceil((card.autoDispatchAt - now) / 1000));
 }
 
 interface DecisionRow {
@@ -197,6 +246,12 @@ export function OperatorPanel(): JSX.Element | null {
   const [ackLatency, setAckLatency] = useState<AckLatencyTable | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<EventSource | null>(null);
+  const [feedFilter, setFeedFilter] = useState<FeedFilter>('all');
+  const [scanStatus, setScanStatus] = useState<ScanStatus>('idle');
+  const [scanError, setScanError] = useState<string | null>(null);
+  const [confirmingHigh, setConfirmingHigh] = useState<Record<string, boolean>>({});
+  const [now, setNow] = useState(() => Date.now());
+
 
   // Subscribe to shared state.
   useEffect(() => {
@@ -225,6 +280,12 @@ export function OperatorPanel(): JSX.Element | null {
       document.removeEventListener('keydown', onKey);
     };
   }, [state.open]);
+  useEffect(() => {
+    if (!state.open) return;
+    const t = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(t);
+  }, [state.open]);
+
 
   // Kick off a scan when the panel opens.
   const startScan = useCallback((request?: string) => {
@@ -234,6 +295,8 @@ export function OperatorPanel(): JSX.Element | null {
     }
     setSuggestions([]);
     setStreamLog([]);
+    setScanError(null);
+    setScanStatus('scanning');
     setState((s) => ({ ...s, iconState: 'scanning' }));
     setScanStarted(true);
     const url =
@@ -277,10 +340,11 @@ export function OperatorPanel(): JSX.Element | null {
             const next = prev.slice();
             const prior = prev[idx];
             const wasTerminal = prior.status === 'dispatched' || prior.status === 'dismissed';
+            const autoDispatchAt = s.auto_dispatch ? Date.now() + 5_000 : undefined;
             next[idx] = wasTerminal
               ? { ...prior, status: 'superseded' as LifecycleState }
-              : { ...prior, ...s, status: 'pending' };
-            if (wasTerminal) next.push({ ...s, status: 'pending' });
+              : { ...prior, ...s, status: 'pending', autoDispatchAt };
+            if (wasTerminal) next.push({ ...s, status: 'pending', autoDispatchAt });
             return next;
           }
           // Fuzzy dedup: titles that paraphrase a still-pending card
@@ -295,11 +359,20 @@ export function OperatorPanel(): JSX.Element | null {
             const fIdx = prev.findIndex((c) => c.id === fuzzy.matchedId);
             if (fIdx >= 0) {
               const dup = prev.slice();
-              dup[fIdx] = { ...prev[fIdx], ...s, id: prev[fIdx].id, status: 'pending' };
+              dup[fIdx] = {
+                ...prev[fIdx],
+                ...s,
+                id: prev[fIdx].id,
+                status: 'pending',
+                autoDispatchAt: s.auto_dispatch ? Date.now() + 5_000 : undefined,
+              };
               return dup;
             }
           }
-          return [...prev, { ...s, status: 'pending' }];
+          return [
+            ...prev,
+            { ...s, status: 'pending', autoDispatchAt: s.auto_dispatch ? Date.now() + 5_000 : undefined },
+          ];
         });
         // Voice mode: speak the suggestion title + why-line.
         if (getVoiceState().mode !== 'off') {
@@ -314,13 +387,17 @@ export function OperatorPanel(): JSX.Element | null {
       const askFirstPending = suggestionsRef.current.some(
         (c) => c.status === 'pending' && !c.auto_dispatch,
       );
+      setScanStatus('complete');
       setState((s) => ({ ...s, iconState: askFirstPending ? 'awaiting-input' : 'idle' }));
       es.close();
       evtSrcRef.current = null;
       void refreshDecisions();
     });
     es.addEventListener('error', (ev: MessageEvent) => {
-      setStreamLog((log) => [...log, `error: ${(ev as any).data ?? '(no detail)'}`]);
+      const detail = (ev as any).data ?? '(no detail)';
+      setStreamLog((log) => [...log, `error: ${detail}`]);
+      setScanError(String(detail));
+      setScanStatus('error');
       setState((s) => ({ ...s, iconState: 'idle' }));
       es.close();
       evtSrcRef.current = null;
@@ -422,10 +499,12 @@ export function OperatorPanel(): JSX.Element | null {
         if (prev.length > 0) return prev;
         return snapshot.cards.map((c) => {
           const { _status, _dispatchedAt, _undoCancelled, ...rest } = c;
+          const status = (_status ?? 'pending') as LifecycleState;
           return {
             ...rest,
-            status: (_status ?? 'pending') as LifecycleState,
+            status,
             dispatchedAt: _dispatchedAt,
+            autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + 5_000 : undefined,
             undoCancelled: _undoCancelled,
           };
         });
@@ -476,23 +555,6 @@ export function OperatorPanel(): JSX.Element | null {
     }
   }, [state.open, state.paused, scanStarted, startScan, refreshDecisions, refreshBudget, hydrateFromLastScan, budget?.configured, budget?.exceeded]);
 
-  // Voice mode: subscribe to final utterances while panel is open and
-  // dispatch them as scan requests. Lets the user say "scan again" or
-  // "tell me about the auth project" instead of typing. Also registers
-  // as the priority voice consumer so VoiceAppBridge stops routing
-  // utterances to Oracle while Operator is open.
-  useEffect(() => {
-    if (!state.open) return;
-    const dereg = registerVoiceConsumer('OperatorPanel');
-    const unsub = onFinalUtterance((text) => {
-      if (!text || text.length < 2) return;
-      startScan(text);
-    });
-    return () => {
-      dereg();
-      unsub();
-    };
-  }, [state.open, startScan]);
 
   const logAudit = useCallback(async (cardId: string, kind: 'dispatched' | 'acked' | 'undo_cancel' | 'consumed' | 'escalated' | 'rejected' | 'failed' | 'dismissed' | 'superseded', context?: Record<string, unknown>) => {
     try {
@@ -509,6 +571,10 @@ export function OperatorPanel(): JSX.Element | null {
   const dispatchSuggestion = useCallback(async (id: string) => {
     const card = suggestionsRef.current.find((c) => c.id === id);
     if (!card) return;
+    setConfirmingHigh((prev) => {
+      const { [id]: _removed, ...rest } = prev;
+      return rest;
+    });
     const dispatchedAt = Date.now();
     setSuggestions((prev) =>
       prev.map((c) => (c.id === id ? { ...c, status: 'dispatched', dispatchedAt } : c)),
@@ -585,6 +651,14 @@ export function OperatorPanel(): JSX.Element | null {
     suggestionsRef.current = suggestions;
   }, [suggestions]);
 
+  useEffect(() => {
+    if (!state.open || state.paused) return;
+    const due = suggestions.find(
+      (s) => s.status === 'pending' && s.auto_dispatch && s.autoDispatchAt && s.autoDispatchAt <= now,
+    );
+    if (due) void dispatchSuggestion(due.id);
+  }, [dispatchSuggestion, now, state.open, state.paused, suggestions]);
+
   /**
    * Deliberate dismiss — user clicked Dismiss in the panel. Optionally
    * collect a reason so Operator can learn from the dismissal (Phase 4a).
@@ -637,7 +711,84 @@ export function OperatorPanel(): JSX.Element | null {
     },
     [logAudit],
   );
-  void undoCancelSuggestion; // surfaced for Phase 3 toast wiring
+
+  // Voice mode: subscribe to final utterances while panel is open and
+  // route commands to Operator actions. Falls through to scan(query)
+  // when no strict command matches.
+  useEffect(() => {
+    if (!state.open) return;
+    const dereg = registerVoiceConsumer('OperatorPanel');
+    const unsub = onFinalUtterance(async (text) => {
+      if (!text || text.length < 2) return;
+      const { parseVoiceCommand } = await import('../../lib/voice-commands');
+      const cmd = parseVoiceCommand(text);
+      const orderedPending = suggestionsRef.current.filter((c) => c.status === 'pending');
+      const pickByOrdinal = (ord?: number) => {
+        if (ord === undefined) return orderedPending[0];
+        return orderedPending[ord - 1];
+      };
+      switch (cmd.kind) {
+        case 'dispatch': {
+          const card = pickByOrdinal(cmd.ordinal);
+          if (card) void dispatchSuggestion(card.id);
+          return;
+        }
+        case 'dismiss': {
+          const card = pickByOrdinal(cmd.ordinal);
+          if (card) dismissSuggestion(card.id);
+          return;
+        }
+        case 'pause':
+          broadcastState({ paused: true });
+          return;
+        case 'resume':
+          broadcastState({ paused: false });
+          return;
+        case 'cancel':
+          return;
+        case 'scan':
+          startScan(cmd.query);
+          return;
+        case 'freeform':
+        default:
+          startScan(cmd.text);
+      }
+    });
+    return () => {
+      dereg();
+      unsub();
+    };
+  }, [state.open, startScan, dispatchSuggestion, dismissSuggestion]);
+
+  const pendingCount = suggestions.filter((s) => s.status === 'pending').length;
+  const inFlightCount = suggestions.filter((s) => s.status === 'dispatched').length;
+  const failedCount = suggestions.filter((s) =>
+    s.status === 'failed' || s.status === 'escalated' || s.status === 'rejected',
+  ).length;
+  const terminalCount = suggestions.filter((s) =>
+    s.status === 'consumed' || s.status === 'dismissed' || s.status === 'superseded',
+  ).length;
+  const visibleSuggestions = feedFilter === 'activity' ? [] : suggestions;
+  const visibleDecisions = feedFilter === 'suggestions' ? [] : decisions;
+  const hasFeedEntries = visibleSuggestions.length > 0 || visibleDecisions.length > 0;
+  const streamMuted = scanStatus === 'complete' && suggestions.length > 0;
+  const emptyTitle = feedFilter === 'activity'
+    ? 'No user-started actions yet'
+    : scanStatus === 'error'
+      ? 'Operator scan needs setup'
+      : scanStatus === 'scanning'
+        ? 'Scanning workspace…'
+        : scanStarted
+          ? "Operator hasn't surfaced anything"
+          : 'No operator entries yet';
+  const emptyBody = feedFilter === 'activity'
+    ? 'Replan, Cleanup, Snapshot, and plugin actions will appear here as they run and settle.'
+    : scanStatus === 'error'
+      ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
+      : scanStatus === 'scanning'
+        ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
+        : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
+  const statusLabel = state.paused ? 'paused' : state.iconState.replace('-', ' ');
 
   if (!state.open) return null;
 
@@ -646,73 +797,68 @@ export function OperatorPanel(): JSX.Element | null {
       ref={panelRef}
       role="dialog"
       aria-label="Operator panel"
-      style={{
-        position: 'fixed',
-        top: 56,
-        left: 24,
-        right: 24,
-        bottom: 24,
-        background: 'var(--pc-panel-bg, #ffffff)',
-        border: '1px solid rgba(0,0,0,0.1)',
-        borderRadius: 12,
-        boxShadow: '0 16px 48px rgba(0,0,0,0.18)',
-        zIndex: 90,
-        overflow: 'hidden',
-        display: 'grid',
-        gridTemplateRows: 'auto 1fr auto',
-      }}
+      className={`operator-panel operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
     >
-      <div
-        style={{
-          padding: '12px 20px',
-          borderBottom: '1px solid rgba(0,0,0,0.08)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-        }}
-      >
-        <div style={{ fontWeight: 600, fontSize: 14 }}>
-          Operator <span style={{ opacity: 0.6, marginLeft: 8 }}>{state.iconState}</span>
+      <header className="operator-panel__header">
+        <div className="operator-panel__titleblock">
+          <div className="operator-panel__titleline">
+            <h2>Operator</h2>
+            <span className={`operator-status operator-status--${state.paused ? 'paused' : state.iconState}`}>
+              {statusLabel}
+            </span>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button type="button" onClick={() => startScan()}>
-            Re-scan
-          </button>
+
+        <div className="operator-panel__metrics" aria-label="Operator panel summary">
+          <span title="pending = pending suggestions"><strong>{pendingCount}</strong><em>pending</em></span>
+          <span title="in flight = dispatched suggestions"><strong>{inFlightCount}</strong><em>in flight</em></span>
+          <span title="attention = escalated, failed, or rejected suggestions"><strong>{failedCount}</strong><em>attention</em></span>
+          <span title="resolved = consumed, dismissed, or superseded suggestions"><strong>{terminalCount}</strong><em>resolved</em></span>
+        </div>
+
+        <div className="operator-panel__actions">
           <button
             type="button"
-            onClick={() => broadcastState({ paused: !state.paused })}
+            className="operator-btn operator-btn--primary operator-btn--icon"
+            onClick={() => startScan()}
+            aria-label="Re-scan Operator suggestions"
           >
-            {state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
+            <span aria-hidden="true">↻</span>
+            <span>Scan</span>
           </button>
           <button
             type="button"
+            className="operator-btn operator-btn--icon"
+            onClick={() => broadcastState({ paused: !state.paused })}
+            aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
+          >
+            <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
+            <span>{state.paused ? 'Resume' : 'Pause'}</span>
+          </button>
+          <a className="operator-btn operator-btn--ghost" href="/settings/operator">
+            Settings
+          </a>
+          <button
+            type="button"
+            className="operator-btn operator-btn--close"
             onClick={() => broadcastState({ open: false })}
             aria-label="Close"
           >
             ×
           </button>
         </div>
-      </div>
+      </header>
 
       {budget && !budget.configured && (
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background: 'rgba(255,255,255,0.96)',
-            zIndex: 1,
-            display: 'grid',
-            placeItems: 'center',
-            padding: 32,
-          }}
-        >
-          <div style={{ maxWidth: 420, fontSize: 14, lineHeight: 1.5 }}>
-            <h3 style={{ margin: '0 0 8px' }}>Pick a daily budget for Operator</h3>
-            <p style={{ opacity: 0.7, margin: '0 0 16px' }}>
+        <div className="operator-budget-overlay">
+          <div className="operator-budget-card">
+            <div className="operator-panel__eyebrow">First run</div>
+            <h3>Pick a daily budget for Operator</h3>
+            <p>
               Operator stops scanning automatically when today&apos;s spend reaches the cap.
               You can change this any time at <a href="/settings/operator">/settings/operator</a>.
             </p>
-            <div style={{ display: 'grid', gap: 8 }}>
+            <div className="operator-budget-options">
               {[
                 { label: 'Light', cap: 5, blurb: '~50 scans/day with default model' },
                 { label: 'Active', cap: 20, blurb: 'recommended for daily use' },
@@ -723,192 +869,259 @@ export function OperatorPanel(): JSX.Element | null {
                   type="button"
                   disabled={budgetSaving}
                   onClick={() => setBudgetCap(cap)}
-                  style={{
-                    textAlign: 'left',
-                    padding: 12,
-                    border: '1px solid rgba(0,0,0,0.12)',
-                    borderRadius: 8,
-                    background: '#fff',
-                    cursor: budgetSaving ? 'wait' : 'pointer',
-                  }}
+                  className="operator-budget-option"
                 >
                   <strong>{label} — ${cap}/day</strong>
-                  <div style={{ fontSize: 12, opacity: 0.7 }}>{blurb}</div>
+                  <span>{blurb}</span>
                 </button>
               ))}
             </div>
           </div>
         </div>
       )}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: '320px 1fr 320px',
-          height: '100%',
-          overflow: 'hidden',
-        }}
-      >
-        <aside
-          style={{
-            borderRight: '1px solid rgba(0,0,0,0.08)',
-            padding: 16,
-            overflow: 'auto',
-          }}
-        >
+
+      <div className="operator-panel__body">
+        <aside className="operator-panel__rail operator-panel__rail--left">
           {firstRun && (
-            <div
-              style={{
-                padding: 12,
-                marginBottom: 12,
-                background: 'rgba(33,150,243,0.06)',
-                borderRadius: 8,
-                fontSize: 13,
-                lineHeight: 1.5,
-              }}
-            >
+            <section className="operator-callout">
               <strong>First-run intro</strong>
-              <p style={{ margin: '6px 0 0' }}>
+              <p>
                 I have full write authority across all harnesses in this workspace.
                 Edit my prompt or preferences from <a href="/settings/operator">/settings/operator</a>.
               </p>
+            </section>
+          )}
+          <section className="operator-section">
+            <PerHarnessStatus />
+          </section>
+          <section className="operator-section">
+            <OtherWorkspacesPanel />
+          </section>
+          <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
+            <div className="operator-section__head">
+              <span>Stream</span>
+              <em>{scanStatus === 'error' ? 'error' : scanStatus === 'scanning' ? 'live scan' : scanStatus === 'complete' ? 'complete' : 'quiet'}</em>
             </div>
-          )}
-          <PerHarnessStatus />
-          <OtherWorkspacesPanel />
-          <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
-            Stream
-          </h3>
-          {streamLog.length === 0 ? (
-            <p style={{ fontSize: 13, opacity: 0.7 }}>(no stream yet)</p>
-          ) : (
-            <pre
-              style={{
-                fontSize: 11,
-                lineHeight: 1.4,
-                whiteSpace: 'pre-wrap',
-                opacity: 0.85,
-                margin: 0,
-              }}
-            >
-              {streamLog.join('\n')}
-            </pre>
-          )}
+            {scanStatus === 'error' ? (
+              <div className="operator-stream-error">
+                <strong>Scan errored</strong>
+                <p>{scanError || 'Operator substrate is not ready.'}</p>
+                <a href="/settings/operator">Set up Operator →</a>
+              </div>
+            ) : streamLog.length === 0 ? (
+              <p className="operator-empty-small">(no stream yet)</p>
+            ) : (
+              <pre>{streamLog.join('\n')}</pre>
+            )}
+          </section>
         </aside>
 
-        <main style={{ padding: 16, overflow: 'auto' }}>
-          <h3 style={{ margin: 0, marginBottom: 12, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
-            Suggestions
-          </h3>
-          {suggestions.length === 0 ? (
-            <p style={{ fontSize: 13, opacity: 0.7 }}>
-              {scanStarted ? 'Scanning…' : 'No scan started.'}
-            </p>
+        <main className="operator-panel__feed">
+          <div className="operator-feed-head">
+            <div>
+              <span className="operator-panel__eyebrow">Unified timeline</span>
+              <h3>Timeline</h3>
+            </div>
+            <div className="operator-feed-pills" aria-label="Timeline view">
+              {[
+                { key: 'all' as FeedFilter, label: 'All', count: suggestions.length + decisions.length },
+                { key: 'suggestions' as FeedFilter, label: 'Suggestions', count: suggestions.length },
+                { key: 'activity' as FeedFilter, label: 'Activity', count: decisions.length },
+              ].map((pill) => (
+                <button
+                  key={pill.key}
+                  type="button"
+                  className={feedFilter === pill.key ? 'is-active' : undefined}
+                  aria-pressed={feedFilter === pill.key}
+                  onClick={() => setFeedFilter(pill.key)}
+                >
+                  <span>{pill.label}</span>
+                  <strong>{pill.count}</strong>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {!hasFeedEntries ? (
+            <div className={`operator-empty-state operator-empty-state--${scanStatus}`}>
+              <div className="operator-empty-state__icon" aria-hidden="true">
+                {scanStatus === 'error' ? '!' : scanStatus === 'scanning' ? '◐' : '·'}
+              </div>
+              <h3>{emptyTitle}</h3>
+              <p>{emptyBody}</p>
+              {scanStatus === 'error' && (
+                <a className="operator-btn operator-btn--primary" href="/settings/operator">
+                  Set up Operator →
+                </a>
+              )}
+            </div>
           ) : (
-            <ul
-              role="list"
-              aria-label="Operator suggestions"
-              style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 12 }}
-            >
-              {suggestions.map((s) => (
+            <ul role="list" aria-label="Operator timeline" className="operator-feed-list">
+              {visibleSuggestions.map((s) => (
                 <li
                   key={s.id}
                   role="article"
                   aria-label={`${s.title} — ${s.actualTier} tier, ${s.auto_dispatch ? 'auto-dispatched' : 'awaiting your decision'}`}
                   tabIndex={0}
-                  style={{
-                    border: '1px solid rgba(0,0,0,0.1)',
-                    borderRadius: 8,
-                    padding: 12,
-                    background: s.status === 'dismissed' ? 'rgba(0,0,0,0.02)' : '#fff',
-                    opacity: s.status === 'dismissed' ? 0.5 : 1,
-                  }}
+                  className={`operator-entry operator-entry--suggestion operator-entry--${s.status} operator-entry--tier-${s.actualTier}`}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                    <strong>{s.title}</strong>
-                    <span style={{ fontSize: 11, opacity: 0.6 }}>
-                      {s.action}
-                      {s.target_harness ? ` → ${s.target_harness}` : ''}
-                      {' · '}
-                      <span title={`tier=${s.actualTier}`}>
-                        {s.actualTier}
-                      </span>
-                      {s.auto_dispatch ? ' · auto' : ' · ask first'}
-                      {s.provenanceFlags?.tierMismatch && (
-                        <span title="LLM-claimed tier overridden by substrate" style={{ color: '#a04' }}>
-                          {' · ⚠tier'}
-                        </span>
-                      )}
-                      {s.provenanceFlags?.capabilityUnknown && (
-                        <span title="Unknown capability — forced high (fail-safe)" style={{ color: '#a04' }}>
-                          {' · ⚠cap'}
-                        </span>
-                      )}
+                  <div className="operator-entry__rail">
+                    <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Ask-first suggestion'}>
+                      {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '✋' : '?'}
                     </span>
                   </div>
-                  <p style={{ fontSize: 13, opacity: 0.8, margin: '6px 0' }}>{s.why}</p>
-                  {s.action === 'send_directive' && s.directive_body && (
-                    <details style={{ fontSize: 12, opacity: 0.7 }}>
-                      <summary>Directive body</summary>
-                      <div style={{ marginTop: 4 }}>
-                        <MarkdownPreview value={s.directive_body} outline="left" />
-                      </div>
-                    </details>
-                  )}
-                  {s.action === 'inform' && s.body && (
-                    <div style={{ fontSize: 12, marginTop: 4 }}>
-                      <MarkdownPreview value={s.body} outline="left" />
+                  <div className="operator-entry__content">
+                    <div className="operator-entry__meta">
+                      <span className="operator-kind">Suggestion</span>
+                      <span className="operator-meta-sep" aria-hidden="true">·</span>
+                      <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
+                      <span className="operator-meta-sep" aria-hidden="true">·</span>
+                      <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
+                      {s.target_harness && (
+                        <>
+                          <span className="operator-meta-sep" aria-hidden="true">·</span>
+                          <span className="operator-target">{s.target_harness}</span>
+                        </>
+                      )}
+                      <span className="operator-voice-slot" aria-hidden="true" />
                     </div>
-                  )}
-                  {s.action === 'navigate' && s.target_resource && (
-                    <a
-                      href={s.target_resource}
-                      style={{ fontSize: 12 }}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open {s.target_resource}
-                    </a>
-                  )}
-                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    {s.action === 'send_directive' && s.status === 'pending' && (
-                      <button type="button" onClick={() => dispatchSuggestion(s.id)}>
-                        Dispatch
-                      </button>
+                    <div className="operator-entry__title-row">
+                      <h4>{s.title}</h4>
+                      <span className="operator-entry__action-kind">{s.action}</span>
+                    </div>
+                    <p className="operator-entry__why">{s.why}</p>
+
+                    {(s.provenanceFlags?.tierMismatch || s.provenanceFlags?.capabilityUnknown) && (
+                      <div className="operator-entry__flags" aria-label="Provenance warnings">
+                        {s.provenanceFlags?.tierMismatch && (
+                          <span title="LLM-claimed tier overridden by substrate">⚠ tier corrected</span>
+                        )}
+                        {s.provenanceFlags?.capabilityUnknown && (
+                          <span title="Unknown capability — forced high (fail-safe)">⚠ capability unknown</span>
+                        )}
+                      </div>
                     )}
-                    {s.status === 'pending' && (
-                      <button type="button" onClick={() => dismissSuggestion(s.id)}>
-                        Dismiss
-                      </button>
+
+                    {s.action === 'send_directive' && s.directive_body && (
+                      <details className="operator-entry__details">
+                        <summary>Directive body</summary>
+                        <div>
+                          <MarkdownPreview value={s.directive_body} outline="left" />
+                        </div>
+                      </details>
                     )}
-                    {s.status === 'dispatched' && (() => {
-                      const age = ageMs(s);
-                      const threshold = unconsumedThresholdFor(s, ackLatency);
-                      const unconsumed = age !== null && age > threshold;
-                      return unconsumed ? (
-                        <span style={{ fontSize: 12, color: '#a04' }} title={`pending for ${Math.round(age! / 60000)}m (threshold ${Math.round(threshold / 60000)}m)`}>
-                          ⏳ unconsumed — harness may be paused
-                        </span>
-                      ) : (
-                        <span style={{ fontSize: 12, color: 'green' }}>✓ dispatched</span>
-                      );
-                    })()}
-                    {s.status === 'consumed' && (
-                      <span style={{ fontSize: 12, color: 'green' }}>✓ consumed</span>
+                    {s.action === 'inform' && s.body && (
+                      <div className="operator-entry__markdown">
+                        <MarkdownPreview value={s.body} outline="left" />
+                      </div>
                     )}
-                    {s.status === 'escalated' && (
-                      <span style={{ fontSize: 12, color: '#a40' }}>↑ escalated</span>
+                    {s.action === 'navigate' && s.target_resource && (
+                      <a
+                        href={s.target_resource}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="operator-entry__link"
+                      >
+                        Open {s.target_resource}
+                      </a>
                     )}
-                    {s.status === 'rejected' && (
-                      <span style={{ fontSize: 12, color: 'red' }}>✗ rejected</span>
-                    )}
-                    {s.status === 'failed' && (
-                      <span style={{ fontSize: 12, color: 'red' }}>
-                        ✗ failed: {s.failureReason}
-                      </span>
-                    )}
-                    {s.status === 'superseded' && (
-                      <span style={{ fontSize: 12, opacity: 0.5 }}>↻ superseded</span>
-                    )}
+
+                    <div className="operator-entry__footer">
+                      <div className="operator-entry__buttons">
+                        {s.action === 'send_directive' && s.status === 'pending' && s.auto_dispatch && (
+                          <button type="button" className="operator-mini-btn operator-mini-btn--auto" onClick={() => undoCancelSuggestion(s.id)}>
+                            Cancel auto
+                          </button>
+                        )}
+                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier !== 'high' && (
+                          <button type="button" className="operator-mini-btn operator-mini-btn--primary" onClick={() => dispatchSuggestion(s.id)}>
+                            Dispatch
+                          </button>
+                        )}
+                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && !confirmingHigh[s.id] && (
+                          <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => setConfirmingHigh((prev) => ({ ...prev, [s.id]: true }))}>
+                            Review high-risk
+                          </button>
+                        )}
+                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && confirmingHigh[s.id] && (
+                          <div className="operator-confirm-strip">
+                            <span>Confirm high-risk dispatch{s.target_harness ? ` to ${s.target_harness}` : ''}</span>
+                            <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => dispatchSuggestion(s.id)}>
+                              Confirm dispatch
+                            </button>
+                            <button type="button" className="operator-mini-btn" onClick={() => setConfirmingHigh((prev) => {
+                              const { [s.id]: _removed, ...rest } = prev;
+                              return rest;
+                            })}>
+                              Cancel
+                            </button>
+                          </div>
+                        )}
+                        {s.status === 'pending' && !s.auto_dispatch && (
+                          <button type="button" className="operator-mini-btn" onClick={() => dismissSuggestion(s.id)}>
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
+                      <div className="operator-entry__state">
+                        {s.status === 'pending' && s.auto_dispatch && (
+                          <span className="operator-state-text operator-state-text--auto">
+                            ⚡ Auto-dispatching in {autoDispatchSeconds(s, now)}s
+                          </span>
+                        )}
+                        {s.status === 'pending' && s.action === 'inform' && (
+                          <span className="operator-state-text operator-state-text--muted">read-only</span>
+                        )}
+                        {s.status === 'dispatched' && (() => {
+                          const age = ageMs(s);
+                          const threshold = unconsumedThresholdFor(s, ackLatency);
+                          const unconsumed = age !== null && age > threshold;
+                          return unconsumed ? (
+                            <span className="operator-state-text operator-state-text--warn" title={`pending for ${Math.round(age! / 60000)}m (threshold ${Math.round(threshold / 60000)}m)`}>
+                              ⏳ unconsumed — harness may be paused
+                            </span>
+                          ) : (
+                            <span className="operator-state-text operator-state-text--good">✓ dispatched</span>
+                          );
+                        })()}
+                        {s.status === 'consumed' && (
+                          <span className="operator-state-text operator-state-text--good">✓ consumed</span>
+                        )}
+                        {s.status === 'escalated' && (
+                          <span className="operator-state-text operator-state-text--warn">↑ escalated</span>
+                        )}
+                        {s.status === 'rejected' && (
+                          <span className="operator-state-text operator-state-text--bad">✗ rejected</span>
+                        )}
+                        {s.status === 'failed' && (
+                          <span className="operator-state-text operator-state-text--bad">✗ failed: {s.failureReason}</span>
+                        )}
+                        {s.status === 'superseded' && (
+                          <span className="operator-state-text operator-state-text--muted">↻ superseded</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </li>
+              ))}
+              {visibleDecisions.map((r) => (
+                <li key={`activity:${r.id}`} role="article" className="operator-entry operator-entry--action" tabIndex={0}>
+                  <div className="operator-entry__rail">
+                    <span title="User-initiated activity">↻</span>
+                  </div>
+                  <div className="operator-entry__content">
+                    <div className="operator-entry__meta">
+                      <span className="operator-kind operator-kind--activity">Activity</span>
+                      <span className="operator-meta-sep" aria-hidden="true">·</span>
+                      <span className="operator-life operator-life--consumed">Recorded</span>
+                      <span className="operator-meta-sep" aria-hidden="true">·</span>
+                      <span className="operator-target">{r.target}</span>
+                    </div>
+                    <div className="operator-entry__title-row">
+                      <h4>{r.action}</h4>
+                      <span className="operator-entry__action-kind">{new Date(r.ts).toLocaleString()}</span>
+                    </div>
+                    <p className="operator-entry__why">User-initiated action recorded by Operator.</p>
                   </div>
                 </li>
               ))}
@@ -916,29 +1129,27 @@ export function OperatorPanel(): JSX.Element | null {
           )}
         </main>
 
-        <aside
-          style={{
-            borderLeft: '1px solid rgba(0,0,0,0.08)',
-            padding: 16,
-            overflow: 'auto',
-          }}
-        >
-          <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
-            Decisions log
-          </h3>
+        <aside className="operator-panel__rail operator-panel__rail--right">
+          <div className="operator-section__head">
+            <span>Activity</span>
+            <em>{decisions.length ? 'recent decisions' : 'waiting'}</em>
+          </div>
           {decisions.length === 0 ? (
-            <p style={{ fontSize: 13, opacity: 0.7 }}>No decisions yet.</p>
+            <div className="operator-empty-side">
+              <strong>No actions yet.</strong>
+              <p>User-started work such as Replan, Cleanup, Snapshot, and plugin changes will live here.</p>
+            </div>
           ) : (
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+            <ul className="operator-activity-list">
               {decisions.map((r) => (
-                <li
-                  key={r.id}
-                  style={{ borderBottom: '1px solid rgba(0,0,0,0.06)', padding: '6px 0', fontSize: 13 }}
-                >
-                  <div style={{ fontWeight: 500 }}>{r.action}</div>
-                  <div style={{ opacity: 0.7 }}>
-                    {r.target}{' '}
-                    <span style={{ opacity: 0.5 }}>· {new Date(r.ts).toLocaleString()}</span>
+                <li key={r.id} className="operator-activity-item">
+                  <span className="operator-activity-dot" aria-hidden="true" />
+                  <div>
+                    <strong>{r.action}</strong>
+                    <p>
+                      {r.target}{' '}
+                      <span>· {new Date(r.ts).toLocaleString()}</span>
+                    </p>
                   </div>
                 </li>
               ))}
@@ -947,19 +1158,10 @@ export function OperatorPanel(): JSX.Element | null {
         </aside>
       </div>
 
-      <div
-        style={{
-          padding: '8px 20px',
-          borderTop: '1px solid rgba(0,0,0,0.08)',
-          fontSize: 12,
-          opacity: 0.7,
-          display: 'flex',
-          justifyContent: 'space-between',
-        }}
-      >
+      <footer className="operator-panel__footer">
         <span>Cmd/Ctrl+K then O to toggle • Click outside to close</span>
         <span>Operator MCP v0.1.0</span>
-      </div>
+      </footer>
     </div>
   );
 }
@@ -1043,66 +1245,41 @@ function OtherWorkspacesPanel(): JSX.Element | null {
       window.location.assign(`/harness?ws=${encodeURIComponent(id)}`);
     }
   };
-  const visibleCards = snap.cards.filter((c) => !c.dismissed).slice(0, 10);
+  const visibleCards = snap.cards.filter((c) => !c.dismissed).slice(0, 3);
   return (
-    <div style={{ marginBottom: 16 }}>
-      <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
+    <div className="operator-workspaces">
+      <h3>
         Other workspaces
       </h3>
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 4, fontSize: 12 }}>
+      <ul className="operator-workspace-list">
         {snap.workspaces.map((w) => (
-          <li key={w.id} style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <li key={w.id} className="operator-workspace-row">
             <button
               type="button"
               onClick={() => void switchTo(w.id)}
-              style={{
-                background: 'transparent',
-                border: 'none',
-                padding: 0,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-                fontSize: 12,
-                textAlign: 'left',
-                color: 'inherit',
-                textDecoration: 'underline dotted',
-              }}
             >
               {w.name}
             </button>
-            <span style={{ opacity: 0.6 }}>
-              {w.cardCount} {w.cardCount === 1 ? 'card' : 'cards'}
-            </span>
+            {w.cardCount > 0 && (
+              <span className="operator-workspace-count">
+                {w.cardCount}
+              </span>
+            )}
           </li>
         ))}
       </ul>
       {visibleCards.length > 0 && (
-        <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0', display: 'grid', gap: 4, fontSize: 11 }}>
+        <ul className="operator-workspace-cards">
           {visibleCards.map((c, i) => (
-            <li key={`${c.workspaceId}-${c.card.id ?? i}`} style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.85 }}>
+            <li key={`${c.workspaceId}-${c.card.id ?? i}`}>
               <button
                 type="button"
                 onClick={() => void switchTo(c.workspaceId)}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  padding: 0,
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  fontSize: 11,
-                  textAlign: 'left',
-                  color: 'inherit',
-                  textDecoration: 'underline dotted',
-                  flex: 1,
-                  marginRight: 8,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
                 title={`${c.workspaceName} · ${c.card.title ?? '(untitled)'}`}
               >
                 {c.card.title ?? '(untitled)'}
               </button>
-              <span style={{ opacity: 0.5 }}>{c.card.auto_dispatch ? 'auto' : 'ask'}</span>
+              <span>{c.card.auto_dispatch ? 'auto' : 'ask'}</span>
             </li>
           ))}
         </ul>

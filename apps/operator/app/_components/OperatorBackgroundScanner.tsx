@@ -22,11 +22,15 @@
 import { useEffect, useRef } from 'react';
 import { toast } from 'sonner';
 import { sharedState, subscribeOperatorState } from './operator-shared-state';
+import { speak, getVoiceState } from './voice/voice-mode';
+import { registerVoiceConsumer } from './voice/VoiceAppBridge';
+import { loadVoicePrefsClient } from './voice/voice-prefs-client';
 
 const POLL_INTERVAL_MS = 30_000;
 const DEBOUNCE_MS = 60_000;
 const MAX_STALL_MS = 5 * 60_000;
-const UNDO_WINDOW_MS = 5_000;
+const UNDO_WINDOW_MS_VISUAL = 5_000;
+const UNDO_WINDOW_MS_VOICE = 8_000;  // v4 §2c: extended for STT latency
 
 interface SuggestionEvent {
   id: string;
@@ -151,15 +155,35 @@ export function OperatorBackgroundScanner() {
 function armAutoFireToast(s: SuggestionEvent) {
   let cancelled = false;
   const id = `op-toast-${s.id}`;
-  const toastId = toast(
-    `Operator queued: ${s.title}`,
-    {
-      id,
-      description: s.why.slice(0, 280),
-      duration: UNDO_WINDOW_MS,
-      action: {
-        label: 'Cancel',
-        onClick: () => {
+
+  // Voice gate: per v4 §2c, when voice mode is on AND speakBackgroundToasts
+  // toggle is on, BOTH the visual ring and the underlying commit deadline
+  // extend to 8s. Visual matches truth.
+  const voiceState = getVoiceState();
+  const prefs = loadVoicePrefsClient();
+  const voiceActive = voiceState.mode !== 'off' && prefs.speakBackgroundToasts;
+  const undoMs = voiceActive ? UNDO_WINDOW_MS_VOICE : UNDO_WINDOW_MS_VISUAL;
+
+  // Conditional `<harness>: <title>` prefix per v4 §2c (#9): only for
+  // variants with target_harness. inform speaks unprefixed.
+  const spokenTitle = s.target_harness && (s.action === 'send_directive' || s.action === 'navigate')
+    ? `${s.target_harness}: ${s.title}`
+    : s.title;
+  const cue = ' Say cancel to skip.';
+  if (voiceActive) {
+    speak(`${spokenTitle}.${cue}`, 'system:operator', 'polite');
+  }
+
+  // Toast voice consumer: register a background-toast-priority handler
+  // that listens for "cancel" within the window and triggers cancellation.
+  let toastDereg: (() => void) | null = null;
+  if (voiceActive) {
+    toastDereg = registerVoiceConsumer(
+      `background-toast-${s.id}`,
+      'background-toast',
+      (utterance: string) => {
+        const lower = utterance.trim().toLowerCase();
+        if (lower === 'cancel') {
           cancelled = true;
           void fetch('/api/agent-mcp/operator-audit', {
             method: 'POST',
@@ -167,16 +191,37 @@ function armAutoFireToast(s: SuggestionEvent) {
             body: JSON.stringify({ cardId: s.id, kind: 'undo_cancel' }),
           });
           toast.dismiss(id);
-        },
+          if (toastDereg) { toastDereg(); toastDereg = null; }
+        }
+      },
+    );
+  }
+
+  toast(spokenTitle, {
+    id,
+    description: s.why.slice(0, 280),
+    duration: undoMs,
+    action: {
+      label: 'Cancel',
+      onClick: () => {
+        cancelled = true;
+        void fetch('/api/agent-mcp/operator-audit', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cardId: s.id, kind: 'undo_cancel' }),
+        });
+        toast.dismiss(id);
+        if (toastDereg) { toastDereg(); toastDereg = null; }
       },
     },
-  );
-  void toastId;
+  });
+
   setTimeout(() => {
+    if (toastDereg) { toastDereg(); toastDereg = null; }
     if (cancelled) return;
     void dispatchSuggestion(s);
-    toast(`Dispatched: ${s.title}`, { duration: 3_000 });
-  }, UNDO_WINDOW_MS);
+    toast(`Dispatched: ${spokenTitle}`, { duration: 3_000 });
+  }, undoMs);
 }
 
 async function dispatchSuggestion(s: SuggestionEvent) {

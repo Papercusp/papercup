@@ -337,8 +337,24 @@ function onUtteranceFinal(text: string): void {
  * Speak text in the voice assigned to `role`. Queues if another role is
  * already speaking. Only one utterance plays at a time.
  */
-export function speak(text: string, role = 'system:operator'): void {
+export function speak(text: string, role = 'system:operator', priority: 'polite' | 'assertive' = 'polite'): void {
   if (state.mode === 'off' || !state.supported) return;
+  // Tutorial gate (v4 §2l): voice no-ops until first-run tutorial is complete.
+  if (typeof window !== 'undefined' && sessionStorage.getItem('oracle-tutorial-complete') !== 'true') return;
+  // Aria-live publish — independent of TTS engine + leader election so
+  // screen-reader users always see the same content the leader speaks.
+  try {
+    // Lazy-import to avoid pulling React-side bus into non-React callers.
+    void import('./aria-live-bus').then((m) => m.publishAriaLive(priority, text));
+  } catch { /* ignore */ }
+  // Leader-election gate (v4 §2i): only the leader tab actually emits TTS.
+  // Followers are silent; aria-live still publishes so screen-readers in any
+  // tab see the text.
+  try {
+    const { getVoiceLeaderState } = require('./voice-leader') as typeof import('./voice-leader');
+    const leader = getVoiceLeaderState();
+    if (leader.available && !leader.isLeader) return;
+  } catch { /* leader module not yet loaded — fall through and speak */ }
   synthQueue.push({ text, role });
   if (!isSynthSpeaking) processSynthQueue();
 }
