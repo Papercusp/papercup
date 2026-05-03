@@ -377,70 +377,15 @@ export default function VoiceSettingsPage() {
         </div>
       </section>
 
-      {/* ── CLOUD API KEYS ──────────────────────────────────────── */}
-      {allCreds && (
-        <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Cloud API keys</h2>
-          <p style={{ ...hint, marginBottom: 12 }}>
-            BYO keys for cloud engines. Keys are stored at <code>~/.papercusp/credentials.json</code>{' '}
-            (mode 0600) and never travel in snapshots. Required for ElevenLabs / OpenAI / Cartesia / Deepgram engines and the OpenAI Realtime full-agent mode.
-          </p>
-          <ApiKeyRow
-            label="OpenAI"
-            field="openaiApiKey"
-            state={allCreds.openai}
-            placeholder="sk-..."
-            helpUrl="https://platform.openai.com/api-keys"
-            note="Used for OpenAI tts-1 voices AND the OpenAI Realtime full-agent mode."
-            onChange={(snapshot) => { setAllCreds(snapshot); }}
-          />
-          <ApiKeyRow
-            label="ElevenLabs"
-            field="elevenlabsApiKey"
-            state={allCreds.elevenlabs}
-            placeholder="sk_..."
-            helpUrl="https://elevenlabs.io/app/settings/api-keys"
-            note="ElevenLabs Turbo v2.5 TTS."
-            onChange={(snapshot) => { setAllCreds(snapshot); setCredentials(snapshot.elevenlabs); }}
-          />
-          <ApiKeyRow
-            label="Cartesia"
-            field="cartesiaApiKey"
-            state={allCreds.cartesia}
-            placeholder="sk_..."
-            helpUrl="https://play.cartesia.ai/keys"
-            note="Cartesia Sonic-2 TTS — sub-100ms first-byte."
-            onChange={(snapshot) => { setAllCreds(snapshot); }}
-          />
-          <ApiKeyRow
-            label="Deepgram"
-            field="deepgramApiKey"
-            state={allCreds.deepgram}
-            placeholder="dg_..."
-            helpUrl="https://console.deepgram.com/project/default/keys"
-            note="Deepgram Nova-2 STT (alternative to Voicemode whisper)."
-            onChange={(snapshot) => { setAllCreds(snapshot); }}
-          />
-          <ApiKeyRow
-            label="Picovoice"
-            field="picovoiceApiKey"
-            state={allCreds.picovoice}
-            placeholder="pv_..."
-            helpUrl="https://console.picovoice.ai/"
-            note="Required for Porcupine wake-word detection and Koala noise suppression. Free tier covers personal use."
-            onChange={(snapshot) => { setAllCreds(snapshot); }}
-          />
-          <ApiKeyRow
-            label="Google AI"
-            field="googleApiKey"
-            state={allCreds.google}
-            placeholder="AIza..."
-            helpUrl="https://aistudio.google.com/app/apikey"
-            note="Required for Gemini Live full-agent mode. Free tier available via AI Studio."
-            onChange={(snapshot) => { setAllCreds(snapshot); }}
-          />
-        </section>
-      )}
+      {/* ── CLOUD API KEYS POINTER ────────────────────────────────
+          Keys live on the dedicated /settings/api-keys page so users
+          have one place to manage all credentials (LLM + voice). */}
+      <section style={{ marginBottom: 24, padding: 12, border: '1px dashed var(--border)', borderRadius: 4 }}>
+        <p style={{ ...hint, margin: 0 }}>
+          Cloud API keys (OpenAI, ElevenLabs, Cartesia, Deepgram, Picovoice, Google AI) live on
+          the dedicated <a href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</a> page.
+        </p>
+      </section>
 
       {/* ── ELEVENLABS SUB-SECTION ───────────────────────────────── */}
       {prefs?.ttsEngine === 'elevenlabs' && (
@@ -879,80 +824,6 @@ function PerSlugVoiceTable({
     </div>
   );
 }
-
-interface ApiKeyRowProps {
-  label: string;
-  field: 'elevenlabsApiKey' | 'openaiApiKey' | 'cartesiaApiKey' | 'deepgramApiKey' | 'picovoiceApiKey' | 'googleApiKey';
-  state: ApiKeyState;
-  placeholder: string;
-  helpUrl: string;
-  note: string;
-  onChange: (snapshot: CloudCredentialsSnapshot) => void;
-}
-
-const ApiKeyRow = React.memo(function ApiKeyRow({ label, field, state, placeholder, helpUrl, note, onChange }: ApiKeyRowProps) {
-  const [draft, setDraft] = useState('');
-  const [busy, setBusy] = useState(false);
-
-  const save = async () => {
-    if (!draft.trim()) return;
-    setBusy(true);
-    try {
-      const r = await fetch('/api/agent-mcp/operator-credentials', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ [field]: draft.trim() }),
-      });
-      if (r.ok) {
-        onChange((await r.json()) as CloudCredentialsSnapshot);
-        setDraft('');
-        toast.success(`${label} key saved`);
-      }
-    } finally { setBusy(false); }
-  };
-
-  const clear = async () => {
-    if (!confirm(`Clear the ${label} API key?`)) return;
-    setBusy(true);
-    try {
-      const r = await fetch('/api/agent-mcp/operator-credentials', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ [field]: null }),
-      });
-      if (r.ok) onChange((await r.json()) as CloudCredentialsSnapshot);
-    } finally { setBusy(false); }
-  };
-
-  return (
-    <div style={{ marginBottom: 12, padding: 10, border: '1px solid var(--border)', borderRadius: 4 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <strong style={{ fontSize: 13 }}>{label}</strong>
-        <a href={helpUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, opacity: 0.7 }}>get key →</a>
-      </div>
-      <p style={{ ...hint, marginTop: 0, marginBottom: 8 }}>{note}</p>
-      {state.configured ? (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <code style={{ padding: '4px 8px', background: 'var(--bg-1)', borderRadius: 4, fontSize: 12, fontFamily: 'monospace' }}>
-            {state.apiKey ?? '(masked)'}
-          </code>
-          <button type="button" onClick={clear} disabled={busy} style={{ ...btn, color: '#fca5a5', fontSize: 12 }}>Clear</button>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            type="password"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={placeholder}
-            style={{ flex: 1, padding: '4px 8px', fontSize: 12, fontFamily: 'monospace' }}
-          />
-          <button type="button" onClick={save} disabled={busy || !draft.trim()} style={{ ...btnPrimary, fontSize: 12 }}>Save</button>
-        </div>
-      )}
-    </div>
-  );
-});
 
 interface RoleVoicesTableProps {
   voices: Array<{ name: string; lang: string }>;
