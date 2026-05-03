@@ -223,6 +223,26 @@ export async function listRuns(
       } catch { /* skip */ }
     }
     metas.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
+
+    // Heuristic: if a run is still `running` but its log file hasn't been
+    // touched in 5 minutes, the parent worker probably died (HMR restart,
+    // crash, etc.). Mark it as failed so the UI doesn't show "running"
+    // forever. Cheap fix on read; no background timer needed.
+    const STALE_MS = 5 * 60 * 1000;
+    const now = Date.now();
+    for (const m of metas) {
+      if (m.status !== 'running') continue;
+      try {
+        const st = await fs.stat(join(dir, `${m.runId}.log`));
+        if (now - st.mtimeMs > STALE_MS) {
+          m.status = 'failed';
+          m.endedAt = new Date(st.mtimeMs).toISOString();
+          m.exitCode = null;
+          m.signal = 'orphaned';
+          m.durationMs = st.mtimeMs - new Date(m.startedAt).getTime();
+        }
+      } catch { /* log gone — leave as-is */ }
+    }
     return metas;
   } catch { return []; }
 }
