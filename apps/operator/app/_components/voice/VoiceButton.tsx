@@ -57,17 +57,17 @@ export function VoiceButton(): JSX.Element {
   const onClick = useCallback(() => {
     if (!vs.supported) {
       // eslint-disable-next-line no-alert
-      alert('Voice mode requires the Web Speech API (Chrome, Edge, or Safari).');
+      alert('Voice mode is not available in this environment.');
       return;
     }
     setVoiceMode(NEXT_MODE[vs.mode]);
   }, [vs.mode, vs.supported]);
 
   const onPttDown = useCallback(() => {
-    if (!vs.supported || vs.mode !== 'push-to-talk') return;
+    if (!vs.hasWebSpeechSTT || vs.mode !== 'push-to-talk') return;
     setPttHeld(true);
     startPushToTalk();
-  }, [vs.mode, vs.supported]);
+  }, [vs.mode, vs.hasWebSpeechSTT]);
 
   const onPttUp = useCallback(() => {
     if (!pttHeld) return;

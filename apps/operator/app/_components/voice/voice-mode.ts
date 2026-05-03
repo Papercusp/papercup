@@ -30,8 +30,12 @@ export type VoiceMode = 'off' | 'push-to-talk' | 'always-on';
 export interface VoiceState {
   mode: VoiceMode;
   status: VoiceModeStatus;
-  /** True if the browser actually supports Web Speech API. */
+  /** True if voice mode can run at all (any engine path is viable). */
   supported: boolean;
+  /** True if the browser provides Web Speech STT (used by wake-word + PTT). */
+  hasWebSpeechSTT: boolean;
+  /** True if the browser provides Web Speech TTS (otherwise route via engine adapters). */
+  hasWebSpeechTTS: boolean;
   /** Last transcript text (latest user utterance). */
   lastTranscript: string;
   /** Currently-speaking role (e.g. 'orchestrator', 'operator', 'system:oracle'). */
@@ -65,6 +69,8 @@ let state: VoiceState = {
   mode: 'off',
   status: 'off',
   supported: false,
+  hasWebSpeechSTT: false,
+  hasWebSpeechTTS: false,
   lastTranscript: '',
   speakingRole: null,
 };
@@ -142,10 +148,17 @@ export function updateVoiceConfig(patch: Partial<VoiceConfig>): void {
 export function initVoiceMode(): void {
   if (typeof window === 'undefined') return;
   config = loadConfig();
+  // Voice mode is "supported" as long as the runtime can plausibly speak
+  // OR transcribe via *some* engine. Web Speech is sufficient but not
+  // required — Tauri/WebKitGTK lacks it but Voicemode (local Kokoro +
+  // Whisper) covers the same surface, and the cloud engines (ElevenLabs,
+  // OpenAI, Cartesia, Deepgram) work via fetch+Audio. So we default to
+  // supported in any browser context and let individual code paths gate
+  // on the specific API they need.
   const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-  const supported = !!SR && !!window.speechSynthesis;
-  setState({ supported });
-  if (!supported) return;
+  const hasWebSpeechSTT = !!SR;
+  const hasWebSpeechTTS = !!window.speechSynthesis;
+  setState({ supported: true, hasWebSpeechSTT, hasWebSpeechTTS });
 
   // Restore last mode from config so navigation preserves user choice.
   // Skip if state.mode is already non-off (init may run again on hot reload).
@@ -313,7 +326,7 @@ function stopWhisperCaptureIfRunning(): void {
 }
 
 function startWakeWordListening(): void {
-  if (typeof window === 'undefined' || !state.supported) return;
+  if (typeof window === 'undefined' || !state.hasWebSpeechSTT) return;
   const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   recognition = new SR();
   recognition.continuous = true;
@@ -416,7 +429,7 @@ function activateListening(seedTranscript: string): void {
 
 /** Push-to-talk: kick off active listening immediately. */
 export function startPushToTalk(): void {
-  if (!state.supported) return;
+  if (!state.hasWebSpeechSTT) return;
   setState({ mode: 'push-to-talk', status: 'listening' });
   activateListening('');
 }
@@ -485,7 +498,7 @@ export function speak(text: string, role = 'system:operator', priority: 'polite'
 }
 
 function processSynthQueue(): void {
-  if (typeof window === 'undefined' || !window.speechSynthesis) return;
+  if (typeof window === 'undefined') return;
   const next = synthQueue.shift();
   if (!next) {
     isSynthSpeaking = false;
@@ -494,21 +507,77 @@ function processSynthQueue(): void {
   }
   isSynthSpeaking = true;
   setState({ status: 'speaking', speakingRole: next.role });
-  const utt = new SpeechSynthesisUtterance(next.text);
-  utt.rate = config.rate;
-  const voiceName = voiceForRole(next.role);
-  if (voiceName) {
-    const voices = window.speechSynthesis.getVoices();
-    const v = voices.find((vv) => vv.name === voiceName);
-    if (v) utt.voice = v;
+
+  // Web Speech TTS happy path. Tauri/WebKitGTK lacks speechSynthesis;
+  // fall through to the engine-adapter route below in that case.
+  if (window.speechSynthesis) {
+    const utt = new SpeechSynthesisUtterance(next.text);
+    utt.rate = config.rate;
+    const voiceName = voiceForRole(next.role);
+    if (voiceName) {
+      const voices = window.speechSynthesis.getVoices();
+      const v = voices.find((vv) => vv.name === voiceName);
+      if (v) utt.voice = v;
+    }
+    utt.onend = () => { processSynthQueue(); };
+    utt.onerror = () => { processSynthQueue(); };
+    window.speechSynthesis.speak(utt);
+    return;
   }
-  utt.onend = () => {
-    processSynthQueue();
-  };
-  utt.onerror = () => {
-    processSynthQueue();
-  };
-  window.speechSynthesis.speak(utt);
+
+  // Adapter route — used in environments without Web Speech TTS (Tauri).
+  // Asks the server which engine the user has configured + uses the
+  // /operator-tts-preview endpoint as a unified synth proxy. Server
+  // proxies Kokoro/ElevenLabs/OpenAI/Cartesia using the user's keys.
+  void synthViaAdapter(next.text).finally(() => processSynthQueue());
+}
+
+let adapterAudio: HTMLAudioElement | null = null;
+let adapterEngineCache: string | null = null;
+let adapterEngineCacheAt = 0;
+
+async function fetchPreferredEngine(): Promise<string> {
+  // Cache the prefs lookup for 30s so a chatty caller doesn't hammer the
+  // prefs route once per utterance.
+  const now = Date.now();
+  if (adapterEngineCache && now - adapterEngineCacheAt < 30_000) return adapterEngineCache;
+  try {
+    const r = await fetch('/api/agent-mcp/operator-voice-prefs');
+    if (r.ok) {
+      const prefs = await r.json();
+      adapterEngineCache = prefs.ttsEngine ?? 'kokoro';
+      adapterEngineCacheAt = now;
+      return adapterEngineCache!;
+    }
+  } catch { /* fall through */ }
+  return 'kokoro';
+}
+
+async function synthViaAdapter(text: string): Promise<void> {
+  let engine = await fetchPreferredEngine();
+  // 'browser' isn't synthable here (no speechSynthesis); coerce to kokoro.
+  if (engine === 'browser') engine = 'kokoro';
+  try {
+    const r = await fetch('/api/agent-mcp/operator-tts-preview', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ engine, text }),
+    });
+    if (!r.ok) return;
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    if (adapterAudio) {
+      try { adapterAudio.pause(); } catch {}
+      try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+    }
+    const a = new Audio(url);
+    adapterAudio = a;
+    await new Promise<void>((resolve) => {
+      a.onended = () => { URL.revokeObjectURL(url); resolve(); };
+      a.onerror = () => { URL.revokeObjectURL(url); resolve(); };
+      void a.play().catch(() => resolve());
+    });
+  } catch { /* ignore — keep queue flowing */ }
 }
 
 /**
@@ -524,6 +593,11 @@ export function cancelAllSpeech(): void {
     } catch {
       /* ignore */
     }
+  }
+  if (adapterAudio) {
+    try { adapterAudio.pause(); } catch {}
+    try { URL.revokeObjectURL(adapterAudio.src); } catch {}
+    adapterAudio = null;
   }
   if (state.status === 'speaking') {
     setState({ status: state.mode === 'off' ? 'off' : 'idle', speakingRole: null });
