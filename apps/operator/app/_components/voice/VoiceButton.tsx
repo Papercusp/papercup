@@ -138,11 +138,14 @@ export function VoiceButton(): JSX.Element {
 
   const onPttDown = useCallback(() => {
     // Mouse-hold on the button works regardless of mode — same semantics
-    // as the keyboard shortcut.
-    if (!vs.hasWebSpeechSTT) return;
+    // as the keyboard shortcut. startPushToTalk() dispatches on the
+    // configured sttEngine (voicemode/deepgram/web-speech), so the gate
+    // here is just "any voice path is viable" — Web Speech specifically
+    // is no longer required.
+    if (!vs.supported) return;
     setPttHeld(true);
     startPushToTalk();
-  }, [vs.hasWebSpeechSTT]);
+  }, [vs.supported]);
 
   const onPttUp = useCallback(() => {
     if (!pttHeld) return;
@@ -157,7 +160,7 @@ export function VoiceButton(): JSX.Element {
   // Previously the listener was gated on mode==='push-to-talk' which
   // made the key silently no-op in any other mode.
   useEffect(() => {
-    if (!vs.supported || !vs.hasWebSpeechSTT) return;
+    if (!vs.supported) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       if (e.code !== PTT_SHORTCUT_CODE) return;
@@ -190,7 +193,7 @@ export function VoiceButton(): JSX.Element {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [markPttHintSeen, pttHeld, vs.hasWebSpeechSTT, vs.supported]);
+  }, [markPttHintSeen, pttHeld, vs.supported]);
 
   // Live mic level — only sample when the mic is actually open AND we're
   // on a route where the visual is worth the CPU. Skip on /settings/* so
