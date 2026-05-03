@@ -15,8 +15,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  BRANCHES, isBranch, listActions, listRuns, runAction,
+  BRANCHES, isBranch, listActions, listRuns, runAction, MissingEnvError,
 } from './branch-actions';
+import { resolveEnv } from './branch-action-manifest';
 
 let staging: string;
 
@@ -239,5 +240,261 @@ describe('listRuns', () => {
 
     const runs = await listRuns(staging, 'staging', 'a');
     expect(runs[0].status).toBe('running');
+  });
+});
+
+describe('action manifests', () => {
+  it('reads inline manifest from <name>.manifest.json sibling', async () => {
+    await writeAction('staging', 'deploy', '#!/bin/bash\necho ok\n');
+    const dir = join(staging, '.harness', 'actions', 'staging');
+    await writeFile(join(dir, 'deploy.manifest.json'), JSON.stringify({
+      displayName: 'Deploy to prod',
+      env: { TOKEN: { from: 'literal', value: 'xyz' } },
+    }));
+
+    const out = await listActions(staging, 'staging');
+    expect(out).toHaveLength(1);
+    expect(out[0].manifest?.displayName).toBe('Deploy to prod');
+    expect(out[0].manifest?.env?.TOKEN).toEqual({ from: 'literal', value: 'xyz' });
+  });
+});
+
+describe('env resolution + run injection', () => {
+  let configsDir: string;
+  beforeEach(async () => {
+    configsDir = await mkdtemp(join(tmpdir(), 'configs-'));
+    await mkdir(join(configsDir, 'plugin-configs', '@scope'), { recursive: true });
+  });
+  afterEach(async () => { await rm(configsDir, { recursive: true, force: true }); });
+
+  it('throws MissingEnvError when required plugin field is absent', async () => {
+    await writeAction('staging', 'deploy', '#!/bin/bash\nexit 0\n');
+    const adir = join(staging, '.harness', 'actions', 'staging');
+    await writeFile(join(adir, 'deploy.manifest.json'), JSON.stringify({
+      env: {
+        API_TOKEN: { from: 'plugin', plugin: '@scope/p', field: 'token', required: true },
+      },
+    }));
+    // Empty plugin-config — token missing
+    await writeFile(join(configsDir, 'plugin-configs', '@scope', 'p.json'), JSON.stringify({}));
+
+    await expect(runAction({
+      stagingPath: staging, harness: 'h', branch: 'staging', name: 'deploy',
+      harnessConfigsDir: configsDir,
+    })).rejects.toBeInstanceOf(MissingEnvError);
+  });
+
+  it('injects resolved env vars into the spawned script', async () => {
+    await writeAction(
+      'staging', 'deploy',
+      '#!/bin/bash\necho "TOKEN=$API_TOKEN"\necho "ACCT=$ACCOUNT"\n',
+    );
+    const adir = join(staging, '.harness', 'actions', 'staging');
+    await writeFile(join(adir, 'deploy.manifest.json'), JSON.stringify({
+      env: {
+        API_TOKEN: { from: 'plugin', plugin: '@scope/p', field: 'token', required: true },
+        ACCOUNT:   { from: 'plugin', plugin: '@scope/p', field: 'accountId', required: true },
+      },
+    }));
+    await writeFile(join(configsDir, 'plugin-configs', '@scope', 'p.json'), JSON.stringify({
+      token: 'sk-secret-123', accountId: 'acct-abc',
+    }));
+
+    const handle = await runAction({
+      stagingPath: staging, harness: 'h', branch: 'staging', name: 'deploy',
+      harnessConfigsDir: configsDir,
+    });
+    const meta = await handle.done;
+    expect(meta.status).toBe('completed');
+    const log = await fs.readFile(
+      join(staging, '.harness', 'action-runs', 'staging', 'deploy', `${meta.runId}.log`),
+      'utf8',
+    );
+    expect(log).toContain('TOKEN=sk-secret-123');
+    expect(log).toContain('ACCT=acct-abc');
+  });
+
+  it('skipEnvCheck bypasses the missing-env guard', async () => {
+    await writeAction('staging', 'deploy', '#!/bin/bash\nexit 0\n');
+    const adir = join(staging, '.harness', 'actions', 'staging');
+    await writeFile(join(adir, 'deploy.manifest.json'), JSON.stringify({
+      env: { API_TOKEN: { from: 'plugin', plugin: '@scope/p', field: 'token', required: true } },
+    }));
+    await writeFile(join(configsDir, 'plugin-configs', '@scope', 'p.json'), JSON.stringify({}));
+
+    const handle = await runAction({
+      stagingPath: staging, harness: 'h', branch: 'staging', name: 'deploy',
+      harnessConfigsDir: configsDir,
+      skipEnvCheck: true,
+    });
+    const meta = await handle.done;
+    expect(meta.status).toBe('completed');
+  });
+
+  it('resolveEnv resolves literal values', async () => {
+    const r = await resolveEnv(
+      { env: { X: { from: 'literal', value: 'hi' } } },
+      { harnessConfigsDir: configsDir },
+    );
+    expect(r.env.X).toBe('hi');
+    expect(r.missing).toEqual([]);
+  });
+
+  it('resolveEnv reads from harness env.json', async () => {
+    await writeFile(join(configsDir, 'env.json'), JSON.stringify({ FOO: 'bar' }));
+    const r = await resolveEnv(
+      { env: { FOO: { from: 'harness', field: 'FOO', required: true } } },
+      { harnessConfigsDir: configsDir },
+    );
+    expect(r.env.FOO).toBe('bar');
+  });
+
+  it('resolveEnv reports `missing` for absent required vars', async () => {
+    const r = await resolveEnv(
+      { env: { X: { from: 'plugin', plugin: '@scope/p', field: 'token', required: true } } },
+      { harnessConfigsDir: configsDir },
+    );
+    expect(r.missing).toHaveLength(1);
+    expect(r.missing[0].name).toBe('X');
+    expect(r.missing[0].plugin).toBe('@scope/p');
+  });
+
+  it('resolveEnv treats absent NON-required vars as silent', async () => {
+    const r = await resolveEnv(
+      { env: { X: { from: 'harness', field: 'X' /* required omitted */ } } },
+      { harnessConfigsDir: configsDir },
+    );
+    expect(r.missing).toEqual([]);
+    expect(r.env.X).toBeUndefined();
+  });
+});
+
+describe('plugin-contributed actions', () => {
+  let pluginsDir: string;
+  let configsDir: string;
+  beforeEach(async () => {
+    pluginsDir = await mkdtemp(join(tmpdir(), 'plugins-'));
+    configsDir = await mkdtemp(join(tmpdir(), 'configs-'));
+  });
+  afterEach(async () => {
+    await rm(pluginsDir, { recursive: true, force: true });
+    await rm(configsDir, { recursive: true, force: true });
+  });
+
+  it('discovers a plugin-contributed action when its plugin is enabled', async () => {
+    const pdir = join(pluginsDir, '@scope', 'mything');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: '@scope/mything',
+      branchActions: {
+        deploy: {
+          branches: ['staging'],
+          displayName: 'Deploy via mything',
+          scriptPath: 'actions/deploy.sh',
+        },
+      },
+    }));
+    await mkdir(join(pdir, 'actions'), { recursive: true });
+    await writeFile(join(pdir, 'actions/deploy.sh'), '#!/bin/bash\nexit 0\n', { mode: 0o755 });
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: { '@scope/mything': { version: '0.1.0' } } }),
+    );
+
+    const out = await listActions(staging, 'staging', {
+      harnessConfigsDir: configsDir,
+      globalPluginsDir: pluginsDir,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].name).toBe('@scope/mything:deploy');
+    expect(out[0].source).toBe('plugin');
+    expect(out[0].pluginSlug).toBe('@scope/mything');
+    expect(out[0].manifest?.displayName).toBe('Deploy via mything');
+  });
+
+  it('skips plugin actions whose branch list excludes the queried branch', async () => {
+    const pdir = join(pluginsDir, 'simple');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: 'simple',
+      branchActions: {
+        prod_only: { branches: ['production'], scriptPath: 'go.sh' },
+      },
+    }));
+    await writeFile(join(pdir, 'go.sh'), '#!/bin/bash\n');
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: { simple: { version: '0.1.0' } } }),
+    );
+
+    const staging_actions = await listActions(staging, 'staging', {
+      harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir,
+    });
+    expect(staging_actions).toEqual([]);
+
+    const prod_actions = await listActions(staging, 'production', {
+      harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir,
+    });
+    expect(prod_actions).toHaveLength(1);
+    expect(prod_actions[0].name).toBe('simple:prod_only');
+  });
+
+  it('runs plugin-contributed actions; from:config resolves to the plugin\'s own config', async () => {
+    const pdir = join(pluginsDir, '@scope', 'cf');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: '@scope/cf',
+      branchActions: {
+        deploy: {
+          branches: ['staging'],
+          scriptPath: 'deploy.sh',
+          env: { TOKEN: { from: 'config', field: 'apiToken', required: true } },
+        },
+      },
+    }));
+    await writeFile(join(pdir, 'deploy.sh'), '#!/bin/bash\necho "TOKEN=$TOKEN"\n', { mode: 0o755 });
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: { '@scope/cf': { version: '0.1.0' } } }),
+    );
+    await mkdir(join(configsDir, 'plugin-configs', '@scope'), { recursive: true });
+    await writeFile(
+      join(configsDir, 'plugin-configs', '@scope', 'cf.json'),
+      JSON.stringify({ apiToken: 'plugin-supplied-token' }),
+    );
+
+    const handle = await runAction({
+      stagingPath: staging, harness: 'h', branch: 'staging',
+      name: '@scope/cf:deploy',
+      harnessConfigsDir: configsDir,
+      globalPluginsDir: pluginsDir,
+    });
+    const meta = await handle.done;
+    expect(meta.status).toBe('completed');
+    const safeName = '_scope_cf_deploy';
+    const log = await fs.readFile(
+      join(staging, '.harness', 'action-runs', 'staging', safeName, `${meta.runId}.log`),
+      'utf8',
+    );
+    expect(log).toContain('TOKEN=plugin-supplied-token');
+  });
+
+  it('does not list plugin actions when the plugin is not enabled', async () => {
+    const pdir = join(pluginsDir, 'notenabled');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: 'notenabled',
+      branchActions: { x: { scriptPath: 'x.sh' } },
+    }));
+    await writeFile(join(pdir, 'x.sh'), '#!/bin/bash\n');
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: {} }),
+    );
+
+    const out = await listActions(staging, 'staging', {
+      harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir,
+    });
+    expect(out).toEqual([]);
   });
 });
