@@ -13,6 +13,8 @@ import { Select } from './Select';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useForm } from 'react-hook-form';
+import { makeAjvResolver } from '@/lib/forms';
 import { useSyncQuery } from '@restart/sync';
 import {
   slugToFeaturesKey,
@@ -1598,18 +1600,35 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
   configSchema?: { required?: string[]; properties?: Record<string, PluginConfigField> };
   defaultConfig?: Record<string, unknown>;
 }) {
-  // Plugin config editor is always-open in the per-plugin Config tab —
-  // there is no read-only "summary" view to collapse back to. The previous
-  // open/close toggle confused users who expected the form to just be
-  // available.
   const open = true;
   const [mode, setMode] = useState<'fields' | 'json'>('fields');
   const [loaded, setLoaded] = useState<Record<string, unknown> | null>(null);
-  const [draftObj, setDraftObj] = useState<Record<string, unknown>>({});
   const [draftJson, setDraftJson] = useState<string>('');
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Plugin schemas may omit `type` at the root — Ajv requires it. Normalize.
+  const ajvSchema = useMemo(() => ({
+    type: 'object',
+    additionalProperties: true,
+    ...(configSchema ?? {}),
+  }), [configSchema]);
+
+  const resolver = useMemo(() => makeAjvResolver(ajvSchema), [ajvSchema]);
+
+  const {
+    register,
+    handleSubmit,
+    reset: rhfReset,
+    setValue,
+    getValues,
+    watch,
+    formState: { errors, isSubmitting, isDirty },
+  } = useForm<Record<string, unknown>>({
+    resolver,
+    defaultValues: {},
+    mode: 'onSubmit',
+  });
 
   // Prefetch config eagerly on mount.
   useEffect(() => {
@@ -1619,18 +1638,18 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
       .then((d) => {
         const cfg = (d?.config ?? {}) as Record<string, unknown>;
         setLoaded(cfg);
-        setDraftObj(cfg);
+        rhfReset(cfg);
         setDraftJson(JSON.stringify(cfg, null, 2));
       })
-      .catch((e) => setError(String(e?.message ?? e)));
-  }, [loaded, harnessSlug, dirSlug]);
+      .catch((e) => setServerError(String(e?.message ?? e)));
+  }, [loaded, harnessSlug, dirSlug, rhfReset]);
 
-  function reset() {
+  function resetToLoaded() {
     if (loaded) {
-      setDraftObj(loaded);
+      rhfReset(loaded);
       setDraftJson(JSON.stringify(loaded, null, 2));
     }
-    setError(null);
+    setServerError(null);
   }
   function loadDefaults() {
     const obj: Record<string, unknown> = { ...(defaultConfig ?? {}) };
@@ -1639,35 +1658,23 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
         if (!(k in obj) && v.default !== undefined) obj[k] = v.default;
       }
     }
-    setDraftObj(obj);
+    rhfReset(obj);
     setDraftJson(JSON.stringify(obj, null, 2));
-    setError(null);
+    setServerError(null);
   }
 
-  async function save() {
-    let parsed: Record<string, unknown>;
-    if (mode === 'json') {
-      try {
-        const j = JSON.parse(draftJson);
-        if (typeof j !== 'object' || j === null || Array.isArray(j)) {
-          setError('Config must be a JSON object.');
-          return;
-        }
-        parsed = j as Record<string, unknown>;
-      } catch (e: any) {
-        setError(`Invalid JSON: ${e?.message ?? e}`);
-        return;
-      }
-    } else {
-      // Fields mode: drop empty strings (treated as "no value, fall back to default")
-      parsed = {};
-      for (const [k, v] of Object.entries(draftObj)) {
-        if (typeof v === 'string' && v.length === 0) continue;
-        parsed[k] = v;
-      }
+  // Drop empty strings on save (treated as "no value, fall back to default").
+  function pruneEmpty(obj: Record<string, unknown>): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'string' && v.length === 0) continue;
+      out[k] = v;
     }
-    setError(null);
-    setSaving(true);
+    return out;
+  }
+
+  async function persist(parsed: Record<string, unknown>) {
+    setServerError(null);
     try {
       const r = await fetch('/api/plugins/config', {
         method: 'PUT',
@@ -1676,42 +1683,66 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
       });
       const d = await r.json();
       if (!r.ok || !d.ok) {
-        setError(d.error ?? `HTTP ${r.status}`);
+        setServerError(d.error ?? `HTTP ${r.status}`);
         return;
       }
       setLoaded(parsed);
-      setDraftObj(parsed);
+      rhfReset(parsed);
       setDraftJson(JSON.stringify(parsed, null, 2));
       setSavedAt(Date.now());
       toast.success(`Config saved for ${dirSlug}`);
     } catch (e: any) {
-      setError(String(e?.message ?? e));
-    } finally { setSaving(false); }
+      setServerError(String(e?.message ?? e));
+    }
   }
 
-  // Switch modes — keep state in sync so the user doesn't lose edits.
+  // Submit handler dispatches based on which mode is active so JSON mode
+  // round-trips through JSON.parse before ajvResolver validates.
+  async function onClickSave() {
+    if (mode === 'json') {
+      let parsed: Record<string, unknown>;
+      try {
+        const j = JSON.parse(draftJson);
+        if (typeof j !== 'object' || j === null || Array.isArray(j)) {
+          setServerError('Config must be a JSON object.');
+          return;
+        }
+        parsed = j as Record<string, unknown>;
+      } catch (e: any) {
+        setServerError(`Invalid JSON: ${e?.message ?? e}`);
+        return;
+      }
+      await persist(parsed);
+    } else {
+      void handleSubmit(async (data) => {
+        await persist(pruneEmpty(data));
+      })();
+    }
+  }
+
+  // Switch modes — keep state in sync.
   function toggleMode() {
     if (mode === 'fields') {
-      setDraftJson(JSON.stringify(draftObj, null, 2));
+      setDraftJson(JSON.stringify(getValues(), null, 2));
       setMode('json');
     } else {
       try {
         const j = JSON.parse(draftJson);
         if (typeof j === 'object' && j !== null && !Array.isArray(j)) {
-          setDraftObj(j as Record<string, unknown>);
+          rhfReset(j as Record<string, unknown>);
         }
-      } catch { /* keep draftObj as-is */ }
+      } catch { /* keep RHF state as-is */ }
       setMode('fields');
     }
   }
 
-  const dirty = loaded !== null && (
-    mode === 'json'
-      ? draftJson !== JSON.stringify(loaded, null, 2)
-      : JSON.stringify(draftObj) !== JSON.stringify(loaded)
-  );
+  const dirty = mode === 'json'
+    ? (loaded !== null && draftJson !== JSON.stringify(loaded, null, 2))
+    : isDirty;
   const schemaKeys = Object.keys(configSchema?.properties ?? {});
   const requiredSet = new Set(configSchema?.required ?? []);
+  // Subscribe to changes so the field-mode renderer sees up-to-date values.
+  watch();
 
   return (
     <div className="h-plugin-config-editor" style={{
@@ -1732,13 +1763,13 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
 
       {open && (
         <div className="h-plugin-config-content" style={{ marginTop: 10 }}>
-          {error && (
+          {serverError && (
             <div className="h-plugin-config-error" style={{
               marginBottom: 8, padding: '6px 10px',
               background: '#450a0a', color: '#fca5a5',
               border: '1px solid #7f1d1d', borderRadius: 4,
               fontSize: 11,
-            }}>{error}</div>
+            }}>{serverError}</div>
           )}
           {loaded === null ? (
             <div className="h-plugin-config-loading" style={{ padding: '16px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading config…</div>
@@ -1747,7 +1778,9 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               {schemaKeys.map((key) => {
                 const field = (configSchema?.properties ?? {})[key]!;
                 const required = requiredSet.has(key);
-                const current = (key in draftObj) ? draftObj[key] : (field.default ?? '');
+                const values = getValues();
+                const current = (key in values) ? values[key] : (field.default ?? '');
+                const fieldError = errors[key]?.message ? String(errors[key]!.message) : undefined;
                 return (
                   <div key={key} className="h-config-field">
                     <label className="h-plugin-config-field-label" style={pluginFieldLabel}>
@@ -1756,7 +1789,10 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                     {field.description && (
                       <div className="h-plugin-config-field-description" style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 3 }}>{field.description}</div>
                     )}
-                    {renderPluginConfigInput(key, field, current, (v) => setDraftObj({ ...draftObj, [key]: v }))}
+                    {renderPluginConfigInput(key, field, current, (v) => setValue(key, v, { shouldDirty: true, shouldValidate: false }))}
+                    {fieldError && (
+                      <div role="alert" style={{ marginTop: 4, fontSize: 11, color: '#fca5a5' }}>{fieldError}</div>
+                    )}
                   </div>
                 );
               })}
@@ -1785,17 +1821,17 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
             <Tooltip label="Save plugin config changes">
               <button
               type="button"
-              onClick={save}
-              disabled={saving || !dirty}
+              onClick={onClickSave}
+              disabled={isSubmitting || !dirty}
               className="pc-button"
               style={{ fontSize: 12, padding: '4px 12px' }}
-            >{saving ? 'Saving…' : dirty ? 'Save' : 'No changes'}</button>
+            >{isSubmitting ? 'Saving…' : dirty ? 'Save' : 'No changes'}</button>
             </Tooltip>
             <Tooltip label="Discard unsaved config changes">
               <button
               type="button"
-              onClick={reset}
-              disabled={saving || !dirty}
+              onClick={resetToLoaded}
+              disabled={isSubmitting || !dirty}
               style={{
                 fontSize: 11, padding: '4px 10px', cursor: 'pointer',
                 background: 'transparent', color: 'var(--text-3)',
@@ -1807,7 +1843,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
               <button
               type="button"
               onClick={loadDefaults}
-              disabled={saving}
+              disabled={isSubmitting}
               style={{
                 fontSize: 11, padding: '4px 10px', cursor: 'pointer',
                 background: 'transparent', color: 'var(--text-3)',
@@ -1820,7 +1856,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
                 <button
                 type="button"
                 onClick={toggleMode}
-                disabled={saving}
+                disabled={isSubmitting}
                 style={{
                   fontSize: 11, padding: '4px 10px', cursor: 'pointer',
                   background: 'transparent', color: 'var(--text-3)',
@@ -2452,18 +2488,43 @@ export default function HarnessDashboard() {
     }
   }, [activeSlug]);
 
+  // Poll the scoper-result endpoint until the wrapper signals completion,
+  // then surface the agent's terminal summary line as a follow-up toast.
+  // Polls every 5s up to ~10 minutes; gives up silently if it doesn't
+  // finish in that window (scoper rarely runs that long).
+  const pollScoperResult = useCallback(async (slug: string, invocationId: string, modeLabel: string) => {
+    const start = Date.now();
+    const maxMs = 10 * 60 * 1000;
+    while (Date.now() - start < maxMs) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const r = await fetch(`/api/harness/${slug}/scoper-result/${invocationId}`);
+        if (!r.ok) continue;
+        const d = await r.json();
+        if (d.done) {
+          if (d.summary) {
+            toast.success(`${modeLabel} done`, { description: d.summary });
+          }
+          return;
+        }
+      } catch { /* keep polling */ }
+    }
+  }, []);
+
   const replanHarness = useCallback(async () => {
     if (!activeSlug) return;
     try {
       const res = await fetch(`/api/harness/${activeSlug}/replan`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const d = await res.json();
       toast.success('Replan started', {
         description: 'Scoper is folding new SPEC.md bullets into the work queue. Updates will appear in a few minutes.',
       });
+      if (d.invocationId) void pollScoperResult(activeSlug, d.invocationId, 'Replan');
     } catch (e) {
       toast.error('Replan failed', { description: String(e) });
     }
-  }, [activeSlug]);
+  }, [activeSlug, pollScoperResult]);
 
   const cleanupHarness = useCallback(async () => {
     if (!activeSlug) return;
@@ -2471,13 +2532,15 @@ export default function HarnessDashboard() {
     try {
       const res = await fetch(`/api/harness/${activeSlug}/cleanup`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      const d = await res.json();
       toast.success('Cleanup started', {
         description: 'Scoper is comparing existing features against SPEC.md. Updates will appear in a few minutes.',
       });
+      if (d.invocationId) void pollScoperResult(activeSlug, d.invocationId, 'Cleanup');
     } catch (e) {
       toast.error('Cleanup failed', { description: String(e) });
     }
-  }, [activeSlug]);
+  }, [activeSlug, pollScoperResult]);
 
   const stopHarness = useCallback(async () => {
     if (!activeSlug) return;
@@ -3174,10 +3237,7 @@ export default function HarnessDashboard() {
             </Tabs.Trigger>
           </Tooltip>
           {/* docs / vscode / pi tabs are now plugin-mounted (see pluginTabs below). */}
-          {/* Plugin-mounted tabs. The trigger is the tab itself; a tiny ⓘ
-              button next to the label opens a popover with version + a link
-              to the marketplace-ops detail page so operators can inspect
-              the source of the tab. */}
+          {/* Plugin-mounted tabs use the tab itself as the only control. */}
           {pluginTabs.map((pt) => (
             <PluginTabTrigger
               key={`${pt.pluginSlug}:${pt.tabId}`}
