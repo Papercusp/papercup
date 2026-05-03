@@ -12,16 +12,16 @@
  * columns in the (already-restored) per-harness schema get UPDATE'd in
  * the same transaction.
  *
- * The CSV parser here is intentionally simple: shared CSVs are produced
- * by `\COPY (...) TO STDOUT WITH (FORMAT csv, HEADER)` so they follow PG's
- * canonical CSV grammar. We re-emit through `\COPY ... FROM STDIN` to
- * inherit the same parser on insert.
+ * The on-disk row format is the canonical PG CSV (HEADER) emitted by the
+ * capture-side `copyFilteredSharedTables`. We parse it in JS and re-emit
+ * via postgres-js parameterized INSERTs — no `psql` involved.
  */
 
-import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
+import postgres from 'postgres';
 import { assertValidSlug, includedSharedTables } from './shared-table-filters';
+import { pgliteSocketOpts } from './pglite-admin-client';
 
 interface CsvFile {
   table: string;
@@ -47,8 +47,8 @@ async function discoverCsvs(stateDir: string): Promise<CsvFile[]> {
  * INSERTs (information_schema roundtrip) so we can rewrite the `id`
  * column when the registry asks for it.
  *
- * All inside a single `psql --single-transaction` so a failure rolls back
- * everything.
+ * Atomic: all inserts + per-harness FK updates happen in a single
+ * postgres-js transaction; any failure rolls back the whole batch.
  */
 export async function applyHarnessSharedRestore(args: {
   url: string;
@@ -57,123 +57,199 @@ export async function applyHarnessSharedRestore(args: {
   workDir: string;
   perHarnessSchema: string;
 }): Promise<{ tables: { table: string; rowCount: number }[] }> {
+  // Bind workDir for any future temp scratch — currently unused since we
+  // stream rows in memory rather than via an intermediate file.
+  void args.workDir;
   const csvs = await discoverCsvs(args.stateDir);
   if (csvs.length === 0) return { tables: [] };
 
-  const cols = await loadColumnLists(args.url);
-  const sqlPath = join(args.workDir, 'shared-restore.sql');
-  const lines: string[] = [`\\set ON_ERROR_STOP 1`, `BEGIN;`];
-  const tableStats: { table: string; rowCount: number }[] = [];
+  assertValidSlug(args.forkSuffix.replace(/_/g, ''));
 
-  for (const csv of csvs) {
-    const reg = includedSharedTables().find((t) => t.table === csv.table)!;
-    const temp = `_shared_${csv.table}_in`;
-    const colList = cols.get(csv.table);
-    if (!colList || colList.length === 0) {
-      throw new Error(`could not introspect columns for harness_shared.${csv.table}`);
-    }
+  const sql = postgres(args.url, {
+    max: 1,
+    idle_timeout: 1,
+    prepare: false,
+    onnotice: () => {},
+    ...pgliteSocketOpts(),
+  });
+  try {
+    const cols = await loadColumnLists(sql);
+    const tableStats: { table: string; rowCount: number }[] = [];
 
-    lines.push(
-      `CREATE TEMP TABLE ${temp} (LIKE harness_shared.${csv.table} INCLUDING DEFAULTS);`,
-    );
-    lines.push(`\\COPY ${temp} FROM '${csv.path}' WITH (FORMAT csv, HEADER);`);
+    await sql.begin(async (tx) => {
+      for (const csv of csvs) {
+        const reg = includedSharedTables().find((t) => t.table === csv.table)!;
+        const colList = cols.get(csv.table);
+        if (!colList || colList.length === 0) {
+          throw new Error(`could not introspect columns for harness_shared.${csv.table}`);
+        }
 
-    const allCols = colList.map((c) => `"${c}"`).join(', ');
-    if (reg.forkPrefixIds) {
-      const rewritten = colList
-        .map((c) =>
-          c === 'id'
-            ? `("id" || '_fork_${args.forkSuffix}') AS "id"`
-            : `"${c}"`,
-        )
-        .join(', ');
-      lines.push(
-        `INSERT INTO harness_shared.${csv.table} (${allCols}) ` +
-          `SELECT ${rewritten} FROM ${temp};`,
-      );
-      for (const fk of reg.fkRefsInPerHarness ?? []) {
-        lines.push(
-          `UPDATE ${args.perHarnessSchema}.${fk.table} ` +
-            `SET ${fk.column} = ${fk.column} || '_fork_${args.forkSuffix}' ` +
-            `WHERE ${fk.column} IS NOT NULL;`,
+        const csvText = await fs.readFile(csv.path, 'utf8');
+        const rows = parseCsv(csvText, colList);
+        if (rows.length === 0) {
+          tableStats.push({ table: csv.table, rowCount: 0 });
+          continue;
+        }
+
+        // Apply id-fork-prefixing in JS rather than via SQL expression so the
+        // INSERT can be a single bulk statement. postgres-js's `tx(rows)`
+        // helper expands an object array into a multi-row VALUES clause.
+        const transformed = reg.forkPrefixIds
+          ? rows.map((r) => ({ ...r, id: String(r.id) + `_fork_${args.forkSuffix}` }))
+          : rows;
+
+        await tx`
+          INSERT INTO ${tx(`harness_shared.${csv.table}`)}
+          ${tx(transformed, ...colList)}
+        `;
+
+        if (reg.forkPrefixIds) {
+          for (const fk of reg.fkRefsInPerHarness ?? []) {
+            await tx.unsafe(
+              `UPDATE ${args.perHarnessSchema}.${fk.table}
+                SET ${fk.column} = ${fk.column} || '_fork_${args.forkSuffix}'
+                WHERE ${fk.column} IS NOT NULL`,
+            );
+          }
+        }
+        tableStats.push({ table: csv.table, rowCount: transformed.length });
+      }
+
+      // §15.6 7f — projects.id forking propagates to project_spec_revisions.
+      if (csvs.some((c) => c.table === 'projects')) {
+        await tx.unsafe(
+          `UPDATE harness_shared.project_spec_revisions
+            SET project_id = project_id || '_fork_${args.forkSuffix}'
+            WHERE project_id IN (
+              SELECT id FROM harness_shared.projects
+              WHERE id LIKE '%_fork_${args.forkSuffix}'
+            )`,
         );
       }
-    } else {
-      lines.push(
-        `INSERT INTO harness_shared.${csv.table} (${allCols}) ` +
-          `SELECT ${allCols} FROM ${temp};`,
-      );
-    }
-    tableStats.push({ table: csv.table, rowCount: -1 });
+    });
+    return { tables: tableStats };
+  } finally {
+    await sql.end({ timeout: 1 }).catch(() => {});
   }
-
-  if (csvs.some((c) => c.table === 'projects')) {
-    lines.push(
-      `UPDATE harness_shared.project_spec_revisions ` +
-        `SET project_id = project_id || '_fork_${args.forkSuffix}' ` +
-        `WHERE project_id IN (` +
-        `  SELECT id FROM harness_shared.projects ` +
-        `  WHERE id LIKE '%_fork_${args.forkSuffix}'` +
-        `);`,
-    );
-  }
-
-  lines.push(`COMMIT;`);
-  await fs.writeFile(sqlPath, lines.join('\n') + '\n');
-  await psqlFile({ url: args.url, sqlPath });
-  await fs.unlink(sqlPath).catch(() => {});
-  return { tables: tableStats };
 }
 
-async function loadColumnLists(url: string): Promise<Map<string, string[]>> {
+async function loadColumnLists(
+  sql: ReturnType<typeof postgres>,
+): Promise<Map<string, string[]>> {
   const m = new Map<string, string[]>();
-  const out = await psqlQuery({
-    url,
-    sql:
-      `SELECT table_name, column_name ` +
-      `FROM information_schema.columns ` +
-      `WHERE table_schema = 'harness_shared' ` +
-      `ORDER BY table_name, ordinal_position`,
-  });
-  for (const row of out.split('\n')) {
-    const [t, c] = row.split('|');
-    if (!t || !c) continue;
-    if (!m.has(t)) m.set(t, []);
-    m.get(t)!.push(c);
+  const rows = (await sql<{ table_name: string; column_name: string }[]>`
+    SELECT table_name, column_name
+    FROM information_schema.columns
+    WHERE table_schema = 'harness_shared'
+    ORDER BY table_name, ordinal_position
+  `) as Array<{ table_name: string; column_name: string }>;
+  for (const row of rows) {
+    if (!m.has(row.table_name)) m.set(row.table_name, []);
+    m.get(row.table_name)!.push(row.column_name);
   }
   return m;
 }
 
-function psqlQuery(args: { url: string; sql: string }): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('psql', ['-X', '-A', '-q', '-tA', '-F', '|', '-c', args.sql, args.url], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (d) => (out += d.toString()));
-    child.stderr.on('data', (d) => (err += d.toString()));
-    child.on('error', reject);
-    child.on('close', (code) =>
-      code === 0
-        ? resolve(out)
-        : reject(new Error(`psql failed (${code}): ${err.trim() || args.sql}`)),
-    );
-  });
+/**
+ * Parse a PG `\COPY (...) TO STDOUT WITH (FORMAT csv, HEADER)` output.
+ *
+ * PG's CSV grammar: comma-separated fields; fields containing
+ * comma/quote/CR/LF are double-quoted; embedded `"` is doubled.
+ * NULL renders as the empty string by default; we keep them as `null`
+ * in the parsed objects so postgres-js inserts them as SQL NULL.
+ *
+ * The first line is the header; subsequent lines are records. A record
+ * may span multiple physical lines if a quoted field contains a newline.
+ */
+function parseCsv(text: string, expectedCols: string[]): Array<Record<string, unknown>> {
+  const fields = tokenizeCsv(text);
+  if (fields.length === 0) return [];
+  const header = fields[0];
+  // Sanity: header should match the column order from information_schema.
+  // If a column is missing, downstream INSERT will fail with a clearer
+  // message than we'd produce here, so just trust the header.
+  void expectedCols;
+
+  const rows: Array<Record<string, unknown>> = [];
+  for (let i = 1; i < fields.length; i++) {
+    const rec = fields[i];
+    if (rec.length === 1 && rec[0] === '') continue; // trailing newline
+    const obj: Record<string, unknown> = {};
+    for (let c = 0; c < header.length; c++) {
+      const raw = rec[c] ?? null;
+      // PG CSV default: empty string == NULL only when the field was
+      // unquoted. Our tokenizer preserves the quoted-vs-unquoted distinction
+      // by returning `null` for unquoted-empty and `""` for quoted-empty.
+      obj[header[c]] = raw;
+    }
+    rows.push(obj);
+  }
+  return rows;
 }
 
-function psqlFile(args: { url: string; sqlPath: string }): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'psql',
-      ['-X', '--single-transaction', '--set=ON_ERROR_STOP=1', '-f', args.sqlPath, args.url],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    let err = '';
-    child.stderr.on('data', (d) => (err += d.toString()));
-    child.on('error', reject);
-    child.on('close', (code) =>
-      code === 0 ? resolve() : reject(new Error(`psql -f failed (${code}): ${err.trim()}`)),
-    );
-  });
+/**
+ * Stateful CSV tokenizer matching PG's COPY CSV grammar. Returns an
+ * array of records, each a flat array of field values. A field is `null`
+ * when it appears unquoted-empty (PG NULL), or a string otherwise (which
+ * may be the empty string when explicitly quoted as `""`).
+ */
+function tokenizeCsv(text: string): Array<Array<string | null>> {
+  const out: Array<Array<string | null>> = [];
+  let row: Array<string | null> = [];
+  let field = '';
+  let inQuotes = false;
+  let fieldQuoted = false;
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (i + 1 < n && text[i + 1] === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        }
+        inQuotes = false;
+        i++;
+        continue;
+      }
+      field += ch;
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = true;
+      fieldQuoted = true;
+      i++;
+      continue;
+    }
+    if (ch === ',') {
+      row.push(fieldQuoted ? field : (field === '' ? null : field));
+      field = '';
+      fieldQuoted = false;
+      i++;
+      continue;
+    }
+    if (ch === '\r') {
+      i++;
+      continue; // \r\n → drop \r, handle \n
+    }
+    if (ch === '\n') {
+      row.push(fieldQuoted ? field : (field === '' ? null : field));
+      out.push(row);
+      row = [];
+      field = '';
+      fieldQuoted = false;
+      i++;
+      continue;
+    }
+    field += ch;
+    i++;
+  }
+  if (field !== '' || fieldQuoted || row.length > 0) {
+    row.push(fieldQuoted ? field : (field === '' ? null : field));
+    out.push(row);
+  }
+  return out;
 }

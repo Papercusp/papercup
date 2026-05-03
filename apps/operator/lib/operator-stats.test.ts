@@ -4,7 +4,7 @@ vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
 
-const auditRows: { ts: number; action: string; subject: string }[] = [];
+const auditRows: { ts: number; action: string; subject: string; details?: { actor_method?: string } }[] = [];
 vi.mock('@restart/db-org', () => ({
   withWorkspace: async (_id: string, fn: (tx: unknown) => Promise<unknown>) =>
     fn(((..._args: unknown[]) => auditRows) as unknown),
@@ -65,5 +65,21 @@ describe('readOperatorStats', () => {
     auditRows.push({ ts: now - 4 * 60_000, action: 'operator.consumed', subject: 'a' });
     const s = await readOperatorStats();
     expect(s.unconsumedFraction).toBeGreaterThan(0.25);
+  });
+
+  it('breaks down user actions by actor_method (voice/click/api/unspecified)', async () => {
+    const now = Date.now();
+    auditRows.length = 0;
+    auditRows.push(
+      { ts: now - 50_000, action: 'operator.dispatched', subject: 'a', details: { actor_method: 'voice' } },
+      { ts: now - 40_000, action: 'operator.dispatched', subject: 'b', details: { actor_method: 'voice' } },
+      { ts: now - 30_000, action: 'operator.dispatched', subject: 'c', details: { actor_method: 'click' } },
+      { ts: now - 20_000, action: 'operator.dismissed',  subject: 'd', details: { actor_method: 'api' } },
+      { ts: now - 10_000, action: 'operator.undo_cancel', subject: 'e' }, // no method
+      // Receiving-state flips should NOT count toward user actions:
+      { ts: now -  5_000, action: 'operator.consumed',  subject: 'a', details: { actor_method: 'voice' } },
+    );
+    const s = await readOperatorStats();
+    expect(s.byActorMethod).toEqual({ voice: 2, click: 1, api: 1, unspecified: 1 });
   });
 });

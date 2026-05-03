@@ -168,7 +168,20 @@ export function initVoiceMode(): void {
  * harnesses, sessions, and browser restarts (config persisted to
  * localStorage).
  */
-function voiceForRole(role: string): string | null {
+function voiceForRole(roleOrComposite: string): string | null {
+  // Per-slug override (v4 §2h v1.5): callers may pass `role@slug` to
+  // request a slug-specific assignment. Lookup chain:
+  //   1. exact `role@slug`     (specific)
+  //   2. base `role`           (shared across instances)
+  //   3. auto-assign (hashed)
+  let role = roleOrComposite;
+  let slugKey: string | null = null;
+  const at = roleOrComposite.indexOf('@');
+  if (at > 0) {
+    slugKey = roleOrComposite;
+    role = roleOrComposite.slice(0, at);
+    if (config.roleVoices[slugKey]) return config.roleVoices[slugKey];
+  }
   if (config.roleVoices[role]) return config.roleVoices[role];
 
   // Auto-assign a voice for this role if not configured. We hash the

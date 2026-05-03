@@ -25,7 +25,9 @@ const LEADER_LOSS_TIMEOUT_MS = 12_000;
 
 type Message =
   | { kind: 'announce'; tabId: string; ts: number }
-  | { kind: 'heartbeat'; tabId: string; ts: number };
+  | { kind: 'heartbeat'; tabId: string; ts: number }
+  | { kind: 'request-lead'; tabId: string; reason: string }
+  | { kind: 'yield'; toTabId: string };
 
 interface LeaderState {
   isLeader: boolean;
@@ -95,15 +97,32 @@ export function bootVoiceLeader(): Promise<LeaderState> {
       if (msg.kind === 'announce') {
         candidates.push({ tabId: msg.tabId, ts: msg.ts });
       } else if (msg.kind === 'heartbeat') {
-        // Track the leader's heartbeats so loss-detection works.
         if (state.leaderTabId === msg.tabId) {
           lastLeaderHeartbeatAt = msg.ts;
         } else if (!state.isLeader) {
-          // Late heartbeat from an unknown tab — adopt as leader if our
-          // own election didn't yield one and theirs is older.
           state = { ...state, leaderTabId: msg.tabId };
           lastLeaderHeartbeatAt = msg.ts;
           notify();
+        }
+      } else if (msg.kind === 'request-lead') {
+        // Another tab wants the lead (e.g. user opened the panel there).
+        // If we're the current leader, yield to them.
+        if (state.isLeader && msg.tabId !== state.myTabId) {
+          if (channel) {
+            channel.postMessage({ kind: 'yield', toTabId: msg.tabId } satisfies Message);
+          }
+          // Step down — stop heartbeating, become follower.
+          if (heartbeatTimer) clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+          state = { ...state, isLeader: false, leaderTabId: msg.tabId };
+          lastLeaderHeartbeatAt = Date.now();
+          startFollowerHeartbeatWatch();
+          notify();
+        }
+      } else if (msg.kind === 'yield') {
+        // We requested the lead and it was granted.
+        if (msg.toTabId === state.myTabId && !state.isLeader) {
+          becomeLeader();
         }
       }
     });
@@ -124,29 +143,60 @@ export function bootVoiceLeader(): Promise<LeaderState> {
     };
 
     if (state.isLeader) {
-      lastLeaderHeartbeatAt = Date.now();
-      heartbeatTimer = setInterval(() => {
-        if (!channel) return;
-        channel.postMessage({ kind: 'heartbeat', tabId: state.myTabId, ts: Date.now() } satisfies Message);
-      }, HEARTBEAT_MS);
+      startLeaderHeartbeats();
     } else {
-      // Followers watch for leader loss + re-elect.
-      lastLeaderHeartbeatAt = Date.now();
-      heartbeatTimer = setInterval(() => {
-        if (Date.now() - lastLeaderHeartbeatAt > LEADER_LOSS_TIMEOUT_MS) {
-          // Leader vanished — re-elect by re-running boot.
-          if (heartbeatTimer) clearInterval(heartbeatTimer);
-          heartbeatTimer = null;
-          bootPromise = null;
-          void bootVoiceLeader();
-        }
-      }, HEARTBEAT_MS);
+      startFollowerHeartbeatWatch();
     }
 
     notify();
     return state;
   })();
   return bootPromise;
+}
+
+function startLeaderHeartbeats(): void {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  lastLeaderHeartbeatAt = Date.now();
+  heartbeatTimer = setInterval(() => {
+    if (!channel) return;
+    channel.postMessage({ kind: 'heartbeat', tabId: state.myTabId, ts: Date.now() } satisfies Message);
+  }, HEARTBEAT_MS);
+}
+
+function startFollowerHeartbeatWatch(): void {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  lastLeaderHeartbeatAt = Date.now();
+  heartbeatTimer = setInterval(() => {
+    if (Date.now() - lastLeaderHeartbeatAt > LEADER_LOSS_TIMEOUT_MS) {
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+      bootPromise = null;
+      void bootVoiceLeader();
+    }
+  }, HEARTBEAT_MS);
+}
+
+function becomeLeader(): void {
+  state = { ...state, isLeader: true, leaderTabId: state.myTabId };
+  startLeaderHeartbeats();
+  // Announce immediately so other followers update their leader pointer.
+  if (channel) channel.postMessage({ kind: 'heartbeat', tabId: state.myTabId, ts: Date.now() } satisfies Message);
+  notify();
+}
+
+/**
+ * Request the voice lead for this tab (focus-transfer; v4 §2i v1.5).
+ *
+ * Used when the user shifts focus to a non-leader tab (e.g. opens the
+ * Operator panel here) — voice should follow user attention. The current
+ * leader yields to us; we become leader and start heartbeating.
+ *
+ * No-op when we're already the leader OR BroadcastChannel is unavailable.
+ */
+export function requestVoiceLead(reason = 'focus'): void {
+  if (state.isLeader) return;
+  if (!channel || !state.available) return;
+  channel.postMessage({ kind: 'request-lead', tabId: state.myTabId, reason } satisfies Message);
 }
 
 /** Test-only: tear down state for a fresh election. */

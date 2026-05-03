@@ -19,7 +19,7 @@ import { dirname } from 'node:path';
 import { papercuspPath } from './papercusp-root';
 
 export type SttEngineKind = 'voicemode' | 'webspeech' | 'off';
-export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs';
+export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai';
 
 export interface VoicePrefs {
   // Feature toggles (defaults reflect v4 §3.2)
@@ -35,6 +35,8 @@ export interface VoicePrefs {
   sttEngine: SttEngineKind;
   ttsEngine: TtsEngineKind;
   elevenlabsVoiceId: string;        // default Adam preset
+  openaiVoice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
+  openaiModel: 'tts-1' | 'tts-1-hd';
 
   // One-time consents
   webSpeechLeakAcked: boolean;
@@ -59,6 +61,8 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM', // Adam preset
+  openaiVoice: 'nova',
+  openaiModel: 'tts-1',
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

@@ -19,13 +19,13 @@
  * `papercusp doctor --release-restore-locks`, not surfaced here.
  */
 
-import { spawn } from 'node:child_process';
 import { promises as fs, createReadStream, createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
 import { createGunzip } from 'node:zlib';
+import postgres from 'postgres';
 import { assertValidSlug } from './shared-table-filters';
-import { resolveDatabaseUrl } from './pg-dump';
+import { pgliteSocketOpts } from './pglite-admin-client';
 
 export class TargetSchemaExists extends Error {
   constructor(slug: string) {
@@ -34,58 +34,53 @@ export class TargetSchemaExists extends Error {
   }
 }
 
-interface PgQuery {
-  url: string;
-  sql: string;
+/**
+ * Open a short-lived postgres-js connection. We deliberately don't share a
+ * pool here — restore is a one-shot batch operation and the cost of a fresh
+ * connection is negligible next to the multi-MB SQL apply that follows.
+ */
+function openSql(url: string) {
+  return postgres(url, {
+    max: 1,
+    idle_timeout: 1,
+    prepare: false,
+    onnotice: () => {},
+    ...pgliteSocketOpts(),
+  });
 }
 
-async function psqlExec(args: PgQuery): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('psql', ['-X', '-A', '-q', '-tA', '-c', args.sql, args.url], {
-      stdio: ['ignore', 'pipe', 'pipe'],
+async function execStatement(url: string, sql: string): Promise<unknown[]> {
+  const client = openSql(url);
+  try {
+    return (await client.unsafe(sql)) as unknown as unknown[];
+  } finally {
+    await client.end({ timeout: 1 }).catch(() => {});
+  }
+}
+
+/**
+ * Apply a multi-statement SQL batch (typically rewritten pg_dump output) inside
+ * a single transaction. Mirrors the behavior of `psql --single-transaction
+ * --set=ON_ERROR_STOP=1 -f file.sql`: the whole batch commits atomically or
+ * rolls back on any error.
+ */
+async function execBatchTransactional(url: string, sqlText: string): Promise<void> {
+  const client = openSql(url);
+  try {
+    await client.begin(async (tx) => {
+      await tx.unsafe(sqlText);
     });
-    let out = '';
-    let err = '';
-    child.stdout.on('data', (d) => (out += d.toString()));
-    child.stderr.on('data', (d) => (err += d.toString()));
-    child.on('error', reject);
-    child.on('close', (code) =>
-      code === 0
-        ? resolve(out)
-        : reject(new Error(`psql failed (${code}): ${err.trim() || args.sql}`)),
-    );
-  });
-}
-
-async function psqlExecFile(args: { url: string; sqlPath: string }): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      'psql',
-      [
-        '-X',
-        '--single-transaction',
-        '--set=ON_ERROR_STOP=1',
-        '-f',
-        args.sqlPath,
-        args.url,
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    let err = '';
-    child.stderr.on('data', (d) => (err += d.toString()));
-    child.on('error', reject);
-    child.on('close', (code) =>
-      code === 0 ? resolve() : reject(new Error(`psql -f failed (${code}): ${err.trim()}`)),
-    );
-  });
+  } finally {
+    await client.end({ timeout: 1 }).catch(() => {});
+  }
 }
 
 export async function schemaExists(url: string, schema: string): Promise<boolean> {
-  const r = await psqlExec({
+  const r = (await execStatement(
     url,
-    sql: `SELECT 1 FROM information_schema.schemata WHERE schema_name = '${schema}'`,
-  });
-  return r.trim() === '1';
+    `SELECT 1 AS one FROM information_schema.schemata WHERE schema_name = '${schema}'`,
+  )) as Array<{ one: number }>;
+  return r.length > 0;
 }
 
 export async function takeRestoreLock(args: {
@@ -93,20 +88,20 @@ export async function takeRestoreLock(args: {
   originalSlug: string;
 }): Promise<void> {
   // hashtext() returns int4; pg_advisory_lock(int4) uses the 32-bit form.
-  await psqlExec({
-    url: args.url,
-    sql: `SELECT pg_advisory_lock(hashtext('snapshot-restore:${args.originalSlug}'))`,
-  });
+  await execStatement(
+    args.url,
+    `SELECT pg_advisory_lock(hashtext('snapshot-restore:${args.originalSlug}'))`,
+  );
 }
 
 export async function releaseRestoreLock(args: {
   url: string;
   originalSlug: string;
 }): Promise<void> {
-  await psqlExec({
-    url: args.url,
-    sql: `SELECT pg_advisory_unlock(hashtext('snapshot-restore:${args.originalSlug}'))`,
-  });
+  await execStatement(
+    args.url,
+    `SELECT pg_advisory_unlock(hashtext('snapshot-restore:${args.originalSlug}'))`,
+  );
 }
 
 /**
@@ -216,8 +211,8 @@ export async function applyPerHarnessDump(args: {
   const restoring = `harness_${args.originalSlug}_restoring`;
 
   // 7c — drop any leftover restoring schema from a half-failed prior attempt.
-  await psqlExec({ url: args.url, sql: `DROP SCHEMA IF EXISTS ${restoring} CASCADE` });
-  await psqlExec({ url: args.url, sql: `CREATE SCHEMA ${restoring}` });
+  await execStatement(args.url, `DROP SCHEMA IF EXISTS ${restoring} CASCADE`);
+  await execStatement(args.url, `CREATE SCHEMA ${restoring}`);
 
   // 7d — stream-rewrite the dump.
   const rewrittenPath = join(args.workDir, 'db-rewritten.sql');
@@ -228,14 +223,15 @@ export async function applyPerHarnessDump(args: {
     restoringSchema: restoring,
   });
 
-  // Apply atomically.
-  await psqlExecFile({ url: args.url, sqlPath: rewrittenPath });
+  // Apply atomically (postgres-js multi-statement, wrapped in a single tx).
+  const rewritten = await fs.readFile(rewrittenPath, 'utf8');
+  await execBatchTransactional(args.url, rewritten);
   await fs.unlink(rewrittenPath).catch(() => {});
 
   // 7g — atomic rename to final slug.
   const finalSchema = `harness_${args.newSlug}`;
-  await psqlExec({
-    url: args.url,
-    sql: `ALTER SCHEMA ${restoring} RENAME TO ${finalSchema}`,
-  });
+  await execStatement(
+    args.url,
+    `ALTER SCHEMA ${restoring} RENAME TO ${finalSchema}`,
+  );
 }

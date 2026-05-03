@@ -42,7 +42,7 @@ class FakeBroadcastChannel {
 (globalThis as any).BroadcastChannel = FakeBroadcastChannel as any;
 (globalThis as any).window = globalThis;
 
-import { bootVoiceLeader, _resetVoiceLeaderForTests, getVoiceLeaderState } from './voice-leader';
+import { bootVoiceLeader, _resetVoiceLeaderForTests, getVoiceLeaderState, requestVoiceLead } from './voice-leader';
 
 beforeEach(() => {
   FakeBroadcastChannel.reset();
@@ -87,5 +87,26 @@ describe('voice-leader election', () => {
     const s = getVoiceLeaderState();
     expect(s.leaderTabId).toBeTruthy();
     expect(s.isLeader).toBe(true);
+  });
+
+  it('requestVoiceLead is a no-op when already leader', async () => {
+    await bootVoiceLeader();
+    expect(getVoiceLeaderState().isLeader).toBe(true);
+    requestVoiceLead('test'); // should not throw, should not change state
+    expect(getVoiceLeaderState().isLeader).toBe(true);
+  });
+
+  it('requestVoiceLead is a no-op when BroadcastChannel is unavailable', async () => {
+    const orig = (globalThis as any).BroadcastChannel;
+    (globalThis as any).BroadcastChannel = undefined;
+    try {
+      _resetVoiceLeaderForTests();
+      const s = await bootVoiceLeader();
+      expect(s.available).toBe(false);
+      requestVoiceLead('test'); // should be a clean no-op
+      expect(getVoiceLeaderState().isLeader).toBe(true);
+    } finally {
+      (globalThis as any).BroadcastChannel = orig;
+    }
   });
 });

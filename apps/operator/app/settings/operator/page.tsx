@@ -46,6 +46,7 @@ export default function OperatorSettingsPage() {
     medianAckLatencyMs: number | null;
     unconsumedFraction: number | null;
     totalSpendUsd: number;
+    byActorMethod?: { voice: number; click: number; api: number; unspecified: number };
   } | null>(null);
 
   const loadAll = useCallback(async () => {
@@ -232,6 +233,19 @@ export default function OperatorSettingsPage() {
               The v5 plan's Path-(a) (`dispatch_role`) escalation criterion is met; consider raising the issue
               with the substrate maintainers.
             </p>
+          )}
+          {stats.byActorMethod && (
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border)', fontSize: 13 }}>
+              <strong>How you act</strong>
+              <div style={{ display: 'flex', gap: 16, marginTop: 6 }}>
+                <span>🎤 voice: <strong>{stats.byActorMethod.voice}</strong></span>
+                <span>🖱 click: <strong>{stats.byActorMethod.click}</strong></span>
+                <span>⚙ api/CLI: <strong>{stats.byActorMethod.api}</strong></span>
+                {stats.byActorMethod.unspecified > 0 && (
+                  <span style={{ opacity: 0.6 }}>? unspecified: {stats.byActorMethod.unspecified}</span>
+                )}
+              </div>
+            </div>
           )}
         </section>
       )}

@@ -14,7 +14,7 @@
  * the chrome boots with.
  */
 
-import { readElevenLabsKey } from './voice-credentials';
+import { readElevenLabsKey, readOpenAiKey } from './voice-credentials';
 import type { SttEngineKind, TtsEngineKind, VoicePrefs } from './voice-prefs';
 
 export type Priority = 'polite' | 'assertive';
@@ -53,6 +53,7 @@ export interface EnginesContext {
   whisperBase: string | null;
   kokoroBase: string | null;
   elevenlabsApiKey: string | null;
+  openaiApiKey: string | null;
 }
 
 export interface DetectResult {
@@ -104,7 +105,8 @@ async function probeHealth(base: string): Promise<string | null> {
 export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
   const { whisperBase, kokoroBase } = await resolveVoicemodeEndpoints();
   const elevenlabsApiKey = readElevenLabsKey();
-  const ctx: EnginesContext = { whisperBase, kokoroBase, elevenlabsApiKey };
+  const openaiApiKey = readOpenAiKey();
+  const ctx: EnginesContext = { whisperBase, kokoroBase, elevenlabsApiKey, openaiApiKey };
 
   // STT selection (per v4 §1.1)
   let stt: SttEngine | null = null;
@@ -131,6 +133,14 @@ export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
     const { createElevenLabsTts } = await import('./voice-engines/elevenlabs');
     tts = createElevenLabsTts({ apiKey: elevenlabsApiKey, voiceId: prefs.elevenlabsVoiceId });
     ttsKind = 'elevenlabs';
+  } else if (requested === 'openai' && openaiApiKey) {
+    const { createOpenAiTts } = await import('./voice-engines/openai');
+    tts = createOpenAiTts({
+      apiKey: openaiApiKey,
+      voice: prefs.openaiVoice,
+      model: prefs.openaiModel,
+    });
+    ttsKind = 'openai';
   } else {
     // Fallback: browser TTS. Always available client-side.
     const { createBrowserTts } = await import('./voice-engines/browser');

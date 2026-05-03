@@ -35,12 +35,20 @@ export interface OperatorStats {
   /** Last-7-days cost from budget.json. */
   spend: { date: string; usd: number }[];
   totalSpendUsd: number;
+  /** Action initiation breakdown (voice-mode plan v4 §2m). */
+  byActorMethod: {
+    voice: number;
+    click: number;
+    api: number;
+    unspecified: number;
+  };
 }
 
 interface AuditRow {
   ts: number;
   action: string;
   subject: string;
+  details?: { actor_method?: string };
 }
 
 const UNCONSUMED_2X_CADENCE_MS = 2 * 60_000;
@@ -52,7 +60,7 @@ export async function readOperatorStats(): Promise<OperatorStats> {
     const workspaceId = activeWorkspaceId();
     rows = await withWorkspace(workspaceId, async (tx) => {
       return tx<AuditRow[]>`
-        SELECT ts, action, subject
+        SELECT ts, action, subject, details
           FROM harness_shared.audit_log
          WHERE actor  = 'system:operator'
            AND action LIKE 'operator.%'
@@ -110,6 +118,21 @@ export async function readOperatorStats(): Promise<OperatorStats> {
   const spend = budget?.spend ?? [];
   const totalSpendUsd = spend.reduce((a, s) => a + s.usd, 0);
 
+  // Voice-vs-click-vs-api breakdown over user-initiated actions
+  // (dispatched / dismissed / undo_cancel). Excludes receiving-state
+  // flips (those are recipient-side, not the user's action).
+  const userActionKinds = new Set(['dispatched', 'dismissed', 'undo_cancel']);
+  const byActorMethod = { voice: 0, click: 0, api: 0, unspecified: 0 };
+  for (const r of rows) {
+    const kind = r.action.replace(/^operator\./, '');
+    if (!userActionKinds.has(kind)) continue;
+    const m = r.details?.actor_method;
+    if (m === 'voice') byActorMethod.voice++;
+    else if (m === 'click') byActorMethod.click++;
+    else if (m === 'api') byActorMethod.api++;
+    else byActorMethod.unspecified++;
+  }
+
   return {
     windowDays: 7,
     cardsTotal: seenCards.size,
@@ -124,5 +147,6 @@ export async function readOperatorStats(): Promise<OperatorStats> {
     unconsumedFraction,
     spend,
     totalSpendUsd,
+    byActorMethod,
   };
 }

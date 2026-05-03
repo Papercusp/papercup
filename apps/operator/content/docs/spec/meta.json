@@ -33,6 +33,7 @@
     "open-questions",
     "cli-pluggability",
     "operator-architecture-decisions",
-    "operator-v5"
+    "operator-v5",
+    "voice-mode-v4"
   ]
 }

@@ -772,6 +772,10 @@ export function OperatorPanel(): JSX.Element | null {
   useEffect(() => {
     if (!state.open) return;
     const dereg = registerVoiceConsumer('OperatorPanel');
+    // Focus-transfer (v4 §2i): when the panel opens, this tab claims the
+    // voice lead so spoken output follows user attention. No-op if we're
+    // already leader or BroadcastChannel is unavailable.
+    void import('./voice/voice-leader').then((m) => m.requestVoiceLead('panel-open')).catch(() => {});
     const unsub = onFinalUtterance(async (text) => {
       if (!text || text.length < 2) return;
       // v4 §2m: tag voice-initiated audit rows. Restore on next macrotask.

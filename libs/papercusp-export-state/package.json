@@ -21,7 +21,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@papercusp/publish-auth": "*"
+    "@papercusp/publish-auth": "*",
+    "postgres": "^3.4.4"
   },
   "devDependencies": {
     "@papercusp/test-config": "*",

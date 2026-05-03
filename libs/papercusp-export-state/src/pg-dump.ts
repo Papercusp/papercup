@@ -3,19 +3,30 @@
  *
  *   1. pg_dump --schema=harness_<slug>          → state/db.sql.gz
  *   2. pg_dump --schema=harness_shared --schema-only → state/shared-schema.sql
- *   3. For each included shared table, COPY (filtered) TO STDOUT csv, HEADER
- *      → state/shared-<table>.csv
+ *   3. For each included shared table, dump filtered rows to CSV
+ *      (PG's canonical FORMAT csv, HEADER) → state/shared-<table>.csv
  *
- * The DB connection URL defaults to `HARNESS_ADMIN_DATABASE_URL` (admin
- * role; needed to dump full DDL + cross-schema reads). Caller can override
- * via `CaptureRequest.databaseUrl`.
+ * Dispatch:
+ *   - If `PGLITE_ADMIN_URL` is set, the dump (step 1+2) goes through
+ *     pglite-server's WASM `pg_dump` (no system binary).
+ *   - Otherwise the dump shells to system `pg_dump`.
+ *   - Filtered shared-row CSVs (step 3) always use postgres-js `COPY ...
+ *     TO STDOUT`, which works on both pglite and real PG with no binary.
+ *
+ * Connection URL defaults to `HARNESS_ADMIN_DATABASE_URL` (admin role; needed
+ * to dump full DDL + cross-schema reads). Caller can override via
+ * `CaptureRequest.databaseUrl`.
  */
 
 import { spawn } from 'node:child_process';
-import { promises as fs } from 'node:fs';
-import { createWriteStream } from 'node:fs';
+import { promises as fs, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
+import { createGzip } from 'node:zlib';
+import { Readable } from 'node:stream';
 import { join } from 'node:path';
+import postgres from 'postgres';
 import { assertValidSlug, includedSharedTables } from './shared-table-filters';
+import { pgliteAdminPgDump, pgliteAdminUrl, pgliteSocketOpts } from './pglite-admin-client';
 
 const ADMIN_URL_ENV = 'HARNESS_ADMIN_DATABASE_URL';
 const APP_URL_ENV = 'HARNESS_DATABASE_URL';
@@ -33,30 +44,6 @@ interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
-}
-
-function run(
-  cmd: string,
-  args: string[],
-  opts: { input?: string; env?: NodeJS.ProcessEnv } = {},
-): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, {
-      env: { ...process.env, ...opts.env },
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
-    child.on('error', (e) => reject(e));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
-    if (opts.input != null) {
-      child.stdin.end(opts.input);
-    } else {
-      child.stdin.end();
-    }
-  });
 }
 
 function runStream(
@@ -82,6 +69,25 @@ function runStream(
   });
 }
 
+async function gzipTextToFile(text: string, destPath: string): Promise<void> {
+  await pipeline(Readable.from([text]), createGzip(), createWriteStream(destPath));
+}
+
+async function writeTextToFile(text: string, destPath: string): Promise<void> {
+  await fs.writeFile(destPath, text, 'utf8');
+}
+
+async function pgDumpViaAdmin(adminUrl: string, args: string[]): Promise<string> {
+  return pgliteAdminPgDump(adminUrl, args);
+}
+
+async function pgDumpViaSystemBinary(args: string[], outPath: string): Promise<void> {
+  const r = await runStream('pg_dump', args, outPath);
+  if (r.code !== 0) {
+    throw new Error(`pg_dump failed (code ${r.code}): ${r.stderr.trim()}`);
+  }
+}
+
 export async function pgDumpPerHarness(args: {
   slug: string;
   destDir: string;
@@ -90,19 +96,25 @@ export async function pgDumpPerHarness(args: {
   assertValidSlug(args.slug);
   const url = resolveDatabaseUrl(args.databaseUrl);
   const outPath = join(args.destDir, 'db.sql.gz');
-  const r = await runStream(
-    'pg_dump',
-    [
+  const admin = pgliteAdminUrl();
+  if (admin) {
+    const text = await pgDumpViaAdmin(admin, [
       `--schema=harness_${args.slug}`,
       '--no-owner',
       '--no-privileges',
-      '--compress=4',
-      url,
-    ],
-    outPath,
-  );
-  if (r.code !== 0) {
-    throw new Error(`pg_dump per-harness failed (code ${r.code}): ${r.stderr.trim()}`);
+    ]);
+    await gzipTextToFile(text, outPath);
+  } else {
+    await pgDumpViaSystemBinary(
+      [
+        `--schema=harness_${args.slug}`,
+        '--no-owner',
+        '--no-privileges',
+        '--compress=4',
+        url,
+      ],
+      outPath,
+    );
   }
   return { outPath };
 }
@@ -113,17 +125,29 @@ export async function pgDumpSharedSchema(args: {
 }): Promise<{ outPath: string }> {
   const url = resolveDatabaseUrl(args.databaseUrl);
   const outPath = join(args.destDir, 'shared-schema.sql');
-  const r = await runStream(
-    'pg_dump',
-    ['--schema-only', '--schema=harness_shared', '--no-owner', '--no-privileges', url],
-    outPath,
-  );
-  if (r.code !== 0) {
-    throw new Error(`pg_dump shared schema failed (code ${r.code}): ${r.stderr.trim()}`);
+  const admin = pgliteAdminUrl();
+  if (admin) {
+    const text = await pgDumpViaAdmin(admin, [
+      '--schema-only',
+      '--schema=harness_shared',
+      '--no-owner',
+      '--no-privileges',
+    ]);
+    await writeTextToFile(text, outPath);
+  } else {
+    await pgDumpViaSystemBinary(
+      ['--schema-only', '--schema=harness_shared', '--no-owner', '--no-privileges', url],
+      outPath,
+    );
   }
   return { outPath };
 }
 
+/**
+ * Filtered CSV dump for each shared table via postgres-js's COPY TO STDOUT
+ * (works on pglite and real PG; no binary). Output format matches the prior
+ * `psql -c "\COPY (...) TO STDOUT WITH (FORMAT csv, HEADER)"` byte-for-byte.
+ */
 export async function copyFilteredSharedTables(args: {
   slug: string;
   destDir: string;
@@ -131,25 +155,32 @@ export async function copyFilteredSharedTables(args: {
 }): Promise<{ written: { table: string; outPath: string; rowCount: number }[] }> {
   assertValidSlug(args.slug);
   const url = resolveDatabaseUrl(args.databaseUrl);
+  const sql = postgres(url, {
+    max: 1,
+    idle_timeout: 1,
+    prepare: false,
+    onnotice: () => {},
+    ...pgliteSocketOpts(),
+  });
   const written: { table: string; outPath: string; rowCount: number }[] = [];
-  for (const entry of includedSharedTables()) {
-    const where = entry.filter(args.slug);
-    const sql = `\\COPY (SELECT * FROM harness_shared.${entry.table} WHERE ${where}) TO STDOUT WITH (FORMAT csv, HEADER)`;
-    const outPath = join(args.destDir, `shared-${entry.table}.csv`);
-    const r = await runStream('psql', ['-X', '-A', '-q', '-c', sql, url], outPath);
-    if (r.code !== 0) {
-      throw new Error(
-        `COPY shared.${entry.table} failed (code ${r.code}): ${r.stderr.trim()}`,
-      );
+  try {
+    for (const entry of includedSharedTables()) {
+      const where = entry.filter(args.slug);
+      const outPath = join(args.destDir, `shared-${entry.table}.csv`);
+      const copySql = `COPY (SELECT * FROM harness_shared.${entry.table} WHERE ${where}) TO STDOUT WITH (FORMAT csv, HEADER)`;
+      const rs = await sql.unsafe(copySql).readable();
+      const ws = createWriteStream(outPath);
+      await pipeline(rs, ws);
+      const stat = await fs.stat(outPath);
+      let rowCount = 0;
+      if (stat.size > 0) {
+        const txt = await fs.readFile(outPath, 'utf8');
+        rowCount = Math.max(0, txt.split('\n').filter((l) => l.length > 0).length - 1);
+      }
+      written.push({ table: entry.table, outPath, rowCount });
     }
-    const stat = await fs.stat(outPath);
-    // First line is header; row count = lines - 1, with empty file edge.
-    let rowCount = 0;
-    if (stat.size > 0) {
-      const txt = await fs.readFile(outPath, 'utf8');
-      rowCount = Math.max(0, txt.split('\n').filter((l) => l.length > 0).length - 1);
-    }
-    written.push({ table: entry.table, outPath, rowCount });
+  } finally {
+    await sql.end({ timeout: 1 }).catch(() => {});
   }
   return { written };
 }
