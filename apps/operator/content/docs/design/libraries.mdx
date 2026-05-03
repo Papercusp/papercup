@@ -133,3 +133,84 @@ toast('quote draft saved');
 **Sizing convention:** `<Check size={11} />` for inline pills, `<Check size={13} />` for buttons, `<Check className="h-3 w-3" />` works too. Use `strokeWidth={1.75}` to match the harness's existing visual weight; the default `strokeWidth={2}` looks slightly bolder.
 
 **Brand logos kept as inline SVG:** Google, Facebook, Apple, Visa, Mastercard, Amex, Discover. Not in lucide; can't be replaced by a generic icon.
+
+## `react-hook-form` + `@hookform/resolvers` + `ajv` + `zod`
+
+**What:** Form-state management. RHF owns input registration / dirty tracking / submit handling; the resolvers package bridges to Zod (for forms whose schema we control) or Ajv (for forms whose schema is plugin-author-supplied JSON Schema).
+
+**Why this one:** After a freshness pass on the React form-library landscape (rjsf, jsonforms, formily, formisch, autoform, tanstack-form), `react-hook-form` was the clear winner for our constraints — ~33 KB / 11 KB gzip, zero runtime deps, uncontrolled inputs (minimal re-renders), SSR-compatible behind a `"use client"` boundary, and — critically — a first-class Ajv resolver that handles the per-plugin JSON Schemas without forcing plugin authors to migrate to Zod/Valibot. Same library covers both internal forms (Zod schemas we author) and dynamic plugin-config forms (Ajv against third-party schemas), so the team learns one form mental model. See `apps/operator/lib/forms/README.md` for the per-PR migration recipe.
+
+**Wrappers:** `apps/operator/lib/forms/`:
+
+- `useFormWith(zodSchema)` — wraps `useForm` with `zodResolver` and exposes a tighter `{ register, submit, errors, isSubmitting, isDirty, ... }`. Use this for any form whose schema you own.
+- `<FormField label error description>` — labelled input wrapper with inline `FieldError`/string error rendering. Matches the existing CSS-variable styling.
+- `<SubmitButton pending>` — disabled-while-submitting button bound to `isSubmitting`.
+- `makeAjvResolver(jsonSchema)` — pre-registers `ajv-formats` (so `email`, `uri`, `date-time`, etc. resolve). Use with vanilla `useForm`, not `useFormWith`. Required for any form that consumes plugin-author JSON Schema (the per-plugin Config tab, `/settings/plugins`).
+
+**When to use which schema dialect:**
+
+| Schema source | Resolver | Helper |
+|---|---|---|
+| Schema is yours to define (settings page, login, internal admin form) | `zodResolver` | `useFormWith(ZodSchema)` |
+| Schema is a Zod schema already imported from `lib/validators.ts` (server-side) | `zodResolver` | `useFormWith(SharedZod)` — single source of truth, no client/server drift |
+| Schema is JSON Schema from a third party (plugin manifests in `papercusp.json`) | `ajvResolver` | `useForm({ resolver: makeAjvResolver(schema) })` |
+
+**When NOT to migrate to RHF:**
+
+- **Single textarea + Cmd-Enter chat composers** (`ChatPanel`, `OracleDock`, `SupportAgentPanel`, `ArchitectInbox` idea draft, `OperatorNoteForm`). One field with custom IME/keyboard handling — RHF adds boilerplate without buying validation, dirty tracking, or perf.
+- **Monaco code editors** (`SpecEditor`, `ManifestSpecEditor`). Those edit text files, not form fields. RHF doesn't model code editors.
+- **Radix native form primitives** when there's no validation logic. A plain `<select>` with one option doesn't need a form library.
+
+**Common pattern for AI agents writing new forms here:**
+
+```tsx
+'use client';
+import { z } from 'zod';
+import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+
+const Schema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+});
+type FormData = z.infer<typeof Schema>;
+
+export function SomeForm() {
+  const { register, submit, errors, isSubmitting } = useFormWith(Schema);
+  const onSubmit = async (data: FormData) => {
+    await fetch('/api/...', { method: 'POST', body: JSON.stringify(data) });
+  };
+  return (
+    <form onSubmit={submit(onSubmit)}>
+      <FormField label="Name" required error={errors.name}>
+        <input {...register('name')} />
+      </FormField>
+      <FormField label="Email" required error={errors.email}>
+        <input type="email" {...register('email')} />
+      </FormField>
+      <SubmitButton pending={isSubmitting}>Save</SubmitButton>
+    </form>
+  );
+}
+```
+
+**For non-native inputs** (MarkdownEditor, custom widgets that take `value`/`onChange` directly instead of a `ref` + native event), use RHF's `Controller`:
+
+```tsx
+import { Controller } from 'react-hook-form';
+import { useFormWith } from '@/lib/forms';
+
+const { control, submit, errors } = useFormWith(Schema, { defaultValues: { content: '' } });
+return (
+  <form onSubmit={submit(onSubmit)}>
+    <Controller
+      control={control}
+      name="content"
+      render={({ field }) => (
+        <MarkdownEditor value={field.value} onChange={field.onChange} />
+      )}
+    />
+  </form>
+);
+```
+
+**Do not** introduce `formik`, `@rjsf/core`, `@jsonforms/react`, `uniforms`, or `@formily/react`. They were all considered and rejected in favour of RHF — adding any of them creates two parallel form systems.
