@@ -34,6 +34,7 @@ import {
   formatLineageForPrompt,
   withWorkspaceLegacy,
 } from '@restart/db-org';
+import { ensureSnapshotFeaturesTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 const getOrgDbClient = () => getLegacyClient();
 const dbcFor = (slug: string) => getLegacyClient(slug);
@@ -295,6 +296,8 @@ function invokeScoperBackground(
 ): { invocationId: string } {
   const { spawn } = require('node:child_process');
   const invocationId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const resultsDir = join(harnessDir(project), 'scoper-results');
+  const resultPath = join(resultsDir, `${mode}-${invocationId}.log`);
   const wrapper = `
     set -e
     export PROJECT_DIR="${project.path}"
@@ -302,10 +305,10 @@ function invokeScoperBackground(
     export HARNESS_DIR="${harnessPackageDir()}"
     export LOG_DIR="$STATE_DIR/logs"
     export SCOPER_INVOCATION_ID="${invocationId}"
-    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR" "$STATE_DIR/scoper-results" "$STATE_DIR/consolidate-results"
+    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR" "${resultsDir}" "$STATE_DIR/consolidate-results"
     source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|check_cost_cap|prune_logs)\\(\\)/,/^}/' "$HARNESS_DIR/run.sh")
-    invoke scoper "MODE=${mode}"
-    echo "__INVOCATION_DONE__" >> "$STATE_DIR/scoper-results/${mode}-${invocationId}.log"
+    invoke scoper "MODE=${mode}" 2>&1 | tee "${resultPath}"
+    echo "__INVOCATION_DONE__" >> "${resultPath}"
   `;
   const child = spawn('bash', ['-c', wrapper], {
     cwd: project.path,
@@ -977,6 +980,7 @@ harness.patch('/:slug/features/:id', async (c) => {
   const id = c.req.param('id');
   const body = await c.req.json() as { title?: string; summary?: string; claims?: string[]; status?: string; attempts?: number; project_id?: string; expected_cost_cents?: number; tags?: string[]; needs_human_review?: boolean; metadata?: any; notes?: string; deprecation_reason?: string };
   const actor = c.req.header('x-actor') ?? 'api';
+  // Ensure deprecation_reason column exists (idempotent; once per process per slug).
 
   const dbc = dbcFor(project.slug);
   const existing = await dbc.prepare('SELECT * FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, id) as any;
@@ -1499,26 +1503,60 @@ harness.get('/:slug/log/stream', (c) => {
 
     // Backfill: read the tail of the file and replay the last N lines so
     // the client has immediate context on connect.
+    //
+    // Two fixes vs the prior implementation (which took 6-7s for 500 lines):
+    //   1. Read only the last 1 MiB via openSync + readSync(offset). The
+    //      previous code did `readFileSync` of the whole file then sliced
+    //      in memory — on a 50 MiB log that's 50 MiB of allocation per
+    //      reconnect.
+    //   2. Don't await per-line. SSE backpressure means each writeSSE in
+    //      a loop can take tens of ms; 500 × 20ms = 10s of dead time. We
+    //      build the multi-event payload as a single string, then issue
+    //      one write. The browser sees no difference; the server stops
+    //      blocking on its own backpressure.
     const backfill = async () => {
       try {
         const stat = statSync(jsonlPath);
-        // Read up to last 1 MiB or whole file. Larger backfills risk
-        // the SSE connection blocking on the initial flush.
-        const start = Math.max(0, stat.size - 1024 * 1024);
-        const fd = readFileSync(jsonlPath, 'utf8');
+        const tailBytes = 1024 * 1024;
+        const start = Math.max(0, stat.size - tailBytes);
+        const len = stat.size - start;
+        const buf = Buffer.alloc(len);
+        const fd = openSync(jsonlPath, 'r');
+        try {
+          readSync(fd, buf, 0, len, start);
+        } finally {
+          closeSync(fd);
+        }
         lastSize = stat.size;
-        const allLines = fd.slice(start).split('\n').filter(Boolean);
+        // If we sliced into the middle of a line, drop the partial first one.
+        let chunk = buf.toString('utf8');
+        if (start > 0) {
+          const firstNl = chunk.indexOf('\n');
+          if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+        }
+        const allLines = chunk.split('\n').filter(Boolean);
         const toReplay = allLines.slice(-tailSize);
+
+        // Build the SSE payload in one pass, then issue ONE write. SSE
+        // events are framed by `event: <name>\ndata: <text>\n\n`; we
+        // emit all `log` events back-to-back followed by the
+        // `backfill-done` event.
+        let payload = '';
+        let count = 0;
         for (const raw of toReplay) {
           try {
-            const evt = JSON.parse(raw);
-            await stream.writeSSE({ event: 'log', data: JSON.stringify(evt) });
+            // Validate the JSON lossily so we don't feed broken data to
+            // the client, but reuse the original string to skip a stringify.
+            JSON.parse(raw);
+            payload += `event: log\ndata: ${raw}\n\n`;
+            count++;
           } catch { /* skip malformed */ }
         }
-        await stream.writeSSE({ event: 'backfill-done', data: String(toReplay.length) });
+        payload += `event: backfill-done\ndata: ${count}\n\n`;
+        // Write the whole batch via the underlying response writer so
+        // we bypass writeSSE's per-event flush logic.
+        await stream.write(payload);
       } catch {
-        // File doesn't exist yet — the harness hasn't run. That's fine;
-        // signal an empty backfill so the client can render its empty state.
         await stream.writeSSE({ event: 'backfill-done', data: '0' });
       }
     };
@@ -1587,6 +1625,17 @@ harness.get('/:slug/log/stream', (c) => {
 harness.post('/:slug/launch', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
+  // Pre-flight: SPEC.md is required for the scoper to produce features.
+  // Without it, run.sh exits 2 with no useful explanation. Catching it
+  // here gives the user an actionable error.
+  const specPath = join(project.path, 'SPEC.md');
+  if (!existsSync(specPath)) {
+    return c.json({
+      error: 'SPEC.md not found',
+      hint: 'Create SPEC.md in the project directory describing what you want built. The scoper reads this to generate the work queue.',
+      path: specPath,
+    }, 400);
+  }
   const body = await c.req.json().catch(() => ({}));
   const extra = typeof body.extra === 'string' ? body.extra : '';
   const result = launchRun(project, extra);
@@ -2464,7 +2513,10 @@ harness.get('/:slug/decisions', (c) => {
   const decisions: Decision[] = [];
   let currentIter: number | null = null;
   const iterRe = /^\[([^\]]+)\] ── iteration (\d+) ──/;
-  const decRe = /^\[([^\]]+)\] ORCH decision:\s*(\S*)\s*(.*)$/;
+  // Verb shape: starts with uppercase, ≥3 letters/underscores. This filters
+  // out parser noise that used to flag ` ``` ` (markdown fences) and `(empty)`
+  // as ghost verbs.
+  const decRe = /^\[([^\]]+)\] ORCH decision:\s*([A-Z][A-Z_]{2,})\s*(.*)$/;
   const KNOWN_VERBS = new Set<string>(DECISION_VERBS);
   for (const line of runLog.split('\n')) {
     const im = line.match(iterRe);
@@ -2715,6 +2767,7 @@ harness.post('/:slug/proposals/:id/accept', async (c) => {
   if (!id || !id.endsWith('.md')) return c.json({ error: 'invalid id' }, 400);
   const proposalPath = join(harnessDir(project), 'proposals', id);
   if (!existsSync(proposalPath)) return c.json({ error: 'not found' }, 404);
+  // Ensure applied_at column exists before syncProposalsToPg fires.
 
   const body = safeRead(proposalPath) ?? '';
   // Extract acceptance bullets (same heuristic as run.sh product_auto_apply_latest)
@@ -2797,8 +2850,8 @@ harness.post('/:slug/product-review', async (c) => {
     return c.json({ error: 'SPEC.md not found in project root' }, 400);
   }
 
-  invokeScoperBackground(project, 'proposal');
-  return c.json({ ok: true });
+  const { invocationId } = invokeScoperBackground(project, 'proposal');
+  return c.json({ ok: true, invocationId, mode: 'proposal' });
 });
 
 /**
@@ -2815,11 +2868,15 @@ harness.post('/:slug/replan', async (c) => {
   // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
   // and the OperatorActionLog component. The action represents the *kickoff*;
   // the replan's completion is observable via /scoper-result/<invocationId>.
-  await recordUserAction(slug, 'replan', async () => {
-    invokeScoperBackground(project, 'replan');
-    return { summary: 'Replan kicked off', result: undefined };
+  const invocationId = await recordUserAction(slug, 'replan', async () => {
+    const r = invokeScoperBackground(project, 'replan');
+    return {
+      summary: `Replan kicked off (invocation ${r.invocationId})`,
+      invocationId: r.invocationId,
+      result: r.invocationId,
+    };
   });
-  return c.json({ ok: true });
+  return c.json({ ok: true, invocationId, mode: 'replan' });
 });
 
 /**
@@ -2845,7 +2902,7 @@ harness.post('/:slug/cleanup', async (c) => {
       result: r.invocationId,
     };
   });
-  return c.json({ ok: true, invocationId });
+  return c.json({ ok: true, invocationId, mode: 'cleanup' });
 });
 
 /**
@@ -3420,9 +3477,29 @@ interface SnapshotMeta {
   featureCounts: Record<string, number>;
 }
 
-function scanSnapshots(project: ProjectEntry): SnapshotMeta[] {
+async function scanSnapshots(project: ProjectEntry): Promise<SnapshotMeta[]> {
   const snapDir = join(harnessDir(project), 'snapshots');
   if (!existsSync(snapDir)) return [];
+  // Aggregate featureCounts from harness_shared.snapshot_features in one
+  // query rather than per-snapshot. Snapshots without PG rows get an
+  // empty count map (legacy snapshots, or ones recorded before the PG
+  // mirror was wired up — these will only have FS state).
+  let countsBySnapshot: Map<string, Record<string, number>> = new Map();
+  try {
+    await ensureSnapshotFeaturesTable();
+    const { sql } = getOrgPg();
+    const rows = await sql<{ snapshot_id: string; status: string; n: string }[]>`
+      SELECT snapshot_id, status, COUNT(*)::text AS n
+      FROM harness_shared.snapshot_features
+      WHERE harness_slug = ${project.slug}
+      GROUP BY snapshot_id, status
+    `;
+    for (const r of rows) {
+      const m = countsBySnapshot.get(r.snapshot_id) ?? {};
+      m[r.status] = Number(r.n);
+      countsBySnapshot.set(r.snapshot_id, m);
+    }
+  } catch { /* PG unavailable — snapshots still listable from FS */ }
   return readdirSync(snapDir, { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => {
@@ -3435,15 +3512,7 @@ function scanSnapshots(project: ProjectEntry): SnapshotMeta[] {
       for (const f of SNAPSHOT_FILES) {
         if (existsSync(join(dirPath, f))) files.push(f);
       }
-      const featureCounts: Record<string, number> = {};
-      try {
-        const raw = readFileSync(join(dirPath, 'features.json'), 'utf8');
-        const parsed = JSON.parse(raw);
-        for (const feat of parsed.features ?? []) {
-          const s = feat.status ?? 'todo';
-          featureCounts[s] = (featureCounts[s] ?? 0) + 1;
-        }
-      } catch {}
+      const featureCounts: Record<string, number> = countsBySnapshot.get(id) ?? {};
       return { id, ts, iterNum, files, featureCounts };
     })
     .filter((s) => s.ts > 0)
@@ -3489,14 +3558,60 @@ async function syncSnapshotsToPg(project: ProjectEntry, snaps: SnapshotMeta[]): 
   }
 }
 
-harness.get('/:slug/snapshots', (c) => {
+harness.get('/:slug/snapshots', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const snapshots = scanSnapshots(project);
+  const snapshots = await scanSnapshots(project);
   syncSnapshotsToPg(project, snapshots).catch((err) => {
     console.error(`[snapshots] PG sync failed for ${project.slug}:`, err);
   });
   return c.json({ snapshots });
+});
+
+/**
+ * POST /:slug/snapshots/:id/record-pg-state — invoked by run.sh's
+ * snapshot_state after the FS copy. Captures the current
+ * `harness_features` rows under the given snapshot_id so restore can
+ * round-trip the work queue. Idempotent — re-running for the same id
+ * deletes prior rows and re-inserts.
+ */
+harness.post('/:slug/snapshots/:id/record-pg-state', async (c) => {
+  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
+  if (!id || !/^\d+-iter-\d+$/.test(id)) {
+    return c.json({ error: 'invalid snapshot id' }, 400);
+  }
+  // Ensure the cross-harness table + per-harness deprecation_reason column.
+  // Both are idempotent IF NOT EXISTS DDL; once-per-process per slug.
+  await ensureSnapshotFeaturesTable();
+  try {
+    const { sql } = getHarnessPg(project.slug);
+    const now = Date.now();
+    // search_path is set on this client to the harness's own schema first,
+    // then harness_shared. Both unqualified `harness_features` (per-harness)
+    // and qualified `harness_shared.snapshot_features` resolve correctly.
+    await sql.begin(async (tx) => {
+      await tx`DELETE FROM harness_shared.snapshot_features WHERE harness_slug = ${project.slug} AND snapshot_id = ${id}`;
+      await tx`
+        INSERT INTO harness_shared.snapshot_features (
+          harness_slug, snapshot_id, feature_id,
+          title, summary, status, attempts, claims, notes, metadata, kind,
+          project_id, expected_cost_cents, tags, needs_human_review,
+          deprecation_reason, parent_id, goal_id, ts, created_ts
+        )
+        SELECT
+          harness_slug, ${id}::TEXT, feature_id,
+          title, summary, status, attempts, claims, notes, metadata, kind,
+          project_id, expected_cost_cents, tags, needs_human_review,
+          deprecation_reason, parent_id, goal_id, ts, ${now}::BIGINT
+        FROM harness_features
+      `;
+    });
+    return c.json({ ok: true });
+  } catch (e: any) {
+    return c.json({ ok: false, error: String(e?.message ?? e) }, 500);
+  }
 });
 
 /**
@@ -3664,15 +3779,20 @@ harness.post('/:slug/snapshots/:id/restore', async (c) => {
   }
   const snapDir = join(harnessDir(project), 'snapshots', id);
   if (!existsSync(snapDir)) return c.json({ error: 'snapshot not found' }, 404);
+  await ensureSnapshotFeaturesTable();
 
-  const body = await c.req.json().catch(() => ({})) as { includeSupervisorNotes?: boolean; includeConfig?: boolean };
+  const body = await c.req.json().catch(() => ({})) as { includeSupervisorNotes?: boolean; includeConfig?: boolean; includeFeatures?: boolean };
   const includeSupervisorNotes = body.includeSupervisorNotes !== false;
   const includeConfig = body.includeConfig !== false;
+  // Default true: features are the main thing users want to roll back.
+  // Set explicitly false to restore only contract+notes+config.
+  const includeFeatures = body.includeFeatures !== false;
 
   const restored: string[] = [];
   for (const f of SNAPSHOT_FILES) {
     if (f === 'supervisor-notes.md' && !includeSupervisorNotes) continue;
     if (f === 'config.json' && !includeConfig) continue;
+    if (f === 'features.json') continue; // legacy — superseded by PG restore below
     const src = join(snapDir, f);
     if (!existsSync(src)) continue;
     const dest = join(harnessDir(project), f);
@@ -3682,7 +3802,49 @@ harness.post('/:slug/snapshots/:id/restore', async (c) => {
     restored.push(f);
   }
 
-  return c.json({ ok: true, restored });
+  // PG round-trip for the work queue. Wrapped in a transaction so a
+  // mid-restore failure leaves the queue intact.
+  let featuresRestored = 0;
+  if (includeFeatures) {
+    try {
+      const { sql } = getHarnessPg(project.slug);
+      await sql.begin(async (tx) => {
+        const exists = await tx<{ n: number }[]>`
+          SELECT COUNT(*)::int AS n
+          FROM harness_shared.snapshot_features
+          WHERE harness_slug = ${project.slug} AND snapshot_id = ${id}
+        `;
+        if (exists[0].n === 0) {
+          // Legacy snapshot (created before PG mirror landed). Leave the
+          // queue alone — restoring would clear it without replacing.
+          return;
+        }
+        await tx`DELETE FROM harness_features WHERE harness_slug = ${project.slug}`;
+        await tx`
+          INSERT INTO harness_features (
+            harness_slug, feature_id,
+            title, summary, status, attempts, claims, notes, metadata, kind,
+            project_id, expected_cost_cents, tags, needs_human_review,
+            deprecation_reason, parent_id, goal_id, ts, created_ts, updated_ts
+          )
+          SELECT
+            harness_slug, feature_id,
+            title, summary, status, attempts, claims, notes, metadata, kind,
+            project_id, expected_cost_cents, tags, needs_human_review,
+            deprecation_reason, parent_id, goal_id, ts, created_ts, ${Date.now()}::BIGINT
+          FROM harness_shared.snapshot_features
+          WHERE harness_slug = ${project.slug} AND snapshot_id = ${id}
+        `;
+        featuresRestored = exists[0].n;
+      });
+      if (featuresRestored > 0) restored.push(`harness_features (${featuresRestored} rows)`);
+    } catch (e) {
+      console.error(`[snapshots] PG restore failed for ${project.slug}:${id}:`, e);
+      return c.json({ ok: false, error: 'work queue restore failed; FS files restored', restored }, 500);
+    }
+  }
+
+  return c.json({ ok: true, restored, featuresRestored });
 });
 
 harness.delete('/:slug/snapshots/:id', async (c) => {
@@ -3698,6 +3860,13 @@ harness.delete('/:slug/snapshots/:id', async (c) => {
     try { await unlink(join(snapDir, f)); } catch {}
   }
   try { const { rmdir } = await import('node:fs/promises'); await rmdir(snapDir); } catch {}
+  // Also drop any PG rows for this snapshot (no-op for legacy ones).
+  try {
+    const { sql } = getHarnessPg(project.slug);
+    await sql`DELETE FROM harness_shared.snapshot_features WHERE harness_slug = ${project.slug} AND snapshot_id = ${id}`;
+  } catch (e) {
+    console.warn(`[snapshots] PG cleanup failed for ${project.slug}:${id}:`, (e as Error)?.message);
+  }
   return c.json({ ok: true, deleted: true });
 });
 
@@ -5488,7 +5657,34 @@ function resolvePhasedProject(slug: string, phase: Phase | undefined): ProjectEn
   return { ...base, path: p };
 }
 
-async function computePhaseInfo(project: ProjectEntry, phase: Phase): Promise<PhaseInfo> {
+/**
+ * One-shot scan of /proc for run.sh harness processes. Returns an array
+ * of (pid, cwd) pairs we'd otherwise stat for each phase independently.
+ * Called once per /phases request and reused across all phases —
+ * `Promise.all([3 phases])` previously did this scan 3× in parallel and
+ * dominated the endpoint's app-code time on busy hosts (1000+ PIDs).
+ */
+function scanRunShProcesses(): Array<{ pid: string; cwd: string }> {
+  const out: Array<{ pid: string; cwd: string }> = [];
+  try {
+    for (const pid of readdirSync('/proc')) {
+      if (!/^\d+$/.test(pid)) continue;
+      try {
+        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        if (!cmdline.includes('autonomous-harness/run.sh') && !cmdline.includes('/harness/run.sh')) continue;
+        const cwd = readFileSync(`/proc/${pid}/cwd`, 'utf8').trim();
+        out.push({ pid, cwd });
+      } catch { /* proc went away or unreadable — skip */ }
+    }
+  } catch {}
+  return out;
+}
+
+async function computePhaseInfo(
+  project: ProjectEntry,
+  phase: Phase,
+  runShProcs?: Array<{ pid: string; cwd: string }>,
+): Promise<PhaseInfo> {
   const path = phasePath(project, phase);
   const branch = phase === 'staging'
     ? (safeRead(join(project.path, '.git', 'HEAD'))?.trim().replace(/^ref: refs\/heads\//, '') ?? 'main')
@@ -5530,20 +5726,10 @@ async function computePhaseInfo(project: ProjectEntry, phase: Phase): Promise<Ph
     if (m.length) iteration = Number(m[m.length - 1][1]);
   } catch {}
 
-  // alive: run.sh proc with cwd inside this path
-  let alive = false;
-  try {
-    const procs = readdirSync('/proc').filter((d) => /^\d+$/.test(d));
-    for (const pid of procs) {
-      try {
-        const cwd = readFileSync(`/proc/${pid}/cwd`, 'utf8').trim();
-        if (cwd.startsWith(path)) {
-          const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-          if ((cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh'))) { alive = true; break; }
-        }
-      } catch {}
-    }
-  } catch {}
+  // alive: any pre-scanned run.sh proc whose cwd lies under this phase's path.
+  // If the caller didn't pass a pre-scan list (back-compat), scan now.
+  const procs = runShProcs ?? scanRunShProcesses();
+  const alive = procs.some((p) => p.cwd.startsWith(path));
 
   // promotion in-flight = any unresolved Promotion item in pending-reviews
   let promotionInFlight: string | null = null;
@@ -5569,7 +5755,10 @@ async function computePhaseInfo(project: ProjectEntry, phase: Phase): Promise<Ph
 harness.get('/:slug/phases', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const out = await Promise.all(PHASE_ORDER.map((p) => computePhaseInfo(project, p)));
+  // Single /proc scan shared across all phases — was the dominant cost
+  // on this endpoint when run 3× in parallel from `Promise.all`.
+  const runShProcs = scanRunShProcesses();
+  const out = await Promise.all(PHASE_ORDER.map((p) => computePhaseInfo(project, p, runShProcs)));
   return c.json({ phases: out });
 });
 
