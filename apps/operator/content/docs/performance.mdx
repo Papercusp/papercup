@@ -430,17 +430,19 @@ The `hint` field is the high-leverage one — server has cross-call context the 
 
 The following measurements were taken on `localhost:3055/harness` during a fresh visit. All on localhost (no network latency); all should be a small fraction of these numbers.
 
-| Endpoint / metric | Before fix | After fix | Fix applied |
+| Endpoint / metric | Before any fix | After all fixes | Fix(es) applied |
 |---|---|---|---|
-| Initial page TTFB | 18.7s | **320ms** | sum of fixes below |
-| Initial domReady | 21.9s | **2.2s** | sum of fixes below |
-| `/api/plugins/enabled` (4KB) | 18-26s | **1.2s** | A1: parallelize fs reads |
-| `/api/harness/projects/lite` | n/a | **150ms** | A3: hot paths migrated |
-| `/api/harness/projects` (heavy) | 5s | 8s | A2/A3: not yet — flagged for follow-up |
-| `/api/harness/.../branch/.../actions` | 6-8s | 6-8s | not yet (git operations); flagged |
-| Dashboard freeze ("7 issues") | infinite loop | **clean** | A8: dedup'd `replan` |
+| Initial page TTFB | 18.7s | **320ms – 1.0s** | sum of all fixes below |
+| Initial domReady | 21.9s | **2.2s – 3.9s** | sum of all fixes below |
+| `/api/plugins/enabled` (4KB) | 18-26s | **0.76s** | A1: parallelize fs reads |
+| `/api/harness/projects` | 5-8s | **2.05s** | A1+A9: parallelize fs reads + merge passes |
+| `/api/harness/projects/lite` | n/a (added) | **0.15-1.3s** | A3: hot paths migrated to /lite |
+| `/api/harness/<slug>/log/stream?tail=500` | 6.6s | **0.32s** | tail-only file read + batched SSE write |
+| `/api/harness/<slug>/branch/<x>/actions` | 6-8s | 6-10s (still slow) | git operations; deferred |
+| Dashboard freeze ("7 issues") | infinite loop | **clean** | A8: dedup'd `replan` key |
+| Click responsiveness | 5s timeout | **instant** | A10: Radix `pointer-events: none !important` |
 
-The remaining slow endpoints (branch/actions, log/stream) are tracked as P2 follow-ups — git/log operations are inherently slower than DB reads.
+Patterns codified into a CI-enforced lint test at `apps/operator/lib/perf-anti-patterns.test.ts` — see "Compliance" below.
 
 ## Compliance — how to use this page
 
@@ -449,10 +451,15 @@ The remaining slow endpoints (branch/actions, log/stream) are tracked as P2 foll
 2. If your change matches an A1-A14 anti-pattern, **change the approach** before writing the code.
 3. If you find a NEW pattern that should be in this list, add it as A15+ with measurement.
 
+**Automated guard**: `apps/operator/lib/perf-anti-patterns.test.ts` codifies A1, A2, A4, A6, A7, A9 as a vitest test. CI runs it; new offenders fail with a pointer back to this page.
+
+The test ratchets via a `BASELINE` constant — existing offenders are grandfathered, only NEW occurrences fail. The baseline shrinks over time as offenders get fixed (see commit `c15478b` for an example: parallelize then drop the corresponding A9 entry from BASELINE). To intentionally allow a single line, append `// perf:allow A<N> <reason>` to it.
+
 **Before merging**:
-1. Test on localhost: `time curl http://localhost:3055/<your-endpoint>` — should match the targets at the top.
-2. Verify no new issues in `/harness` page console (verdict-cli works for this).
-3. Check the dev server log for new `⚠ Fast Refresh full reload` lines — those signal the same kind of duplicate-key issue we fixed in A8.
+1. Run the perf guard: `cd apps/operator && npx vitest run lib/perf-anti-patterns.test.ts`
+2. Test the affected endpoint: `time curl http://localhost:3055/<your-endpoint>` — should match the targets at the top.
+3. Verify no new issues in `/harness` page console (`verdict goto http://localhost:3055/harness && verdict console error` works for this).
+4. Check the dev server log for new `⚠ Fast Refresh full reload` lines — those signal the same kind of duplicate-key issue we fixed in A8.
 
 ## Cheat sheet — what to do, in order
 
