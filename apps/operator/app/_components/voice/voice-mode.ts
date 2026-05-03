@@ -194,6 +194,57 @@ export function initVoiceMode(): void {
  * harnesses, sessions, and browser restarts (config persisted to
  * localStorage).
  */
+// Per-engine role-voice pools. Hashing the role name into one of these
+// gives every role a distinct, stable voice when speaking through a
+// cloud / Kokoro engine.
+const KOKORO_VOICE_POOL = [
+  'af_bella', 'af_nova', 'af_sarah', 'af_sky', 'af_nicole',
+  'am_michael', 'am_adam', 'am_echo', 'am_liam', 'am_onyx',
+  'bf_alice', 'bf_emma', 'bm_daniel', 'bm_george',
+];
+const OPENAI_VOICE_POOL = ['nova', 'alloy', 'echo', 'fable', 'onyx', 'shimmer'];
+const ELEVEN_VOICE_POOL = [
+  '21m00Tcm4TlvDq8ikWAM', // Rachel
+  'AZnzlk1XvdvUeBnXmlld', // Domi
+  'EXAVITQu4vr4xnSDxMaL', // Bella
+  'TxGEqnHWrfWFTfGW9XjX', // Josh
+  'VR6AewLTigWG4xSOukaG', // Arnold
+  'pNInz6obpgDQGcFmaJgB', // Adam
+];
+const CARTESIA_VOICE_POOL = [
+  'a0e99841-438c-4a64-b679-ae501e7d6091', // Barbershop Man
+  '79a125e8-cd45-4c13-8a67-188112f4dd22', // British Reading Lady
+  '2ee87190-8f84-4925-97da-e52547f9462c', // Child
+  'fb26447f-308b-471e-8b00-8e9f04284eb5', // Doctor Mischief
+  '156fb8d2-335b-4950-9cb3-a2d33befec77', // Help Desk Man
+  '95856005-0332-41b0-935f-352e296aa0df', // Classy British Man
+];
+
+function hashRole(role: string): number {
+  let h = 0;
+  for (let i = 0; i < role.length; i++) h = (h * 31 + role.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+export function voiceForEngineRole(engine: string, role: string): string | null {
+  // Per-slug override may exist in voice config (Web Speech style names).
+  // For cloud engines we treat the override as opaque and pass it through.
+  let baseRole = role;
+  const at = role.indexOf('@');
+  if (at > 0) baseRole = role.slice(0, at);
+  if (config.roleVoices[role]) return config.roleVoices[role];
+  if (config.roleVoices[baseRole]) return config.roleVoices[baseRole];
+
+  const h = hashRole(baseRole);
+  switch (engine) {
+    case 'kokoro':     return KOKORO_VOICE_POOL[h % KOKORO_VOICE_POOL.length];
+    case 'openai':     return OPENAI_VOICE_POOL[h % OPENAI_VOICE_POOL.length];
+    case 'elevenlabs': return ELEVEN_VOICE_POOL[h % ELEVEN_VOICE_POOL.length];
+    case 'cartesia':   return CARTESIA_VOICE_POOL[h % CARTESIA_VOICE_POOL.length];
+    default:           return null;
+  }
+}
+
 function voiceForRole(roleOrComposite: string): string | null {
   // Per-slug override (v4 §2h v1.5): callers may pass `role@slug` to
   // request a slug-specific assignment. Lookup chain:
@@ -566,7 +617,7 @@ function processSynthQueue(): void {
 
   // Adapter route — Kokoro / ElevenLabs / OpenAI / Cartesia via the
   // server-side TTS preview endpoint (keys never leave the server).
-  void synthViaAdapter(next.text).finally(() => processSynthQueue());
+  void synthViaAdapter(next.text, next.role).finally(() => processSynthQueue());
 }
 
 let adapterAudio: HTMLAudioElement | null = null;
@@ -590,15 +641,16 @@ async function fetchPreferredEngine(): Promise<string> {
   return 'kokoro';
 }
 
-async function synthViaAdapter(text: string): Promise<void> {
+async function synthViaAdapter(text: string, role: string): Promise<void> {
   let engine = await fetchPreferredEngine();
   // 'browser' isn't synthable here (no speechSynthesis); coerce to kokoro.
   if (engine === 'browser') engine = 'kokoro';
+  const voiceId = voiceForEngineRole(engine, role);
   try {
     const r = await fetch('/api/agent-mcp/operator-tts-preview', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ engine, text }),
+      body: JSON.stringify({ engine, text, voiceId }),
     });
     if (!r.ok) return;
     const blob = await r.blob();

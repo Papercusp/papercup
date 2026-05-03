@@ -701,43 +701,97 @@ function PerSlugVoiceTable({
 }
 
 function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
-  const [busy, setBusy] = useState(false);
-  const [last, setLast] = useState<string | null>(null);
+  type Stage =
+    | 'idle'
+    | 'prompting'      // we asked the user to speak; STT is hot
+    | 'heard-correct'  // got the right phrase; intent fired
+    | 'heard-other'    // STT got something but not what we asked for
+    | 'timeout'        // no transcript after window
+    | 'error';
+  const [stage, setStage] = useState<Stage>('idle');
+  const [transcript, setTranscript] = useState<string | null>(null);
+  const phrase = `${wakeWord} open`;
 
-  const onClick = async () => {
-    setBusy(true);
-    setLast(null);
+  const run = async () => {
+    setStage('prompting');
+    setTranscript(null);
+    const { onFinalUtterance, setVoiceMode } = await import('../../_components/voice/voice-mode');
+    // Ensure always-on mode is active so STT is capturing. If the user
+    // had it off, we'll restore it after.
+    let restoreMode: 'off' | 'push-to-talk' | 'always-on' | null = null;
     try {
-      // Dispatch the same internal event the voicemode/Deepgram capture
-      // loops fire on a real utterance. VoiceAppBridge listens via
-      // `onFinalUtterance`, runs the engine-agnostic wake-word strip,
-      // then dispatches the intent.
-      const phrase = `${wakeWord} open`;
-      const m = await import('../../_components/voice/voice-mode');
-      // @ts-expect-error — internal helper for testing the dispatch path
-      const dispatch: undefined | ((s: string) => void) = (m as any).__simulateUtterance;
-      if (dispatch) {
-        dispatch(phrase);
-      } else {
-        // Fall back: directly notify all utterance listeners.
-        const listeners = (globalThis as any).__voiceUtteranceListeners as Set<(s: string) => void> | undefined;
-        if (listeners) listeners.forEach((fn) => fn(phrase));
+      const stMod = await import('../../_components/voice/voice-mode');
+      const stCfg = stMod.getVoiceConfig();
+      restoreMode = (stCfg.lastMode ?? 'off') as typeof restoreMode;
+      setVoiceMode('always-on');
+    } catch { /* best-effort */ }
+
+    let resolved = false;
+    const expectedNorm = phrase.trim().toLowerCase();
+
+    const unsub = onFinalUtterance((text) => {
+      if (resolved) return;
+      const norm = text.trim().toLowerCase();
+      setTranscript(text);
+      // Loose match: must contain the wake word + "open"
+      const containsWake = norm.includes(wakeWord.toLowerCase());
+      const containsVerb = /\bopen\b/.test(norm);
+      if (containsWake && containsVerb) {
+        resolved = true;
+        setStage('heard-correct');
+        unsub();
+      } else if (norm.length > 1) {
+        // Got SOMETHING but not the right thing — keep listening for the
+        // remainder of the timeout window in case the user retries.
+        setStage('heard-other');
       }
-      setLast(`Sent: "${phrase}" — Operator panel should open. If not, see Setup → Voice troubleshooting.`);
-    } catch (e) {
-      setLast(`Error: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setBusy(false);
-    }
+    });
+
+    // 15s window
+    setTimeout(() => {
+      if (!resolved) {
+        setStage((s) => (s === 'heard-correct' ? s : 'timeout'));
+        unsub();
+      }
+      // Restore prior voice mode if we changed it.
+      if (restoreMode && restoreMode !== 'always-on') {
+        setVoiceMode(restoreMode);
+      }
+    }, 15000);
+    void expectedNorm;
   };
+
+  let label = 'Test wake word';
+  if (stage === 'prompting') label = 'Listening…';
+  else if (stage === 'heard-correct') label = '✓ Working — try again';
+  else if (stage === 'heard-other') label = 'Heard something — try again';
+  else if (stage === 'timeout') label = 'No audio — try again';
+  else if (stage === 'error') label = 'Error — try again';
 
   return (
     <>
-      <button type="button" onClick={onClick} disabled={busy} style={btn}>
-        {busy ? 'Testing…' : 'Test wake word'}
+      <button type="button" onClick={run} disabled={stage === 'prompting'} style={stage === 'heard-correct' ? btnPrimary : btn}>
+        {label}
       </button>
-      {last && (
-        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%' }}>{last}</span>
+      {stage === 'prompting' && (
+        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%' }}>
+          Say <strong>"{phrase}"</strong> now. We'll wait up to 15 seconds. The Operator panel should open if the pipeline is healthy.
+        </span>
+      )}
+      {stage === 'heard-correct' && (
+        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%', color: 'var(--success, #16a34a)' }}>
+          Heard: <em>"{transcript}"</em> — the Operator panel should have opened.
+        </span>
+      )}
+      {stage === 'heard-other' && transcript && (
+        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%' }}>
+          Got: <em>"{transcript}"</em> — that's not "{phrase}". STT is working but didn't catch the wake phrase. Speak more clearly or retry.
+        </span>
+      )}
+      {stage === 'timeout' && (
+        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%' }}>
+          No audio captured in 15s. Check that Voicemode whisper is running, the mic isn't muted, and you've granted browser permission.
+        </span>
       )}
     </>
   );
