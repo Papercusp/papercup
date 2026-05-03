@@ -47,14 +47,67 @@ export interface ActionManifest {
 }
 
 /**
- * Plugin-contributed action manifest. Same shape as ActionManifest plus
- * which branches it shows up on and where the script lives.
+ * Plugin-contributed action manifest (script-based). Same shape as
+ * ActionManifest plus which branches it shows up on and where the
+ * script lives. Used by `branchActions` field.
  */
 export interface PluginActionManifest extends ActionManifest {
   /** Branches this action should appear on. Default = all three. */
   branches?: Array<'staging' | 'testing' | 'production'>;
   /** Script path relative to the plugin install dir. Required. */
   scriptPath: string;
+}
+
+/**
+ * Plugin-contributed button (URL-based). Plugins declare:
+ *
+ *   "buttons": {
+ *     "staging":    { "build": "/api/plugins/@scope/myplug/build-staging" },
+ *     "production": { "build": "/api/plugins/@scope/myplug/build-prod" }
+ *   }
+ *
+ * Or with extra metadata:
+ *
+ *   "buttons": {
+ *     "staging": {
+ *       "build": {
+ *         "url": "/api/plugins/@scope/myplug/build-staging",
+ *         "displayName": "Build & deploy (staging)",
+ *         "method": "POST"
+ *       }
+ *     }
+ *   }
+ *
+ * The substrate POSTs (default) to `url` with JSON body:
+ *   { harness, branch, button }
+ *
+ * Plugin handler can:
+ *   - return text/event-stream (SSE) → substrate forwards lines to the
+ *     xterm runner modal verbatim;
+ *   - return application/json → substrate shows it as a one-line summary;
+ *   - return text/plain or anything else → substrate shows the body.
+ *
+ * URL is relative to the operator's origin. Plugin authors typically
+ * point at their own apiRoutes (mounted under /api/plugins/<slug>/...).
+ */
+export type ButtonDecl =
+  | string
+  | {
+      url: string;
+      method?: 'POST' | 'GET';
+      displayName?: string;
+      description?: string;
+    };
+
+export type ButtonsManifest = Partial<
+  Record<'staging' | 'testing' | 'production', Record<string, ButtonDecl>>
+>;
+
+export function normalizeButtonDecl(d: ButtonDecl): {
+  url: string; method: 'POST' | 'GET'; displayName?: string; description?: string;
+} {
+  if (typeof d === 'string') return { url: d, method: 'POST' };
+  return { url: d.url, method: d.method ?? 'POST', displayName: d.displayName, description: d.description };
 }
 
 export interface MissingEnvEntry {

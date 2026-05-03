@@ -32,7 +32,8 @@ import { randomUUID } from 'node:crypto';
 import {
   type ActionManifest,
   type PluginActionManifest,
-  type EnvResolution,
+  type ButtonsManifest,
+  normalizeButtonDecl,
   resolveEnv,
   readInlineManifest,
 } from './branch-action-manifest';
@@ -46,14 +47,23 @@ export function isBranch(s: unknown): s is Branch {
 
 export interface ActionDescriptor {
   name: string;
+  /** Path on disk for script-based sources. Empty string for HTTP buttons. */
   scriptPath: string;
   branch: Branch;
-  /** 'harness' = local .sh in staging worktree; 'plugin' = contributed by an enabled plugin. */
-  source: 'harness' | 'plugin';
-  /** When source==='plugin', the contributing plugin's name. */
+  /**
+   *  - 'harness'        = local .sh in staging worktree (no plugin)
+   *  - 'plugin'         = bash script contributed by a plugin (branchActions field)
+   *  - 'plugin-button'  = HTTP endpoint contributed by a plugin (buttons field)
+   */
+  source: 'harness' | 'plugin' | 'plugin-button';
+  /** When source includes 'plugin', the contributing plugin's name. */
   pluginSlug?: string;
   /** Optional manifest (env requirements + display metadata). */
   manifest?: ActionManifest;
+  /** When source==='plugin-button', the URL the substrate POSTs to. */
+  buttonUrl?: string;
+  /** When source==='plugin-button', the HTTP method (default POST). */
+  buttonMethod?: 'POST' | 'GET';
 }
 
 export interface RunMeta {
@@ -122,6 +132,7 @@ async function listHarnessActions(stagingPath: string, branch: Branch): Promise<
 interface PluginManifestForActions {
   name?: string;
   branchActions?: Record<string, PluginActionManifest>;
+  buttons?: ButtonsManifest;
 }
 
 /**
@@ -160,24 +171,56 @@ async function listPluginActions(args: {
 
   for (const pdir of tryDirs) {
     const manifest = await readJsonSafe<PluginManifestForActions>(join(pdir, 'papercusp.json'));
-    if (!manifest?.branchActions) continue;
+    if (!manifest) continue;
+    const hasBranchActions = !!manifest.branchActions;
+    const hasButtons = !!manifest.buttons;
+    if (!hasBranchActions && !hasButtons) continue;
     const slug = manifest.name ?? basename(pdir);
     const dirBase = basename(pdir);
     if (!enabledKeys.has(slug) && !enabledKeys.has(dirBase)) continue;
-    for (const [actName, m] of Object.entries(manifest.branchActions)) {
-      if (!NAME_RE.test(actName)) continue;
-      const branches = m.branches ?? ['staging', 'testing', 'production'];
-      if (!branches.includes(args.branch)) continue;
-      const scriptPath = join(pdir, m.scriptPath);
-      if (!existsSync(scriptPath)) continue;
-      out.push({
-        name: `${slug}:${actName}`,
-        branch: args.branch,
-        source: 'plugin',
-        pluginSlug: slug,
-        scriptPath,
-        manifest: m,
-      });
+
+    // Script-based contributions (bash scripts shipped inside the plugin)
+    if (manifest.branchActions) {
+      for (const [actName, m] of Object.entries(manifest.branchActions)) {
+        if (!NAME_RE.test(actName)) continue;
+        const branches = m.branches ?? ['staging', 'testing', 'production'];
+        if (!branches.includes(args.branch)) continue;
+        const scriptPath = join(pdir, m.scriptPath);
+        if (!existsSync(scriptPath)) continue;
+        out.push({
+          name: `${slug}:${actName}`,
+          branch: args.branch,
+          source: 'plugin',
+          pluginSlug: slug,
+          scriptPath,
+          manifest: m,
+        });
+      }
+    }
+
+    // URL-based contributions (HTTP buttons hitting the plugin's apiRoutes)
+    if (manifest.buttons) {
+      const branchButtons = manifest.buttons[args.branch];
+      if (branchButtons) {
+        for (const [btnName, decl] of Object.entries(branchButtons)) {
+          if (!NAME_RE.test(btnName)) continue;
+          const norm = normalizeButtonDecl(decl);
+          if (!norm.url) continue;
+          out.push({
+            name: `${slug}:${btnName}`,
+            branch: args.branch,
+            source: 'plugin-button',
+            pluginSlug: slug,
+            scriptPath: '',
+            buttonUrl: norm.url,
+            buttonMethod: norm.method,
+            manifest: {
+              displayName: norm.displayName,
+              description: norm.description,
+            },
+          });
+        }
+      }
     }
   }
   return out;
@@ -271,7 +314,7 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
   const desc = all.find((a) => a.name === name);
   if (!desc) throw new Error(`action not found: ${branch}/${name}`);
 
-  // Resolve env from manifest before spawn.
+  // Resolve env from manifest before spawn / dispatch.
   let resolvedEnv: Record<string, string> = {};
   if (desc.manifest?.env && opts.harnessConfigsDir) {
     const r = await resolveEnv(desc.manifest, {
@@ -282,6 +325,17 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
       throw new MissingEnvError(r.missing);
     }
     resolvedEnv = r.env;
+  }
+
+  // For 'plugin-button' sources, dispatch HTTP instead of bash.
+  if (desc.source === 'plugin-button') {
+    return runButtonAction({
+      desc,
+      harness,
+      branch,
+      stagingPath,
+      resolvedEnv,
+    });
   }
 
   const cwd = phasePath && existsSync(phasePath) ? phasePath : stagingPath;
@@ -359,6 +413,127 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
       resolve(final);
     });
   });
+
+  return { runId, meta, done };
+}
+
+/**
+ * HTTP-button dispatch. Mirrors runAction's spawn flow:
+ *   - writes ::papercusp::action-started header to the log
+ *   - calls the plugin's URL with body { harness, branch, button, env }
+ *   - if response is text/event-stream → forwards every line to the log
+ *   - otherwise → captures the body once
+ *   - writes ::papercusp::action-completed/failed footer + meta
+ *
+ * Returns the same RunHandle shape as runAction so callers (route, UI)
+ * stay agnostic to the source.
+ */
+async function runButtonAction(args: {
+  desc: ActionDescriptor;
+  harness: string;
+  branch: Branch;
+  stagingPath: string;
+  resolvedEnv: Record<string, string>;
+}): Promise<RunHandle> {
+  const { desc, harness, branch, stagingPath, resolvedEnv } = args;
+  const url = desc.buttonUrl!;
+  const method = desc.buttonMethod ?? 'POST';
+  const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
+  const root = runRoot(stagingPath, branch, desc.name);
+  await fs.mkdir(root, { recursive: true });
+  const logPath = runLogPath(stagingPath, branch, desc.name, runId);
+  const metaPath = runMetaPath(stagingPath, branch, desc.name, runId);
+
+  const startedAt = new Date().toISOString();
+  const meta: RunMeta = {
+    runId, harness, branch, name: desc.name,
+    scriptPath: url,
+    startedAt, status: 'running',
+  };
+  await fs.writeFile(metaPath, JSON.stringify(meta, null, 2), 'utf8');
+
+  const logFh = await fs.open(logPath, 'w');
+  await logFh.write(`::papercusp::action-started\t${JSON.stringify({
+    runId, harness, branch, name: desc.name,
+    scriptPath: url, source: 'plugin-button', method,
+    pluginSlug: desc.pluginSlug, startedAt,
+  })}\n`);
+
+  const t0 = Date.now();
+  const done = (async () => {
+    let exitCode: number | null = 0;
+    let signal: string | null = null;
+    let status: 'completed' | 'failed' = 'completed';
+    try {
+      // The plugin's URL is operator-relative. Resolve against the operator's
+      // self-URL so this works in standalone + dev modes.
+      const base = process.env.PAPERCUSP_SELF_URL ?? 'http://localhost:3055';
+      const fullUrl = url.startsWith('http') ? url : `${base}${url.startsWith('/') ? '' : '/'}${url}`;
+
+      const res = await fetch(fullUrl, {
+        method,
+        headers: { 'content-type': 'application/json' },
+        body: method === 'GET' ? undefined : JSON.stringify({
+          harness, branch, button: desc.name.split(':').slice(1).join(':'),
+          runId, env: resolvedEnv,
+        }),
+      });
+
+      if (!res.ok) {
+        await logFh.write(`::papercusp::stderr\tHTTP ${res.status} ${res.statusText}\n`);
+        const text = await res.text().catch(() => '');
+        if (text) await logFh.write(text + '\n');
+        exitCode = res.status;
+        status = 'failed';
+      } else {
+        const ct = res.headers.get('content-type') ?? '';
+        if (ct.includes('text/event-stream') && res.body) {
+          // Forward SSE data lines to the log verbatim.
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          while (true) {
+            const { done: rdone, value } = await reader.read();
+            if (rdone) break;
+            buf += dec.decode(value, { stream: true });
+            const events = buf.split('\n\n');
+            buf = events.pop() ?? '';
+            for (const ev of events) {
+              for (const line of ev.split('\n')) {
+                if (line.startsWith('data:')) {
+                  const data = line.slice(5).trimStart();
+                  await logFh.write(data + '\n');
+                }
+              }
+            }
+          }
+        } else {
+          // One-shot: log the body as output.
+          const body = await res.text();
+          if (body) await logFh.write(body + (body.endsWith('\n') ? '' : '\n'));
+        }
+      }
+    } catch (e) {
+      await logFh.write(`::papercusp::stderr\tdispatch error: ${(e as Error).message}\n`);
+      exitCode = -1;
+      signal = 'fetch-error';
+      status = 'failed';
+    }
+
+    const endedAt = new Date().toISOString();
+    const durationMs = Date.now() - t0;
+    const final: RunMeta = {
+      ...meta, endedAt, exitCode, signal, durationMs, status,
+    };
+    try {
+      await logFh.write(`::papercusp::action-${status}\t${JSON.stringify({
+        runId, exitCode, signal, durationMs, endedAt,
+      })}\n`);
+    } catch { /* ignore */ }
+    try { await logFh.close(); } catch { /* ignore */ }
+    try { await fs.writeFile(metaPath, JSON.stringify(final, null, 2), 'utf8'); } catch { /* ignore */ }
+    return final;
+  })();
 
   return { runId, meta, done };
 }

@@ -479,6 +479,139 @@ describe('plugin-contributed actions', () => {
     expect(log).toContain('TOKEN=plugin-supplied-token');
   });
 
+  it('discovers URL-based buttons under buttons.<branch>.<name>', async () => {
+    const pdir = join(pluginsDir, '@scope', 'cf');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: '@scope/cf',
+      buttons: {
+        staging: { build: '/api/plugins/@scope/cf/build-staging' },
+        production: {
+          build: { url: '/api/plugins/@scope/cf/build-prod', displayName: 'Build & deploy (prod)' },
+        },
+      },
+    }));
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: { '@scope/cf': { version: '0.1.0' } } }),
+    );
+
+    const staging = await listActions('/tmp/unused', 'staging', {
+      harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir,
+    });
+    expect(staging).toHaveLength(1);
+    expect(staging[0].name).toBe('@scope/cf:build');
+    expect(staging[0].source).toBe('plugin-button');
+    expect(staging[0].buttonUrl).toBe('/api/plugins/@scope/cf/build-staging');
+    expect(staging[0].buttonMethod).toBe('POST');
+
+    const prod = await listActions('/tmp/unused', 'production', {
+      harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir,
+    });
+    expect(prod).toHaveLength(1);
+    expect(prod[0].buttonUrl).toBe('/api/plugins/@scope/cf/build-prod');
+    expect(prod[0].manifest?.displayName).toBe('Build & deploy (prod)');
+  });
+
+  it('button per-branch URL routing — different URLs for staging vs production', async () => {
+    const pdir = join(pluginsDir, 'p');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: 'p',
+      buttons: {
+        staging: { build: '/api/build-staging' },
+        production: { build: '/api/build-prod' },
+      },
+    }));
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: { p: { version: '0.1.0' } } }),
+    );
+
+    const s = await listActions('/tmp/unused', 'staging', { harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir });
+    const t = await listActions('/tmp/unused', 'testing', { harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir });
+    const p = await listActions('/tmp/unused', 'production', { harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir });
+
+    expect(s[0]?.buttonUrl).toBe('/api/build-staging');
+    expect(t).toEqual([]); // no testing button declared
+    expect(p[0]?.buttonUrl).toBe('/api/build-prod');
+  });
+
+  it('runAction dispatches HTTP for plugin-button and writes log lines', async () => {
+    const pdir = join(pluginsDir, 'echo');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: 'echo',
+      buttons: { staging: { build: 'http://localhost:0/' } },
+    }));
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: { echo: { version: '0.1.0' } } }),
+    );
+
+    // Override fetch to record + return a known body.
+    const origFetch = globalThis.fetch;
+    let captured: { url: string; body: string } | null = null;
+    globalThis.fetch = (async (input: any, init: any) => {
+      captured = { url: typeof input === 'string' ? input : input.url, body: init?.body ?? '' };
+      return new Response('plugin says hi\n', { headers: { 'content-type': 'text/plain' } });
+    }) as typeof fetch;
+
+    try {
+      const handle = await runAction({
+        stagingPath: staging,
+        harness: 'h', branch: 'staging',
+        name: 'echo:build',
+        harnessConfigsDir: configsDir,
+        globalPluginsDir: pluginsDir,
+      });
+      const meta = await handle.done;
+      expect(meta.status).toBe('completed');
+      expect(captured?.url).toContain('http://localhost:0/');
+      const body = JSON.parse(captured!.body);
+      expect(body.harness).toBe('h');
+      expect(body.branch).toBe('staging');
+      expect(body.button).toBe('build');
+      // Log captured the response
+      const safeName = 'echo_build';
+      const log = await fs.readFile(
+        join(staging, '.harness', 'action-runs', 'staging', safeName, `${meta.runId}.log`),
+        'utf8',
+      );
+      expect(log).toContain('plugin says hi');
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
+  it('runAction marks plugin-button as failed on non-2xx response', async () => {
+    const pdir = join(pluginsDir, 'fail');
+    await mkdir(pdir, { recursive: true });
+    await writeFile(join(pdir, 'papercusp.json'), JSON.stringify({
+      name: 'fail',
+      buttons: { staging: { build: 'http://localhost:0/' } },
+    }));
+    await writeFile(
+      join(configsDir, 'enabled-plugins.json'),
+      JSON.stringify({ enabled: { fail: { version: '0.1.0' } } }),
+    );
+
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('boom', { status: 500, statusText: 'Internal' })) as typeof fetch;
+
+    try {
+      const handle = await runAction({
+        stagingPath: staging, harness: 'h', branch: 'staging', name: 'fail:build',
+        harnessConfigsDir: configsDir, globalPluginsDir: pluginsDir,
+      });
+      const meta = await handle.done;
+      expect(meta.status).toBe('failed');
+      expect(meta.exitCode).toBe(500);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
+
   it('does not list plugin actions when the plugin is not enabled', async () => {
     const pdir = join(pluginsDir, 'notenabled');
     await mkdir(pdir, { recursive: true });
