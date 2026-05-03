@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
+import { toast } from 'sonner';
 import {
   initVoiceMode,
   setVoiceMode,
@@ -17,6 +18,7 @@ import {
   type VoiceState,
   type VoiceMode,
 } from './voice-mode';
+import { useMicLevel } from './useMicLevel';
 
 const ICON: Record<VoiceState['status'], string> = {
   off: '🎤',
@@ -33,7 +35,7 @@ const NEXT_MODE: Record<VoiceMode, VoiceMode> = {
 };
 
 const MODE_LABEL: Record<VoiceMode, string> = {
-  'off': 'Voice off',
+  'off': 'Mic off',
   'push-to-talk': 'PTT',
   'always-on': 'Always-on',
 };
@@ -56,8 +58,7 @@ export function VoiceButton(): JSX.Element {
 
   const onClick = useCallback(() => {
     if (!vs.supported) {
-      // eslint-disable-next-line no-alert
-      alert('Voice mode is not available in this environment.');
+      toast.error('Voice mode is not available in this environment.');
       return;
     }
     setVoiceMode(NEXT_MODE[vs.mode]);
@@ -75,7 +76,16 @@ export function VoiceButton(): JSX.Element {
     stopPushToTalk();
   }, [pttHeld]);
 
-  const showLabel = vs.mode !== 'off' || vs.status === 'speaking';
+  // Live mic level — only sample when the mic is actually open. Always-on
+  // continuously listens (so we sample any time mode is always-on); PTT
+  // only listens while held. `listening` status covers both.
+  const micActive =
+    vs.mode === 'always-on' ||
+    vs.status === 'listening' ||
+    pttHeld;
+  const micLevel = useMicLevel(micActive);
+
+  const labelText = vs.supported ? MODE_LABEL[vs.mode] : 'No mic';
   const title = vs.supported
     ? `Voice mode: ${MODE_LABEL[vs.mode]} (click to cycle, hold for PTT)`
     : 'Voice mode unsupported in this browser';
@@ -91,24 +101,14 @@ export function VoiceButton(): JSX.Element {
       onMouseLeave={onPttUp}
       onTouchStart={onPttDown}
       onTouchEnd={onPttUp}
-      style={{
-        marginLeft: 8,
-        padding: '4px 10px',
-        background: vs.status === 'listening' ? 'rgba(255,0,0,0.1)'
-          : vs.status === 'speaking' ? 'rgba(0,128,255,0.1)'
-          : 'transparent',
-        border: '1px solid rgba(0,0,0,0.15)',
-        borderRadius: 6,
-        cursor: vs.supported ? 'pointer' : 'not-allowed',
-        opacity: vs.supported ? 1 : 0.5,
-        fontSize: 13,
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-      }}
+      className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}`}
+      style={{ ['--mic-level' as any]: micLevel.toFixed(3) }}
     >
-      <span style={{ fontFamily: 'monospace' }}>{ICON[vs.status]}</span>
-      {showLabel && <span style={{ fontSize: 11 }}>{MODE_LABEL[vs.mode]}</span>}
+      <span className="pc-voice-btn-orb" aria-hidden="true">
+        <span className="pc-voice-btn-level" aria-hidden="true" />
+        <span className="pc-voice-btn-icon">{ICON[vs.status]}</span>
+      </span>
+      <span className="pc-voice-btn-label">{labelText}</span>
     </button>
   );
 }
