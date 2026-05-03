@@ -5,7 +5,7 @@
  */
 
 import { NextRequest } from 'next/server';
-import { writeOperatorAudit, type OperatorAuditKind } from '@/lib/operator-audit';
+import { writeOperatorAudit, type OperatorAuditKind, type ActorMethod } from '@/lib/operator-audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,8 +21,10 @@ const ALLOWED: ReadonlySet<OperatorAuditKind> = new Set([
   'superseded',
 ]);
 
+const ALLOWED_METHODS: ReadonlySet<NonNullable<ActorMethod>> = new Set(['voice', 'click', 'api']);
+
 export async function POST(req: NextRequest) {
-  let body: { cardId?: unknown; kind?: unknown; context?: unknown } = {};
+  let body: { cardId?: unknown; kind?: unknown; context?: unknown; actorMethod?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -33,10 +35,15 @@ export async function POST(req: NextRequest) {
   if (!cardId || !ALLOWED.has(kind)) {
     return new Response('cardId and kind required (see OperatorAuditKind)', { status: 400 });
   }
+  let actorMethod: ActorMethod = null;
+  if (typeof body.actorMethod === 'string' && ALLOWED_METHODS.has(body.actorMethod as any)) {
+    actorMethod = body.actorMethod as ActorMethod;
+  }
   await writeOperatorAudit({
     cardId,
     kind,
     context: body.context && typeof body.context === 'object' ? (body.context as Record<string, unknown>) : undefined,
+    actorMethod,
   });
   return Response.json({ ok: true });
 }

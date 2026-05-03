@@ -46,6 +46,11 @@ describe('parseOperatorIntent', () => {
   it('rejects unknown verbs', () => {
     expect(parseOperatorIntent('operator yodel')).toBeNull();
   });
+
+  it('parses cross-workspace summary intent', () => {
+    expect(parseOperatorIntent('operator across workspaces')).toEqual({ kind: 'across-workspaces' });
+    expect(parseOperatorIntent('operator across workspace')).toEqual({ kind: 'across-workspaces' });
+  });
 });
 
 describe('isCapVoiceEligible', () => {

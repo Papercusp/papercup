@@ -68,9 +68,17 @@ export function OperatorBackgroundScanner() {
       if (pausedRef.current) return;
       const es = new EventSource('/api/agent-mcp/operator-scan?background=1&request=Background+scan%3A+surface+next-action+suggestions.');
       inFlightRef.current = es;
+      // Fire scan-start event for OperatorVoiceAnnouncer.
+      try {
+        window.dispatchEvent(new CustomEvent('operator:scan', { detail: { kind: 'scan-start' } }));
+      } catch { /* ignore */ }
+      let suggestionsCount = 0;
+      let autoDispatchedCount = 0;
       es.addEventListener('suggestion', (ev: MessageEvent) => {
         try {
           const s = JSON.parse(ev.data) as SuggestionEvent;
+          suggestionsCount++;
+          if (s.auto_dispatch) autoDispatchedCount++;
           if (!s.auto_dispatch) return; // ask-first → wait for the user to open the panel
           armAutoFireToast(s);
         } catch {
@@ -81,6 +89,11 @@ export function OperatorBackgroundScanner() {
         es.close();
         inFlightRef.current = null;
         lastScanCompletedRef.current = Date.now();
+        try {
+          window.dispatchEvent(new CustomEvent('operator:scan', {
+            detail: { kind: 'scan-done', suggestions: suggestionsCount, autoDispatched: autoDispatchedCount },
+          }));
+        } catch { /* ignore */ }
       });
       es.addEventListener('error', () => {
         es.close();
@@ -185,10 +198,11 @@ function armAutoFireToast(s: SuggestionEvent) {
         const lower = utterance.trim().toLowerCase();
         if (lower === 'cancel') {
           cancelled = true;
+          // v4 §2m: voice-initiated cancel — actor_method='voice'.
           void fetch('/api/agent-mcp/operator-audit', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ cardId: s.id, kind: 'undo_cancel' }),
+            body: JSON.stringify({ cardId: s.id, kind: 'undo_cancel', actorMethod: 'voice' }),
           });
           toast.dismiss(id);
           if (toastDereg) { toastDereg(); toastDereg = null; }

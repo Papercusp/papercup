@@ -9,6 +9,7 @@ import { VoiceButton } from './voice/VoiceButton';
 import { VoiceAppBridge } from './voice/VoiceAppBridge';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
+import { OperatorVoiceAnnouncer } from './voice/OperatorVoiceAnnouncer';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
 import UpdateChip from './UpdateChip';
@@ -77,6 +78,7 @@ export default function ChromeShell() {
       <OperatorBackgroundScanner />
       <VoiceAppBridge />
       <VoiceLeaderBootstrap />
+      <OperatorVoiceAnnouncer />
       <AriaLiveRegions />
     </>
   );

@@ -375,8 +375,16 @@ export function OperatorPanel(): JSX.Element | null {
           ];
         });
         // Voice mode: speak the suggestion title + why-line.
+        // Phase 6: append voice-readable provenance flags so users hear
+        // when Operator overrode the LLM's claimed tier or fell back to
+        // the unknown-cap fail-safe.
         if (getVoiceState().mode !== 'off') {
-          speak(`${s.title}. ${s.why}`, 'system:operator');
+          let suffix = '';
+          if (s.provenanceFlags?.tierMismatch) suffix += ' Warning: tier mismatch — substrate forced authoritative.';
+          if (s.provenanceFlags?.capabilityUnknown) suffix += ' Warning: unknown capability — forced high.';
+          // Escalation surfaces louder via assertive aria-live priority.
+          const priority = s.actualTier === 'high' ? 'assertive' : 'polite';
+          speak(`${s.title}. ${s.why}${suffix}`, 'system:operator', priority);
         }
       } catch {
         /* ignore */
@@ -556,12 +564,17 @@ export function OperatorPanel(): JSX.Element | null {
   }, [state.open, state.paused, scanStarted, startScan, refreshDecisions, refreshBudget, hydrateFromLastScan, budget?.configured, budget?.exceeded]);
 
 
+  // Voice-action provenance (v4 §2m): flipped to 'voice' for the duration
+  // of voice-utterance-handled actions so logAudit tags them correctly.
+  // Reset to 'click' otherwise.
+  const actorMethodRef = useRef<'voice' | 'click' | 'api'>('click');
+
   const logAudit = useCallback(async (cardId: string, kind: 'dispatched' | 'acked' | 'undo_cancel' | 'consumed' | 'escalated' | 'rejected' | 'failed' | 'dismissed' | 'superseded', context?: Record<string, unknown>) => {
     try {
       await fetch('/api/agent-mcp/operator-audit', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ cardId, kind, context }),
+        body: JSON.stringify({ cardId, kind, context, actorMethod: actorMethodRef.current }),
       });
     } catch {
       /* best-effort */
@@ -720,38 +733,44 @@ export function OperatorPanel(): JSX.Element | null {
     const dereg = registerVoiceConsumer('OperatorPanel');
     const unsub = onFinalUtterance(async (text) => {
       if (!text || text.length < 2) return;
-      const { parseVoiceCommand } = await import('../../lib/voice-commands');
-      const cmd = parseVoiceCommand(text);
-      const orderedPending = suggestionsRef.current.filter((c) => c.status === 'pending');
-      const pickByOrdinal = (ord?: number) => {
-        if (ord === undefined) return orderedPending[0];
-        return orderedPending[ord - 1];
-      };
-      switch (cmd.kind) {
-        case 'dispatch': {
-          const card = pickByOrdinal(cmd.ordinal);
-          if (card) void dispatchSuggestion(card.id);
-          return;
+      // v4 §2m: tag voice-initiated audit rows. Restore on next macrotask.
+      actorMethodRef.current = 'voice';
+      try {
+        const { parseVoiceCommand } = await import('../../lib/voice-commands');
+        const cmd = parseVoiceCommand(text);
+        const orderedPending = suggestionsRef.current.filter((c) => c.status === 'pending');
+        const pickByOrdinal = (ord?: number) => {
+          if (ord === undefined) return orderedPending[0];
+          return orderedPending[ord - 1];
+        };
+        switch (cmd.kind) {
+          case 'dispatch': {
+            const card = pickByOrdinal(cmd.ordinal);
+            if (card) await dispatchSuggestion(card.id);
+            return;
+          }
+          case 'dismiss': {
+            const card = pickByOrdinal(cmd.ordinal);
+            if (card) dismissSuggestion(card.id);
+            return;
+          }
+          case 'pause':
+            broadcastState({ paused: true });
+            return;
+          case 'resume':
+            broadcastState({ paused: false });
+            return;
+          case 'cancel':
+            return;
+          case 'scan':
+            startScan(cmd.query);
+            return;
+          case 'freeform':
+          default:
+            startScan(cmd.text);
         }
-        case 'dismiss': {
-          const card = pickByOrdinal(cmd.ordinal);
-          if (card) dismissSuggestion(card.id);
-          return;
-        }
-        case 'pause':
-          broadcastState({ paused: true });
-          return;
-        case 'resume':
-          broadcastState({ paused: false });
-          return;
-        case 'cancel':
-          return;
-        case 'scan':
-          startScan(cmd.query);
-          return;
-        case 'freeform':
-        default:
-          startScan(cmd.text);
+      } finally {
+        setTimeout(() => { actorMethodRef.current = 'click'; }, 50);
       }
     });
     return () => {

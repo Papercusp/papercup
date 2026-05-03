@@ -19,7 +19,8 @@
 export type OperatorIntent =
   | { kind: 'open' }
   | { kind: 'open-and-scan'; query?: string }
-  | { kind: 'approve'; targetSlug: string; capability?: string };
+  | { kind: 'approve'; targetSlug: string; capability?: string }
+  | { kind: 'across-workspaces' };
 
 const OPEN_VERBS = new Set(['open', 'show']);
 const SCAN_VERBS = new Set(['scan', 'status']);
@@ -33,6 +34,9 @@ export function parseOperatorIntent(utterance: string): OperatorIntent | null {
   // Multi-word verbs first.
   if (/^operator\s+what'?s\s+pending\b/.test(trimmed)) {
     return { kind: 'open-and-scan' };
+  }
+  if (/^operator\s+across\s+workspaces?\b/.test(trimmed)) {
+    return { kind: 'across-workspaces' };
   }
 
   const m = trimmed.match(/^operator\s+(\S+)(?:\s+(.+))?$/);

@@ -29,6 +29,18 @@ export type OperatorAuditKind =
   | 'dismissed'
   | 'superseded';
 
+/**
+ * How the action was initiated (voice-mode-plan-v4 §2m). Stored in
+ * audit_log.details.actor_method so retrospective analysis can break
+ * down voice vs click vs CLI/API utility.
+ *
+ *   'voice'  — voice utterance (in-panel command, wake-word, toast cancel)
+ *   'click'  — UI click / keyboard activation
+ *   'api'    — direct API call (CLI, automated test, external script)
+ *   null     — legacy / unspecified (default for back-compat)
+ */
+export type ActorMethod = 'voice' | 'click' | 'api' | null;
+
 export interface OperatorAuditEvent {
   cardId: string;
   kind: OperatorAuditKind;
@@ -36,6 +48,8 @@ export interface OperatorAuditEvent {
   at?: string;
   /** Optional context (capability + target for dispatched events, etc). */
   context?: Record<string, unknown>;
+  /** How this action was initiated. Defaults to null for back-compat. */
+  actorMethod?: ActorMethod;
 }
 
 function makeId(): string {
@@ -46,7 +60,13 @@ export async function writeOperatorAudit(ev: OperatorAuditEvent): Promise<void> 
   const workspaceId = activeWorkspaceId();
   const at = ev.at ?? new Date().toISOString();
   const id = makeId();
-  const details = { card_id: ev.cardId, kind: ev.kind, at, ...(ev.context ?? {}) };
+  const details = {
+    card_id: ev.cardId,
+    kind: ev.kind,
+    at,
+    actor_method: ev.actorMethod ?? null,
+    ...(ev.context ?? {}),
+  };
   try {
     await withWorkspace(workspaceId, async (tx) => {
       await tx`

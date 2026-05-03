@@ -119,6 +119,78 @@ export function VoiceAppBridge(): null {
       if (voiceStateRef.current.mode === 'off') return;
       if (!text || text.trim().length < 2) return;
 
+      // Wake-word intents (v4 §2f + Phase 5b): "operator <verb>" prefix
+      // captures take precedence over consumer routing AND Oracle. This
+      // way the user can say "operator open" or "operator approve foo"
+      // from anywhere without first opening the panel.
+      try {
+        const { parseOperatorIntent, resolveApprove } = await import('../../../lib/voice-intents');
+        const intent = parseOperatorIntent(text);
+        if (intent) {
+          if (intent.kind === 'open' || intent.kind === 'open-and-scan') {
+            const { setOperatorState } = await import('../operator-shared-state');
+            setOperatorState({ open: true });
+            if (intent.kind === 'open-and-scan') {
+              // Defer the scan trigger to next tick so the panel mounts first.
+              setTimeout(() => {
+                window.dispatchEvent(new CustomEvent('operator:scan-request', {
+                  detail: { query: intent.query ?? '' },
+                }));
+              }, 100);
+            }
+            return;
+          }
+          if (intent.kind === 'approve') {
+            // Fetch candidates + resolve.
+            try {
+              const r = await fetch('/api/agent-mcp/operator-standing-approvals');
+              const body = await r.json();
+              const result = resolveApprove(intent, body.candidates ?? []);
+              const { speak } = await import('./voice-mode');
+              if (result.action === 'approve' && result.capability) {
+                await fetch('/api/agent-mcp/operator-standing-approvals', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    capability: result.capability,
+                    targetHarness: result.targetSlug,
+                    decision: 'approve',
+                  }),
+                });
+                speak(`Approved ${result.capability.replace(':', ' ')} for ${result.targetSlug}.`, 'system:operator', 'polite');
+              } else if (result.action === 'refuse-no-match') {
+                speak(`No candidate matches ${result.targetSlug} that I've shown you yet. Open settings to review.`, 'system:operator', 'polite');
+              } else if (result.action === 'refuse-ambiguous') {
+                const opts = (result.options ?? []).map((o) => o.replace(':', ' ')).join(', or ');
+                speak(`Multiple pending approvals for ${result.targetSlug}: ${opts}. Say operator approve ${result.targetSlug} followed by the capability.`, 'system:operator', 'polite');
+              } else if (result.action === 'refuse-complex-cap') {
+                speak(`That capability has a complex name. Please approve in operator settings.`, 'system:operator', 'polite');
+              }
+            } catch {
+              /* network blip — settings UI is the fallback */
+            }
+            return;
+          }
+          if (intent.kind === 'across-workspaces') {
+            try {
+              const r = await fetch('/api/agent-mcp/operator-multi-workspace');
+              const body = await r.json();
+              const ws: { name: string; cardCount: number }[] = body.workspaces ?? [];
+              const { speak } = await import('./voice-mode');
+              if (ws.length === 0) {
+                speak('No other workspaces.', 'system:operator', 'polite');
+              } else {
+                const phrases = ws.map((w) => `${w.name}: ${w.cardCount} card${w.cardCount === 1 ? '' : 's'}`);
+                speak(`Across workspaces: ${phrases.join('; ')}.`, 'system:operator', 'polite');
+              }
+            } catch { /* ignore */ }
+            return;
+          }
+        }
+      } catch {
+        /* intent module not yet loaded — fall through to normal routing */
+      }
+
       // Highest-priority consumer wins. If it has an `onUtterance`
       // handler (e.g. background-toast looking for "cancel"), let it
       // process the utterance and stop. If it has no handler (e.g.
