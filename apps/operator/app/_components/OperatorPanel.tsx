@@ -774,6 +774,7 @@ export function OperatorPanel(): JSX.Element | null {
             </div>
           )}
           <PerHarnessStatus />
+          <OtherWorkspacesPanel />
           <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
             Stream
           </h3>
@@ -1001,6 +1002,111 @@ function PerHarnessStatus(): JSX.Element | null {
           <li style={{ opacity: 0.5 }}>+{rows.length - 8} more</li>
         )}
       </ul>
+    </div>
+  );
+}
+
+interface ForeignCard {
+  workspaceId: string;
+  workspaceName: string;
+  card: { id?: string; title?: string; action?: string; auto_dispatch?: boolean };
+  dismissed: boolean;
+}
+
+interface MultiWorkspaceSnapshot {
+  cards: ForeignCard[];
+  workspaces: { id: string; name: string; cardCount: number; scanCompletedAt: string | null }[];
+}
+
+function OtherWorkspacesPanel(): JSX.Element | null {
+  const [snap, setSnap] = useState<MultiWorkspaceSnapshot | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/agent-mcp/operator-multi-workspace')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d) return;
+        setSnap(d as MultiWorkspaceSnapshot);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  if (!snap?.workspaces?.length) return null;
+  const switchTo = async (id: string) => {
+    try {
+      const m = await import('../../lib/workspaces-tauri');
+      await m.switchWorkspace(id, { resetTo: `/harness?ws=${encodeURIComponent(id)}` });
+    } catch {
+      // Web mode — fall back to a hard navigate.
+      window.location.assign(`/harness?ws=${encodeURIComponent(id)}`);
+    }
+  };
+  const visibleCards = snap.cards.filter((c) => !c.dismissed).slice(0, 10);
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
+        Other workspaces
+      </h3>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 4, fontSize: 12 }}>
+        {snap.workspaces.map((w) => (
+          <li key={w.id} style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <button
+              type="button"
+              onClick={() => void switchTo(w.id)}
+              style={{
+                background: 'transparent',
+                border: 'none',
+                padding: 0,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                fontSize: 12,
+                textAlign: 'left',
+                color: 'inherit',
+                textDecoration: 'underline dotted',
+              }}
+            >
+              {w.name}
+            </button>
+            <span style={{ opacity: 0.6 }}>
+              {w.cardCount} {w.cardCount === 1 ? 'card' : 'cards'}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {visibleCards.length > 0 && (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '8px 0 0', display: 'grid', gap: 4, fontSize: 11 }}>
+          {visibleCards.map((c, i) => (
+            <li key={`${c.workspaceId}-${c.card.id ?? i}`} style={{ display: 'flex', justifyContent: 'space-between', opacity: 0.85 }}>
+              <button
+                type="button"
+                onClick={() => void switchTo(c.workspaceId)}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  fontSize: 11,
+                  textAlign: 'left',
+                  color: 'inherit',
+                  textDecoration: 'underline dotted',
+                  flex: 1,
+                  marginRight: 8,
+                  whiteSpace: 'nowrap',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                }}
+                title={`${c.workspaceName} · ${c.card.title ?? '(untitled)'}`}
+              >
+                {c.card.title ?? '(untitled)'}
+              </button>
+              <span style={{ opacity: 0.5 }}>{c.card.auto_dispatch ? 'auto' : 'ask'}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
