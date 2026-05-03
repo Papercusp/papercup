@@ -39,9 +39,33 @@ const NEXT_MODE: Record<VoiceMode, VoiceMode> = {
 
 const MODE_LABEL: Record<VoiceMode, string> = {
   'off': 'Mic off',
-  'push-to-talk': 'PTT',
+  'push-to-talk': 'PUSH TT',
   'always-on': 'Always-on',
 };
+
+const WAKE_HINT_SEEN_KEY = 'pc-voice-wake-hint-seen-v1';
+const PTT_HINT_SEEN_KEY = 'pc-voice-ptt-hint-seen-v1';
+// Push-to-talk key. Backtick (`) is the right default for a coding-harness
+// app: rarely typed in normal English/code outside template literals,
+// easy to find by touch (top-left, below Escape), and doesn't conflict
+// with editor shortcuts. V was a poor choice — it fires in any text
+// input that isn't caught by `isEditableTarget`, and the global keydown
+// listener only ran in push-to-talk *mode*, so users in always-on mode
+// got a silent no-op instead of a temporary force-mic.
+//
+// `event.code === 'Backquote'` matches the physical key regardless of
+// keyboard layout (US/UK/etc), which is more reliable than e.key.
+const PTT_SHORTCUT_CODE = 'Backquote';
+const PTT_SHORTCUT_LABEL = '`';
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  // contenteditable elements: any "true"/"" value, plus inherited via [contenteditable=inherit]
+  if (target.isContentEditable) return true;
+  return !!target.closest(
+    'input, textarea, select, [contenteditable="true"], [contenteditable=""], .cm-editor, .monaco-editor, .xterm, .xterm-screen',
+  );
+}
 
 export function VoiceButton(): JSX.Element {
   const [vs, setVs] = useState<VoiceState>({
@@ -52,6 +76,14 @@ export function VoiceButton(): JSX.Element {
     speakingRole: null,
   });
   const [wakeWord, setWakeWord] = useState(() => getVoiceConfig().wakeWord);
+  const [wakeHintSeen, setWakeHintSeen] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(WAKE_HINT_SEEN_KEY) === '1';
+  });
+  const [pttHintSeen, setPttHintSeen] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(PTT_HINT_SEEN_KEY) === '1';
+  });
   const [pttHeld, setPttHeld] = useState(false);
 
   useEffect(() => {
@@ -71,26 +103,94 @@ export function VoiceButton(): JSX.Element {
     };
   }, []);
 
+  const markWakeHintSeen = useCallback(() => {
+    if (wakeHintSeen) return;
+    setWakeHintSeen(true);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(WAKE_HINT_SEEN_KEY, '1');
+      } catch {
+        /* ignore storage issues */
+      }
+    }
+  }, [wakeHintSeen]);
+
+  const markPttHintSeen = useCallback(() => {
+    if (pttHintSeen) return;
+    setPttHintSeen(true);
+    if (typeof window !== 'undefined') {
+      try {
+        window.localStorage.setItem(PTT_HINT_SEEN_KEY, '1');
+      } catch {
+        /* ignore storage issues */
+      }
+    }
+  }, [pttHintSeen]);
 
   const onClick = useCallback(() => {
     if (!vs.supported) {
       toast.error('Voice mode is not available in this environment.');
       return;
     }
+    if (vs.mode === 'always-on') markWakeHintSeen();
     setVoiceMode(NEXT_MODE[vs.mode]);
-  }, [vs.mode, vs.supported]);
+  }, [markWakeHintSeen, vs.mode, vs.supported]);
 
   const onPttDown = useCallback(() => {
-    if (!vs.hasWebSpeechSTT || vs.mode !== 'push-to-talk') return;
+    // Mouse-hold on the button works regardless of mode — same semantics
+    // as the keyboard shortcut.
+    if (!vs.hasWebSpeechSTT) return;
     setPttHeld(true);
     startPushToTalk();
-  }, [vs.mode, vs.hasWebSpeechSTT]);
+  }, [vs.hasWebSpeechSTT]);
 
   const onPttUp = useCallback(() => {
     if (!pttHeld) return;
     setPttHeld(false);
     stopPushToTalk();
   }, [pttHeld]);
+
+  // Hold-to-talk keyboard shortcut. Listener is mounted whenever voice
+  // mode is "supported" (i.e. any voice path is viable), regardless of
+  // current mode — holding the key in always-on mode acts as a force-
+  // listen override; in off mode it temporarily activates the mic.
+  // Previously the listener was gated on mode==='push-to-talk' which
+  // made the key silently no-op in any other mode.
+  useEffect(() => {
+    if (!vs.supported || !vs.hasWebSpeechSTT) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
+      if (e.code !== PTT_SHORTCUT_CODE) return;
+      if (isEditableTarget(e.target)) return;
+      e.preventDefault();
+      markPttHintSeen();
+      if (pttHeld) return;
+      setPttHeld(true);
+      startPushToTalk();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== PTT_SHORTCUT_CODE) return;
+      if (!pttHeld) return;
+      e.preventDefault();
+      setPttHeld(false);
+      stopPushToTalk();
+    };
+    // Defensive: if the user releases the key while the window doesn't have
+    // focus (alt-tab while held), keyup never fires. Treat blur as release.
+    const onBlur = () => {
+      if (!pttHeld) return;
+      setPttHeld(false);
+      stopPushToTalk();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [markPttHintSeen, pttHeld, vs.hasWebSpeechSTT, vs.supported]);
 
   // Live mic level — only sample when the mic is actually open AND we're
   // on a route where the visual is worth the CPU. Skip on /settings/* so
@@ -105,12 +205,13 @@ export function VoiceButton(): JSX.Element {
 
   const labelText = vs.supported ? MODE_LABEL[vs.mode] : 'No mic';
   const title = vs.supported
-    ? `Voice mode: ${MODE_LABEL[vs.mode]} (click to cycle, hold for PTT)`
+    ? `Voice mode: ${MODE_LABEL[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
     : 'Voice mode unsupported in this browser';
-  const showWakeHint = vs.mode === 'always-on' && vs.supported;
+  const showWakeHint = vs.mode === 'always-on' && vs.supported && !wakeHintSeen;
+  const showPttHint = vs.mode === 'push-to-talk' && vs.supported && !pttHintSeen;
 
   return (
-    <div className={`pc-voice-control${showWakeHint ? ' has-wake-hint' : ''}`}>
+    <div className={`pc-voice-control${showWakeHint || showPttHint ? ' has-wake-hint' : ''}`}>
       <button
         type="button"
         aria-label="Voice mode"
@@ -139,9 +240,17 @@ export function VoiceButton(): JSX.Element {
         <Settings2 size={14} aria-hidden="true" />
         <span className="pc-voice-settings-text">Voice</span>
       </a>
-      {showWakeHint && (
+      {(showWakeHint || showPttHint) && (
         <div className="pc-voice-wake-hint" aria-live="polite">
-          Say <strong>{wakeWord}</strong>
+          {showWakeHint ? (
+            <>
+              Say <strong>{wakeWord}</strong>
+            </>
+          ) : (
+            <>
+              Hold <strong>{PTT_SHORTCUT_LABEL}</strong> to talk
+            </>
+          )}
         </div>
       )}
     </div>
