@@ -84,6 +84,12 @@ export async function startWhisperCapture(
 
   const vad = await MicVAD.new({
     model: 'v5',                 // Silero v5 — more accurate than legacy
+    // Pin asset paths to absolute origin URLs so the loader resolves the
+    // ONNX model + worklet from /silero_vad_v5.onnx and /vad.worklet…
+    // regardless of the current page's path. Default `./` resolution
+    // breaks on nested routes like /settings/voice → /settings/silero…
+    baseAssetPath: '/',
+    onnxWASMBasePath: '/',
     positiveSpeechThreshold: 0.6, // raise = stricter (fewer false positives)
     negativeSpeechThreshold: 0.35,
     minSpeechFrames: 4,           // ~250ms minimum to count as speech

@@ -11,7 +11,8 @@
     "test:e2e:ui": "playwright test --ui",
     "test": "vitest run --passWithNoTests",
     "setup-wake-runtime": "bash scripts/setup-wake-runtime.sh",
-    "postinstall": "bash scripts/setup-wake-runtime.sh"
+    "setup-vad-runtime": "bash scripts/setup-vad-runtime.sh",
+    "postinstall": "bash scripts/setup-wake-runtime.sh && bash scripts/setup-vad-runtime.sh"
   },
   "dependencies": {
     "@blocknote/core": "^0.49.0",
