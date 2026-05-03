@@ -1,8 +1,11 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { Controller } from 'react-hook-form';
 import { toast } from 'sonner';
+import { z } from 'zod';
 import { MarkdownEditor } from '../../_components/MarkdownEditor';
+import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 
 interface OracleConfig {
   prompt: string;
@@ -11,12 +14,19 @@ interface OracleConfig {
   memory_path: string;
 }
 
+const OracleSchema = z.object({
+  prompt: z.string(),
+  memory: z.string(),
+});
+type OracleFormData = z.infer<typeof OracleSchema>;
+
 export default function OracleSettingsPage() {
   const [cfg, setCfg] = useState<OracleConfig | null>(null);
-  const [prompt, setPrompt] = useState('');
-  const [memory, setMemory] = useState('');
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+
+  const { control, submit, reset, errors, isSubmitting } = useFormWith(OracleSchema, {
+    defaultValues: { prompt: '', memory: '' },
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -25,31 +35,27 @@ export default function OracleSettingsPage() {
       .then((d: OracleConfig) => {
         if (cancelled) return;
         setCfg(d);
-        setPrompt(d.prompt);
-        setMemory(d.memory);
+        reset({ prompt: d.prompt, memory: d.memory });
       })
       .catch((e) => { if (!cancelled) toast.error(`load failed: ${e?.message ?? e}`); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, []);
+  }, [reset]);
 
-  const onSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
+  const onSubmit = async (data: OracleFormData) => {
     try {
       const r = await fetch('/api/oracle/config', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt, memory }),
+        body: JSON.stringify(data),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d: OracleConfig = await r.json();
       setCfg(d);
+      reset({ prompt: d.prompt, memory: d.memory });
       toast.success('Oracle config saved');
     } catch (err: any) {
       toast.error(`save failed: ${err?.message ?? err}`);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -64,25 +70,33 @@ export default function OracleSettingsPage() {
         <code>{cfg?.prompt_path}</code> and <code>{cfg?.memory_path}</code>.
       </p>
 
-      <form onSubmit={onSave}>
-        <label style={{ display: 'block', fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
-          System prompt
-        </label>
-        <div style={{ minHeight: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-          <MarkdownEditor value={prompt} onChange={setPrompt} mode="ir" outline="left" minHeight={320} />
-        </div>
+      <form onSubmit={submit(onSubmit)}>
+        <FormField label="System prompt" error={errors.prompt}>
+          <Controller
+            control={control}
+            name="prompt"
+            render={({ field }) => (
+              <div style={{ minHeight: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={320} />
+              </div>
+            )}
+          />
+        </FormField>
 
-        <label style={{ display: 'block', fontWeight: 700, fontSize: 13, marginTop: 20, marginBottom: 6 }}>
-          Persistent memory
-        </label>
-        <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-          <MarkdownEditor value={memory} onChange={setMemory} mode="ir" outline="left" minHeight={240} />
-        </div>
+        <FormField label="Persistent memory" error={errors.memory}>
+          <Controller
+            control={control}
+            name="memory"
+            render={({ field }) => (
+              <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+                <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={240} />
+              </div>
+            )}
+          />
+        </FormField>
 
         <div style={{ marginTop: 16 }}>
-          <button type="submit" disabled={saving} className="pc-button">
-            {saving ? 'Saving…' : 'Save'}
-          </button>
+          <SubmitButton pending={isSubmitting}>Save</SubmitButton>
         </div>
       </form>
     </div>

@@ -3,14 +3,22 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
+import { z } from 'zod';
+import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+
+const LoginSchema = z.object({
+  email: z.string().email('Please enter a valid email'),
+});
+type LoginFormData = z.infer<typeof LoginSchema>;
 
 function LoginForm() {
   const sp = useSearchParams();
   const error = sp.get('error');
 
-  const [email, setEmail] = useState('');
-  const [submitting, setSubmitting] = useState(false);
   const [devUrl, setDevUrl] = useState<string | null>(null);
+  const { register, submit, errors, isSubmitting } = useFormWith(LoginSchema, {
+    defaultValues: { email: '' },
+  });
 
   useEffect(() => {
     if (error === 'expired') toast.error('That magic link expired. Request a new one.');
@@ -19,19 +27,13 @@ function LoginForm() {
     else if (error) toast.error(`login error: ${error}`);
   }, [error]);
 
-  const onSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email.includes('@')) {
-      toast.error('Please enter a valid email');
-      return;
-    }
-    setSubmitting(true);
+  const onSubmit = async (data: LoginFormData) => {
     setDevUrl(null);
     try {
       const r = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify(data),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d?.error ?? 'request failed');
@@ -39,8 +41,6 @@ function LoginForm() {
       if (d?.devMagicUrl) setDevUrl(d.devMagicUrl);
     } catch (err: any) {
       toast.error(`failed: ${err?.message ?? err}`);
-    } finally {
-      setSubmitting(false);
     }
   };
 
@@ -52,22 +52,17 @@ function LoginForm() {
       </p>
 
       <div className="pc-card" style={{ maxWidth: 460 }}>
-        <form onSubmit={onSubmit}>
-          <div className="pc-form-row">
-            <label htmlFor="email">Email</label>
+        <form onSubmit={submit(onSubmit)}>
+          <FormField label="Email" error={errors.email}>
             <input
-              id="email"
               type="email"
               className="pc-input"
               placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
+              {...register('email')}
             />
-          </div>
-          <button type="submit" className="pc-button primary" disabled={submitting}>
-            {submitting ? 'Sending…' : 'Send magic link'}
-          </button>
+          </FormField>
+          <SubmitButton pending={isSubmitting} pendingLabel="Sending…">Send magic link</SubmitButton>
         </form>
 
         {devUrl && (
