@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { Tooltip } from './Tooltip';
 import { Play, Square, Activity, AlertTriangle, ExternalLink, ChevronDown } from 'lucide-react';
@@ -74,12 +75,30 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
     return () => { alive = false; clearInterval(t); };
   }, [slug]);
 
-  // Close menu on outside click. Listens on mousedown so the menu's own
-  // button-click handlers still fire (click runs after mousedown).
-  // The "ignore the open click" guard prevents the same event that opened
-  // the menu from immediately closing it.
+  // The menu is portal'd to document.body to escape any clipping ancestor
+  // (the phase strip lives inside `.h-project-phases` which has compact
+  // styling that can hide an absolute-positioned descendant). We pin its
+  // position to the chip's bounding rect.
+  const chipRefs = useRef<Record<Phase, HTMLButtonElement | null>>({
+    staging: null, testing: null, production: null,
+  });
   const menuContainerRef = useRef<HTMLDivElement | null>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
   const justOpenedRef = useRef(false);
+
+  // Position the portal'd menu under its chip whenever it opens.
+  useEffect(() => {
+    if (!openMenu) { setMenuPos(null); return; }
+    const anchor = chipRefs.current[openMenu];
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    setMenuPos({ top: r.bottom + 4, left: r.left });
+  }, [openMenu]);
+
+  // Close menu on outside click. mousedown so menu items' clicks still
+  // fire (click runs after mousedown). justOpenedRef skips the very
+  // first event after open so the same click that opened it doesn't
+  // close it.
   useEffect(() => {
     if (!openMenu) { justOpenedRef.current = false; return; }
     justOpenedRef.current = true;
@@ -87,6 +106,8 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
     const onDown = (e: MouseEvent) => {
       if (justOpenedRef.current) return;
       if (menuContainerRef.current?.contains(e.target as Node)) return;
+      // Also ignore clicks on the open chip itself (its own onClick handles toggle)
+      if (chipRefs.current[openMenu]?.contains(e.target as Node)) return;
       setOpenMenu(null);
     };
     document.addEventListener('mousedown', onDown);
@@ -218,72 +239,24 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                   </Tooltip>
                 )}
                 {actions[p].length > 0 && (
-                  <div style={{ position: 'relative', display: 'inline-flex' }}>
-                    <button
-                      type="button"
-                      className="h-phase-actions-btn"
-                      onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === p ? null : p); }}
-                      onMouseDown={(e) => e.stopPropagation()}
-                      title={`Run a ${p} action`}
-                      style={{
-                        display: 'inline-flex', alignItems: 'center', gap: 2,
-                        padding: '2px 6px', marginLeft: 2,
-                        fontSize: 10, color: color,
-                        background: `color-mix(in oklab, ${color}, transparent 88%)`,
-                        border: `1px solid color-mix(in oklab, ${color}, transparent 60%)`,
-                        borderRadius: 3, cursor: 'pointer', fontWeight: 600,
-                      }}
-                    >
-                      actions <ChevronDown size={10} />
-                    </button>
-                    {openMenu === p && (
-                      <div
-                        ref={menuContainerRef}
-                        onClick={(e) => e.stopPropagation()}
-                        style={{
-                          position: 'absolute', top: '100%', left: 0, marginTop: 4,
-                          background: 'var(--bg-2)', border: '1px solid var(--border)',
-                          borderRadius: 4, padding: 4, minWidth: 180, zIndex: 50,
-                          boxShadow: '0 6px 16px rgba(0,0,0,0.4)',
-                        }}
-                      >
-                        {actions[p].map((a) => (
-                          <button
-                            key={a.name}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setOpenMenu(null);
-                              setRunning({ branch: p, name: a.name });
-                            }}
-                            style={{
-                              display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
-                              gap: 2,
-                              width: '100%', textAlign: 'left',
-                              padding: '6px 8px',
-                              background: 'transparent', border: 'none',
-                              color: 'var(--fg)', cursor: 'pointer',
-                              fontSize: 12, borderRadius: 3,
-                            }}
-                            onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in oklab, var(--bg-2), white 6%)'; }}
-                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                          >
-                            <span style={{ fontWeight: 600 }}>{a.name}</span>
-                            {a.lastRun && (
-                              <span style={{
-                                fontSize: 10,
-                                color: a.lastRun.status === 'completed' ? '#3fb950' :
-                                       a.lastRun.status === 'failed' ? '#f85149' :
-                                       '#58a6ff',
-                              }}>
-                                last: {a.lastRun.status}{a.lastRun.endedAt ? ` · ${a.lastRun.endedAt.slice(11, 19)}` : ''}
-                              </span>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                  <button
+                    type="button"
+                    ref={(el) => { chipRefs.current[p] = el; }}
+                    className="h-phase-actions-btn"
+                    onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === p ? null : p); }}
+                    onMouseDown={(e) => e.stopPropagation()}
+                    title={`Run a ${p} action`}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 2,
+                      padding: '2px 6px', marginLeft: 2,
+                      fontSize: 10, color: color,
+                      background: `color-mix(in oklab, ${color}, transparent 88%)`,
+                      border: `1px solid color-mix(in oklab, ${color}, transparent 60%)`,
+                      borderRadius: 3, cursor: 'pointer', fontWeight: 600,
+                    }}
+                  >
+                    actions <ChevronDown size={10} />
+                  </button>
                 )}
                 {(info.publicUrl || info.port) && (() => {
                   const localUrl = info.port ? `http://localhost:${info.port}/` : null;
@@ -333,6 +306,55 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
         >Set up phases</button>
       )}
     </div>
+    {openMenu && menuPos && typeof document !== 'undefined' && createPortal(
+      <div
+        ref={menuContainerRef}
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: 'fixed', top: menuPos.top, left: menuPos.left,
+          background: 'var(--bg-2)', border: '1px solid var(--border)',
+          borderRadius: 4, padding: 4, minWidth: 180, zIndex: 1000,
+          boxShadow: '0 6px 16px rgba(0,0,0,0.4)',
+        }}
+      >
+        {actions[openMenu].map((a) => (
+          <button
+            key={a.name}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              const branch = openMenu;
+              setOpenMenu(null);
+              if (branch) setRunning({ branch, name: a.name });
+            }}
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
+              gap: 2,
+              width: '100%', textAlign: 'left',
+              padding: '6px 8px',
+              background: 'transparent', border: 'none',
+              color: 'var(--fg)', cursor: 'pointer',
+              fontSize: 12, borderRadius: 3,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in oklab, var(--bg-2), white 6%)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+          >
+            <span style={{ fontWeight: 600 }}>{a.name}</span>
+            {a.lastRun && (
+              <span style={{
+                fontSize: 10,
+                color: a.lastRun.status === 'completed' ? '#3fb950' :
+                       a.lastRun.status === 'failed' ? '#f85149' :
+                       '#58a6ff',
+              }}>
+                last: {a.lastRun.status}{a.lastRun.endedAt ? ` · ${a.lastRun.endedAt.slice(11, 19)}` : ''}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>,
+      document.body,
+    )}
     {running && (
       <BranchActionRunner
         slug={slug}
