@@ -1,8 +1,17 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { Tooltip } from './Tooltip';
-import { Play, Square, Activity, AlertTriangle, ExternalLink } from 'lucide-react';
+import { Play, Square, Activity, AlertTriangle, ExternalLink, ChevronDown } from 'lucide-react';
+
+const BranchActionRunner = dynamic(() => import('../_components/BranchActionRunner'), { ssr: false });
+
+interface ActionEntry {
+  name: string;
+  scriptPath: string;
+  lastRun: { runId: string; status: string; endedAt?: string; exitCode?: number | null } | null;
+}
 
 export type Phase = 'staging' | 'testing' | 'production';
 
@@ -39,6 +48,39 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
   const [health, setHealth] = useState<Record<Phase, 'up' | 'slow' | 'down' | 'unknown'>>({
     staging: 'unknown', testing: 'unknown', production: 'unknown',
   });
+  const [actions, setActions] = useState<Record<Phase, ActionEntry[]>>({
+    staging: [], testing: [], production: [],
+  });
+  const [openMenu, setOpenMenu] = useState<Phase | null>(null);
+  const [running, setRunning] = useState<{ branch: Phase; name: string } | null>(null);
+
+  // Discover actions per branch
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      const next: Record<Phase, ActionEntry[]> = { staging: [], testing: [], production: [] };
+      await Promise.all(PHASE_ORDER.map(async (b) => {
+        try {
+          const r = await fetch(`/api/harness/${slug}/branch/${b}/actions`);
+          if (!r.ok) return;
+          const d = await r.json();
+          if (Array.isArray(d.actions)) next[b] = d.actions;
+        } catch { /* ignore */ }
+      }));
+      if (alive) setActions(next);
+    };
+    load();
+    const t = setInterval(load, 8000);
+    return () => { alive = false; clearInterval(t); };
+  }, [slug]);
+
+  // Close menu on outside click
+  useEffect(() => {
+    if (!openMenu) return;
+    const onDoc = () => setOpenMenu(null);
+    document.addEventListener('click', onDoc);
+    return () => document.removeEventListener('click', onDoc);
+  }, [openMenu]);
 
   useEffect(() => {
     let alive = true;
@@ -97,6 +139,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
   };
 
   return (
+    <>
     <div className="h-phase-strip" style={{
       display: 'flex', alignItems: 'center', gap: 8,
       padding: '4px 10px',
@@ -117,7 +160,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
         return (
           <div
             key={p}
-            className={`h-phase-item${isActive ? ' active' : ''}${exists ? '' : ' disabled'}`}
+            className={`h-phase-item phase-${p}${isActive ? ' active' : ''}${exists ? '' : ' disabled'}`}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               padding: '4px 10px',
@@ -160,10 +203,71 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                     </span>
                   </Tooltip>
                 )}
+                {actions[p].length > 0 && (
+                  <div style={{ position: 'relative', display: 'inline-flex' }}>
+                    <button
+                      className="h-phase-actions-btn"
+                      onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === p ? null : p); }}
+                      title={`Run a ${p} action`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 2,
+                        padding: '2px 6px', marginLeft: 2,
+                        fontSize: 10, color: color,
+                        background: `color-mix(in oklab, ${color}, transparent 88%)`,
+                        border: `1px solid color-mix(in oklab, ${color}, transparent 60%)`,
+                        borderRadius: 3, cursor: 'pointer', fontWeight: 600,
+                      }}
+                    >
+                      actions <ChevronDown size={10} />
+                    </button>
+                    {openMenu === p && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          position: 'absolute', top: '100%', left: 0, marginTop: 4,
+                          background: 'var(--bg-2)', border: '1px solid var(--border)',
+                          borderRadius: 4, padding: 4, minWidth: 180, zIndex: 50,
+                          boxShadow: '0 6px 16px rgba(0,0,0,0.4)',
+                        }}
+                      >
+                        {actions[p].map((a) => (
+                          <button
+                            key={a.name}
+                            onClick={() => {
+                              setOpenMenu(null);
+                              setRunning({ branch: p, name: a.name });
+                            }}
+                            style={{
+                              display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
+                              gap: 2,
+                              width: '100%', textAlign: 'left',
+                              padding: '6px 8px',
+                              background: 'transparent', border: 'none',
+                              color: 'var(--fg)', cursor: 'pointer',
+                              fontSize: 12, borderRadius: 3,
+                            }}
+                            onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in oklab, var(--bg-2), white 6%)'; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                          >
+                            <span style={{ fontWeight: 600 }}>{a.name}</span>
+                            {a.lastRun && (
+                              <span style={{
+                                fontSize: 10,
+                                color: a.lastRun.status === 'completed' ? '#3fb950' :
+                                       a.lastRun.status === 'failed' ? '#f85149' :
+                                       '#58a6ff',
+                              }}>
+                                last: {a.lastRun.status}{a.lastRun.endedAt ? ` · ${a.lastRun.endedAt.slice(11, 19)}` : ''}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {(info.publicUrl || info.port) && (() => {
                   const localUrl = info.port ? `http://localhost:${info.port}/` : null;
-                  // On the public site (papercupai.com), prefer publicUrl;
-                  // on localhost dev, prefer the local port.
                   const isLocalhost = typeof window !== 'undefined' && window.location.hostname === 'localhost';
                   const href = isLocalhost ? (localUrl ?? info.publicUrl) : (info.publicUrl ?? localUrl);
                   if (!href) return null;
@@ -210,5 +314,14 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
         >Set up phases</button>
       )}
     </div>
+    {running && (
+      <BranchActionRunner
+        slug={slug}
+        branch={running.branch}
+        name={running.name}
+        onClose={() => setRunning(null)}
+      />
+    )}
+    </>
   );
 }
