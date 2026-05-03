@@ -1,6 +1,8 @@
 'use client';
 
 import './harness.css';
+import { OperatorActionLog } from '../_components/OperatorActionLog';
+import { LazyDetails } from '../_components/LazyDetails';
 import MonacoEditor from '@monaco-editor/react';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as RSelect from '@radix-ui/react-select';
@@ -3722,6 +3724,18 @@ export default function HarnessDashboard() {
               fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
             }}
           />
+        </div>
+      )}
+
+      {/* ── User-action log (replan/cleanup/snapshot/etc.) ─── */}
+      {activeSlug && (
+        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
+          <LazyDetails
+            summary={<span style={{ fontSize: 13, fontWeight: 600, opacity: 0.85 }}>Recent actions</span>}
+            summaryStyle={{ cursor: 'pointer', userSelect: 'none' }}
+          >
+            <OperatorActionLog slug={activeSlug} />
+          </LazyDetails>
         </div>
       )}
 

@@ -2826,11 +2826,19 @@ harness.post('/:slug/replan', async (c) => {
  * Never adds features (that's /replan's job). Code is not auto-removed;
  * deprecation is metadata-only.
  */
-harness.post('/:slug/cleanup', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.post('/:slug/cleanup', async (c) => {
+  const slug = c.req.param('slug');
+  const project = resolveProject(slug);
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  invokeScoperBackground(project, 'cleanup');
-  return c.json({ ok: true });
+  const invocationId = await recordUserAction(slug, 'cleanup', async () => {
+    const r = invokeScoperBackground(project, 'cleanup');
+    return {
+      summary: `Cleanup kicked off (invocation ${r.invocationId})`,
+      invocationId: r.invocationId,
+      result: r.invocationId,
+    };
+  });
+  return c.json({ ok: true, invocationId });
 });
 
 /**
