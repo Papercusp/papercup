@@ -375,16 +375,19 @@ export function OperatorPanel(): JSX.Element | null {
           ];
         });
         // Voice mode: speak the suggestion title + why-line.
-        // Phase 6: append voice-readable provenance flags so users hear
-        // when Operator overrode the LLM's claimed tier or fell back to
-        // the unknown-cap fail-safe.
+        // Gated by `speakSuggestions` toggle (v4 §3.2). Voice-readable
+        // provenance flags (Phase 6) are appended; tier=high uses
+        // assertive aria-live priority.
         if (getVoiceState().mode !== 'off') {
-          let suffix = '';
-          if (s.provenanceFlags?.tierMismatch) suffix += ' Warning: tier mismatch — substrate forced authoritative.';
-          if (s.provenanceFlags?.capabilityUnknown) suffix += ' Warning: unknown capability — forced high.';
-          // Escalation surfaces louder via assertive aria-live priority.
-          const priority = s.actualTier === 'high' ? 'assertive' : 'polite';
-          speak(`${s.title}. ${s.why}${suffix}`, 'system:operator', priority);
+          import('./voice/voice-prefs-client').then(({ loadVoicePrefsClient }) => {
+            const prefs = loadVoicePrefsClient();
+            if (!prefs.speakSuggestions) return;
+            let suffix = '';
+            if (s.provenanceFlags?.tierMismatch) suffix += ' Warning: tier mismatch — substrate forced authoritative.';
+            if (s.provenanceFlags?.capabilityUnknown) suffix += ' Warning: unknown capability — forced high.';
+            const priority = s.actualTier === 'high' ? 'assertive' : 'polite';
+            speak(`${s.title}. ${s.why}${suffix}`, 'system:operator', priority);
+          }).catch(() => {});
         }
       } catch {
         /* ignore */
@@ -444,13 +447,29 @@ export function OperatorPanel(): JSX.Element | null {
         };
         if (cancelled || !rows.length) return;
         const byMsgId = new Map(rows.map((r) => [r.messageId, r.receivingState]));
+        // Voice-mode flip announcements (v4 §2d): consumed gated by
+        // `speakReceivingFlips` (chatty, default OFF), escalated/rejected
+        // always speak via assertive priority (significant).
+        const voiceOn = getVoiceState().mode !== 'off';
+        const prefsP = voiceOn ? import('./voice/voice-prefs-client').then((m) => m.loadVoicePrefsClient()) : null;
         setSuggestions((prev) =>
           prev.map((c) => {
             if (!c.messageId || c.status !== 'dispatched') return c;
             const next = byMsgId.get(c.messageId);
             if (!next || next === 'dispatched') return c;
-            // Lifecycle telemetry: log the receiving-state transition.
             void logAudit(c.id, next as 'consumed' | 'escalated' | 'rejected');
+            if (voiceOn && prefsP) {
+              void prefsP.then((prefs) => {
+                const harness = c.target_harness ?? 'a harness';
+                if (next === 'consumed' && prefs.speakReceivingFlips) {
+                  speak(`${harness} consumed the directive.`, 'harness', 'polite');
+                } else if (next === 'escalated' && prefs.speakEscalations) {
+                  speak(`${harness} escalated the directive.`, 'harness', 'assertive');
+                } else if (next === 'rejected' && prefs.speakEscalations) {
+                  speak(`${harness} rejected the directive.`, 'harness', 'assertive');
+                }
+              }).catch(() => {});
+            }
             return { ...c, status: next };
           }),
         );
@@ -526,7 +545,29 @@ export function OperatorPanel(): JSX.Element | null {
     try {
       const r = await fetch('/api/agent-mcp/operator-budget');
       if (!r.ok) return;
-      setBudget((await r.json()) as BudgetSnapshot);
+      const snap = (await r.json()) as BudgetSnapshot;
+      setBudget(snap);
+      // Voice budget warning at 80% / 100% (v4 §2e). Per-kind dedup
+      // (30 min) is server-side via /api/agent-mcp/operator-nudge.
+      if (snap.configured && getVoiceState().mode !== 'off') {
+        const ratio = snap.todaySpendUsd / Math.max(snap.dailyCapUsd, 0.01);
+        if (ratio >= 0.8) {
+          import('./voice/voice-prefs-client').then(async ({ loadVoicePrefsClient }) => {
+            if (!loadVoicePrefsClient().speakNudges) return;
+            const nudge = await fetch('/api/agent-mcp/operator-nudge', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ kind: 'budget' }),
+            }).then((nr) => nr.ok ? nr.json() : { fired: false });
+            if (nudge.fired) {
+              const phrase = ratio >= 1.0
+                ? `Operator paused. Daily budget reached: ${snap.todaySpendUsd.toFixed(2)}.`
+                : `Operator budget at ${Math.round(ratio * 100)} percent — ${snap.todaySpendUsd.toFixed(2)} of ${snap.dailyCapUsd}.`;
+              speak(phrase, 'system:operator-nudge', 'assertive');
+            }
+          }).catch(() => {});
+        }
+      }
     } catch {
       /* ignore */
     }

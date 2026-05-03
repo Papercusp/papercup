@@ -123,7 +123,14 @@ export function VoiceAppBridge(): null {
       // captures take precedence over consumer routing AND Oracle. This
       // way the user can say "operator open" or "operator approve foo"
       // from anywhere without first opening the panel.
+      // Gated by `wakeWordIntents` toggle.
       try {
+        const { loadVoicePrefsClient } = await import('./voice-prefs-client');
+        const prefs = loadVoicePrefsClient();
+        if (!prefs.wakeWordIntents) {
+          // Skip intent parsing; fall through to consumer/Oracle routing.
+          throw new Error('wake-word disabled');
+        }
         const { parseOperatorIntent, resolveApprove } = await import('../../../lib/voice-intents');
         const intent = parseOperatorIntent(text);
         if (intent) {

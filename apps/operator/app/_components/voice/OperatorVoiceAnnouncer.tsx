@@ -18,7 +18,7 @@
 
 import { useEffect, useRef } from 'react';
 import { speak, getVoiceState } from './voice-mode';
-import { sharedState } from '../operator-shared-state';
+import { sharedState, subscribeOperatorState } from '../operator-shared-state';
 import { loadVoicePrefsClient } from './voice-prefs-client';
 
 type ScanEvent = { kind: 'scan-start' } | { kind: 'scan-done'; suggestions: number; autoDispatched: number };
@@ -49,17 +49,61 @@ export function OperatorVoiceAnnouncer(): null {
       } else if (detail.kind === 'scan-done') {
         const n = detail.suggestions ?? 0;
         const m = detail.autoDispatched ?? 0;
-        const phrase = n === 0
+        const base = n === 0
           ? 'Scan complete. No new suggestions.'
           : m > 0
             ? `Scan complete. Surfaced ${n} suggestion${n === 1 ? '' : 's'}, ${m} auto-dispatched.`
             : `Scan complete. Surfaced ${n} suggestion${n === 1 ? '' : 's'}.`;
-        speak(phrase, 'system:operator', 'polite');
+        // Phase 6: append adaptive ack-latency when it differs significantly
+        // from the static fallback (4 min). Pulled from the operator-stats
+        // endpoint; fire-and-forget so we don't delay the speak.
+        void fetch('/api/agent-mcp/operator-stats')
+          .then((r) => r.ok ? r.json() : null)
+          .then((stats) => {
+            const ms: number | null = stats?.medianAckLatencyMs ?? null;
+            if (ms !== null && Math.abs(ms - 240_000) > 60_000) {
+              const sec = Math.round(ms / 1000);
+              speak(`${base} Median ack ${sec} seconds.`, 'system:operator', 'polite');
+            } else {
+              speak(base, 'system:operator', 'polite');
+            }
+          })
+          .catch(() => speak(base, 'system:operator', 'polite'));
       }
     };
 
     window.addEventListener('operator:scan', onScan as EventListener);
-    return () => window.removeEventListener('operator:scan', onScan as EventListener);
+
+    // Pause nudge (v4 §2e): speak when paused state flips. Per-kind dedup
+    // (5 min for pause) is server-side via voice-nudges; here we just fire
+    // the request and let the server arbitrate.
+    let lastPausedSpoken: boolean | null = null;
+    const unsubPause = subscribeOperatorState((s) => {
+      if (typeof s.paused !== 'boolean') return;
+      // First observation anchors without speaking.
+      if (lastPausedSpoken === null) { lastPausedSpoken = s.paused; return; }
+      if (s.paused === lastPausedSpoken) return;
+      lastPausedSpoken = s.paused;
+      const v = getVoiceState();
+      if (v.mode === 'off') return;
+      const prefs = loadVoicePrefsClient();
+      if (!prefs.speakNudges) return;
+      // Fire-and-forget the dedup arbitration.
+      void fetch('/api/agent-mcp/operator-nudge', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'pause' }),
+      }).then((r) => r.ok ? r.json() : { fired: false }).then((res) => {
+        if (res.fired) {
+          speak(s.paused ? 'Operator paused.' : 'Operator resumed.', 'system:operator-nudge', 'polite');
+        }
+      }).catch(() => {});
+    });
+
+    return () => {
+      window.removeEventListener('operator:scan', onScan as EventListener);
+      unsubPause();
+    };
   }, []);
 
   return null;

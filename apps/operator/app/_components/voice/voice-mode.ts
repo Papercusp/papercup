@@ -206,11 +206,64 @@ export function setVoiceMode(mode: VoiceMode): void {
   saveConfig();
   if (mode === 'off') {
     cancelAllSpeech();
+    stopWhisperCaptureIfRunning();
     setState({ mode, status: 'off' });
     return;
   }
   setState({ mode, status: 'idle' });
-  if (mode === 'always-on') startWakeWordListening();
+  // STT engine selection (v4 §1.1): if Voicemode whisper is selected
+  // and reachable, use the local capture loop; otherwise fall back to
+  // Web Speech for both PTT and always-on.
+  void maybeStartWhisperCapture(mode).catch(() => {
+    // On failure, fall through to Web Speech path.
+    if (mode === 'always-on') startWakeWordListening();
+  });
+}
+
+let whisperCapture: { stop(): void } | null = null;
+
+async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
+  // Only initialize whisper for always-on. PTT continues to use Web
+  // Speech for now (synchronous start/stop semantics are awkward to
+  // replicate over MediaRecorder VAD).
+  if (mode !== 'always-on') {
+    if (mode !== 'off' && mode === 'push-to-talk') {
+      // PTT keeps the existing Web Speech recognizer.
+      return;
+    }
+    return;
+  }
+  try {
+    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
+    if (!prefsR.ok) { startWakeWordListening(); return; }
+    const prefs = await prefsR.json();
+    if (prefs.sttEngine !== 'voicemode') {
+      startWakeWordListening();
+      return;
+    }
+    // Detect whisper endpoint.
+    const probe = await fetch('http://localhost:2022/health', { signal: AbortSignal.timeout(2000) }).catch(() => null);
+    if (!probe?.ok) {
+      startWakeWordListening();
+      return;
+    }
+    const { startWhisperCapture } = await import('./stt-voicemode');
+    whisperCapture = await startWhisperCapture('http://localhost:2022', {
+      onFinal: (text) => {
+        setState({ lastTranscript: text });
+        onUtteranceFinal(text);
+      },
+    });
+  } catch {
+    startWakeWordListening();
+  }
+}
+
+function stopWhisperCaptureIfRunning(): void {
+  if (whisperCapture) {
+    try { whisperCapture.stop(); } catch { /* ignore */ }
+    whisperCapture = null;
+  }
 }
 
 function startWakeWordListening(): void {
