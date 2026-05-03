@@ -432,18 +432,18 @@ The following measurements were taken on `localhost:3055/harness` during a fresh
 
 | Endpoint / metric | Before any fix | After all fixes | Fix(es) applied |
 |---|---|---|---|
-| Initial page TTFB (warm) | 18.7s | **265ms** | sum of all fixes below |
-| Initial domReady (warm) | 21.9s | **345ms** | sum of all fixes below |
+| Initial page TTFB (warm) | 18.7s | **83ms** | sum of all fixes below |
+| Initial domReady (warm) | 21.9s | **116ms** | sum of all fixes below |
 | `/api/plugins/enabled` (4KB) | 18-26s | **92ms** | A1: parallelize fs reads |
 | `/api/harness/projects` | 5-8s | **2.6s** | A1+A9: parallelize fs reads + merge passes |
 | `/api/harness/projects/lite` | n/a (added) | **0.15-0.6s** | A3: hot paths migrated to /lite |
 | `/api/harness/<slug>/log/stream?tail=500` | 6.6s | **0.3-2s** | tail-only file read + batched SSE write |
-| `/api/harness/<slug>/branch/<x>/actions` | 6-10s | **1.5-3s** | A1: parallelize listHarnessActions + listPluginActions |
+| `/api/harness/<slug>/branch/<x>/actions` | 6-10s | **30-590ms** | A1: parallelize discovery + dedup'd resolveEnv reads |
 | `/api/templates` | slow (loop) | **53ms** | A1: parallelize template manifest scan |
 | Dashboard freeze ("7 issues") | infinite loop | **clean** | A8: dedup'd `replan` key |
 | Click responsiveness | 5s timeout | **instant** | A10: Radix `pointer-events: none !important` |
 
-**Compounded result: ~70× speedup on initial TTFB; the dashboard now feels native.** Patterns codified into a CI-enforced lint test at `apps/operator/lib/perf-anti-patterns.test.ts` — see "Compliance" below.
+**Compounded result: ~225× speedup on warm-cache TTFB (18.7s → 83ms); the dashboard now feels native on localhost.** Patterns codified into a CI-enforced lint test at `apps/operator/lib/perf-anti-patterns.test.ts` — see "Compliance" below.
 
 ## Compliance — how to use this page
 
