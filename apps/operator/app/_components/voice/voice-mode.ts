@@ -325,20 +325,78 @@ function maybeIsLeader(): boolean {
 function syncSttToLeader(): void {
   if (state.mode === 'off') {
     stopWhisperCaptureIfRunning();
+    stopRealtimeSession();
     return;
   }
   if (!maybeIsLeader()) {
-    // We're a follower. Stop any active capture; the leader handles STT.
     stopWhisperCaptureIfRunning();
+    stopRealtimeSession();
     if (recognition) {
       try { recognition.stop(); } catch { /* ignore */ }
       recognition = null;
     }
     return;
   }
-  void maybeStartWhisperCapture(state.mode).catch(() => {
-    if (state.mode === 'always-on') startWakeWordListening();
+  // Full-agent mode (OpenAI Realtime) takes precedence over the STT
+  // pipeline — it bundles STT + LLM + TTS + intent dispatch.
+  void maybeStartFullAgent().then((started) => {
+    if (started) return;
+    void maybeStartWhisperCapture(state.mode).catch(() => {
+      if (state.mode === 'always-on') startWakeWordListening();
+    });
   });
+}
+
+let realtimeSession: { stop(): Promise<void>; sendSystem(text: string): void } | null = null;
+
+function stopRealtimeSession(): void {
+  if (!realtimeSession) return;
+  void realtimeSession.stop();
+  realtimeSession = null;
+}
+
+async function maybeStartFullAgent(): Promise<boolean> {
+  if (realtimeSession) return true;
+  try {
+    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
+    if (!prefsR.ok) return false;
+    const prefs = await prefsR.json();
+    if (prefs.fullAgentEngine !== 'openai-realtime') return false;
+    const bootR = await fetch('/api/agent-mcp/operator-realtime-bootstrap');
+    if (!bootR.ok) return false;
+    const { apiKey } = await bootR.json();
+    if (!apiKey) return false;
+    const { startRealtimeSession } = await import('../../../lib/voice-engines/openai-realtime');
+    realtimeSession = await startRealtimeSession(apiKey, {
+      onTranscript: (text) => {
+        setState({ lastTranscript: text });
+      },
+      onIntentOpen: () => {
+        window.dispatchEvent(new CustomEvent('operator:open-request'));
+      },
+      onIntentScan: (query) => {
+        window.dispatchEvent(new CustomEvent('operator:scan-request', { detail: { query: query ?? '' } }));
+      },
+      onIntentApprove: (slug, capability) => {
+        void fetch('/api/agent-mcp/operator-standing-approvals', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ targetHarness: slug, capability, decision: 'approve' }),
+        });
+      },
+      onIntentAcrossWorkspaces: () => {
+        window.dispatchEvent(new CustomEvent('operator:across-workspaces'));
+      },
+      onError: (err) => {
+        console.error('[realtime]', err);
+      },
+    });
+    setState({ status: 'listening' });
+    return true;
+  } catch (err) {
+    console.warn('[voice] realtime start failed:', err);
+    return false;
+  }
 }
 
 // React to leader-election changes: when we're newly elected leader,

@@ -316,6 +316,24 @@ export default function VoiceSettingsPage() {
           </div>
         </div>
 
+        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+          <label style={lbl}>Full-agent engine (overrides STT + TTS)</label>
+          <select
+            value={prefs?.fullAgentEngine ?? 'off'}
+            onChange={(e) => savePrefsPatch({ fullAgentEngine: e.target.value as 'off' | 'openai-realtime' })}
+            style={sel}
+            disabled={savingPrefs}
+          >
+            <option value="off">Off — use the STT + TTS pair above</option>
+            <option value="openai-realtime">OpenAI Realtime (gpt-4o-realtime) — full conversational agent</option>
+          </select>
+          <p style={hint}>
+            Full-agent mode replaces the STT + TTS pipeline with a single conversational session.
+            Costs ~$0.06/min audio in + $0.24/min audio out (~$18/hr). Requires an OpenAI API key.
+            Intents (open / scan / approve / across workspaces) become tool calls — the model handles them naturally.
+          </p>
+        </div>
+
         <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <button type="button" onClick={onTestVoice} style={btnPrimary}>Test voice</button>
           <button type="button" onClick={onTestAllRoles} style={btn}>Test all roles</button>

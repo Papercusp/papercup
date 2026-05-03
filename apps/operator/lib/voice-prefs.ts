@@ -20,6 +20,13 @@ import { papercuspPath } from './papercusp-root';
 
 export type SttEngineKind = 'voicemode' | 'webspeech' | 'deepgram' | 'off';
 export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai' | 'cartesia';
+/**
+ * Full-agent engine — bundles STT + LLM + TTS + intent dispatch in one
+ * connection. When set to anything other than 'off', it OVERRIDES
+ * sttEngine + ttsEngine: voice-mode.ts uses the full-agent transport
+ * and bypasses the per-utterance pipeline.
+ */
+export type FullAgentEngineKind = 'off' | 'openai-realtime';
 
 export interface VoicePrefs {
   // Feature toggles (defaults reflect v4 §3.2)
@@ -34,6 +41,8 @@ export interface VoicePrefs {
   // Engine selection
   sttEngine: SttEngineKind;
   ttsEngine: TtsEngineKind;
+  /** Full-agent engine. When set to anything but 'off', overrides STT + TTS. */
+  fullAgentEngine: FullAgentEngineKind;
   elevenlabsVoiceId: string;        // default Adam preset
   openaiVoice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
   openaiModel: 'tts-1' | 'tts-1-hd';
@@ -62,6 +71,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   wakeWordIntents: true,
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
+  fullAgentEngine: 'off',
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM', // Adam preset
   openaiVoice: 'nova',
   openaiModel: 'tts-1',
