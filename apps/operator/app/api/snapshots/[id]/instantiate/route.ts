@@ -302,16 +302,16 @@ async function listPendingProvisioning(harnessSlug: string): Promise<PendingProv
   const slugs = Object.keys(enabled?.enabled ?? {});
   if (slugs.length === 0) return [];
 
-  const out: PendingProvisioningEntry[] = [];
-  for (const pluginSlug of slugs) {
+  // Parallelized — see /docs/performance #A1.
+  const results = await Promise.all(slugs.map(async (pluginSlug) => {
     const manifestPath = join(GLOBAL_PLUGINS_DIR(), pluginSlug, 'papercusp.json');
-    let manifest: PluginManifest | null = null;
+    let manifest: PluginManifest;
     try {
       manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as PluginManifest;
-    } catch { continue; }
+    } catch { return null; }
     const setup = manifest.provision?.setup;
-    if (!setup?.path) continue;
-    out.push({
+    if (!setup?.path) return null;
+    return {
       plugin: pluginSlug,
       publisher: manifest.publisher,
       version: manifest.version,
@@ -321,7 +321,7 @@ async function listPendingProvisioning(harnessSlug: string): Promise<PendingProv
       allowedHosts: manifest.provision?.allowedHosts,
       cloudProvider: manifest.provision?.cloudProvider,
       timeoutSec: setup.timeoutSec,
-    });
-  }
-  return out;
+    } as PendingProvisioningEntry;
+  }));
+  return results.filter((r): r is PendingProvisioningEntry => r != null);
 }

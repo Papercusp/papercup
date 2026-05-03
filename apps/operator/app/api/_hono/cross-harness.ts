@@ -214,27 +214,31 @@ export async function getSpawnableTemplates(): Promise<{ spawnable: any[] }> {
   } catch { /* fall through */ }
 
   // Also scan locally-installed templates for spawnable fields.
+  // Parallelized: serial fs.readFile in Next.js dev costs ~150ms per call
+  // due to HMR file-tracking instrumentation. See /docs/performance #A1.
   const harnessesDir = process.env.PAPERCUSP_HARNESSES_DIR ?? papercuspPath('harnesses');
   const localSpawnable: any[] = [];
   if (existsSync(harnessesDir)) {
     try {
       const entries = await fs.readdir(harnessesDir);
-      for (const name of entries) {
+      const results = await Promise.all(entries.map(async (name) => {
         const manifestPath = join(harnessesDir, name, 'papercusp.json');
-        if (!existsSync(manifestPath)) continue;
+        if (!existsSync(manifestPath)) return null;
         try {
           const m = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
           if (m.spawnable && typeof m.spawnable === 'object') {
-            localSpawnable.push({
+            return {
               name: m.name ?? name,
               version: m.version ?? '0.0.0',
               description: m.description,
               spawnable: m.spawnable,
-              source: 'local',
-            });
+              source: 'local' as const,
+            };
           }
         } catch { /* skip */ }
-      }
+        return null;
+      }));
+      for (const r of results) if (r) localSpawnable.push(r);
     } catch { /* skip */ }
   }
 

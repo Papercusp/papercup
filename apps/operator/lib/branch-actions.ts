@@ -544,14 +544,19 @@ export async function listRuns(
   const dir = runRoot(stagingPath, branch, name);
   try {
     const ents = await fs.readdir(dir);
-    const metas: RunMeta[] = [];
-    for (const f of ents) {
-      if (!f.endsWith('.json')) continue;
-      try {
-        const raw = await fs.readFile(join(dir, f), 'utf8');
-        metas.push(JSON.parse(raw) as RunMeta);
-      } catch { /* skip */ }
-    }
+    // Parallelized — see /docs/performance #A1. Order doesn't matter
+    // because we sort below.
+    const results = await Promise.all(
+      ents.filter((f) => f.endsWith('.json')).map(async (f) => {
+        try {
+          const raw = await fs.readFile(join(dir, f), 'utf8');
+          return JSON.parse(raw) as RunMeta;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    const metas: RunMeta[] = results.filter((m): m is RunMeta => m != null);
     metas.sort((a, b) => (a.startedAt < b.startedAt ? 1 : -1));
 
     // Heuristic: if a run is still `running` but its log file hasn't been
