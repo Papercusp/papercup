@@ -16,6 +16,8 @@
  * via the public methods.
  */
 
+import { stripWakeWordAndPrefix } from '../../../lib/wake-word';
+
 export type VoiceModeStatus =
   | 'off'                    // Voice mode disabled
   | 'idle'                   // Listening for wake word (or idle in PTT)
@@ -319,15 +321,28 @@ function startWakeWordListening(): void {
   recognition.lang = 'en-US';
   recognition.onresult = (event: any) => {
     let transcript = '';
+    let sawFinal = false;
     for (let i = event.resultIndex; i < event.results.length; i++) {
       transcript += event.results[i][0].transcript;
+      if (event.results[i].isFinal) sawFinal = true;
     }
-    const lower = transcript.toLowerCase();
-    if (lower.includes(config.wakeWord)) {
-      // Wake word detected — switch to active listening.
-      const idx = lower.lastIndexOf(config.wakeWord);
-      const after = transcript.slice(idx + config.wakeWord.length).trim();
-      activateListening(after);
+    const wake = stripWakeWordAndPrefix(transcript, config.wakeWord);
+    if (wake.matched) {
+      // Single-utterance fast path: wake word + command spoken together
+      // and the recognizer has already marked the utterance final. Dispatch
+      // immediately instead of opening a fresh recognizer that would wait
+      // for the no-speech timeout (~5s) before firing onend.
+      if (sawFinal && wake.dispatchText) {
+        cancelAllSpeech();
+        setState({ status: 'idle', lastTranscript: wake.dispatchText });
+        onUtteranceFinal(wake.dispatchText);
+        if (state.mode === 'always-on') {
+          setTimeout(() => startWakeWordListening(), 200);
+        }
+        try { recognition?.stop(); } catch { /* ignore */ }
+        return;
+      }
+      activateListening(wake.trailing);
     }
   };
   recognition.onerror = () => {
@@ -376,10 +391,16 @@ function activateListening(seedTranscript: string): void {
     setState({ lastTranscript: finalTranscript.trim() });
   };
   recognition.onend = () => {
-    setState({ status: 'idle', lastTranscript: finalTranscript.trim() });
-    // Notify listeners that a final transcript is ready (via state).
-    if (finalTranscript.trim()) {
-      onUtteranceFinal(finalTranscript.trim());
+    const trimmed = finalTranscript.trim();
+    setState({ status: 'idle', lastTranscript: trimmed });
+    if (trimmed) {
+      // Re-prefix "operator " when the wake word stripped it, so
+      // parseOperatorIntent can match. Skip if user already said
+      // "operator …" as the seed (rare case where wakeWord === intent prefix).
+      const dispatch = trimmed.toLowerCase().startsWith('operator ')
+        ? trimmed
+        : `operator ${trimmed}`;
+      onUtteranceFinal(dispatch);
     }
     // Resume wake-word listening if mode is always-on.
     if (state.mode === 'always-on') {

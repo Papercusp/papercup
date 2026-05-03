@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import {
   initVoiceMode,
@@ -266,8 +266,11 @@ export default function VoiceSettingsPage() {
             >
               <option value="kokoro">Kokoro (Voicemode, local) — recommended</option>
               <option value="browser">Browser (OS voices)</option>
-              <option value="elevenlabs">ElevenLabs (cloud, BYO key)</option>
+              <option value="elevenlabs">ElevenLabs Turbo v2.5 (cloud, BYO key)</option>
+              <option value="openai">OpenAI tts-1 (cloud, BYO key)</option>
+              <option value="cartesia">Cartesia Sonic-2 (cloud, BYO key)</option>
             </select>
+            <EnginePreview engine={prefs?.ttsEngine ?? 'kokoro'} />
             <p style={hint}>
               Kokoro requires Voicemode (port 8880). Browser TTS works without setup but quality varies by OS.
               ElevenLabs requires an API key below.
@@ -648,6 +651,65 @@ function PerSlugVoiceTable({
           Add override
         </button>
       </div>
+    </div>
+  );
+}
+
+function EnginePreview({ engine }: { engine: string }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const onClick = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      if (engine === 'browser') {
+        if (typeof window === 'undefined' || !window.speechSynthesis) {
+          setError('Web Speech not available in this browser');
+          return;
+        }
+        const u = new SpeechSynthesisUtterance('This is a sample of the operator voice.');
+        u.onend = () => setBusy(false);
+        u.onerror = () => { setError('browser TTS errored'); setBusy(false); };
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.speak(u);
+        return;
+      }
+      const r = await fetch('/api/agent-mcp/operator-tts-preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ engine }),
+      });
+      if (!r.ok) {
+        if (r.status === 404) setError('No API key configured for this engine');
+        else setError(`Preview failed: ${r.status}`);
+        setBusy(false);
+        return;
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch {}
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+      const a = new Audio(url);
+      audioRef.current = a;
+      a.onended = () => { URL.revokeObjectURL(url); setBusy(false); };
+      a.onerror = () => { setError('audio playback failed'); setBusy(false); };
+      await a.play();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'preview errored');
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button type="button" onClick={onClick} disabled={busy} style={btn}>
+        {busy ? '▶ Playing…' : `▶ Preview ${engine}`}
+      </button>
+      {error && <p style={{ ...hint, color: 'var(--danger, #b91c1c)' }}>{error}</p>}
     </div>
   );
 }
