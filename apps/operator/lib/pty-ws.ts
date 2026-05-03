@@ -43,15 +43,16 @@ import {
 const HIGH_WATERMARK_BYTES = 100_000;
 const LOW_WATERMARK_BYTES = 10_000;
 
-// Coalesce window for pty→ws batching. Aligned to one display frame
-// (16 ms) rather than VS Code's 5 ms because xterm renders at rAF, so
-// sub-frame batching just creates more parser+render scheduling work
-// without producing any extra visible frames. Chatty interactive shells
-// like omp emit ~20 small write bursts per keystroke (prompt redraw
-// with ANSI color noise); at 5 ms each gets its own message and its
-// own term.write() call, which adds up to perceptible jitter even on
-// localhost. 16 ms collapses them into one render-aligned chunk.
-const COALESCE_INTERVAL_MS = 16;
+// No server-side coalesce of pty → ws output. Every node-pty chunk is
+// forwarded immediately, so the keystroke-echo path adds zero server
+// latency. Earlier versions added a 5-16 ms coalesce window to chunk
+// chatty bursts (omp prompt redraw emits ~20 sub-chunks per keystroke),
+// but that just delayed the first byte of every echo by up to one
+// frame — exactly the "occasional lag on localhost" symptom. xterm
+// already batches term.write() to rAF on the client, so multiple ws
+// frames arriving within a 16 ms window collapse into one render
+// anyway. Server-side coalesce was solving a problem xterm already
+// solves, at the cost of latency we couldn't afford.
 
 interface OriginCheckOptions {
   /** Hosts (without scheme) that may originate WS upgrades. Production. */
@@ -200,29 +201,14 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   // the client sends {type:"ack", bytes} as it consumes data, and we
   // resume once back below LOW_WATERMARK_BYTES. node-pty's pause/
   // resume is documented as the right primitive for this.
-  let pendingChunks: Buffer[] = [];
-  let pendingBytes = 0;
-  let flushTimer: NodeJS.Timeout | null = null;
   let unacked = 0;
   let paused = false;
 
-  const flush = () => {
-    flushTimer = null;
-    if (pendingChunks.length === 0) return;
-    const merged = pendingChunks.length === 1 ? pendingChunks[0] : Buffer.concat(pendingChunks);
-    pendingChunks = [];
-    pendingBytes = 0;
-    if (ws.readyState !== ws.OPEN) return;
-    try {
-      ws.send(merged, { binary: true });
-    } catch { /* socket likely closing; ignore */ }
-  };
-
   const onData = (chunk: Buffer) => {
     unacked += chunk.length;
-    pendingChunks.push(chunk);
-    pendingBytes += chunk.length;
-    if (!flushTimer) flushTimer = setTimeout(flush, COALESCE_INTERVAL_MS);
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(chunk, { binary: true }); } catch { /* socket likely closing */ }
+    }
     if (!paused && unacked > HIGH_WATERMARK_BYTES) {
       paused = true;
       try { handle.pty.pause(); } catch { /* node-pty may not support pause on all platforms */ }
@@ -230,7 +216,6 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   };
 
   const onExit = (code: number) => {
-    flush();
     try { ws.send(JSON.stringify({ type: 'exit', code }), { binary: false }); } catch { /* */ }
     try { ws.close(1000, 'pty exited'); } catch { /* */ }
   };
@@ -245,10 +230,10 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   const replay = getScreenSerialization(ptyId);
   if (replay && replay.length > 0) {
     const buf = Buffer.from(replay, 'utf8');
-    pendingChunks.push(buf);
-    pendingBytes += buf.length;
     unacked += buf.length;
-    flushTimer = setTimeout(flush, 0);
+    if (ws.readyState === ws.OPEN) {
+      try { ws.send(buf, { binary: true }); } catch { /* socket closing */ }
+    }
   }
 
   handle.onData.add(onData);
@@ -293,7 +278,6 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   ws.on('close', () => {
     handle.onData.delete(onData);
     handle.onExit.delete(onExit);
-    if (flushTimer) clearTimeout(flushTimer);
     if (paused) {
       // Don't leave the pty paused if the only consumer disconnected.
       try { handle.pty.resume(); } catch { /* */ }
