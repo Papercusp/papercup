@@ -7,9 +7,10 @@
 // Source of truth: /api/installed returns { projects, harnesses,
 // staleCount }. Each project corresponds to one installed harness.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { toast } from 'sonner';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface ProjectRow {
   slug: string;
@@ -30,6 +31,72 @@ interface InstalledResponse {
   projects: ProjectRow[];
   harnesses: HarnessRow[];
   staleCount: number;
+}
+
+function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
+  const columns: ColumnDef<ProjectRow>[] = useMemo(() => [
+    {
+      key: 'slug',
+      header: 'Slug',
+      width: 1.4,
+      render: ({ row }) => (
+        <span style={{ fontWeight: 600, opacity: row.exists ? 1 : 0.5 }}>{row.slug}</span>
+      ),
+    },
+    {
+      key: 'kind',
+      header: 'Kind',
+      width: 1.2,
+      render: ({ row }) => (
+        <span style={{ color: 'var(--fg-dim)', opacity: row.exists ? 1 : 0.5 }}>
+          {row.harness_kind ?? (row.department_slug ? `department:${row.department_slug}` : '—')}
+        </span>
+      ),
+    },
+    {
+      key: 'path',
+      header: 'Path',
+      width: 2.4,
+      render: ({ row }) => (
+        <span style={{ color: 'var(--fg-dim)', fontFamily: 'monospace', fontSize: 12, opacity: row.exists ? 1 : 0.5 }}>{row.path}</span>
+      ),
+    },
+    {
+      key: 'state',
+      header: 'State',
+      width: 0.7,
+      render: ({ row }) => (
+        row.exists ? (
+          <span style={{ color: 'var(--accent, #7fc99a)' }}>● live</span>
+        ) : (
+          <span style={{ color: 'var(--fg-mute)' }} title="Project directory missing on disk">○ stale</span>
+        )
+      ),
+    },
+    {
+      key: 'added',
+      header: 'Added',
+      width: 1.2,
+      render: ({ row }) => (
+        <span style={{ color: 'var(--fg-dim)', opacity: row.exists ? 1 : 0.5 }}>{fmtDate(row.addedAt)}</span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      width: 0.8,
+      align: 'right',
+      render: ({ row }) => (
+        row.exists ? (
+          <Link href={`/harness?project=${encodeURIComponent(row.slug)}`} className="pc-button" style={{ padding: '4px 10px' }} onClick={(e) => e.stopPropagation()}>
+            Open
+          </Link>
+        ) : null
+      ),
+    },
+  ], []);
+
+  return <RichGrid<ProjectRow> columns={columns} rows={projects} getRowId={(p) => p.slug} inline />;
 }
 
 function fmtDate(s?: string): string {
@@ -86,47 +153,7 @@ export default function InstalledHarnessesPage() {
         </div>
       )}
 
-      {data && data.projects.length > 0 && (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
-          <thead>
-            <tr style={{ textAlign: 'left', color: 'var(--fg-mute)', borderBottom: '1px solid var(--border)' }}>
-              <th style={{ padding: '8px 4px' }}>Slug</th>
-              <th style={{ padding: '8px 4px' }}>Kind</th>
-              <th style={{ padding: '8px 4px' }}>Path</th>
-              <th style={{ padding: '8px 4px' }}>State</th>
-              <th style={{ padding: '8px 4px' }}>Added</th>
-              <th style={{ padding: '8px 4px' }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.projects.map((p) => {
-              const kind = p.harness_kind ?? (p.department_slug ? `department:${p.department_slug}` : '—');
-              return (
-                <tr key={p.slug} style={{ borderBottom: '1px solid var(--border)', opacity: p.exists ? 1 : 0.5 }}>
-                  <td style={{ padding: '10px 4px', fontWeight: 600 }}>{p.slug}</td>
-                  <td style={{ padding: '10px 4px', color: 'var(--fg-dim)' }}>{kind}</td>
-                  <td style={{ padding: '10px 4px', color: 'var(--fg-dim)', fontFamily: 'monospace', fontSize: 12 }}>{p.path}</td>
-                  <td style={{ padding: '10px 4px' }}>
-                    {p.exists ? (
-                      <span style={{ color: 'var(--accent, #7fc99a)' }}>● live</span>
-                    ) : (
-                      <span style={{ color: 'var(--fg-mute)' }} title="Project directory missing on disk">○ stale</span>
-                    )}
-                  </td>
-                  <td style={{ padding: '10px 4px', color: 'var(--fg-dim)' }}>{fmtDate(p.addedAt)}</td>
-                  <td style={{ padding: '10px 4px', textAlign: 'right' }}>
-                    {p.exists && (
-                      <Link href={`/harness?project=${encodeURIComponent(p.slug)}`} className="pc-button" style={{ padding: '4px 10px' }}>
-                        Open
-                      </Link>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
+      {data && data.projects.length > 0 && <ProjectsGrid projects={data.projects} />}
 
       {data && data.staleCount > 0 && (
         <p style={{ marginTop: 16, color: 'var(--fg-mute)', fontSize: 13 }}>

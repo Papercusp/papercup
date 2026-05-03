@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface PublishRecord {
   slug: string;
@@ -188,95 +189,122 @@ export default function SnapshotsPage() {
       )}
 
       {rows.length > 0 && (
-        <table className="pc-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ textAlign: 'left', color: 'var(--fg-mute)', borderBottom: '1px solid var(--border)' }}>
-              <th style={{ padding: '8px 6px' }}>Snapshot</th>
-              <th style={{ padding: '8px 6px' }}>Harness</th>
-              <th style={{ padding: '8px 6px' }}>Created</th>
-              <th style={{ padding: '8px 6px', textAlign: 'right' }}>Size</th>
-              <th style={{ padding: '8px 6px', textAlign: 'right' }}>Files</th>
-              <th style={{ padding: '8px 6px', textAlign: 'right' }}>Plugins</th>
-              <th style={{ padding: '8px 6px' }}>Redactions</th>
-              <th style={{ padding: '8px 6px' }} />
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const busy = busyId === row.id;
-              return (
-                <tr key={row.id} style={{ borderBottom: '1px solid var(--border)' }}>
-                  <td style={{ padding: '10px 6px' }}>
-                    <div style={{ fontWeight: 500 }}>{row.name}</div>
-                    {row.description && (
-                      <div style={{ color: 'var(--fg)', fontSize: 12, marginTop: 2 }}>{row.description}</div>
-                    )}
-                    <div style={{ color: 'var(--fg-mute)', fontSize: 12, fontFamily: "'SF Mono', monospace" }}>{row.id}</div>
-                    {row.partial && (
-                      <div style={{ color: '#f59e0b', fontSize: 11 }}>partial</div>
-                    )}
-                    {row.publishes.length > 0 && (
-                      <div style={{ marginTop: 4, fontSize: 11 }}>
-                        <a
-                          href={row.publishes[row.publishes.length - 1]!.browseUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          title={row.publishes.map((p) => `${p.slug}@${p.version}`).join('\n')}
-                          style={{
-                            display: 'inline-block',
-                            padding: '1px 8px',
-                            borderRadius: 999,
-                            background: '#1e3a5f',
-                            color: '#bfdbfe',
-                            textDecoration: 'none',
-                            border: '1px solid #2e5288',
-                          }}
-                        >
-                          ↗ published{row.publishes.length > 1 ? ` ×${row.publishes.length}` : ''}
-                        </a>
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ padding: '10px 6px' }}>
-                    <code>{row.harnessSlug}</code>
-                  </td>
-                  <td style={{ padding: '10px 6px', color: 'var(--fg-mute)', fontSize: 12 }}>
-                    {formatDate(row.createdAtMs)}
-                  </td>
-                  <td style={{ padding: '10px 6px', textAlign: 'right' }}>{formatBytes(row.bytes)}</td>
-                  <td style={{ padding: '10px 6px', textAlign: 'right' }}>{row.filesCount}</td>
-                  <td style={{ padding: '10px 6px', textAlign: 'right' }}>{row.pluginsCount}</td>
-                  <td style={{ padding: '10px 6px', fontSize: 12 }}>
-                    {row.redactions.verifiedHits > 0 && (
-                      <span style={{ color: '#ef4444' }}>{row.redactions.verifiedHits} verified </span>
-                    )}
-                    {row.redactions.highRecallHits > 0 && (
-                      <span style={{ color: '#f59e0b' }}>{row.redactions.highRecallHits} warns</span>
-                    )}
-                    {row.redactions.verifiedHits === 0 && row.redactions.highRecallHits === 0 && (
-                      <span style={{ color: 'var(--fg-mute)' }}>clean</span>
-                    )}
-                  </td>
-                  <td style={{ padding: '10px 6px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onInstantiate(row)} style={{ marginRight: 6 }}>
-                      {busy ? '…' : 'Instantiate'}
-                    </button>
-                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onPublish(row)} style={{ marginRight: 6 }}>
-                      Publish
-                    </button>
-                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onRetract(row)} style={{ marginRight: 6 }} title="Retract a previously-published copy from the marketplace">
-                      Retract
-                    </button>
-                    <button type="button" className="h-btn ghost" disabled={busy} onClick={() => void onDelete(row)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <SnapshotsGrid
+          rows={rows}
+          busyId={busyId}
+          onInstantiate={onInstantiate}
+          onPublish={onPublish}
+          onRetract={onRetract}
+          onDelete={onDelete}
+        />
       )}
     </div>
   );
+}
+
+function SnapshotsGrid({
+  rows, busyId, onInstantiate, onPublish, onRetract, onDelete,
+}: {
+  rows: SnapshotRow[];
+  busyId: string | null;
+  onInstantiate: (row: SnapshotRow) => void;
+  onPublish: (row: SnapshotRow) => void;
+  onRetract: (row: SnapshotRow) => void;
+  onDelete: (row: SnapshotRow) => void;
+}) {
+  const columns: ColumnDef<SnapshotRow>[] = useMemo(() => [
+    {
+      key: 'snapshot',
+      header: 'Snapshot',
+      width: 3,
+      render: ({ row }) => (
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontWeight: 500 }}>{row.name}</div>
+          {row.description && (
+            <div style={{ color: 'var(--fg)', fontSize: 12, marginTop: 2 }}>{row.description}</div>
+          )}
+          <div style={{ color: 'var(--fg-mute)', fontSize: 12, fontFamily: "'SF Mono', monospace" }}>{row.id}</div>
+          {row.partial && <div style={{ color: '#f59e0b', fontSize: 11 }}>partial</div>}
+          {row.publishes.length > 0 && (
+            <div style={{ marginTop: 4, fontSize: 11 }}>
+              <a
+                href={row.publishes[row.publishes.length - 1]!.browseUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={row.publishes.map((p) => `${p.slug}@${p.version}`).join('\n')}
+                style={{
+                  display: 'inline-block',
+                  padding: '1px 8px',
+                  borderRadius: 999,
+                  background: '#1e3a5f',
+                  color: '#bfdbfe',
+                  textDecoration: 'none',
+                  border: '1px solid #2e5288',
+                }}
+              >
+                ↗ published{row.publishes.length > 1 ? ` ×${row.publishes.length}` : ''}
+              </a>
+            </div>
+          )}
+        </div>
+      ),
+    },
+    { key: 'harness', header: 'Harness', width: 1.2, render: ({ row }) => <code>{row.harnessSlug}</code> },
+    {
+      key: 'created',
+      header: 'Created',
+      width: 1.4,
+      render: ({ row }) => (
+        <span style={{ color: 'var(--fg-mute)', fontSize: 12 }}>{formatDate(row.createdAtMs)}</span>
+      ),
+    },
+    { key: 'size', header: 'Size', width: 0.7, align: 'right', render: ({ row }) => <>{formatBytes(row.bytes)}</> },
+    { key: 'files', header: 'Files', width: 0.5, align: 'right', render: ({ row }) => <>{row.filesCount}</> },
+    { key: 'plugins', header: 'Plugins', width: 0.6, align: 'right', render: ({ row }) => <>{row.pluginsCount}</> },
+    {
+      key: 'redactions',
+      header: 'Redactions',
+      width: 1.1,
+      render: ({ row }) => (
+        <span style={{ fontSize: 12 }}>
+          {row.redactions.verifiedHits > 0 && (
+            <span style={{ color: '#ef4444' }}>{row.redactions.verifiedHits} verified </span>
+          )}
+          {row.redactions.highRecallHits > 0 && (
+            <span style={{ color: '#f59e0b' }}>{row.redactions.highRecallHits} warns</span>
+          )}
+          {row.redactions.verifiedHits === 0 && row.redactions.highRecallHits === 0 && (
+            <span style={{ color: 'var(--fg-mute)' }}>clean</span>
+          )}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      width: 2.4,
+      align: 'right',
+      render: ({ row }) => {
+        const busy = busyId === row.id;
+        return (
+          <span style={{ whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onInstantiate(row)} style={{ marginRight: 6 }}>
+              {busy ? '…' : 'Instantiate'}
+            </button>
+            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onPublish(row)} style={{ marginRight: 6 }}>
+              Publish
+            </button>
+            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onRetract(row)} style={{ marginRight: 6 }} title="Retract a previously-published copy from the marketplace">
+              Retract
+            </button>
+            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onDelete(row)}>
+              Delete
+            </button>
+          </span>
+        );
+      },
+    },
+  ], [busyId, onInstantiate, onPublish, onRetract, onDelete]);
+
+  return <RichGrid<SnapshotRow> columns={columns} rows={rows} getRowId={(r) => r.id} inline />;
 }

@@ -9,7 +9,10 @@
  * multi-harness substrate. Refresh button or 30s auto-refresh.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
+
+type AutoLoopFire = KPIs['autoloop']['recent_fires'][number];
 
 interface KPIs {
   totals: {
@@ -40,6 +43,42 @@ function formatRel(iso: string): string {
   if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
   if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
   return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+function AutoLoopGrid({ fires }: { fires: AutoLoopFire[] }) {
+  const columns: ColumnDef<AutoLoopFire>[] = useMemo(() => [
+    { key: 'harness', header: 'Harness', width: 2, render: ({ row }) => <span style={{ fontFamily: 'monospace' }}>{row.harness_slug}</span> },
+    { key: 'role', header: 'Role', width: 1, render: ({ row }) => <>{row.role}</> },
+    { key: 'fired', header: 'Last fired', width: 1, render: ({ row }) => <>{formatRel(row.last_fired_at)}</> },
+    {
+      key: 'status',
+      header: 'Status',
+      width: 1,
+      render: ({ row }) => (
+        <span style={{ color: row.last_status === 'ok' ? 'lightgreen' : row.last_status?.startsWith('error') ? 'tomato' : 'var(--fg-mute)' }}>
+          {row.last_status ?? '—'}
+        </span>
+      ),
+    },
+    {
+      key: 'errs',
+      header: 'Consec errs',
+      width: 0.8,
+      align: 'right',
+      render: ({ row }) => (
+        <span style={{ color: row.consecutive_errors > 0 ? 'tomato' : 'inherit' }}>{row.consecutive_errors}</span>
+      ),
+    },
+  ], []);
+
+  return (
+    <RichGrid<AutoLoopFire>
+      columns={columns}
+      rows={fires}
+      getRowId={(f) => `${f.harness_slug}:${f.role}`}
+      inline
+    />
+  );
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
@@ -184,30 +223,7 @@ export default function KPIsPage() {
         <div style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, overflowX: 'auto' }}>
           {data.autoloop.recent_fires.length === 0 && <div style={{ color: 'var(--fg-mute)' }}>No autoLoop activity recorded yet.</div>}
           {data.autoloop.recent_fires.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead>
-                <tr style={{ textAlign: 'left', color: 'var(--fg-mute)', fontSize: 12 }}>
-                  <th style={{ padding: '6px 0', fontWeight: 500 }}>Harness</th>
-                  <th style={{ padding: '6px 0', fontWeight: 500 }}>Role</th>
-                  <th style={{ padding: '6px 0', fontWeight: 500 }}>Last fired</th>
-                  <th style={{ padding: '6px 0', fontWeight: 500 }}>Status</th>
-                  <th style={{ padding: '6px 0', fontWeight: 500 }}>Consec errs</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.autoloop.recent_fires.map((f, i) => (
-                  <tr key={i} style={{ borderTop: '1px solid rgba(255,255,255,0.04)' }}>
-                    <td style={{ padding: '6px 0', fontFamily: 'monospace' }}>{f.harness_slug}</td>
-                    <td style={{ padding: '6px 0' }}>{f.role}</td>
-                    <td style={{ padding: '6px 0' }}>{formatRel(f.last_fired_at)}</td>
-                    <td style={{ padding: '6px 0', color: f.last_status === 'ok' ? 'lightgreen' : f.last_status?.startsWith('error') ? 'tomato' : 'var(--fg-mute)' }}>
-                      {f.last_status ?? '—'}
-                    </td>
-                    <td style={{ padding: '6px 0', color: f.consecutive_errors > 0 ? 'tomato' : 'inherit' }}>{f.consecutive_errors}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <AutoLoopGrid fires={data.autoloop.recent_fires} />
           )}
         </div>
       </section>
