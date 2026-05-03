@@ -90,6 +90,10 @@ export async function startOpenWakeWordDetection(
     vadThreshold: 0.5,
     inferenceFramework: 'onnx',
     debounceTime: 1.0,
+    // Required for the browser context: tell onnxruntime-web where to
+    // find its WASM blobs. We mirror them into /public/wake-runtime/ at
+    // install time (see apps/operator/scripts/setup-wake-runtime.sh).
+    wasmPaths: '/wake-runtime/',
   });
   await model.init();
 
