@@ -21,6 +21,7 @@ import {
   type VoiceMode,
 } from './voice-mode';
 import { useMicLevel } from './useMicLevel';
+import { usePathname } from 'next/navigation';
 
 const ICON: Record<VoiceState['status'], string> = {
   off: '🚫',
@@ -91,14 +92,15 @@ export function VoiceButton(): JSX.Element {
     stopPushToTalk();
   }, [pttHeld]);
 
-  // Live mic level — only sample when the mic is actually open. Always-on
-  // continuously listens (so we sample any time mode is always-on); PTT
-  // only listens while held. `listening` status covers both. Writes a
-  // CSS custom property directly via ref — no React re-renders at 60fps.
+  // Live mic level — only sample when the mic is actually open AND we're
+  // on a route where the visual is worth the CPU. Skip on /settings/* so
+  // the settings UI stays responsive (the actual STT VAD is already
+  // running another analyser on the same mic when always-on is enabled).
+  const pathname = usePathname();
+  const onSettingsRoute = pathname?.startsWith('/settings') ?? false;
   const micActive =
-    vs.mode === 'always-on' ||
-    vs.status === 'listening' ||
-    pttHeld;
+    !onSettingsRoute &&
+    (vs.mode === 'always-on' || vs.status === 'listening' || pttHeld);
   const { ref: micRef } = useMicLevel(micActive);
 
   const labelText = vs.supported ? MODE_LABEL[vs.mode] : 'No mic';

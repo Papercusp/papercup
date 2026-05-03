@@ -48,17 +48,33 @@ export function useMicLevel(active: boolean): {
         src.connect(analyser);
         const buf = new Uint8Array(analyser.fftSize);
 
-        const tick = () => {
-          analyser.getByteTimeDomainData(buf);
-          let sum = 0;
-          for (let i = 0; i < buf.length; i++) {
-            const v = (buf[i] - 128) / 128;
-            sum += v * v;
+        // Throttle to ~20Hz instead of 60Hz. The ring is a vibe indicator
+        // — you can't perceive faster than ~30Hz changes anyway, and the
+        // user already has another analyser (stt-voicemode VAD) running
+        // on the actual capture stream. 60Hz here on a quiet idle page
+        // wastes main-thread budget that React reconciliation needs.
+        const FRAME_MS = 50;
+        let lastTick = 0;
+        let lastWritten = -1;
+
+        const tick = (t: number) => {
+          if (t - lastTick >= FRAME_MS) {
+            lastTick = t;
+            analyser.getByteTimeDomainData(buf);
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) {
+              const v = (buf[i] - 128) / 128;
+              sum += v * v;
+            }
+            const rms = Math.sqrt(sum / buf.length);
+            const eased = Math.min(1, Math.max(0, (rms - 0.02) * 6));
+            // Skip the DOM write when the value barely moved (saves the
+            // CSSStyleDeclaration write + GPU recomposite).
+            if (Math.abs(eased - lastWritten) >= 0.01) {
+              lastWritten = eased;
+              if (ref.current) ref.current.style.setProperty('--mic-level', eased.toFixed(2));
+            }
           }
-          const rms = Math.sqrt(sum / buf.length);
-          const eased = Math.min(1, Math.max(0, (rms - 0.02) * 6));
-          // Direct DOM write — bypasses React entirely.
-          if (ref.current) ref.current.style.setProperty('--mic-level', eased.toFixed(3));
           rafRef.current = requestAnimationFrame(tick);
         };
         rafRef.current = requestAnimationFrame(tick);
