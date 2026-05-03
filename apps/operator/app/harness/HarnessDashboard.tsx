@@ -2794,26 +2794,12 @@ export default function HarnessDashboard() {
           } catch (e) { toast.error(String(e)); }
         },
       });
-      cs.push({
-        id: 'replan', section: 'Control',
-        title: 'Re-plan — regenerate features.json + contract from SPEC.md',
-        icon: '🔄', keywords: 'replan regenerate planner spec',
-        perform: async () => {
-          if (!confirm('Re-run the planner? Current features.json + contract will be backed up and replaced.')) return;
-          toast.info('Re-planning… (may take a few minutes)');
-          try {
-            const r = await fetch(`/api/harness/${activeSlug}/replan?phase=${activePhase}`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ overwrite: true }),
-            });
-            const d = await r.json();
-            if (d.ok && d.produced) toast.success(`re-planned — backup at ${d.backupDir}`, { duration: 6000 });
-            else toast.error(`replan: ${d.error ?? 'did not produce artifacts'}`);
-            fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
-          } catch (e) { toast.error(String(e)); }
-        },
-      });
+      // Note: a second `id: 'replan'` command was here (legacy destructive
+      // variant calling /replan with `overwrite: true`). Removed because (a)
+      // it duplicates id 'replan' above, causing React's "two children with
+      // same key" error on every render and an infinite Fast Refresh loop,
+      // and (b) the unified MODE=replan delta-merge path is non-destructive
+      // and the only one we want users to invoke.
     }
     for (const f of status?.features ?? []) {
       cs.push({
