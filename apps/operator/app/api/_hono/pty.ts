@@ -36,7 +36,8 @@ import {
   spawnPty,
   writePty,
   getPty,
-  consumeReplay,
+  getPtyMeta,
+  getHistory,
   PtyError,
 } from '../../../lib/pty-bridge';
 
@@ -62,6 +63,14 @@ interface SpawnBody {
   rows?: number;
   /** Optional extra env merged into the spawn. */
   env?: Record<string, string>;
+  /**
+   * If provided, try to adopt this existing pty instead of spawning a
+   * new one. Used by PiPanel on remount (tab-switch resume) to keep
+   * session state alive across React unmount/mount cycles. Falls
+   * through to prewarm/cold-spawn if the id is unknown or its handle
+   * has been killed.
+   */
+  resumePtyId?: string;
 }
 
 /** Resolve the harness's project directory by reading its registry. */
@@ -270,20 +279,74 @@ function ensurePapercuspMcpRegistered(): void {
 
   /**
    * Prewarm pool. Keyed by `<slug>|<laneId>|<command>` so a /pty/prewarm
-   * call from PiTerminalsDock.onReady reserves a pty whose env/cwd/args
+   * call from PiTerminalsDock.onMount reserves a pty whose env/cwd/args
    * exactly match what /pty/spawn would build for the same dock. Spawn
-   * then adopts the warm handle instead of forking fresh, eliminating
-   * the ~500–1500 ms omp startup from the user-visible critical path.
+   * adopts the warm handle instead of forking fresh, eliminating the
+   * ~500–1500 ms omp startup from the user-visible critical path.
+   *
+   * The slot stores a Promise<handle | null>, not a handle, so /spawn can
+   * await an in-flight prewarm. Without this, spawn races prewarm: dock
+   * mount fires both POSTs nearly simultaneously, prewarm's spawnPty()
+   * returns synchronously but the slot wasn't visible to spawn yet,
+   * spawn cold-forks, and the warm handle becomes an orphan.
    *
    * If a prewarmed handle isn't claimed within PREWARM_TTL_MS we kill
    * it from a one-shot timer so we don't accumulate orphans on tab
    * navigations away from the dock.
    */
-  const prewarmed = new Map<string, { handle: Awaited<ReturnType<typeof spawnPty>>; reaper: NodeJS.Timeout }>();
+  type PrewarmEntry = {
+    promise: Promise<ReturnType<typeof spawnPty> | null>;
+    reaper: NodeJS.Timeout | null;
+  };
+  const prewarmed = new Map<string, PrewarmEntry>();
   const PREWARM_TTL_MS = 60_000;
 
   function prewarmKey(slug: string, laneId: string | undefined, command: string): string {
     return `${slug}|${laneId ?? ''}|${command}`;
+  }
+
+  /**
+   * Internal: reserve a prewarm slot and spawn a pty into it. Shared by
+   * the /pty/prewarm endpoint and the /pty/spawn refill path. Idempotent
+   * — if a slot is already reserved (warm or in-flight), we leave it.
+   *
+   * Returns the handle the caller can await, or null if no spawn was
+   * needed (slot already populated).
+   */
+  function reservePrewarmSlot(opts: {
+    slug: string;
+    laneId: string | undefined;
+    cfg: { command: string; args: readonly string[]; cwd: string; env: Record<string, string>; sd: string | null };
+  }): PrewarmEntry | null {
+    const { slug, laneId, cfg } = opts;
+    const key = prewarmKey(slug, laneId, cfg.command);
+    const existing = prewarmed.get(key);
+    if (existing) return existing;
+    const entry: PrewarmEntry = { promise: Promise.resolve(null), reaper: null };
+    entry.promise = new Promise<ReturnType<typeof spawnPty> | null>((resolve) => {
+      try {
+        const handle = spawnPty({
+          command: cfg.command,
+          args: cfg.args,
+          cwd: cfg.cwd,
+          cols: 80,
+          rows: 24,
+          env: cfg.env,
+        });
+        attachAuditExport(handle, cfg.sd, cfg.command, laneId);
+        entry.reaper = setTimeout(() => {
+          if (prewarmed.get(key) === entry) prewarmed.delete(key);
+          try { killPty(handle.id); } catch { /* ignore */ }
+        }, PREWARM_TTL_MS);
+        entry.reaper.unref?.();
+        resolve(handle);
+      } catch {
+        if (prewarmed.get(key) === entry) prewarmed.delete(key);
+        resolve(null);
+      }
+    });
+    prewarmed.set(key, entry);
+    return entry;
   }
 
   /**
@@ -365,29 +428,52 @@ function ensurePapercuspMcpRegistered(): void {
   const cols = Math.max(20, Math.min(500, Math.floor(body.cols ?? 80)));
   const rows = Math.max(5, Math.min(200, Math.floor(body.rows ?? 24)));
 
+  // Resume path: if the client passed a previously-issued pty id and that
+  // handle is still alive, adopt it. This is the fast path for PiPanel
+  // remounts (tab-switch resume) — no spawn, no prewarm, just hand the
+  // same pty back so the new SSE consumer can replay history into the
+  // fresh xterm.
+  if (body.resumePtyId) {
+    const existing = getPtyMeta(body.resumePtyId);
+    if (existing) {
+      try { resizePty(body.resumePtyId, cols, rows); } catch { /* ignore */ }
+      return c.json({ ...existing, resumed: true });
+    }
+    // Stale id — fall through to a normal spawn flow.
+  }
+
   const cfg = await buildSpawnConfig({ slug, body, requestUrl: c.req.url });
   if (cfg.kind === 'unknown-slug') {
     return c.json({ error: 'unknown harness slug', slug }, 404);
   }
 
-  // Try to adopt a prewarmed handle for this slug+laneId+command. The
-  // prewarm path uses the same buildSpawnConfig output, so cwd/args/env
-  // already match. Resize the pty to the caller's dims before handing it
-  // off — the prewarmed shell was started at default 80x24.
+  // Try to adopt a prewarmed handle for this slug+laneId+command. Awaits
+  // the prewarm promise so a dock that fires /prewarm and /spawn back-
+  // to-back doesn't race past the slot before it's populated.
   const key = prewarmKey(slug, body.laneId, cfg.command);
   const reserved = prewarmed.get(key);
-  if (reserved && !reserved.handle.killed) {
+  if (reserved) {
+    const handle = await reserved.promise;
     prewarmed.delete(key);
-    clearTimeout(reserved.reaper);
-    try { reserved.handle.pty.resize(cols, rows); } catch { /* ignore */ }
-    return c.json({
-      id: reserved.handle.id,
-      command: reserved.handle.command,
-      args: reserved.handle.args,
-      cwd: reserved.handle.cwd,
-      pid: reserved.handle.pty.pid,
-      prewarmed: true,
-    });
+    if (reserved.reaper) clearTimeout(reserved.reaper);
+    if (handle && !handle.killed) {
+      try { handle.pty.resize(cols, rows); } catch { /* ignore */ }
+      // Refill the pool so the NEXT spawn for this key is also warm.
+      // Without this, React StrictMode's double-mount in dev cold-forks
+      // the second mount, and any subsequent click-to-add-terminal hits
+      // a cold start. Side-effect; failures get cleared by reaper.
+      reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
+      return c.json({
+        id: handle.id,
+        command: handle.command,
+        args: handle.args,
+        cwd: handle.cwd,
+        pid: handle.pty.pid,
+        prewarmed: true,
+      });
+    }
+    // prewarm failed (cap reached, spawn error) or its handle already died
+    // — fall through to a normal cold spawn.
   }
 
   try {
@@ -400,6 +486,10 @@ function ensurePapercuspMcpRegistered(): void {
       env: cfg.env,
     });
     attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
+    // Cold-spawn path also refills the pool so the next spawn is warm.
+    // Covers the case where StrictMode's first mount cold-forks before
+    // any prewarm has happened.
+    reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
     return c.json({
       id: handle.id,
       command: handle.command,
@@ -414,6 +504,30 @@ function ensurePapercuspMcpRegistered(): void {
     return c.json({ error: (err as Error).message, code: 'UNKNOWN' }, 500);
   }
 });
+
+  /**
+   * Resolve-only: return the spawn config (command, args, cwd, env)
+   * that /pty/spawn WOULD have used, without actually forking. Used by
+   * the desktop (Tauri) renderer to forward those args to its native
+   * pty-host (src-tauri/src/pty.rs) — pty fork lives in the Rust
+   * process, but the harness-aware config-building (prompt prepending,
+   * worktree resolution, MCP wiring) stays here on the operator side.
+   */
+  harness.post('/:slug/pty/resolve', async (c) => {
+    const slug = c.req.param('slug') ?? '';
+    let body: SpawnBody;
+    try { body = (await c.req.json<SpawnBody>()) ?? {}; } catch { body = {}; }
+    const cfg = await buildSpawnConfig({ slug, body, requestUrl: c.req.url });
+    if (cfg.kind === 'unknown-slug') {
+      return c.json({ error: 'unknown harness slug', slug }, 404);
+    }
+    return c.json({
+      command: cfg.command,
+      args: cfg.args,
+      cwd: cfg.cwd,
+      env: cfg.env,
+    });
+  });
 
   /**
    * Reserve a hot pty for an upcoming /pty/spawn call. The dock fires this
@@ -433,41 +547,18 @@ function ensurePapercuspMcpRegistered(): void {
 
     const key = prewarmKey(slug, body.laneId, cfg.command);
     const existing = prewarmed.get(key);
-    if (existing && !existing.handle.killed) {
-      return c.json({ reserved: true, reused: true });
-    }
     if (existing) {
-      // Stale entry from a prior killed handle — drop and re-spawn.
-      clearTimeout(existing.reaper);
+      const handle = await existing.promise.catch(() => null);
+      if (handle && !handle.killed) return c.json({ reserved: true, reused: true });
+      if (existing.reaper) clearTimeout(existing.reaper);
       prewarmed.delete(key);
     }
 
-    try {
-      const handle = spawnPty({
-        command: cfg.command,
-        args: cfg.args,
-        cwd: cfg.cwd,
-        cols: 80,
-        rows: 24,
-        env: cfg.env,
-      });
-      attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
-      const reaper = setTimeout(() => {
-        // Caller never claimed this handle — kill so it doesn't hold a
-        // pty slot. spawnPty's own idle reaper would eventually catch
-        // this too, but at 5min that's too lax for a pre-warm.
-        if (prewarmed.get(key)?.handle === handle) prewarmed.delete(key);
-        try { handle.pty.kill(); } catch { /* ignore */ }
-      }, PREWARM_TTL_MS);
-      reaper.unref?.();
-      prewarmed.set(key, { handle, reaper });
-      return c.json({ reserved: true });
-    } catch (err) {
-      if (err instanceof PtyError) {
-        return c.json({ error: err.message, code: err.code }, 503);
-      }
-      return c.json({ error: (err as Error).message, code: 'UNKNOWN' }, 500);
-    }
+    const entry = reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
+    if (!entry) return c.json({ reserved: true, reused: true });
+    const handle = await entry.promise;
+    if (!handle) return c.json({ error: 'prewarm spawn failed' }, 503);
+    return c.json({ reserved: true });
   });
 
   harness.get('/:slug/pty/:id/stream', (c) => {
@@ -500,12 +591,14 @@ function ensurePapercuspMcpRegistered(): void {
       closed = true;
     };
 
-    // Drain anything emitted before this subscriber attached (only
-    // non-empty for prewarmed handles where omp printed its banner
-    // while the browser was still loading xterm).
-    const replay = consumeReplay(id);
-    if (replay && replay.length > 0) {
-      try { onData(replay); } catch { /* see onData */ }
+    // Replay full session history into the new subscriber. Non-empty for
+    // prewarmed handles AND for tab-switch remounts where the same pty
+    // had output that earlier consumers already saw — the new xterm
+    // starts blank and needs the whole history to re-render the prior
+    // state.
+    const history = getHistory(id);
+    if (history && history.length > 0) {
+      try { onData(history); } catch { /* see onData */ }
     }
 
     handle.onData.add(onData);
@@ -537,11 +630,12 @@ function ensurePapercuspMcpRegistered(): void {
       closed = true;
       cleanup?.();
       clearInterval(ticker);
-      // PTY is tied to one UI pane. Once the SSE consumer disconnects
-      // (tab close, navigation away, network drop), the pty has no
-      // reader and should die immediately — relying on the 5-min idle
-      // reaper would orphan a pi process the user already abandoned.
-      killPty(id);
+      // Don't kill the pty on SSE disconnect — PiPanel unmounts on
+      // every dashboard tab switch, and killing here would force a
+      // full respawn (and full omp restart) when the user comes back.
+      // The handle keeps writing to its history buffer; the next
+      // /stream connection replays it. Idle reaper still cleans up
+      // truly-abandoned ptys after IDLE_TIMEOUT_MS.
     });
 
     // Block until exit or abort.

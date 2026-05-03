@@ -1,0 +1,307 @@
+/**
+ * pty-ws.ts — WebSocket transport for the embedded pty bridge.
+ *
+ * Client connects to ws://<host>:<PAPERCUSP_PTY_WS_PORT>/pty/<id> after
+ * a successful POST /api/harness/:slug/pty/spawn. The id comes from
+ * that response. The HTTP control plane (spawn/prewarm/kill) is
+ * unchanged — this just replaces the SSE output + POST input data
+ * channels with one full-duplex WebSocket.
+ *
+ * Wire format:
+ *   server → client : binary frames, raw pty bytes (no base64).
+ *                     xterm.js's AttachAddon is the canonical consumer
+ *                     and decodes Uint8Array as UTF-8.
+ *   client → server : binary frames are user input bytes (forwarded to
+ *                     writePty). text frames are JSON control messages:
+ *                       {type:"resize", cols, rows}
+ *                       {type:"ack",    bytes}     // flow control
+ *                       {type:"kill"}
+ *
+ * Flow control (VS Code shape, not Wetty's): coalesce server→client
+ * data via a 5 ms throttle, and pause the pty when more than 100 KB
+ * of output is unacknowledged by the client. Resume when it drains
+ * back below the low watermark. node-pty's own handleFlowControl is
+ * also enabled at spawn so pty children that emit XOFF/XON cooperate.
+ */
+
+import { WebSocketServer, type WebSocket } from 'ws';
+import type { IncomingMessage } from 'node:http';
+import {
+  getPty,
+  writePty,
+  resizePty,
+  killPty,
+  markActive,
+  getScreenSerialization,
+} from './pty-bridge';
+
+// VS Code's terminal flow-control numbers, from
+// vscode/src/vs/platform/terminal/common/terminal.ts FlowControlConstants.
+// HighWatermarkChars = 100_000; LowWatermarkChars proportional. Much
+// tighter than wetty's 2 MB — keyboard stays responsive within a few
+// chars of bulk output.
+const HIGH_WATERMARK_BYTES = 100_000;
+const LOW_WATERMARK_BYTES = 10_000;
+
+// Coalesce window for pty→ws batching. Aligned to one display frame
+// (16 ms) rather than VS Code's 5 ms because xterm renders at rAF, so
+// sub-frame batching just creates more parser+render scheduling work
+// without producing any extra visible frames. Chatty interactive shells
+// like omp emit ~20 small write bursts per keystroke (prompt redraw
+// with ANSI color noise); at 5 ms each gets its own message and its
+// own term.write() call, which adds up to perceptible jitter even on
+// localhost. 16 ms collapses them into one render-aligned chunk.
+const COALESCE_INTERVAL_MS = 16;
+
+interface OriginCheckOptions {
+  /** Hosts (without scheme) that may originate WS upgrades. Production. */
+  allowedHosts: string[];
+  /** Whether to additionally allow localhost-family hosts. Dev. */
+  allowLocalhost: boolean;
+}
+
+function isAllowedOrigin(origin: string | undefined, opts: OriginCheckOptions): boolean {
+  if (!origin) return opts.allowLocalhost; // some clients omit Origin on same-origin
+  let host: string;
+  try {
+    host = new URL(origin).host;
+  } catch {
+    return false;
+  }
+  if (opts.allowedHosts.includes(host)) return true;
+  if (opts.allowLocalhost) {
+    if (host.startsWith('localhost:') || host === 'localhost') return true;
+    if (host.startsWith('127.0.0.1:') || host === '127.0.0.1') return true;
+    if (host.startsWith('[::1]:') || host === '[::1]') return true;
+  }
+  return false;
+}
+
+export interface PtyWsServerOptions {
+  port: number;
+  /** Production hosts to allow (e.g. ['operator.papercup.ai']). */
+  allowedHosts?: string[];
+  /** Allow localhost / loopback origins. Default true; set false in prod. */
+  allowLocalhost?: boolean;
+}
+
+// Pin started/serverRef on globalThis so HMR re-imports of this module
+// (Next dev) don't double-bind the port. Same trick pty-bridge.ts uses
+// for the handles map.
+type WsGlobals = typeof globalThis & {
+  __papercuspPtyWs?: { started: boolean; serverRef: WebSocketServer | null };
+};
+const _wsGlobals = globalThis as WsGlobals;
+const wsState = _wsGlobals.__papercuspPtyWs ?? { started: false, serverRef: null as WebSocketServer | null };
+_wsGlobals.__papercuspPtyWs = wsState;
+
+/**
+ * Start the pty WS server. Idempotent: a second call (typical under
+ * Next dev's instrumentation re-register) is a no-op.
+ */
+export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | null {
+  if (wsState.started) return wsState.serverRef;
+  wsState.started = true;
+
+  const wss = new WebSocketServer({
+    port: opts.port,
+    // We do our own origin check rather than relying on `verifyClient`
+    // (which runs synchronously during the upgrade handshake) so the
+    // logging path is a normal request handler.
+    perMessageDeflate: false, // we send mostly small frames, deflate adds latency
+  });
+  wsState.serverRef = wss;
+
+  const originOpts: OriginCheckOptions = {
+    allowedHosts: opts.allowedHosts ?? [],
+    allowLocalhost: opts.allowLocalhost ?? true,
+  };
+
+  wss.on('connection', (ws, req) => {
+    const origin = req.headers.origin;
+    if (!isAllowedOrigin(origin, originOpts)) {
+      ws.close(4403, 'origin not allowed');
+      return;
+    }
+
+    // URL is `/pty/<id>`. Anything else is rejected.
+    const url = req.url ?? '';
+    const m = url.match(/^\/pty\/([a-f0-9-]{8,})\/?$/i);
+    if (!m) {
+      ws.close(4404, 'unknown route');
+      return;
+    }
+    const ptyId = m[1];
+
+    const handle = getPty(ptyId);
+    if (!handle || handle.killed) {
+      ws.close(4410, 'pty not found or killed');
+      return;
+    }
+
+    attachWsToPty(ws, ptyId);
+  });
+
+  // ── Heartbeat (gotty / ttyd shape) ──────────────────────────────────
+  // Server pings every PING_INTERVAL_MS. If a client misses two pongs
+  // in a row, the connection is terminate()d so we don't accumulate
+  // half-open sockets behind reverse proxies that silently drop idle
+  // connections after N minutes. ws library tracks pong responses via
+  // `isAlive` flag (canonical pattern from the README).
+  const PING_INTERVAL_MS = 30_000;
+  const pingInterval = setInterval(() => {
+    for (const ws of wss.clients) {
+      const tagged = ws as WebSocket & { _isAlive?: boolean };
+      if (tagged._isAlive === false) {
+        try { ws.terminate(); } catch { /* */ }
+        continue;
+      }
+      tagged._isAlive = false;
+      try { ws.ping(); } catch { /* */ }
+    }
+  }, PING_INTERVAL_MS);
+  pingInterval.unref?.();
+  wss.on('connection', (ws) => {
+    const tagged = ws as WebSocket & { _isAlive?: boolean };
+    tagged._isAlive = true;
+    ws.on('pong', () => { tagged._isAlive = true; });
+  });
+  wss.on('close', () => clearInterval(pingInterval));
+
+  wss.on('listening', () => {
+    const addr = wss.address();
+    const where = typeof addr === 'string' ? addr : `:${addr?.port}`;
+    console.log(`[pty-ws] listening on ${where}`);
+  });
+
+  wss.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+      // Likely a stale instrumentation re-run from a previous process —
+      // give up silently rather than crash the whole operator.
+      console.warn(`[pty-ws] port ${opts.port} in use; another operator instance may be running`);
+      wsState.started = false;
+      return;
+    }
+    console.error('[pty-ws] server error:', err);
+  });
+
+  return wss;
+}
+
+function attachWsToPty(ws: WebSocket, ptyId: string): void {
+  const handle = getPty(ptyId);
+  if (!handle) { ws.close(); return; }
+
+  // ── Server → client coalesce + flow control ─────────────────────────
+  // Outgoing chunks are coalesced for COALESCE_INTERVAL_MS into one
+  // binary frame (VS Code's TerminalDataBufferer pattern). When the
+  // unacknowledged byte count exceeds HIGH_WATERMARK_BYTES we pause
+  // the pty (writes from the child block at the kernel pty buffer);
+  // the client sends {type:"ack", bytes} as it consumes data, and we
+  // resume once back below LOW_WATERMARK_BYTES. node-pty's pause/
+  // resume is documented as the right primitive for this.
+  let pendingChunks: Buffer[] = [];
+  let pendingBytes = 0;
+  let flushTimer: NodeJS.Timeout | null = null;
+  let unacked = 0;
+  let paused = false;
+
+  const flush = () => {
+    flushTimer = null;
+    if (pendingChunks.length === 0) return;
+    const merged = pendingChunks.length === 1 ? pendingChunks[0] : Buffer.concat(pendingChunks);
+    pendingChunks = [];
+    pendingBytes = 0;
+    if (ws.readyState !== ws.OPEN) return;
+    try {
+      ws.send(merged, { binary: true });
+    } catch { /* socket likely closing; ignore */ }
+  };
+
+  const onData = (chunk: Buffer) => {
+    unacked += chunk.length;
+    pendingChunks.push(chunk);
+    pendingBytes += chunk.length;
+    if (!flushTimer) flushTimer = setTimeout(flush, COALESCE_INTERVAL_MS);
+    if (!paused && unacked > HIGH_WATERMARK_BYTES) {
+      paused = true;
+      try { handle.pty.pause(); } catch { /* node-pty may not support pause on all platforms */ }
+    }
+  };
+
+  const onExit = (code: number) => {
+    flush();
+    try { ws.send(JSON.stringify({ type: 'exit', code }), { binary: false }); } catch { /* */ }
+    try { ws.close(1000, 'pty exited'); } catch { /* */ }
+  };
+
+  // Replay current screen state (P4): a string of ANSI escapes that,
+  // written into a fresh client xterm, reproduces the canonical screen
+  // including scrollback. Bounded by terminal size, not session bytes
+  // — orders of magnitude smaller than the byte history for any pty
+  // that has run more than a few seconds, and inherently
+  // geometry-correct for vim/htop because the headless Terminal
+  // resizes alongside the pty.
+  const replay = getScreenSerialization(ptyId);
+  if (replay && replay.length > 0) {
+    const buf = Buffer.from(replay, 'utf8');
+    pendingChunks.push(buf);
+    pendingBytes += buf.length;
+    unacked += buf.length;
+    flushTimer = setTimeout(flush, 0);
+  }
+
+  handle.onData.add(onData);
+  handle.onExit.add(onExit);
+
+  // ── Client → server input + control frames ──────────────────────────
+  ws.on('message', (data, isBinary) => {
+    markActive(ptyId);
+    if (isBinary) {
+      // Raw bytes from xterm input.
+      const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
+      writePty(ptyId, buf);
+      return;
+    }
+    // Text frame: JSON control message.
+    let msg: { type?: string; cols?: number; rows?: number; bytes?: number };
+    try {
+      msg = JSON.parse(data.toString('utf8'));
+    } catch { return; }
+    switch (msg.type) {
+      case 'resize':
+        if (typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+          resizePty(ptyId, Math.floor(msg.cols), Math.floor(msg.rows));
+        }
+        break;
+      case 'ack':
+        if (typeof msg.bytes === 'number' && msg.bytes > 0) {
+          unacked = Math.max(0, unacked - msg.bytes);
+          if (paused && unacked < LOW_WATERMARK_BYTES) {
+            paused = false;
+            try { handle.pty.resume(); } catch { /* see pause */ }
+          }
+        }
+        break;
+      case 'kill':
+        killPty(ptyId);
+        break;
+      // Unknown types are ignored — forward-compat.
+    }
+  });
+
+  ws.on('close', () => {
+    handle.onData.delete(onData);
+    handle.onExit.delete(onExit);
+    if (flushTimer) clearTimeout(flushTimer);
+    if (paused) {
+      // Don't leave the pty paused if the only consumer disconnected.
+      try { handle.pty.resume(); } catch { /* */ }
+    }
+    // Intentionally NOT calling killPty: the pty stays alive on the
+    // server so a remount (tab switch back) can resume it via the
+    // existing resumePtyId path. Same policy as the SSE handler.
+  });
+
+  ws.on('error', () => { /* let close handler do cleanup */ });
+}
