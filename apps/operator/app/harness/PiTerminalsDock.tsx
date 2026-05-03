@@ -143,9 +143,14 @@ async function pruneStaleChatPanels(api: DockviewApi, slug: string): Promise<voi
 /** Component rendered inside each dockview panel. */
 function TerminalPanelComponent(props: IDockviewPanelProps<TerminalPanelParams>) {
   const { slug, laneId } = props.params;
+  // props.api.id is the dockview panel id (term-initial, term-<rand>, …)
+  // and is stable across React unmount/remount, which is exactly what we
+  // need for sessionStorage-keyed pty resume. Without this every panel
+  // would key under 'default' and two terminals would clobber each
+  // other's stored id.
   return (
     <div style={{ width: '100%', height: '100%', minHeight: 0, display: 'flex' }}>
-      <PiPanel slug={slug} laneId={laneId} />
+      <PiPanel slug={slug} laneId={laneId} panelId={props.api.id} />
     </div>
   );
 }
@@ -169,6 +174,15 @@ function ChatPanelComponent(props: IDockviewPanelProps<ChatPanelParams>) {
 function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: string }) {
   const onClick = useCallback(() => {
     if (!api) return;
+    // Fire prewarm BEFORE addPanel so the slot is reserved by the time
+    // the new PiPanel's /pty/spawn POST arrives — otherwise spawn races
+    // prewarm and cold-forks. Best-effort; failure falls through to
+    // normal cold spawn.
+    fetch(`/api/harness/${encodeURIComponent(slug)}/pty/prewarm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    }).catch(() => { /* best-effort */ });
     const id = `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const existing = api.panels.filter((p) => p.id.startsWith('term-')).length;
     api.addPanel({
@@ -200,6 +214,7 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
 
   const onReady = useCallback(
     (event: DockviewReadyEvent) => {
+
       apiRef.current = event.api;
       setApi(event.api);
 
