@@ -84,6 +84,24 @@ function ptyResumeKey(slug: string, panelId: string | undefined, laneId: string 
   return `papercusp:pi-pty:${slug}:${panelId ?? 'default'}:${laneId ?? ''}`;
 }
 
+/**
+ * Module-level coalescing for in-flight spawn POSTs. React StrictMode
+ * double-mounts effects in dev, and our spawn fetch is async with a
+ * sessionStorage-based resume that races: mount-1 fires spawn, mount-1
+ * unmounts before the response, mount-2 reads sessionStorage (empty),
+ * mount-2 fires its OWN spawn — and now the server has two ptys for
+ * one user-visible panel. The first becomes an orphan that doesn't get
+ * reaped for 5 minutes (it has activity from being spawned), so the
+ * 16-pty cap fills up after a handful of clicks.
+ *
+ * We dedupe by `resumeKey` (slug + panelId + laneId): if a spawn is
+ * already in flight for this key, the second mount awaits the same
+ * Promise instead of firing another POST. Once the spawn settles the
+ * entry is removed, so subsequent (genuine) remounts can spawn fresh.
+ */
+type SpawnResult = { ok: true; handle: PtyHandle } | { ok: false; error: string };
+const inFlightSpawns = new Map<string, Promise<SpawnResult>>();
+
 interface ToolDef {
   name: string;
   label: string;
@@ -227,22 +245,44 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
     // dock has likely POSTed /pty/prewarm and the server adopts that
     // hot handle. Default 80×24 — a resize() POST follows once xterm
     // has measured the container.
-    const spawnPromise = useNative ? null : (async () => {
-      try {
-        const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/pty/spawn`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ command, args, laneId, cols: 80, rows: 24, resumePtyId }),
+    // Coalesce concurrent spawn POSTs for this resumeKey. If an effect
+    // re-run (StrictMode, fast-refresh) hits the same key while the
+    // first POST is still in flight, both consumers await the same
+    // Promise and the server only sees one spawn. Cleared after the
+    // Promise settles so a genuine later remount can spawn fresh.
+    let spawnPromise: Promise<SpawnResult> | null = null;
+    if (!useNative) {
+      const existing = inFlightSpawns.get(resumeKey);
+      if (existing) {
+        spawnPromise = existing;
+      } else {
+        const p = (async (): Promise<SpawnResult> => {
+          try {
+            const res = await fetch(`/api/harness/${encodeURIComponent(slug)}/pty/spawn`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ command, args, laneId, cols: 80, rows: 24, resumePtyId }),
+            });
+            if (!res.ok) {
+              const errBody = await res.json().catch(() => ({} as { error?: string }));
+              return { ok: false, error: errBody?.error ?? `spawn failed: HTTP ${res.status}` };
+            }
+            return { ok: true, handle: (await res.json()) as PtyHandle };
+          } catch (err) {
+            return { ok: false, error: `spawn failed: ${(err as Error).message}` };
+          }
+        })();
+        // Drop the entry on settle so a real remount (e.g. tab close→reopen
+        // after the pty has been killed) can spawn a fresh handle. Do this
+        // BEFORE storing the Promise resolution side-effects, so concurrent
+        // awaiters always observe the same finished value.
+        p.finally(() => {
+          if (inFlightSpawns.get(resumeKey) === p) inFlightSpawns.delete(resumeKey);
         });
-        if (!res.ok) {
-          const errBody = await res.json().catch(() => ({} as { error?: string }));
-          return { ok: false as const, error: errBody?.error ?? `spawn failed: HTTP ${res.status}` };
-        }
-        return { ok: true as const, handle: (await res.json()) as PtyHandle };
-      } catch (err) {
-        return { ok: false as const, error: `spawn failed: ${(err as Error).message}` };
+        inFlightSpawns.set(resumeKey, p);
+        spawnPromise = p;
       }
-    })();
+    }
 
     if (!containerRef.current) return;
 

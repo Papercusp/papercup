@@ -458,11 +458,6 @@ function ensurePapercuspMcpRegistered(): void {
     if (reserved.reaper) clearTimeout(reserved.reaper);
     if (handle && !handle.killed) {
       try { handle.pty.resize(cols, rows); } catch { /* ignore */ }
-      // Refill the pool so the NEXT spawn for this key is also warm.
-      // Without this, React StrictMode's double-mount in dev cold-forks
-      // the second mount, and any subsequent click-to-add-terminal hits
-      // a cold start. Side-effect; failures get cleared by reaper.
-      reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
       return c.json({
         id: handle.id,
         command: handle.command,
@@ -486,10 +481,6 @@ function ensurePapercuspMcpRegistered(): void {
       env: cfg.env,
     });
     attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
-    // Cold-spawn path also refills the pool so the next spawn is warm.
-    // Covers the case where StrictMode's first mount cold-forks before
-    // any prewarm has happened.
-    reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
     return c.json({
       id: handle.id,
       command: handle.command,
