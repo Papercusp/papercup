@@ -285,64 +285,76 @@ export default function VoiceSettingsPage() {
       {/* ── ENGINE SELECTORS ─────────────────────────────────────── */}
       <section style={{ marginBottom: 32 }}>
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Engines</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <div>
-            <label style={lbl}>STT (speech → text)</label>
-            <select
-              value={prefs?.sttEngine ?? 'voicemode'}
-              onChange={(e) => setSttEngine(e.target.value as SttEngineKind)}
-              style={sel}
-              disabled={savingPrefs}
-            >
-              <option value="voicemode">Voicemode (Whisper, local)</option>
-              <option value="webspeech">Web Speech (browser cloud)</option>
-              <option value="deepgram">Deepgram Nova-2 (cloud, BYO key)</option>
-              <option value="off">Off</option>
-            </select>
-            <p style={hint}>
-              Voicemode runs locally — audio never leaves your machine.
-              Start it via <code>mcp__voicemode__service whisper start</code>.
-            </p>
-          </div>
-          <div>
-            <label style={lbl}>TTS (text → speech)</label>
-            <select
-              value={prefs?.ttsEngine ?? 'kokoro'}
-              onChange={(e) => setTtsEngine(e.target.value as TtsEngineKind)}
-              style={sel}
-              disabled={savingPrefs}
-            >
-              <option value="kokoro">Kokoro (Voicemode, local) — recommended</option>
-              <option value="browser">Browser (OS voices)</option>
-              <option value="elevenlabs">ElevenLabs Turbo v2.5 (cloud, BYO key)</option>
-              <option value="openai">OpenAI tts-1 (cloud, BYO key)</option>
-              <option value="cartesia">Cartesia Sonic-2 (cloud, BYO key)</option>
-            </select>
-            <EnginePreview engine={prefs?.ttsEngine ?? 'kokoro'} />
-            <p style={hint}>
-              Kokoro requires Voicemode (port 8880). Browser TTS works without setup but quality varies by OS.
-              ElevenLabs requires an API key below.
-            </p>
-          </div>
-        </div>
+        {(() => {
+          const fullAgentOn = (prefs?.fullAgentEngine ?? 'off') !== 'off';
+          const sttTtsDisabled = savingPrefs || fullAgentOn;
+          const sttTtsDimStyle: React.CSSProperties = fullAgentOn
+            ? { opacity: 0.5, pointerEvents: 'none' as const }
+            : {};
+          return (
+            <>
+              <div style={{ marginBottom: 16 }}>
+                <label style={lbl}>Full-agent engine</label>
+                <select
+                  value={prefs?.fullAgentEngine ?? 'off'}
+                  onChange={(e) => savePrefsPatch({ fullAgentEngine: e.target.value as 'off' | 'openai-realtime' })}
+                  style={sel}
+                  disabled={savingPrefs}
+                >
+                  <option value="off">Off — use the STT + TTS pair below</option>
+                  <option value="openai-realtime">OpenAI Realtime (gpt-4o-realtime) — full conversational agent</option>
+                </select>
+                <p style={hint}>
+                  Full-agent mode replaces the STT + TTS pair with a single conversational session.
+                  Costs ~$0.06/min audio in + $0.24/min audio out (~$18/hr). Requires an OpenAI API key.
+                  Intents (open / scan / approve / across workspaces) become tool calls — the model handles them naturally.
+                </p>
+              </div>
 
-        <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-          <label style={lbl}>Full-agent engine (overrides STT + TTS)</label>
-          <select
-            value={prefs?.fullAgentEngine ?? 'off'}
-            onChange={(e) => savePrefsPatch({ fullAgentEngine: e.target.value as 'off' | 'openai-realtime' })}
-            style={sel}
-            disabled={savingPrefs}
-          >
-            <option value="off">Off — use the STT + TTS pair above</option>
-            <option value="openai-realtime">OpenAI Realtime (gpt-4o-realtime) — full conversational agent</option>
-          </select>
-          <p style={hint}>
-            Full-agent mode replaces the STT + TTS pipeline with a single conversational session.
-            Costs ~$0.06/min audio in + $0.24/min audio out (~$18/hr). Requires an OpenAI API key.
-            Intents (open / scan / approve / across workspaces) become tool calls — the model handles them naturally.
-          </p>
-        </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, ...sttTtsDimStyle }}
+                   aria-disabled={fullAgentOn}>
+                <div>
+                  <label style={lbl}>STT (speech → text){fullAgentOn ? ' — overridden by full-agent' : ''}</label>
+                  <select
+                    value={prefs?.sttEngine ?? 'voicemode'}
+                    onChange={(e) => setSttEngine(e.target.value as SttEngineKind)}
+                    style={sel}
+                    disabled={sttTtsDisabled}
+                  >
+                    <option value="voicemode">Voicemode (Whisper, local)</option>
+                    <option value="webspeech">Web Speech (browser cloud)</option>
+                    <option value="deepgram">Deepgram Nova-2 (cloud, BYO key)</option>
+                    <option value="off">Off</option>
+                  </select>
+                  <p style={hint}>
+                    Voicemode runs locally — audio never leaves your machine.
+                    Start it via <code>mcp__voicemode__service whisper start</code>.
+                  </p>
+                </div>
+                <div>
+                  <label style={lbl}>TTS (text → speech){fullAgentOn ? ' — overridden by full-agent' : ''}</label>
+                  <select
+                    value={prefs?.ttsEngine ?? 'kokoro'}
+                    onChange={(e) => setTtsEngine(e.target.value as TtsEngineKind)}
+                    style={sel}
+                    disabled={sttTtsDisabled}
+                  >
+                    <option value="kokoro">Kokoro (Voicemode, local) — recommended</option>
+                    <option value="browser">Browser (OS voices)</option>
+                    <option value="elevenlabs">ElevenLabs Turbo v2.5 (cloud, BYO key)</option>
+                    <option value="openai">OpenAI tts-1 (cloud, BYO key)</option>
+                    <option value="cartesia">Cartesia Sonic-2 (cloud, BYO key)</option>
+                  </select>
+                  <EnginePreview engine={prefs?.ttsEngine ?? 'kokoro'} />
+                  <p style={hint}>
+                    Kokoro requires Voicemode (port 8880). Browser TTS works without setup but quality varies by OS.
+                    ElevenLabs requires an API key below.
+                  </p>
+                </div>
+              </div>
+            </>
+          );
+        })()}
 
         <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <button type="button" onClick={onTestVoice} style={btnPrimary}>Test voice</button>
