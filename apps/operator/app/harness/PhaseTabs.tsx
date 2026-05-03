@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Tooltip } from './Tooltip';
 import { Play, Square, Activity, AlertTriangle, ExternalLink, ChevronDown } from 'lucide-react';
@@ -74,12 +74,26 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
     return () => { alive = false; clearInterval(t); };
   }, [slug]);
 
-  // Close menu on outside click
+  // Close menu on outside click. Listens on mousedown so the menu's own
+  // button-click handlers still fire (click runs after mousedown).
+  // The "ignore the open click" guard prevents the same event that opened
+  // the menu from immediately closing it.
+  const menuContainerRef = useRef<HTMLDivElement | null>(null);
+  const justOpenedRef = useRef(false);
   useEffect(() => {
-    if (!openMenu) return;
-    const onDoc = () => setOpenMenu(null);
-    document.addEventListener('click', onDoc);
-    return () => document.removeEventListener('click', onDoc);
+    if (!openMenu) { justOpenedRef.current = false; return; }
+    justOpenedRef.current = true;
+    const tick = setTimeout(() => { justOpenedRef.current = false; }, 0);
+    const onDown = (e: MouseEvent) => {
+      if (justOpenedRef.current) return;
+      if (menuContainerRef.current?.contains(e.target as Node)) return;
+      setOpenMenu(null);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      clearTimeout(tick);
+      document.removeEventListener('mousedown', onDown);
+    };
   }, [openMenu]);
 
   useEffect(() => {
@@ -222,6 +236,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                     </button>
                     {openMenu === p && (
                       <div
+                        ref={menuContainerRef}
                         onClick={(e) => e.stopPropagation()}
                         style={{
                           position: 'absolute', top: '100%', left: 0, marginTop: 4,
