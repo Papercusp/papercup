@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import { restore, readManifestFromTarball } from '@papercusp/export-state';
 import { findSnapshot, readRegistry } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
+import { recordUserAction } from '@/lib/user-actions';
 import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
 import { resolveAliases, type ConfigSchema } from '@/lib/snapshot-shape';
 
@@ -33,7 +34,21 @@ interface Body {
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = (await req.json().catch(() => ({}))) as Body;
-  return withSnapshotLock(id, () => instantiate(id, body));
+  return withSnapshotLock(id, async () => {
+    const snap = await findSnapshot(id);
+    const slug = snap?.harnessSlug ?? '_unknown';
+    return recordUserAction(slug, 'snapshot.fork', async () => {
+      const res = await instantiate(id, body);
+      const cloned = res.clone();
+      const json = await cloned.json().catch(() => ({})) as { ok?: boolean; slug?: string };
+      return {
+        summary: json.ok
+          ? `Forked ${id} → ${json.slug ?? '?'}`
+          : `Fork rejected for ${id}`,
+        result: res,
+      };
+    });
+  });
 }
 
 async function instantiate(id: string, body: Body): Promise<NextResponse> {
@@ -122,12 +137,20 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
       applied = await applyForkOverrides(finalSlug, body.pluginConfigOverrides, snapshotPreservedConfigs);
     }
 
+    // Compute the post-fork provisioning queue: walk the new harness's
+    // enabled-plugins.json, look up each plugin's manifest, return the
+    // ones that declare provision.setup. The fork-completion UI walks
+    // this queue (consent → run → next) before redirecting to the
+    // harness dashboard.
+    const pendingProvisioning = await listPendingProvisioning(finalSlug);
+
     return NextResponse.json({
       ok: true,
       newSlug: finalSlug,
       projectDir: join(PROJECTS_DIR(), finalSlug),
       warnings: [...(result.warnings ?? []), ...(applied?.warnings ?? [])],
       ambiguousSlugMatches: result.ambiguousSlugMatches,
+      pendingProvisioning,
       ...(applied ? { appliedOverrides: applied.applied } : {}),
     });
   } catch (e: unknown) {
@@ -236,4 +259,69 @@ async function copyDir(src: string, dest: string): Promise<void> {
     if (e.isDirectory()) await copyDir(s, d);
     else if (e.isFile()) await fs.copyFile(s, d);
   }
+}
+
+interface PendingProvisioningEntry {
+  plugin: string;
+  publisher?: string;
+  version?: string;
+  displayName?: string;
+  description?: string;
+  scriptPath: string;
+  allowedHosts?: string[];
+  cloudProvider?: { id: string; region?: string; regions?: string[] };
+  timeoutSec?: number;
+}
+
+interface PluginManifest {
+  name?: string;
+  version?: string;
+  publisher?: string;
+  provision?: {
+    setup?: {
+      path: string;
+      displayName?: string;
+      description?: string;
+      timeoutSec?: number;
+    };
+    cloudProvider?: { id: string; region?: string; regions?: string[] };
+    allowedHosts?: string[];
+  };
+}
+
+interface EnabledPluginsFile {
+  enabled?: Record<string, { version?: string }>;
+}
+
+async function listPendingProvisioning(harnessSlug: string): Promise<PendingProvisioningEntry[]> {
+  const enabledPath = join(HARNESSES_DIR(), harnessSlug, 'enabled-plugins.json');
+  let enabled: EnabledPluginsFile | null = null;
+  try {
+    enabled = JSON.parse(await fs.readFile(enabledPath, 'utf8')) as EnabledPluginsFile;
+  } catch { return []; }
+  const slugs = Object.keys(enabled?.enabled ?? {});
+  if (slugs.length === 0) return [];
+
+  const out: PendingProvisioningEntry[] = [];
+  for (const pluginSlug of slugs) {
+    const manifestPath = join(GLOBAL_PLUGINS_DIR(), pluginSlug, 'papercusp.json');
+    let manifest: PluginManifest | null = null;
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8')) as PluginManifest;
+    } catch { continue; }
+    const setup = manifest.provision?.setup;
+    if (!setup?.path) continue;
+    out.push({
+      plugin: pluginSlug,
+      publisher: manifest.publisher,
+      version: manifest.version,
+      displayName: setup.displayName ?? `${pluginSlug} setup`,
+      description: setup.description,
+      scriptPath: setup.path,
+      allowedHosts: manifest.provision?.allowedHosts,
+      cloudProvider: manifest.provision?.cloudProvider,
+      timeoutSec: setup.timeoutSec,
+    });
+  }
+  return out;
 }

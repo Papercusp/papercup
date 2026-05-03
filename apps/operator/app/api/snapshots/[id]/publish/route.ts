@@ -16,6 +16,7 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
+import { recordUserAction } from '@/lib/user-actions';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
@@ -40,7 +41,31 @@ interface Body {
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = (await req.json().catch(() => ({}))) as Body;
-  return withSnapshotLock(id, () => publish(id, body));
+  return withSnapshotLock(id, async () => {
+    // Look up the source harness slug for the action log; if the snapshot
+    // doesn't exist locally, fall through to publish() which returns 404.
+    const snap = await findSnapshot(id);
+    const slug = snap?.harnessSlug ?? '_unknown';
+    try {
+      return await recordUserAction(slug, 'snapshot.publish', async () => {
+        const res = await publish(id, body);
+        const cloned = res.clone();
+        const json = await cloned.json().catch(() => ({})) as { ok?: boolean; slug?: string; version?: string; browseUrl?: string };
+        return {
+          summary: json.ok
+            ? `Published ${json.slug ?? id}@${json.version ?? '?'}`
+            : `Publish rejected for ${id}`,
+          detailUrl: json.browseUrl,
+          result: res,
+        };
+      });
+    } catch {
+      // recordUserAction stamps error_text and rethrows; the original
+      // publish() may have already returned an error NextResponse — fall
+      // back to a generic failure response.
+      return NextResponse.json({ ok: false, error: 'publish failed' }, { status: 500 });
+    }
+  });
 }
 
 async function publish(id: string, body: Body): Promise<NextResponse> {

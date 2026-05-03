@@ -7,6 +7,7 @@ import { redactPluginConfig } from '@/lib/snapshot-config-redact';
 import { extractShape, type ConfigSchema } from '@/lib/snapshot-shape';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { recordUserAction } from '@/lib/user-actions';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
@@ -48,25 +49,31 @@ export async function POST(req: Request) {
   const plugins = await readEnabledPlugins(slug, { includeSecretsConfirmed: !!body.includeSecretsConfirmed });
 
   try {
-    const result = await capture({
-      harnessSlug: slug,
-      projectDir: project.path,
-      template,
-      substrateVersion: '0.0.1',
-      schemaVersionDb: 0,
-      minSubstrateVersion: '0.0.1',
-      name: body.name ?? `${slug} snapshot @ ${new Date().toISOString().slice(0, 16)}`,
-      description: body.description,
-      license: body.license ?? 'MIT',
-      plugins,
-      capture: {
-        includeGit: !!body.includeGit,
-        includeAgentTranscripts: !!body.includeAgentTranscripts,
-        includeOperatorNotes: !!body.includeOperatorNotes,
-      },
-      drainMode: 'interactive',
-      acceptVerifiedSecrets: !!body.acceptVerifiedSecrets,
-      acceptSoftCap: !!body.acceptSoftCap,
+    const result = await recordUserAction(slug, 'snapshot.create', async () => {
+      const r = await capture({
+        harnessSlug: slug,
+        projectDir: project.path,
+        template,
+        substrateVersion: '0.0.1',
+        schemaVersionDb: 0,
+        minSubstrateVersion: '0.0.1',
+        name: body.name ?? `${slug} snapshot @ ${new Date().toISOString().slice(0, 16)}`,
+        description: body.description,
+        license: body.license ?? 'MIT',
+        plugins,
+        capture: {
+          includeGit: !!body.includeGit,
+          includeAgentTranscripts: !!body.includeAgentTranscripts,
+          includeOperatorNotes: !!body.includeOperatorNotes,
+        },
+        drainMode: 'interactive',
+        acceptVerifiedSecrets: !!body.acceptVerifiedSecrets,
+        acceptSoftCap: !!body.acceptSoftCap,
+      });
+      return {
+        summary: `Snapshot ${r.manifest.id} created (${r.manifest.files.length} files, ${(r.bytesCompressed / 1024).toFixed(1)} KB)`,
+        result: r,
+      };
     });
     return NextResponse.json({
       ok: true,
