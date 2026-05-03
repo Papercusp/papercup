@@ -458,6 +458,11 @@ function ensurePapercuspMcpRegistered(): void {
     if (reserved.reaper) clearTimeout(reserved.reaper);
     if (handle && !handle.killed) {
       try { handle.pty.resize(cols, rows); } catch { /* ignore */ }
+      // Refill the pool so the next click is also instant. Safe to do
+      // because PiPanel now dedupes spawn POSTs across StrictMode mounts
+      // (see inFlightSpawns map there) — without that dedup, this
+      // refill would leak ptys at 2× per click.
+      reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
       return c.json({
         id: handle.id,
         command: handle.command,
@@ -481,6 +486,10 @@ function ensurePapercuspMcpRegistered(): void {
       env: cfg.env,
     });
     attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
+    // Cold-spawn path also kicks a refill — covers the case where the
+    // prewarm hasn't been fired yet (e.g. dock effect ordering, or a
+    // cap-hit on the original prewarm).
+    reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
     return c.json({
       id: handle.id,
       command: handle.command,
