@@ -631,37 +631,46 @@ export default function VoiceSettingsPage() {
         <span style={{ marginLeft: 12, fontSize: 13 }}>{config.rate.toFixed(1)}x</span>
       </section>
 
+      {/* Per-role voices — wrapped in <details> so the heavy table
+          (21 roles × N voices = many <option>s) only renders when expanded.
+          Closed by default to keep page-load light. */}
       <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Per-role voices</h2>
-        <p style={hint}>
-          Voices are keyed on role (worker/validator/orchestrator/system:operator/etc.) — all instances
-          of a role share one voice. Per-slug voices are deferred to v1.5.
-        </p>
-        <RoleVoicesTable
-          voices={voices}
-          roleVoices={config.roleVoices}
-          onAssign={onAssign}
-          onTest={onTest}
-        />
+        <details>
+          <summary style={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}>
+            Per-role voices
+          </summary>
+          <p style={hint}>
+            Voices are keyed on role (worker/validator/orchestrator/system:operator/etc.) — all instances
+            of a role share one voice. Per-slug voices are deferred to v1.5.
+          </p>
+          <RoleVoicesTable
+            voices={voices}
+            roleVoices={config.roleVoices}
+            onAssign={onAssign}
+            onTest={onTest}
+          />
 
-
-        {/* Per-slug voice overrides — show any role@slug entries that exist */}
-        <PerSlugVoiceTable
-          config={config}
-          voices={voices}
-          onAssign={(key, voice) => {
-            assignVoiceToRole(key, voice);
-            setConfig(getVoiceConfig());
-          }}
-          onTest={(key) => speak(`This is the voice for ${key.replace(':', ' ').replace('@', ' at ')}.`, key, 'polite', { force: true })}
-        />
+          {/* Per-slug voice overrides — show any role@slug entries that exist */}
+          <PerSlugVoiceTable
+            config={config}
+            voices={voices}
+            onAssign={(key, voice) => {
+              assignVoiceToRole(key, voice);
+              setConfig(getVoiceConfig());
+            }}
+            onTest={(key) => speak(`This is the voice for ${key.replace(':', ' ').replace('@', ' at ')}.`, key, 'polite', { force: true })}
+          />
+        </details>
       </section>
 
-      {/* ── PRECEDENCE MATRIX (debugging aid) ────────────────────── */}
+      {/* ── PRECEDENCE MATRIX (debugging aid, lazy via <details>) ──── */}
       <section style={{ marginBottom: 32 }}>
-        <h2 style={{ fontSize: 16, marginBottom: 8 }}>Why isn't anything speaking? (precedence matrix)</h2>
-        <p style={hint}>If voice isn't working, check this top-to-bottom.</p>
-        <pre style={{ fontSize: 11, padding: 12, background: 'var(--bg-1)', borderRadius: 4, overflow: 'auto' }}>{`
+        <details>
+          <summary style={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}>
+            Why isn't anything speaking? (precedence matrix)
+          </summary>
+          <p style={hint}>If voice isn't working, check this top-to-bottom.</p>
+          <pre style={{ fontSize: 11, padding: 12, background: 'var(--bg-1)', borderRadius: 4, overflow: 'auto' }}>{`
               global  per-feature  paused   tutorial   leader-tab  result
               voice   toggle                complete   election
               ──────  ───────────  ───────  ─────────  ──────────  ──────────
@@ -672,6 +681,7 @@ paused        on      on           paused   any        leader      only "pause" 
 pre-tutorial  on      on           any      false      leader      silent
 all clear     on      on           running  true       leader      speaks
 `}</pre>
+        </details>
       </section>
 
       {/* ── WEB SPEECH LEAK WARNING MODAL ────────────────────────── */}
