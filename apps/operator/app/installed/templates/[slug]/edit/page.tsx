@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { z } from 'zod';
+import { useFormWith, FormField as RhfFormField, SubmitButton } from '@/lib/forms';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
@@ -457,6 +459,18 @@ export default function EditTemplatePage() {
   );
 }
 
+const AddFileSchema = z.object({
+  path: z.string()
+    .min(1, 'Required')
+    .refine((p) => !p.includes('..'), { message: 'Cannot contain ".."' })
+    .refine((p) => !p.startsWith('/'), { message: 'Must be relative (no leading /)' }),
+  label: z.string().optional().default(''),
+  language: z.enum(['markdown', 'json', 'yaml', 'text']),
+  description: z.string().optional().default(''),
+  sensitivity: z.enum(['normal', 'warn', 'secret']),
+});
+type AddFileFormData = z.infer<typeof AddFileSchema>;
+
 function AddFileDialog({
   existingPaths,
   onCancel,
@@ -468,29 +482,37 @@ function AddFileDialog({
   onSubmit: (spec: ConfigFileSpec, initialContent: string) => void;
   busy: boolean;
 }) {
-  const [path, setPath] = useState('');
-  const [label, setLabel] = useState('');
-  const [language, setLanguage] = useState<'markdown' | 'json' | 'yaml' | 'text'>('markdown');
-  const [description, setDescription] = useState('');
-  const [sensitivity, setSensitivity] = useState<'normal' | 'warn' | 'secret'>('normal');
+  const { register, submit, watch, setValue, errors, isSubmitting } = useFormWith(AddFileSchema, {
+    defaultValues: { path: '', label: '', language: 'markdown', description: '', sensitivity: 'normal' },
+  });
+  const path = watch('path');
+  const label = watch('label');
+  const language = watch('language');
 
-  // Auto-pick a sensible language from the extension as the user types
-  // so the form stays useful without requiring them to flip the dropdown.
+  // Auto-pick a sensible language from the extension as the user types.
   useEffect(() => {
     if (!path) return;
-    if (path.endsWith('.json')) setLanguage('json');
-    else if (path.endsWith('.yaml') || path.endsWith('.yml')) setLanguage('yaml');
-    else if (path.endsWith('.md')) setLanguage('markdown');
-  }, [path]);
+    if (path.endsWith('.json')) setValue('language', 'json');
+    else if (path.endsWith('.yaml') || path.endsWith('.yml')) setValue('language', 'yaml');
+    else if (path.endsWith('.md')) setValue('language', 'markdown');
+  }, [path, setValue]);
 
-  const conflict = existingPaths.includes(path.trim());
-  const invalid = !path.trim() || path.includes('..') || path.startsWith('/');
+  const conflict = existingPaths.includes((path ?? '').trim());
 
-  const initialContent = language === 'json'
-    ? '{\n}\n'
-    : language === 'markdown'
-      ? `# ${label || path}\n`
-      : '';
+  const handleSubmit = (data: AddFileFormData) => {
+    const initialContent = data.language === 'json'
+      ? '{\n}\n'
+      : data.language === 'markdown'
+        ? `# ${(data.label ?? '').trim() || data.path}\n`
+        : '';
+    onSubmit({
+      path: data.path.trim(),
+      label: (data.label ?? '').trim() || undefined,
+      language: data.language,
+      description: (data.description ?? '').trim() || undefined,
+      sensitivity: data.sensitivity === 'normal' ? undefined : data.sensitivity,
+    }, initialContent);
+  };
 
   return (
     <div
@@ -506,56 +528,69 @@ function AddFileDialog({
           Creates the file under the template root and registers it in
           <code> configFiles[]</code> so it shows in the operator&apos;s Config tab post-install.
         </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <Field label="path" value={path} onChange={setPath} mono />
-          <Field label="label (optional)" value={label} onChange={setLabel} />
+        <form
+          onSubmit={submit(handleSubmit)}
+          style={{ display: 'flex', flexDirection: 'column', gap: 10 }}
+        >
+          <RhfFormField label="path" required error={errors.path}>
+            <input
+              type="text"
+              {...register('path')}
+              style={{
+                width: '100%', padding: '4px 8px',
+                background: 'var(--bg-elevated, rgba(255,255,255,0.04))', color: 'var(--fg)',
+                border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
+                fontFamily: "'SF Mono', monospace",
+              }}
+            />
+          </RhfFormField>
+          <RhfFormField label="label (optional)" error={errors.label}>
+            <input type="text" {...register('label')} style={inputStyleSmall} />
+          </RhfFormField>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <label style={{ display: 'block' }}>
-              <span style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>language</span>
-              <select value={language} onChange={(e) => setLanguage(e.target.value as typeof language)} style={{ ...inputStyle(0), width: '100%', padding: '4px 6px' }}>
+            <RhfFormField label="language" error={errors.language}>
+              <select {...register('language')} style={{ ...inputStyleSmall, padding: '4px 6px' }}>
                 <option value="markdown">markdown</option>
                 <option value="json">json</option>
                 <option value="yaml">yaml</option>
                 <option value="text">text</option>
               </select>
-            </label>
-            <label style={{ display: 'block' }}>
-              <span style={{ display: 'block', fontSize: 11, color: 'var(--fg-dim)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>sensitivity</span>
-              <select value={sensitivity} onChange={(e) => setSensitivity(e.target.value as typeof sensitivity)} style={{ ...inputStyle(0), width: '100%', padding: '4px 6px' }}>
+            </RhfFormField>
+            <RhfFormField label="sensitivity" error={errors.sensitivity}>
+              <select {...register('sensitivity')} style={{ ...inputStyleSmall, padding: '4px 6px' }}>
                 <option value="normal">normal</option>
                 <option value="warn">warn</option>
                 <option value="secret">secret</option>
               </select>
-            </label>
+            </RhfFormField>
           </div>
-          <Field label="description" value={description} onChange={setDescription} multiline />
-        </div>
-        {conflict ? (
-          <div style={{ marginTop: 8, fontSize: 12, color: '#fbbf24' }}>
-            &ldquo;{path}&rdquo; is already declared.
+          <RhfFormField label="description" error={errors.description}>
+            <textarea {...register('description')} style={{
+              ...inputStyleSmall, padding: '6px 8px', minHeight: 60, resize: 'vertical',
+            }} />
+          </RhfFormField>
+          {conflict ? (
+            <div style={{ marginTop: 8, fontSize: 12, color: '#fbbf24' }}>
+              &ldquo;{path}&rdquo; is already declared.
+            </div>
+          ) : null}
+          <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button type="button" onClick={onCancel} disabled={busy || isSubmitting} style={btnStyle('muted')}>Cancel</button>
+            <SubmitButton pending={busy || isSubmitting} aria-disabled={conflict ? 'true' : 'false'}>
+              <Plus size={12} /> Add file
+            </SubmitButton>
           </div>
-        ) : null}
-        <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button onClick={onCancel} disabled={busy} style={btnStyle('muted')}>Cancel</button>
-          <button
-            onClick={() => onSubmit({
-              path: path.trim(),
-              label: label.trim() || undefined,
-              language,
-              description: description.trim() || undefined,
-              sensitivity: sensitivity === 'normal' ? undefined : sensitivity,
-            }, initialContent)}
-            disabled={busy || invalid || conflict}
-            style={btnStyle((!busy && !invalid && !conflict) ? 'primary' : 'muted')}
-          >
-            {busy ? <Loader2 size={12} className="pc-spin" /> : <Plus size={12} />}
-            Add file
-          </button>
-        </div>
+        </form>
       </div>
     </div>
   );
 }
+
+const inputStyleSmall: React.CSSProperties = {
+  width: '100%', padding: '4px 8px',
+  background: 'var(--bg-elevated, rgba(255,255,255,0.04))', color: 'var(--fg)',
+  border: '1px solid var(--border)', borderRadius: 3, fontSize: 12,
+};
 
 function tabBtnStyle(active: boolean): React.CSSProperties {
   return {
