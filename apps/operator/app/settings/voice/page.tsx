@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
 import {
@@ -501,44 +501,13 @@ export default function VoiceSettingsPage() {
           Voices are keyed on role (worker/validator/orchestrator/system:operator/etc.) — all instances
           of a role share one voice. Per-slug voices are deferred to v1.5.
         </p>
-        {voices.length === 0 ? (
-          <p style={{ fontSize: 13, opacity: 0.7 }}>No voices loaded yet.</p>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-                <th style={{ padding: '8px 4px', fontSize: 12 }}>Role</th>
-                <th style={{ padding: '8px 4px', fontSize: 12 }}>Voice</th>
-                <th style={{ padding: '8px 4px', fontSize: 12 }}>Test</th>
-              </tr>
-            </thead>
-            <tbody>
-              {KNOWN_ROLES.map((role) => {
-                const current = config.roleVoices[role] ?? '(auto)';
-                return (
-                  <tr key={role} style={{ borderBottom: '1px solid var(--border)' }}>
-                    <td style={{ padding: '8px 4px', fontSize: 13, fontFamily: 'monospace' }}>{role}</td>
-                    <td style={{ padding: '8px 4px' }}>
-                      <select
-                        value={current === '(auto)' ? '' : current}
-                        onChange={(e) => onAssign(role, e.target.value)}
-                        style={{ padding: '4px 8px', fontSize: 13, minWidth: 240 }}
-                      >
-                        <option value="">(auto)</option>
-                        {voices.map((v) => (
-                          <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td style={{ padding: '8px 4px' }}>
-                      <button type="button" onClick={() => onTest(role)} style={{ padding: '4px 8px', fontSize: 12 }}>Test</button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+        <RoleVoicesTable
+          voices={voices}
+          roleVoices={config.roleVoices}
+          onAssign={onAssign}
+          onTest={onTest}
+        />
+
 
         {/* Per-slug voice overrides — show any role@slug entries that exist */}
         <PerSlugVoiceTable
@@ -622,6 +591,10 @@ function PerSlugVoiceTable({
   const overrides = Object.keys(config.roleVoices).filter((k) => k.includes('@'));
   const [addRole, setAddRole] = useState('worker');
   const [addSlug, setAddSlug] = useState('');
+  const sharedVoiceOptions = React.useMemo(
+    () => voices.map((v) => <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>),
+    [voices],
+  );
   return (
     <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
       <h3 style={{ fontSize: 14, marginBottom: 6 }}>Per-slug voice overrides</h3>
@@ -650,7 +623,7 @@ function PerSlugVoiceTable({
                     style={{ padding: '4px 8px', fontSize: 12, minWidth: 220 }}
                   >
                     <option value="">(removed)</option>
-                    {voices.map((v) => <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>)}
+                    {sharedVoiceOptions}
                   </select>
                 </td>
                 <td style={{ padding: '6px 4px', display: 'flex', gap: 4 }}>
@@ -699,6 +672,92 @@ function PerSlugVoiceTable({
     </div>
   );
 }
+
+interface RoleVoicesTableProps {
+  voices: Array<{ name: string; lang: string }>;
+  roleVoices: Record<string, string>;
+  onAssign: (role: string, voiceName: string) => void;
+  onTest: (role: string) => void;
+}
+
+const RoleVoicesTable = React.memo(function RoleVoicesTable({
+  voices,
+  roleVoices,
+  onAssign,
+  onTest,
+}: RoleVoicesTableProps) {
+  // Render the option list ONCE per voices change. The previous code
+  // iterated voices for each of 21 roles → on Chrome with ~100 system
+  // voices that's 2100 React elements per page render. Now we render
+  // 100 once and reuse via a `<datalist>`-style shared options block.
+  const options = React.useMemo(() => {
+    if (!voices.length) return null;
+    return voices.map((v) => (
+      <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
+    ));
+  }, [voices]);
+
+  if (voices.length === 0) {
+    return <p style={{ fontSize: 13, opacity: 0.7 }}>No voices loaded yet.</p>;
+  }
+
+  return (
+    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+      <thead>
+        <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+          <th style={{ padding: '8px 4px', fontSize: 12 }}>Role</th>
+          <th style={{ padding: '8px 4px', fontSize: 12 }}>Voice</th>
+          <th style={{ padding: '8px 4px', fontSize: 12 }}>Test</th>
+        </tr>
+      </thead>
+      <tbody>
+        {KNOWN_ROLES.map((role) => (
+          <RoleVoiceRow
+            key={role}
+            role={role}
+            current={roleVoices[role] ?? ''}
+            options={options}
+            onAssign={onAssign}
+            onTest={onTest}
+          />
+        ))}
+      </tbody>
+    </table>
+  );
+});
+
+const RoleVoiceRow = React.memo(function RoleVoiceRow({
+  role,
+  current,
+  options,
+  onAssign,
+  onTest,
+}: {
+  role: string;
+  current: string;
+  options: React.ReactNode;
+  onAssign: (role: string, voiceName: string) => void;
+  onTest: (role: string) => void;
+}) {
+  return (
+    <tr style={{ borderBottom: '1px solid var(--border)' }}>
+      <td style={{ padding: '8px 4px', fontSize: 13, fontFamily: 'monospace' }}>{role}</td>
+      <td style={{ padding: '8px 4px' }}>
+        <select
+          value={current}
+          onChange={(e) => onAssign(role, e.target.value)}
+          style={{ padding: '4px 8px', fontSize: 13, minWidth: 240 }}
+        >
+          <option value="">(auto)</option>
+          {options}
+        </select>
+      </td>
+      <td style={{ padding: '8px 4px' }}>
+        <button type="button" onClick={() => onTest(role)} style={{ padding: '4px 8px', fontSize: 12 }}>Test</button>
+      </td>
+    </tr>
+  );
+});
 
 function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
   type Stage =
