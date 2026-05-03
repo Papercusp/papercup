@@ -20,17 +20,22 @@ export async function resolvePluginCliSlug(input: string): Promise<string> {
   if (existsSync(join(GLOBAL_PLUGINS_DIR(), input))) return input;
   if (!existsSync(GLOBAL_PLUGINS_DIR())) return input;
   const entries = await fs.readdir(GLOBAL_PLUGINS_DIR(), { withFileTypes: true }).catch(() => []);
-  for (const e of entries) {
-    if (!e.isDirectory() && !e.isSymbolicLink()) continue;
+
+  // Parallel resolution. Each entry contributes 0–1 candidate match; the
+  // first match wins (preserves prior 'first-match-by-iteration-order'
+  // semantic but avoids the serial Next.js-dev fs cost). See
+  // /docs/performance #A1.
+  const candidates = await Promise.all(entries.map(async (e): Promise<string | null> => {
+    if (!e.isDirectory() && !e.isSymbolicLink()) return null;
     const dir = join(GLOBAL_PLUGINS_DIR(), e.name);
     try {
       const m = JSON.parse(await fs.readFile(join(dir, 'papercusp.json'), 'utf8'));
       if (m?.name === input) return e.name;
     } catch { /* no manifest at this level */ }
-    if (!e.name.startsWith('@')) continue;
+    if (!e.name.startsWith('@')) return null;
     const inner = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const sub of inner) {
-      if (!sub.isDirectory() && !sub.isSymbolicLink()) continue;
+    const subResults = await Promise.all(inner.map(async (sub): Promise<string | null> => {
+      if (!sub.isDirectory() && !sub.isSymbolicLink()) return null;
       const subPath = `${e.name}/${sub.name}`;
       try {
         const m = JSON.parse(await fs.readFile(join(dir, sub.name, 'papercusp.json'), 'utf8'));
@@ -38,7 +43,10 @@ export async function resolvePluginCliSlug(input: string): Promise<string> {
         if (input === subPath) return subPath;
         if (input === sub.name) return subPath;
       } catch { /* skip */ }
-    }
-  }
-  return input;
+      return null;
+    }));
+    return subResults.find((s) => s != null) ?? null;
+  }));
+  const found = candidates.find((c) => c != null);
+  return found ?? input;
 }

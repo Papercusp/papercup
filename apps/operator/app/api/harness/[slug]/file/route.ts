@@ -27,16 +27,24 @@ async function loadAllowlist(projectPath: string): Promise<string[]> {
     try { manifest = JSON.parse(await fs.readFile(projectManifest, 'utf8')); } catch { /* ignore */ }
   }
   // Fallback: scan installed templates for a configFiles list.
+  // Parallel-then-find-first preserves the previous "first match wins"
+  // semantic but uses Promise.all for the reads (the harnesses dir has
+  // ~70 entries; serial × ~150ms-per-readFile in Next.js dev = 10s).
+  // See /docs/performance #A1.
   if (!manifest || !Array.isArray(manifest.configFiles)) {
     const harnessesDir = papercuspPath('harnesses');
     const dirs = await fs.readdir(harnessesDir, { withFileTypes: true }).catch(() => []);
-    for (const d of dirs) {
-      if (!d.isDirectory()) continue;
+    const dirManifests = await Promise.all(dirs.map(async (d) => {
+      if (!d.isDirectory()) return null;
       try {
         const m = JSON.parse(await fs.readFile(join(harnessesDir, d.name, 'papercusp.json'), 'utf8'));
-        if (m && Array.isArray(m.configFiles)) { manifest = m; break; }
-      } catch { /* skip */ }
-    }
+        return m && Array.isArray(m.configFiles) ? m : null;
+      } catch {
+        return null;
+      }
+    }));
+    const found = dirManifests.find((m) => m != null);
+    if (found) manifest = found;
   }
   // Last-resort fallback for legacy harnesses without any manifest:
   // the SpecEditor's pre-template list. Templates that ship configFiles

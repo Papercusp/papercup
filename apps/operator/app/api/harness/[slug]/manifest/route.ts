@@ -40,16 +40,21 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   if (!manifest) {
     // Walk every installed harness template's manifest and match against
     // this project's harness_kind or registered template — best-effort.
+    // Parallel-then-find-first; see /docs/performance #A1 (~70-entry dir).
     const harnessesDir = papercuspPath('harnesses');
     if (existsSync(harnessesDir)) {
       const dirs = await fs.readdir(harnessesDir, { withFileTypes: true }).catch(() => []);
-      for (const d of dirs) {
-        if (!d.isDirectory()) continue;
+      const candidates = await Promise.all(dirs.map(async (d) => {
+        if (!d.isDirectory()) return null;
         try {
           const m = JSON.parse(await fs.readFile(join(harnessesDir, d.name, 'papercusp.json'), 'utf8'));
-          if (m && Array.isArray(m.configFiles)) { manifest = m; break; }
-        } catch { /* skip */ }
-      }
+          return m && Array.isArray(m.configFiles) ? m : null;
+        } catch {
+          return null;
+        }
+      }));
+      const found = candidates.find((m) => m != null);
+      if (found) manifest = found;
     }
   }
 

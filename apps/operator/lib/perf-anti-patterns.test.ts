@@ -173,16 +173,11 @@ const BASELINE: Array<{ rule: string; fileSuffix: string }> = [
   // should migrate to LazyDetails when convenient).
   { rule: 'A6', fileSuffix: '_components/OperatorPanel.tsx' },
 
-  // A1: serial fs.readFile in for loops. The four entries below have
-  // early-return semantics ('first match wins') and need a small refactor
-  // (race + first-truthy) before parallelizing — kept in baseline until
-  // someone tackles them. The other four sites were fixed in commit
-  // dc7e4a6 (cross-harness, branch-actions, snapshots/instantiate,
-  // templates).
-  { rule: 'A1', fileSuffix: 'app/api/harness/[slug]/file/route.ts' },
-  { rule: 'A1', fileSuffix: 'app/api/harness/[slug]/manifest/route.ts' },
+  // A1: serial fs.readFile in for loops. Only one site remains:
+  // plugin-runtime's small-N candidates list, where parallelization
+  // adds wasted reads without measurable benefit (3-5 paths). See
+  // /docs/performance #A1 and the route file's header comment.
   { rule: 'A1', fileSuffix: 'app/api/plugin-runtime/[slug]/[plugin]/[...path]/route.ts' },
-  { rule: 'A1', fileSuffix: 'lib/plugin-slug.ts' },
 
   // A7: 500ms safety poll for SpeechSynthesis.voiceschanged event. Bounded
   // to 5 attempts (5 × 500ms = 2.5s) and stops as soon as voices arrive
