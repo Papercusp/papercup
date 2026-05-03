@@ -12,6 +12,7 @@ import {
 } from '@/app/_components/voice/voice-mode';
 import type { VoicePrefs, SttEngineKind, TtsEngineKind } from '@/lib/voice-prefs';
 import type { TtsSpendState } from '@/lib/tts-spend';
+import type { SttSpendState } from '@/lib/stt-spend';
 
 const KNOWN_ROLES = [
   'system:operator',
@@ -53,6 +54,7 @@ export default function VoiceSettingsPage() {
   const [testing, setTesting] = useState(false);
   const [elevenVoices, setElevenVoices] = useState<ElevenLabsVoice[]>([]);
   const [spend, setSpend] = useState<TtsSpendState | null>(null);
+  const [sttSpend, setSttSpend] = useState<SttSpendState | null>(null);
   const [showLeakWarning, setShowLeakWarning] = useState(false);
 
   useEffect(() => {
@@ -69,10 +71,12 @@ export default function VoiceSettingsPage() {
       fetch('/api/agent-mcp/operator-voice-prefs').then((r) => r.ok ? r.json() : null),
       fetch('/api/agent-mcp/operator-credentials').then((r) => r.ok ? r.json() : null),
       fetch('/api/agent-mcp/operator-tts-spend').then((r) => r.ok ? r.json() : null),
-    ]).then(([p, c, s]) => {
+      fetch('/api/agent-mcp/operator-stt-spend').then((r) => r.ok ? r.json() : null),
+    ]).then(([p, c, s, ss]) => {
       if (p) setPrefs(p as VoicePrefs);
       if (c?.elevenlabs) setCredentials(c.elevenlabs);
       if (s) setSpend(s as TtsSpendState);
+      if (ss) setSttSpend(ss as SttSpendState);
     });
 
     return () => clearInterval(t);
@@ -369,6 +373,22 @@ export default function VoiceSettingsPage() {
                 onCommit={(n) => updateSpendKnob({ hardCapUsd: n })}
                 hint="Auto-fall-back to Kokoro/browser when crossed."
               />
+            </div>
+          )}
+
+          {sttSpend && (
+            <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #e5e7eb' }}>
+              <h3 style={{ fontSize: 14, marginBottom: 8 }}>STT spend (Deepgram)</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+                <Stat label="Today" value={`${(sttSpend.spend[0]?.estimatedUsd ?? 0).toFixed(2)}`} />
+                <Stat label="Minutes" value={(sttSpend.spend[0]?.minutes ?? 0).toFixed(1)} />
+                <Stat label="Soft cap" value={`${sttSpend.softCapUsd}`} />
+                <Stat label="Hard cap" value={`${sttSpend.hardCapUsd}`} />
+              </div>
+              <p style={hint}>
+                Voicemode (local Whisper) and Web Speech are free; only Deepgram accrues spend.
+                Recorded server-side from the capture loop's heartbeat.
+              </p>
             </div>
           )}
         </section>

@@ -87,6 +87,28 @@ export async function startDeepgramStream(opts: DeepgramStreamOptions): Promise<
 
   let stopped = false;
   let recorder: MediaRecorder | null = null;
+  let lastFlushedAt = Date.now();
+
+  // Heartbeat-flush minutes used every 60s so a long-running mic still
+  // reports incrementally + we hit cap-trip before the user stops.
+  const heartbeat = window.setInterval(() => {
+    if (stopped) return;
+    const now = Date.now();
+    const minutes = (now - lastFlushedAt) / 60000;
+    if (minutes < 0.05) return;
+    lastFlushedAt = now;
+    void postSttSpend(minutes);
+  }, 60000);
+
+  async function postSttSpend(minutes: number): Promise<void> {
+    try {
+      await fetch('/api/agent-mcp/operator-stt-spend', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ minutes }),
+      });
+    } catch { /* network-flaky; we lose this slice but the next heartbeat catches up */ }
+  }
 
   ws.addEventListener('open', () => {
     if (stopped) return;
@@ -122,6 +144,9 @@ export async function startDeepgramStream(opts: DeepgramStreamOptions): Promise<
   return {
     stop(): void {
       stopped = true;
+      try { window.clearInterval(heartbeat); } catch {}
+      const tailMinutes = (Date.now() - lastFlushedAt) / 60000;
+      if (tailMinutes >= 0.01) void postSttSpend(tailMinutes);
       try { recorder?.stop(); } catch {}
       try { ws.close(1000, 'client-stop'); } catch {}
       try { stream.getTracks().forEach((t) => t.stop()); } catch {}
