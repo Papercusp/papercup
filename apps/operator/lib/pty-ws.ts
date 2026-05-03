@@ -37,22 +37,28 @@ import {
 
 // VS Code's terminal flow-control numbers, from
 // vscode/src/vs/platform/terminal/common/terminal.ts FlowControlConstants.
-// HighWatermarkChars = 100_000; LowWatermarkChars proportional. Much
-// tighter than wetty's 2 MB — keyboard stays responsive within a few
-// chars of bulk output.
-const HIGH_WATERMARK_BYTES = 100_000;
-const LOW_WATERMARK_BYTES = 10_000;
+// Flow-control watermarks for pty -> ws. Aligned with wetty's defaults
+// (2 MB high / 512 KB low) — large enough that interactive pty echo
+// never trips pause/resume. Earlier 100 KB cap was tight enough that a
+// few omp prompt-redraws filled it, paused the pty mid-burst, and
+// produced perceptible jitter on chatty sessions. Client must ack at
+// least every (HIGH - LOW) bytes for flow control to work.
+const HIGH_WATERMARK_BYTES = 2_097_152;
+const LOW_WATERMARK_BYTES = 524_288;
 
-// No server-side coalesce of pty → ws output. Every node-pty chunk is
-// forwarded immediately, so the keystroke-echo path adds zero server
-// latency. Earlier versions added a 5-16 ms coalesce window to chunk
-// chatty bursts (omp prompt redraw emits ~20 sub-chunks per keystroke),
-// but that just delayed the first byte of every echo by up to one
-// frame — exactly the "occasional lag on localhost" symptom. xterm
-// already batches term.write() to rAF on the client, so multiple ws
-// frames arriving within a 16 ms window collapse into one render
-// anyway. Server-side coalesce was solving a problem xterm already
-// solves, at the cost of latency we couldn't afford.
+// 2 ms tinybuffer-style coalesce of pty -> ws output. Lifted from
+// wetty (mature Node + node-pty browser-terminal); below human
+// perception (one frame is 16 ms) and short enough that keystroke
+// echo never feels delayed, but long enough to batch the ~7 sub-
+// chunks an omp prompt redraw emits per keystroke into one ws
+// message. Without it, the 7 chunks become 7 separate term.write
+// calls inside one rAF window — measurably stalls that frame on
+// the client (51 ms vs 17 ms baseline rAF gap, observed in browser).
+//
+// Native impls (ttyd, gotty) skip this because their TCP layer
+// coalesces with kernel-side TCP_CORK; Node + ws + a chatty shell
+// like omp benefit from an explicit JS-side batcher.
+const COALESCE_INTERVAL_MS = 2;
 
 interface OriginCheckOptions {
   /** Hosts (without scheme) that may originate WS upgrades. Production. */
@@ -203,12 +209,28 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   // resume is documented as the right primitive for this.
   let unacked = 0;
   let paused = false;
+  // Tinybuffer state: any pending chunks that arrived inside the
+  // current 2 ms window. The first chunk after an idle period sets
+  // the timer; subsequent chunks within the window get appended.
+  let pendingChunks: Buffer[] = [];
+  let pendingBytes = 0;
+  let flushTimer: NodeJS.Timeout | null = null;
+
+  const flush = () => {
+    flushTimer = null;
+    if (pendingChunks.length === 0) return;
+    const merged = pendingChunks.length === 1 ? pendingChunks[0] : Buffer.concat(pendingChunks);
+    pendingChunks = [];
+    pendingBytes = 0;
+    if (ws.readyState !== ws.OPEN) return;
+    try { ws.send(merged, { binary: true }); } catch { /* socket likely closing */ }
+  };
 
   const onData = (chunk: Buffer) => {
     unacked += chunk.length;
-    if (ws.readyState === ws.OPEN) {
-      try { ws.send(chunk, { binary: true }); } catch { /* socket likely closing */ }
-    }
+    pendingChunks.push(chunk);
+    pendingBytes += chunk.length;
+    if (!flushTimer) flushTimer = setTimeout(flush, COALESCE_INTERVAL_MS);
     if (!paused && unacked > HIGH_WATERMARK_BYTES) {
       paused = true;
       try { handle.pty.pause(); } catch { /* node-pty may not support pause on all platforms */ }
@@ -216,6 +238,8 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   };
 
   const onExit = (code: number) => {
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    flush();
     try { ws.send(JSON.stringify({ type: 'exit', code }), { binary: false }); } catch { /* */ }
     try { ws.close(1000, 'pty exited'); } catch { /* */ }
   };
@@ -278,6 +302,7 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   ws.on('close', () => {
     handle.onData.delete(onData);
     handle.onExit.delete(onExit);
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     if (paused) {
       // Don't leave the pty paused if the only consumer disconnected.
       try { handle.pty.resume(); } catch { /* */ }
