@@ -14,7 +14,7 @@
  * the chrome boots with.
  */
 
-import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from './voice-credentials';
+import { readElevenLabsKey, readOpenAiKey, readCartesiaKey, readDeepgramKey } from './voice-credentials';
 import type { SttEngineKind, TtsEngineKind, VoicePrefs } from './voice-prefs';
 
 export type Priority = 'polite' | 'assertive';
@@ -55,6 +55,7 @@ export interface EnginesContext {
   elevenlabsApiKey: string | null;
   openaiApiKey: string | null;
   cartesiaApiKey: string | null;
+  deepgramApiKey: string | null;
 }
 
 export interface DetectResult {
@@ -108,7 +109,8 @@ export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
   const elevenlabsApiKey = readElevenLabsKey();
   const openaiApiKey = readOpenAiKey();
   const cartesiaApiKey = readCartesiaKey();
-  const ctx: EnginesContext = { whisperBase, kokoroBase, elevenlabsApiKey, openaiApiKey, cartesiaApiKey };
+  const deepgramApiKey = readDeepgramKey();
+  const ctx: EnginesContext = { whisperBase, kokoroBase, elevenlabsApiKey, openaiApiKey, cartesiaApiKey, deepgramApiKey };
 
   // STT selection (per v4 §1.1)
   let stt: SttEngine | null = null;
@@ -121,6 +123,10 @@ export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
     const { createWebSpeechStt } = await import('./voice-engines/webspeech');
     stt = createWebSpeechStt();
     sttKind = 'webspeech';
+  } else if (prefs.sttEngine === 'deepgram' && deepgramApiKey && prefs.webSpeechLeakAcked) {
+    const { createDeepgramStt } = await import('./voice-engines/deepgram');
+    stt = createDeepgramStt({ apiKey: deepgramApiKey });
+    sttKind = 'deepgram';
   }
 
   // TTS selection (per v4 §1.2)

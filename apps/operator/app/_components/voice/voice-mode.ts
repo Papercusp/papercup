@@ -254,6 +254,23 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
     const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
     if (!prefsR.ok) { startWakeWordListening(); return; }
     const prefs = await prefsR.json();
+    if (prefs.sttEngine === 'deepgram') {
+      // Deepgram cloud streaming (BYO key + leak-ack gate, same as Web Speech).
+      if (!prefs.webSpeechLeakAcked) { startWakeWordListening(); return; }
+      const bootR = await fetch('/api/agent-mcp/operator-stt-bootstrap?engine=deepgram').catch(() => null);
+      if (!bootR?.ok) { startWakeWordListening(); return; }
+      const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
+      if (!apiKey) { startWakeWordListening(); return; }
+      const { startDeepgramStream } = await import('../../../lib/voice-engines/deepgram');
+      whisperCapture = await startDeepgramStream({
+        apiKey,
+        onFinal: (text) => {
+          setState({ lastTranscript: text });
+          onUtteranceFinal(text);
+        },
+      });
+      return;
+    }
     if (prefs.sttEngine !== 'voicemode') {
       startWakeWordListening();
       return;

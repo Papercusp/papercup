@@ -134,5 +134,26 @@ describe('detectEngines', () => {
     expect(r.ctx.elevenlabsApiKey).toBe('e');
     expect(r.ctx.openaiApiKey).toBe('o');
     expect(r.ctx.cartesiaApiKey).toBe('c');
+    expect(r.ctx.deepgramApiKey).toBe('d');
+  });
+
+  it('does NOT select deepgram without leak acknowledgement', async () => {
+    mockFetch.mockImplementation(okHealth);
+    vi.mocked(creds.readDeepgramKey).mockReturnValue('dg-key');
+    const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: false });
+    expect(r.sttKind).toBe('off');
+  });
+
+  it('does NOT select deepgram without configured key', async () => {
+    mockFetch.mockImplementation(okHealth);
+    const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: true });
+    expect(r.sttKind).toBe('off');
+  });
+
+  it('selects deepgram when key + leak ack present', async () => {
+    mockFetch.mockImplementation(okHealth);
+    vi.mocked(creds.readDeepgramKey).mockReturnValue('dg-key');
+    const r = await detectEngines({ ...basePrefs, sttEngine: 'deepgram', webSpeechLeakAcked: true });
+    expect(r.sttKind).toBe('deepgram');
   });
 });

@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { papercuspPath } from './papercusp-root';
 
-export type SttEngineKind = 'voicemode' | 'webspeech' | 'off';
+export type SttEngineKind = 'voicemode' | 'webspeech' | 'deepgram' | 'off';
 export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai' | 'cartesia';
 
 export interface VoicePrefs {

@@ -125,7 +125,7 @@ export default function VoiceSettingsPage() {
   }, []);
 
   const setSttEngine = useCallback((kind: SttEngineKind) => {
-    if (kind === 'webspeech' && !prefs?.webSpeechLeakAcked) {
+    if ((kind === 'webspeech' || kind === 'deepgram') && !prefs?.webSpeechLeakAcked) {
       setShowLeakWarning(true);
       return;
     }
@@ -244,6 +244,7 @@ export default function VoiceSettingsPage() {
             >
               <option value="voicemode">Voicemode (Whisper, local)</option>
               <option value="webspeech">Web Speech (browser cloud)</option>
+              <option value="deepgram">Deepgram Nova-2 (cloud, BYO key)</option>
               <option value="off">Off</option>
             </select>
             <p style={hint}>

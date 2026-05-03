@@ -28,7 +28,7 @@ export interface DeepgramConfig {
 
 export function createDeepgramStt(cfg: DeepgramConfig): SttEngine {
   return {
-    kind: 'webspeech', // SttEngineKind doesn't yet have 'deepgram'; v1.5 widens
+    kind: 'deepgram',
     async health(): Promise<boolean> {
       try {
         const r = await fetch(HEALTH_URL, {
