@@ -505,21 +505,24 @@ export default function VoiceSettingsPage() {
             </div>
           )}
 
-          {sttSpend && (
-            <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #e5e7eb' }}>
-              <h3 style={{ fontSize: 14, marginBottom: 8 }}>STT spend (Deepgram)</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
-                <Stat label="Today" value={`${(sttSpend.spend[0]?.estimatedUsd ?? 0).toFixed(2)}`} />
-                <Stat label="Minutes" value={(sttSpend.spend[0]?.minutes ?? 0).toFixed(1)} />
-                <Stat label="Soft cap" value={`${sttSpend.softCapUsd}`} />
-                <Stat label="Hard cap" value={`${sttSpend.hardCapUsd}`} />
-              </div>
-              <p style={hint}>
-                Voicemode (local Whisper) and Web Speech are free; only Deepgram accrues spend.
-                Recorded server-side from the capture loop's heartbeat.
-              </p>
-            </div>
-          )}
+        </section>
+      )}
+
+      {/* STT spend lives outside the ElevenLabs sub-section — Deepgram is the cloud STT,
+          unrelated to TTS engine choice. Only renders once the API has loaded the state. */}
+      {sttSpend && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 16, marginBottom: 8 }}>STT spend (Deepgram)</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+            <Stat label="Today" value={`${(sttSpend.spend[0]?.estimatedUsd ?? 0).toFixed(2)}`} />
+            <Stat label="Minutes" value={(sttSpend.spend[0]?.minutes ?? 0).toFixed(1)} />
+            <Stat label="Soft cap" value={`${sttSpend.softCapUsd}`} />
+            <Stat label="Hard cap" value={`${sttSpend.hardCapUsd}`} />
+          </div>
+          <p style={hint}>
+            Voicemode (local Whisper) and Web Speech are free; only Deepgram accrues spend.
+            Recorded server-side from the capture loop's heartbeat.
+          </p>
         </section>
       )}
 
@@ -1140,7 +1143,7 @@ function NumField({ label, value, step, onCommit, hint }: { label: string; value
         }}
         style={{ padding: '6px 10px', width: '100%', fontSize: 13 }}
       />
-      {hint && <p style={{ ...hint as any, marginTop: 4, fontSize: 11, color: 'var(--fg-mute)' }}>{hint}</p>}
+      {hint && <p style={{ marginTop: 4, fontSize: 11, color: 'var(--fg-mute)' }}>{hint}</p>}
     </div>
   );
 }

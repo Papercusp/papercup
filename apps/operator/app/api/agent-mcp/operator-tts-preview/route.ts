@@ -81,7 +81,9 @@ export async function POST(req: NextRequest) {
   if (engine === 'kokoro') {
     // Kokoro runs locally. Server proxies so the client can preview without
     // discovering the local port itself.
-    const r = await fetch('http://localhost:8880/v1/audio/speech', {
+    // Use 127.0.0.1 explicitly: localhost resolves to ::1 first on this
+    // Linux setup, but Kokoro/Voicemode binds IPv4. ::1 attempt → ECONNREFUSED.
+    const r = await fetch('http://127.0.0.1:8880/v1/audio/speech', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'kokoro', input: text, voice: body.voiceId ?? 'af_bella', response_format: 'wav' }),
