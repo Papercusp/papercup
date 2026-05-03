@@ -301,13 +301,59 @@ export function setVoiceMode(mode: VoiceMode): void {
     return;
   }
   setState({ mode, status: 'idle' });
-  // STT engine selection (v4 §1.1): if Voicemode whisper is selected
-  // and reachable, use the local capture loop; otherwise fall back to
-  // Web Speech for both PTT and always-on.
-  void maybeStartWhisperCapture(mode).catch(() => {
-    // On failure, fall through to Web Speech path.
-    if (mode === 'always-on') startWakeWordListening();
+  // STT capture is leader-gated: only one tab in the BroadcastChannel
+  // group opens the mic + transcribes. Followers stay silent so we don't
+  // run N parallel getUserMedia + N transcription pipelines + dispatch
+  // the same intent N times. We re-evaluate when leader changes (see
+  // syncSttToLeader below).
+  syncSttToLeader();
+}
+
+function maybeIsLeader(): boolean {
+  try {
+    const { getVoiceLeaderState } = require('./voice-leader') as typeof import('./voice-leader');
+    const ls = getVoiceLeaderState();
+    // If leader-election hasn't booted yet, treat us as leader so a
+    // single-tab user isn't blocked from STT during initial load.
+    if (!ls.available) return true;
+    return ls.isLeader;
+  } catch {
+    return true;
+  }
+}
+
+function syncSttToLeader(): void {
+  if (state.mode === 'off') {
+    stopWhisperCaptureIfRunning();
+    return;
+  }
+  if (!maybeIsLeader()) {
+    // We're a follower. Stop any active capture; the leader handles STT.
+    stopWhisperCaptureIfRunning();
+    if (recognition) {
+      try { recognition.stop(); } catch { /* ignore */ }
+      recognition = null;
+    }
+    return;
+  }
+  void maybeStartWhisperCapture(state.mode).catch(() => {
+    if (state.mode === 'always-on') startWakeWordListening();
   });
+}
+
+// React to leader-election changes: when we're newly elected leader,
+// start STT; when we lose leadership, stop. Subscribed once at module
+// load.
+if (typeof window !== 'undefined') {
+  void (async () => {
+    try {
+      const { subscribeVoiceLeader, bootVoiceLeader } = await import('./voice-leader');
+      await bootVoiceLeader();
+      subscribeVoiceLeader(() => {
+        if (state.mode !== 'off') syncSttToLeader();
+      });
+    } catch { /* leader module missing — STT runs ungated, prior behavior */ }
+  })();
 }
 
 let whisperCapture: { stop(): void } | null = null;
