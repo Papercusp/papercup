@@ -388,9 +388,33 @@ for (const p of projects) {
 
 Module imports are cached but the `.then()` chain in a loop still adds promise-microtask overhead per iteration. Hoist all dynamic imports to module scope or hoist them above the loop.
 
-### A10. Don't add `pointer-events: auto` inline-style on a Radix dialog without testing close-state
+### A10. Radix Dialog focus-trap leaks `pointer-events` — guard with `!important`
 
-Radix's `Dialog.Content` adds `style="pointer-events: auto"` when open and **does not always remove it on close**. If your CSS sets `pointer-events: none` on `[data-state="closed"]` without `!important`, the leftover inline style wins and the closed dialog intercepts every click on the page. Reproducible via verdict-cli (`<html> intercepts pointer events`). Audit found this on `.h-cmd[data-state="closed"]`. Always use `!important` on `pointer-events: none` for Radix overlays.
+Radix's Dialog/cmdk/Modal mount sets two inline styles for focus-scope
+locking, and **doesn't always remove them on close**:
+
+1. **`pointer-events: auto` on `Dialog.Content`** — meant to override an
+   ancestor's `pointer-events: none`. Leftover after close → the closed
+   dialog intercepts every click on the page (`<html> intercepts pointer
+   events` is the verdict-cli signature).
+2. **`pointer-events: none` on `<body>`** — meant to focus-trap users
+   inside the dialog. Leftover after close → the *entire page* is
+   unclickable until full reload; appears to the user as "totally frozen."
+
+Both have the same fix: `!important` on the override CSS so the
+leftover inline style cannot win. We've hit each one separately:
+
+```css
+/* Override the dialog-element leak (first incident: .h-cmd) */
+.h-cmd[data-state="closed"] { pointer-events: none !important; }
+
+/* Override the body-element leak (second incident, second freeze) */
+html, body { pointer-events: auto !important; }
+```
+
+Dialogs still trap focus correctly via `aria-modal` / `aria-hidden` on
+their portal overlays, so neither override weakens modal UX — they just
+unfreeze the page when the lock leaks.
 
 ### A11. Don't fan out from N `useEffect` hooks fetching the same endpoint
 
