@@ -16,6 +16,7 @@ interface CredentialsFile {
   elevenlabs?: { apiKey: string };
   openai?: { apiKey: string };
   cartesia?: { apiKey: string };
+  deepgram?: { apiKey: string };
   // Other plugin/service keys may live here too — we only read/write
   // our own slice.
   [k: string]: unknown;
@@ -93,6 +94,21 @@ export function writeCartesiaKey(apiKey: string | null): void {
     delete all.cartesia;
   } else {
     all.cartesia = { ...all.cartesia, apiKey };
+  }
+  writeAll(all);
+}
+
+export function readDeepgramKey(): string | null {
+  const all = readAll();
+  return all.deepgram?.apiKey ?? null;
+}
+
+export function writeDeepgramKey(apiKey: string | null): void {
+  const all = readAll();
+  if (apiKey === null) {
+    delete all.deepgram;
+  } else {
+    all.deepgram = { ...all.deepgram, apiKey };
   }
   writeAll(all);
 }

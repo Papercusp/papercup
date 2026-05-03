@@ -208,6 +208,68 @@ function prefsCmd(args: string[]) {
   process.exit(1);
 }
 
+async function voiceCmd(args: string[]) {
+  const sub = args[0];
+  if (sub === 'status' || !sub) {
+    const [prefs, creds, spend] = await Promise.all([
+      api<Record<string, unknown>>('GET', '/api/agent-mcp/operator-voice-prefs'),
+      api<Record<string, { configured: boolean }>>('GET', '/api/agent-mcp/operator-credentials'),
+      api<{ perKCharRate: number; spend: { date: string; estimatedUsd: number }[] }>('GET', '/api/agent-mcp/operator-tts-spend'),
+    ]);
+    console.log('STT engine:        ', prefs.sttEngine);
+    console.log('TTS engine:        ', prefs.ttsEngine);
+    console.log('Configured keys:   ', Object.entries(creds).filter(([, v]) => v.configured).map(([k]) => k).join(', ') || '(none)');
+    const today = spend.spend?.[0];
+    if (today) console.log('Today TTS spend:   ', `${today.estimatedUsd.toFixed(2)} @ ${prefs.perKCharRate ?? spend.perKCharRate}/1k`);
+    return;
+  }
+  if (sub === 'test') {
+    const provider = args[1];
+    if (!provider) { console.error('usage: operator voice test <elevenlabs|openai|cartesia|deepgram>'); process.exit(1); }
+    const r = await api<{ ok: boolean; error?: string; tier?: string; voicesAvailable?: number; projects?: number }>('POST', `/api/agent-mcp/operator-${provider}-test`);
+    console.log(JSON.stringify(r, null, 2));
+    return;
+  }
+  if (sub === 'set-engine') {
+    const engineKind = args[1] as 'stt' | 'tts';
+    const value = args[2];
+    if (!engineKind || !value || !['stt', 'tts'].includes(engineKind)) {
+      console.error('usage: operator voice set-engine <stt|tts> <engine-name>');
+      process.exit(1);
+    }
+    const field = engineKind === 'stt' ? 'sttEngine' : 'ttsEngine';
+    await api('PUT', '/api/agent-mcp/operator-voice-prefs', { [field]: value });
+    console.log(`set ${field} = ${value}`);
+    return;
+  }
+  if (sub === 'set-key') {
+    const provider = args[1];
+    const key = args[2];
+    if (!provider || !key) { console.error('usage: operator voice set-key <elevenlabs|openai|cartesia|deepgram> <api-key>'); process.exit(1); }
+    const fieldMap: Record<string, string> = {
+      elevenlabs: 'elevenlabsApiKey', openai: 'openaiApiKey',
+      cartesia: 'cartesiaApiKey', deepgram: 'deepgramApiKey',
+    };
+    const field = fieldMap[provider];
+    if (!field) { console.error('unknown provider'); process.exit(1); }
+    await api('PUT', '/api/agent-mcp/operator-credentials', { [field]: key });
+    console.log(`set ${provider} key (${key.length} chars)`);
+    return;
+  }
+  if (sub === 'spend') {
+    const spend = await api<{ perKCharRate: number; softCapUsd: number; hardCapUsd: number; spend: { date: string; chars: number; estimatedUsd: number }[] }>('GET', '/api/agent-mcp/operator-tts-spend');
+    console.log(`Rate: ${spend.perKCharRate}/1k chars`);
+    console.log(`Soft cap: ${spend.softCapUsd}/day  ·  Hard cap: ${spend.hardCapUsd}/day`);
+    console.log('Last 7 days:');
+    for (const d of spend.spend) {
+      console.log(`  ${d.date}  ${d.estimatedUsd.toFixed(3).padStart(7)}  (${d.chars} chars)`);
+    }
+    return;
+  }
+  console.error('usage: operator voice <status|test|set-engine|set-key|spend>');
+  process.exit(1);
+}
+
 async function main() {
   const [, , cmd, ...rest] = process.argv;
   switch (cmd) {
@@ -222,8 +284,9 @@ async function main() {
     case 'candidates':     return await candidatesCmd();
     case 'approve':        return await approveCmd(rest);
     case 'config':         return configCmd();
+    case 'voice':          return await voiceCmd(rest);
     default:
-      console.error('usage: operator <status|stats|scan|pause|resume|budget|prefs|dismiss-clear|candidates|approve|config>');
+      console.error('usage: operator <status|stats|scan|pause|resume|budget|prefs|dismiss-clear|candidates|approve|config|voice>');
       process.exit(1);
   }
 }
