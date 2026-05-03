@@ -41,12 +41,35 @@ const nextConfig = {
   },
   typescript: { ignoreBuildErrors: true },
   images: { unoptimized: true },
-  // Turbopack persistent cache deadlocks under load AND silently retains
-  // stale transpiled artifacts from workspace deps (e.g. libs/zero-harness)
-  // even after a dev restart — disable it so source edits actually rebuild.
-  experimental: {
-    turbopackFileSystemCacheForDev: false,
-  },
+  // Next 16 dev mode rejects HMR WebSocket upgrades whose Origin doesn't
+  // match the dev-server's configured host. Without this, the browser
+  // (which connects to 127.0.0.1) is blocked when the page was loaded
+  // from `localhost`, and vice-versa — every HMR ping fails with
+  // "Blocked cross-origin request to Next.js dev resource". The HMR
+  // client retries indefinitely, which prevents Suspense boundaries
+  // from settling (next/dynamic stuck on its loading fallback) and
+  // makes RSC payload fetches flap. The fix is the documented
+  // allowedDevOrigins list — both forms of localhost + the LAN IP the
+  // operator binds on. Production isn't affected (this is dev-only).
+  // Wildcard list — dev only. The operator binds 0.0.0.0 so users
+  // commonly access via any of localhost / 127.0.0.1 / their LAN IP.
+  // Without each host being in this allow-list, Next 16 rejects the
+  // HMR WebSocket as cross-origin and the page silently never resolves
+  // its Suspense boundaries (chunks load but client tree never settles).
+  // The wildcard covers IPv4 LAN ranges + .local mDNS without having
+  // to hand-list every interface.
+  allowedDevOrigins: [
+    'localhost', '127.0.0.1', '0.0.0.0', '[::1]',
+    '*.local',
+    '192.168.*.*', '10.*.*.*', '172.16.*.*', '172.17.*.*', '172.18.*.*',
+    '172.19.*.*', '172.20.*.*', '172.21.*.*', '172.22.*.*', '172.23.*.*',
+    '172.24.*.*', '172.25.*.*', '172.26.*.*', '172.27.*.*', '172.28.*.*',
+    '172.29.*.*', '172.30.*.*', '172.31.*.*',
+  ],
+  // Note: `experimental.turbopackFileSystemCacheForDev: false` was set here
+  // to dodge a Next.js 15 Turbopack bug, but Next 16 doesn't recognize the
+  // option (logs `⨯ turbopackFileSystemCacheForDev` at boot). The Next 15
+  // bug doesn't apply in 16; removed.
   transpilePackages: [
     '@papercusp/harness',
     '@papercusp/orchestrator',

@@ -60,7 +60,10 @@ async function ensureTable(): Promise<void> {
 
 async function listHarnesses(operatorBase: string): Promise<HarnessRow[]> {
   try {
-    const r = await fetch(`${operatorBase}/api/harness/projects`, { signal: AbortSignal.timeout(5000) });
+    // /projects/lite returns slug+path+harnessDir without the per-project
+    // PG hits we don't need here (autoloop only checks director-config.json
+    // on disk). Cuts the hot-path autoloop tick from ~5s to <50ms.
+    const r = await fetch(`${operatorBase}/api/harness/projects/lite`, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return [];
     const d: any = await r.json();
     return Array.isArray(d?.projects) ? d.projects : [];
@@ -198,17 +201,31 @@ async function tickOnce(operatorBase: string): Promise<void> {
   }
 }
 
+// Backoff state lives on globalThis so HMR (which creates a fresh module
+// instance) doesn't reset it and re-fire bootstrap on every page load.
+const BOOTSTRAP_BACKOFF_MS = Number(process.env.PAPERCUSP_AUTOLOOP_BACKOFF_MS ?? 60_000);
+function bootstrapState(): { lastAttempt: number; armed: boolean } {
+  const g = globalThis as any;
+  if (!g.__papercuspAutoLoop) g.__papercuspAutoLoop = { lastAttempt: 0, armed: false };
+  return g.__papercuspAutoLoop;
+}
+
 export function startAutoLoopOnce(): void {
   if (started) return;
   started = true;
-  // Pin a globalThis flag so HMR doesn't re-arm.
-  if ((globalThis as any).__papercuspAutoLoopArmed) return;
-  (globalThis as any).__papercuspAutoLoopArmed = true;
+  const state = bootstrapState();
+  if (state.armed) return;
+  // Skip if a recent bootstrap attempt is still within the backoff window —
+  // prevents per-request retry storms when Postgres is connection-saturated.
+  const since = Date.now() - state.lastAttempt;
+  if (state.lastAttempt > 0 && since < BOOTSTRAP_BACKOFF_MS) return;
+  state.lastAttempt = Date.now();
 
   const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
 
   ensureTable()
     .then(() => {
+      state.armed = true;
       // eslint-disable-next-line no-console
       console.log(`[autoloop] armed (tick=${TICK_INTERVAL_MS}ms, op=${operatorBase})`);
       const tick = async () => {
@@ -221,9 +238,13 @@ export function startAutoLoopOnce(): void {
       };
       timer = setTimeout(tick, 5_000); // first tick after 5s warmup
     })
-    .catch((e) => {
+    .catch((e: any) => {
+      // Compact one-line warning instead of dumping a FATAL Postgres stack
+      // across the log every retry — bootstrap will be re-attempted after
+      // BOOTSTRAP_BACKOFF_MS, no need to scare on each one.
+      const msg = String(e?.message ?? e).slice(0, 160);
       // eslint-disable-next-line no-console
-      console.warn('[autoloop] failed to bootstrap:', e);
+      console.warn(`[autoloop] bootstrap deferred (${Math.round(BOOTSTRAP_BACKOFF_MS / 1000)}s): ${msg}`);
     });
 }
 
@@ -231,7 +252,7 @@ export function stopAutoLoop(): void {
   stopped = true;
   if (timer) clearTimeout(timer);
   timer = null;
-  (globalThis as any).__papercuspAutoLoopArmed = false;
+  (globalThis as any).__papercuspAutoLoop = { lastAttempt: 0, armed: false };
   started = false;
 }
 

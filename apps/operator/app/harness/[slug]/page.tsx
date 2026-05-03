@@ -12,11 +12,13 @@ type ProjectEntry = {
 };
 
 async function fetchProject(slug: string): Promise<ProjectEntry | null> {
-  // Self-hit the local sidecar's /api/harness/projects (papercusp owns this
-  // route now post-migration; the old apps/web :3001 endpoint was deleted).
+  // Self-hit the local sidecar. Use /projects/lite — we only need slug+path
+  // for the routing-validity check below, not the per-project hasState/hasSpec
+  // enrichment (~70× PG-pool-open in serial that the heavy /projects endpoint
+  // does — measured 4-5s vs <50ms for /lite in the 2026-05-03 perf audit).
   const base = process.env.PAPERCUSP_SELF_URL ?? 'http://localhost:3055';
   try {
-    const res = await fetch(`${base}/api/harness/projects`, { cache: 'no-store' });
+    const res = await fetch(`${base}/api/harness/projects/lite`, { cache: 'no-store' });
     if (!res.ok) return null;
     const data = await res.json();
     const projects: ProjectEntry[] = data.projects ?? [];

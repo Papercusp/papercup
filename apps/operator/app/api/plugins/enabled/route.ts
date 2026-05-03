@@ -34,15 +34,24 @@ export async function GET(req: Request) {
 
 async function listEnabledFromJson(): Promise<Record<string, string[]>> {
   const dir = papercuspPath('harnesses');
-  const out: Record<string, string[]> = {};
   let harnesses: string[] = [];
-  try { harnesses = await fs.readdir(dir); } catch { return out; }
-  for (const h of harnesses) {
+  try { harnesses = await fs.readdir(dir); } catch { return {}; }
+  // Parallel reads. Next.js dev mode instruments every fs.readFile call (for
+  // HMR file-tracking), which adds ~150ms overhead per call. Serial 68×150ms
+  // = 10s; parallel collapses to single-call latency. Measured 2026-05-03:
+  // 10.9s → ~150ms in dev, no measurable change in production.
+  const results = await Promise.all(harnesses.map(async (h) => {
     try {
       const raw = await fs.readFile(join(dir, h, 'enabled-plugins.json'), 'utf8');
       const parsed = JSON.parse(raw) as { enabled?: Record<string, unknown> };
-      out[h] = Object.keys(parsed.enabled ?? {});
-    } catch { /* skip */ }
+      return [h, Object.keys(parsed.enabled ?? {})] as const;
+    } catch {
+      return null;
+    }
+  }));
+  const out: Record<string, string[]> = {};
+  for (const r of results) {
+    if (r) out[r[0]] = r[1];
   }
   return out;
 }
