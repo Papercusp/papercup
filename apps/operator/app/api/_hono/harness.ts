@@ -14,6 +14,7 @@ import { streamSSE } from 'hono/streaming';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
 import { getKnownHooks } from '@/lib/known-hooks';
+import { recordUserAction } from '@/lib/user-actions';
 import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
@@ -2794,10 +2795,17 @@ harness.post('/:slug/product-review', async (c) => {
  * SPEC.md and wants the queue updated without waiting for the next
  * orchestrator tick.
  */
-harness.post('/:slug/replan', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.post('/:slug/replan', async (c) => {
+  const slug = c.req.param('slug');
+  const project = resolveProject(slug);
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  invokeScoperBackground(project, 'replan');
+  // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
+  // and the OperatorActionLog component. The action represents the *kickoff*;
+  // the replan's completion is observable via /scoper-result/<invocationId>.
+  await recordUserAction(slug, 'replan', async () => {
+    invokeScoperBackground(project, 'replan');
+    return { summary: 'Replan kicked off', result: undefined };
+  });
   return c.json({ ok: true });
 });
 
