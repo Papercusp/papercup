@@ -51,7 +51,10 @@ export interface RunMeta {
   status: 'running' | 'completed' | 'failed';
 }
 
-const NAME_RE = /^[A-Za-z0-9._-]+$/;
+// Names can't start with a dot and can't contain two consecutive dots —
+// blocks `..evil`, `.hidden`, and traversal attempts even though the
+// readdir-based discovery already constrains the lookup to one directory.
+const NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
 
 export function actionsDir(stagingPath: string, branch: Branch): string {
   return join(stagingPath, '.harness', 'actions', branch);
