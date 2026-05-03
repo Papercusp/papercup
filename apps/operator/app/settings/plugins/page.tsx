@@ -14,7 +14,9 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
+import { makeAjvResolver } from '@/lib/forms';
 import { ProvisionPanel } from './ProvisionPanel';
 
 interface InstalledPlugin {
@@ -66,9 +68,7 @@ export default function PluginSettingsPage() {
   const [activeHarness, setActiveHarness] = useState<string>('');
   const [activePlugin, setActivePlugin] = useState<string>('');
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
-  const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
 
   // Initial load: plugins + harnesses + enabled state.
   useEffect(() => {
@@ -104,40 +104,61 @@ export default function PluginSettingsPage() {
     }
   }, [harnesses, enabledByHarness, activeHarness]);
 
-  // When harness or plugin changes, fetch its current config.
-  useEffect(() => {
-    if (!activeHarness || !activePlugin) return;
-    setConfig(null);
-    setDraft({});
-    const dirSlug = pluginDirSlug(activePlugin);
-    fetch(`/api/plugins/config?harness=${encodeURIComponent(activeHarness)}&plugin=${encodeURIComponent(dirSlug)}`)
-      .then((r) => r.json())
-      .then((d) => {
-        setConfig(d?.config ?? {});
-        setDraft({}); // empty form means "no change"; defaults still display
-      })
-      .catch((e) => toast.error(`config load failed: ${e?.message ?? e}`));
-  }, [activeHarness, activePlugin]);
-
   const activePluginManifest = configurable.find((p) => p.name === activePlugin);
   const enabledHere = !!activeHarness && (enabledByHarness[activeHarness] ?? []).some(
     (s) => s === activePlugin || s === pluginDirSlug(activePlugin),
   );
 
-  async function onSave(e: React.FormEvent) {
-    e.preventDefault();
+  // Plugin schemas may omit `type` at the root; Ajv requires it.
+  const ajvSchema = useMemo(() => ({
+    type: 'object',
+    additionalProperties: true,
+    ...(activePluginManifest?.configSchema ?? {}),
+  }), [activePluginManifest?.configSchema]);
+  const resolver = useMemo(() => makeAjvResolver(ajvSchema), [ajvSchema]);
+
+  const {
+    handleSubmit: rhfSubmit,
+    setValue,
+    getValues,
+    reset: rhfReset,
+    watch,
+    formState: { errors, isSubmitting, isDirty },
+  } = useForm<Record<string, unknown>>({
+    resolver,
+    defaultValues: {},
+    mode: 'onSubmit',
+  });
+  watch();
+
+  // When harness or plugin changes, fetch its current config and reset RHF.
+  useEffect(() => {
     if (!activeHarness || !activePlugin) return;
-    if (Object.keys(draft).length === 0) {
+    setConfig(null);
+    rhfReset({});
+    const dirSlug = pluginDirSlug(activePlugin);
+    fetch(`/api/plugins/config?harness=${encodeURIComponent(activeHarness)}&plugin=${encodeURIComponent(dirSlug)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        const cfg = (d?.config ?? {}) as Record<string, unknown>;
+        setConfig(cfg);
+        rhfReset(cfg);
+      })
+      .catch((e) => toast.error(`config load failed: ${e?.message ?? e}`));
+  }, [activeHarness, activePlugin, rhfReset]);
+
+  const onSave = rhfSubmit(async (data) => {
+    if (!activeHarness || !activePlugin) return;
+    if (!isDirty) {
       toast.message('No changes to save.');
       return;
     }
-    setSaving(true);
     try {
-      // Merge: load → overlay draft → write back. Empty strings drop the key.
-      const merged = { ...(config ?? {}) };
-      for (const [k, v] of Object.entries(draft)) {
-        if (typeof v === 'string' && v.length === 0) delete merged[k];
-        else merged[k] = v;
+      // Empty strings drop the key (preserves "no value, fall back to default").
+      const merged: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(data)) {
+        if (typeof v === 'string' && v.length === 0) continue;
+        merged[k] = v;
       }
       const r = await fetch('/api/plugins/config', {
         method: 'PUT',
@@ -152,13 +173,11 @@ export default function PluginSettingsPage() {
       if (!r.ok || !d.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
       toast.success(`Saved ${activePlugin} config`, { description: `hash ${(d.configHash ?? '').slice(0, 16)}…` });
       setConfig(merged);
-      setDraft({});
+      rhfReset(merged);
     } catch (e: any) {
       toast.error(`save failed: ${e?.message ?? e}`);
-    } finally {
-      setSaving(false);
     }
-  }
+  });
 
   if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
 
@@ -238,7 +257,9 @@ export default function PluginSettingsPage() {
                 </div>
                 {Object.entries(activePluginManifest.configSchema!.properties ?? {}).map(([key, field]) => {
                   const required = activePluginManifest.configSchema!.required?.includes(key);
-                  const current = (key in draft) ? draft[key] : config?.[key] ?? field.default ?? '';
+                  const values = getValues();
+                  const current = (key in values) ? values[key] : config?.[key] ?? field.default ?? '';
+                  const fieldError = errors[key]?.message ? String(errors[key]!.message) : undefined;
                   return (
                     <div key={key} style={{ marginBottom: 16 }}>
                       <label style={lbl}>
@@ -266,13 +287,16 @@ export default function PluginSettingsPage() {
                           currentValue={typeof current === 'string' ? current : ''}
                         />
                       ) : (
-                        renderInput(key, field, current, (v) => setDraft({ ...draft, [key]: v }))
+                        renderInput(key, field, current, (v) => setValue(key, v, { shouldDirty: true, shouldValidate: false }))
+                      )}
+                      {fieldError && (
+                        <div role="alert" style={{ marginTop: 4, fontSize: 11, color: '#fca5a5' }}>{fieldError}</div>
                       )}
                     </div>
                   );
                 })}
-                <button type="submit" disabled={saving} style={primary}>
-                  {saving ? 'Saving…' : 'Save'}
+                <button type="submit" disabled={isSubmitting || !isDirty} style={primary}>
+                  {isSubmitting ? 'Saving…' : isDirty ? 'Save' : 'No changes'}
                 </button>
                 {activePluginManifest.provision && enabledHere && (
                   <ProvisionPanel
