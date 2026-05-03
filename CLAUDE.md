@@ -1,5 +1,22 @@
 # Papercup — agent guide
 
+## Read this before changing code
+
+Performance regressions in this repo have repeatedly come from the same
+small set of patterns (serial fs loops, per-slug PG-pool opens, `<details>`
+gating, duplicate React keys, stale Radix pointer-events overrides, etc.).
+**Read the operator docs site's performance page before any non-trivial
+change**:
+
+→ <http://localhost:3055/docs/performance>
+→ Source: `apps/operator/content/docs/performance.mdx`
+
+Pay particular attention to the "What NOT to do" sections (A1–A14). If
+your change matches one of those anti-patterns, change the approach
+before writing the code. The audit findings (2026-05-03) at the bottom
+of that page are real and were causing the dashboard's TTFB to be ~19s
+on localhost.
+
 ## Tests after editing
 
 After completing any file edit, run the affected tests **before** declaring
