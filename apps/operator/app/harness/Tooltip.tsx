@@ -27,7 +27,7 @@ export function Tooltip({ label, children, side = 'top', align = 'center' }: {
     <RT.Root>
       <RT.Trigger asChild>{children}</RT.Trigger>
       <RT.Portal>
-        <RT.Content sideOffset={6} side={side} align={align} style={CONTENT_STYLE}>
+        <RT.Content data-anim="fade" sideOffset={6} side={side} align={align} style={CONTENT_STYLE}>
           {label}
           <RT.Arrow style={{ fill: 'rgba(20,20,22,0.96)' }} width={10} height={5} />
         </RT.Content>

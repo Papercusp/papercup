@@ -3,6 +3,8 @@
 import './harness.css';
 import { OperatorActionLog } from '../_components/OperatorActionLog';
 import { LazyDetails } from '../_components/LazyDetails';
+import { useShortcut } from '../../lib/hotkeys';
+import ShortcutsCheatSheet from '../_components/ShortcutsCheatSheet';
 import MonacoEditor from '@monaco-editor/react';
 import * as Tabs from '@radix-ui/react-tabs';
 import * as RSelect from '@radix-ui/react-select';
@@ -16,6 +18,7 @@ import { Select } from './Select';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useForm } from 'react-hook-form';
+import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { makeAjvResolver } from '@/lib/forms';
 import { useSyncQuery } from '@restart/sync';
 import {
@@ -484,6 +487,10 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
   const [busy, setBusy] = useState<string | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const [coords, setCoords] = useState<{ top: number; right: number } | null>(null);
+  // Smooth FLIP animation when the candidate list grows (marketplace
+  // catalog arrives after the popover opens) or shrinks (plugin
+  // enabled, falls off the candidates list).
+  const [listRef] = useAutoAnimate<HTMLUListElement>();
   // Marketplace catalog (plugins not yet installed in this workspace) —
   // fetched lazily on first popover open so the user can install + enable
   // in one click without leaving the dashboard.
@@ -553,7 +560,10 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
   );
 
   async function installAndEnable(name: string) {
-    if (!activeSlug) return;
+    if (!activeSlug) {
+      toast.error('No harness selected', { description: 'Pick a harness in the project picker before adding a plugin.' });
+      return;
+    }
     setBusy(name);
     try {
       const r = await fetch('/api/marketplace/install-plugin', {
@@ -563,7 +573,20 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
       });
       const d = await r.json();
       if (!r.ok || !d.ok) {
-        toast.error(`Install failed: ${name}`, { description: d.log?.slice(-300) ?? d.error ?? 'unknown' });
+        // Strip ANSI colour codes from CLI output before showing the toast —
+        // sonner renders them as visible "[36m" sequences otherwise.
+        const cleanLog = String(d.log ?? '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+        const lastLines = cleanLog.split('\n').filter(Boolean).slice(-3).join('\n');
+        const desc = lastLines || d.error || 'unknown';
+        // Catalog/marketplace mismatch is the most common cause when the
+        // CLI returns "not found" — surface a clearer next step.
+        const notFound = /not found/i.test(cleanLog);
+        toast.error(`Install failed: ${name}`, {
+          description: notFound
+            ? `${desc}\n\nThe marketplace catalog lists this plugin but the install fetch returned 404. The publisher likely removed the tarball; try refreshing the catalog or pick a different plugin.`
+            : desc,
+          duration: 10000,
+        });
         return;
       }
       const er = await fetch('/api/plugins/enable', {
@@ -573,14 +596,20 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
       });
       const ed = await er.json();
       if (!er.ok || !ed.ok) {
-        toast.error(`Enable failed: ${name}`, { description: ed.results?.[0]?.log?.slice(-300) ?? ed.error ?? 'installed but not enabled' });
+        const rawLog = ed.results?.[0]?.log ?? '';
+        const cleanLog = String(rawLog).replace(/\x1b\[[0-9;]*m/g, '').trim();
+        const lastLines = cleanLog.split('\n').filter(Boolean).slice(-3).join('\n');
+        toast.error(`Enable failed: ${name}`, {
+          description: lastLines || ed.error || 'installed but not enabled',
+          duration: 10000,
+        });
         return;
       }
       toast.success(`${name} installed and enabled in ${activeSlug}`);
       setOpen(false);
       onEnabled();
     } catch (e: any) {
-      toast.error(`Install failed: ${name}`, { description: String(e?.message ?? e) });
+      toast.error(`Install failed: ${name}`, { description: String(e?.message ?? e), duration: 10000 });
     } finally {
       setBusy(null);
     }
@@ -676,7 +705,7 @@ function AddPluginButton({ activeSlug, alreadyEnabled, installed, error, onEnabl
           ) : installed === null ? (
             <div style={{ padding: '12px 8px', fontSize: 12, color: 'var(--text-3)' }}>Loading…</div>
           ) : (
-            <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 360, overflowY: 'auto' }}>
+            <ul ref={listRef} style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: 360, overflowY: 'auto' }}>
               {candidates.length > 0 && (
                 <li style={{ fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-3)', padding: '6px 10px 2px' }}>Installed</li>
               )}
@@ -1063,19 +1092,19 @@ function SaveSnapshotButton({ slug }: { slug: string }) {
 
         <div style={{ marginTop: 16, marginBottom: 4, fontSize: 12, color: 'var(--fg-mute)' }}>Include</div>
         <label style={checkRow}>
-          <input type="checkbox" checked={includeOperatorNotes} onChange={(e) => setIncludeOperatorNotes(e.target.checked)} />
+          <Checkbox checked={includeOperatorNotes} onChange={setIncludeOperatorNotes} ariaLabel="Operator notes" />
           Operator notes
         </label>
         <label style={checkRow}>
-          <input type="checkbox" checked={includeAgentTranscripts} onChange={(e) => setIncludeAgentTranscripts(e.target.checked)} />
+          <Checkbox checked={includeAgentTranscripts} onChange={setIncludeAgentTranscripts} ariaLabel="Agent transcripts" />
           Agent transcripts
         </label>
         <label style={checkRow}>
-          <input type="checkbox" checked={includeGit} onChange={(e) => setIncludeGit(e.target.checked)} />
+          <Checkbox checked={includeGit} onChange={setIncludeGit} ariaLabel=".git directory" />
           .git directory <span style={{ color: 'var(--fg-mute)' }}>(large)</span>
         </label>
         <label style={checkRow}>
-          <input type="checkbox" checked={acceptVerifiedSecrets} onChange={(e) => setAcceptVerifiedSecrets(e.target.checked)} />
+          <Checkbox checked={acceptVerifiedSecrets} onChange={setAcceptVerifiedSecrets} ariaLabel="Accept verified secrets" />
           <span>Accept verified secrets <span style={{ color: 'var(--fg-mute)' }}>(don't fail on detected secrets)</span></span>
         </label>
 
@@ -1282,6 +1311,8 @@ function ConfigPanel({
   const HARNESS_PANE = 'harness' as const;
   const pane = activePane;
   const setPane = onPaneChange;
+  // Smooth FLIP when a plugin is enabled/disabled and a tab appears/leaves.
+  const [tabRailRef] = useAutoAnimate<HTMLDivElement>();
 
   const enabledManifests = useMemo(() => {
     // Dedupe by `plugin.name` — enabled-plugins.json may legitimately
@@ -1358,7 +1389,7 @@ function ConfigPanel({
 
   return (
     <div className="h-config-panel" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-      <div className="h-config-rail" style={{
+      <div ref={tabRailRef} className="h-config-rail" style={{
         display: 'flex', alignItems: 'stretch', gap: 2,
         padding: '0 18px',
         borderBottom: '1px solid var(--border)',
@@ -2585,17 +2616,20 @@ export default function HarnessDashboard() {
     if (peekFeature && ids.includes(peekFeature.id)) setPeekFeature(null);
   }, [activeSlug, peekFeature]);
 
-  // ⌘K toggle
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setPaletteOpen((o) => !o);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // Command palette + cheat-sheet + tab navigation. All shortcuts are
+  // sourced from the registry so the settings page can rebind them.
+  const [showShortcutsCheatSheet, setShowShortcutsCheatSheet] = useState(false);
+  useShortcut('palette.toggle', () => setPaletteOpen((o) => !o));
+  useShortcut('shortcuts.show', () => setShowShortcutsCheatSheet(true));
+
+  // Linear-style `g <letter>` two-stroke tab navigation.
+  useShortcut('goto.dashboard', () => activeSlug && setActivePanel('dashboard'), {}, [activeSlug]);
+  useShortcut('goto.summary', () => activeSlug && setActivePanel('summary'), {}, [activeSlug]);
+  useShortcut('goto.config', () => activeSlug && setActivePanel('config'), {}, [activeSlug]);
+  useShortcut('goto.brainstorm', () => activeSlug && setActivePanel('brainstorm'), {}, [activeSlug]);
+  useShortcut('goto.proposals', () => activeSlug && setActivePanel('proposals'), {}, [activeSlug]);
+  useShortcut('goto.experts', () => activeSlug && setActivePanel('experts'), {}, [activeSlug]);
+  useShortcut('goto.insights', () => activeSlug && setActivePanel('insights'), {}, [activeSlug]);
 
 
   // Keep peekFeature in sync with latest features data so status transitions
@@ -2808,6 +2842,27 @@ export default function HarnessDashboard() {
         perform: () => loadAgent(r.runId),
       });
     }
+    // Always-available navigation commands so the palette never lands
+    // empty (e.g. on first open before projects load).
+    cs.push(
+      { id: 'nav:marketplace', section: 'Navigate', title: 'Marketplace', icon: '🛒', keywords: 'marketplace plugins templates browse', perform: () => { window.location.href = '/marketplace'; } },
+      { id: 'nav:harnesses', section: 'Navigate', title: 'Installed harnesses', icon: '📦', keywords: 'harnesses installed projects list', perform: () => { window.location.href = '/installed/harnesses'; } },
+      { id: 'nav:plugins', section: 'Navigate', title: 'Installed plugins', icon: '🔌', keywords: 'plugins installed list', perform: () => { window.location.href = '/installed/plugins'; } },
+      { id: 'nav:snapshots', section: 'Navigate', title: 'Snapshots', icon: '⟲', keywords: 'snapshots backups', perform: () => { window.location.href = '/installed/snapshots'; } },
+      { id: 'nav:settings', section: 'Navigate', title: 'Settings', icon: '⚙', keywords: 'settings operator oracle voice', perform: () => { window.location.href = '/settings/operator'; } },
+      { id: 'nav:setup', section: 'Navigate', title: 'Setup guide', icon: '📖', keywords: 'setup install help getting started', perform: () => { window.location.href = '/setup'; } },
+      { id: 'nav:support', section: 'Navigate', title: 'Support', icon: '💬', keywords: 'support help troubleshoot', perform: () => { window.location.href = '/support'; } },
+    );
+    // Documented keyboard shortcuts. The palette has no power to
+    // re-bind these — these entries are reference-only, surfaced here
+    // so the palette doubles as a shortcuts cheat-sheet.
+    cs.push(
+      { id: 'kbd:cmdk', section: 'Keyboard shortcuts', title: 'Open command palette', icon: '⌨', shortcut: '⌘K', keywords: 'command palette search', perform: () => setPaletteOpen(true) },
+      { id: 'kbd:operator', section: 'Keyboard shortcuts', title: 'Open Operator panel', icon: '⌨', shortcut: '⌘K, O', keywords: 'operator panel concierge', perform: () => { /* triggered via handler in OperatorPanel */ } },
+      { id: 'kbd:feature-jk', section: 'Keyboard shortcuts', title: 'Feature list — move selection', icon: '⌨', shortcut: 'J / K', keywords: 'feature list navigate move', perform: () => { /* see FeatureList */ } },
+      { id: 'kbd:feature-enter', section: 'Keyboard shortcuts', title: 'Feature list — open selected', icon: '⌨', shortcut: '↵', keywords: 'feature list open enter', perform: () => { /* see FeatureList */ } },
+      { id: 'kbd:feature-r', section: 'Keyboard shortcuts', title: 'Feature list — reset selected', icon: '⌨', shortcut: 'R', keywords: 'feature list reset', perform: () => { /* see FeatureList */ } },
+    );
     return cs;
   }, [projects, activeSlug, status, agents, launchHarness, stopHarness, loadAgent]);
 
@@ -2858,10 +2913,6 @@ export default function HarnessDashboard() {
         </button>
         </Tooltip>
         <div className="h-header-main">
-          <div className="h-brand">
-            <span className="h-brand-kicker"><Activity size={12} /> autonomous workspace</span>
-            <span className="h-title">Harness Control</span>
-          </div>
 
           <div className="h-project-card">
             <div className="h-project-topline">
@@ -2990,17 +3041,25 @@ export default function HarnessDashboard() {
         {status ? (
           <div className="h-header-side">
             <div className="h-stats">
-              <StatCard
-                label="iter"
-                value={status.iteration}
-                icon={<Activity size={13} />}
-              />
-              <StatCard
-                label="passed"
-                value={`${passedCount}/${totalCount}`}
-                tone={progressPct === 100 ? 'good' : undefined}
-                icon={<CheckCircle2 size={13} />}
-              />
+              <Tooltip label="Pulse iteration — latest operator loop count. The pulse chip shows how recently it advanced.">
+                <div title={`Pulse iteration ${status.iteration}`}>
+                  <StatCard
+                    label="pulse"
+                    value={`#${status.iteration}`}
+                    icon={<Activity size={13} />}
+                  />
+                </div>
+              </Tooltip>
+              <Tooltip label="Features passed out of total in this harness queue">
+                <div title={`${passedCount} passed out of ${totalCount} features`}>
+                  <StatCard
+                    label="passed"
+                    value={`${passedCount}/${totalCount}`}
+                    tone={progressPct === 100 ? 'good' : undefined}
+                    icon={<CheckCircle2 size={13} />}
+                  />
+                </div>
+              </Tooltip>
               {typeof status.missionCostUsd === 'number' && status.missionCostUsd > 0 && (
                 <Tooltip label="Open per-role cost breakdown">
                   <button
@@ -3008,7 +3067,7 @@ export default function HarnessDashboard() {
                     onClick={() => setShowUsage(true)}
                   >
                     <StatCard
-                      label="spent"
+                      label="$ spent"
                       value={`${status.missionCostUsd.toFixed(2)}`}
                       icon={<Coins size={13} />}
                     />
@@ -3564,6 +3623,12 @@ export default function HarnessDashboard() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         commands={commands}
+      />
+
+      {/* ── Keyboard-shortcut cheat-sheet (?) ─────────────── */}
+      <ShortcutsCheatSheet
+        open={showShortcutsCheatSheet}
+        onClose={() => setShowShortcutsCheatSheet(false)}
       />
 
       {/* ── Feature peek panel ────────────────────────────── */}

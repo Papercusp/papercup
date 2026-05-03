@@ -97,6 +97,7 @@ export function Select({
       </RS.Trigger>
       <RS.Portal>
         <RS.Content
+          data-anim="pop"
           position="popper"
           sideOffset={4}
           style={{ ...CONTENT_STYLE, ...contentStyle }}

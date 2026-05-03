@@ -74,9 +74,10 @@ export function Modal({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay style={overlay} />
+        <Dialog.Overlay data-anim="fade" style={overlay} />
         <div style={wrap}>
           <Dialog.Content
+            data-anim="pop"
             style={content}
             onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}
             onPointerDownOutside={closeOnOutsideClick ? undefined : (e) => e.preventDefault()}

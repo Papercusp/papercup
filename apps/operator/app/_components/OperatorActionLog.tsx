@@ -21,6 +21,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { useAutoAnimate } from '@formkit/auto-animate/react';
 
 export interface UserAction {
   id: number;
@@ -45,6 +46,9 @@ function useUserActions(slug: string | null, opts?: { onTransition?: Listener })
   const [actions, setActions] = useState<UserAction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Smooth FLIP when a new action prepends — operators perceive the
+  // log as live; without animation the new row pops in jarringly.
+  const [listRef] = useAutoAnimate<HTMLUListElement>();
   const lastRef = useRef<Map<number, UserAction>>(new Map());
   const onTransitionRef = useRef(opts?.onTransition);
   onTransitionRef.current = opts?.onTransition;
@@ -151,7 +155,7 @@ export function OperatorActionLog({
   }
 
   return (
-    <ul className={className} style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+    <ul ref={listRef} className={className} style={{ listStyle: 'none', padding: 0, margin: 0 }}>
       {actions.map((a) => (
         <ActionRow key={a.id} action={a} now={now} />
       ))}
