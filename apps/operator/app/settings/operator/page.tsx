@@ -34,13 +34,27 @@ export default function OperatorSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [budget, setBudget] = useState<{ dailyCapUsd: number; todaySpendUsd: number; configured: boolean } | null>(null);
   const [candidates, setCandidates] = useState<{ capability: string; targetHarness: string; count: number; lastSeenAt: string }[]>([]);
+  const [stats, setStats] = useState<{
+    cardsTotal: number;
+    dispatched: number;
+    dismissed: number;
+    consumed: number;
+    escalated: number;
+    rejected: number;
+    failed: number;
+    undoCancelled: number;
+    medianAckLatencyMs: number | null;
+    unconsumedFraction: number | null;
+    totalSpendUsd: number;
+  } | null>(null);
 
   const loadAll = useCallback(async () => {
-    const [cfgR, prefsR, budgetR, candR] = await Promise.all([
+    const [cfgR, prefsR, budgetR, candR, statsR] = await Promise.all([
       fetch('/api/agent-mcp/operator-config').then((r) => r.json()),
       fetch('/api/agent-mcp/operator-preferences').then((r) => r.json()),
       fetch('/api/agent-mcp/operator-budget').then((r) => r.json()),
       fetch('/api/agent-mcp/operator-standing-approvals').then((r) => r.json()).catch(() => ({ candidates: [] })),
+      fetch('/api/agent-mcp/operator-stats').then((r) => r.json()).catch(() => null),
     ]);
     setCfg(cfgR);
     setPromptUser(cfgR.prompt_user);
@@ -48,6 +62,7 @@ export default function OperatorSettingsPage() {
     setEntries(prefsR.entries ?? []);
     setBudget(budgetR);
     setCandidates(candR.candidates ?? []);
+    setStats(statsR);
   }, []);
 
   const decideCandidate = useCallback(async (capability: string, targetHarness: string, decision: 'approve' | 'dismiss') => {
@@ -161,6 +176,63 @@ export default function OperatorSettingsPage() {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {stats && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Last 7 days</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, fontSize: 13 }}>
+            <div>
+              <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Cards seen</div>
+              <strong style={{ fontSize: 22 }}>{stats.cardsTotal}</strong>
+            </div>
+            <div>
+              <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Dispatched</div>
+              <strong style={{ fontSize: 22 }}>{stats.dispatched}</strong>
+            </div>
+            <div>
+              <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Consumed</div>
+              <strong style={{ fontSize: 22 }}>{stats.consumed}</strong>
+            </div>
+            <div>
+              <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Dismissed</div>
+              <strong style={{ fontSize: 22 }}>{stats.dismissed}</strong>
+            </div>
+            <div>
+              <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Escalated</div>
+              <strong style={{ fontSize: 22, color: stats.escalated > 0 ? '#a40' : 'inherit' }}>{stats.escalated}</strong>
+            </div>
+            <div>
+              <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Undo-cancel</div>
+              <strong style={{ fontSize: 22 }}>{stats.undoCancelled}</strong>
+            </div>
+            {stats.medianAckLatencyMs !== null && (
+              <div>
+                <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Median ack</div>
+                <strong style={{ fontSize: 22 }}>{Math.round(stats.medianAckLatencyMs / 1000)}s</strong>
+              </div>
+            )}
+            {stats.unconsumedFraction !== null && (
+              <div title="Path-(a) escalation criterion: trigger if >25%">
+                <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Unconsumed</div>
+                <strong style={{ fontSize: 22, color: stats.unconsumedFraction > 0.25 ? '#a04' : 'inherit' }}>
+                  {(stats.unconsumedFraction * 100).toFixed(0)}%
+                </strong>
+              </div>
+            )}
+            <div>
+              <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Spend</div>
+              <strong style={{ fontSize: 22 }}>${stats.totalSpendUsd.toFixed(2)}</strong>
+            </div>
+          </div>
+          {stats.unconsumedFraction !== null && stats.unconsumedFraction > 0.25 && (
+            <p style={{ fontSize: 12, color: '#a04', marginTop: 8 }}>
+              ⚠ Unconsumed fraction {`>`}25% — recipient harnesses are slow to consume Operator directives.
+              The v5 plan's Path-(a) (`dispatch_role`) escalation criterion is met; consider raising the issue
+              with the substrate maintainers.
+            </p>
+          )}
         </section>
       )}
 
