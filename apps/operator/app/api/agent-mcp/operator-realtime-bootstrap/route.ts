@@ -12,12 +12,12 @@
  */
 
 import { readOpenAiKey } from '@/lib/voice-credentials';
-import { readVoicePrefs } from '@/lib/voice-prefs';
+import { loadVoicePrefs } from '@/lib/voice-prefs';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const prefs = readVoicePrefs();
+  const prefs = loadVoicePrefs();
   if (prefs.fullAgentEngine !== 'openai-realtime') {
     return new Response('not-enabled', { status: 404 });
   }

@@ -415,6 +415,63 @@ if (typeof window !== 'undefined') {
 }
 
 let whisperCapture: { stop(): void } | null = null;
+let porcupineHandle: { stop(): Promise<void> } | null = null;
+
+async function maybeStartPorcupineGate(prefs: any): Promise<boolean> {
+  // Returns true if Porcupine took over (whisper should NOT also start).
+  if (!prefs.porcupineEnabled) return false;
+  // Need a Picovoice key.
+  const credR = await fetch('/api/agent-mcp/operator-credentials').catch(() => null);
+  const creds = credR?.ok ? await credR.json() : null;
+  if (!creds?.picovoice?.configured) return false;
+  // Fetch the actual key via narrow bootstrap (we'll add this endpoint).
+  const bootR = await fetch('/api/agent-mcp/operator-picovoice-bootstrap').catch(() => null);
+  if (!bootR?.ok) return false;
+  const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
+  if (!apiKey) return false;
+
+  try {
+    const { startWakeWordDetection } = await import('../../../lib/voice-engines/porcupine');
+    porcupineHandle = await startWakeWordDetection({
+      accessKey: apiKey,
+      keyword: prefs.porcupineKeyword ?? 'Computer',
+      onWake: () => {
+        // Wake fired — spin up Whisper for one utterance, then back to gating.
+        void runOneShotWhisperAfterWake().catch(() => { /* ignore */ });
+      },
+      onError: (err) => console.warn('[porcupine]', err),
+    });
+    return true;
+  } catch (err) {
+    console.warn('[voice] porcupine start failed; falling back:', err);
+    return false;
+  }
+}
+
+async function runOneShotWhisperAfterWake(): Promise<void> {
+  if (whisperCapture) return; // already running
+  // Use whatever STT engine is configured (Voicemode whisper / Deepgram).
+  // The Whisper capture's first onFinal handler ships the transcript; we
+  // then tear it down and resume Porcupine gating.
+  const probe = await fetch('http://localhost:2022/health', { signal: AbortSignal.timeout(2000) }).catch(() => null);
+  if (!probe?.ok) return;
+  const { startWhisperCapture } = await import('../../../app/_components/voice/stt-voicemode');
+  let fired = false;
+  whisperCapture = await startWhisperCapture('http://localhost:2022', {
+    onFinal: (text) => {
+      if (fired) return;
+      fired = true;
+      setState({ lastTranscript: text });
+      // Synthesize "operator <text>" so the wake-word strip doesn't drop it.
+      onUtteranceFinal(`operator ${text}`);
+      stopWhisperCaptureIfRunning();
+    },
+  });
+  // Auto-tear-down after 8s in case no transcript ever fires.
+  window.setTimeout(() => {
+    if (!fired) stopWhisperCaptureIfRunning();
+  }, 8000);
+}
 
 async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
   // Only initialize whisper for always-on. PTT continues to use Web
@@ -431,6 +488,9 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
     const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
     if (!prefsR.ok) { startWakeWordListening(); return; }
     const prefs = await prefsR.json();
+    // Porcupine gate: when enabled, run wake-word detection only.
+    // Whisper spins up only on wake — big idle-CPU win.
+    if (await maybeStartPorcupineGate(prefs)) return;
     if (prefs.sttEngine === 'deepgram') {
       // Deepgram cloud streaming (BYO key + leak-ack gate, same as Web Speech).
       if (!prefs.webSpeechLeakAcked) { startWakeWordListening(); return; }
@@ -484,6 +544,10 @@ function stopWhisperCaptureIfRunning(): void {
   if (whisperCapture) {
     try { whisperCapture.stop(); } catch { /* ignore */ }
     whisperCapture = null;
+  }
+  if (porcupineHandle) {
+    void porcupineHandle.stop();
+    porcupineHandle = null;
   }
 }
 

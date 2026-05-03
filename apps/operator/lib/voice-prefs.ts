@@ -43,6 +43,12 @@ export interface VoicePrefs {
   ttsEngine: TtsEngineKind;
   /** Full-agent engine. When set to anything but 'off', overrides STT + TTS. */
   fullAgentEngine: FullAgentEngineKind;
+  /** Use Picovoice Porcupine for wake-word detection (vs. transcribe-everything-then-string-match). */
+  porcupineEnabled: boolean;
+  /** Built-in Porcupine keyword. Custom keywords (.ppn) deferred to v1.5. */
+  porcupineKeyword: 'Computer' | 'Jarvis' | 'Bumblebee' | 'Picovoice' | 'Porcupine' | 'Alexa' | 'Hey Google' | 'Hey Siri' | 'Okay Google' | 'Terminator' | 'Americano' | 'Blueberry' | 'Grapefruit' | 'Grasshopper';
+  /** Use Picovoice Koala for noise suppression on the mic input. */
+  koalaEnabled: boolean;
   elevenlabsVoiceId: string;        // default Adam preset
   openaiVoice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
   openaiModel: 'tts-1' | 'tts-1-hd';
@@ -72,6 +78,9 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   fullAgentEngine: 'off',
+  porcupineEnabled: false,
+  porcupineKeyword: 'Computer',
+  koalaEnabled: false,
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM', // Adam preset
   openaiVoice: 'nova',
   openaiModel: 'tts-1',

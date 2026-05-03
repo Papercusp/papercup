@@ -112,3 +112,18 @@ export function writeDeepgramKey(apiKey: string | null): void {
   }
   writeAll(all);
 }
+
+export function readPicovoiceKey(): string | null {
+  const all = readAll();
+  return (all.picovoice as { apiKey?: string } | undefined)?.apiKey ?? null;
+}
+
+export function writePicovoiceKey(apiKey: string | null): void {
+  const all = readAll();
+  if (apiKey === null) {
+    delete all.picovoice;
+  } else {
+    all.picovoice = { ...(all.picovoice as object || {}), apiKey };
+  }
+  writeAll(all);
+}
