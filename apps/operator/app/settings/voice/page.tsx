@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
+import { Checkbox } from '../../harness/Checkbox';
 import {
   initVoiceMode,
   listAvailableVoices,
@@ -102,19 +103,19 @@ export default function VoiceSettingsPage() {
   }, []);
 
   const onTest = useCallback((role: string) => {
-    speak(`This is the voice for ${role.replace(':', ' ')}.`, role);
+    speak(`This is the voice for ${role.replace(':', ' ')}.`, role, 'polite', { force: true });
   }, []);
 
   const onTestVoice = useCallback(() => {
-    speak('Voice mode is working.', 'system:operator');
+    speak('Voice mode is working.', 'system:operator', 'polite', { force: true });
   }, []);
 
   const onTestAllRoles = useCallback(() => {
     if (prefs?.ttsEngine === 'elevenlabs') {
-      if (!confirm(`Test all ${KNOWN_ROLES.length} roles? This will send ~${KNOWN_ROLES.length} requests to ElevenLabs (≈$${(KNOWN_ROLES.length * 0.04).toFixed(2)} estimated charges).`)) return;
+      if (!confirm(`Test all ${KNOWN_ROLES.length} roles? This will send ~${KNOWN_ROLES.length} requests to ElevenLabs (≈${(KNOWN_ROLES.length * 0.04).toFixed(2)} estimated charges).`)) return;
     }
     KNOWN_ROLES.forEach((role, i) => {
-      setTimeout(() => speak(`This is the ${role.replace(':', ' ')} voice.`, role), i * 1500);
+      setTimeout(() => speak(`This is the ${role.replace(':', ' ')} voice.`, role, 'polite', { force: true }), i * 1500);
     });
   }, [prefs?.ttsEngine]);
 
@@ -278,10 +279,14 @@ export default function VoiceSettingsPage() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+        <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <button type="button" onClick={onTestVoice} style={btnPrimary}>Test voice</button>
           <button type="button" onClick={onTestAllRoles} style={btn}>Test all roles</button>
           <button type="button" onClick={onRedetect} style={btn}>Re-detect engines</button>
+          <p style={{ ...hint, margin: 0, flexBasis: '100%' }}>
+            Test buttons play immediately even when voice mode is off — they're how you check the engine works.
+            Toggle voice mode (mic icon in the header) to enable announcements during normal use.
+          </p>
         </div>
       </section>
 
@@ -412,11 +417,11 @@ export default function VoiceSettingsPage() {
               ['wakeWordIntents',        'Enable "operator scan" wake-word commands'],
             ] as const).map(([key, label]) => (
               <label key={key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={prefs[key]}
-                  onChange={(e) => savePrefsPatch({ [key]: e.target.checked } as any)}
+                  onChange={(v) => savePrefsPatch({ [key]: v } as any)}
                   disabled={savingPrefs}
+                  ariaLabel={label}
                   style={{ marginTop: 2 }}
                 />
                 <span>{label}</span>
@@ -503,7 +508,7 @@ export default function VoiceSettingsPage() {
             assignVoiceToRole(key, voice);
             setConfig(getVoiceConfig());
           }}
-          onTest={(key) => speak(`This is the voice for ${key.replace(':', ' ').replace('@', ' at ')}.`, key)}
+          onTest={(key) => speak(`This is the voice for ${key.replace(':', ' ').replace('@', ' at ')}.`, key, 'polite', { force: true })}
         />
       </section>
 

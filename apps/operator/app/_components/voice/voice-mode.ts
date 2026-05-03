@@ -468,10 +468,21 @@ function onUtteranceFinal(text: string): void {
  * Speak text in the voice assigned to `role`. Queues if another role is
  * already speaking. Only one utterance plays at a time.
  */
-export function speak(text: string, role = 'system:operator', priority: 'polite' | 'assertive' = 'polite'): void {
-  if (state.mode === 'off' || !state.supported) return;
-  // Tutorial gate (v4 §2l): voice no-ops until first-run tutorial is complete.
-  if (typeof window !== 'undefined' && sessionStorage.getItem('oracle-tutorial-complete') !== 'true') return;
+export function speak(
+  text: string,
+  role = 'system:operator',
+  priority: 'polite' | 'assertive' = 'polite',
+  options: { force?: boolean } = {},
+): void {
+  if (!state.supported) return;
+  if (!options.force) {
+    // Normal path: voice mode must be on AND tutorial complete AND we
+    // must be the leader tab. Test/preview buttons in /settings/voice
+    // pass force:true to bypass these gates — they ARE the explicit
+    // user request to make sound.
+    if (state.mode === 'off') return;
+    if (typeof window !== 'undefined' && sessionStorage.getItem('oracle-tutorial-complete') !== 'true') return;
+  }
   // Aria-live publish — independent of TTS engine + leader election so
   // screen-reader users always see the same content the leader speaks.
   try {
@@ -484,7 +495,7 @@ export function speak(text: string, role = 'system:operator', priority: 'polite'
   try {
     const { getVoiceLeaderState } = require('./voice-leader') as typeof import('./voice-leader');
     const leader = getVoiceLeaderState();
-    if (leader.available && !leader.isLeader) return;
+    if (leader.available && !leader.isLeader && !options.force) return;
   } catch { /* leader module not yet loaded — fall through and speak */ }
   synthQueue.push({ text, role });
   // Cap queue depth: drop the oldest items beyond MAX so newer (more
