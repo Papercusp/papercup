@@ -220,8 +220,10 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                 {actions[p].length > 0 && (
                   <div style={{ position: 'relative', display: 'inline-flex' }}>
                     <button
+                      type="button"
                       className="h-phase-actions-btn"
                       onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === p ? null : p); }}
+                      onMouseDown={(e) => e.stopPropagation()}
                       title={`Run a ${p} action`}
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: 2,
@@ -248,7 +250,9 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                         {actions[p].map((a) => (
                           <button
                             key={a.name}
-                            onClick={() => {
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
                               setOpenMenu(null);
                               setRunning({ branch: p, name: a.name });
                             }}
