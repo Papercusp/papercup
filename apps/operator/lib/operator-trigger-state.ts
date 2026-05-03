@@ -43,11 +43,15 @@ export async function readTriggerState(): Promise<TriggerState> {
     `;
     let inbox = 0;
     try {
+      // Count pending messages where any recipient department is the
+      // operator's inbox. message_recipients keys (message_id, dept_slug);
+      // status lives on the parent messages row.
       const rows = await tx<{ count: number }[]>`
         SELECT COUNT(*)::int AS count
-          FROM papercup_shared.message_recipients
-         WHERE to_slug = 'system:operator'
-           AND status  = 'pending'
+          FROM papercup_shared.message_recipients r
+          JOIN papercup_shared.messages m ON m.id = r.message_id
+         WHERE r.dept_slug = 'system:operator'
+           AND m.status    = 'pending'
       `;
       inbox = rows[0]?.count ?? 0;
     } catch {
