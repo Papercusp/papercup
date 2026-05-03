@@ -8,8 +8,10 @@
  */
 
 import { useEffect, useState, useCallback } from 'react';
+import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
+  getVoiceConfig,
   initVoiceMode,
   setVoiceMode,
   startPushToTalk,
@@ -48,6 +50,7 @@ export function VoiceButton(): JSX.Element {
     lastTranscript: '',
     speakingRole: null,
   });
+  const [wakeWord, setWakeWord] = useState(() => getVoiceConfig().wakeWord);
   const [pttHeld, setPttHeld] = useState(false);
 
   useEffect(() => {
@@ -55,6 +58,18 @@ export function VoiceButton(): JSX.Element {
     const unsub = subscribeVoiceState(setVs);
     return unsub;
   }, []);
+
+  useEffect(() => {
+    const syncWakeWord = () => setWakeWord(getVoiceConfig().wakeWord);
+    syncWakeWord();
+    window.addEventListener('pc-voice-config-changed', syncWakeWord);
+    window.addEventListener('focus', syncWakeWord);
+    return () => {
+      window.removeEventListener('pc-voice-config-changed', syncWakeWord);
+      window.removeEventListener('focus', syncWakeWord);
+    };
+  }, []);
+
 
   const onClick = useCallback(() => {
     if (!vs.supported) {
@@ -78,37 +93,55 @@ export function VoiceButton(): JSX.Element {
 
   // Live mic level — only sample when the mic is actually open. Always-on
   // continuously listens (so we sample any time mode is always-on); PTT
-  // only listens while held. `listening` status covers both.
+  // only listens while held. `listening` status covers both. Writes a
+  // CSS custom property directly via ref — no React re-renders at 60fps.
   const micActive =
     vs.mode === 'always-on' ||
     vs.status === 'listening' ||
     pttHeld;
-  const micLevel = useMicLevel(micActive);
+  const { ref: micRef } = useMicLevel(micActive);
 
   const labelText = vs.supported ? MODE_LABEL[vs.mode] : 'No mic';
   const title = vs.supported
     ? `Voice mode: ${MODE_LABEL[vs.mode]} (click to cycle, hold for PTT)`
     : 'Voice mode unsupported in this browser';
+  const showWakeHint = vs.mode === 'always-on' && vs.supported;
 
   return (
-    <button
-      type="button"
-      aria-label="Voice mode"
-      title={title}
-      onClick={onClick}
-      onMouseDown={onPttDown}
-      onMouseUp={onPttUp}
-      onMouseLeave={onPttUp}
-      onTouchStart={onPttDown}
-      onTouchEnd={onPttUp}
-      className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}`}
-      style={{ ['--mic-level' as any]: micLevel.toFixed(3) }}
-    >
-      <span className="pc-voice-btn-orb" aria-hidden="true">
-        <span className="pc-voice-btn-level" aria-hidden="true" />
-        <span className="pc-voice-btn-icon">{ICON[vs.status]}</span>
-      </span>
-      <span className="pc-voice-btn-label">{labelText}</span>
-    </button>
+    <div className={`pc-voice-control${showWakeHint ? ' has-wake-hint' : ''}`}>
+      <button
+        type="button"
+        aria-label="Voice mode"
+        title={title}
+        onClick={onClick}
+        onMouseDown={onPttDown}
+        onMouseUp={onPttUp}
+        onMouseLeave={onPttUp}
+        onTouchStart={onPttDown}
+        onTouchEnd={onPttUp}
+        ref={micRef as React.RefObject<HTMLButtonElement>}
+        className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}`}
+      >
+        <span className="pc-voice-btn-orb" aria-hidden="true">
+          <span className="pc-voice-btn-level" aria-hidden="true" />
+          <span className="pc-voice-btn-icon">{ICON[vs.status]}</span>
+        </span>
+        <span className="pc-voice-btn-label">{labelText}</span>
+      </button>
+      <a
+        href="/settings/voice"
+        className="pc-voice-settings-link"
+        aria-label="Microphone settings"
+        title="Open microphone settings"
+      >
+        <Settings2 size={14} aria-hidden="true" />
+        <span className="pc-voice-settings-text">Voice</span>
+      </a>
+      {showWakeHint && (
+        <div className="pc-voice-wake-hint" aria-live="polite">
+          Say <strong>{wakeWord}</strong>
+        </div>
+      )}
+    </div>
   );
 }
