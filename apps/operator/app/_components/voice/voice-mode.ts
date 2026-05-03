@@ -73,6 +73,10 @@ type Listener = (s: VoiceState) => void;
 const listeners = new Set<Listener>();
 
 let recognition: any = null;
+// Voice playback queue (defensive limit to prevent runaway accumulation
+// from a stuck TTS engine + a chatty caller — e.g. background scanner
+// fires while playback is hung). Hard cap drops oldest items beyond MAX.
+const SYNTH_QUEUE_MAX = 8;
 let synthQueue: Array<{ text: string; role: string }> = [];
 let isSynthSpeaking = false;
 
@@ -422,6 +426,13 @@ export function speak(text: string, role = 'system:operator', priority: 'polite'
     if (leader.available && !leader.isLeader) return;
   } catch { /* leader module not yet loaded — fall through and speak */ }
   synthQueue.push({ text, role });
+  // Cap queue depth: drop the oldest items beyond MAX so newer (more
+  // relevant) utterances win. Critical when a stuck TTS engine + a
+  // chatty caller (background scanner during always-on voice) would
+  // otherwise queue megabytes of stale text.
+  if (synthQueue.length > SYNTH_QUEUE_MAX) {
+    synthQueue = synthQueue.slice(-SYNTH_QUEUE_MAX);
+  }
   if (!isSynthSpeaking) processSynthQueue();
 }
 

@@ -19,7 +19,7 @@ import { dirname } from 'node:path';
 import { papercuspPath } from './papercusp-root';
 
 export type SttEngineKind = 'voicemode' | 'webspeech' | 'off';
-export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai';
+export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai' | 'cartesia';
 
 export interface VoicePrefs {
   // Feature toggles (defaults reflect v4 §3.2)
@@ -37,6 +37,8 @@ export interface VoicePrefs {
   elevenlabsVoiceId: string;        // default Adam preset
   openaiVoice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
   openaiModel: 'tts-1' | 'tts-1-hd';
+  cartesiaVoiceId: string;
+  cartesiaModel: 'sonic' | 'sonic-2';
 
   // One-time consents
   webSpeechLeakAcked: boolean;
@@ -63,6 +65,8 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM', // Adam preset
   openaiVoice: 'nova',
   openaiModel: 'tts-1',
+  cartesiaVoiceId: 'a0e99841-438c-4a64-b679-ae501e7d6091', // Barbershop Man, common preset
+  cartesiaModel: 'sonic-2',
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

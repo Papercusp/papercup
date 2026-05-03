@@ -14,7 +14,7 @@
  * the chrome boots with.
  */
 
-import { readElevenLabsKey, readOpenAiKey } from './voice-credentials';
+import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from './voice-credentials';
 import type { SttEngineKind, TtsEngineKind, VoicePrefs } from './voice-prefs';
 
 export type Priority = 'polite' | 'assertive';
@@ -54,6 +54,7 @@ export interface EnginesContext {
   kokoroBase: string | null;
   elevenlabsApiKey: string | null;
   openaiApiKey: string | null;
+  cartesiaApiKey: string | null;
 }
 
 export interface DetectResult {
@@ -106,7 +107,8 @@ export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
   const { whisperBase, kokoroBase } = await resolveVoicemodeEndpoints();
   const elevenlabsApiKey = readElevenLabsKey();
   const openaiApiKey = readOpenAiKey();
-  const ctx: EnginesContext = { whisperBase, kokoroBase, elevenlabsApiKey, openaiApiKey };
+  const cartesiaApiKey = readCartesiaKey();
+  const ctx: EnginesContext = { whisperBase, kokoroBase, elevenlabsApiKey, openaiApiKey, cartesiaApiKey };
 
   // STT selection (per v4 §1.1)
   let stt: SttEngine | null = null;
@@ -141,6 +143,14 @@ export async function detectEngines(prefs: VoicePrefs): Promise<DetectResult> {
       model: prefs.openaiModel,
     });
     ttsKind = 'openai';
+  } else if (requested === 'cartesia' && cartesiaApiKey) {
+    const { createCartesiaTts } = await import('./voice-engines/cartesia');
+    tts = createCartesiaTts({
+      apiKey: cartesiaApiKey,
+      voiceId: prefs.cartesiaVoiceId,
+      model: prefs.cartesiaModel,
+    });
+    ttsKind = 'cartesia';
   } else {
     // Fallback: browser TTS. Always available client-side.
     const { createBrowserTts } = await import('./voice-engines/browser');

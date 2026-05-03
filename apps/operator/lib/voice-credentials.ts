@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path';
 interface CredentialsFile {
   elevenlabs?: { apiKey: string };
   openai?: { apiKey: string };
+  cartesia?: { apiKey: string };
   // Other plugin/service keys may live here too — we only read/write
   // our own slice.
   [k: string]: unknown;
@@ -77,6 +78,21 @@ export function writeOpenAiKey(apiKey: string | null): void {
     delete all.openai;
   } else {
     all.openai = { ...all.openai, apiKey };
+  }
+  writeAll(all);
+}
+
+export function readCartesiaKey(): string | null {
+  const all = readAll();
+  return all.cartesia?.apiKey ?? null;
+}
+
+export function writeCartesiaKey(apiKey: string | null): void {
+  const all = readAll();
+  if (apiKey === null) {
+    delete all.cartesia;
+  } else {
+    all.cartesia = { ...all.cartesia, apiKey };
   }
   writeAll(all);
 }

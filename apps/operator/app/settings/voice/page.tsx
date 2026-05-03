@@ -470,6 +470,17 @@ export default function VoiceSettingsPage() {
             </tbody>
           </table>
         )}
+
+        {/* Per-slug voice overrides — show any role@slug entries that exist */}
+        <PerSlugVoiceTable
+          config={config}
+          voices={voices}
+          onAssign={(key, voice) => {
+            assignVoiceToRole(key, voice);
+            setConfig(getVoiceConfig());
+          }}
+          onTest={(key) => speak(`This is the voice for ${key.replace(':', ' ').replace('@', ' at ')}.`, key)}
+        />
       </section>
 
       {/* ── PRECEDENCE MATRIX (debugging aid) ────────────────────── */}
@@ -522,6 +533,100 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div>
       <div style={{ fontSize: 11, opacity: 0.6, textTransform: 'uppercase' }}>{label}</div>
       <strong style={{ fontSize: 18 }}>{value}</strong>
+    </div>
+  );
+}
+
+/**
+ * Per-slug voice overrides. v1.5 surface for the `role@slug` lookup
+ * chain in voice-mode.ts. Lists existing overrides + lets users add
+ * new ones with a "role @ slug" composite key.
+ */
+function PerSlugVoiceTable({
+  config, voices, onAssign, onTest,
+}: {
+  config: { roleVoices: Record<string, string> };
+  voices: Array<{ name: string; lang: string }>;
+  onAssign: (key: string, voice: string) => void;
+  onTest: (key: string) => void;
+}) {
+  const overrides = Object.keys(config.roleVoices).filter((k) => k.includes('@'));
+  const [addRole, setAddRole] = useState('worker');
+  const [addSlug, setAddSlug] = useState('');
+  return (
+    <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
+      <h3 style={{ fontSize: 14, marginBottom: 6 }}>Per-slug voice overrides</h3>
+      <p style={hint}>
+        Override the role voice for a specific harness instance.
+        Useful when you have multiple harnesses from the same template
+        and want to distinguish them by ear.
+      </p>
+      {overrides.length > 0 && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8, marginBottom: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
+              <th style={{ padding: '6px 4px', fontSize: 12 }}>Role @ Slug</th>
+              <th style={{ padding: '6px 4px', fontSize: 12 }}>Voice</th>
+              <th style={{ padding: '6px 4px', fontSize: 12 }}>Test / Remove</th>
+            </tr>
+          </thead>
+          <tbody>
+            {overrides.map((key) => (
+              <tr key={key} style={{ borderBottom: '1px solid var(--border)' }}>
+                <td style={{ padding: '6px 4px', fontSize: 12, fontFamily: 'monospace' }}>{key}</td>
+                <td style={{ padding: '6px 4px' }}>
+                  <select
+                    value={config.roleVoices[key] ?? ''}
+                    onChange={(e) => onAssign(key, e.target.value)}
+                    style={{ padding: '4px 8px', fontSize: 12, minWidth: 220 }}
+                  >
+                    <option value="">(removed)</option>
+                    {voices.map((v) => <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>)}
+                  </select>
+                </td>
+                <td style={{ padding: '6px 4px', display: 'flex', gap: 4 }}>
+                  <button type="button" onClick={() => onTest(key)} style={{ padding: '4px 8px', fontSize: 11 }}>Test</button>
+                  <button type="button" onClick={() => onAssign(key, '')} style={{ padding: '4px 8px', fontSize: 11, color: '#fca5a5' }}>×</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 8 }}>
+        <div>
+          <label style={{ ...lbl, fontSize: 11 }}>Role</label>
+          <input
+            type="text"
+            value={addRole}
+            onChange={(e) => setAddRole(e.target.value)}
+            placeholder="worker"
+            style={{ padding: '4px 8px', fontSize: 12, width: 120 }}
+          />
+        </div>
+        <div>
+          <label style={{ ...lbl, fontSize: 11 }}>Harness slug</label>
+          <input
+            type="text"
+            value={addSlug}
+            onChange={(e) => setAddSlug(e.target.value)}
+            placeholder="papercup-coding-foo"
+            style={{ padding: '4px 8px', fontSize: 12, width: 200 }}
+          />
+        </div>
+        <button
+          type="button"
+          disabled={!addRole.trim() || !addSlug.trim() || voices.length === 0}
+          onClick={() => {
+            const key = `${addRole.trim()}@${addSlug.trim()}`;
+            onAssign(key, voices[0]?.name ?? '');
+            setAddSlug('');
+          }}
+          style={{ padding: '6px 12px', fontSize: 12 }}
+        >
+          Add override
+        </button>
+      </div>
     </div>
   );
 }
