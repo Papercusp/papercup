@@ -927,13 +927,17 @@ function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
     setStage('prompting');
     setTranscript(null);
     const { onFinalUtterance, setVoiceMode } = await import('../../_components/voice/voice-mode');
-    // Ensure always-on mode is active so STT is capturing. If the user
-    // had it off, we'll restore it after.
+    // Force a fresh always-on cycle. setVoiceMode early-returns when the
+    // mode hasn't changed, so if the user is already in always-on the
+    // capture loop won't re-spin. Toggle off → on to force a fresh start.
     let restoreMode: 'off' | 'push-to-talk' | 'always-on' | null = null;
     try {
       const stMod = await import('../../_components/voice/voice-mode');
       const stCfg = stMod.getVoiceConfig();
       restoreMode = (stCfg.lastMode ?? 'off') as typeof restoreMode;
+      setVoiceMode('off');
+      // Brief tick so the prior capture tears down before we restart.
+      await new Promise(r => setTimeout(r, 200));
       setVoiceMode('always-on');
     } catch { /* best-effort */ }
 

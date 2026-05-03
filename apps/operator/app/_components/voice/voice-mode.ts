@@ -670,22 +670,73 @@ function activateListening(seedTranscript: string): void {
   }
 }
 
-/** Push-to-talk: kick off active listening immediately. */
+/**
+ * Push-to-talk: start capture using the user's configured STT engine.
+ * Was hardcoded to Web Speech, which silently no-op'd for users on
+ * Voicemode whisper or Deepgram. Now respects sttEngine the same way
+ * always-on does.
+ */
 export function startPushToTalk(): void {
-  if (!state.hasWebSpeechSTT) return;
-  setState({ mode: 'push-to-talk', status: 'listening' });
-  activateListening('');
+  if (!state.supported) return;
+  setState({ status: 'listening' });
+  // Use the same capture path as always-on. setVoiceMode-style sync
+  // handles which engine to spin up based on prefs.sttEngine.
+  void maybeStartCaptureForPtt().catch(() => {
+    // Last-ditch: try Web Speech if everything else failed.
+    if (state.hasWebSpeechSTT) activateListening('');
+  });
 }
 
-/** Stop push-to-talk and finalize the current utterance. */
+/** Stop push-to-talk: tear down whichever capture is running. */
 export function stopPushToTalk(): void {
+  setState({ status: state.mode === 'off' ? 'off' : 'idle' });
   if (recognition) {
-    try {
-      recognition.stop();
-    } catch {
-      /* ignore */
+    try { recognition.stop(); } catch { /* ignore */ }
+    recognition = null;
+  }
+  stopWhisperCaptureIfRunning();
+}
+
+async function maybeStartCaptureForPtt(): Promise<void> {
+  if (whisperCapture) return; // already running
+  // Reuse the same engine-selection logic as always-on.
+  const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs').catch(() => null);
+  const prefs = prefsR?.ok ? await prefsR.json() : null;
+  if (!prefs) {
+    if (state.hasWebSpeechSTT) activateListening('');
+    return;
+  }
+  // Voicemode whisper if reachable
+  if (prefs.sttEngine === 'voicemode') {
+    const probe = await fetch('http://localhost:2022/health', { signal: AbortSignal.timeout(2000) }).catch(() => null);
+    if (probe?.ok) {
+      const { startWhisperCapture } = await import('./stt-voicemode');
+      whisperCapture = await startWhisperCapture('http://localhost:2022', {
+        onFinal: (text) => {
+          setState({ lastTranscript: text });
+          onUtteranceFinal(text);
+        },
+      });
+      return;
     }
   }
+  // Deepgram if configured + leak-acked
+  if (prefs.sttEngine === 'deepgram' && prefs.webSpeechLeakAcked) {
+    const bootR = await fetch('/api/agent-mcp/operator-stt-bootstrap?engine=deepgram').catch(() => null);
+    if (bootR?.ok) {
+      const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
+      if (apiKey) {
+        const { startDeepgramStream } = await import('../../../lib/voice-engines/deepgram');
+        whisperCapture = await startDeepgramStream({
+          apiKey,
+          onFinal: (text) => { setState({ lastTranscript: text }); onUtteranceFinal(text); },
+        });
+        return;
+      }
+    }
+  }
+  // Web Speech fallback (always works in Chromium when not denied)
+  if (state.hasWebSpeechSTT) activateListening('');
 }
 
 const utteranceListeners = new Set<(text: string) => void>();
