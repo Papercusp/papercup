@@ -9,6 +9,10 @@ import { Callout } from 'fumadocs-ui/components/callout';
 **Every agent must read this page before changing code in this repo.** "It works" isn't the same as "it's fast." This page captures (a) practices from apps users consider best-in-class — Linear, Notion, Vercel, Figma, Discord, Stripe — and (b) **real anti-patterns we've shipped** that have caused production slowdowns. The "What not to do" section near the bottom is **load-bearing**: it lists specific traps with measured impact and the correct alternative. If a pattern in your change matches one of those traps, change the approach before continuing.
 </Callout>
 
+<Callout type="info" title="Latest update — 2026-05-03">
+A focused perf audit on `/harness` reduced warm TTFB from **18.7s to 83ms (225×)** across 14 commits. Eight separate slow endpoints were reduced to two repeating root patterns (serial fs/PG in loops; repeated reads of the same file). A new rule **A15** covers the request-scoped readJson cache pattern that produced the last 100× speedup. The "Audit findings" table further down shows every endpoint's before/after with the fix applied. Two `<body>`-frozen incidents during the session are also captured under **A8** (duplicate React keys → infinite Fast Refresh loop) and **A10** (Radix `pointer-events` leak on `<body>`).
+</Callout>
+
 ## What "fast" actually means here
 
 The targets are stricter than the typical web app baseline:
@@ -426,6 +430,44 @@ The audit captured `/checkpoints` ×2, `/reviews` ×3, `/agents` ×2 in a single
 
 `experimental.turbopackFileSystemCacheForDev: false` was set for a Next 15 Turbopack bug. Next 16 doesn't recognize it (`⨯ turbopackFileSystemCacheForDev` at boot). Audit before retaining flag-style configs across major Next upgrades; remove ones that show up as `⨯` in the dev log.
 
+### A15. Don't read the same JSON file repeatedly within one request
+
+Even after parallelizing per-A1, hot endpoints often read the **same** plugin-config or env-config file multiple times in one request. The `/branch/<x>/actions` endpoint discovered this: a manifest with 5 env entries from `@papercupai/cloudflare-pages.json` would do 5 separate `fs.readFile` calls. Multiply by N actions per request and you have NM redundant reads.
+
+Fix: pass a request-scoped `Map<string, Promise<unknown>>` cache through to all the resolution helpers; first reader populates, subsequent readers reuse the same Promise.
+
+```ts
+// ❌ Wrong — same file read M times within one resolveEnv call,
+//             and again × N for each of N actions in the parent loop
+async function resolveEnv(manifest, args) {
+  for (const [name, src] of Object.entries(manifest.env)) {
+    if (src.from === 'plugin') {
+      const cfg = await readJson(`plugin-configs/${src.plugin}.json`); // ← reads again every entry
+      ...
+    }
+  }
+}
+
+// ✅ Right — request-scoped cache, awaitable Promise stored once
+async function resolveEnv(manifest, args: { readCache?: Map<string, Promise<unknown>> }) {
+  const cache = args.readCache ?? new Map();
+  const cachedReadJson = (path) => {
+    let p = cache.get(path);
+    if (!p) { p = readJson(path); cache.set(path, p); }
+    return p;
+  };
+  // ...all entries now share the cache; same path = same Promise = one read
+}
+
+// Caller passes ONE Map across N parallel resolveEnv invocations:
+const envReadCache = new Map<string, Promise<unknown>>();
+await Promise.all(actions.map(a => resolveEnv(a.manifest, { ..., readCache: envReadCache })));
+```
+
+Measured: `/branch/<x>/actions` 1.5–3s → 30–590ms (warm 30ms; ~100× per-request speedup on the read fan-out).
+
+The pattern generalizes to any "look up a config field" path called repeatedly per request: pass a Map; let the first reader pay the cost; let everyone else reuse the Promise.
+
 ## What NOT to do — agent / API design
 
 ### A13. Don't expose unbounded query tools to AI agents
@@ -462,29 +504,83 @@ The following measurements were taken on `localhost:3055/harness` during a fresh
 | `/api/harness/projects` | 5-8s | **2.6s** | A1+A9: parallelize fs reads + merge passes |
 | `/api/harness/projects/lite` | n/a (added) | **0.15-0.6s** | A3: hot paths migrated to /lite |
 | `/api/harness/<slug>/log/stream?tail=500` | 6.6s | **0.3-2s** | tail-only file read + batched SSE write |
-| `/api/harness/<slug>/branch/<x>/actions` | 6-10s | **30-590ms** | A1: parallelize discovery + dedup'd resolveEnv reads |
+| `/api/harness/<slug>/branch/<x>/actions` | 6-10s | **30-590ms** | A1+A15: parallelize discovery + dedup'd resolveEnv reads via shared cache |
 | `/api/templates` | slow (loop) | **53ms** | A1: parallelize template manifest scan |
 | Dashboard freeze ("7 issues") | infinite loop | **clean** | A8: dedup'd `replan` key |
 | Click responsiveness | 5s timeout | **instant** | A10: Radix `pointer-events: none !important` |
 
 **Compounded result: ~225× speedup on warm-cache TTFB (18.7s → 83ms); the dashboard now feels native on localhost.** Patterns codified into a CI-enforced lint test at `apps/operator/lib/perf-anti-patterns.test.ts` — see "Compliance" below.
 
+### Recurring patterns observed across all the fixes
+
+Eight separate slow endpoints reduced to **two** root patterns:
+
+1. **Serial fs/PG reads in a loop** (A1, A2, A9) — eight callsites, each producing 5–25s of dead time. `Promise.all` collapses them to single-call latency. The fact that this happened EVERYWHERE (operator, libraries, deeply nested) is a signal that the synchronous-mental-model leaks into async code by default. Treat **any new** loop-with-await as suspect.
+
+2. **Repeated reads of the same file/config within one request** (A15) — even after parallelizing, the *same file* gets read N times when N actions reference it. A request-scoped Map cache turns N×M reads into N+1.
+
+A third pattern is harder to catch but biggest in absolute pain:
+
+3. **Radix focus-trap inline-style leaks** (A10) — twice in one session, the page went "totally frozen" because Radix left a `pointer-events` inline style on a DOM element after the dialog closed. Both leaks were on different elements (`.h-cmd` and `<body>`) but had the same root: Radix lifecycle bugs we don't control. The fix is always `!important` on the override CSS; trust the dialog's `aria-modal` for actual focus-trap semantics.
+
+### What this session demonstrated
+
+- **20-second mystery endpoints are usually one of the patterns above.** Don't reach for "Next.js dev mode is just slow"; instrument the handler with `t0/t1` markers, find the actual bottleneck, parallelize.
+- **The `/lite` endpoint pattern is a smell.** If you have `/things` and `/things/lite`, every callsite using `/things` "just in case" is overpaying. Default to `/lite`; justify each upgrade.
+- **Lint guards beat memory.** Patterns added to `perf-anti-patterns.test.ts` are caught at CI time. Patterns that only live in this doc require humans to remember.
+- **The BASELINE ratchet works.** Started at 9 grandfathered offenders, now at 3. The stale-baseline check forces the list to shrink as fixes land, so this isn't "permanent debt" — it's a queue.
+
 ## Compliance — how to use this page
 
 **Before any change**:
-1. Read this page once if you haven't (subsequent reads can skim the "What NOT to do" section as a check-list).
-2. If your change matches an A1-A14 anti-pattern, **change the approach** before writing the code.
-3. If you find a NEW pattern that should be in this list, add it as A15+ with measurement.
+1. Read this page once if you haven't (subsequent reads can skim the "What NOT to do" sections as a checklist).
+2. If your change matches an A1–A15 anti-pattern, **change the approach** before writing the code.
+3. If you find a NEW pattern that should be in this list, add it as A16+ with measurement, then add a corresponding rule to the lint test if it's regex-detectable.
 
-**Automated guard**: `apps/operator/lib/perf-anti-patterns.test.ts` codifies A1, A2, A4, A6, A7, A9 as a vitest test. CI runs it; new offenders fail with a pointer back to this page.
+### Automated guard
 
-The test ratchets via a `BASELINE` constant — existing offenders are grandfathered, only NEW occurrences fail. The baseline shrinks over time as offenders get fixed (see commit `c15478b` for an example: parallelize then drop the corresponding A9 entry from BASELINE). To intentionally allow a single line, append `// perf:allow A<N> <reason>` to it.
+`apps/operator/lib/perf-anti-patterns.test.ts` is a vitest CI guard that codifies the regex-detectable rules. As of the latest update, it covers:
 
-**Before merging**:
-1. Run the perf guard: `cd apps/operator && npx vitest run lib/perf-anti-patterns.test.ts`
-2. Test the affected endpoint: `time curl http://localhost:3055/<your-endpoint>` — should match the targets at the top.
-3. Verify no new issues in `/harness` page console (`verdict goto http://localhost:3055/harness && verdict console error` works for this).
-4. Check the dev server log for new `⚠ Fast Refresh full reload` lines — those signal the same kind of duplicate-key issue we fixed in A8.
+| Rule | What it catches |
+|---|---|
+| **A1** | `for { … await fs.readFile … }` — serial fs reads in a loop |
+| **A2** | `for { … getHarnessPg(…) … }` — per-slug PG pool open in a loop |
+| **A4** | `spawn('psql' / 'pg_dump', …)` — runtime shell-out to PG client binaries |
+| **A6** | `<details>` wrapping a heavy JSX component (use `LazyDetails`) |
+| **A7** | `setInterval(…, 500)` — 500 ms "safety" polling |
+| **A9** | `for { … await import("…") … }` — dynamic import inside a hot loop |
+
+Rules NOT regex-detectable (and so checked manually / via runtime symptoms): A3, A5, A8, A10, A11, A12, A13, A14, A15.
+
+### Ratchet pattern
+
+The test ratchets via a `BASELINE` constant — existing offenders are grandfathered, only NEW occurrences fail CI. The baseline shrinks over time as offenders are fixed; a paired stale-baseline check forces the list to actually shrink (BASELINE entries that no longer match real hits also fail the test).
+
+Current BASELINE — 3 reasoned exceptions:
+
+```ts
+A1: app/api/plugin-runtime/[slug]/[plugin]/[...path]/route.ts  (small-N candidates list, ~3-5 paths,
+                                                                parallelization is a wash)
+A6: app/_components/OperatorPanel.tsx                          (paperclip-active file; one
+                                                                <details> per directive — small impact,
+                                                                edit risk too high to bundle)
+A7: app/settings/voice/page.tsx                                (justified — bounded 5-attempt
+                                                                cap on SpeechSynthesis.voiceschanged
+                                                                detection, total ≤ 2.5s)
+```
+
+To intentionally allow a single line, append `// perf:allow A<N> <reason>` to it.
+
+### Before merging
+
+1. **Run the perf guard**: `cd apps/operator && npx vitest run lib/perf-anti-patterns.test.ts`
+2. **Test the affected endpoint** with `time curl http://localhost:3055/<your-endpoint>` — should match the targets at the top of this page (localhost endpoints should be a small fraction of stated network latencies).
+3. **Verify no new issues in the `/harness` page console** via verdict-cli:
+   ```
+   verdict goto http://localhost:3055/harness && verdict console error
+   ```
+4. **Watch the dev server log** for new `⚠ Fast Refresh full reload` lines — those signal the duplicate-key issue we fixed in A8. Also watch for `[plugin-mount]` log spam, which signals A5 module re-evaluation.
+5. **If the page goes "totally frozen"**: it's almost certainly A10 — either inline `pointer-events: auto` left on a closed Radix dialog (covers clicks) or inline `pointer-events: none` left on `<body>` (entire page unclickable). Both fixes are `!important` overrides; see A10 for the snippets.
 
 ## Cheat sheet — what to do, in order
 
