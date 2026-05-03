@@ -447,9 +447,6 @@ function ensurePapercuspMcpRegistered(): void {
     return c.json({ error: 'unknown harness slug', slug }, 404);
   }
 
-  // Try to adopt a prewarmed handle for this slug+laneId+command. Awaits
-  // the prewarm promise so a dock that fires /prewarm and /spawn back-
-  // to-back doesn't race past the slot before it's populated.
   const key = prewarmKey(slug, body.laneId, cfg.command);
   const reserved = prewarmed.get(key);
   if (reserved) {
@@ -458,11 +455,16 @@ function ensurePapercuspMcpRegistered(): void {
     if (reserved.reaper) clearTimeout(reserved.reaper);
     if (handle && !handle.killed) {
       try { handle.pty.resize(cols, rows); } catch { /* ignore */ }
-      // Refill the pool so the next click is also instant. Safe to do
-      // because PiPanel now dedupes spawn POSTs across StrictMode mounts
-      // (see inFlightSpawns map there) — without that dedup, this
-      // refill would leak ptys at 2× per click.
-      reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
+      // Defer the refill so the user's spawn response returns immediately.
+      // reservePrewarmSlot calls spawnPty synchronously, which forks omp
+      // and blocks for ~150-200 ms — without setImmediate, every spawn
+      // adoption pays the next refill's fork time before responding,
+      // negating the prewarm benefit. Decoupling lets the response fly
+      // out in <5 ms while the refill races in the background.
+      setImmediate(() => {
+        try { reservePrewarmSlot({ slug, laneId: body.laneId, cfg }); }
+        catch { /* refill is best-effort */ }
+      });
       return c.json({
         id: handle.id,
         command: handle.command,
@@ -486,10 +488,12 @@ function ensurePapercuspMcpRegistered(): void {
       env: cfg.env,
     });
     attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
-    // Cold-spawn path also kicks a refill — covers the case where the
-    // prewarm hasn't been fired yet (e.g. dock effect ordering, or a
-    // cap-hit on the original prewarm).
-    reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
+    // Cold-spawn path also kicks a refill — deferred (same reasoning
+    // as the prewarm-adopt branch above).
+    setImmediate(() => {
+      try { reservePrewarmSlot({ slug, laneId: body.laneId, cfg }); }
+      catch { /* refill is best-effort */ }
+    });
     return c.json({
       id: handle.id,
       command: handle.command,
