@@ -846,7 +846,17 @@ function ManifestOrLegacySpecEditor({ slug, projectPath, alive, onClose }: {
     return () => { cancelled = true; };
   }, [slug]);
   if (configFiles === 'pending') {
-    return <SpecEditor inline slug={slug} projectPath={projectPath} alive={alive} onClose={onClose} />;
+    // Show a skeleton instead of SpecEditor. Mounting SpecEditor here
+    // and then swapping to ManifestSpecEditor when the manifest fetch
+    // resolves causes a visible swap of editor tabs (Spec/Agents/...
+    // → custom config-files list) plus a Monaco editor remount. The
+    // fetch is a single GET — ~100-200ms — so a brief placeholder is
+    // the right UX, not a wrong editor.
+    return (
+      <div style={{ flex: 1, padding: '2rem', color: 'var(--fg-mute)' }} aria-busy="true">
+        loading…
+      </div>
+    );
   }
   if (configFiles && configFiles.length > 0) {
     return <ManifestSpecEditor inline slug={slug} projectPath={projectPath} alive={alive} onClose={onClose} configFiles={configFiles} />;
