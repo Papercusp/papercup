@@ -137,6 +137,9 @@ export function getVoiceConfig(): VoiceConfig {
 export function updateVoiceConfig(patch: Partial<VoiceConfig>): void {
   config = { ...config, ...patch };
   saveConfig();
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    window.dispatchEvent(new Event('pc-voice-config-changed'));
+  }
 }
 
 /**
@@ -159,6 +162,10 @@ export function initVoiceMode(): void {
   const hasWebSpeechSTT = !!SR;
   const hasWebSpeechTTS = !!window.speechSynthesis;
   setState({ supported: true, hasWebSpeechSTT, hasWebSpeechTTS });
+
+  // Prime the TTS engine cache so the first speak() routes through
+  // the user's chosen engine instead of defaulting to Browser TTS.
+  void fetchPreferredEngine();
 
   // Restore last mode from config so navigation preserves user choice.
   // Skip if state.mode is already non-off (init may run again on hot reload).
@@ -465,6 +472,17 @@ function onUtteranceFinal(text: string): void {
 }
 
 /**
+ * Test helper used by the "Test wake word" button in /settings/voice.
+ * Fires onUtteranceFinal as if a real STT engine had just produced
+ * a transcript, exercising the full dispatch path (VoiceAppBridge →
+ * stripWakeWordAndPrefix → parseOperatorIntent).
+ */
+export function __simulateUtterance(text: string): void {
+  setState({ lastTranscript: text });
+  onUtteranceFinal(text);
+}
+
+/**
  * Speak text in the voice assigned to `role`. Queues if another role is
  * already speaking. Only one utterance plays at a time.
  */
@@ -519,9 +537,16 @@ function processSynthQueue(): void {
   isSynthSpeaking = true;
   setState({ status: 'speaking', speakingRole: next.role });
 
-  // Web Speech TTS happy path. Tauri/WebKitGTK lacks speechSynthesis;
-  // fall through to the engine-adapter route below in that case.
-  if (window.speechSynthesis) {
+  // Engine routing: only use Web Speech if the user explicitly picked it,
+  // OR if it's our last-resort fallback (no speechSynthesis would mean
+  // we go straight to the adapter route). Previously we always used
+  // speechSynthesis when available, ignoring the user's engine choice —
+  // so picking Kokoro in settings still produced robotic OS voices.
+  const cachedEngine = adapterEngineCache; // sync read; populated by prior fetch
+  const useBrowser =
+    cachedEngine === 'browser' ||
+    (cachedEngine === null && window.speechSynthesis && state.hasWebSpeechTTS);
+  if (useBrowser && window.speechSynthesis) {
     const utt = new SpeechSynthesisUtterance(next.text);
     utt.rate = config.rate;
     const voiceName = voiceForRole(next.role);
@@ -533,13 +558,14 @@ function processSynthQueue(): void {
     utt.onend = () => { processSynthQueue(); };
     utt.onerror = () => { processSynthQueue(); };
     window.speechSynthesis.speak(utt);
+    // Kick off prefs fetch in the background so the next utterance can
+    // route correctly once we know the user's pick.
+    if (cachedEngine === null) void fetchPreferredEngine();
     return;
   }
 
-  // Adapter route — used in environments without Web Speech TTS (Tauri).
-  // Asks the server which engine the user has configured + uses the
-  // /operator-tts-preview endpoint as a unified synth proxy. Server
-  // proxies Kokoro/ElevenLabs/OpenAI/Cartesia using the user's keys.
+  // Adapter route — Kokoro / ElevenLabs / OpenAI / Cartesia via the
+  // server-side TTS preview endpoint (keys never leave the server).
   void synthViaAdapter(next.text).finally(() => processSynthQueue());
 }
 

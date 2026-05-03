@@ -471,13 +471,16 @@ export default function VoiceSettingsPage() {
       {/* ── EXISTING WAKE-WORD + RATE + PER-ROLE VOICES ──────────── */}
       <section style={{ marginBottom: 32 }}>
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Wake word (always-on mode)</h2>
-        <input
-          type="text"
-          value={config.wakeWord}
-          onChange={(e) => onWakeWordChange(e.target.value)}
-          style={{ padding: '6px 10px', minWidth: 240, fontSize: 14 }}
-        />
-        <p style={hint}>3-syllable phrase that doesn't appear in normal speech (e.g. "hey operator").</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="text"
+            value={config.wakeWord}
+            onChange={(e) => onWakeWordChange(e.target.value)}
+            style={{ padding: '6px 10px', minWidth: 240, fontSize: 14 }}
+          />
+          <WakeWordTestButton wakeWord={config.wakeWord} />
+        </div>
+        <p style={hint}>3-syllable phrase that doesn't appear in normal speech (e.g. "hey operator"). Click <strong>Test wake word</strong> to simulate the dispatch path without using your voice.</p>
       </section>
 
       <section style={{ marginBottom: 32 }}>
@@ -694,6 +697,49 @@ function PerSlugVoiceTable({
         </button>
       </div>
     </div>
+  );
+}
+
+function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
+  const [busy, setBusy] = useState(false);
+  const [last, setLast] = useState<string | null>(null);
+
+  const onClick = async () => {
+    setBusy(true);
+    setLast(null);
+    try {
+      // Dispatch the same internal event the voicemode/Deepgram capture
+      // loops fire on a real utterance. VoiceAppBridge listens via
+      // `onFinalUtterance`, runs the engine-agnostic wake-word strip,
+      // then dispatches the intent.
+      const phrase = `${wakeWord} open`;
+      const m = await import('../../_components/voice/voice-mode');
+      // @ts-expect-error — internal helper for testing the dispatch path
+      const dispatch: undefined | ((s: string) => void) = (m as any).__simulateUtterance;
+      if (dispatch) {
+        dispatch(phrase);
+      } else {
+        // Fall back: directly notify all utterance listeners.
+        const listeners = (globalThis as any).__voiceUtteranceListeners as Set<(s: string) => void> | undefined;
+        if (listeners) listeners.forEach((fn) => fn(phrase));
+      }
+      setLast(`Sent: "${phrase}" — Operator panel should open. If not, see Setup → Voice troubleshooting.`);
+    } catch (e) {
+      setLast(`Error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button type="button" onClick={onClick} disabled={busy} style={btn}>
+        {busy ? 'Testing…' : 'Test wake word'}
+      </button>
+      {last && (
+        <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%' }}>{last}</span>
+      )}
+    </>
   );
 }
 

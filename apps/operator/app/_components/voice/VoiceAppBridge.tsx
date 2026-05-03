@@ -142,8 +142,23 @@ export function VoiceAppBridge(): null {
         const { getVoiceConfig } = await import('./voice-mode');
         const wakeWord = getVoiceConfig().wakeWord ?? 'hey operator';
         const stripped = stripWakeWordAndPrefix(text, wakeWord);
+        // Wake word with no verb → audible acknowledgement so the user
+        // knows the engine heard them. They then need to say
+        // "hey operator <verb>" as a single utterance — there's no
+        // separate listen-window like Siri.
+        if (stripped.matched && !stripped.trailing) {
+          const { speak } = await import('./voice-mode');
+          speak('Say a command after the wake word, like "open" or "approve sheets".', 'system:operator', 'polite');
+          return;
+        }
         const normalized = stripped.matched ? stripped.dispatchText : text;
         const intent = parseOperatorIntent(normalized);
+        // No matching intent → tell the user, so silence isn't a black hole.
+        if (stripped.matched && stripped.trailing && !intent) {
+          const { speak } = await import('./voice-mode');
+          speak(`I didn't recognize "${stripped.trailing}". Try open, scan, approve, or across workspaces.`, 'system:operator', 'polite');
+          return;
+        }
         if (intent) {
           if (intent.kind === 'open' || intent.kind === 'open-and-scan') {
             const { setOperatorState } = await import('../operator-shared-state');
