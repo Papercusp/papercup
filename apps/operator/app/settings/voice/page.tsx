@@ -61,12 +61,43 @@ export default function VoiceSettingsPage() {
   useEffect(() => {
     initVoiceMode();
     setConfig(getVoiceConfig());
+
+    // Browsers fire `voiceschanged` exactly once after the voice list
+    // is populated. Listen for that AND poll a few times in case the
+    // browser doesn't emit the event (some Linux Chromium builds);
+    // stop polling as soon as voices arrive or after a short window so
+    // we don't churn the page on environments without Web Speech (Tauri
+    // WebKitGTK), where the list stays empty forever.
+    let stopped = false;
+    let attempts = 0;
+    const maxAttempts = 10; // 10 × 500ms = 5s ceiling
+    let interval: ReturnType<typeof setInterval> | null = null;
+
     const tryRefresh = () => {
+      if (stopped) return;
       const v = listAvailableVoices();
-      if (v.length) setVoices(v);
+      if (v.length) {
+        // Only set state when the list actually changed length — avoids
+        // a no-op render loop.
+        setVoices((prev) => (prev.length === v.length ? prev : v));
+        stopped = true;
+        if (interval) clearInterval(interval);
+        return;
+      }
+      attempts += 1;
+      if (attempts >= maxAttempts) {
+        stopped = true;
+        if (interval) clearInterval(interval);
+      }
     };
+
     tryRefresh();
-    const t = setInterval(tryRefresh, 500);
+    interval = setInterval(tryRefresh, 500);
+
+    const onVoicesChanged = () => tryRefresh();
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      window.speechSynthesis.addEventListener?.('voiceschanged', onVoicesChanged);
+    }
 
     void Promise.all([
       fetch('/api/agent-mcp/operator-voice-prefs').then((r) => r.ok ? r.json() : null),
@@ -80,7 +111,13 @@ export default function VoiceSettingsPage() {
       if (ss) setSttSpend(ss as SttSpendState);
     });
 
-    return () => clearInterval(t);
+    return () => {
+      stopped = true;
+      if (interval) clearInterval(interval);
+      if (typeof window !== 'undefined' && window.speechSynthesis) {
+        window.speechSynthesis.removeEventListener?.('voiceschanged', onVoicesChanged);
+      }
+    };
   }, []);
 
   const savePrefsPatch = useCallback(async (patch: Partial<VoicePrefs>) => {
