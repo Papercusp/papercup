@@ -30,21 +30,69 @@ import {
   type VoiceState,
 } from './voice-mode';
 
-const consumers = new Set<string>();
-let consumerListeners = new Set<() => void>();
+/**
+ * Voice consumer priority registry (v4 §2b).
+ *
+ * Multiple chrome surfaces can claim utterances; the highest-priority
+ * registered consumer wins. Oracle is the implicit lowest (no
+ * registration needed — falls through when no consumer is registered).
+ *
+ * Priority order:
+ *   panel-open               highest — the Operator panel is open
+ *   background-toast         a 5s/8s undo toast is on-screen
+ *   standing-approval-prompt (deferred per v4; reserved)
+ *   oracle                   lowest, implicit
+ */
+export type VoiceConsumerPriority =
+  | 'panel-open'
+  | 'background-toast'
+  | 'standing-approval-prompt';
+
+const PRIORITY_RANK: Record<VoiceConsumerPriority, number> = {
+  'panel-open': 100,
+  'background-toast': 50,
+  'standing-approval-prompt': 25,
+};
+
+interface Consumer {
+  name: string;
+  priority: VoiceConsumerPriority;
+  /** Optional callback — when present, this consumer also handles the
+   *  utterance directly (high-priority consumers like the toast cancel
+   *  hook). When absent, the consumer's only effect is to suppress
+   *  lower-priority routing. */
+  onUtterance?: (text: string) => void;
+}
+
+const consumers: Map<string, Consumer> = new Map();
+const consumerListeners = new Set<() => void>();
 
 /**
- * Register a higher-priority voice consumer (e.g. the Operator panel
- * when open). While any consumer is registered, the app-level bridge
- * suppresses its routing to Oracle. Returns a deregister function.
+ * Register a voice consumer. Defaults to `panel-open` priority for
+ * back-compat with the original (name-only) signature.
+ *
+ * Returns a deregister function.
  */
-export function registerVoiceConsumer(name: string): () => void {
-  consumers.add(name);
+export function registerVoiceConsumer(
+  name: string,
+  priority: VoiceConsumerPriority = 'panel-open',
+  onUtterance?: (text: string) => void,
+): () => void {
+  consumers.set(name, { name, priority, onUtterance });
   consumerListeners.forEach((l) => l());
   return () => {
     consumers.delete(name);
     consumerListeners.forEach((l) => l());
   };
+}
+
+/** Highest-priority registered consumer, or null if none. */
+function topConsumer(): Consumer | null {
+  let best: Consumer | null = null;
+  for (const c of consumers.values()) {
+    if (!best || PRIORITY_RANK[c.priority] > PRIORITY_RANK[best.priority]) best = c;
+  }
+  return best;
 }
 
 function hasHigherPriorityConsumer(): boolean {
@@ -67,10 +115,21 @@ export function VoiceAppBridge(): null {
     });
 
     const unsubUtterance = onFinalUtterance(async (text) => {
-      // Skip if voice mode is off, or another consumer is in priority.
+      // Skip if voice mode is off.
       if (voiceStateRef.current.mode === 'off') return;
-      if (hasHigherPriorityConsumer()) return;
       if (!text || text.trim().length < 2) return;
+
+      // Highest-priority consumer wins. If it has an `onUtterance`
+      // handler (e.g. background-toast looking for "cancel"), let it
+      // process the utterance and stop. If it has no handler (e.g.
+      // panel-open consumer, which uses its own onFinalUtterance
+      // subscription), still suppress Oracle routing.
+      const top = topConsumer();
+      if (top) {
+        if (top.onUtterance) top.onUtterance(text);
+        return;
+      }
+      if (hasHigherPriorityConsumer()) return;
 
       // Lazy-init session id (Oracle expects a stable session per dock).
       if (!sessionIdRef.current) {

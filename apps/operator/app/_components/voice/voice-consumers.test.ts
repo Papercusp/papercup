@@ -21,3 +21,24 @@ describe('voice consumer registration', () => {
     expect(() => dereg()).not.toThrow();
   });
 });
+
+describe('voice consumer priority', () => {
+  it('back-compat: name-only registration defaults to panel-open', () => {
+    const dereg = registerVoiceConsumer('compat');
+    // Existence check; full priority semantics tested via top-consumer probe
+    // in integration. Here we just assert no throw + returns deregister.
+    expect(typeof dereg).toBe('function');
+    dereg();
+  });
+
+  it('accepts explicit priority + onUtterance handler', () => {
+    let received: string | null = null;
+    const dereg = registerVoiceConsumer('toast', 'background-toast', (t) => {
+      received = t;
+    });
+    expect(typeof dereg).toBe('function');
+    dereg();
+    // Handler not invoked on register/deregister; only on utterance routing
+    expect(received).toBeNull();
+  });
+});
