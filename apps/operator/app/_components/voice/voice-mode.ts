@@ -268,6 +268,16 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
           setState({ lastTranscript: text });
           onUtteranceFinal(text);
         },
+        onSoftCap: (usd) => {
+          // Server already deduped to once-per-day; just speak it.
+          speak(`Heads up: Deepgram spend just crossed ${usd.toFixed(2)} today.`, 'system:stt-soft-cap', 'polite');
+        },
+        onHardCap: (usd) => {
+          speak(`Deepgram daily cap reached at ${usd.toFixed(2)}; switching microphone off.`, 'system:stt-hard-cap', 'assertive');
+          whisperCapture = null;
+          // Fall back to wake-word listening so always-on still works (free path).
+          startWakeWordListening();
+        },
       });
       return;
     }

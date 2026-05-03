@@ -49,6 +49,10 @@ export interface DeepgramStreamOptions {
   onPartial?: (text: string) => void;
   /** Called when a final (utterance-end) transcript is available. */
   onFinal: (text: string) => void;
+  /** Soft-cap crossed (called at most once per UTC day per process). */
+  onSoftCap?: (todayUsd: number) => void;
+  /** Hard-cap crossed — stream auto-stops; caller should surface a toast. */
+  onHardCap?: (todayUsd: number) => void;
 }
 
 export interface DeepgramStream {
@@ -102,11 +106,23 @@ export async function startDeepgramStream(opts: DeepgramStreamOptions): Promise<
 
   async function postSttSpend(minutes: number): Promise<void> {
     try {
-      await fetch('/api/agent-mcp/operator-stt-spend', {
+      const r = await fetch('/api/agent-mcp/operator-stt-spend', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ minutes }),
       });
+      if (!r.ok) return;
+      const sig = await r.json() as { todayUsd?: number; fireSoftCap?: boolean; hardCapTripped?: boolean };
+      if (sig.fireSoftCap) opts.onSoftCap?.(sig.todayUsd ?? 0);
+      if (sig.hardCapTripped) {
+        opts.onHardCap?.(sig.todayUsd ?? 0);
+        // Self-stop: no further audio billed.
+        try { window.clearInterval(heartbeat); } catch {}
+        stopped = true;
+        try { recorder?.stop(); } catch {}
+        try { ws.close(1000, 'hard-cap'); } catch {}
+        try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+      }
     } catch { /* network-flaky; we lose this slice but the next heartbeat catches up */ }
   }
 
