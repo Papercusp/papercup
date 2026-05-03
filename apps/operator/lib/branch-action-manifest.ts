@@ -159,54 +159,81 @@ export async function resolveEnv(
   args: {
     harnessConfigsDir: string;
     contributingPlugin?: string;
+    /** Per-request readJson cache. When the caller is resolving env
+     *  across many actions in parallel (e.g. /branch/<x>/actions),
+     *  pass a shared Map to dedupe reads of the same plugin-config
+     *  and env.json files across all calls. See /docs/performance #A1. */
+    readCache?: Map<string, Promise<unknown>>;
   },
 ): Promise<EnvResolution> {
   const out: EnvResolution = { env: {}, missing: [] };
   if (!manifest?.env) return out;
 
-  for (const [name, src] of Object.entries(manifest.env)) {
-    if (src.from === 'literal') {
-      out.env[name] = src.value;
-      continue;
+  // Local cache covers within-this-call dedup even when no shared cache
+  // is passed. The same plugin-config file is often referenced by
+  // multiple env entries on the same manifest.
+  const cache = args.readCache ?? new Map<string, Promise<unknown>>();
+  const cachedReadJson = <T>(path: string): Promise<T | null> => {
+    let p = cache.get(path);
+    if (!p) {
+      p = readJson(path);
+      cache.set(path, p);
     }
+    return p as Promise<T | null>;
+  };
 
-    let value: string | undefined;
-
-    if (src.from === 'plugin') {
-      const cfg = await readJson<Record<string, unknown>>(
-        join(args.harnessConfigsDir, 'plugin-configs', `${src.plugin}.json`),
-      );
-      const v = cfg?.[src.field];
-      if (typeof v === 'string' && v.length > 0) value = v;
-    } else if (src.from === 'config') {
-      if (!args.contributingPlugin) {
-        // 'config' only valid for plugin-contributed actions.
-        if (src.required) out.missing.push({ name, from: src.from, field: src.field, description: src.description });
-        continue;
+  // Resolve every entry in parallel — independent reads.
+  const resolved = await Promise.all(
+    Object.entries(manifest.env).map(async ([name, src]) => {
+      if (src.from === 'literal') {
+        return { name, value: src.value, missing: false as const };
       }
-      const cfg = await readJson<Record<string, unknown>>(
-        join(args.harnessConfigsDir, 'plugin-configs', `${args.contributingPlugin}.json`),
-      );
-      const v = cfg?.[src.field];
-      if (typeof v === 'string' && v.length > 0) value = v;
-    } else if (src.from === 'harness') {
-      const env = await readJson<Record<string, unknown>>(
-        join(args.harnessConfigsDir, 'env.json'),
-      );
-      const v = env?.[src.field];
-      if (typeof v === 'string' && v.length > 0) value = v;
-    }
 
-    if (value !== undefined) {
-      out.env[name] = value;
-    } else if (src.required) {
-      out.missing.push({
-        name,
-        from: src.from,
-        plugin: src.from === 'plugin' ? src.plugin : (src.from === 'config' ? args.contributingPlugin : undefined),
-        field: 'field' in src ? src.field : undefined,
-        description: src.description,
-      });
+      let value: string | undefined;
+
+      if (src.from === 'plugin') {
+        const cfg = await cachedReadJson<Record<string, unknown>>(
+          join(args.harnessConfigsDir, 'plugin-configs', `${src.plugin}.json`),
+        );
+        const v = cfg?.[src.field];
+        if (typeof v === 'string' && v.length > 0) value = v;
+      } else if (src.from === 'config') {
+        if (!args.contributingPlugin) {
+          return src.required
+            ? { name, missing: true as const, src }
+            : { name, missing: false as const, value: undefined };
+        }
+        const cfg = await cachedReadJson<Record<string, unknown>>(
+          join(args.harnessConfigsDir, 'plugin-configs', `${args.contributingPlugin}.json`),
+        );
+        const v = cfg?.[src.field];
+        if (typeof v === 'string' && v.length > 0) value = v;
+      } else if (src.from === 'harness') {
+        const env = await cachedReadJson<Record<string, unknown>>(
+          join(args.harnessConfigsDir, 'env.json'),
+        );
+        const v = env?.[src.field];
+        if (typeof v === 'string' && v.length > 0) value = v;
+      }
+
+      return { name, value, src, missing: false as const };
+    }),
+  );
+
+  for (const r of resolved) {
+    if (r.value !== undefined) {
+      out.env[r.name] = r.value;
+    } else if (r.missing || ('src' in r && r.src && 'required' in r.src && r.src.required)) {
+      const src = ('src' in r ? r.src : undefined) as { from?: string; plugin?: string; field?: string; description?: string } | undefined;
+      if (src) {
+        out.missing.push({
+          name: r.name,
+          from: src.from as 'plugin' | 'config' | 'harness',
+          plugin: src.from === 'plugin' ? src.plugin : (src.from === 'config' ? args.contributingPlugin : undefined),
+          field: src.field,
+          description: src.description,
+        });
+      }
     }
   }
   return out;

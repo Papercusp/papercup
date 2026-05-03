@@ -43,10 +43,16 @@ export async function GET(_req: Request, { params }: Params) {
     harnessConfigsDir, globalPluginsDir,
   });
 
+  // Request-scoped cache shared across all per-action resolveEnv calls.
+  // Many actions reference the same plugin-config files (e.g. all
+  // @papercupai/cloudflare-pages actions hit the same .json), so sharing
+  // the cache turns N×M reads into N+1. See /docs/performance #A1.
+  const envReadCache = new Map<string, Promise<unknown>>();
+
   const enriched = await Promise.all(actions.map(async (a) => {
     const runs = await listRuns(project.path, branch, a.name);
     const envResolution = a.manifest?.env
-      ? await resolveEnv(a.manifest, { harnessConfigsDir, contributingPlugin: a.pluginSlug })
+      ? await resolveEnv(a.manifest, { harnessConfigsDir, contributingPlugin: a.pluginSlug, readCache: envReadCache })
       : { env: {}, missing: [] };
     return {
       name: a.name,
