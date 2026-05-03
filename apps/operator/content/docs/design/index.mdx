@@ -35,6 +35,9 @@ The library set documented here was chosen, installed, and applied across the ha
 | Hover card (rich content on hover) | `@radix-ui/react-hover-card` | Direct import — used in `FeatureLink.tsx` |
 | Icons | `lucide-react` | `import { ChevronRight } from 'lucide-react'` |
 | Form with validation, dirty tracking, async submit | `react-hook-form` + `zod` (or `ajv` for plugin schemas) | `useFormWith(schema)` + `<FormField>` + `<SubmitButton>` from `@/lib/forms` |
+| Tabular list with custom-styled rows (status pills, action buttons, hover popovers, expand-to-detail) | `@restart/grid-core` `RichGrid` | `<RichGrid<Row> rows columns={[{key, header, render: ({ row }) => …}]} getRowId />` |
+| Static admin table with declarative cell types (text, stepper, price, checkbox, expand) | `@restart/grid-core` `GridTable` | `<GridTable headers data columnTypes={{ qty: 'stepper' }} />` |
+| 5000+ rows of mostly-scalar data, performance is the constraint | `@restart/grid-core` `DataGridShell` (canvas) | `<DataGridShell headers data formatters />` |
 
 ## Hard rules
 
@@ -52,6 +55,8 @@ The library set documented here was chosen, installed, and applied across the ha
 
 7. **Never hand-roll `useState<string>` chains for form fields.** Use `react-hook-form` via `useFormWith(zodSchema)` (or the AJV resolver for plugin-author JSON Schemas). The wrappers live in `apps/operator/lib/forms/` and the migration recipe is in [the libraries reference](/docs/design/libraries#react-hook-form--hookformresolvers--ajv--zod). Exceptions: single-textarea chat composers and Monaco code editors — both explicitly out of scope for RHF.
 
+8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@restart/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (`MarkdownPreview`) — those are content-author tables, not UI tables.
+
 ## Soft rules (judgment calls)
 
 - **Tooltips on grid-cell text.** When you're rendering thousands of rows in `RichGrid` and want truncation tooltips, `title="…"` on the cell `<span>` is fine. Wrapping each row in a Radix Tooltip mounts thousands of portals and listeners — bad perf. The "no native title=" rule is for *action elements*, not data cells.
@@ -61,6 +66,59 @@ The library set documented here was chosen, installed, and applied across the ha
 - **HoverCard vs Tooltip.** Use Tooltip for short text labels. Use HoverCard for rich content (multi-line, links, badges, images) like the feature card in `FeatureLink.tsx`.
 
 - **Where to put the shared CSS.** Radix sets `data-state="active"` (when there's a matching `<Tabs.Content>`) and `aria-selected="true"` (always, on the trigger). Some of our existing CSS uses `.on` to mean active. We bridge with `[data-state="active"]` and `[aria-selected="true"]` attribute selectors at the bottom of `harness.css`. Add new aliases there, not inline.
+
+## Grids — `RichGrid` vs `GridTable` vs `DataGridShell`
+
+Three grid components in `@restart/grid-core`. Pick by what your cells need to do, not by row count alone.
+
+| Use… | When | Cell style | Virtualization | Examples |
+|---|---|---|---|---|
+| **`RichGrid`** | You want JSX cells: status pills, hover popovers, action buttons, multi-line content, per-row expand | Anything you can render in React | Optional via `virtualMode` | `FeatureList.tsx`, `ProposalsPanel.tsx`, `ArchivesPanel.tsx`, `IssuesList.tsx`, `SnapshotsPanel.tsx` |
+| **`GridTable`** | Static admin page, low row count (under 200), declarative cell *types* (`text`, `stepper`, `price`, `checkbox`, `expand`), SSR-rendered HTML matters | Built-in via column `type:` | None | small admin tables, settings pages |
+| **`DataGridShell`** | Catalog-style scrolling, 5000+ rows of mostly-scalar data, DOM perf hurts | Canvas pixels (cells aren't React) | Built-in (canvas) | `HarnessConsoleView` (papercup), `WholesaleGlideGrid` |
+
+Authoring style differs:
+
+```tsx
+// RichGrid — you write the cell render function
+<RichGrid<Project>
+  rows={projects}
+  getRowId={(p) => p.id}
+  columns={[
+    { key: 'name',   header: 'Project', width: 3, render: ({ row }) => <b>{row.name}</b> },
+    { key: 'status', header: 'Status',  width: 1, render: ({ row }) => <StatusPill value={row.status} /> },
+    { key: 'budget', header: 'Budget',  width: 1, align: 'right', render: ({ row }) => formatCents(row.budgetCents) },
+  ]}
+/>
+
+// GridTable — declarative columns, one of a fixed set of cell types
+<GridTable
+  headers={['name', 'qty', 'priceCents', 'select']}
+  data={items}
+  columnTypes={{ qty: 'stepper', priceCents: 'price', select: 'checkbox' }}
+/>
+
+// DataGridShell — canvas, formatters override scalar cells
+<DataGridShell
+  headers={['name', 'status', 'budgetCents']}
+  data={projects}
+  formatters={{ budgetCents: (v) => formatCents(v) }}
+/>
+```
+
+### Decision tree
+
+1. Are your cells *just text and numbers* with maybe a date format? → `GridTable`
+2. Do you need pills / icons / hover cards / action buttons / per-row expand? → `RichGrid`
+3. Do you have 5000+ rows where scrolling perf is the bottleneck? → `DataGridShell`
+
+If you're tempted by both #2 and #3, you're in the wrong place — that's the `@restart/bloom-grid` use case (search-driven catalog with rich cells).
+
+### Critical gotcha for `RichGrid`
+
+The render signature is **`render: ({ row }) =>`** — destructure. Writing `render: (row) =>` *looks* like it works but actually receives the cell context object, so `row.name` etc. silently come back `undefined`. This bites every new contributor at least once.
+
+For full sort, virtualization, multi-row expand, and theme-token reference, see [`libs/papergrid/grid-core/README.md`](https://github.com/...) — the canonical grid docs.
 
 ## Where to look for examples
 
@@ -87,8 +145,13 @@ The library set documented here was chosen, installed, and applied across the ha
 | `Controller` for non-native widgets (MarkdownEditor, etc.) | `app/settings/oracle/page.tsx` |
 | Radix Collapsible (per-row state) | `CheckpointBanner.tsx` |
 | Radix Collapsible (replacing `<details>`) | `DepartmentHarnessDashboard.tsx` |
+| `RichGrid` with sort + multi-row expand | `FeatureList.tsx`, `ProposalsPanel.tsx` |
+| `RichGrid` with custom row hover/click | `IssuesList.tsx`, `ArchivesPanel.tsx` |
+| `RichGrid` with virtualization | `HarnessDashboard.tsx` (large feature list) |
+| `applySort` helper for client-side sort | `ProposalsPanel.tsx`, `IssuesList.tsx` |
 
 ## Pages
 
 - [Library reference](/docs/design/libraries) — per-library notes, install location, version, and why we picked it
-- [Gotchas & performance](/docs/design/gotchas) — known sharp edges, perf budgets, the data-state-vs-aria-selected trap, and migration anti-patterns
+- [Performance](/docs/design/performance) — render / bundle / network / layout / measurement rules every agent must follow
+- [Gotchas](/docs/design/gotchas) — known sharp edges, the data-state-vs-aria-selected trap, and migration anti-patterns
