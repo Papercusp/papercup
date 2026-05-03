@@ -92,6 +92,14 @@ export function OperatorBackgroundScanner() {
 
     const tick = async () => {
       if (pausedRef.current) return;
+      // CLI pause sentinel: respect `operator pause` even when the panel
+      // hasn't been opened (so sharedState.paused never flipped).
+      try {
+        const flag = await fetch('/api/agent-mcp/operator-pause-flag');
+        if (flag.ok && (await flag.json()).paused) return;
+      } catch {
+        /* ignore */
+      }
       try {
         const r = await fetch('/api/agent-mcp/operator-trigger-state');
         if (!r.ok) return;
