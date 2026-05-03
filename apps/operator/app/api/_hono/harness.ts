@@ -289,18 +289,23 @@ function tailFile(path: string, maxBytes = 64 * 1024): string {
  * mid-replan, and it never respawns experts. Detached background spawn;
  * caller does not block on the agent invocation.
  */
-function invokeScoperBackground(project: ProjectEntry, mode: 'proposal' | 'replan' | 'cleanup'): void {
+function invokeScoperBackground(
+  project: ProjectEntry,
+  mode: 'proposal' | 'replan' | 'cleanup' | 'consolidate',
+): { invocationId: string } {
   const { spawn } = require('node:child_process');
-  const harnessScript = harnessPath('run.sh');
+  const invocationId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const wrapper = `
     set -e
     export PROJECT_DIR="${project.path}"
     export STATE_DIR="${project.path}/.harness"
     export HARNESS_DIR="${harnessPackageDir()}"
     export LOG_DIR="$STATE_DIR/logs"
-    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR"
+    export SCOPER_INVOCATION_ID="${invocationId}"
+    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR" "$STATE_DIR/scoper-results" "$STATE_DIR/consolidate-results"
     source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|check_cost_cap|prune_logs)\\(\\)/,/^}/' "$HARNESS_DIR/run.sh")
     invoke scoper "MODE=${mode}"
+    echo "__INVOCATION_DONE__" >> "$STATE_DIR/scoper-results/${mode}-${invocationId}.log"
   `;
   const child = spawn('bash', ['-c', wrapper], {
     cwd: project.path,
@@ -309,6 +314,7 @@ function invokeScoperBackground(project: ProjectEntry, mode: 'proposal' | 'repla
     stdio: ['ignore', 'ignore', 'ignore'],
   });
   child.unref();
+  return { invocationId };
 }
 
 function launchRun(project: ProjectEntry, extra?: string): { ok: true; logPath: string } | { ok: false; error: string } {
@@ -2825,6 +2831,28 @@ harness.post('/:slug/cleanup', (c) => {
   if (!project) return c.json({ error: 'unknown project' }, 404);
   invokeScoperBackground(project, 'cleanup');
   return c.json({ ok: true });
+});
+
+/**
+ * Consolidate pass — runs scoper MODE=consolidate to dedup, surface
+ * conflicts, reorder by dependency tier, and budget-defer features
+ * across the post-parallel-expert queue. PATCH-only; no INSERTs or
+ * deletes. See prompts/scoper.md "MODE=consolidate" for the four-pass
+ * algorithm. Logged in user_actions.
+ */
+harness.post('/:slug/consolidate', async (c) => {
+  const slug = c.req.param('slug');
+  const project = resolveProject(slug);
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const invocationId = await recordUserAction(slug, 'consolidate', async () => {
+    const r = invokeScoperBackground(project, 'consolidate');
+    return {
+      summary: `Consolidate kicked off (invocation ${r.invocationId})`,
+      invocationId: r.invocationId,
+      result: r.invocationId,
+    };
+  });
+  return c.json({ ok: true, invocationId, mode: 'consolidate' });
 });
 
 harness.get('/:slug/plan-review', (c) => {

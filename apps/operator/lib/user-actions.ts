@@ -23,6 +23,7 @@ import { ensureUserActionsTable } from './ensure-schema';
 export type ActionKind =
   | 'replan'
   | 'cleanup'
+  | 'consolidate'
   | 'snapshot.create'
   | 'snapshot.fork'
   | 'snapshot.publish'
