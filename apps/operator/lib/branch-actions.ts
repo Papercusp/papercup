@@ -110,20 +110,21 @@ async function listHarnessActions(stagingPath: string, branch: Branch): Promise<
   const dir = actionsDir(stagingPath, branch);
   try {
     const ents = await fs.readdir(dir, { withFileTypes: true });
-    const out: ActionDescriptor[] = [];
-    for (const e of ents) {
-      if (!e.isFile()) continue;
-      if (!e.name.endsWith('.sh')) continue;
-      const name = e.name.replace(/\.sh$/, '');
-      if (!NAME_RE.test(name)) continue;
-      const manifest = (await readInlineManifest(stagingPath, branch, name)) ?? undefined;
-      out.push({
-        name, branch, source: 'harness',
-        scriptPath: join(dir, e.name),
-        manifest,
-      });
-    }
-    return out;
+    // Parallelize per-action manifest reads. See /docs/performance #A1.
+    const results = await Promise.all(
+      ents
+        .filter((e) => e.isFile() && e.name.endsWith('.sh') && NAME_RE.test(e.name.replace(/\.sh$/, '')))
+        .map(async (e): Promise<ActionDescriptor> => {
+          const name = e.name.replace(/\.sh$/, '');
+          const manifest = (await readInlineManifest(stagingPath, branch, name)) ?? undefined;
+          return {
+            name, branch, source: 'harness',
+            scriptPath: join(dir, e.name),
+            manifest,
+          };
+        }),
+    );
+    return results;
   } catch {
     return [];
   }
@@ -152,25 +153,35 @@ async function listPluginActions(args: {
   const enabledKeys = new Set(Object.keys(enabledRaw?.enabled ?? {}));
   if (enabledKeys.size === 0) return [];
 
-  const out: ActionDescriptor[] = [];
   // Walk global-plugins/<scope>/<name> and global-plugins/<name>.
-  const tryDirs: string[] = [];
+  // Parallelize the @scope-subdir scan AND the per-plugin manifest reads.
+  // Previously serial across ~30 plugin dirs × ~150ms per fs.readFile in
+  // Next.js dev mode = 4.5s. See /docs/performance #A1.
+  let tryDirs: string[] = [];
   try {
     const top = await fs.readdir(args.globalPluginsDir, { withFileTypes: true });
-    for (const e of top) {
-      if (!e.isDirectory()) continue;
+    const nested = await Promise.all(top.map(async (e) => {
+      if (!e.isDirectory()) return [] as string[];
       const p = join(args.globalPluginsDir, e.name);
       if (e.name.startsWith('@')) {
         const inner = await fs.readdir(p, { withFileTypes: true });
-        for (const i of inner) if (i.isDirectory()) tryDirs.push(join(p, i.name));
-      } else {
-        tryDirs.push(p);
+        return inner.filter((i) => i.isDirectory()).map((i) => join(p, i.name));
       }
-    }
+      return [p];
+    }));
+    tryDirs = nested.flat();
   } catch { return []; }
 
-  for (const pdir of tryDirs) {
-    const manifest = await readJsonSafe<PluginManifestForActions>(join(pdir, 'papercusp.json'));
+  // Read every plugin manifest in parallel, then build the descriptor list.
+  // The descriptor build is fully synchronous, so we materialize the
+  // in-order list after the parallel reads complete.
+  const manifestEntries = await Promise.all(tryDirs.map(async (pdir) => ({
+    pdir,
+    manifest: await readJsonSafe<PluginManifestForActions>(join(pdir, 'papercusp.json')),
+  })));
+
+  const out: ActionDescriptor[] = [];
+  for (const { pdir, manifest } of manifestEntries) {
     if (!manifest) continue;
     const hasBranchActions = !!manifest.branchActions;
     const hasButtons = !!manifest.buttons;
