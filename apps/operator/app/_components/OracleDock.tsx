@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Tooltip } from '../harness/Tooltip';
 import Link from 'next/link';
 import {
   Activity,
@@ -324,6 +325,10 @@ export function OracleDock() {
   const inFlightRef = useRef<Map<string, AbortController>>(new Map());
   const endRef = useRef<HTMLDivElement>(null);
   const chatwootFrameRef = useRef<HTMLIFrameElement>(null);
+  // Tracks the last path Oracle navigated the user to during a tutorial,
+  // so we can detect when the user has manually moved elsewhere and
+  // suppress further auto-navigation. See the navigate handler below.
+  const lastExpectedPathRef = useRef<string>(typeof window !== 'undefined' ? window.location.pathname : '');
 
   // Re-evaluated on URL changes; also refreshed when the picker opens
   // so the localStorage-backed dashboard combobox selection is picked up.
@@ -761,7 +766,25 @@ export function OracleDock() {
             appendTool(data.name, data.input);
           } else if (event === 'ui_command' && tab.target.kind === 'oracle') {
             if (data?.type === 'navigate' && typeof data.path === 'string') {
-              router.push(data.path);
+              // During the first-run tutorial, the user may have navigated
+              // themselves to explore — auto-navigating would yank them
+              // back. Skip the auto-navigate if the current pathname
+              // differs from where Oracle last expected the user to be
+              // (we sent it via `currentPath` at request time). The
+              // assistant's text still mentions the page; the user can
+              // navigate manually.
+              const expectedFrom = typeof window !== 'undefined' ? window.location.pathname : '';
+              const userMovedAway = tutorialActive && expectedFrom !== lastExpectedPathRef.current;
+              if (!userMovedAway) {
+                router.push(data.path);
+                lastExpectedPathRef.current = data.path;
+              }
+              // If the user has moved away during a tutorial, treat that
+              // as opting out — stop the tutorial so subsequent steps
+              // don't keep yanking them back.
+              if (userMovedAway) {
+                setTutorialActive(false);
+              }
             } else if (data?.type === 'openChat' && typeof data.slug === 'string' && typeof data.role === 'string') {
               // Oracle's openChat now opens a tab in the dock instead of
               // routing to /harness/<slug>?panel=pi.
@@ -1054,7 +1077,7 @@ export function OracleDock() {
               </div>
             </div>
             <div className="oracle-header-actions">
-              <button onClick={newOracleChat} aria-label="Reset this chat" title="Reset this chat" className="oracle-icon-button"><RefreshCcw aria-hidden="true" className="oracle-header-action-icon" /></button>
+              <Tooltip label="Reset this chat"><button onClick={newOracleChat} aria-label="Reset this chat" className="oracle-icon-button"><RefreshCcw aria-hidden="true" className="oracle-header-action-icon" /></button></Tooltip>
               <Link href="/settings/oracle" className="oracle-icon-button" title="Configure" aria-label="Configure"><Settings2 aria-hidden="true" className="oracle-header-action-icon" /></Link>
               <button onClick={() => setOpen(false)} aria-label="Close" className="oracle-icon-button oracle-icon-button-close"><X aria-hidden="true" className="oracle-header-action-icon" /></button>
             </div>
