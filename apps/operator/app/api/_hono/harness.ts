@@ -367,30 +367,37 @@ harness.get('/projects', async (c) => {
   // Best-effort: pull parent_slug for each registered slug from the
   // project's own .harness/config.json. The file registry doesn't carry
   // this field, so for newly-spawned children we read it back from disk.
-  const parentSlugByConfigByPath = new Map<string, string | null>();
-  for (const p of reg.projects) {
-    const cfgPath = join(p.path, '.harness', 'config.json');
-    let parentSlug: string | null = null;
-    try {
-      if (existsSync(cfgPath)) {
-        const txt = await import('node:fs/promises').then((fs) => fs.readFile(cfgPath, 'utf8'));
-        const j = JSON.parse(txt);
-        if (typeof j?.parent_slug === 'string' && j.parent_slug) parentSlug = j.parent_slug;
-      }
-    } catch { /* ignore */ }
-    parentSlugByConfigByPath.set(p.slug, parentSlug);
-  }
+  // Reads are parallelized — Next.js dev mode adds ~150ms per fs.readFile
+  // call (HMR file-tracking instrumentation), so a serial loop over ~70
+  // projects was the dominant cost in the /projects handler.
   const enriched = await Promise.all(reg.projects.map(async (p) => {
     const hDir = harnessDir(p);
-    let hasState = false;
-    try {
-      const c2 = dbcFor(p.slug);
-      const row = await c2.prepare('SELECT 1 AS x FROM harness_features WHERE harness_slug = ? LIMIT 1').get(p.slug);
-      hasState = !!row;
-    } catch {}
-    const hasSpec = existsSync(join(p.path, 'SPEC.md'));
-    const parent_slug = parentSlugByConfigByPath.get(p.slug) ?? null;
-    return { ...p, hasState, hasSpec, harnessDir: hDir, parent_slug };
+    const cfgPath = join(p.path, '.harness', 'config.json');
+    const specPath = join(p.path, 'SPEC.md');
+    // Parallelize the three independent reads + the per-harness PG probe.
+    const [parentSlug, hasState, hasSpec] = await Promise.all([
+      (async (): Promise<string | null> => {
+        try {
+          if (!existsSync(cfgPath)) return null;
+          const txt = await readFile(cfgPath, 'utf8');
+          const j = JSON.parse(txt);
+          return typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
+        } catch {
+          return null;
+        }
+      })(),
+      (async (): Promise<boolean> => {
+        try {
+          const c2 = dbcFor(p.slug);
+          const row = await c2.prepare('SELECT 1 AS x FROM harness_features WHERE harness_slug = ? LIMIT 1').get(p.slug);
+          return !!row;
+        } catch {
+          return false;
+        }
+      })(),
+      (async (): Promise<boolean> => existsSync(specPath))(),
+    ]);
+    return { ...p, hasState, hasSpec, harnessDir: hDir, parent_slug: parentSlug };
   }));
   const filtered = filterParentSlug
     ? enriched.filter((p) => p.parent_slug === filterParentSlug)
