@@ -430,6 +430,43 @@ The audit captured `/checkpoints` ×2, `/reviews` ×3, `/agents` ×2 in a single
 
 `experimental.turbopackFileSystemCacheForDev: false` was set for a Next 15 Turbopack bug. Next 16 doesn't recognize it (`⨯ turbopackFileSystemCacheForDev` at boot). Audit before retaining flag-style configs across major Next upgrades; remove ones that show up as `⨯` in the dev log.
 
+### A16. Don't enforce a minimum-visible debounce on a progress indicator
+
+A page-transition library was integrated with `bprogress` to show a
+loading bar during route changes. Two constants in `RouteLink.tsx` +
+`RouteProgressProvider.tsx` controlled how the bar behaved:
+
+```ts
+// ❌ Wrong — measured: every nav showed the bar 3s minimum, regardless of
+//             how fast the route actually loaded. With Next.js dev's
+//             cold-compile (~3s), perceived nav was 6+s.
+const ROUTE_PROGRESS_MIN_VISIBLE_MS = 3000;
+const ROUTE_PROGRESS_FALLBACK_MS    = 8000;
+
+// ✅ Right — bar reflects actual pending state; gone the instant the
+//            route lands. Cuts ~3s off every navigation.
+const ROUTE_PROGRESS_MIN_VISIBLE_MS = 0;
+const ROUTE_PROGRESS_FALLBACK_MS    = 1500;
+```
+
+A "minimum-visible debounce" on a progress bar conflates two things:
+
+- **Anti-flicker** (the bar shouldn't appear and disappear within a
+  single frame for instant routes) — `bprogress` already debounces
+  sub-frame transitions internally, so this isn't the caller's job.
+- **Padding the perceived load time** (showing the bar longer than
+  reality so the user "feels" something happened) — this is the
+  *opposite* of useful. The bar lingering after content lands looks
+  like a stuck navigation.
+
+Always let the progress indicator reflect actual state. If you find
+yourself adding `MIN_VISIBLE_MS` to a polling/loading UI element,
+that's the smell.
+
+Same shape applies to spinners (don't show them for >150ms after the
+data arrives) and skeletons (swap them out the moment the real content
+is ready, not on a fade-timer).
+
 ### A15. Don't read the same JSON file repeatedly within one request
 
 Even after parallelizing per-A1, hot endpoints often read the **same** plugin-config or env-config file multiple times in one request. The `/branch/<x>/actions` endpoint discovered this: a manifest with 5 env entries from `@papercupai/cloudflare-pages.json` would do 5 separate `fs.readFile` calls. Multiply by N actions per request and you have NM redundant reads.
