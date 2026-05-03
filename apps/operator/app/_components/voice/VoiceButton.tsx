@@ -21,7 +21,7 @@ import {
 import { useMicLevel } from './useMicLevel';
 
 const ICON: Record<VoiceState['status'], string> = {
-  off: '🎤',
+  off: '🚫',
   idle: '🎤',
   listening: '🔴',
   speaking: '🔊',

@@ -132,7 +132,18 @@ export function VoiceAppBridge(): null {
           throw new Error('wake-word disabled');
         }
         const { parseOperatorIntent, resolveApprove } = await import('../../../lib/voice-intents');
-        const intent = parseOperatorIntent(text);
+        // Engine-agnostic wake-word strip: Voicemode/Deepgram deliver the
+        // raw transcript ("hey operator approve sheets") without going
+        // through the Web Speech wake-word listener, so we re-prefix here
+        // so parseOperatorIntent sees a parseable string. Web Speech path
+        // already passes a normalized "operator …" string and is a no-op
+        // through this helper.
+        const { stripWakeWordAndPrefix } = await import('../../../lib/wake-word');
+        const { getVoiceConfig } = await import('./voice-mode');
+        const wakeWord = getVoiceConfig().wakeWord ?? 'hey operator';
+        const stripped = stripWakeWordAndPrefix(text, wakeWord);
+        const normalized = stripped.matched ? stripped.dispatchText : text;
+        const intent = parseOperatorIntent(normalized);
         if (intent) {
           if (intent.kind === 'open' || intent.kind === 'open-and-scan') {
             const { setOperatorState } = await import('../operator-shared-state');

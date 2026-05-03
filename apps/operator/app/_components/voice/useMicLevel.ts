@@ -19,7 +19,11 @@ export function useMicLevel(active: boolean): number {
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      // Immediate visual drop the moment the caller flips active false.
+      setLevel(0);
+      return;
+    }
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) return;
 
     let cancelled = false;
