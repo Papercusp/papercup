@@ -1,28 +1,41 @@
 /**
  * Per-branch action registry.
  *
- * Discovers shell scripts at:
+ * Discovers actions from two sources for each branch:
  *
- *   <project>/.harness/actions/<branch>/<name>.sh
+ *   1. Harness-shipped:  <staging>/.harness/actions/<branch>/<name>.sh
+ *      Optional manifest sibling: <name>.manifest.json
  *
- * (where `<project>` is the harness's *staging* worktree — actions are
- * branch-scoped data, not branch-scoped storage). Branches: staging |
- * testing | production.
+ *   2. Plugin-contributed: each enabled plugin's papercusp.json may
+ *      declare a `branchActions` map. Each entry's name becomes
+ *      `<plugin-slug>:<action-name>` to avoid collisions; its scriptPath
+ *      is resolved relative to the plugin install dir.
  *
- * Spawning is intentionally minimal: bash <script>, cwd = the branch's
- * phase worktree if it exists else the staging worktree, env =
- * { ...process.env, PAPERCUSP_BRANCH, PAPERCUSP_PROJECT_DIR,
- *   PAPERCUSP_PHASE_DIR, PAPERCUSP_HARNESS_SLUG, PAPERCUSP_ACTION_NAME }.
+ * Branches: staging | testing | production. The branch concept is
+ * substrate-level; actions are user/plugin contributions on top.
+ *
+ * Spawning is bash <script> with env merged from:
+ *   - process.env (so $HOME, $PATH propagate)
+ *   - resolved manifest env (plugin-config / harness-env / literal)
+ *   - PAPERCUSP_BRANCH, PAPERCUSP_PROJECT_DIR, PAPERCUSP_PHASE_DIR,
+ *     PAPERCUSP_HARNESS_SLUG, PAPERCUSP_ACTION_NAME, PAPERCUSP_RUN_ID
  *
  * Logs land at <staging>/.harness/action-runs/<branch>/<name>/<runId>.log
- * with a sibling `<runId>.json` capturing exit code + timing.
+ * with sibling <runId>.json capturing exit code + timing.
  */
 
 import { promises as fs } from 'node:fs';
 import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import {
+  type ActionManifest,
+  type PluginActionManifest,
+  type EnvResolution,
+  resolveEnv,
+  readInlineManifest,
+} from './branch-action-manifest';
 
 export type Branch = 'staging' | 'testing' | 'production';
 export const BRANCHES: Branch[] = ['staging', 'testing', 'production'];
@@ -35,6 +48,12 @@ export interface ActionDescriptor {
   name: string;
   scriptPath: string;
   branch: Branch;
+  /** 'harness' = local .sh in staging worktree; 'plugin' = contributed by an enabled plugin. */
+  source: 'harness' | 'plugin';
+  /** When source==='plugin', the contributing plugin's name. */
+  pluginSlug?: string;
+  /** Optional manifest (env requirements + display metadata). */
+  manifest?: ActionManifest;
 }
 
 export interface RunMeta {
@@ -60,8 +79,13 @@ export function actionsDir(stagingPath: string, branch: Branch): string {
   return join(stagingPath, '.harness', 'actions', branch);
 }
 
+/** Sanitise an action name (which may include `:` or `@scope/`) for a path. */
+function safeNameForFs(name: string): string {
+  return name.replace(/[/:@]/g, '_');
+}
+
 export function runRoot(stagingPath: string, branch: Branch, name: string): string {
-  return join(stagingPath, '.harness', 'action-runs', branch, name);
+  return join(stagingPath, '.harness', 'action-runs', branch, safeNameForFs(name));
 }
 
 export function runLogPath(stagingPath: string, branch: Branch, name: string, runId: string): string {
@@ -72,7 +96,7 @@ export function runMetaPath(stagingPath: string, branch: Branch, name: string, r
   return join(runRoot(stagingPath, branch, name), `${runId}.json`);
 }
 
-export async function listActions(stagingPath: string, branch: Branch): Promise<ActionDescriptor[]> {
+async function listHarnessActions(stagingPath: string, branch: Branch): Promise<ActionDescriptor[]> {
   const dir = actionsDir(stagingPath, branch);
   try {
     const ents = await fs.readdir(dir, { withFileTypes: true });
@@ -82,22 +106,115 @@ export async function listActions(stagingPath: string, branch: Branch): Promise<
       if (!e.name.endsWith('.sh')) continue;
       const name = e.name.replace(/\.sh$/, '');
       if (!NAME_RE.test(name)) continue;
-      out.push({ name, branch, scriptPath: join(dir, e.name) });
+      const manifest = (await readInlineManifest(stagingPath, branch, name)) ?? undefined;
+      out.push({
+        name, branch, source: 'harness',
+        scriptPath: join(dir, e.name),
+        manifest,
+      });
     }
-    out.sort((a, b) => a.name.localeCompare(b.name));
     return out;
   } catch {
     return [];
   }
 }
 
+interface PluginManifestForActions {
+  name?: string;
+  branchActions?: Record<string, PluginActionManifest>;
+}
+
+/**
+ * Walk the harness's enabled-plugins set and pull every `branchActions`
+ * declaration that matches `branch`. Each contributed action's name is
+ * prefixed with the plugin slug (`<plugin>:<name>`) so two plugins can
+ * both ship a "deploy" action without colliding.
+ */
+async function listPluginActions(args: {
+  harnessConfigsDir: string;
+  globalPluginsDir: string;
+  branch: Branch;
+}): Promise<ActionDescriptor[]> {
+  const enabledRaw = await readJsonSafe<{ enabled?: Record<string, { version?: string }> }>(
+    join(args.harnessConfigsDir, 'enabled-plugins.json'),
+  );
+  const enabledKeys = new Set(Object.keys(enabledRaw?.enabled ?? {}));
+  if (enabledKeys.size === 0) return [];
+
+  const out: ActionDescriptor[] = [];
+  // Walk global-plugins/<scope>/<name> and global-plugins/<name>.
+  const tryDirs: string[] = [];
+  try {
+    const top = await fs.readdir(args.globalPluginsDir, { withFileTypes: true });
+    for (const e of top) {
+      if (!e.isDirectory()) continue;
+      const p = join(args.globalPluginsDir, e.name);
+      if (e.name.startsWith('@')) {
+        const inner = await fs.readdir(p, { withFileTypes: true });
+        for (const i of inner) if (i.isDirectory()) tryDirs.push(join(p, i.name));
+      } else {
+        tryDirs.push(p);
+      }
+    }
+  } catch { return []; }
+
+  for (const pdir of tryDirs) {
+    const manifest = await readJsonSafe<PluginManifestForActions>(join(pdir, 'papercusp.json'));
+    if (!manifest?.branchActions) continue;
+    const slug = manifest.name ?? basename(pdir);
+    const dirBase = basename(pdir);
+    if (!enabledKeys.has(slug) && !enabledKeys.has(dirBase)) continue;
+    for (const [actName, m] of Object.entries(manifest.branchActions)) {
+      if (!NAME_RE.test(actName)) continue;
+      const branches = m.branches ?? ['staging', 'testing', 'production'];
+      if (!branches.includes(args.branch)) continue;
+      const scriptPath = join(pdir, m.scriptPath);
+      if (!existsSync(scriptPath)) continue;
+      out.push({
+        name: `${slug}:${actName}`,
+        branch: args.branch,
+        source: 'plugin',
+        pluginSlug: slug,
+        scriptPath,
+        manifest: m,
+      });
+    }
+  }
+  return out;
+}
+
+async function readJsonSafe<T>(path: string): Promise<T | null> {
+  try { return JSON.parse(await fs.readFile(path, 'utf8')) as T; } catch { return null; }
+}
+
+export interface ListActionsOpts {
+  /** When provided, also lists plugin-contributed actions. */
+  harnessConfigsDir?: string;
+  globalPluginsDir?: string;
+}
+
+export async function listActions(
+  stagingPath: string, branch: Branch, opts: ListActionsOpts = {},
+): Promise<ActionDescriptor[]> {
+  const out = await listHarnessActions(stagingPath, branch);
+  if (opts.harnessConfigsDir && opts.globalPluginsDir) {
+    out.push(...await listPluginActions({
+      harnessConfigsDir: opts.harnessConfigsDir,
+      globalPluginsDir: opts.globalPluginsDir,
+      branch,
+    }));
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
+}
+
 export async function listAllActions(
-  stagingPath: string,
+  stagingPath: string, opts: ListActionsOpts = {},
 ): Promise<Record<Branch, ActionDescriptor[]>> {
   const out: Record<Branch, ActionDescriptor[]> = {
     staging: [], testing: [], production: [],
   };
-  for (const b of BRANCHES) out[b] = await listActions(stagingPath, b);
+  for (const b of BRANCHES) out[b] = await listActions(stagingPath, b, opts);
   return out;
 }
 
@@ -110,6 +227,12 @@ export interface RunOpts {
   name: string;
   /** Extra env to merge over the defaults. */
   extraEnv?: Record<string, string>;
+  /** Where plugin-configs/* and env.json live. Required for plugin-contributed
+   *  actions and for any action whose manifest declares env requirements. */
+  harnessConfigsDir?: string;
+  globalPluginsDir?: string;
+  /** When true, skip the missing-env check (caller has already prompted). */
+  skipEnvCheck?: boolean;
 }
 
 export interface RunHandle {
@@ -117,6 +240,13 @@ export interface RunHandle {
   meta: RunMeta;
   /** Resolves once the child has exited and meta is flushed. */
   done: Promise<RunMeta>;
+}
+
+export class MissingEnvError extends Error {
+  constructor(public missing: import('./branch-action-manifest').MissingEnvEntry[]) {
+    super(`required env not configured: ${missing.map((m) => m.name).join(', ')}`);
+    this.name = 'MissingEnvError';
+  }
 }
 
 /**
@@ -128,10 +258,31 @@ export interface RunHandle {
 export async function runAction(opts: RunOpts): Promise<RunHandle> {
   const { stagingPath, phasePath, harness, branch, name, extraEnv } = opts;
   if (!isBranch(branch)) throw new Error(`invalid branch: ${branch}`);
-  if (!NAME_RE.test(name)) throw new Error(`invalid action name: ${name}`);
+  // Plugin-contributed actions are named `<slug>:<action>` — extend the
+  // regex check to allow `:` and `/` (for scoped slugs like `@scope/x:run`).
+  if (!/^[A-Za-z0-9_@/:][A-Za-z0-9._@/:-]*$/.test(name)) {
+    throw new Error(`invalid action name: ${name}`);
+  }
 
-  const desc = (await listActions(stagingPath, branch)).find((a) => a.name === name);
+  const all = await listActions(stagingPath, branch, {
+    harnessConfigsDir: opts.harnessConfigsDir,
+    globalPluginsDir: opts.globalPluginsDir,
+  });
+  const desc = all.find((a) => a.name === name);
   if (!desc) throw new Error(`action not found: ${branch}/${name}`);
+
+  // Resolve env from manifest before spawn.
+  let resolvedEnv: Record<string, string> = {};
+  if (desc.manifest?.env && opts.harnessConfigsDir) {
+    const r = await resolveEnv(desc.manifest, {
+      harnessConfigsDir: opts.harnessConfigsDir,
+      contributingPlugin: desc.pluginSlug,
+    });
+    if (r.missing.length > 0 && !opts.skipEnvCheck) {
+      throw new MissingEnvError(r.missing);
+    }
+    resolvedEnv = r.env;
+  }
 
   const cwd = phasePath && existsSync(phasePath) ? phasePath : stagingPath;
   const runId = `run-${Date.now()}-${randomUUID().slice(0, 8)}`;
@@ -158,6 +309,7 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
 
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
+    ...resolvedEnv,
     PAPERCUSP_BRANCH: branch,
     PAPERCUSP_PROJECT_DIR: cwd,
     PAPERCUSP_STAGING_DIR: stagingPath,

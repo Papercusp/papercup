@@ -4,13 +4,26 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { Tooltip } from './Tooltip';
-import { Play, Square, Activity, AlertTriangle, ExternalLink, ChevronDown } from 'lucide-react';
+import { Play, Square, Activity, AlertTriangle, ExternalLink, ChevronDown, Settings } from 'lucide-react';
 
 const BranchActionRunner = dynamic(() => import('../_components/BranchActionRunner'), { ssr: false });
 
+interface MissingEnvEntry {
+  name: string;
+  from: 'plugin' | 'config' | 'harness' | 'literal';
+  plugin?: string;
+  field?: string;
+  description?: string;
+}
+
 interface ActionEntry {
   name: string;
+  source: 'harness' | 'plugin';
+  pluginSlug?: string;
+  displayName: string;
+  description?: string;
   scriptPath: string;
+  envStatus: { ok: boolean; resolved: string[]; missing: MissingEnvEntry[] };
   lastRun: { runId: string; status: string; endedAt?: string; exitCode?: number | null } | null;
 }
 
@@ -238,26 +251,32 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                     </span>
                   </Tooltip>
                 )}
-                {actions[p].length > 0 && (
-                  <button
-                    type="button"
-                    ref={(el) => { chipRefs.current[p] = el; }}
-                    className="h-phase-actions-btn"
-                    onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === p ? null : p); }}
-                    onMouseDown={(e) => e.stopPropagation()}
-                    title={`Run a ${p} action`}
-                    style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 2,
-                      padding: '2px 6px', marginLeft: 2,
-                      fontSize: 10, color: color,
-                      background: `color-mix(in oklab, ${color}, transparent 88%)`,
-                      border: `1px solid color-mix(in oklab, ${color}, transparent 60%)`,
-                      borderRadius: 3, cursor: 'pointer', fontWeight: 600,
-                    }}
-                  >
-                    actions <ChevronDown size={10} />
-                  </button>
-                )}
+                {actions[p].length > 0 && (() => {
+                  const anyMissing = actions[p].some((a) => !a.envStatus.ok);
+                  const chipColor = anyMissing ? '#f59e0b' : color;
+                  return (
+                    <button
+                      type="button"
+                      ref={(el) => { chipRefs.current[p] = el; }}
+                      className="h-phase-actions-btn"
+                      onClick={(e) => { e.stopPropagation(); setOpenMenu(openMenu === p ? null : p); }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      title={anyMissing ? `One or more ${p} actions need keys configured` : `Run a ${p} action`}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 2,
+                        padding: '2px 6px', marginLeft: 2,
+                        fontSize: 10, color: chipColor,
+                        background: `color-mix(in oklab, ${chipColor}, transparent 88%)`,
+                        border: `1px solid color-mix(in oklab, ${chipColor}, transparent 60%)`,
+                        borderRadius: 3, cursor: 'pointer', fontWeight: 600,
+                        pointerEvents: 'auto',
+                      }}
+                    >
+                      {anyMissing && <AlertTriangle size={10} />}
+                      actions <ChevronDown size={10} />
+                    </button>
+                  );
+                })()}
                 {(info.publicUrl || info.port) && (() => {
                   const localUrl = info.port ? `http://localhost:${info.port}/` : null;
                   const isLocalhost = typeof window !== 'undefined' && window.location.hostname === 'localhost';
@@ -315,43 +334,86 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
           background: 'var(--bg-2)', border: '1px solid var(--border)',
           borderRadius: 4, padding: 4, minWidth: 180, zIndex: 1000,
           boxShadow: '0 6px 16px rgba(0,0,0,0.4)',
+          pointerEvents: 'auto',
         }}
       >
-        {actions[openMenu].map((a) => (
-          <button
-            key={a.name}
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              const branch = openMenu;
-              setOpenMenu(null);
-              if (branch) setRunning({ branch, name: a.name });
-            }}
-            style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
-              gap: 2,
-              width: '100%', textAlign: 'left',
-              padding: '6px 8px',
-              background: 'transparent', border: 'none',
-              color: 'var(--fg)', cursor: 'pointer',
-              fontSize: 12, borderRadius: 3,
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in oklab, var(--bg-2), white 6%)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-          >
-            <span style={{ fontWeight: 600 }}>{a.name}</span>
-            {a.lastRun && (
-              <span style={{
-                fontSize: 10,
-                color: a.lastRun.status === 'completed' ? '#3fb950' :
-                       a.lastRun.status === 'failed' ? '#f85149' :
-                       '#58a6ff',
-              }}>
-                last: {a.lastRun.status}{a.lastRun.endedAt ? ` · ${a.lastRun.endedAt.slice(11, 19)}` : ''}
-              </span>
-            )}
-          </button>
-        ))}
+        {actions[openMenu].map((a) => {
+          const blocked = !a.envStatus.ok;
+          const firstMissing = a.envStatus.missing[0];
+          const configurePlugin = firstMissing?.plugin;
+          return (
+            <div
+              key={a.name}
+              style={{
+                display: 'flex', flexDirection: 'column',
+                gap: 2,
+                padding: '6px 8px',
+                borderRadius: 3,
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in oklab, var(--bg-2), white 6%)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+            >
+              <button
+                type="button"
+                disabled={blocked}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (blocked) return;
+                  const branch = openMenu;
+                  setOpenMenu(null);
+                  if (branch) setRunning({ branch, name: a.name });
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  width: '100%', textAlign: 'left',
+                  background: 'transparent', border: 'none', padding: 0,
+                  color: blocked ? '#f59e0b' : 'var(--fg)',
+                  cursor: blocked ? 'not-allowed' : 'pointer',
+                  opacity: blocked ? 0.85 : 1,
+                  fontSize: 12, fontWeight: 600,
+                }}
+                title={blocked ? `Missing: ${a.envStatus.missing.map((m) => m.name).join(', ')}` : a.description ?? ''}
+              >
+                {blocked && <AlertTriangle size={11} />}
+                <span>{a.displayName}</span>
+                {a.source === 'plugin' && (
+                  <span style={{ fontSize: 9, color: 'var(--fg-dim)', fontWeight: 400 }}>
+                    {a.pluginSlug}
+                  </span>
+                )}
+              </button>
+              {blocked && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 10 }}>
+                  <span style={{ color: '#f59e0b' }}>
+                    needs: {a.envStatus.missing.map((m) => m.name).join(', ')}
+                  </span>
+                  {configurePlugin && (
+                    <a
+                      href={`/harness/${slug}?panel=plugins&plugin=${encodeURIComponent(configurePlugin)}`}
+                      onClick={(e) => { e.stopPropagation(); setOpenMenu(null); }}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 4,
+                        color: '#58a6ff', textDecoration: 'none',
+                      }}
+                    >
+                      <Settings size={10} /> configure {configurePlugin}
+                    </a>
+                  )}
+                </div>
+              )}
+              {!blocked && a.lastRun && (
+                <span style={{
+                  fontSize: 10,
+                  color: a.lastRun.status === 'completed' ? '#3fb950' :
+                         a.lastRun.status === 'failed' ? '#f85149' :
+                         '#58a6ff',
+                }}>
+                  last: {a.lastRun.status}{a.lastRun.endedAt ? ` · ${a.lastRun.endedAt.slice(11, 19)}` : ''}
+                </span>
+              )}
+            </div>
+          );
+        })}
       </div>,
       document.body,
     )}

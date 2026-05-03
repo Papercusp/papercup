@@ -1,7 +1,9 @@
 /**
- * GET /api/harness/<slug>/branch/<branch>/action/<name>/stream?runId=
+ * GET /api/harness/<slug>/branch/<branch>/action-stream?runId=&name=
  *
- * Server-Sent Events tail of a single action run's log file.
+ * Server-Sent Events tail of a single action run's log file. `name` is
+ * a query param (not a path segment) so plugin-contributed names with
+ * `:` or `/` work.
  *
  * Emits one event per stdout/stderr line ('output' or 'stderr'),
  * terminal markers (`action-started`, `action-completed`, `action-failed`),
@@ -20,17 +22,19 @@ export const maxDuration = 1800;
 
 const POLL_INTERVAL_MS = 250;
 
-interface Params { params: Promise<{ slug: string; branch: string; name: string }> }
+interface Params { params: Promise<{ slug: string; branch: string }> }
 
 function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 export async function GET(req: Request, { params }: Params) {
-  const { slug, branch, name } = await params;
+  const { slug, branch } = await params;
   if (!isBranch(branch)) return new Response('invalid branch', { status: 400 });
   const url = new URL(req.url);
+  const name = url.searchParams.get('name') ?? '';
   const runId = url.searchParams.get('runId');
+  if (!name) return new Response('name required', { status: 400 });
   if (!runId) return new Response('runId required', { status: 400 });
   if (!/^run-[A-Za-z0-9_-]+$/.test(runId)) {
     return new Response('invalid runId', { status: 400 });

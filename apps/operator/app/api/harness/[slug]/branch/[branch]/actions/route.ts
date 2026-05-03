@@ -1,14 +1,26 @@
 /**
  * GET /api/harness/<slug>/branch/<branch>/actions
  *
- * Lists discoverable actions at <staging>/.harness/actions/<branch>/*.sh.
+ * Lists discoverable actions for the branch — both harness-shipped
+ * (.harness/actions/<branch>/*.sh) and plugin-contributed (each enabled
+ * plugin's papercusp.json `branchActions`).
  *
- * Spec: per-branch action registry (substrate piece 1 of 3).
+ * Each action is enriched with:
+ *   - manifest:   declared env requirements + display metadata
+ *   - envStatus:  { resolved: [...], missing: [...] } based on current
+ *                 plugin-configs and harness env.json
+ *   - lastRun:    most recent run's terminal status (or null)
+ *
+ * Spec: per-branch action registry; envStatus drives the chip's
+ * "⚠ keys needed" indicator.
  */
 
 import { NextResponse } from 'next/server';
+import { join } from 'node:path';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { papercuspPath } from '@/lib/papercusp-root';
 import { isBranch, listActions, listRuns } from '@/lib/branch-actions';
+import { resolveEnv } from '@/lib/branch-action-manifest';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -24,11 +36,33 @@ export async function GET(_req: Request, { params }: Params) {
   const project = reg.projects.find((p) => p.slug === slug);
   if (!project) return NextResponse.json({ error: 'unknown project' }, { status: 404 });
 
-  const actions = await listActions(project.path, branch);
-  // Pull last-run summary per action so the UI can render a "last deploy" badge.
+  const harnessConfigsDir = papercuspPath('harnesses', slug);
+  const globalPluginsDir = papercuspPath('global-plugins');
+
+  const actions = await listActions(project.path, branch, {
+    harnessConfigsDir, globalPluginsDir,
+  });
+
   const enriched = await Promise.all(actions.map(async (a) => {
     const runs = await listRuns(project.path, branch, a.name);
-    return { name: a.name, scriptPath: a.scriptPath, lastRun: runs[0] ?? null };
+    const envResolution = a.manifest?.env
+      ? await resolveEnv(a.manifest, { harnessConfigsDir, contributingPlugin: a.pluginSlug })
+      : { env: {}, missing: [] };
+    return {
+      name: a.name,
+      source: a.source,
+      pluginSlug: a.pluginSlug,
+      displayName: a.manifest?.displayName ?? a.name,
+      description: a.manifest?.description,
+      scriptPath: a.scriptPath,
+      env: a.manifest?.env ?? null,
+      envStatus: {
+        ok: envResolution.missing.length === 0,
+        resolved: Object.keys(envResolution.env),
+        missing: envResolution.missing,
+      },
+      lastRun: runs[0] ?? null,
+    };
   }));
   return NextResponse.json({ branch, actions: enriched });
 }

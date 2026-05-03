@@ -69,6 +69,8 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
     };
   }, []);
 
+  const [missingKeys, setMissingKeys] = useState<{ name: string; plugin?: string }[] | null>(null);
+
   // Start the run if we don't have one yet
   useEffect(() => {
     if (runId) return;
@@ -76,10 +78,18 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
     (async () => {
       try {
         const res = await fetch(
-          `/api/harness/${slug}/branch/${branch}/action/${name}/run`,
+          `/api/harness/${slug}/branch/${branch}/action-run?name=${encodeURIComponent(name)}`,
           { method: 'POST' },
         );
         const body = await res.json();
+        if (res.status === 412) {
+          if (!cancelled) {
+            setMissingKeys(body.missing ?? []);
+            setStatus('error');
+            setError('Required keys missing');
+          }
+          return;
+        }
         if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
         if (!cancelled) {
           setRunId(body.runId as string);
@@ -95,7 +105,7 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
   // Subscribe SSE
   useEffect(() => {
     if (!runId) return;
-    const url = `/api/harness/${slug}/branch/${branch}/action/${name}/stream?runId=${encodeURIComponent(runId)}`;
+    const url = `/api/harness/${slug}/branch/${branch}/action-stream?name=${encodeURIComponent(name)}&runId=${encodeURIComponent(runId)}`;
     const es = new EventSource(url);
 
     const write = (s: string) => termRef.current?.write(s);
@@ -184,8 +194,48 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
             }}
           >Close</button>
         </div>
-        <div ref={containerRef} style={{ flex: 1, padding: 8, background: '#0d1117' }} />
-        {error && (
+        <div ref={containerRef} style={{ flex: 1, padding: 8, background: '#0d1117', display: missingKeys ? 'none' : 'block' }} />
+        {missingKeys && (
+          <div style={{ padding: 16, background: '#1c1917', color: '#fbbf24', fontSize: 13, lineHeight: 1.5, overflow: 'auto', flex: 1 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, color: '#f59e0b' }}>
+              Required keys missing
+            </div>
+            <div style={{ color: '#c9d1d9', marginBottom: 12 }}>
+              This action needs values that haven't been configured yet for this harness.
+            </div>
+            <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+              {missingKeys.map((m) => (
+                <li key={m.name} style={{ marginBottom: 8 }}>
+                  <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: 3 }}>{m.name}</code>
+                  {m.plugin && (
+                    <>
+                      {' '}— from{' '}
+                      <a
+                        href={`/harness/${slug}?panel=plugins&plugin=${encodeURIComponent(m.plugin)}`}
+                        style={{ color: '#58a6ff' }}
+                      >
+                        {m.plugin}
+                      </a>
+                    </>
+                  )}
+                </li>
+              ))}
+            </ul>
+            {missingKeys[0]?.plugin && (
+              <a
+                href={`/harness/${slug}?panel=plugins&plugin=${encodeURIComponent(missingKeys[0].plugin)}`}
+                style={{
+                  display: 'inline-block', marginTop: 12,
+                  padding: '6px 12px', background: '#58a6ff', color: '#0d1117',
+                  textDecoration: 'none', borderRadius: 4, fontWeight: 600,
+                }}
+              >
+                Configure {missingKeys[0].plugin} →
+              </a>
+            )}
+          </div>
+        )}
+        {error && !missingKeys && (
           <div style={{ padding: '6px 12px', background: '#3a1010', color: '#f85149', fontSize: 12 }}>
             {error}
           </div>

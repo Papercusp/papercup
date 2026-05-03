@@ -29,7 +29,8 @@ export type ActionKind =
   | 'snapshot.publish'
   | 'plugin.install'
   | 'plugin.enable'
-  | 'plugin.disable';
+  | 'plugin.disable'
+  | 'branch.action';
 
 export interface ActionResult<T = unknown> {
   /** One-line user-facing summary string. */
