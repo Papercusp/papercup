@@ -582,51 +582,81 @@ export default function VoiceSettingsPage() {
         <p style={hint}>3-syllable phrase that doesn't appear in normal speech (e.g. "hey operator"). Click <strong>Test wake word</strong> to simulate the dispatch path without using your voice.</p>
 
         <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={prefs?.porcupineEnabled ?? false}
-              onChange={(e) => savePrefsPatch({ porcupineEnabled: e.target.checked })}
-              disabled={savingPrefs || !allCreds?.picovoice?.configured}
-            />
-            <strong style={{ fontSize: 13 }}>Use Picovoice Porcupine for wake-word detection</strong>
-          </label>
+          {/* Wake-word engine: single enum (engine + keyword are paired). */}
+          <label style={lbl}>Wake-word engine</label>
+          <select
+            value={prefs?.wakeWordEngine ?? 'off'}
+            onChange={(e) => savePrefsPatch({ wakeWordEngine: e.target.value as VoicePrefs['wakeWordEngine'] })}
+            style={{ ...sel, maxWidth: 360 }}
+            disabled={savingPrefs}
+          >
+            <option value="off">Off — string-match wake word in transcript</option>
+            <option value="openwakeword">openWakeWord (Apache 2.0, no key)</option>
+            <option value="porcupine" disabled={!allCreds?.picovoice?.configured}>
+              Porcupine (Picovoice, BYO key{!allCreds?.picovoice?.configured ? ' — not configured' : ''})
+            </option>
+          </select>
           <p style={hint}>
-            On-device neural wake-word — Whisper only spins up after the wake fires.
-            Big idle-CPU win when always-on mode is enabled but you're not actively talking.
-            Requires a Picovoice API key (see "Cloud API keys" above).
+            On-device neural wake-word. Whisper only spins up AFTER the wake fires —
+            big idle-CPU win when always-on mode is enabled.{' '}
+            <strong>openWakeWord</strong> is open source and free; <strong>Porcupine</strong> is
+            commercial (requires a Picovoice API key in the section above) but more accurate.
           </p>
-          {prefs?.porcupineEnabled && (
-            <div>
-              <label style={lbl}>Built-in keyword</label>
+          {prefs?.wakeWordEngine === 'porcupine' && (
+            <div style={{ marginTop: 8 }}>
+              <label style={lbl}>Porcupine keyword (built-in)</label>
               <select
                 value={prefs?.porcupineKeyword ?? 'Computer'}
                 onChange={(e) => savePrefsPatch({ porcupineKeyword: e.target.value as VoicePrefs['porcupineKeyword'] })}
                 style={{ ...sel, maxWidth: 240 }}
+                disabled={savingPrefs}
               >
                 {['Computer','Jarvis','Bumblebee','Picovoice','Porcupine','Alexa','Hey Google','Hey Siri','Okay Google','Terminator','Americano','Blueberry','Grapefruit','Grasshopper'].map((k) => (
                   <option key={k} value={k}>{k}</option>
                 ))}
               </select>
+              <p style={hint}>Custom keywords need a .ppn file trained on Picovoice Console.</p>
+            </div>
+          )}
+          {prefs?.wakeWordEngine === 'openwakeword' && (
+            <div style={{ marginTop: 8 }}>
+              <label style={lbl}>openWakeWord keyword (built-in)</label>
+              <select
+                value={prefs?.openwakewordKeyword ?? 'hey_jarvis'}
+                onChange={(e) => savePrefsPatch({ openwakewordKeyword: e.target.value as VoicePrefs['openwakewordKeyword'] })}
+                style={{ ...sel, maxWidth: 240 }}
+                disabled={savingPrefs}
+              >
+                {['alexa', 'hey_jarvis', 'hey_mycroft', 'hey_rhasspy', 'ok_nabu', 'weather', 'timer'].map((k) => (
+                  <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>
+                ))}
+              </select>
               <p style={hint}>
-                Custom wake words ("hey operator") need a .ppn file trained on Picovoice Console.
-                Use a built-in keyword for now; "Computer" is the most natural.
+                Custom "hey operator" needs an ONNX classifier trained via the openWakeWord
+                Colab/Kaggle tutorial (~30 min). Drop the .onnx into <code>/public/wake/</code>.
               </p>
             </div>
           )}
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginTop: 12 }}>
-            <input
-              type="checkbox"
-              checked={prefs?.koalaEnabled ?? false}
-              onChange={(e) => savePrefsPatch({ koalaEnabled: e.target.checked })}
-              disabled={savingPrefs || !allCreds?.picovoice?.configured}
-            />
-            <strong style={{ fontSize: 13 }}>Use Picovoice Koala for noise suppression</strong>
-          </label>
+          {/* Noise suppression engine: single enum dropdown. */}
+          <label style={{ ...lbl, marginTop: 16 }}>Noise suppression</label>
+          <select
+            value={prefs?.noiseSuppressionEngine ?? 'browser'}
+            onChange={(e) => savePrefsPatch({ noiseSuppressionEngine: e.target.value as VoicePrefs['noiseSuppressionEngine'] })}
+            style={{ ...sel, maxWidth: 360 }}
+            disabled={savingPrefs}
+          >
+            <option value="off">Off — raw mic input</option>
+            <option value="browser">Browser native (WebRTC noiseSuppression)</option>
+            <option value="rnnoise">Jitsi RNNoise (BSD, stronger)</option>
+            <option value="koala" disabled={!allCreds?.picovoice?.configured}>
+              Picovoice Koala (BYO key{!allCreds?.picovoice?.configured ? ' — not configured' : ''})
+            </option>
+          </select>
           <p style={hint}>
-            Real-time NN noise suppression — removes fan / keyboard / HVAC from the mic input.
-            Reduces VAD false positives. Requires a Picovoice API key.
+            Removes fan / keyboard / HVAC from the mic input before STT.
+            Reduces VAD false positives. <strong>Browser native</strong> is the default and
+            works without setup; the others trade higher CPU for stronger suppression.
           </p>
         </div>
       </section>

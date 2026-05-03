@@ -13,7 +13,9 @@ export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const prefs = loadVoicePrefs();
-  if (!prefs.porcupineEnabled && !prefs.koalaEnabled) {
+  const wantsPorcupine = prefs.wakeWordEngine === 'porcupine';
+  const wantsKoala = prefs.noiseSuppressionEngine === 'koala';
+  if (!wantsPorcupine && !wantsKoala) {
     return new Response('not-enabled', { status: 404 });
   }
   const apiKey = readPicovoiceKey();

@@ -43,12 +43,23 @@ export interface VoicePrefs {
   ttsEngine: TtsEngineKind;
   /** Full-agent engine. When set to anything but 'off', overrides STT + TTS. */
   fullAgentEngine: FullAgentEngineKind;
-  /** Use Picovoice Porcupine for wake-word detection (vs. transcribe-everything-then-string-match). */
-  porcupineEnabled: boolean;
-  /** Built-in Porcupine keyword. Custom keywords (.ppn) deferred to v1.5. */
+  /**
+   * Wake-word engine. 'off' = transcribe-everything-then-string-match (current default);
+   * 'porcupine' = Picovoice Porcupine (commercial, free for dev, BYO key);
+   * 'openwakeword' = openWakeWord (Apache 2.0, no key, custom-trainable).
+   */
+  wakeWordEngine: 'off' | 'porcupine' | 'openwakeword';
+  /** Wake-word keyword. Each engine has its own model name space. */
   porcupineKeyword: 'Computer' | 'Jarvis' | 'Bumblebee' | 'Picovoice' | 'Porcupine' | 'Alexa' | 'Hey Google' | 'Hey Siri' | 'Okay Google' | 'Terminator' | 'Americano' | 'Blueberry' | 'Grapefruit' | 'Grasshopper';
-  /** Use Picovoice Koala for noise suppression on the mic input. */
-  koalaEnabled: boolean;
+  openwakewordKeyword: 'alexa' | 'hey_jarvis' | 'hey_mycroft' | 'hey_rhasspy' | 'ok_nabu' | 'weather' | 'timer';
+  /**
+   * Noise suppression engine for the mic input.
+   * 'browser' = built-in WebRTC noiseSuppression (free, default);
+   * 'rnnoise' = Jitsi RNNoise WASM (BSD, stronger);
+   * 'koala' = Picovoice Koala (commercial, BYO key);
+   * 'off' = no suppression.
+   */
+  noiseSuppressionEngine: 'off' | 'browser' | 'rnnoise' | 'koala';
   elevenlabsVoiceId: string;        // default Adam preset
   openaiVoice: 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
   openaiModel: 'tts-1' | 'tts-1-hd';
@@ -78,9 +89,10 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   fullAgentEngine: 'off',
-  porcupineEnabled: false,
+  wakeWordEngine: 'off',
   porcupineKeyword: 'Computer',
-  koalaEnabled: false,
+  openwakewordKeyword: 'hey_jarvis',
+  noiseSuppressionEngine: 'browser',
   elevenlabsVoiceId: '21m00Tcm4TlvDq8ikWAM', // Adam preset
   openaiVoice: 'nova',
   openaiModel: 'tts-1',

@@ -417,35 +417,52 @@ if (typeof window !== 'undefined') {
 let whisperCapture: { stop(): void } | null = null;
 let porcupineHandle: { stop(): Promise<void> } | null = null;
 
-async function maybeStartPorcupineGate(prefs: any): Promise<boolean> {
-  // Returns true if Porcupine took over (whisper should NOT also start).
-  if (!prefs.porcupineEnabled) return false;
-  // Need a Picovoice key.
-  const credR = await fetch('/api/agent-mcp/operator-credentials').catch(() => null);
-  const creds = credR?.ok ? await credR.json() : null;
-  if (!creds?.picovoice?.configured) return false;
-  // Fetch the actual key via narrow bootstrap (we'll add this endpoint).
-  const bootR = await fetch('/api/agent-mcp/operator-picovoice-bootstrap').catch(() => null);
-  if (!bootR?.ok) return false;
-  const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
-  if (!apiKey) return false;
+async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
+  // Returns true if a wake-word engine took over (Whisper should NOT
+  // also run continuously). The wake-word engine fires onWake → we spin
+  // up Whisper once for the command utterance, then return to gating.
+  const engine = prefs.wakeWordEngine ?? 'off';
+  if (engine === 'off') return false;
 
-  try {
-    const { startWakeWordDetection } = await import('../../../lib/voice-engines/porcupine');
-    porcupineHandle = await startWakeWordDetection({
-      accessKey: apiKey,
-      keyword: prefs.porcupineKeyword ?? 'Computer',
-      onWake: () => {
-        // Wake fired — spin up Whisper for one utterance, then back to gating.
-        void runOneShotWhisperAfterWake().catch(() => { /* ignore */ });
-      },
-      onError: (err) => console.warn('[porcupine]', err),
-    });
-    return true;
-  } catch (err) {
-    console.warn('[voice] porcupine start failed; falling back:', err);
-    return false;
+  if (engine === 'porcupine') {
+    // Porcupine needs a Picovoice access key.
+    const bootR = await fetch('/api/agent-mcp/operator-picovoice-bootstrap').catch(() => null);
+    if (!bootR?.ok) return false;
+    const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
+    if (!apiKey) return false;
+    try {
+      const { startWakeWordDetection } = await import('../../../lib/voice-engines/porcupine');
+      porcupineHandle = await startWakeWordDetection({
+        accessKey: apiKey,
+        keyword: prefs.porcupineKeyword ?? 'Computer',
+        onWake: () => { void runOneShotWhisperAfterWake().catch(() => {}); },
+        onError: (err) => console.warn('[porcupine]', err),
+      });
+      return true;
+    } catch (err) {
+      console.warn('[voice] porcupine start failed; falling back:', err);
+      return false;
+    }
   }
+
+  if (engine === 'openwakeword') {
+    // No key required — Apache 2.0, models downloaded from upstream release.
+    try {
+      const { startOpenWakeWordDetection } = await import('../../../lib/voice-engines/openwakeword');
+      porcupineHandle = await startOpenWakeWordDetection({
+        keyword: prefs.openwakewordKeyword ?? 'hey_jarvis',
+        threshold: 0.5,
+        onWake: () => { void runOneShotWhisperAfterWake().catch(() => {}); },
+        onError: (err) => console.warn('[openwakeword]', err),
+      });
+      return true;
+    } catch (err) {
+      console.warn('[voice] openwakeword start failed; falling back:', err);
+      return false;
+    }
+  }
+
+  return false;
 }
 
 async function runOneShotWhisperAfterWake(): Promise<void> {
@@ -490,7 +507,7 @@ async function maybeStartWhisperCapture(mode: VoiceMode): Promise<void> {
     const prefs = await prefsR.json();
     // Porcupine gate: when enabled, run wake-word detection only.
     // Whisper spins up only on wake — big idle-CPU win.
-    if (await maybeStartPorcupineGate(prefs)) return;
+    if (await maybeStartWakeWordGate(prefs)) return;
     if (prefs.sttEngine === 'deepgram') {
       // Deepgram cloud streaming (BYO key + leak-ack gate, same as Web Speech).
       if (!prefs.webSpeechLeakAcked) { startWakeWordListening(); return; }
