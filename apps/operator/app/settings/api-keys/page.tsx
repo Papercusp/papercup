@@ -82,6 +82,8 @@ export default function ApiKeysPage() {
     }
   };
 
+  if (loading) return <div style={{ padding: 24 }}><h1>API keys</h1><p>Loading…</p></div>;
+
   return (
     <div>
       <h1>API keys</h1>
