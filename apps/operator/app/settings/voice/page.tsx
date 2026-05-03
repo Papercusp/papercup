@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
+import { LazyDetails } from '../../_components/LazyDetails';
 import { Checkbox } from '../../harness/Checkbox';
 import {
   initVoiceMode,
@@ -673,14 +674,14 @@ export default function VoiceSettingsPage() {
         <span style={{ marginLeft: 12, fontSize: 13 }}>{config.rate.toFixed(1)}x</span>
       </section>
 
-      {/* Per-role voices — wrapped in <details> so the heavy table
-          (21 roles × N voices = many <option>s) only renders when expanded.
-          Closed by default to keep page-load light. */}
+      {/* Per-role voices — wrapped in LazyDetails so the heavy table
+          (21 roles × N voices = many <option>s) only mounts the first
+          time the user expands it. Closed by default. */}
       <section style={{ marginBottom: 32 }}>
-        <details>
-          <summary style={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}>
-            Per-role voices
-          </summary>
+        <LazyDetails
+          summary="Per-role voices"
+          summaryStyle={{ fontSize: 16, fontWeight: 600, cursor: 'pointer', marginBottom: 8 }}
+        >
           <p style={hint}>
             Voices are keyed on role (worker/validator/orchestrator/system:operator/etc.) — all instances
             of a role share one voice. Per-slug voices are deferred to v1.5.
@@ -702,7 +703,7 @@ export default function VoiceSettingsPage() {
             }}
             onTest={(key) => speak(`This is the voice for ${key.replace(':', ' ').replace('@', ' at ')}.`, key, 'polite', { force: true })}
           />
-        </details>
+        </LazyDetails>
       </section>
 
       {/* ── PRECEDENCE MATRIX (debugging aid, lazy via <details>) ──── */}
