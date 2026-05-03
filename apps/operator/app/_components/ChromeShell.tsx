@@ -106,7 +106,12 @@ export default function ChromeShell() {
       <HostCheckBanner />
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
-      <DeferredDocks />
+      {/* Skip the heavy dock components entirely on /settings/* —
+          settings is configuration, the user isn't operating. Saves
+          ~6 large chunks (OracleDock, OperatorPanel, ChatwootWidget,
+          OperatorBackgroundScanner, VoiceAppBridge, OperatorVoiceAnnouncer)
+          from blocking the network during settings page interaction. */}
+      {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );
 }

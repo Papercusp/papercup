@@ -46,6 +46,7 @@ interface CloudCredentialsSnapshot {
   cartesia: ApiKeyState;
   deepgram: ApiKeyState;
   picovoice: ApiKeyState;
+  google: ApiKeyState;
 }
 type ElevenLabsKeyState = ApiKeyState;
 interface ElevenLabsConnTest { ok: boolean; tier?: string; characterCount?: number; characterLimit?: number; email?: string | null; error?: string }
@@ -298,12 +299,20 @@ export default function VoiceSettingsPage() {
                 <label style={lbl}>Full-agent engine</label>
                 <select
                   value={prefs?.fullAgentEngine ?? 'off'}
-                  onChange={(e) => savePrefsPatch({ fullAgentEngine: e.target.value as 'off' | 'openai-realtime' })}
+                  onChange={(e) => savePrefsPatch({ fullAgentEngine: e.target.value as VoicePrefs['fullAgentEngine'] })}
                   style={sel}
                   disabled={savingPrefs}
                 >
                   <option value="off">Off — use the STT + TTS pair below</option>
-                  <option value="openai-realtime">OpenAI Realtime (gpt-4o-realtime) — full conversational agent</option>
+                  <option value="openai-realtime" disabled={!allCreds?.openai?.configured}>
+                    OpenAI Realtime (gpt-4o-realtime){!allCreds?.openai?.configured ? ' — needs OpenAI key' : ''}
+                  </option>
+                  <option value="gemini-live" disabled={!allCreds?.google?.configured}>
+                    Google Gemini Live (multimodal){!allCreds?.google?.configured ? ' — needs Google AI key' : ''}
+                  </option>
+                  <option value="elevenlabs-conversational" disabled={!allCreds?.elevenlabs?.configured}>
+                    ElevenLabs Conversational AI{!allCreds?.elevenlabs?.configured ? ' — needs ElevenLabs key' : ''}
+                  </option>
                 </select>
                 <p style={hint}>
                   Full-agent mode replaces the STT + TTS pair with a single conversational session.
@@ -419,6 +428,15 @@ export default function VoiceSettingsPage() {
             placeholder="pv_..."
             helpUrl="https://console.picovoice.ai/"
             note="Required for Porcupine wake-word detection and Koala noise suppression. Free tier covers personal use."
+            onChange={(snapshot) => { setAllCreds(snapshot); }}
+          />
+          <ApiKeyRow
+            label="Google AI"
+            field="googleApiKey"
+            state={allCreds.google}
+            placeholder="AIza..."
+            helpUrl="https://aistudio.google.com/app/apikey"
+            note="Required for Gemini Live full-agent mode. Free tier available via AI Studio."
             onChange={(snapshot) => { setAllCreds(snapshot); }}
           />
         </section>
@@ -864,7 +882,7 @@ function PerSlugVoiceTable({
 
 interface ApiKeyRowProps {
   label: string;
-  field: 'elevenlabsApiKey' | 'openaiApiKey' | 'cartesiaApiKey' | 'deepgramApiKey' | 'picovoiceApiKey';
+  field: 'elevenlabsApiKey' | 'openaiApiKey' | 'cartesiaApiKey' | 'deepgramApiKey' | 'picovoiceApiKey' | 'googleApiKey';
   state: ApiKeyState;
   placeholder: string;
   helpUrl: string;

@@ -127,3 +127,15 @@ export function writePicovoiceKey(apiKey: string | null): void {
   }
   writeAll(all);
 }
+
+export function readGoogleKey(): string | null {
+  const all = readAll();
+  return (all.google as { apiKey?: string } | undefined)?.apiKey ?? null;
+}
+
+export function writeGoogleKey(apiKey: string | null): void {
+  const all = readAll();
+  if (apiKey === null) delete all.google;
+  else all.google = { ...(all.google as object || {}), apiKey };
+  writeAll(all);
+}

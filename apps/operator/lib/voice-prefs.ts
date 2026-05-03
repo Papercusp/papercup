@@ -26,7 +26,11 @@ export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai' | 'ca
  * sttEngine + ttsEngine: voice-mode.ts uses the full-agent transport
  * and bypasses the per-utterance pipeline.
  */
-export type FullAgentEngineKind = 'off' | 'openai-realtime';
+export type FullAgentEngineKind =
+  | 'off'
+  | 'openai-realtime'
+  | 'gemini-live'
+  | 'elevenlabs-conversational';
 
 export interface VoicePrefs {
   // Feature toggles (defaults reflect v4 §3.2)

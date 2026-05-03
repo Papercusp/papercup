@@ -24,6 +24,8 @@ import {
   writeDeepgramKey,
   readPicovoiceKey,
   writePicovoiceKey,
+  readGoogleKey,
+  writeGoogleKey,
   maskKey,
 } from '@/lib/voice-credentials';
 
@@ -35,12 +37,14 @@ function snapshot() {
   const c = readCartesiaKey();
   const d = readDeepgramKey();
   const p = readPicovoiceKey();
+  const g = readGoogleKey();
   return {
     elevenlabs: { apiKey: maskKey(e), configured: !!e },
     openai:     { apiKey: maskKey(o), configured: !!o },
     cartesia:   { apiKey: maskKey(c), configured: !!c },
     deepgram:   { apiKey: maskKey(d), configured: !!d },
     picovoice:  { apiKey: maskKey(p), configured: !!p },
+    google:     { apiKey: maskKey(g), configured: !!g },
   };
 }
 
@@ -49,7 +53,7 @@ export async function GET() {
 }
 
 export async function PUT(req: NextRequest) {
-  let body: { elevenlabsApiKey?: unknown; openaiApiKey?: unknown; cartesiaApiKey?: unknown; deepgramApiKey?: unknown; picovoiceApiKey?: unknown } = {};
+  let body: { elevenlabsApiKey?: unknown; openaiApiKey?: unknown; cartesiaApiKey?: unknown; deepgramApiKey?: unknown; picovoiceApiKey?: unknown; googleApiKey?: unknown } = {};
   try {
     body = (await req.json()) as typeof body;
   } catch {
@@ -72,6 +76,7 @@ export async function PUT(req: NextRequest) {
     ['cartesiaApiKey',   writeCartesiaKey],
     ['deepgramApiKey',   writeDeepgramKey],
     ['picovoiceApiKey',  writePicovoiceKey],
+    ['googleApiKey',     writeGoogleKey],
   ] as const) {
     const err = setKey(field, writer);
     if (err) return err;
