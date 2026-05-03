@@ -2,7 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { z } from 'zod';
+import { Controller } from 'react-hook-form';
 import { MarkdownEditor } from '../../_components/MarkdownEditor';
+import { useFormWith, SubmitButton } from '@/lib/forms';
+
+// Form schema — both fields are free-form markdown, allowed to be empty.
+const ConfigSchema = z.object({
+  prompt_user: z.string().default(''),
+  preferences: z.string().default(''),
+});
+type ConfigFormData = z.infer<typeof ConfigSchema>;
 
 interface OperatorConfig {
   prompt_user: string;
@@ -26,12 +36,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default function OperatorSettingsPage() {
   const [cfg, setCfg] = useState<OperatorConfig | null>(null);
-  const [promptUser, setPromptUser] = useState('');
-  const [preferences, setPreferences] = useState('');
   const [entries, setEntries] = useState<PreferenceEntry[]>([]);
   const [filter, setFilter] = useState<FilterMode>('all');
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+
+  const { control, submit, reset, isSubmitting } = useFormWith(ConfigSchema, {
+    defaultValues: { prompt_user: '', preferences: '' },
+  });
   const [budget, setBudget] = useState<{ dailyCapUsd: number; todaySpendUsd: number; configured: boolean } | null>(null);
   const [candidates, setCandidates] = useState<{ capability: string; targetHarness: string; count: number; lastSeenAt: string }[]>([]);
   const [stats, setStats] = useState<{
@@ -58,13 +69,12 @@ export default function OperatorSettingsPage() {
       fetch('/api/agent-mcp/operator-stats').then((r) => r.json()).catch(() => null),
     ]);
     setCfg(cfgR);
-    setPromptUser(cfgR.prompt_user);
-    setPreferences(cfgR.preferences);
+    reset({ prompt_user: cfgR.prompt_user ?? '', preferences: cfgR.preferences ?? '' });
     setEntries(prefsR.entries ?? []);
     setBudget(budgetR);
     setCandidates(candR.candidates ?? []);
     setStats(statsR);
-  }, []);
+  }, [reset]);
 
   const decideCandidate = useCallback(async (capability: string, targetHarness: string, decision: 'approve' | 'dismiss') => {
     await fetch('/api/agent-mcp/operator-standing-approvals', {
@@ -89,22 +99,18 @@ export default function OperatorSettingsPage() {
     };
   }, [loadAll]);
 
-  const onSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
+  const onSave = async (data: ConfigFormData) => {
     try {
       const r = await fetch('/api/agent-mcp/operator-config', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ prompt_user: promptUser, preferences }),
+        body: JSON.stringify({ prompt_user: data.prompt_user, preferences: data.preferences }),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       await loadAll();
       toast.success('Saved');
     } catch (err: any) {
       toast.error(`save failed: ${err?.message ?? err}`);
-    } finally {
-      setSaving(false);
     }
   };
 
@@ -263,37 +269,36 @@ export default function OperatorSettingsPage() {
         </div>
       </section>
 
-      <form onSubmit={onSave}>
+      <form onSubmit={submit(onSave)}>
         <label style={{ display: 'block', fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
           Your prompt (voice + free-form preferences)
         </label>
         <div style={{ minHeight: 200, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', marginBottom: 16 }}>
-          <MarkdownEditor value={promptUser} onChange={setPromptUser} mode="ir" outline="left" minHeight={200} />
+          <Controller
+            name="prompt_user"
+            control={control}
+            render={({ field }) => (
+              <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={200} />
+            )}
+          />
         </div>
 
         <label style={{ display: 'block', fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
           Preferences notebook (free-form markdown)
         </label>
         <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden', marginBottom: 16 }}>
-          <MarkdownEditor value={preferences} onChange={setPreferences} mode="ir" outline="left" minHeight={240} />
+          <Controller
+            name="preferences"
+            control={control}
+            render={({ field }) => (
+              <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={240} />
+            )}
+          />
         </div>
 
-        <button
-          type="submit"
-          disabled={saving}
-          style={{
-            padding: '8px 16px',
-            background: 'var(--cta-bg, #1f2937)',
-            color: 'var(--cta-fg, #ffffff)',
-            border: 'none',
-            borderRadius: 6,
-            cursor: saving ? 'wait' : 'pointer',
-            fontWeight: 600,
-            marginBottom: 24,
-          }}
-        >
-          {saving ? 'Saving…' : 'Save prompt + preferences'}
-        </button>
+        <SubmitButton pending={isSubmitting} style={{ marginBottom: 24 }}>
+          Save prompt + preferences
+        </SubmitButton>
       </form>
 
       <section style={{ marginBottom: 32 }}>

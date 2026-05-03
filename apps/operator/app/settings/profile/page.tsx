@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { z } from 'zod';
+import type { UseFormRegisterReturn } from 'react-hook-form';
+import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 
 interface Profile {
   email?: string;
@@ -12,164 +15,127 @@ interface Profile {
   updated_at?: string;
 }
 
+const ProfileSchema = z.object({
+  email: z.string().optional().default(''),
+  display_name: z.string().optional().default(''),
+  default_project_dir: z.string().optional().default(''),
+  scoper: z.string().optional().default(''),
+  worker: z.string().optional().default(''),
+  validator: z.string().optional().default(''),
+  reviewer: z.string().optional().default(''),
+  orchestrator: z.string().optional().default(''),
+});
+type ProfileFormData = z.infer<typeof ProfileSchema>;
+
 export default function ProfilePage() {
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  const { register, submit, reset, errors, isSubmitting } = useFormWith(ProfileSchema, {
+    defaultValues: {
+      email: '', display_name: '', default_project_dir: '',
+      scoper: '', worker: '', validator: '', reviewer: '', orchestrator: '',
+    },
+  });
 
   useEffect(() => {
+    let cancelled = false;
     fetch('/api/profile')
       .then((r) => r.json())
-      .then((d) => setProfile(d))
-      .catch((e) => toast.error(`load failed: ${e?.message ?? e}`));
-  }, []);
+      .then((d: Profile) => {
+        if (cancelled) return;
+        const m = d.preferred_models ?? {};
+        reset({
+          email: d.email ?? '',
+          display_name: d.display_name ?? '',
+          default_project_dir: d.default_project_dir ?? '',
+          scoper: m.scoper ?? '',
+          worker: m.worker ?? '',
+          validator: m.validator ?? '',
+          reviewer: m.reviewer ?? '',
+          orchestrator: m.orchestrator ?? '',
+        });
+        setUpdatedAt(d.updated_at ?? null);
+      })
+      .catch((e) => { if (!cancelled) toast.error(`load failed: ${e?.message ?? e}`); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [reset]);
 
-  const update = (patch: Partial<Profile>) => {
-    setProfile((p) => ({ ...(p ?? {}), ...patch }));
-  };
-
-  const save = async () => {
-    if (!profile) return;
-    setSaving(true);
+  const onSubmit = async (data: ProfileFormData) => {
     try {
+      const body: Profile = {
+        email: data.email || undefined,
+        display_name: data.display_name || undefined,
+        default_project_dir: data.default_project_dir || undefined,
+        preferred_models: {
+          ...(data.scoper && { scoper: data.scoper }),
+          ...(data.worker && { worker: data.worker }),
+          ...(data.validator && { validator: data.validator }),
+          ...(data.reviewer && { reviewer: data.reviewer }),
+          ...(data.orchestrator && { orchestrator: data.orchestrator }),
+        },
+      };
       const r = await fetch('/api/profile', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(profile),
+        body: JSON.stringify(body),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json();
-      setProfile(d);
-      toast.success(`saved to ~/.papercusp/profile.json`);
+      const d: Profile = await r.json();
+      setUpdatedAt(d.updated_at ?? null);
+      toast.success('saved to ~/.papercusp/profile.json');
     } catch (e: any) {
       toast.error(`save failed: ${e?.message ?? e}`);
-    } finally {
-      setSaving(false);
     }
   };
 
-  if (!profile) return <div><h1>Profile</h1><p>loading…</p></div>;
+  if (loading) return <div><h1>Profile</h1><p>loading…</p></div>;
 
   return (
     <div>
       <h1>Profile</h1>
 
-      <div className="pc-warn" role="status" style={{ marginBottom: 16 }}>
-        🔓 <strong>Local-only mode.</strong> Cloud sign-in isn&rsquo;t wired
-        yet — your profile lives at <code>~/.papercusp/profile.json</code>.
-        When auth lands, this same form will start syncing to your account
-        across machines. API keys always stay local.
-      </div>
+      <form onSubmit={submit(onSubmit)} className="pc-card" style={{ maxWidth: 640 }}>
+        <FormField label="Email (optional)" error={errors.email?.message} description="Used to identify you in commit messages and agent attribution.">
+          <input type="email" className="pc-input" placeholder="you@example.com" {...register('email')} />
+        </FormField>
 
-      <div className="pc-card" style={{ maxWidth: 640 }}>
-        <div className="pc-form-row">
-          <label htmlFor="email">Email (optional)</label>
-          <input
-            id="email"
-            type="email"
-            className="pc-input"
-            placeholder="you@example.com"
-            value={profile.email ?? ''}
-            onChange={(e) => update({ email: e.target.value })}
-          />
-          <span className="help">Used to identify you across devices once cloud sync is wired.</span>
-        </div>
+        <FormField label="Display name" error={errors.display_name?.message} description="Shown next to your harness runs and proposals.">
+          <input type="text" className="pc-input" placeholder="Avi" {...register('display_name')} />
+        </FormField>
 
-        <div className="pc-form-row">
-          <label htmlFor="display_name">Display name</label>
-          <input
-            id="display_name"
-            type="text"
-            className="pc-input"
-            placeholder="Avi"
-            value={profile.display_name ?? ''}
-            onChange={(e) => update({ display_name: e.target.value })}
-          />
-          <span className="help">Shown next to your harness runs and proposals.</span>
-        </div>
-
-        <div className="pc-form-row">
-          <label htmlFor="default_project_dir">Default project directory</label>
-          <input
-            id="default_project_dir"
-            type="text"
-            className="pc-input"
-            placeholder="~/papercusp-projects"
-            value={profile.default_project_dir ?? ''}
-            onChange={(e) => update({ default_project_dir: e.target.value })}
-          />
-          <span className="help">Where <code>papercusp init &lt;slug&gt;</code> creates new project directories.</span>
-        </div>
+        <FormField label="Default project directory" error={errors.default_project_dir?.message} description={
+          <>Where <code>papercusp init &lt;slug&gt;</code> creates new project directories.</>
+        }>
+          <input type="text" className="pc-input" placeholder="~/papercusp-projects" {...register('default_project_dir')} />
+        </FormField>
 
         <h3 style={{ marginTop: 24, marginBottom: 8 }}>Preferred models</h3>
-        <ModelInput
-          label="scoper"
-          help="Plans missions and reviews proposals. Bigger model = better plans."
-          value={profile.preferred_models?.scoper ?? ''}
-          onChange={(v) => update({ preferred_models: { ...profile.preferred_models, scoper: v } })}
-        />
-        <ModelInput
-          label="worker"
-          help="Implements features. The high-volume role; pick something fast."
-          value={profile.preferred_models?.worker ?? ''}
-          onChange={(v) => update({ preferred_models: { ...profile.preferred_models, worker: v } })}
-        />
-        <ModelInput
-          label="validator"
-          help="Verifies workers. Bigger model = catches more bugs."
-          value={profile.preferred_models?.validator ?? ''}
-          onChange={(v) => update({ preferred_models: { ...profile.preferred_models, validator: v } })}
-        />
-        <ModelInput
-          label="reviewer"
-          help="Gates plans and proposals. Should be at least as smart as scoper."
-          value={profile.preferred_models?.reviewer ?? ''}
-          onChange={(v) => update({ preferred_models: { ...profile.preferred_models, reviewer: v } })}
-        />
-        <ModelInput
-          label="orchestrator"
-          help="Coordinates the loop. Tiny model is fine — it's mostly routing."
-          value={profile.preferred_models?.orchestrator ?? ''}
-          onChange={(v) => update({ preferred_models: { ...profile.preferred_models, orchestrator: v } })}
-        />
+
+        <ModelField label="scoper" help="Plans missions and reviews proposals. Bigger model = better plans." register={register('scoper')} error={errors.scoper?.message} />
+        <ModelField label="worker" help="Implements features. The high-volume role; pick something fast." register={register('worker')} error={errors.worker?.message} />
+        <ModelField label="validator" help="Verifies workers. Bigger model = catches more bugs." register={register('validator')} error={errors.validator?.message} />
+        <ModelField label="reviewer" help="Gates plans and proposals. Should be at least as smart as scoper." register={register('reviewer')} error={errors.reviewer?.message} />
+        <ModelField label="orchestrator" help="Coordinates the loop. Tiny model is fine — it's mostly routing." register={register('orchestrator')} error={errors.orchestrator?.message} />
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
-          <button type="button" className="pc-button primary" onClick={save} disabled={saving}>
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          {profile.updated_at && (
+          <SubmitButton pending={isSubmitting}>Save</SubmitButton>
+          {updatedAt && (
             <span style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
-              Last updated <time dateTime={profile.updated_at}>{new Date(profile.updated_at).toLocaleString()}</time>
+              Last updated <time dateTime={updatedAt}>{new Date(updatedAt).toLocaleString()}</time>
             </span>
           )}
         </div>
-      </div>
+      </form>
     </div>
   );
 }
 
-function ModelInput({
-  label,
-  help,
-  value,
-  onChange,
-}: {
-  label: string;
-  help: string;
-  value: string;
-  onChange: (v: string) => void;
-}) {
+function ModelField({ label, help, register, error }: { label: string; help: string; register: UseFormRegisterReturn; error?: string }) {
   return (
-    <div className="pc-form-row">
-      <label htmlFor={`model-${label}`}>{label}</label>
-      <input
-        id={`model-${label}`}
-        type="text"
-        className="pc-input"
-        placeholder="claude-sonnet-4-6"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-      <span className="help">{help}</span>
-    </div>
+    <FormField label={label} error={error} description={help}>
+      <input type="text" className="pc-input" placeholder="claude-sonnet-4-6" {...register} />
+    </FormField>
   );
 }
