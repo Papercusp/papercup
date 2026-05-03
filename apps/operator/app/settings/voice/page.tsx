@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { Link } from 'next-view-transitions';
+
 import { toast } from 'sonner';
 import { LazyDetails } from '../../_components/LazyDetails';
 import { Checkbox } from '../../harness/Checkbox';
@@ -276,6 +278,22 @@ export default function VoiceSettingsPage() {
 
   const todaySpend = spend?.spend?.[0];
 
+  // Hold the render until the prefs fetch resolves. Otherwise every
+  // `prefs?.sttEngine ?? 'voicemode'` style fallback in the JSX paints
+  // the default value, then the fetch lands and every control snaps to
+  // its real value half a second later. The skeleton matches the real
+  // layout's outer dimensions so there's no shift when prefs arrives.
+  if (!prefs) {
+    return (
+      <div style={{ padding: '8px 4px', maxWidth: 880 }} aria-busy="true">
+        <h1 style={{ fontSize: 22, marginBottom: 4 }}>Voice mode</h1>
+        <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
+          Loading your voice settings…
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: '8px 4px', maxWidth: 880 }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Voice mode</h1>
@@ -383,7 +401,7 @@ export default function VoiceSettingsPage() {
       <section style={{ marginBottom: 24, padding: 12, border: '1px dashed var(--border)', borderRadius: 4 }}>
         <p style={{ ...hint, margin: 0 }}>
           Cloud API keys (OpenAI, ElevenLabs, Cartesia, Deepgram, Picovoice, Google AI) live on
-          the dedicated <a href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</a> page.
+          the dedicated <Link href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</Link> page.
         </p>
       </section>
 
