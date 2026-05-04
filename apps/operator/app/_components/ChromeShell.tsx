@@ -106,11 +106,15 @@ export default function ChromeShell() {
       <HostCheckBanner />
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
-      {/* Skip the heavy dock components entirely on /settings/* —
-          settings is configuration, the user isn't operating. Saves
-          ~6 large chunks (OracleDock, OperatorPanel, ChatwootWidget,
-          OperatorBackgroundScanner, VoiceAppBridge, OperatorVoiceAnnouncer)
-          from blocking the network during settings page interaction. */}
+      {/* OperatorPanel mounts on every page (including /settings/*) so
+          clicking the chrome-bar Operator button always opens it. The
+          panel returns null when its open state is false, so mounting
+          it everywhere is essentially free.
+
+          The other heavy docks (OracleDock, ChatwootWidget, voice infra)
+          ARE still skipped on /settings/* since the user isn't operating
+          on a settings page — that perf win still applies. */}
+      <DeferredOperatorPanel />
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );
@@ -141,10 +145,38 @@ function DeferredDocks() {
     <Suspense fallback={null}>
       <ChatwootWidget />
       <OracleDock />
-      <OperatorPanel />
       <OperatorBackgroundScanner />
       <VoiceAppBridge />
       <OperatorVoiceAnnouncer />
+    </Suspense>
+  );
+}
+
+// OperatorPanel is split out of DeferredDocks so it can mount on every
+// page including /settings/*. Same idle-deferral pattern, just a smaller
+// payload. The panel itself returns null while closed, so the only cost
+// of mounting it everywhere is its useEffect/subscribe wiring, which is
+// negligible compared to the bigger docks above.
+function DeferredOperatorPanel() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    const idle = (window as any).requestIdleCallback as undefined | ((cb: () => void) => number);
+    let id: number | ReturnType<typeof setTimeout>;
+    if (idle) {
+      id = idle(() => setReady(true));
+    } else {
+      id = setTimeout(() => setReady(true), 200);
+    }
+    return () => {
+      const cancel = (window as any).cancelIdleCallback as undefined | ((id: number) => void);
+      if (cancel && typeof id === 'number') cancel(id);
+      else clearTimeout(id as ReturnType<typeof setTimeout>);
+    };
+  }, []);
+  if (!ready) return null;
+  return (
+    <Suspense fallback={null}>
+      <OperatorPanel />
     </Suspense>
   );
 }
