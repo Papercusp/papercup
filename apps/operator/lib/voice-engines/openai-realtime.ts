@@ -94,10 +94,11 @@ export async function startRealtimeSession(
     },
   });
 
+  const registryTools = await buildRegistryTools();
   const agent = new RealtimeAgent({
     name: 'Operator',
     instructions: INSTRUCTIONS,
-    tools: [openTool, scanTool, approveTool, acrossTool],
+    tools: [openTool, scanTool, approveTool, acrossTool, ...registryTools],
   });
 
   const session = new RealtimeSession(agent);
@@ -134,6 +135,73 @@ export async function startRealtimeSession(
     sendSystem(text: string): void {
       try { session.sendMessage(text); } catch { /* ignore */ }
     },
+  };
+}
+
+/**
+ * Build the registry-derived tool list for the OpenAI Realtime SDK.
+ * Mirrors the ElevenLabs shim — emits browser:'required' commands and
+ * fast queries as in-page tools the agent can call. Keeps the registry
+ * as the single source of truth across both providers.
+ *
+ * Reuses the legacy callback names where there's overlap (open_operator,
+ * scan, approve, across_workspaces) — those four predate the registry
+ * and the existing system prompt mentions them by name. Registry tools
+ * are added on top with their dotted ids (panel.open, panel.close, etc.).
+ */
+async function buildRegistryTools() {
+  const { list } = await import('../commands/registry');
+  const { runCommand, runQuery } = await import('../commands/registry');
+  const { z: zod } = await import('zod');
+  // Side-effect import: registers all defs.
+  await import('../commands/defs');
+
+  const tools: Array<ReturnType<typeof tool>> = [];
+  const commands = list({ kind: 'command', agent: 'operator', browser: ['required'] });
+  for (const def of commands) {
+    tools.push(
+      tool({
+        name: def.id.replace(/\./g, '_'),
+        description: def.promptDescription ?? def.description,
+        parameters: def.schema as any,
+        execute: async (params: any) => {
+          const ctx = makeBrowserCtx();
+          const result = await runCommand(def.id, params, ctx);
+          return result;
+        },
+      }),
+    );
+  }
+  const queries = list({ kind: 'query', agent: 'operator' });
+  for (const def of queries) {
+    tools.push(
+      tool({
+        name: def.id.replace(/\./g, '_'),
+        description: def.promptDescription ?? def.description,
+        parameters: def.schema as any,
+        execute: async (params: any) => {
+          const ctx = makeBrowserCtx();
+          const result = await runQuery(def.id, params, ctx);
+          return result;
+        },
+      }),
+    );
+  }
+  // Suppress unused-var warning on zod import — kept for future inline schemas.
+  void zod;
+  return tools;
+}
+
+function makeBrowserCtx() {
+  return {
+    agent: 'operator' as const,
+    workspace: typeof window === 'undefined'
+      ? 'default'
+      : (new URL(window.location.href).searchParams.get('ws') ?? 'default'),
+    sessionId: typeof window === 'undefined'
+      ? undefined
+      : window.sessionStorage.getItem('pc-voice-tab-id') ?? undefined,
+    requestId: `or-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   };
 }
 
