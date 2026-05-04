@@ -10284,7 +10284,7 @@ body.h-harness-top-collapsed .pc-header {
 /* ── Voice button: wake-word detected pulse ─────────────────────────────
    voice-mode flashes `wakeDetected: true` for ~1.2s when a wake word
    fires (Porcupine, openWakeWord, or in-transcript string match). The
-   class composes with --mode-*/--status-*/.is-mic-active/.is-held so it
+   class composes with the voice mode/status activity classes so it
    doesn't clobber any other indicator. */
 @keyframes pc-voice-wake-flash {
   0%   { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.55), 0 0 0 0 rgba(34, 197, 94, 0.30); }
@@ -10325,5 +10325,245 @@ body.h-harness-top-collapsed .pc-header {
   .pc-voice-btn.is-wake-detected,
   .pc-voice-btn.is-wake-detected::after {
     animation-duration: 1ms !important;
+  }
+}
+
+/* Restored Operator panel finish: visible Blade Runner neon perimeter.
+   This intentionally overrides the subtle chrome/cyberpunk frame blocks above. */
+.operator-panel {
+  --operator-cut: 22px;
+  --operator-frame: 11px;
+  --operator-inner-cut: 10px;
+  padding: var(--operator-frame);
+  background:
+    radial-gradient(circle at 52% -10%, rgba(103, 232, 249, 0.24), transparent 24rem),
+    radial-gradient(circle at 12% 15%, rgba(251, 146, 60, 0.18), transparent 16rem),
+    radial-gradient(circle at 88% 12%, rgba(34, 211, 238, 0.18), transparent 19rem),
+    linear-gradient(125deg, rgba(251, 146, 60, 0.055), transparent 22% 74%, rgba(34, 211, 238, 0.060)),
+    linear-gradient(180deg, rgba(7, 12, 23, 0.996), rgba(1, 5, 13, 0.996)) !important;
+  box-shadow:
+    0 0 0 100vmax rgba(1, 4, 10, 0.58),
+    0 52px 148px rgba(0, 0, 0, 0.84),
+    0 0 0 1px rgba(103, 232, 249, 0.82),
+    0 0 9px rgba(103, 232, 249, 0.62),
+    0 0 28px rgba(34, 211, 238, 0.38),
+    0 0 58px rgba(251, 146, 60, 0.24),
+    inset 0 0 0 1px rgba(255, 237, 213, 0.22),
+    inset 0 0 28px rgba(34, 211, 238, 0.075) !important;
+}
+
+.operator-panel::before {
+  opacity: 1 !important;
+  padding: var(--operator-frame);
+  background:
+    linear-gradient(90deg, transparent 4%, rgba(103, 232, 249, 1) 5% 28%, rgba(251, 191, 36, 0.98) 28% 36%, transparent 36% 64%, rgba(251, 191, 36, 0.98) 64% 72%, rgba(103, 232, 249, 1) 72% 95%, transparent 96%) top 0 left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 6%, rgba(251, 191, 36, 0.88) 6% 24%, rgba(103, 232, 249, 0.72) 24% 36%, transparent 36% 64%, rgba(103, 232, 249, 0.72) 64% 76%, rgba(251, 191, 36, 0.88) 76% 94%, transparent 94%) bottom 0 left / 100% 2px no-repeat,
+    linear-gradient(180deg, transparent 6%, rgba(103, 232, 249, 0.94) 7% 36%, rgba(251, 191, 36, 0.70) 36% 47%, transparent 47% 58%, rgba(251, 191, 36, 0.70) 58% 69%, rgba(103, 232, 249, 0.94) 69% 94%, transparent 95%) left 0 center / 2px 100% no-repeat,
+    linear-gradient(180deg, transparent 6%, rgba(251, 191, 36, 0.82) 7% 32%, rgba(103, 232, 249, 0.76) 32% 44%, transparent 44% 58%, rgba(103, 232, 249, 0.76) 58% 70%, rgba(251, 191, 36, 0.82) 70% 94%, transparent 95%) right 0 center / 2px 100% no-repeat,
+    repeating-linear-gradient(102deg, rgba(103, 232, 249, 0.46) 0 1px, transparent 1px 10px) top 4px center / calc(100% - 44px) 2px no-repeat,
+    repeating-linear-gradient(102deg, rgba(251, 191, 36, 0.34) 0 1px, transparent 1px 11px) bottom 4px center / calc(100% - 54px) 2px no-repeat,
+    radial-gradient(circle at 20px 20px, rgba(255,255,255,1) 0 1px, rgba(103, 232, 249, 1) 2px 4px, rgba(34, 211, 238, 0.34) 5px 13px, transparent 15px),
+    radial-gradient(circle at calc(100% - 20px) 20px, rgba(255,255,255,1) 0 1px, rgba(251, 191, 36, 0.98) 2px 4px, rgba(251, 146, 60, 0.32) 5px 13px, transparent 15px),
+    radial-gradient(circle at 20px calc(100% - 20px), rgba(255,255,255,0.86) 0 1px, rgba(251, 191, 36, 0.88) 2px 4px, rgba(251, 146, 60, 0.26) 5px 13px, transparent 15px),
+    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.86) 0 1px, rgba(103, 232, 249, 0.88) 2px 4px, rgba(34, 211, 238, 0.28) 5px 13px, transparent 15px),
+    linear-gradient(135deg, rgba(12, 18, 31, 0.96), rgba(34, 211, 238, 0.30) 16%, rgba(9, 14, 25, 0.98) 34%, rgba(251, 146, 60, 0.22) 52%, rgba(8, 13, 24, 0.99) 72%, rgba(103, 232, 249, 0.24) 100%) !important;
+  filter:
+    drop-shadow(0 0 5px rgba(103, 232, 249, 0.86))
+    drop-shadow(0 0 18px rgba(34, 211, 238, 0.54))
+    drop-shadow(0 0 26px rgba(251, 146, 60, 0.36)) !important;
+}
+
+.operator-panel::after {
+  opacity: 1 !important;
+  inset: calc(var(--operator-frame) - 1px);
+  padding: 4px;
+  background:
+    linear-gradient(90deg, transparent 5%, rgba(103, 232, 249, 0.92) 5% 24%, transparent 24% 76%, rgba(251, 191, 36, 0.82) 76% 95%, transparent 95%) top 0 left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 8%, rgba(251, 191, 36, 0.58) 8% 22%, transparent 22% 78%, rgba(103, 232, 249, 0.58) 78% 92%, transparent 92%) bottom 0 left / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(251, 191, 36, 0.44) 10% 32%, transparent 32% 68%, rgba(103, 232, 249, 0.44) 68% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(103, 232, 249, 0.44) 10% 32%, transparent 32% 68%, rgba(251, 191, 36, 0.44) 68% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(255,255,255,0.12), rgba(34, 211, 238, 0.12) 24%, rgba(251, 146, 60, 0.10) 54%, rgba(8, 15, 26, 0.95) 100%) !important;
+  box-shadow:
+    0 0 10px rgba(103, 232, 249, 0.42),
+    0 0 24px rgba(34, 211, 238, 0.24),
+    0 0 18px rgba(251, 146, 60, 0.18),
+    inset 0 0 0 1px rgba(103, 232, 249, 0.34) !important;
+}
+
+/* Restored Operator panel usability: timeline controls, dispatch status box, action chrome. */
+.operator-feed-head {
+  align-items: center !important;
+  justify-content: flex-start !important;
+  gap: 12px !important;
+}
+
+.operator-feed-title {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.operator-feed-tools {
+  flex: 1 1 560px;
+  min-width: 0 !important;
+  margin-left: 0 !important;
+  justify-content: flex-start !important;
+  gap: 8px !important;
+}
+
+.operator-feed-search {
+  flex: 0 1 330px !important;
+  min-width: 230px !important;
+  max-width: 360px;
+}
+
+.operator-feed-pills {
+  flex: 0 0 auto;
+}
+
+.operator-entry__state {
+  margin-left: auto;
+}
+
+.operator-entry__state:has(.operator-state-text) {
+  --operator-state-tone: rgba(148, 163, 184, 0.62);
+  display: inline-flex;
+  align-items: center;
+  min-height: 29px;
+  padding: 5px 9px;
+  text-align: left;
+  border: 1px solid color-mix(in oklab, var(--operator-state-tone), transparent 48%);
+  border-radius: 11px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--operator-state-tone), transparent 86%),
+      rgba(6, 15, 28, 0.84)
+    );
+  box-shadow:
+    0 8px 18px rgba(0,0,0,0.18),
+    0 0 0 1px color-mix(in oklab, var(--operator-state-tone), transparent 84%),
+    inset 0 1px 0 rgba(255,255,255,0.055);
+}
+
+.operator-entry__state:has(.operator-state-text--good) {
+  --operator-state-tone: rgba(45, 212, 191, 0.76);
+}
+
+.operator-entry__state:has(.operator-state-text--warn),
+.operator-entry__state:has(.operator-state-text--auto) {
+  --operator-state-tone: rgba(245, 181, 63, 0.82);
+}
+
+.operator-entry__state:has(.operator-state-text--bad) {
+  --operator-state-tone: rgba(251, 113, 133, 0.82);
+}
+
+.operator-state-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1.1;
+  letter-spacing: 0.01em;
+}
+
+.operator-panel__actions {
+  gap: 6px !important;
+  padding: 2px;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.operator-panel__actions .operator-btn {
+  --operator-action-tone: rgb(125 211 252);
+  min-height: 32px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px !important;
+  color: color-mix(in oklab, var(--operator-action-tone), white 30%) !important;
+  line-height: 1;
+  letter-spacing: 0.015em;
+  border-color: color-mix(in oklab, var(--operator-action-tone), transparent 36%) !important;
+  border-radius: 999px !important;
+  clip-path: none !important;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--operator-action-tone), transparent 78%),
+      rgba(7, 16, 29, 0.92)
+    ) !important;
+  box-shadow:
+    0 8px 18px rgba(0,0,0,0.20),
+    0 0 0 1px color-mix(in oklab, var(--operator-action-tone), transparent 84%),
+    inset 0 1px 0 rgba(255,255,255,0.065) !important;
+}
+
+.operator-panel__actions .operator-btn--primary {
+  --operator-action-tone: rgb(45 212 191);
+}
+
+.operator-panel__actions .operator-btn:not(.operator-btn--primary):not(.operator-btn--ghost):not(.operator-btn--close) {
+  --operator-action-tone: rgb(245 181 63);
+}
+
+.operator-panel__actions .operator-btn--ghost {
+  --operator-action-tone: rgb(186 230 253);
+}
+
+.operator-panel__actions .operator-btn--close {
+  --operator-action-tone: rgb(251 113 133);
+  width: 32px;
+  height: 32px;
+  padding: 0 !important;
+  font-size: 18px;
+}
+
+.operator-panel__actions .operator-btn:hover,
+.operator-panel__actions .operator-btn:focus-visible {
+  color: color-mix(in oklab, var(--operator-action-tone), white 44%) !important;
+  border-color: color-mix(in oklab, var(--operator-action-tone), transparent 20%) !important;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--operator-action-tone), transparent 70%),
+      color-mix(in oklab, rgba(7, 16, 29, 0.92), white 4%)
+    ) !important;
+  box-shadow:
+    0 10px 24px rgba(0,0,0,0.26),
+    0 0 0 1px color-mix(in oklab, var(--operator-action-tone), transparent 66%),
+    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+  transform: translateY(-0.5px);
+}
+
+@media (max-width: 760px) {
+  .operator-panel {
+    --operator-cut: 16px;
+    --operator-frame: 8px;
+    --operator-inner-cut: 8px;
+  }
+
+  .operator-panel::before {
+    background:
+      linear-gradient(90deg, transparent 4%, rgba(103, 232, 249, 1) 5% 28%, rgba(251, 191, 36, 0.98) 28% 36%, transparent 36% 64%, rgba(251, 191, 36, 0.98) 64% 72%, rgba(103, 232, 249, 1) 72% 95%, transparent 96%) top 0 left / 100% 2px no-repeat,
+      linear-gradient(90deg, transparent 6%, rgba(251, 191, 36, 0.88) 6% 24%, rgba(103, 232, 249, 0.72) 24% 36%, transparent 36% 64%, rgba(103, 232, 249, 0.72) 64% 76%, rgba(251, 191, 36, 0.88) 76% 94%, transparent 94%) bottom 0 left / 100% 2px no-repeat,
+      linear-gradient(180deg, transparent 6%, rgba(103, 232, 249, 0.94) 7% 36%, rgba(251, 191, 36, 0.70) 36% 47%, transparent 47% 58%, rgba(251, 191, 36, 0.70) 58% 69%, rgba(103, 232, 249, 0.94) 69% 94%, transparent 95%) left 0 center / 2px 100% no-repeat,
+      linear-gradient(180deg, transparent 6%, rgba(251, 191, 36, 0.82) 7% 32%, rgba(103, 232, 249, 0.76) 32% 44%, transparent 44% 58%, rgba(103, 232, 249, 0.76) 58% 70%, rgba(251, 191, 36, 0.82) 70% 94%, transparent 95%) right 0 center / 2px 100% no-repeat,
+      linear-gradient(135deg, rgba(12, 18, 31, 0.96), rgba(34, 211, 238, 0.30) 16%, rgba(9, 14, 25, 0.98) 34%, rgba(251, 146, 60, 0.22) 52%, rgba(8, 13, 24, 0.99) 72%, rgba(103, 232, 249, 0.24) 100%) !important;
+  }
+
+  .operator-feed-head {
+    align-items: flex-start !important;
+  }
+
+  .operator-feed-tools {
+    flex: 1 0 100%;
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .operator-feed-search {
+    flex: 1 1 100% !important;
+    max-width: none;
   }
 }

@@ -17,12 +17,12 @@
  */
 
 import { useDeferredValue, useEffect, useState, useCallback, useRef } from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { MarkdownPreview } from './MarkdownEditor';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
 import RouteLink from './RouteLink';
-
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
 const ICON_GLYPH: Record<IconState, string> = {
@@ -923,414 +923,447 @@ export function OperatorPanel(): JSX.Element | null {
         ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
         : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
   const statusLabel = state.paused ? 'paused' : state.iconState.replace('-', ' ');
-
-  if (!state.open) return null;
+  const reducedMotion = useReducedMotion();
+  const panelMotion = reducedMotion
+    ? {
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit: { opacity: 0 },
+        transition: { duration: 0.16, ease: [0.2, 0, 0, 1] as const },
+      }
+    : {
+        initial: { opacity: 0, x: 36, y: -72, scale: 0.94, rotate: -4 },
+        animate: {
+          opacity: 1,
+          x: 0,
+          y: 0,
+          scale: 1,
+          rotate: 0,
+          transition: { duration: 0.38, ease: [0.16, 1, 0.3, 1] as const },
+        },
+        exit: {
+          opacity: 0,
+          x: 24,
+          y: -34,
+          scale: 0.975,
+          rotate: 2.25,
+          transition: { duration: 0.22, ease: [0.7, 0, 0.84, 0] as const },
+        },
+      };
 
   return (
-    <div
-      ref={panelRef}
-      role="dialog"
-      aria-label="Operator panel"
-      className={`operator-panel pc-animate-in pc-animate-in--down operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
-    >
-      <header className="operator-panel__header pc-animate-in pc-animate-in--down pc-animate-in--fast">
-        <div className="operator-panel__titleblock">
-          <div className="operator-panel__titleline">
-            <h2>Operator</h2>
-            <span className={`operator-status operator-status--${state.paused ? 'paused' : state.iconState}`}>
-              {statusLabel}
-            </span>
-          </div>
-        </div>
-
-        <div className="operator-panel__metrics pc-animate-in pc-animate-in--down pc-animate-in--delay-1" aria-label="Operator panel summary">
-          <span title="pending = pending suggestions"><strong>{pendingCount}</strong><em>pending</em></span>
-          <span title="in flight = dispatched suggestions"><strong>{inFlightCount}</strong><em>in flight</em></span>
-          <span title="attention = escalated, failed, or rejected suggestions"><strong>{failedCount}</strong><em>attention</em></span>
-          <span title="resolved = consumed, dismissed, or superseded suggestions"><strong>{terminalCount}</strong><em>resolved</em></span>
-        </div>
-
-        <div className="operator-panel__actions pc-animate-in pc-animate-in--down pc-animate-in--delay-2">
-          <button
-            type="button"
-            className="operator-btn operator-btn--primary operator-btn--icon"
-            onClick={() => startScan()}
-            aria-label="Re-scan Operator suggestions"
-          >
-            <span aria-hidden="true">↻</span>
-            <span>Scan</span>
-          </button>
-          <button
-            type="button"
-            className="operator-btn operator-btn--icon"
-            onClick={() => broadcastState({ paused: !state.paused })}
-            aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
-          >
-            <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
-            <span>{state.paused ? 'Resume' : 'Pause'}</span>
-          </button>
-          <RouteLink className="operator-btn operator-btn--ghost" href="/settings/operator">
-            Settings
-          </RouteLink>
-          <button
-            type="button"
-            className="operator-btn operator-btn--close"
-            onClick={() => broadcastState({ open: false })}
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </div>
-      </header>
-
-      {budget && !budget.configured && (
-        <div className="operator-budget-overlay pc-animate-in pc-animate-in--fade">
-          <div className="operator-budget-card pc-animate-in pc-animate-in--down pc-animate-in--delay-1">
-            <div className="operator-panel__eyebrow">First run</div>
-            <h3>Pick a daily budget for Operator</h3>
-            <p>
-              Operator stops scanning automatically when today&apos;s spend reaches the cap.
-              You can change this any time at <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
-            </p>
-            <div className="operator-budget-options">
-              {[
-                { label: 'Light', cap: 5, blurb: '~50 scans/day with default model' },
-                { label: 'Active', cap: 20, blurb: 'recommended for daily use' },
-                { label: 'Heavy', cap: 50, blurb: 'large workspaces or always-on background' },
-              ].map(({ label, cap, blurb }) => (
-                <button
-                  key={cap}
-                  type="button"
-                  disabled={budgetSaving}
-                  onClick={() => setBudgetCap(cap)}
-                  className="operator-budget-option"
-                >
-                  <strong>{label} — ${cap}/day</strong>
-                  <span>{blurb}</span>
-                </button>
-              ))}
+    <AnimatePresence initial={false}>
+      {state.open ? (
+        <motion.div
+          ref={panelRef}
+          role="dialog"
+          aria-label="Operator panel"
+          className={`operator-panel operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
+          initial={panelMotion.initial}
+          animate={panelMotion.animate}
+          exit={panelMotion.exit}
+          transition={panelMotion.transition}
+        >
+          <header className="operator-panel__header pc-animate-in pc-animate-in--down pc-animate-in--fast">
+            <div className="operator-panel__titleblock">
+              <div className="operator-panel__titleline">
+                <h2>Operator</h2>
+                <span className={`operator-status operator-status--${state.paused ? 'paused' : state.iconState}`}>
+                  {statusLabel}
+                </span>
+              </div>
             </div>
-          </div>
-        </div>
-      )}
 
-      <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
-        <aside className="operator-panel__rail operator-panel__rail--left">
-          {firstRun && (
-            <section className="operator-callout">
-              <strong>First-run intro</strong>
-              <p>
-                I have full write authority across all harnesses in this workspace.
-                Edit my prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
-              </p>
-            </section>
+            <div className="operator-panel__metrics pc-animate-in pc-animate-in--down pc-animate-in--delay-1" aria-label="Operator panel summary">
+              <span title="pending = pending suggestions"><strong>{pendingCount}</strong><em>pending</em></span>
+              <span title="in flight = dispatched suggestions"><strong>{inFlightCount}</strong><em>in flight</em></span>
+              <span title="attention = escalated, failed, or rejected suggestions"><strong>{failedCount}</strong><em>attention</em></span>
+              <span title="resolved = consumed, dismissed, or superseded suggestions"><strong>{terminalCount}</strong><em>resolved</em></span>
+            </div>
+
+            <div className="operator-panel__actions pc-animate-in pc-animate-in--down pc-animate-in--delay-2">
+              <button
+                type="button"
+                className="operator-btn operator-btn--primary operator-btn--icon"
+                onClick={() => startScan()}
+                aria-label="Re-scan Operator suggestions"
+              >
+                <span aria-hidden="true">↻</span>
+                <span>Scan</span>
+              </button>
+              <button
+                type="button"
+                className="operator-btn operator-btn--icon"
+                onClick={() => broadcastState({ paused: !state.paused })}
+                aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
+              >
+                <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
+                <span>{state.paused ? 'Resume' : 'Pause'}</span>
+              </button>
+              <RouteLink className="operator-btn operator-btn--ghost" href="/settings/operator">
+                Settings
+              </RouteLink>
+              <button
+                type="button"
+                className="operator-btn operator-btn--close"
+                onClick={() => broadcastState({ open: false })}
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+          </header>
+
+          {budget && !budget.configured && (
+            <div className="operator-budget-overlay pc-animate-in pc-animate-in--fade">
+              <div className="operator-budget-card pc-animate-in pc-animate-in--down pc-animate-in--delay-1">
+                <div className="operator-panel__eyebrow">First run</div>
+                <h3>Pick a daily budget for Operator</h3>
+                <p>
+                  Operator stops scanning automatically when today&apos;s spend reaches the cap.
+                  You can change this any time at <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
+                </p>
+                <div className="operator-budget-options">
+                  {[
+                    { label: 'Light', cap: 5, blurb: '~50 scans/day with default model' },
+                    { label: 'Active', cap: 20, blurb: 'recommended for daily use' },
+                    { label: 'Heavy', cap: 50, blurb: 'large workspaces or always-on background' },
+                  ].map(({ label, cap, blurb }) => (
+                    <button
+                      key={cap}
+                      type="button"
+                      disabled={budgetSaving}
+                      onClick={() => setBudgetCap(cap)}
+                      className="operator-budget-option"
+                    >
+                      <strong>{label} — ${cap}/day</strong>
+                      <span>{blurb}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           )}
-          <section className="operator-section">
-            <PerHarnessStatus />
-          </section>
-          <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
-            <div className="operator-section__head">
-              <span>Stream</span>
-              <em>{scanStatus === 'error' ? 'error' : scanStatus === 'scanning' ? 'live scan' : scanStatus === 'complete' ? 'complete' : 'quiet'}</em>
-            </div>
-            {scanStatus === 'error' ? (
-              <div className="operator-stream-error">
-                <strong>Scan errored</strong>
-                <p>{scanError || 'Operator substrate is not ready.'}</p>
-                <RouteLink href="/settings/operator">Set up Operator →</RouteLink>
-              </div>
-            ) : streamLog.length === 0 ? (
-              <p className="operator-empty-small">(no stream yet)</p>
-            ) : (
-              <pre>{streamLog.join('\n')}</pre>
-            )}
-          </section>
-        </aside>
 
-        <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-          <div className="operator-feed-head">
-            <div>
-              <span className="operator-panel__eyebrow">Unified timeline</span>
-              <h3>Timeline</h3>
-            </div>
-            <div className="operator-feed-tools">
-              <div className="operator-feed-pills" aria-label="Timeline view">
-                {[
-                  { key: 'all' as FeedFilter, label: 'All', count: filteredSuggestions.length + filteredDecisions.length },
-                  { key: 'suggestions' as FeedFilter, label: 'Suggestions', count: filteredSuggestions.length },
-                ].map((pill) => (
-                  <button
-                    key={pill.key}
-                    type="button"
-                    className={feedFilter === pill.key ? 'is-active' : undefined}
-                    aria-pressed={feedFilter === pill.key}
-                    onClick={() => setFeedFilter(pill.key)}
-                  >
-                    <span>{pill.label}</span>
-                    <strong>{pill.count}</strong>
-                  </button>
-                ))}
-              </div>
-              <div className={`operator-feed-search${filterActive ? ' has-value' : ''}`}>
-                <span className="operator-feed-search__icon" aria-hidden="true">⌕</span>
-                <input
-                  type="search"
-                  value={feedQuery}
-                  onChange={(e) => setFeedQuery(e.target.value)}
-                  placeholder="Filter title, harness, or action"
-                  aria-label="Filter unified timeline"
-                  spellCheck={false}
-                  enterKeyHint="search"
-                />
-                {feedQuery && (
-                  <button
-                    type="button"
-                    className="operator-feed-search__clear"
-                    onClick={() => setFeedQuery('')}
-                    aria-label="Clear timeline filter"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {!hasFeedEntries ? (
-            <div className={`operator-empty-state operator-empty-state--${scanStatus}`}>
-              <div className="operator-empty-state__icon" aria-hidden="true">
-                {scanStatus === 'error' ? '!' : scanStatus === 'scanning' ? '◐' : '·'}
-              </div>
-              <h3>{emptyTitle}</h3>
-              <p>{emptyBody}</p>
-              {scanStatus === 'error' && (
-                <RouteLink className="operator-btn operator-btn--primary" href="/settings/operator">
-                  Set up Operator →
-                </RouteLink>
+          <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
+            <aside className="operator-panel__rail operator-panel__rail--left">
+              {firstRun && (
+                <section className="operator-callout">
+                  <strong>First-run intro</strong>
+                  <p>
+                    I have full write authority across all harnesses in this workspace.
+                    Edit my prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
+                  </p>
+                </section>
               )}
-            </div>
-          ) : (
-            <ul role="list" aria-label="Operator timeline" className="operator-feed-list">
-              {visibleSuggestions.map((s) => (
-                <li
-                  key={s.id}
-                  role="article"
-                  aria-label={`${s.title} — ${s.actualTier} tier, ${s.auto_dispatch ? 'auto-dispatched' : 'awaiting your decision'}`}
-                  tabIndex={0}
-                  className={`operator-entry operator-entry--suggestion operator-entry--${s.status} operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
-                >
-                  <div className="operator-entry__rail">
-                    <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
-                      {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '⚠' : '✋'}
-                    </span>
+              <section className="operator-section">
+                <PerHarnessStatus />
+              </section>
+              <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
+                <div className="operator-section__head">
+                  <span>Stream</span>
+                  <em>{scanStatus === 'error' ? 'error' : scanStatus === 'scanning' ? 'live scan' : scanStatus === 'complete' ? 'complete' : 'quiet'}</em>
+                </div>
+                {scanStatus === 'error' ? (
+                  <div className="operator-stream-error">
+                    <strong>Scan errored</strong>
+                    <p>{scanError || 'Operator substrate is not ready.'}</p>
+                    <RouteLink href="/settings/operator">Set up Operator →</RouteLink>
                   </div>
-                  <div className="operator-entry__content">
-                    <div className="operator-entry__meta">
-                      <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
-                      <span className="operator-meta-sep" aria-hidden="true">·</span>
-                      <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
-                      {s.target_harness && (
-                        <>
-                          <span className="operator-meta-sep" aria-hidden="true">·</span>
-                          <span className="operator-target">{s.target_harness}</span>
-                        </>
-                      )}
-                      <span className="operator-voice-slot" aria-hidden="true" />
-                    </div>
-                    <div className="operator-entry__title-row">
-                      <div className="operator-entry__heading">
-                        <span className={`operator-entry__type-glyph operator-entry__type-glyph--${s.action}`} aria-hidden="true">
-                          {actionGlyphForCard(s)}
-                        </span>
-                        <h4>{s.title}</h4>
-                      </div>
-                    </div>
-                    <p className="operator-entry__why">{s.why}</p>
+                ) : streamLog.length === 0 ? (
+                  <p className="operator-empty-small">(no stream yet)</p>
+                ) : (
+                  <pre>{streamLog.join('\n')}</pre>
+                )}
+              </section>
+            </aside>
 
-                    {(s.provenanceFlags?.tierMismatch || s.provenanceFlags?.capabilityUnknown) && (
-                      <div className="operator-entry__flags" aria-label="Provenance warnings">
-                        {s.provenanceFlags?.tierMismatch && (
-                          <span title="LLM-claimed tier overridden by substrate">⚠ tier corrected</span>
-                        )}
-                        {s.provenanceFlags?.capabilityUnknown && (
-                          <span title="Unknown capability — forced high (fail-safe)">⚠ capability unknown</span>
-                        )}
-                      </div>
-                    )}
-
-                    {s.action === 'send_directive' && s.directive_body && (
-                      <details className="operator-entry__details">
-                        <summary>Directive body</summary>
-                        <div>
-                          <MarkdownPreview value={s.directive_body} outline="left" />
-                        </div>
-                      </details>
-                    )}
-                    {s.action === 'inform' && s.body && (
-                      <div className="operator-entry__markdown">
-                        <MarkdownPreview value={s.body} outline="left" />
-                      </div>
-                    )}
-                    {s.action === 'navigate' && s.target_resource && (
-                      <a
-                        href={s.target_resource}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="operator-entry__link"
+            <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
+              <div className="operator-feed-head">
+                <div className="operator-feed-title">
+                  <span className="operator-panel__eyebrow">Unified timeline</span>
+                  <h3>Timeline</h3>
+                </div>
+                <div className="operator-feed-tools">
+                  <div className={`operator-feed-search${filterActive ? ' has-value' : ''}`}>
+                    <span className="operator-feed-search__icon" aria-hidden="true">⌕</span>
+                    <input
+                      type="search"
+                      value={feedQuery}
+                      onChange={(e) => setFeedQuery(e.target.value)}
+                      placeholder="Filter title, harness, or action"
+                      aria-label="Filter unified timeline"
+                      spellCheck={false}
+                      enterKeyHint="search"
+                    />
+                    {feedQuery && (
+                      <button
+                        type="button"
+                        className="operator-feed-search__clear"
+                        onClick={() => setFeedQuery('')}
+                        aria-label="Clear timeline filter"
                       >
-                        Open {s.target_resource}
-                      </a>
+                        ×
+                      </button>
                     )}
+                  </div>
+                  <div className="operator-feed-pills" aria-label="Timeline view">
+                    {[
+                      { key: 'all' as FeedFilter, label: 'All', count: filteredSuggestions.length + filteredDecisions.length },
+                      { key: 'suggestions' as FeedFilter, label: 'Suggestions', count: filteredSuggestions.length },
+                    ].map((pill) => (
+                      <button
+                        key={pill.key}
+                        type="button"
+                        className={feedFilter === pill.key ? 'is-active' : undefined}
+                        aria-pressed={feedFilter === pill.key}
+                        onClick={() => setFeedFilter(pill.key)}
+                      >
+                        <span>{pill.label}</span>
+                        <strong>{pill.count}</strong>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
 
-                    <div className="operator-entry__footer">
-                      <div className="operator-entry__state">
-                        {s.status === 'pending' && s.auto_dispatch && (
-                          <span className="operator-state-text operator-state-text--auto">
-                            ⚡ Auto-dispatching in {autoDispatchSeconds(s, now)}s
-                          </span>
-                        )}
-                        {s.status === 'pending' && s.action === 'inform' && (
-                          <span className="operator-state-text operator-state-text--muted">read-only</span>
-                        )}
-                        {s.status === 'dispatched' && (() => {
-                          const age = ageMs(s);
-                          const threshold = unconsumedThresholdFor(s, ackLatency);
-                          const unconsumed = age !== null && age > threshold;
-                          return unconsumed ? (
-                            <span className="operator-state-text operator-state-text--warn" title={`pending for ${Math.round(age! / 60000)}m (threshold ${Math.round(threshold / 60000)}m)`}>
-                              ⏳ unconsumed — harness may be paused
-                            </span>
-                          ) : (
-                            <span className="operator-state-text operator-state-text--good">✓ dispatched</span>
-                          );
-                        })()}
-                        {s.status === 'consumed' && (
-                          <span className="operator-state-text operator-state-text--good">✓ consumed</span>
-                        )}
-                        {s.status === 'escalated' && (
-                          <span className="operator-state-text operator-state-text--warn">↑ escalated</span>
-                        )}
-                        {s.status === 'rejected' && (
-                          <span className="operator-state-text operator-state-text--bad">✗ rejected</span>
-                        )}
-                        {s.status === 'failed' && (
-                          <span className="operator-state-text operator-state-text--bad">✗ failed: {s.failureReason}</span>
-                        )}
-                        {s.status === 'superseded' && (
-                          <span className="operator-state-text operator-state-text--muted">↻ superseded</span>
-                        )}
+              {!hasFeedEntries ? (
+                <div className={`operator-empty-state operator-empty-state--${scanStatus}`}>
+                  <div className="operator-empty-state__icon" aria-hidden="true">
+                    {scanStatus === 'error' ? '!' : scanStatus === 'scanning' ? '◐' : '·'}
+                  </div>
+                  <h3>{emptyTitle}</h3>
+                  <p>{emptyBody}</p>
+                  {scanStatus === 'error' && (
+                    <RouteLink className="operator-btn operator-btn--primary" href="/settings/operator">
+                      Set up Operator →
+                    </RouteLink>
+                  )}
+                </div>
+              ) : (
+                <ul role="list" aria-label="Operator timeline" className="operator-feed-list">
+                  {visibleSuggestions.map((s) => (
+                    <li
+                      key={s.id}
+                      role="article"
+                      aria-label={`${s.title} — ${s.actualTier} tier, ${s.auto_dispatch ? 'auto-dispatched' : 'awaiting your decision'}`}
+                      tabIndex={0}
+                      className={`operator-entry operator-entry--suggestion operator-entry--${s.status} operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
+                    >
+                      <div className="operator-entry__rail">
+                        <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
+                          {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '⚠' : '✋'}
+                        </span>
                       </div>
-                      <div className="operator-entry__buttons">
-                        {s.action === 'navigate' && s.target_resource && (
-                          <a className="operator-mini-btn operator-mini-btn--primary" href={s.target_resource} target="_blank" rel="noreferrer">
-                            Open link
-                          </a>
-                        )}
-                        {s.action === 'send_directive' && s.status === 'pending' && s.auto_dispatch && (
-                          <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
-                            Dismiss
-                          </button>
-                        )}
-                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier !== 'high' && (
-                          <button
-                            type="button"
-                            className={`operator-mini-btn ${s.actualTier === 'medium' ? 'operator-mini-btn--primary' : ''}`}
-                            onClick={() => dispatchSuggestion(s.id)}
-                          >
-                            Dispatch →
-                          </button>
-                        )}
-                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && !confirmingHigh[s.id] && (
-                          <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => setConfirmingHigh((prev) => ({ ...prev, [s.id]: true }))}>
-                            Review now
-                          </button>
-                        )}
-                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && confirmingHigh[s.id] && (
-                          <div className="operator-confirm-strip">
-                            <span>Confirm high-risk dispatch{s.target_harness ? ` to ${s.target_harness}` : ''}</span>
-                            <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => dispatchSuggestion(s.id)}>
-                              Dispatch →
-                            </button>
-                            <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => setConfirmingHigh((prev) => {
-                              const { [s.id]: _removed, ...rest } = prev;
-                              return rest;
-                            })}>
-                              Dismiss
-                            </button>
+                      <div className="operator-entry__content">
+                        <div className="operator-entry__meta">
+                          <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
+                          <span className="operator-meta-sep" aria-hidden="true">·</span>
+                          <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
+                          {s.target_harness && (
+                            <>
+                              <span className="operator-meta-sep" aria-hidden="true">·</span>
+                              <span className="operator-target">{s.target_harness}</span>
+                            </>
+                          )}
+                          <span className="operator-voice-slot" aria-hidden="true" />
+                        </div>
+                        <div className="operator-entry__title-row">
+                          <div className="operator-entry__heading">
+                            <span className={`operator-entry__type-glyph operator-entry__type-glyph--${s.action}`} aria-hidden="true">
+                              {actionGlyphForCard(s)}
+                            </span>
+                            <h4>{s.title}</h4>
+                          </div>
+                        </div>
+                        <p className="operator-entry__why">{s.why}</p>
+
+                        {(s.provenanceFlags?.tierMismatch || s.provenanceFlags?.capabilityUnknown) && (
+                          <div className="operator-entry__flags" aria-label="Provenance warnings">
+                            {s.provenanceFlags?.tierMismatch && (
+                              <span title="LLM-claimed tier overridden by substrate">⚠ tier corrected</span>
+                            )}
+                            {s.provenanceFlags?.capabilityUnknown && (
+                              <span title="Unknown capability — forced high (fail-safe)">⚠ capability unknown</span>
+                            )}
                           </div>
                         )}
-                        {s.status === 'pending' && !(s.action === 'send_directive' && s.auto_dispatch) && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingHigh[s.id]) && (
-                          <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => dismissSuggestion(s.id)}>
-                            Dismiss
-                          </button>
+
+                        {s.action === 'send_directive' && s.directive_body && (
+                          <details className="operator-entry__details">
+                            <summary>Directive body</summary>
+                            <div>
+                              <MarkdownPreview value={s.directive_body} outline="left" />
+                            </div>
+                          </details>
                         )}
+                        {s.action === 'inform' && s.body && (
+                          <div className="operator-entry__markdown">
+                            <MarkdownPreview value={s.body} outline="left" />
+                          </div>
+                        )}
+                        {s.action === 'navigate' && s.target_resource && (
+                          <a
+                            href={s.target_resource}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="operator-entry__link"
+                          >
+                            Open {s.target_resource}
+                          </a>
+                        )}
+
+                        <div className="operator-entry__footer">
+                          <div className="operator-entry__state">
+                            {s.status === 'pending' && s.auto_dispatch && (
+                              <span className="operator-state-text operator-state-text--auto">
+                                ⚡ Auto-dispatching in {autoDispatchSeconds(s, now)}s
+                              </span>
+                            )}
+                            {s.status === 'pending' && s.action === 'inform' && (
+                              <span className="operator-state-text operator-state-text--muted">read-only</span>
+                            )}
+                            {s.status === 'dispatched' && (() => {
+                              const age = ageMs(s);
+                              const threshold = unconsumedThresholdFor(s, ackLatency);
+                              const unconsumed = age !== null && age > threshold;
+                              return unconsumed ? (
+                                <span className="operator-state-text operator-state-text--warn" title={`pending for ${Math.round(age! / 60000)}m (threshold ${Math.round(threshold / 60000)}m)`}>
+                                  ⏳ unconsumed — harness may be paused
+                                </span>
+                              ) : (
+                                <span className="operator-state-text operator-state-text--good">✓ dispatched</span>
+                              );
+                            })()}
+                            {s.status === 'consumed' && (
+                              <span className="operator-state-text operator-state-text--good">✓ consumed</span>
+                            )}
+                            {s.status === 'escalated' && (
+                              <span className="operator-state-text operator-state-text--warn">↑ escalated</span>
+                            )}
+                            {s.status === 'rejected' && (
+                              <span className="operator-state-text operator-state-text--bad">✗ rejected</span>
+                            )}
+                            {s.status === 'failed' && (
+                              <span className="operator-state-text operator-state-text--bad">✗ failed: {s.failureReason}</span>
+                            )}
+                            {s.status === 'superseded' && (
+                              <span className="operator-state-text operator-state-text--muted">↻ superseded</span>
+                            )}
+                          </div>
+                          <div className="operator-entry__buttons">
+                            {s.action === 'navigate' && s.target_resource && (
+                              <a className="operator-mini-btn operator-mini-btn--primary" href={s.target_resource} target="_blank" rel="noreferrer">
+                                Open link
+                              </a>
+                            )}
+                            {s.action === 'send_directive' && s.status === 'pending' && s.auto_dispatch && (
+                              <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
+                                Dismiss
+                              </button>
+                            )}
+                            {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier !== 'high' && (
+                              <button
+                                type="button"
+                                className={`operator-mini-btn ${s.actualTier === 'medium' ? 'operator-mini-btn--primary' : ''}`}
+                                onClick={() => dispatchSuggestion(s.id)}
+                              >
+                                Dispatch →
+                              </button>
+                            )}
+                            {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && !confirmingHigh[s.id] && (
+                              <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => setConfirmingHigh((prev) => ({ ...prev, [s.id]: true }))}>
+                                Review now
+                              </button>
+                            )}
+                            {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && confirmingHigh[s.id] && (
+                              <div className="operator-confirm-strip">
+                                <span>Confirm high-risk dispatch{s.target_harness ? ` to ${s.target_harness}` : ''}</span>
+                                <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => dispatchSuggestion(s.id)}>
+                                  Dispatch →
+                                </button>
+                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => setConfirmingHigh((prev) => {
+                                  const { [s.id]: _removed, ...rest } = prev;
+                                  return rest;
+                                })}>
+                                  Dismiss
+                                </button>
+                              </div>
+                            )}
+                            {s.status === 'pending' && !(s.action === 'send_directive' && s.auto_dispatch) && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingHigh[s.id]) && (
+                              <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => dismissSuggestion(s.id)}>
+                                Dismiss
+                              </button>
+                            )}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
-                </li>
-              ))}
-              {visibleDecisions.map((r) => (
-                <li key={`activity:${r.id}`} role="article" className="operator-entry operator-entry--action" tabIndex={0}>
-                  <div className="operator-entry__rail">
-                    <span title="User-initiated activity">↻</span>
-                  </div>
-                  <div className="operator-entry__content">
-                    <div className="operator-entry__meta">
-                      <span className="operator-kind operator-kind--activity">Activity</span>
-                      <span className="operator-meta-sep" aria-hidden="true">·</span>
-                      <span className="operator-life operator-life--consumed">Recorded</span>
-                      <span className="operator-meta-sep" aria-hidden="true">·</span>
-                      <span className="operator-target">{r.target}</span>
-                    </div>
-                    <div className="operator-entry__title-row">
-                      <h4>{r.action}</h4>
-                      <span className="operator-entry__action-kind">{new Date(r.ts).toLocaleString()}</span>
-                    </div>
-                    <p className="operator-entry__why">User-initiated action recorded by Operator.</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </main>
+                    </li>
+                  ))}
+                  {visibleDecisions.map((r) => (
+                    <li key={`activity:${r.id}`} role="article" className="operator-entry operator-entry--action" tabIndex={0}>
+                      <div className="operator-entry__rail">
+                        <span title="User-initiated activity">↻</span>
+                      </div>
+                      <div className="operator-entry__content">
+                        <div className="operator-entry__meta">
+                          <span className="operator-kind operator-kind--activity">Activity</span>
+                          <span className="operator-meta-sep" aria-hidden="true">·</span>
+                          <span className="operator-life operator-life--consumed">Recorded</span>
+                          <span className="operator-meta-sep" aria-hidden="true">·</span>
+                          <span className="operator-target">{r.target}</span>
+                        </div>
+                        <div className="operator-entry__title-row">
+                          <h4>{r.action}</h4>
+                          <span className="operator-entry__action-kind">{new Date(r.ts).toLocaleString()}</span>
+                        </div>
+                        <p className="operator-entry__why">User-initiated action recorded by Operator.</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </main>
 
-        <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
-          {decisions.length === 0 ? (
-            <div className="operator-empty-rail">
-              <strong>Activity</strong>
-              <span>waiting</span>
-              <em>0</em>
-            </div>
-          ) : (
-            <>
-              <div className="operator-section__head">
-                <span>Activity</span>
-                <em>recent decisions</em>
-              </div>
-            <ul className="operator-activity-list">
-              {decisions.map((r) => (
-                <li key={r.id} className="operator-activity-item">
-                  <span className="operator-activity-dot" aria-hidden="true" />
-                  <div>
-                    <strong>{r.action}</strong>
-                    <p>
-                      {r.target}{' '}
-                      <span>· {new Date(r.ts).toLocaleString()}</span>
-                    </p>
+            <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
+              {decisions.length === 0 ? (
+                <div className="operator-empty-rail">
+                  <strong>Activity</strong>
+                  <span>waiting</span>
+                  <em>0</em>
+                </div>
+              ) : (
+                <>
+                  <div className="operator-section__head">
+                    <span>Activity</span>
+                    <em>recent decisions</em>
                   </div>
-                </li>
-              ))}
-            </ul>
-            </>
-          )}
-        </aside>
-      </div>
+                <ul className="operator-activity-list">
+                  {decisions.map((r) => (
+                    <li key={r.id} className="operator-activity-item">
+                      <span className="operator-activity-dot" aria-hidden="true" />
+                      <div>
+                        <strong>{r.action}</strong>
+                        <p>
+                          {r.target}{' '}
+                          <span>· {new Date(r.ts).toLocaleString()}</span>
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                </>
+              )}
+            </aside>
+          </div>
 
-      <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-        <span>Cmd/Ctrl+K then O to toggle • Click outside to close</span>
-        <span>Operator MCP v0.1.0</span>
-      </footer>
-    </div>
+          <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
+            <span>Cmd/Ctrl+K then O to toggle • Click outside to close</span>
+            <span>Operator MCP v0.1.0</span>
+          </footer>
+        </motion.div>
+      ) : null}
+    </AnimatePresence>
   );
 }
 
