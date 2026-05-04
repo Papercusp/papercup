@@ -430,6 +430,74 @@ The audit captured `/checkpoints` ×2, `/reviews` ×3, `/agents` ×2 in a single
 
 `experimental.turbopackFileSystemCacheForDev: false` was set for a Next 15 Turbopack bug. Next 16 doesn't recognize it (`⨯ turbopackFileSystemCacheForDev` at boot). Audit before retaining flag-style configs across major Next upgrades; remove ones that show up as `⨯` in the dev log.
 
+### A17. Don't fetch the same per-slug data N times in a Promise.all that varies by sub-key
+
+The `/api/harness/<slug>/phases` handler ran `parseFeatures(scopedProject)` inside `Promise.all(PHASE_ORDER.map((p) => computePhaseInfo(...)))`. The features query returns the same data for all 3 phases (slug doesn't change), but the per-harness PG pool's `max=1` cap meant each Promise.all branch sat in a queue waiting for a connection. Three sequential 5s queries in flight = 15s.
+
+Fix: hoist invariant fetches OUT of the per-iteration loop. One query, pass the result to all branches.
+
+```ts
+// ❌ Wrong — each branch issues its own per-slug PG query, serializing
+//             on the per-harness pool's max=1 cap.
+const out = await Promise.all(PHASE_ORDER.map((p) =>
+  computePhaseInfo(project, p)  // calls parseFeatures(slug) internally
+));
+
+// ✅ Right — fetch once, pass through.
+const features = await parseFeatures(project);
+const out = await Promise.all(PHASE_ORDER.map((p) =>
+  computePhaseInfo(project, p, features)
+));
+```
+
+Sounds obvious in isolation but easy to miss when the per-iteration helper hides the fetch. Same pattern as A15 (request-scoped cache) but at a higher level — A15 dedupes WITHIN a single resolveEnv-style helper; A17 dedupes ACROSS calls to the same helper that share an invariant input.
+
+### A18. Don't pin per-process caches to module scope without a globalThis sentinel
+
+Caches declared `const __cache = new Map()` at module top level look durable but **reset every time Next.js dev re-evaluates the module** (visible as repeated `[plugin-mount]` log lines on the catch-all route). The cache key looks like a key but it's effectively per-request because the Map itself is re-allocated.
+
+Fix: pin the cache on `globalThis` so HMR / module re-eval reuses the same Map.
+
+```ts
+// ❌ Wrong — Map gets recreated on every module re-eval (Next.js dev
+//             with the [[...route]] catch-all does this per request)
+const __costCache = new Map<string, CacheEntry>();
+
+// ✅ Right — pinned to globalThis; survives module re-eval
+const __cacheKey = '__papercuspCostCache';
+type CacheGlobals = { [__cacheKey]?: Map<string, CacheEntry> };
+const __costCache: Map<string, CacheEntry> = (() => {
+  const g = globalThis as CacheGlobals;
+  if (!g[__cacheKey]) g[__cacheKey] = new Map();
+  return g[__cacheKey]!;
+})();
+```
+
+This is the durable-cache idiom Next.js itself uses for things like the Postgres connection pool. Use it for any Map/cache you want to survive across requests in dev mode.
+
+### A19. Don't shell-walk `/proc` per request without a cache
+
+Walking `/proc` to find live processes (e.g., to compute `alive` state for a harness) means N+ sync `readFileSync` calls per request, where N is the total process count on the host (4000+ on a busy dev box). In standalone Node this is ~50-100ms; under Next.js dev's fs instrumentation it can be 5-10 seconds.
+
+Fix: 5-second `globalThis`-pinned cache (alive state doesn't need sub-second freshness).
+
+```ts
+// ✅ Right — same shape as A18, with a TTL
+type ScanCacheEntry = { ts: number; value: ScanResult };
+const KEY = '__papercuspProcScanCache';
+function scanProcs(): ScanResult {
+  const g = globalThis as { [KEY]?: ScanCacheEntry };
+  const now = Date.now();
+  const cached = g[KEY];
+  if (cached && now - cached.ts < 5000) return cached.value;
+  const result = doExpensiveScan();
+  g[KEY] = { ts: now, value: result };
+  return result;
+}
+```
+
+For dashboard "is this thing running?" status indicators, 5 seconds is well within the user's tolerance. Don't force the user to wait fresh-data each tick.
+
 ### A16. Don't enforce a minimum-visible debounce on a progress indicator
 
 A page-transition library was integrated with `bprogress` to show a
