@@ -382,6 +382,42 @@ export function registerExperts(harness: Hono): void {
     return c.json(identity, 201);
   });
 
+  // ── Dispatch autonomous expert ────────────────────────────────────────
+  // Used by scoper (and future callers) to spawn a cross-cutting expert
+  // role that writes features directly. Distinct from the manual chat-
+  // driven expert flow above; this path runs the agent autonomously and
+  // surfaces in OperatorActionLog rather than ExpertsPanel.
+  // See lib/expert-dispatcher.ts + /docs/experts/authoring.
+  harness.post('/:slug/experts/dispatch', async (c) => {
+    const slug = c.req.param('slug');
+    const reg = (await import('@/lib/harness-registry')).loadHarnessRegistry();
+    const project = reg.projects.find((p) => p.slug === slug);
+    if (!project) return c.json({ error: 'unknown harness' }, 404);
+    const body = await c.req.json().catch(() => ({})) as {
+      role?: string;
+      reason?: string;
+      context?: Record<string, unknown>;
+    };
+    if (!body.role || typeof body.role !== 'string') {
+      return c.json({ error: 'role required' }, 400);
+    }
+    const { dispatchExpert } = await import('@/lib/expert-dispatcher');
+    try {
+      const result = await dispatchExpert(
+        { slug, path: project.path },
+        body.role,
+        { reason: body.reason, context: body.context },
+      );
+      if (!result.ok) {
+        // Lock-held — caller can decide whether to retry/skip.
+        return c.json(result, 409);
+      }
+      return c.json(result, 200);
+    } catch (e) {
+      return c.json({ error: String((e as Error).message) }, 400);
+    }
+  });
+
   // ── Get expert ───────────────────────────────────────────────────────
   harness.get('/:slug/experts/:expertId', async (c) => {
     const projectDir = lookupProjectDir(c.req.param('slug'));

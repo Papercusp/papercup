@@ -30,7 +30,8 @@ export type ActionKind =
   | 'plugin.install'
   | 'plugin.enable'
   | 'plugin.disable'
-  | 'branch.action';
+  | 'branch.action'
+  | 'expert.dispatch';
 
 export interface ActionResult<T = unknown> {
   /** One-line user-facing summary string. */
