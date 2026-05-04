@@ -357,15 +357,26 @@ function stopRealtimeSession(): void {
 
 async function maybeStartFullAgent(): Promise<boolean> {
   if (realtimeSession) return true;
+  // Track which "stage" we reached so the failure toast can point at the
+  // exact thing that broke (prefs / bootstrap / SDK connect / runtime err).
+  let stage: 'prefs' | 'bootstrap' | 'connect' | 'runtime' = 'prefs';
   try {
     const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
     if (!prefsR.ok) return false;
     const prefs = await prefsR.json();
     if (prefs.fullAgentEngine !== 'openai-realtime') return false;
+    stage = 'bootstrap';
     const bootR = await fetch('/api/agent-mcp/operator-realtime-bootstrap');
-    if (!bootR.ok) return false;
+    if (!bootR.ok) {
+      void emitVoiceToast('error', `Realtime: bootstrap returned ${bootR.status}. Check OpenAI key in /settings/api-keys.`);
+      return false;
+    }
     const { apiKey } = await bootR.json();
-    if (!apiKey) return false;
+    if (!apiKey) {
+      void emitVoiceToast('error', 'Realtime: no OpenAI key. Add one in /settings/api-keys.');
+      return false;
+    }
+    stage = 'connect';
     const { startRealtimeSession } = await import('../../../lib/voice-engines/openai-realtime');
     realtimeSession = await startRealtimeSession(apiKey, {
       onTranscript: (text) => {
@@ -389,14 +400,28 @@ async function maybeStartFullAgent(): Promise<boolean> {
       },
       onError: (err) => {
         console.error('[realtime]', err);
+        void emitVoiceToast('error', `Realtime runtime error: ${err?.message ?? String(err)}`);
       },
     });
     setState({ status: 'listening' });
+    void emitVoiceToast('info', 'Realtime connected — speak to talk to the operator.');
     return true;
-  } catch (err) {
-    console.warn('[voice] realtime start failed:', err);
+  } catch (err: any) {
+    console.warn('[voice] realtime start failed at stage=' + stage + ':', err);
+    void emitVoiceToast('error', `Realtime failed at ${stage}: ${err?.message ?? String(err)}. Falling back to Whisper.`);
     return false;
   }
+}
+
+// Best-effort sonner toast — sonner only ships in the browser bundle, so
+// a dynamic import keeps the SSR build clean.
+async function emitVoiceToast(level: 'info' | 'error', text: string): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    const { toast } = await import('sonner');
+    if (level === 'error') toast.error(text, { duration: 8000 });
+    else toast(text);
+  } catch { /* sonner not in bundle on this page; drop */ }
 }
 
 // React to leader-election changes: when we're newly elected leader,
