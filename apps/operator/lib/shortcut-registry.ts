@@ -45,6 +45,13 @@ export interface ShortcutDef {
    * `useShortcutAction`). Most relevant for `enableOnFormTags`.
    */
   options?: Partial<ActionOptions>;
+  /**
+   * Optional Action Registry command id. If set, the shortcut auto-fires
+   * the registry command — the consumer doesn't need to wire a handler.
+   * The component-side `useShortcutAction(id, ...)` still wins (registers
+   * later, runs first), so per-component overrides keep working.
+   */
+  command?: string;
 }
 
 // Order in this array drives the order in the cheat-sheet + settings UI
@@ -81,6 +88,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     // mod+shift+o is kept as an alternate for muscle memory.
     defaultCombo: 'mod+;, mod+shift+o',
     category: 'global',
+    command: 'panel.toggle',
   },
   {
     id: 'editor.save',
