@@ -51,7 +51,7 @@ export async function writeAuditRows(
               now(),
               ${a.agent},
               ${a.id},
-              ${tx.json(a.args ?? {})},
+              ${JSON.stringify(a.args ?? {})}::jsonb,
               ${a.status},
               ${a.errorCode ?? null},
               ${a.durationMs},
@@ -71,7 +71,7 @@ export async function writeAuditRows(
               now(),
               ${q.agent},
               ${q.id},
-              ${q.args === undefined ? null : tx.json(q.args)},
+              ${q.args === undefined ? null : JSON.stringify(q.args)}::jsonb,
               ${q.workspace},
               ${q.requestId}
             )

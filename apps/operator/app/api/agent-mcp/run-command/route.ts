@@ -24,6 +24,7 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { get, runCommand, runQuery } from '@/lib/commands/registry';
 import { deliver as deliverToTab } from '@/lib/commands/session-registry';
 import type { AgentId, CommandContext, CommandResult } from '@/lib/commands/types';
+import { audit } from '@/lib/commands/audit';
 import '@/lib/commands/audit-server';
 import '@/lib/commands/defs';
 
@@ -62,8 +63,23 @@ export async function POST(req: NextRequest): Promise<Response> {
   };
 
   // Browser-required commands need to round-trip to the leader tab.
+  // The leader tab runs the handler under its own runCommand call, but
+  // browser-side audit is a no-op (no PG access). Log here so the audit
+  // trail isn't lost for cross-tab dispatch.
   if (def.kind === 'command' && def.browser === 'required') {
+    const startedAt = Date.now();
     const result = await deliverToTab(ctx.workspace, { id: body.id, args: body.args });
+    audit({
+      id: body.id,
+      agent: ctx.agent,
+      workspace: ctx.workspace,
+      sessionId: ctx.sessionId,
+      requestId: ctx.requestId,
+      args: body.args ?? {},
+      status: result.ok ? 'ok' : 'err',
+      errorCode: result.ok ? undefined : result.error.code,
+      durationMs: Date.now() - startedAt,
+    });
     return Response.json(result);
   }
 
