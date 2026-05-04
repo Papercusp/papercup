@@ -24,10 +24,23 @@ If those don't fit, you probably want a feature, a build-script change, a plugin
 
 For each new role, exactly two artifacts:
 
-1. **A prompt file** at `prompts/<role>.md` (in the harness package).
-2. **A line in `prompts/scoper.md`** under "Cross-cutting experts" that names your role and tells scoper when to consult it.
+1. **A prompt file** at `prompts/<role>.md` (the agent's system prompt).
+2. **A sidecar manifest** at `prompts/<role>.role.json`:
 
-That's it. Substrate-side, the dispatcher and the `kind`-aware features import endpoint already handle every role. No new code.
+   ```json
+   {
+     "id": "<role>",
+     "whenUseful": "Consult when SPEC additions <do X, Y, Z>. Do NOT consult for <out-of-scope cases>.",
+     "output": { "kind": "features", "featureKind": "<kind-tag>" },
+     "alwaysFireOn": ["<plugin-event-name>"],
+     "budgetCents": 50,
+     "featureSize": "small"
+   }
+   ```
+
+That's it. Substrate-side, the dispatcher, the role registry, the kind-aware features import, and the scoper's cross-cutting-experts discovery all handle the new role automatically. **No code changes, no scoper.md edits.**
+
+Scoper discovers your role at runtime via `GET /api/harness/<slug>/expert-roles` and reads your `whenUseful` description to decide when to consult.
 
 ## Step 1 — write the prompt
 
@@ -90,21 +103,29 @@ End with a single summary line so the substrate's telemetry can parse it:
 ::papercusp::<your-role>-done features=<N> reason="<EXPERT_REASON>"
 ```
 
-## Step 2 — register with the scoper
+## Step 2 — verify the role is registered
 
-Add a bullet to `prompts/scoper.md` under "Cross-cutting experts (post-replan)":
-
-```markdown
-- **<your-role>**: Consult when SPEC additions imply <your domain>.
-  Do NOT consult for <out-of-scope cases>. Most replans should NOT
-  consult it.
+```bash
+curl -sS http://localhost:3055/api/harness/<slug>/expert-roles | jq .
 ```
 
-Be specific about both when to consult AND when not to. The "do not" half is more important than the "do" half — overconsultation is the failure mode.
+You should see your role's manifest in the `roles` array. If not, check:
 
-## Step 3 — verify
+- Both `prompts/<role>.md` AND `prompts/<role>.role.json` exist
+- `id` in the sidecar matches the filename
+- `output.kind` is `"features"` and `output.featureKind` is a slug-shaped string
+- The sidecar JSON parses
 
-Dispatch your new role manually before relying on autonomous triggering:
+## Step 3 — verify dispatch works
+
+Dispatch your new role manually before relying on autonomous triggering. Use the bin/dispatch-expert helper:
+
+```bash
+bin/dispatch-expert <your-role> <slug> --reason "manual smoke" \
+  --context '{"newSpecBullets":["- example bullet relevant to your role"]}'
+```
+
+Or POST directly:
 
 ```bash
 curl -sS -X POST -H 'content-type: application/json' \
@@ -137,14 +158,24 @@ Scoper-replan's prompt explicitly preserves features where `kind` is anything ot
 
 The next dispatch of the responsible expert is the only thing that should retire its own features.
 
+## Substrate features now in place
+
+These are all live and require no per-role configuration beyond the sidecar manifest:
+
+- **Role registry** — sidecar `prompts/<role>.role.json` files are auto-discovered. Scoper sees the live list via `GET /api/harness/<slug>/expert-roles`.
+- **`alwaysFireOn` triggers** — list plugin lifecycle / event names in the sidecar's `alwaysFireOn` array. The expert-triggers module dispatches the role automatically when those events fire from `firePluginLifecycle` / `firePluginEvent`.
+- **Manual dispatch CLI** — `bin/dispatch-expert <role> <slug> [--reason ...] [--context ...]`.
+- **Layer-3 smoke-build at promotion** — when a harness has `.harness/infra-contract.json`, `POST /:slug/promote/:id/confirm` runs the destination branch's build action after the merge; on failure, the merge is reverted and a `kind=infra` fix-the-build feature is created in the destination phase. Opt out via `.harness/config.json` `promotion.smokeBuild.enabled: false`.
+- **Cross-writer guard at `/features/import`** — features with `kind != 'product'` cannot be overwritten except by an updater whose payload also carries the matching `kind`. Scoper-replan can't trample expert features even if it generates a colliding id.
+- **Operator integration** — every dispatch records a `user_actions` row with `kind: 'expert.dispatch'`, `summary`, `detail_url` to the run log, and lifecycle (running → succeeded/failed). OperatorActionLog renders these alongside other long-running actions.
+
 ## Future work (not in v1)
 
 These are deliberate omissions in the current substrate:
 
 - **`output: 'spec'` mode** — a role that produces an intermediate SPEC for scoper to translate. Useful for roles that benefit from scoper's holistic synthesis. Add when a real role needs it.
-- **`alwaysFireOn` triggers** — roles that fire on plugin events, smoke-build failures, or manual CLI invocations independent of scoper. Add when ops needs them.
-- **Role registry** — a JSON sidecar `prompts/<role>.role.json` that scoper reads at runtime instead of having roles named in its prompt. Worth doing when there are 3+ roles and the scoper prompt section is getting long.
-- **ExpertsPanel UI integration** — autonomous experts currently surface only in OperatorActionLog (the "Recent actions" panel). Adding them to the chat-driven ExpertsPanel UI would require an `identity.json` shim. Defer until users ask for it.
+- **ExpertsPanel UI integration** — autonomous experts surface only in OperatorActionLog today. Adding them to the chat-driven ExpertsPanel would require an `identity.json` shim with a different schema than chat-driven experts use. Defer until users ask for it.
+- **Per-role cost cap enforcement** — `budgetCents` in the role manifest is informational; the dispatcher doesn't currently kill an over-budget run. The harness substrate's existing per-role timeout (`config.json` `timeouts`) is a coarser substitute. Tighten when telemetry shows real over-spend.
 
 ## What this pattern lets you avoid
 

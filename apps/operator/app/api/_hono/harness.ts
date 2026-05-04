@@ -15,6 +15,7 @@ import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync
 import { getKnownRoles } from '@/lib/known-roles';
 import { getKnownHooks } from '@/lib/known-hooks';
 import { recordUserAction } from '@/lib/user-actions';
+import { papercuspPath } from '@/lib/papercusp-root';
 import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
@@ -5967,6 +5968,95 @@ harness.post('/:slug/promote/:id/confirm', async (c) => {
       execFileSync('git', ['-C', toPath, 'merge', '--no-edit', fromBranch], { encoding: 'utf8' });
     } catch (e2: any) {
       return c.json({ error: `merge failed: ${String(e2?.stderr ?? e2?.message ?? e2)}` }, 500);
+    }
+  }
+
+  // Layer 3 — pre-handoff smoke-build. Auto-enabled when the harness has
+  // declared an infra-contract.json (signal that build-pipeline integrity
+  // matters here). Opt out via .harness/config.json `promotion.smokeBuild.enabled: false`.
+  // On failure, reset the destination worktree back to ORIG_HEAD (git's
+  // auto-saved pre-merge SHA), create a fix-the-build feature tagged
+  // kind='infra', and reject the promotion. Substrate-level safety net
+  // for what scoper + infra-reviewer might miss at planning time.
+  let smokeEnabled = false;
+  try {
+    const cfgRaw = safeRead(join(project.path, '.harness', 'config.json'));
+    const cfg = cfgRaw ? JSON.parse(cfgRaw) : null;
+    const explicit = cfg?.promotion?.smokeBuild?.enabled;
+    if (typeof explicit === 'boolean') smokeEnabled = explicit;
+    else smokeEnabled = existsSync(join(project.path, '.harness', 'infra-contract.json'));
+  } catch { /* fall through with smokeEnabled=false */ }
+
+  if (smokeEnabled) {
+    try {
+      const { runAction, listActions } = await import('@/lib/branch-actions');
+      const harnessConfigsDir = papercuspPath('harnesses', project.slug);
+      const globalPluginsDir = papercuspPath('global-plugins');
+      // Pick the build action for the destination branch.
+      const candidates = await listActions(project.path, to as 'staging' | 'testing' | 'production', {
+        harnessConfigsDir, globalPluginsDir,
+      });
+      const buildAction = candidates.find((a) => a.name === 'build') ?? candidates[0];
+      if (buildAction) {
+        const handle = await runAction({
+          stagingPath: project.path,
+          phasePath: toPath,
+          harness: project.slug,
+          branch: to as 'staging' | 'testing' | 'production',
+          name: buildAction.name,
+          harnessConfigsDir, globalPluginsDir,
+          skipEnvCheck: true,  // promotion shouldn't be blocked on missing keys; the run itself reports the failure
+        });
+        const meta = await handle.done;
+        if (meta.status !== 'completed') {
+          // Smoke failed — revert the merge in the destination worktree.
+          try {
+            execFileSync('git', ['-C', toPath, 'reset', '--hard', 'ORIG_HEAD'], { encoding: 'utf8' });
+          } catch { /* reset failure is observable in the dest worktree's git status — log to user */ }
+          // Best-effort: create a fix-the-build feature in the source phase
+          // so the orchestrator knows what's blocking promotion.
+          try {
+            const dbcSlug = dbcFor(project.slug);
+            const fid = `F-INFRA-FIX-PROMOTION-${Math.floor(Date.now() / 1000)}`;
+            const tail = (() => {
+              try {
+                const log = safeRead(join(buildAction.scriptPath.replace(/\/[^/]+$/, ''), '..', '..', 'action-runs', to, buildAction.name, `${meta.runId}.log`));
+                return (log ?? '').split('\n').slice(-30).join('\n').slice(0, 2000);
+              } catch { return '(see action-runs log)'; }
+            })();
+            await dbcSlug.prepare(`
+              INSERT INTO harness_features (harness_slug, feature_id, title, summary, status, attempts, kind, metadata, ts, created_ts, updated_ts)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+              project.slug, fid,
+              `Fix broken build before re-promoting ${from} → ${to}`,
+              `The destination worktree's build script failed during promotion (runId=${meta.runId}, exit=${meta.exitCode ?? '?'}, dur=${meta.durationMs ?? 0}ms). Last log lines:\n\n\`\`\`\n${tail}\n\`\`\`\n\nThe merge has been reverted. Fix the build on the ${from} branch (or update the build script accordingly) and re-attempt promotion.`,
+              'todo',
+              0,
+              'infra',
+              JSON.stringify({ proposed_by: 'promotion-smoke-build', smoke_run_id: meta.runId, blocked_promotion: id }),
+              Date.now(), Date.now(), Date.now(),
+            );
+          } catch { /* feature creation is best-effort */ }
+
+          return c.json({
+            error: 'smoke-build failed',
+            runId: meta.runId,
+            exitCode: meta.exitCode,
+            reverted: true,
+            message: `The build for ${to} did not pass post-merge. The merge has been reverted; a fix-the-build feature was created. See OperatorActionLog for the run.`,
+          }, 422);
+        }
+      }
+      // No build action declared → silently skip; smoke-build only matters
+      // when there's something to smoke.
+    } catch (e) {
+      // Smoke-build infrastructure failed (e.g. branch-actions module missing).
+      // Don't block the promotion on infra issues with the smoke runner itself
+      // — the merge succeeded, the user can deal with build issues separately.
+      // (We don't return an error here because that would be more disruptive
+      // than just letting the promotion proceed without the safety net.)
+      console.warn(`[promotion] smoke-build skipped due to error: ${(e as Error).message}`);
     }
   }
 

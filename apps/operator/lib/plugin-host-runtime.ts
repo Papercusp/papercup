@@ -599,6 +599,17 @@ export async function firePluginLifecycle<K extends keyof PluginHooks>(
       ctx.log(`hook "${String(event)}" threw: ${e?.message ?? e}`);
     }
   }
+
+  // Fire any expert triggers registered for this lifecycle event. Best-effort;
+  // failures here don't block the plugin event chain (see lib/expert-triggers.ts).
+  try {
+    const { fireLifecycleTriggers } = await import('./expert-triggers');
+    void fireLifecycleTriggers(String(event), args.installSlug, {
+      projectDir: args.projectDir,
+      stateDir: args.stateDir,
+      payload: payload[0],
+    }).catch((e) => console.warn(`[expert-triggers] lifecycle ${String(event)}:`, (e as Error).message));
+  } catch { /* expert-triggers module failed to load — ignore */ }
 }
 
 /**
@@ -609,6 +620,18 @@ export async function firePluginLifecycle<K extends keyof PluginHooks>(
 export async function firePluginEvent<T = unknown>(event: string, arg: T): Promise<void> {
   const state = await getPluginHost();
   await state.bus.runAction(event, arg, (msg) => console.warn(msg));
+  // Fire any expert triggers registered for this event. Same best-effort
+  // semantics as firePluginLifecycle.
+  try {
+    const { fireEventTriggers } = await import('./expert-triggers');
+    const installSlug = (typeof arg === 'object' && arg !== null && 'installSlug' in arg)
+      ? String((arg as Record<string, unknown>).installSlug ?? '')
+      : '';
+    if (installSlug) {
+      void fireEventTriggers(event, installSlug, arg)
+        .catch((e) => console.warn(`[expert-triggers] event ${event}:`, (e as Error).message));
+    }
+  } catch { /* ignore */ }
 }
 
 export async function applyPluginFilter<T = unknown>(event: string, value: T): Promise<T> {

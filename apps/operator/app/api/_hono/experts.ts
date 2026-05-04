@@ -382,6 +382,21 @@ export function registerExperts(harness: Hono): void {
     return c.json(identity, 201);
   });
 
+  // ── List registered cross-cutting roles ───────────────────────────────
+  // Used by scoper-replan (and any future caller) to discover which
+  // experts are available without hardcoding their names. Source of
+  // truth: prompts/<role>.role.json sidecar files.
+  harness.get('/:slug/expert-roles', async (c) => {
+    const slug = c.req.param('slug');
+    const reg = (await import('@/lib/harness-registry')).loadHarnessRegistry();
+    if (!reg.projects.find((p) => p.slug === slug)) {
+      return c.json({ error: 'unknown harness' }, 404);
+    }
+    const { listRoles } = await import('@/lib/role-registry');
+    const roles = listRoles();
+    return c.json({ roles });
+  });
+
   // ── Dispatch autonomous expert ────────────────────────────────────────
   // Used by scoper (and future callers) to spawn a cross-cutting expert
   // role that writes features directly. Distinct from the manual chat-

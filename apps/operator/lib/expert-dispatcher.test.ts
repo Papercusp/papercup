@@ -53,6 +53,19 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // Detached bash children write to .harness/* asynchronously. Give them
+  // a brief moment to finish before we rm — otherwise rmdir races and
+  // gets ENOTEMPTY. We retry rm with a short delay; force:true would
+  // ignore individual file errors but not the parent rmdir race.
+  for (let i = 0; i < 5; i++) {
+    try {
+      await rm(project.path, { recursive: true, force: true });
+      return;
+    } catch {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+  // Final attempt; let it throw if it still fails so we know.
   await rm(project.path, { recursive: true, force: true });
 });
 
