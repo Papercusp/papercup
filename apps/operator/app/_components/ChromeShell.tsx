@@ -18,6 +18,7 @@ const OperatorPanel = lazy(() => import('./OperatorPanel').then(m => ({ default:
 const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
 const OperatorBackgroundScanner = lazy(() => import('./OperatorBackgroundScanner').then(m => ({ default: m.OperatorBackgroundScanner })));
 const VoiceAppBridge = lazy(() => import('./voice/VoiceAppBridge').then(m => ({ default: m.VoiceAppBridge })));
+const OperatorDelegationListener = lazy(() => import('./OperatorDelegationListener'));
 const OperatorVoiceAnnouncer = lazy(() => import('./voice/OperatorVoiceAnnouncer').then(m => ({ default: m.OperatorVoiceAnnouncer })));
 const ChatwootWidget = lazy(() => import('./ChatwootWidget').then(m => ({ default: m.ChatwootWidget })));
 
@@ -147,6 +148,7 @@ function DeferredDocks() {
       <OracleDock />
       <OperatorBackgroundScanner />
       <VoiceAppBridge />
+      <OperatorDelegationListener />
       <OperatorVoiceAnnouncer />
     </Suspense>
   );

@@ -31,6 +31,7 @@ import {
   getClaudeSession,
   autoArchiveIdleSessions,
 } from '@/lib/claude-sessions';
+import { generateSessionTitle } from '@/lib/claude-session-summary';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -185,6 +186,15 @@ export async function GET(req: NextRequest): Promise<Response> {
               tokensOut: ev.tokensOut,
               fullText: ev.finalText || assistantText,
             });
+            // Background title generation on first turn (non-blocking).
+            if (sessionCreated) {
+              void generateSessionTitle({
+                workspace: workspaceId,
+                claudeSessionId,
+                initiatorMsg: requestText,
+                firstResponse: ev.finalText || assistantText,
+              }).catch(() => { /* best-effort */ });
+            }
           } else if (ev.type === 'error') {
             send('error', { message: ev.message, stderr: ev.stderr });
           }

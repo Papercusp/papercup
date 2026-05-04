@@ -57,11 +57,25 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
     tabId: args.tabId,
   });
 
+  // Inject a brief "open Claude conversations" preamble so the voice
+  // agent can pick which session to delegate to. Keeps voice's working
+  // memory of prior delegations alive across EL session resets.
+  const sessionsContext = await fetchClaudeSessionsBlock(args.workspace);
+
   const conv = await Conversation.startSession({
     conversationToken: args.conversationToken,
     connectionType: 'webrtc',
     textOnly: false,
     clientTools,
+    overrides: sessionsContext
+      ? {
+          agent: {
+            prompt: {
+              prompt: sessionsContext,
+            },
+          },
+        }
+      : undefined,
     onConnect: () => { args.onConnect?.(); },
     onDisconnect: () => { args.onDisconnect?.(); },
     onMessage: ({ message, source }) => {
@@ -170,4 +184,43 @@ export function buildClientToolCatalog(): Array<{
 function zodToJsonSchemaFor(_schema: unknown): unknown {
   // Plumbed via the elevenlabs-shim sync endpoint, not at session start.
   return {};
+}
+
+/**
+ * Build the "you have these Claude conversations open" context block
+ * for voice. Voice picks which session to pass to delegate_to_claude
+ * based on title relevance. Refreshed at every EL session-start.
+ */
+async function fetchClaudeSessionsBlock(workspace: string): Promise<string | null> {
+  try {
+    const r = await fetch(`/api/agent-mcp/claude-sessions?status=open&limit=10`, {
+      headers: { 'x-workspace': workspace },
+    });
+    if (!r.ok) return null;
+    const data = await r.json() as {
+      sessions: Array<{ id: number; title: string | null; lastActiveAt: string; turnCount: number; claudeSessionId: string }>;
+    };
+    if (!data.sessions?.length) {
+      return (
+        'You have no open Claude conversations in this workspace. ' +
+        'When the user delegates a deep-reasoning task to you, call ' +
+        '`delegate_to_claude` with newSession:true to start a fresh one.'
+      );
+    }
+    const lines = data.sessions.map((s) => {
+      const title = s.title ?? '(untitled)';
+      const minsAgo = Math.round((Date.now() - new Date(s.lastActiveAt).getTime()) / 60000);
+      return `  - id:${s.claudeSessionId.slice(0, 8)} "${title}" (${s.turnCount} turns, ${minsAgo}m ago)`;
+    });
+    return [
+      'You have access to these ongoing Claude conversations in this workspace:',
+      ...lines,
+      '',
+      'When delegating: pass `sessionId` (the id from the list above) if the user\'s task',
+      'relates to one of these conversations; pass `newSession:true` for a clean slate;',
+      'pass neither and the server picks (most recent if <5min, else new).',
+    ].join('\n');
+  } catch {
+    return null;
+  }
 }

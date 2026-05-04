@@ -154,12 +154,23 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
       }
     }
 
-    return {
+    const result = {
       status: 'complete' as const,
       fullText,
       claudeSessionId: resolvedSession,
       costUsd: cost,
     };
+    // Browser-side: dispatch a delegation-complete event so a) the panel
+    // can show the result, b) the panel auto-opens if voicePanelAutoOpen
+    // is set, c) the voice layer can be told to speak the gist.
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(
+          new CustomEvent('operator:delegation-complete', { detail: result }),
+        );
+      } catch { /* ignore */ }
+    }
+    return result;
   },
 };
 
