@@ -230,7 +230,7 @@ export function VoiceButton(): JSX.Element {
         onTouchStart={onPttDown}
         onTouchEnd={onPttUp}
         ref={micRef as React.RefObject<HTMLButtonElement>}
-        className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}`}
+        className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}${vs.wakeDetected ? ' is-wake-detected' : ''}`}
       >
         <span className="pc-voice-btn-orb" aria-hidden="true">
           <span className="pc-voice-btn-level" aria-hidden="true" />

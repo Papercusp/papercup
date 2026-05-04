@@ -40,6 +40,10 @@ export interface VoiceState {
   lastTranscript: string;
   /** Currently-speaking role (e.g. 'orchestrator', 'operator', 'system:oracle'). */
   speakingRole: string | null;
+  /** Pulses true for ~1.2s when a wake word is detected (any engine —
+   *  Porcupine, openWakeWord, or string-match in transcript). UI uses
+   *  this to flash a visual indicator on the voice button. */
+  wakeDetected: boolean;
 }
 
 interface VoiceConfig {
@@ -73,7 +77,25 @@ let state: VoiceState = {
   hasWebSpeechTTS: false,
   lastTranscript: '',
   speakingRole: null,
+  wakeDetected: false,
 };
+
+// Pulse the wake-detected flag for ~1.2s. Auto-clears so the visual
+// indicator is a flash, not a stuck highlight. Idempotent — re-firing
+// while the pulse is active resets the timer (back-to-back wakes still
+// produce one continuous flash rather than two flickers).
+let wakeDetectedTimer: ReturnType<typeof setTimeout> | null = null;
+export function signalWakeDetected(): void {
+  if (wakeDetectedTimer) {
+    clearTimeout(wakeDetectedTimer);
+    wakeDetectedTimer = null;
+  }
+  setState({ wakeDetected: true });
+  wakeDetectedTimer = setTimeout(() => {
+    wakeDetectedTimer = null;
+    setState({ wakeDetected: false });
+  }, 1200);
+}
 
 let config: VoiceConfig = { ...DEFAULT_CONFIG };
 
@@ -460,7 +482,10 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
       porcupineHandle = await startWakeWordDetection({
         accessKey: apiKey,
         keyword: prefs.porcupineKeyword ?? 'Computer',
-        onWake: () => { void runOneShotWhisperAfterWake().catch(() => {}); },
+        onWake: () => {
+          signalWakeDetected();
+          void runOneShotWhisperAfterWake().catch(() => {});
+        },
         onError: (err) => console.warn('[porcupine]', err),
       });
       return true;
@@ -477,7 +502,10 @@ async function maybeStartWakeWordGate(prefs: any): Promise<boolean> {
       porcupineHandle = await startOpenWakeWordDetection({
         keyword: prefs.openwakewordKeyword ?? 'hey_jarvis',
         threshold: 0.5,
-        onWake: () => { void runOneShotWhisperAfterWake().catch(() => {}); },
+        onWake: () => {
+          signalWakeDetected();
+          void runOneShotWhisperAfterWake().catch(() => {});
+        },
         onError: (err) => console.warn('[openwakeword]', err),
       });
       return true;
@@ -609,6 +637,7 @@ function startWakeWordListening(): void {
     }
     const wake = stripWakeWordAndPrefix(transcript, config.wakeWord);
     if (wake.matched) {
+      signalWakeDetected();
       // Single-utterance fast path: wake word + command spoken together
       // and the recognizer has already marked the utterance final. Dispatch
       // immediately instead of opening a fresh recognizer that would wait

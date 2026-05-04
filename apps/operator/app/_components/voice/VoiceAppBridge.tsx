@@ -142,6 +142,14 @@ export function VoiceAppBridge(): null {
         const { getVoiceConfig } = await import('./voice-mode');
         const wakeWord = getVoiceConfig().wakeWord ?? 'hey operator';
         const stripped = stripWakeWordAndPrefix(text, wakeWord);
+        // Pulse the visual wake-detected indicator on the voice button
+        // so the user sees a flash the moment we recognize the wake
+        // word — even if the dispatch path errors below or the verb
+        // doesn't parse. Same signal feeds Porcupine + openWakeWord.
+        if (stripped.matched) {
+          const { signalWakeDetected } = await import('./voice-mode');
+          signalWakeDetected();
+        }
         // Wake word with no verb → audible acknowledgement so the user
         // knows the engine heard them. They then need to say
         // "hey operator <verb>" as a single utterance — there's no
