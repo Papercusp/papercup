@@ -21,6 +21,7 @@ import { MarkdownPreview } from './MarkdownEditor';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
+import RouteLink from './RouteLink';
 
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
@@ -128,7 +129,7 @@ function tierLabel(tier: SuggestionCard['actualTier']): string {
   return tier === 'high' ? 'High safety' : tier === 'medium' ? 'Medium safety' : 'Low safety';
 }
 
-type FeedFilter = 'all' | 'suggestions' | 'activity';
+type FeedFilter = 'all' | 'suggestions';
 type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error';
 
 function lifecycleLabelForCard(card: SuggestionCard): string {
@@ -146,6 +147,18 @@ function lifecycleClassForCard(card: SuggestionCard): string {
 function autoDispatchSeconds(card: SuggestionCard, now: number): number {
   if (!card.autoDispatchAt) return 0;
   return Math.max(0, Math.ceil((card.autoDispatchAt - now) / 1000));
+}
+
+const TIER_SORT_RANK: Record<SuggestionCard['actualTier'], number> = {
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+function actionGlyphForCard(card: SuggestionCard): string {
+  if (card.action === 'navigate') return '↗';
+  if (card.action === 'inform') return 'ℹ';
+  return '✉';
 }
 
 interface DecisionRow {
@@ -282,7 +295,13 @@ export function OperatorPanel(): JSX.Element | null {
   }, [state.open]);
   useEffect(() => {
     if (!state.open) return;
-    const t = window.setInterval(() => setNow(Date.now()), 500);
+    // Updates `now` so relative timestamps in the panel re-render. 500ms
+    // was overkill — at 2 re-renders/sec × ~287 nodes the panel was
+    // doing reconciliation work even when nothing relevant had changed.
+    // Most timestamps in this panel are minutes-old; 5s is well under
+    // the perceptible threshold for "this was just now" timestamps and
+    // cuts the steady-state render rate by 10×. See /docs/performance #A7.
+    const t = window.setInterval(() => setNow(Date.now()), 5000);
     return () => window.clearInterval(t);
   }, [state.open]);
 
@@ -832,26 +851,30 @@ export function OperatorPanel(): JSX.Element | null {
   const terminalCount = suggestions.filter((s) =>
     s.status === 'consumed' || s.status === 'dismissed' || s.status === 'superseded',
   ).length;
-  const visibleSuggestions = feedFilter === 'activity' ? [] : suggestions;
+  const sortedSuggestions = suggestions
+    .map((s, index) => ({ s, index }))
+    .sort((a, b) => {
+      const tierDelta = TIER_SORT_RANK[b.s.actualTier] - TIER_SORT_RANK[a.s.actualTier];
+      if (tierDelta !== 0) return tierDelta;
+      return b.index - a.index;
+    })
+    .map(({ s }) => s);
+  const visibleSuggestions = sortedSuggestions;
   const visibleDecisions = feedFilter === 'suggestions' ? [] : decisions;
   const hasFeedEntries = visibleSuggestions.length > 0 || visibleDecisions.length > 0;
   const streamMuted = scanStatus === 'complete' && suggestions.length > 0;
-  const emptyTitle = feedFilter === 'activity'
-    ? 'No user-started actions yet'
-    : scanStatus === 'error'
-      ? 'Operator scan needs setup'
-      : scanStatus === 'scanning'
-        ? 'Scanning workspace…'
-        : scanStarted
-          ? "Operator hasn't surfaced anything"
-          : 'No operator entries yet';
-  const emptyBody = feedFilter === 'activity'
-    ? 'Replan, Cleanup, Snapshot, and plugin actions will appear here as they run and settle.'
-    : scanStatus === 'error'
-      ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
-      : scanStatus === 'scanning'
-        ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
-        : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
+  const emptyTitle = scanStatus === 'error'
+    ? 'Operator scan needs setup'
+    : scanStatus === 'scanning'
+      ? 'Scanning workspace…'
+      : scanStarted
+        ? "Operator hasn't surfaced anything"
+        : 'No operator entries yet';
+  const emptyBody = scanStatus === 'error'
+    ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
+    : scanStatus === 'scanning'
+      ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
+      : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
   const statusLabel = state.paused ? 'paused' : state.iconState.replace('-', ' ');
 
   if (!state.open) return null;
@@ -861,9 +884,9 @@ export function OperatorPanel(): JSX.Element | null {
       ref={panelRef}
       role="dialog"
       aria-label="Operator panel"
-      className={`operator-panel operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
+      className={`operator-panel pc-animate-in pc-animate-in--down operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
     >
-      <header className="operator-panel__header">
+      <header className="operator-panel__header pc-animate-in pc-animate-in--down pc-animate-in--fast">
         <div className="operator-panel__titleblock">
           <div className="operator-panel__titleline">
             <h2>Operator</h2>
@@ -873,14 +896,14 @@ export function OperatorPanel(): JSX.Element | null {
           </div>
         </div>
 
-        <div className="operator-panel__metrics" aria-label="Operator panel summary">
+        <div className="operator-panel__metrics pc-animate-in pc-animate-in--down pc-animate-in--delay-1" aria-label="Operator panel summary">
           <span title="pending = pending suggestions"><strong>{pendingCount}</strong><em>pending</em></span>
           <span title="in flight = dispatched suggestions"><strong>{inFlightCount}</strong><em>in flight</em></span>
           <span title="attention = escalated, failed, or rejected suggestions"><strong>{failedCount}</strong><em>attention</em></span>
           <span title="resolved = consumed, dismissed, or superseded suggestions"><strong>{terminalCount}</strong><em>resolved</em></span>
         </div>
 
-        <div className="operator-panel__actions">
+        <div className="operator-panel__actions pc-animate-in pc-animate-in--down pc-animate-in--delay-2">
           <button
             type="button"
             className="operator-btn operator-btn--primary operator-btn--icon"
@@ -899,9 +922,9 @@ export function OperatorPanel(): JSX.Element | null {
             <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
             <span>{state.paused ? 'Resume' : 'Pause'}</span>
           </button>
-          <a className="operator-btn operator-btn--ghost" href="/settings/operator">
+          <RouteLink className="operator-btn operator-btn--ghost" href="/settings/operator">
             Settings
-          </a>
+          </RouteLink>
           <button
             type="button"
             className="operator-btn operator-btn--close"
@@ -914,13 +937,13 @@ export function OperatorPanel(): JSX.Element | null {
       </header>
 
       {budget && !budget.configured && (
-        <div className="operator-budget-overlay">
-          <div className="operator-budget-card">
+        <div className="operator-budget-overlay pc-animate-in pc-animate-in--fade">
+          <div className="operator-budget-card pc-animate-in pc-animate-in--down pc-animate-in--delay-1">
             <div className="operator-panel__eyebrow">First run</div>
             <h3>Pick a daily budget for Operator</h3>
             <p>
               Operator stops scanning automatically when today&apos;s spend reaches the cap.
-              You can change this any time at <a href="/settings/operator">/settings/operator</a>.
+              You can change this any time at <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
             </p>
             <div className="operator-budget-options">
               {[
@@ -944,14 +967,14 @@ export function OperatorPanel(): JSX.Element | null {
         </div>
       )}
 
-      <div className="operator-panel__body">
+      <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
         <aside className="operator-panel__rail operator-panel__rail--left">
           {firstRun && (
             <section className="operator-callout">
               <strong>First-run intro</strong>
               <p>
                 I have full write authority across all harnesses in this workspace.
-                Edit my prompt or preferences from <a href="/settings/operator">/settings/operator</a>.
+                Edit my prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
               </p>
             </section>
           )}
@@ -970,7 +993,7 @@ export function OperatorPanel(): JSX.Element | null {
               <div className="operator-stream-error">
                 <strong>Scan errored</strong>
                 <p>{scanError || 'Operator substrate is not ready.'}</p>
-                <a href="/settings/operator">Set up Operator →</a>
+                <RouteLink href="/settings/operator">Set up Operator →</RouteLink>
               </div>
             ) : streamLog.length === 0 ? (
               <p className="operator-empty-small">(no stream yet)</p>
@@ -980,7 +1003,7 @@ export function OperatorPanel(): JSX.Element | null {
           </section>
         </aside>
 
-        <main className="operator-panel__feed">
+        <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
           <div className="operator-feed-head">
             <div>
               <span className="operator-panel__eyebrow">Unified timeline</span>
@@ -990,7 +1013,6 @@ export function OperatorPanel(): JSX.Element | null {
               {[
                 { key: 'all' as FeedFilter, label: 'All', count: suggestions.length + decisions.length },
                 { key: 'suggestions' as FeedFilter, label: 'Suggestions', count: suggestions.length },
-                { key: 'activity' as FeedFilter, label: 'Activity', count: decisions.length },
               ].map((pill) => (
                 <button
                   key={pill.key}
@@ -1014,9 +1036,9 @@ export function OperatorPanel(): JSX.Element | null {
               <h3>{emptyTitle}</h3>
               <p>{emptyBody}</p>
               {scanStatus === 'error' && (
-                <a className="operator-btn operator-btn--primary" href="/settings/operator">
+                <RouteLink className="operator-btn operator-btn--primary" href="/settings/operator">
                   Set up Operator →
-                </a>
+                </RouteLink>
               )}
             </div>
           ) : (
@@ -1027,17 +1049,15 @@ export function OperatorPanel(): JSX.Element | null {
                   role="article"
                   aria-label={`${s.title} — ${s.actualTier} tier, ${s.auto_dispatch ? 'auto-dispatched' : 'awaiting your decision'}`}
                   tabIndex={0}
-                  className={`operator-entry operator-entry--suggestion operator-entry--${s.status} operator-entry--tier-${s.actualTier}`}
+                  className={`operator-entry operator-entry--suggestion operator-entry--${s.status} operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
                 >
                   <div className="operator-entry__rail">
-                    <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Ask-first suggestion'}>
-                      {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '✋' : '?'}
+                    <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
+                      {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '⚠' : '✋'}
                     </span>
                   </div>
                   <div className="operator-entry__content">
                     <div className="operator-entry__meta">
-                      <span className="operator-kind">Suggestion</span>
-                      <span className="operator-meta-sep" aria-hidden="true">·</span>
                       <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
                       <span className="operator-meta-sep" aria-hidden="true">·</span>
                       <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
@@ -1050,8 +1070,12 @@ export function OperatorPanel(): JSX.Element | null {
                       <span className="operator-voice-slot" aria-hidden="true" />
                     </div>
                     <div className="operator-entry__title-row">
-                      <h4>{s.title}</h4>
-                      <span className="operator-entry__action-kind">{s.action}</span>
+                      <div className="operator-entry__heading">
+                        <span className={`operator-entry__type-glyph operator-entry__type-glyph--${s.action}`} aria-hidden="true">
+                          {actionGlyphForCard(s)}
+                        </span>
+                        <h4>{s.title}</h4>
+                      </div>
                     </div>
                     <p className="operator-entry__why">{s.why}</p>
 
@@ -1091,42 +1115,6 @@ export function OperatorPanel(): JSX.Element | null {
                     )}
 
                     <div className="operator-entry__footer">
-                      <div className="operator-entry__buttons">
-                        {s.action === 'send_directive' && s.status === 'pending' && s.auto_dispatch && (
-                          <button type="button" className="operator-mini-btn operator-mini-btn--auto" onClick={() => undoCancelSuggestion(s.id)}>
-                            Cancel auto
-                          </button>
-                        )}
-                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier !== 'high' && (
-                          <button type="button" className="operator-mini-btn operator-mini-btn--primary" onClick={() => dispatchSuggestion(s.id)}>
-                            Dispatch
-                          </button>
-                        )}
-                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && !confirmingHigh[s.id] && (
-                          <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => setConfirmingHigh((prev) => ({ ...prev, [s.id]: true }))}>
-                            Review high-risk
-                          </button>
-                        )}
-                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && confirmingHigh[s.id] && (
-                          <div className="operator-confirm-strip">
-                            <span>Confirm high-risk dispatch{s.target_harness ? ` to ${s.target_harness}` : ''}</span>
-                            <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => dispatchSuggestion(s.id)}>
-                              Confirm dispatch
-                            </button>
-                            <button type="button" className="operator-mini-btn" onClick={() => setConfirmingHigh((prev) => {
-                              const { [s.id]: _removed, ...rest } = prev;
-                              return rest;
-                            })}>
-                              Cancel
-                            </button>
-                          </div>
-                        )}
-                        {s.status === 'pending' && !s.auto_dispatch && (
-                          <button type="button" className="operator-mini-btn" onClick={() => dismissSuggestion(s.id)}>
-                            Dismiss
-                          </button>
-                        )}
-                      </div>
                       <div className="operator-entry__state">
                         {s.status === 'pending' && s.auto_dispatch && (
                           <span className="operator-state-text operator-state-text--auto">
@@ -1164,6 +1152,51 @@ export function OperatorPanel(): JSX.Element | null {
                           <span className="operator-state-text operator-state-text--muted">↻ superseded</span>
                         )}
                       </div>
+                      <div className="operator-entry__buttons">
+                        {s.action === 'navigate' && s.target_resource && (
+                          <a className="operator-mini-btn operator-mini-btn--primary" href={s.target_resource} target="_blank" rel="noreferrer">
+                            Open link
+                          </a>
+                        )}
+                        {s.action === 'send_directive' && s.status === 'pending' && s.auto_dispatch && (
+                          <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
+                            Dismiss
+                          </button>
+                        )}
+                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier !== 'high' && (
+                          <button
+                            type="button"
+                            className={`operator-mini-btn ${s.actualTier === 'medium' ? 'operator-mini-btn--primary' : ''}`}
+                            onClick={() => dispatchSuggestion(s.id)}
+                          >
+                            Dispatch →
+                          </button>
+                        )}
+                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && !confirmingHigh[s.id] && (
+                          <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => setConfirmingHigh((prev) => ({ ...prev, [s.id]: true }))}>
+                            Review now
+                          </button>
+                        )}
+                        {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && confirmingHigh[s.id] && (
+                          <div className="operator-confirm-strip">
+                            <span>Confirm high-risk dispatch{s.target_harness ? ` to ${s.target_harness}` : ''}</span>
+                            <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => dispatchSuggestion(s.id)}>
+                              Dispatch →
+                            </button>
+                            <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => setConfirmingHigh((prev) => {
+                              const { [s.id]: _removed, ...rest } = prev;
+                              return rest;
+                            })}>
+                              Dismiss
+                            </button>
+                          </div>
+                        )}
+                        {s.status === 'pending' && !(s.action === 'send_directive' && s.auto_dispatch) && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingHigh[s.id]) && (
+                          <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => dismissSuggestion(s.id)}>
+                            Dismiss
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </li>
@@ -1193,17 +1226,19 @@ export function OperatorPanel(): JSX.Element | null {
           )}
         </main>
 
-        <aside className="operator-panel__rail operator-panel__rail--right">
-          <div className="operator-section__head">
-            <span>Activity</span>
-            <em>{decisions.length ? 'recent decisions' : 'waiting'}</em>
-          </div>
+        <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
           {decisions.length === 0 ? (
-            <div className="operator-empty-side">
-              <strong>No actions yet.</strong>
-              <p>User-started work such as Replan, Cleanup, Snapshot, and plugin changes will live here.</p>
+            <div className="operator-empty-rail">
+              <strong>Activity</strong>
+              <span>waiting</span>
+              <em>0</em>
             </div>
           ) : (
+            <>
+              <div className="operator-section__head">
+                <span>Activity</span>
+                <em>recent decisions</em>
+              </div>
             <ul className="operator-activity-list">
               {decisions.map((r) => (
                 <li key={r.id} className="operator-activity-item">
@@ -1218,11 +1253,12 @@ export function OperatorPanel(): JSX.Element | null {
                 </li>
               ))}
             </ul>
+            </>
           )}
         </aside>
       </div>
 
-      <footer className="operator-panel__footer">
+      <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
         <span>Cmd/Ctrl+K then O to toggle • Click outside to close</span>
         <span>Operator MCP v0.1.0</span>
       </footer>
@@ -1324,11 +1360,9 @@ function OtherWorkspacesPanel(): JSX.Element | null {
             >
               {w.name}
             </button>
-            {w.cardCount > 0 && (
-              <span className="operator-workspace-count">
-                {w.cardCount}
-              </span>
-            )}
+            <span className={`operator-workspace-count${w.cardCount > 0 ? '' : ' is-quiet'}`}>
+              {w.cardCount > 0 ? `${w.cardCount} active` : '•'}
+            </span>
           </li>
         ))}
       </ul>

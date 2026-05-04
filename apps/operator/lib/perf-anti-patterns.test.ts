@@ -74,8 +74,14 @@ const RULES: Rule[] = [
   {
     id: 'A7',
     description: '`setInterval(..., 500)` "safety polling" — cap retries or use a longer cadence',
-    // Catches setInterval(..., 500) and setTimeout-loops at 500ms cadence.
-    pattern: /setInterval\s*\([^,)]+,\s*500\b/,
+    // Earlier pattern `setInterval\s*\([^,)]+,\s*500\b` failed on
+    // `setInterval(() => fn(), 500)` because `[^,)]+` terminates at the
+    // `)` inside the arrow function body. New pattern looks for "500" as
+    // the second positional argument by anchoring on a `,\s*500\b` that's
+    // followed by `)` somewhere on the line — covers the common forms
+    // setInterval(fn, 500), setInterval(() => …, 500), and the
+    // window.setInterval(…) variant.
+    pattern: /setInterval\s*\([\s\S]{0,200}?,\s*500\s*\)/,
     excludePathContains: ['/test/', '.test.ts', '/perf-anti-patterns.test.ts'],
   },
   {
