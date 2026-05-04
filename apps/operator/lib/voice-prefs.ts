@@ -30,7 +30,8 @@ export type FullAgentEngineKind =
   | 'off'
   | 'openai-realtime'
   | 'gemini-live'
-  | 'elevenlabs-conversational';
+  | 'elevenlabs-conversational'  // legacy alias of elevenlabs-conv
+  | 'elevenlabs-conv';            // primary in v5+ (Conv AI agent platform)
 
 export interface VoicePrefs {
   // Feature toggles (defaults reflect v4 §3.2)
@@ -70,6 +71,25 @@ export interface VoicePrefs {
   cartesiaVoiceId: string;
   cartesiaModel: 'sonic' | 'sonic-2';
 
+  /**
+   * ElevenLabs Conversational AI agent ID (`agent_…`). Required when
+   * fullAgentEngine === 'elevenlabs-conv'. Set in /settings/voice;
+   * separate from the ElevenLabs API key (which lives in
+   * voice-credentials and is shared with the TTS path).
+   */
+  elevenLabsAgentId: string;
+  /**
+   * Auto-open the operator panel when delegate_to_claude completes
+   * with a result that should be shown.
+   */
+  voicePanelAutoOpen: boolean;
+  /**
+   * Cached scan / verbatim readout cap. Voice speaks fullText if its
+   * word count is ≤ this; otherwise speaks gist + 'details in panel'.
+   * Default 120 words ≈ 60s of speech at standard rates.
+   */
+  voiceMaxSpokenWords: number;
+
   // One-time consents
   webSpeechLeakAcked: boolean;
   kokoroSlowSuggestionDismissed: boolean;
@@ -102,6 +122,9 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   openaiModel: 'tts-1',
   cartesiaVoiceId: 'a0e99841-438c-4a64-b679-ae501e7d6091', // Barbershop Man, common preset
   cartesiaModel: 'sonic-2',
+  elevenLabsAgentId: '',
+  voicePanelAutoOpen: true,
+  voiceMaxSpokenWords: 120,
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {
