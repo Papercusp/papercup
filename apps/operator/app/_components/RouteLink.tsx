@@ -2,7 +2,7 @@
 
 import { useEffect, useSyncExternalStore, type MouseEvent } from 'react';
 import { usePathname } from 'next/navigation';
-import { Link as TransitionLink } from 'next-view-transitions';
+import { Link as TransitionLink } from 'next-transition-router';
 import { useProgress } from '@bprogress/next';
 
 import {
@@ -74,7 +74,7 @@ export default function RouteLink({ className, onClickCapture, ...props }: Route
     beginRoutePending(`${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`);
 
     // Start synchronously so app-shell navigation shows feedback immediately,
-    // before next-view-transitions/Next.js pushState can finish a fast route.
+    // before next-transition-router/Next.js pushState can finish a fast route.
     progress.set(0.08);
     progress.start(0.08, 0, true);
     window.setTimeout(() => {

@@ -11473,3 +11473,446 @@ body.h-harness-top-collapsed .pc-header {
 .oracle-dock--maximal-hud {
   z-index: 1450 !important;
 }
+
+/* Maximal GSAP route jump transitions */
+[data-route-transition-page="true"] {
+  position: relative;
+  transform-origin: 50% 44%;
+  will-change: transform, opacity, filter;
+}
+
+.pc-route-transition {
+  position: fixed;
+  inset: 0;
+  z-index: 1800;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  color: #e6fbff;
+  isolation: isolate;
+  contain: layout paint style;
+}
+
+.pc-route-transition *,
+.pc-route-transition *::before,
+.pc-route-transition *::after {
+  pointer-events: none;
+}
+
+.pc-route-transition__backdrop {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(34, 211, 238, 0.18), transparent 30%),
+    radial-gradient(circle at 18% 22%, rgba(59, 130, 246, 0.20), transparent 24%),
+    radial-gradient(circle at 82% 76%, rgba(16, 185, 129, 0.16), transparent 28%),
+    linear-gradient(135deg, rgba(1, 7, 16, 0.96), rgba(2, 12, 27, 0.98) 48%, rgba(1, 6, 18, 0.97));
+  opacity: 0.98;
+}
+
+.pc-route-transition__grid,
+.pc-route-transition__starfield {
+  position: absolute;
+  inset: -12%;
+  mix-blend-mode: screen;
+}
+
+.pc-route-transition__grid {
+  background:
+    linear-gradient(rgba(103, 232, 249, 0.16) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.12) 1px, transparent 1px),
+    linear-gradient(115deg, transparent 0 47%, rgba(34, 211, 238, 0.10) 48% 49%, transparent 50% 100%);
+  background-size: 42px 42px, 42px 42px, 220px 220px;
+  mask-image: radial-gradient(circle at 50% 50%, #000 0 48%, transparent 78%);
+  opacity: 0.36;
+  animation: pcRouteGridDrift 3.2s linear infinite;
+}
+
+.pc-route-transition__starfield {
+  background:
+    radial-gradient(circle, rgba(255,255,255,0.95) 0 1px, transparent 1.4px) 0 0 / 130px 130px,
+    radial-gradient(circle, rgba(125,211,252,0.72) 0 1px, transparent 1.6px) 47px 72px / 180px 180px,
+    radial-gradient(circle, rgba(52,211,153,0.5) 0 1px, transparent 1.8px) 95px 24px / 240px 240px;
+  opacity: 0.42;
+  filter: drop-shadow(0 0 7px rgba(103, 232, 249, 0.8));
+  animation: pcRouteStarDrift 5s linear infinite;
+}
+
+.pc-route-transition__blade {
+  position: absolute;
+  left: -5vw;
+  right: -5vw;
+  height: 53vh;
+  background:
+    linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.26) 18%, transparent 19% 24%, rgba(34, 211, 238, 0.18) 25%, transparent 26%),
+    linear-gradient(135deg, rgba(3, 15, 33, 0.98), rgba(6, 32, 58, 0.97) 45%, rgba(2, 11, 24, 0.99));
+  box-shadow:
+    0 0 44px rgba(34, 211, 238, 0.22),
+    inset 0 0 54px rgba(103, 232, 249, 0.12),
+    inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.pc-route-transition__blade::before,
+.pc-route-transition__blade::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.95), rgba(52, 211, 153, 0.78), transparent);
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.72);
+}
+
+.pc-route-transition__blade--top {
+  top: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 82%, 54% 100%, 46% 100%, 0 82%);
+}
+
+.pc-route-transition__blade--top::after {
+  bottom: 1px;
+}
+
+.pc-route-transition__blade--bottom {
+  bottom: 0;
+  clip-path: polygon(0 18%, 46% 0, 54% 0, 100% 18%, 100% 100%, 0 100%);
+}
+
+.pc-route-transition__blade--bottom::before {
+  top: 1px;
+}
+
+.pc-route-transition__sweep {
+  position: absolute;
+  top: -18%;
+  bottom: -18%;
+  width: 22vw;
+  min-width: 220px;
+  transform: skewX(-18deg);
+  background:
+    linear-gradient(90deg, transparent, rgba(255,255,255,0.82), rgba(103, 232, 249, 0.88), transparent),
+    linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.5), transparent);
+  filter: blur(4px) drop-shadow(0 0 34px rgba(103, 232, 249, 0.94));
+  mix-blend-mode: screen;
+}
+
+.pc-route-transition__sweep--a {
+  left: 21%;
+}
+
+.pc-route-transition__sweep--b {
+  right: 18%;
+  width: 16vw;
+  opacity: 0.72;
+}
+
+.pc-route-transition__scan {
+  position: absolute;
+  mix-blend-mode: screen;
+  opacity: 0.62;
+  filter: blur(0.2px) drop-shadow(0 0 18px rgba(103, 232, 249, 0.72));
+}
+
+.pc-route-transition__scan--vertical {
+  top: -20%;
+  bottom: -20%;
+  left: 50%;
+  width: 1px;
+  background: linear-gradient(180deg, transparent, rgba(255,255,255,0.92), rgba(52, 211, 153, 0.84), transparent);
+  animation: pcRouteVerticalScan 1.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+.pc-route-transition__scan--horizontal {
+  left: -20%;
+  right: -20%;
+  top: 50%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.86), rgba(103, 232, 249, 0.82), transparent);
+  animation: pcRouteHorizontalScan 1.45s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+.pc-route-transition__core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(62vw, 440px);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+}
+
+.pc-route-transition__ring,
+.pc-route-transition__reticle {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+}
+
+.pc-route-transition__ring--outer {
+  border: 1px solid rgba(125, 211, 252, 0.72);
+  background:
+    conic-gradient(from 10deg, transparent 0 8%, rgba(103, 232, 249, 0.55) 9% 11%, transparent 12% 28%, rgba(52, 211, 153, 0.44) 29% 31%, transparent 32% 100%),
+    radial-gradient(circle, transparent 58%, rgba(34, 211, 238, 0.08) 59% 62%, transparent 63%);
+  box-shadow: 0 0 42px rgba(34, 211, 238, 0.38), inset 0 0 32px rgba(34, 211, 238, 0.10);
+  animation: pcRouteRingSpin 7s linear infinite;
+}
+
+.pc-route-transition__ring--middle {
+  inset: 11%;
+  border: 1px dashed rgba(103, 232, 249, 0.76);
+  box-shadow: inset 0 0 28px rgba(125, 211, 252, 0.12);
+  animation: pcRouteRingSpin 4.6s linear infinite reverse;
+}
+
+.pc-route-transition__ring--inner {
+  inset: 25%;
+  border: 1px solid rgba(52, 211, 153, 0.78);
+  background: radial-gradient(circle, rgba(52, 211, 153, 0.18), transparent 56%);
+  box-shadow: 0 0 32px rgba(52, 211, 153, 0.32), inset 0 0 28px rgba(52, 211, 153, 0.12);
+  animation: pcRoutePulse 1.4s ease-in-out infinite;
+}
+
+.pc-route-transition__reticle {
+  inset: 36%;
+  border: 1px solid rgba(255,255,255,0.68);
+  box-shadow: 0 0 24px rgba(255,255,255,0.38), inset 0 0 18px rgba(103, 232, 249, 0.22);
+}
+
+.pc-route-transition__reticle::before,
+.pc-route-transition__reticle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 168%;
+  height: 1px;
+  transform: translate(-50%, -50%);
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.76), transparent);
+}
+
+.pc-route-transition__reticle::after {
+  width: 1px;
+  height: 168%;
+  background: linear-gradient(180deg, transparent, rgba(255,255,255,0.76), transparent);
+}
+
+.pc-route-transition__title,
+.pc-route-transition__subtitle {
+  position: relative;
+  z-index: 2;
+  text-align: center;
+  text-transform: uppercase;
+  text-shadow: 0 0 22px rgba(103, 232, 249, 0.82);
+}
+
+.pc-route-transition__title {
+  font-size: clamp(30px, 5vw, 72px);
+  font-weight: 950;
+  letter-spacing: 0.16em;
+}
+
+.pc-route-transition__subtitle {
+  margin-top: 10px;
+  color: rgba(190, 242, 255, 0.82);
+  font-size: clamp(10px, 1.35vw, 14px);
+  font-weight: 850;
+  letter-spacing: 0.22em;
+}
+
+.pc-route-transition__telemetry {
+  position: absolute;
+  top: 50%;
+  width: min(28vw, 320px);
+  padding: 14px 16px;
+  border: 1px solid rgba(125, 211, 252, 0.28);
+  background:
+    linear-gradient(90deg, rgba(103, 232, 249, 0.12), transparent),
+    rgba(3, 15, 33, 0.7);
+  box-shadow: 0 0 30px rgba(34, 211, 238, 0.14), inset 0 1px 0 rgba(255,255,255,0.08);
+  transform: translateY(-50%);
+  backdrop-filter: blur(16px);
+}
+
+.pc-route-transition__telemetry--left {
+  left: clamp(20px, 4vw, 60px);
+  clip-path: polygon(0 0, 92% 0, 100% 50%, 92% 100%, 0 100%);
+}
+
+.pc-route-transition__telemetry--right {
+  right: clamp(20px, 4vw, 60px);
+  text-align: right;
+  clip-path: polygon(8% 0, 100% 0, 100% 100%, 8% 100%, 0 50%);
+}
+
+.pc-route-transition__telemetry span,
+.pc-route-transition__telemetry strong {
+  display: block;
+}
+
+.pc-route-transition__telemetry span {
+  color: rgba(125, 211, 252, 0.78);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.24em;
+}
+
+.pc-route-transition__telemetry strong {
+  margin-top: 6px;
+  color: #f8feff;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
+.pc-route-transition__status {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + min(28vw, 210px));
+  min-width: min(74vw, 430px);
+  padding: 10px 18px 11px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, transparent, rgba(52, 211, 153, 0.14), transparent),
+    rgba(2, 18, 24, 0.72);
+  box-shadow: 0 0 32px rgba(52, 211, 153, 0.16), inset 0 1px 0 rgba(255,255,255,0.08);
+  text-align: center;
+  text-transform: uppercase;
+  backdrop-filter: blur(12px);
+}
+
+.pc-route-transition__status span,
+.pc-route-transition__status strong {
+  display: block;
+}
+
+.pc-route-transition__status span {
+  color: rgba(167, 243, 208, 0.76);
+  font-size: 9px;
+  font-weight: 950;
+  letter-spacing: 0.32em;
+}
+
+.pc-route-transition__status strong {
+  margin-top: 4px;
+  color: #ecfeff;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
+  font-size: 13px;
+  font-weight: 950;
+  letter-spacing: 0.24em;
+  text-shadow: 0 0 18px rgba(52, 211, 153, 0.86);
+}
+
+.pc-route-transition__checksum {
+  position: absolute;
+  left: clamp(20px, 4vw, 60px);
+  right: clamp(20px, 4vw, 60px);
+  bottom: clamp(72px, 12vh, 112px);
+  color: rgba(186, 230, 253, 0.64);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.26em;
+  text-align: center;
+  text-transform: uppercase;
+  text-shadow: 0 0 14px rgba(103, 232, 249, 0.66);
+}
+.pc-route-transition__ticks {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(28px, 7vh, 70px);
+  display: flex;
+  gap: 7px;
+  transform: translateX(-50%);
+}
+
+.pc-route-transition__ticks i {
+  width: 4px;
+  height: 28px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(34, 211, 238, 0.45));
+  box-shadow: 0 0 16px rgba(103, 232, 249, 0.68);
+  transform-origin: 50% 100%;
+}
+
+@keyframes pcRouteGridDrift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(42px, 42px, 0); }
+}
+
+@keyframes pcRouteStarDrift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(-90px, 72px, 0) scale(1.04); }
+}
+
+@keyframes pcRouteRingSpin {
+  to { rotate: 360deg; }
+}
+
+@keyframes pcRoutePulse {
+  0%, 100% { opacity: 0.74; filter: brightness(1); }
+  50% { opacity: 1; filter: brightness(1.45); }
+}
+
+@keyframes pcRouteVerticalScan {
+  0% { transform: translate3d(-42vw, 0, 0) scaleY(0.5); opacity: 0; }
+  16% { opacity: 0.9; }
+  100% { transform: translate3d(42vw, 0, 0) scaleY(1.05); opacity: 0; }
+}
+
+@keyframes pcRouteHorizontalScan {
+  0% { transform: translate3d(0, -32vh, 0) scaleX(0.5); opacity: 0; }
+  20% { opacity: 0.76; }
+  100% { transform: translate3d(0, 32vh, 0) scaleX(1.05); opacity: 0; }
+}
+
+@media (max-width: 760px) {
+  .pc-route-transition__telemetry {
+    top: auto;
+    bottom: 108px;
+    width: calc(50vw - 26px);
+    padding: 10px 12px;
+  }
+
+  .pc-route-transition__telemetry strong {
+    font-size: 11px;
+  }
+
+  .pc-route-transition__status {
+    top: calc(50% + 165px);
+    min-width: calc(100vw - 42px);
+    padding-inline: 12px;
+  }
+
+  .pc-route-transition__status strong {
+    font-size: 11px;
+    letter-spacing: 0.14em;
+  }
+
+  .pc-route-transition__checksum {
+    bottom: 56px;
+    font-size: 8px;
+    letter-spacing: 0.16em;
+  }
+
+  .pc-route-transition__core {
+    width: min(88vw, 390px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-route-transition-page="true"] {
+    transform: none !important;
+    filter: none !important;
+  }
+
+  .pc-route-transition {
+    display: none !important;
+  }
+}
