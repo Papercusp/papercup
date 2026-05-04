@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Build @papercusp/web and run the production server. Tails the log.
+# Usage: bin/prod                         (uses defaults below)
+#        PORT=3170 PTY=3156 bin/prod      (override ports)
+# Stop server later:  fuser -k $PORT/tcp
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG=/tmp/prod-main.log
+PORT="${PORT:-3170}"
+PTY="${PTY:-3156}"
+
+echo "==> killing prior server + builds on :$PORT"
+pkill -f "next start -p $PORT" 2>/dev/null
+pkill -9 -f "next build"         2>/dev/null
+pkill -9 -f "fumadocs-mdx"       2>/dev/null
+fuser -k "$PORT/tcp"             2>/dev/null
+fuser -k "$PTY/tcp"              2>/dev/null
+rm -f "$REPO/apps/operator/.next/.build-lock" \
+      "$REPO/apps/operator/.next/lock" \
+      "$REPO/apps/operator/.next/dev/lock"
+sleep 2
+
+echo "==> tailing $LOG"
+: > "$LOG"
+tail -F "$LOG" &
+TAIL_PID=$!
+trap 'kill $TAIL_PID 2>/dev/null' EXIT INT
+
+echo "==> building @papercusp/web (worktree=$REPO)"
+cd "$REPO"
+if ! npm --workspace @papercusp/web run build >> "$LOG" 2>&1; then
+  echo "==> build failed — see $LOG"
+  exit 1
+fi
+
+echo "==> starting prod server on :$PORT (pty-ws :$PTY)"
+cd "$REPO/apps/operator"
+PAPERCUSP_PTY_WS_PORT="$PTY" nohup npx next start -p "$PORT" >> "$LOG" 2>&1 &
+disown
+echo "==> server pid $! — Ctrl-C stops the tail; server keeps running"
+echo "==> kill server later:  fuser -k $PORT/tcp"
+wait $TAIL_PID
