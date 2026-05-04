@@ -19,3 +19,4 @@ import './voice';
 import './workspace';
 import './harness';
 import './chat';
+import './delegation';

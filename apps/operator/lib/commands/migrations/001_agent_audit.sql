@@ -35,3 +35,8 @@ CREATE TABLE IF NOT EXISTS harness_shared.agent_queries (
 
 CREATE INDEX IF NOT EXISTS agent_queries_ts_idx       ON harness_shared.agent_queries (ts DESC);
 CREATE INDEX IF NOT EXISTS agent_queries_agent_id_ts  ON harness_shared.agent_queries (agent, query_id, ts DESC);
+
+GRANT SELECT, INSERT ON harness_shared.agent_actions TO harness_app;
+GRANT USAGE, SELECT ON SEQUENCE harness_shared.agent_actions_id_seq TO harness_app;
+GRANT SELECT, INSERT ON harness_shared.agent_queries TO harness_app;
+GRANT USAGE, SELECT ON SEQUENCE harness_shared.agent_queries_id_seq TO harness_app;

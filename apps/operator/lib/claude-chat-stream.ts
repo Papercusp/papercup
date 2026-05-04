@@ -46,6 +46,21 @@ export interface RunClaudeChatOptions {
   claudeCmd?: string;
   /** Aborts the spawn. */
   signal?: AbortSignal;
+  /**
+   * Resume a specific claude session by id. When set, claude continues the
+   * existing conversation; when null/undefined, claude starts a fresh one.
+   * Voice's delegate_to_claude uses this to route each delegation to either
+   * a picked existing claude-session or a brand-new one.
+   */
+  sessionId?: string;
+  /**
+   * When `sessionId` is set, controls which flag to use:
+   *   - 'resume' → `-r <id>` (fail if no such session in claude's store)
+   *   - 'force' → `--session-id <uuid>` (create-or-resume; uuid must be valid)
+   * Default: 'force' (create-or-resume) — what delegate_to_claude wants since
+   * we manage the session id ourselves.
+   */
+  sessionMode?: 'resume' | 'force';
 }
 
 export type ChatEvent =
@@ -83,6 +98,13 @@ export async function* runClaudeChat(
   }
   if (opts.permissionMode) {
     args.push('--permission-mode', opts.permissionMode);
+  }
+  if (opts.sessionId) {
+    if ((opts.sessionMode ?? 'force') === 'resume') {
+      args.push('-r', opts.sessionId);
+    } else {
+      args.push('--session-id', opts.sessionId);
+    }
   }
 
   let child: ChildProcess;
