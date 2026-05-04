@@ -392,8 +392,13 @@ export function registerExperts(harness: Hono): void {
     if (!reg.projects.find((p) => p.slug === slug)) {
       return c.json({ error: 'unknown harness' }, 404);
     }
-    const { listRoles } = await import('@/lib/role-registry');
-    const roles = listRoles();
+    const { listRoles, __clearRoleRegistryCache } = await import('@/lib/role-registry');
+    // Clear the per-process cache on every request — cheap (a single
+    // readdir + stat) and avoids "I added a plugin role but the API
+    // didn't pick it up until restart" footguns.
+    __clearRoleRegistryCache();
+    const roles = listRoles(slug);
+    console.log('[expert-roles]', slug, 'returned', roles.length, 'roles:', roles.map(r => r.id).join(','));
     return c.json({ roles });
   });
 

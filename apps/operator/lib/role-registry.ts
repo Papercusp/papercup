@@ -1,12 +1,31 @@
 /**
- * Role registry — scans the harness package's `prompts/` directory for
- * `<role>.role.json` sidecar files and returns parsed manifests.
+ * Role registry — scans for cross-cutting expert role manifests from
+ * two sources:
  *
- * Adding a new cross-cutting expert role becomes:
+ *   1. **Built-in roles**: `<harness-package>/prompts/<role>.role.json`
+ *      sidecar files. Ship with the substrate.
+ *
+ *   2. **Plugin-contributed roles**: each enabled plugin's
+ *      `papercusp.json` may declare a `roles` array. The plugin
+ *      bundles its own prompt at `<plugin-dir>/<promptPath>` (typically
+ *      `roles/<role>.md`). Lets ecosystems ship their own specialists.
+ *
+ * Adding a new built-in role becomes:
  *   1. Write `prompts/<role>.md` (the agent's system prompt).
  *   2. Write `prompts/<role>.role.json` (this manifest).
  *
- * No substrate code changes; the scoper consumes the registry via the
+ * Adding a plugin-contributed role becomes:
+ *   1. Write `<plugin>/<promptPath>` (the prompt).
+ *   2. Add to `<plugin>/papercusp.json`:
+ *      "roles": [{
+ *        "id": "<role>",
+ *        "promptPath": "roles/<role>.md",
+ *        "whenUseful": "...",
+ *        "output": { "kind": "features", "featureKind": "<kind>" },
+ *        "alwaysFireOn": [...]
+ *      }]
+ *
+ * Either way, the scoper consumes the merged registry via the
  * `/api/harness/<slug>/expert-roles` endpoint and decides per replan
  * which roles to consult.
  *
@@ -17,20 +36,28 @@
  *     output:       { kind: "features", featureKind: "infra" },
  *     alwaysFireOn: ["onProvisioned"],     // plugin lifecycle / event names
  *     budgetCents:  50,
- *     featureSize:  "small"
+ *     featureSize:  "small",
+ *     source:       { kind: 'builtin' } | { kind: 'plugin', plugin: '@scope/x', promptPath: 'roles/x.md', dir: '...' }
  *   }
  *
- * Roles without a sidecar are NOT in the registry — even if a prompt
- * file exists. This is intentional: the sidecar is the opt-in to make
- * a role visible to scoper.
+ * Plugin-contributed roles namespace their id as `<plugin>:<role-id>`
+ * to avoid collisions when two plugins both ship a "reviewer" role.
+ * The dispatcher recognises this naming and resolves the prompt
+ * accordingly.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { harnessPackageDir } from '../app/api/_hono/harness-paths';
+import { papercuspPath } from './papercusp-root';
+
+export type RoleSource =
+  | { kind: 'builtin' }
+  | { kind: 'plugin'; plugin: string; promptPath: string; dir: string };
 
 export interface RoleManifest {
-  /** Matches the prompt filename: `prompts/<id>.md`. */
+  /** For builtins: matches the prompt filename `prompts/<id>.md`.
+   *  For plugin-contributed: `<plugin-slug>:<plugin-local-id>`. */
   id: string;
   /** Free-form description scoper uses to decide whether to consult. */
   whenUseful: string;
@@ -50,35 +77,27 @@ export interface RoleManifest {
   budgetCents?: number;
   /** Size hint for the dispatcher / UI. */
   featureSize?: 'small' | 'standard' | 'large';
+  /** Where this role came from. Built-in unless surfaced from a plugin manifest. */
+  source: RoleSource;
 }
 
 const ROLE_ID_RE = /^[a-z][a-z0-9-]*$/;
+// Plugin-contributed role ids look like `<plugin>:<local>`. The plugin
+// part allows '@', '/', and '-' (matching scoped npm names); the local
+// part follows ROLE_ID_RE.
+const PLUGIN_ROLE_ID_RE = /^@?[a-z0-9][a-z0-9_/.-]*:[a-z][a-z0-9-]*$/;
 
-let cached: { roles: RoleManifest[]; mtime: number } | null = null;
+interface CachedRegistry {
+  roles: RoleManifest[];
+  builtinMtime: number;
+  /** harness-slug → cache (plugin scan depends on enabled plugins) */
+  forSlug?: string;
+  pluginsHash?: string;
+}
+let cached: CachedRegistry | null = null;
 
-/**
- * Returns all valid role manifests sorted by id. Caches based on the
- * prompts directory's mtime so that adding a new sidecar at runtime
- * is picked up on the next call without restarting the dev server.
- *
- * Skips invalid manifests (missing required fields, malformed JSON,
- * id that doesn't match `^[a-z][a-z0-9-]*$`) — silently, since the
- * registry is best-effort. Use `validateAllRoles()` to surface errors
- * during development.
- */
-export function listRoles(): RoleManifest[] {
-  const promptsDir = join(harnessPackageDir(), 'prompts');
+function readBuiltinRoles(promptsDir: string): RoleManifest[] {
   if (!existsSync(promptsDir)) return [];
-
-  // Cheap mtime cache — readdir cost is small but every scoper-replan
-  // hits this endpoint and we'd rather not re-parse JSON each time.
-  let mtime = 0;
-  try {
-    const stats = require('node:fs').statSync(promptsDir);
-    mtime = stats.mtimeMs;
-  } catch { /* fall through with mtime=0 */ }
-  if (cached && cached.mtime === mtime) return cached.roles;
-
   const out: RoleManifest[] = [];
   let entries: string[] = [];
   try {
@@ -90,39 +109,170 @@ export function listRoles(): RoleManifest[] {
     if (!ROLE_ID_RE.test(id)) continue;
     try {
       const raw = readFileSync(join(promptsDir, entry), 'utf8');
-      const parsed = JSON.parse(raw) as RoleManifest;
-      // Required fields
-      if (parsed.id !== id) continue;  // sidecar id must match filename
+      const parsed = JSON.parse(raw) as Omit<RoleManifest, 'source'>;
+      if (parsed.id !== id) continue;
       if (!parsed.whenUseful || typeof parsed.whenUseful !== 'string') continue;
       if (!parsed.output || parsed.output.kind !== 'features' || !parsed.output.featureKind) continue;
-      // Sanity: featureKind should be a slug-ish string
       if (!ROLE_ID_RE.test(parsed.output.featureKind)) continue;
-      // Verify the prompt file exists; a manifest without a prompt is dead.
       if (!existsSync(join(promptsDir, `${id}.md`))) continue;
-      out.push(parsed);
-    } catch { /* malformed JSON or read error — skip silently */ }
+      out.push({ ...parsed, source: { kind: 'builtin' } });
+    } catch { /* skip silently */ }
   }
-  out.sort((a, b) => a.id.localeCompare(b.id));
-  cached = { roles: out, mtime };
   return out;
+}
+
+function readPluginRolesFromDir(pluginDir: string, pluginName: string): RoleManifest[] {
+  const out: RoleManifest[] = [];
+  let manifest: { roles?: Array<Omit<RoleManifest, 'id' | 'source'> & { id: string; promptPath: string }> };
+  try {
+    manifest = JSON.parse(readFileSync(join(pluginDir, 'papercusp.json'), 'utf8'));
+  } catch { return []; }
+
+  const roles = manifest.roles;
+  if (!Array.isArray(roles)) return [];
+
+  for (const decl of roles) {
+    if (!decl?.id || !ROLE_ID_RE.test(decl.id)) continue;
+    if (!decl.promptPath || typeof decl.promptPath !== 'string') continue;
+    if (decl.promptPath.includes('..')) continue; // basic traversal guard
+    if (!decl.whenUseful || typeof decl.whenUseful !== 'string') continue;
+    if (!decl.output || decl.output.kind !== 'features' || !decl.output.featureKind) continue;
+    if (!ROLE_ID_RE.test(decl.output.featureKind)) continue;
+    const promptAbs = join(pluginDir, decl.promptPath);
+    if (!existsSync(promptAbs)) continue;
+    out.push({
+      id: `${pluginName}:${decl.id}`,
+      whenUseful: decl.whenUseful,
+      output: decl.output,
+      alwaysFireOn: decl.alwaysFireOn,
+      budgetCents: decl.budgetCents,
+      featureSize: decl.featureSize,
+      source: { kind: 'plugin', plugin: pluginName, promptPath: decl.promptPath, dir: pluginDir },
+    });
+  }
+  return out;
+}
+
+/** Returns true if the path resolves to a directory (follows symlinks). */
+function isDirOrSymlinkedDir(path: string): boolean {
+  try {
+    const fs = require('node:fs');
+    return fs.statSync(path).isDirectory();
+  } catch { return false; }
+}
+
+function readPluginRoles(harnessSlug: string): RoleManifest[] {
+  if (!harnessSlug) return [];
+  const harnessConfigsDir = papercuspPath('harnesses', harnessSlug);
+  let enabled: Set<string>;
+  try {
+    const enabledRaw = JSON.parse(readFileSync(join(harnessConfigsDir, 'enabled-plugins.json'), 'utf8'));
+    enabled = new Set(Object.keys(enabledRaw?.enabled ?? {}));
+  } catch { return []; }
+  if (enabled.size === 0) return [];
+
+  const globalDir = papercuspPath('global-plugins');
+  if (!existsSync(globalDir)) return [];
+
+  // Walk @scope/plugin and bare plugin-name dirs. Plugins may be installed
+  // as either real dirs or symlinks (the marketplace install path uses
+  // symlinks for "live" dev plugins). We must stat-follow to detect
+  // symlinked-directories; readdir's Dirent.isDirectory() returns false
+  // for symlinks.
+  const pluginDirs: Array<{ dir: string; name: string }> = [];
+  try {
+    for (const e of readdirSync(globalDir)) {
+      const p = join(globalDir, e);
+      if (!isDirOrSymlinkedDir(p)) continue;
+      if (e.startsWith('@')) {
+        try {
+          for (const inner of readdirSync(p)) {
+            const innerPath = join(p, inner);
+            if (isDirOrSymlinkedDir(innerPath)) {
+              pluginDirs.push({ dir: innerPath, name: `${e}/${inner}` });
+            }
+          }
+        } catch { /* unreadable scope dir */ }
+      } else {
+        pluginDirs.push({ dir: p, name: e });
+      }
+    }
+  } catch { return []; }
+
+  const out: RoleManifest[] = [];
+  for (const { dir, name } of pluginDirs) {
+    if (!enabled.has(name) && !enabled.has(basename(dir))) continue;
+    out.push(...readPluginRolesFromDir(dir, name));
+  }
+  return out;
+}
+
+function pluginsHashForSlug(harnessSlug: string): string {
+  // Cheap signature: enabled-plugins.json mtime + content checksum proxy.
+  if (!harnessSlug) return '0';
+  try {
+    const p = papercuspPath('harnesses', harnessSlug, 'enabled-plugins.json');
+    const stat = require('node:fs').statSync(p);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch { return '0'; }
+}
+
+/**
+ * Returns the merged role registry (builtin + plugin-contributed for this
+ * harness) sorted by id. Caches on builtin mtime + plugin manifest mtime.
+ *
+ * Pass `harnessSlug` to include plugin-contributed roles for that
+ * harness's enabled plugin set. Without it, only builtin roles are
+ * returned.
+ */
+export function listRoles(harnessSlug = ''): RoleManifest[] {
+  const promptsDir = join(harnessPackageDir(), 'prompts');
+  let builtinMtime = 0;
+  try {
+    const stats = require('node:fs').statSync(promptsDir);
+    builtinMtime = stats.mtimeMs;
+  } catch { /* prompts dir absent — empty builtin */ }
+  const pluginsHash = pluginsHashForSlug(harnessSlug);
+
+  if (cached
+      && cached.builtinMtime === builtinMtime
+      && cached.forSlug === harnessSlug
+      && cached.pluginsHash === pluginsHash) {
+    return cached.roles;
+  }
+
+  const builtins = readBuiltinRoles(promptsDir);
+  const pluginRoles = harnessSlug ? readPluginRoles(harnessSlug) : [];
+  const merged = [...builtins, ...pluginRoles].sort((a, b) => a.id.localeCompare(b.id));
+
+  cached = { roles: merged, builtinMtime, forSlug: harnessSlug, pluginsHash };
+  return merged;
 }
 
 /**
  * Returns a single role's manifest by id, or null if not registered.
- * Useful for the dispatcher to look up an alwaysFireOn list, or for
- * the expert-triggers module to verify a triggered role exists.
+ * For plugin-contributed roles, pass the harness slug as the second
+ * argument so the per-plugin registry resolves correctly.
  */
-export function getRole(id: string): RoleManifest | null {
-  return listRoles().find((r) => r.id === id) ?? null;
+export function getRole(id: string, harnessSlug = ''): RoleManifest | null {
+  return listRoles(harnessSlug).find((r) => r.id === id) ?? null;
 }
 
 /**
  * Returns roles whose `alwaysFireOn` includes the given event/lifecycle
- * name. The expert-triggers module uses this to dispatch all matching
- * roles when a plugin event fires.
+ * name. Optionally scoped to a harness slug to include plugin-contributed
+ * roles.
  */
-export function rolesFiringOn(event: string): RoleManifest[] {
-  return listRoles().filter((r) => (r.alwaysFireOn ?? []).includes(event));
+export function rolesFiringOn(event: string, harnessSlug = ''): RoleManifest[] {
+  return listRoles(harnessSlug).filter((r) => (r.alwaysFireOn ?? []).includes(event));
+}
+
+/**
+ * Validate that a role id is well-formed. Used by the dispatcher and
+ * tests to reject obviously-bad input before doing filesystem work.
+ */
+export function isValidRoleId(id: string): boolean {
+  return ROLE_ID_RE.test(id) || PLUGIN_ROLE_ID_RE.test(id);
 }
 
 /** For the test suite: clear the mtime cache. */

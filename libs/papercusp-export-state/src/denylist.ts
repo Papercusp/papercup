@@ -59,6 +59,17 @@ export const DEFAULT_DENY: DenyMatcher[] = [
   { pattern: '.harness/logs/', reason: 'denylist:re-derivable' },
   { pattern: '.harness/pi-sessions/', reason: 'denylist:per-machine-ephemeral' },
   { pattern: '.harness/screenshots/', reason: 'denylist:per-machine-ephemeral' },
+  // Autonomous expert runtime state — per-run logs and dispatch locks.
+  // Per-machine and rebuilt on the next dispatch; never useful to a
+  // forker. The role definitions live in the harness package's
+  // `prompts/` (which DOES ride). Manual chat-driven expert directories
+  // `.harness/experts/EXP-NNN/` are NOT excluded — those carry authored
+  // content (identity.json, SPEC.md, feedback rounds).
+  { pattern: '.harness/experts/runs/', reason: 'denylist:per-machine-ephemeral' },
+  { pattern: '.harness/expert-prompts/', reason: 'denylist:per-machine-ephemeral' },
+  // Branch-action runtime state — per-run logs and metadata for the
+  // /actions UI. Re-derivable on next run; not portable.
+  { pattern: '.harness/action-runs/', reason: 'denylist:per-machine-ephemeral' },
 
   // Secrets — never
   { pattern: '.env', reason: 'denylist:secret' },

@@ -24,6 +24,7 @@ import { join } from 'node:path';
 
 import { recordUserAction, updateUserAction } from './user-actions';
 import { harnessPackageDir } from '../app/api/_hono/harness-paths';
+import { getRole } from './role-registry';
 
 const LOCK_TTL_MS = 5 * 60 * 1000;
 
@@ -53,10 +54,18 @@ export interface DispatchConflict {
   existingStartedAt: string;
 }
 
-const ROLE_RE = /^[a-z][a-z0-9-]*$/;
+// Builtin role ids: simple slugs.
+// Plugin-contributed role ids: `<plugin-slug>:<local-id>` where the
+// plugin slug allows '@', '/', '.', '-' (npm scoped names).
+const ROLE_RE = /^@?[a-z0-9][a-z0-9_/.-]*(:[a-z][a-z0-9-]*)?$/;
+
+/** Sanitize a role id (which may contain `:`/`/`/`@` for plugin roles) for filesystem use. */
+function safeRoleName(role: string): string {
+  return role.replace(/[:/@]/g, '_');
+}
 
 function lockPath(projectPath: string, role: string): string {
-  return join(projectPath, '.harness', 'experts', `${role}.dispatch-lock`);
+  return join(projectPath, '.harness', 'experts', `${safeRoleName(role)}.dispatch-lock`);
 }
 
 interface LockBody {
@@ -175,23 +184,113 @@ export async function dispatchExpert(
         const stateDir = join(project.path, '.harness');
         const resultsDir = join(stateDir, 'experts', 'runs');
         mkdirSync(resultsDir, { recursive: true });
-        const resultPath = join(resultsDir, `${role}-${expertId}.log`);
+        // Sanitize role id for filesystem use (`:`/`/`/`@` → `_`).
+        const safeName = role.replace(/[:/@]/g, '_');
+        const resultPath = join(resultsDir, `${safeName}-${expertId}.log`);
         const contextJson = JSON.stringify(ctx.context ?? {}).replace(/'/g, `'\\''`);
         const reason = (ctx.reason ?? '').replace(/'/g, `'\\''`);
+
+        // Resolve role's budget cap (informational; agent self-respects via env).
+        const roleManifest = (() => {
+          try { return getRole(role, project.slug); } catch { return null; }
+        })();
+        const budgetCents = roleManifest?.budgetCents;
+
+        // For plugin-contributed roles, materialise the plugin's prompt
+        // into the harness's per-project prompts dir under a synthesised
+        // role id, then invoke that. Built-in roles (no `:` in the id)
+        // use the harness package's prompts directly via invoke().
+        let invokeRole = role;
+        if (role.includes(':')) {
+          const roleManifest = getRole(role, project.slug);
+          if (!roleManifest || roleManifest.source.kind !== 'plugin') {
+            throw new Error(`plugin role not found in registry: ${role}`);
+          }
+          const src = roleManifest.source;
+          const promptSrc = join(src.dir, src.promptPath);
+          if (!existsSync(promptSrc)) {
+            throw new Error(`plugin role prompt missing: ${promptSrc}`);
+          }
+          // Synthesise a role id that invoke() can resolve via prompt
+          // override config. We write to STATE_DIR/expert-prompts/ and
+          // patch the invocation to read it via the existing
+          // promptOverrides config.json mechanism — but to avoid mutating
+          // the user's config.json mid-flight, we go via the env-var
+          // PAPERCUSP_PROMPT_OVERRIDE path that invoke() will pick up.
+          // The simpler proven path: write the prompt under a synthetic
+          // name in $STATE_DIR/prompts/ and tell invoke() to use that
+          // directory via $HARNESS_DIR override.
+          //
+          // Implementation chosen: we materialise the prompt at
+          // $STATE_DIR/expert-prompts/<safeName>.md and run a fixed-name
+          // synthetic invocation by SETTING $HARNESS_DIR to a per-run
+          // shadow directory that contains a `prompts/<safeName>.md`
+          // pointing at our materialised prompt. This way invoke() finds
+          // the prompt without us needing to teach run.sh about plugin
+          // paths or modify config.json.
+          const promptShadowDir = join(stateDir, 'expert-prompts', `${safeName}-${expertId}`);
+          mkdirSync(join(promptShadowDir, 'prompts'), { recursive: true });
+          // Symlink to harness prompts so other roles still resolve
+          // (the "shared" identity dir, base prompts, etc.). Then
+          // overlay the plugin's prompt on top with the synthetic name.
+          const fs2 = require('node:fs');
+          for (const entry of fs2.readdirSync(harnessDirPkg)) {
+            const target = join(harnessDirPkg, entry);
+            const link = join(promptShadowDir, entry);
+            if (entry === 'prompts') continue; // we own this one
+            try { fs2.symlinkSync(target, link); } catch { /* may exist */ }
+          }
+          for (const entry of fs2.readdirSync(join(harnessDirPkg, 'prompts'))) {
+            try {
+              fs2.symlinkSync(
+                join(harnessDirPkg, 'prompts', entry),
+                join(promptShadowDir, 'prompts', entry),
+              );
+            } catch { /* may exist */ }
+          }
+          // Overlay the plugin prompt as <safeName>.md
+          fs2.copyFileSync(promptSrc, join(promptShadowDir, 'prompts', `${safeName}.md`));
+          // Write a tiny role.json so any registry-aware code can resolve
+          // metadata for this run if needed.
+          fs2.writeFileSync(
+            join(promptShadowDir, 'prompts', `${safeName}.role.json`),
+            JSON.stringify({
+              id: safeName,
+              whenUseful: roleManifest.whenUseful,
+              output: roleManifest.output,
+              alwaysFireOn: roleManifest.alwaysFireOn ?? [],
+              budgetCents: roleManifest.budgetCents,
+              featureSize: roleManifest.featureSize,
+            }),
+          );
+          invokeRole = safeName;
+          // The wrapper below will use $PROMPT_SHADOW_DIR as HARNESS_DIR.
+          // We pass it via env so the cleanup at the end can rm it.
+        }
+
+        const promptShadowEnvAssign = (invokeRole !== role)
+          ? `export HARNESS_DIR='${join(stateDir, 'expert-prompts', `${safeName}-${expertId}`)}'`
+          : `export HARNESS_DIR='${harnessDirPkg}'`;
+
+        const cleanupPromptShadow = (invokeRole !== role)
+          ? `rm -rf '${join(stateDir, 'expert-prompts', `${safeName}-${expertId}`)}'`
+          : ':';
 
         const wrapper = `
           set -e
           export PROJECT_DIR='${project.path}'
           export STATE_DIR='${stateDir}'
-          export HARNESS_DIR='${harnessDirPkg}'
+          ${promptShadowEnvAssign}
           export LOG_DIR="$STATE_DIR/logs"
           export EXPERT_ID='${expertId}'
           export EXPERT_ROLE='${role}'
           export EXPERT_REASON='${reason}'
           export EXPERT_CONTEXT='${contextJson}'
+          export EXPERT_BUDGET_CENTS='${budgetCents ?? ''}'
           mkdir -p "$LOG_DIR" '${resultsDir}'
-          source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|check_cost_cap|prune_logs)\\(\\)/,/^}/' "$HARNESS_DIR/run.sh")
-          invoke ${role} "EXPERT_ID=${expertId}" "EXPERT_REASON=${reason}" 2>&1 | tee '${resultPath}'
+          source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|check_cost_cap|prune_logs)\\(\\)/,/^}/' "${harnessDirPkg}/run.sh")
+          invoke ${invokeRole} "EXPERT_ID=${expertId}" "EXPERT_REASON=${reason}" 2>&1 | tee '${resultPath}'
+          ${cleanupPromptShadow}
           echo "__EXPERT_DONE__" >> '${resultPath}'
         `;
         const child = spawn('bash', ['-c', wrapper], {
@@ -209,11 +308,57 @@ export async function dispatchExpert(
         // child — same approach `invokeScoperBackground` would use if it
         // tracked outcomes (it doesn't today; we do).
         const startTs = Date.now();
+
+        // Sum total cost from all stream-json log files belonging to this run.
+        // run_id pattern is `<ts>-<safeName>` per invoke(); we match prefix.
+        const sumCostUsd = (): number => {
+          const fs = require('node:fs');
+          try {
+            const dir = join(stateDir, 'logs');
+            const files = fs.readdirSync(dir).filter((f: string) =>
+              f.endsWith('.jsonl') && f.includes(`-${invokeRole}`),
+            );
+            let total = 0;
+            for (const f of files) {
+              try {
+                const raw = fs.readFileSync(join(dir, f), 'utf8');
+                for (const line of raw.split('\n')) {
+                  if (!line) continue;
+                  try {
+                    const obj = JSON.parse(line);
+                    // Two known shapes from claude-cli: top-level `result`
+                    // events carry `total_cost_usd`; older streams put it
+                    // at the root.
+                    const c = obj?.total_cost_usd ?? obj?.result?.total_cost_usd;
+                    if (typeof c === 'number') total = Math.max(total, c);
+                  } catch { /* skip non-json line */ }
+                }
+              } catch { /* skip unreadable file */ }
+            }
+            return total;
+          } catch { return 0; }
+        };
+
         const finalise = async (status: 'succeeded' | 'failed', summary: string) => {
           releaseLock(project.path, role);
+          // Compute cost vs budget for telemetry. If we're over budget,
+          // append a warning to the summary so the OperatorActionLog row
+          // surfaces it; downstream tuning of the role's whenUseful or
+          // budgetCents is informed by this signal.
+          let withCost = summary;
+          try {
+            const costUsd = sumCostUsd();
+            const costCents = Math.round(costUsd * 100);
+            if (costCents > 0) {
+              withCost = `${summary} · cost=${costUsd.toFixed(3)}`;
+              if (typeof budgetCents === 'number' && budgetCents > 0 && costCents > budgetCents) {
+                withCost += ` · OVER BUDGET (cap=${(budgetCents / 100).toFixed(2)})`;
+              }
+            }
+          } catch { /* cost calc failure shouldn't block finalise */ }
           await updateUserAction({
             id, status,
-            summary,
+            summary: withCost,
             detailUrl: resultPath,
           }).catch(() => undefined);
         };

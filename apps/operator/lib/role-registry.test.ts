@@ -4,13 +4,17 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { listRoles, getRole, rolesFiringOn, __clearRoleRegistryCache } from './role-registry';
+import { listRoles, getRole, rolesFiringOn, isValidRoleId, __clearRoleRegistryCache } from './role-registry';
 
 let harnessRoot: string;
 let promptsDir: string;
+let papercuspRoot: string;
 
 vi.mock('../app/api/_hono/harness-paths', () => ({
   harnessPackageDir: () => harnessRoot,
+}));
+vi.mock('./papercusp-root', () => ({
+  papercuspPath: (...segs: string[]) => join(papercuspRoot, ...segs),
 }));
 
 beforeEach(async () => {
@@ -18,12 +22,35 @@ beforeEach(async () => {
   harnessRoot = await mkdtemp(join(tmpdir(), 'role-registry-test-'));
   promptsDir = join(harnessRoot, 'prompts');
   mkdirSync(promptsDir, { recursive: true });
+  papercuspRoot = await mkdtemp(join(tmpdir(), 'papercusp-root-test-'));
+  mkdirSync(join(papercuspRoot, 'global-plugins'), { recursive: true });
 });
 
 afterEach(async () => {
   __clearRoleRegistryCache();
   await rm(harnessRoot, { recursive: true, force: true });
+  await rm(papercuspRoot, { recursive: true, force: true });
 });
+
+function writePlugin(scope: string, name: string, manifest: Record<string, unknown>, files: Record<string, string> = {}) {
+  const dir = join(papercuspRoot, 'global-plugins', scope, name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'papercusp.json'), JSON.stringify(manifest), 'utf8');
+  for (const [path, content] of Object.entries(files)) {
+    const full = join(dir, path);
+    mkdirSync(join(full, '..'), { recursive: true });
+    writeFileSync(full, content, 'utf8');
+  }
+  return dir;
+}
+
+function enablePluginsForHarness(slug: string, names: string[]) {
+  const dir = join(papercuspRoot, 'harnesses', slug);
+  mkdirSync(dir, { recursive: true });
+  const enabled: Record<string, { version: string }> = {};
+  for (const n of names) enabled[n] = { version: '0.1.0' };
+  writeFileSync(join(dir, 'enabled-plugins.json'), JSON.stringify({ enabled }), 'utf8');
+}
 
 function writeRole(id: string, role: Record<string, unknown>) {
   writeFileSync(join(promptsDir, `${id}.md`), `# ${id}\n\nfake prompt`, 'utf8');
@@ -148,5 +175,176 @@ describe('role-registry', () => {
     expect(rolesFiringOn('onProvisioned').map((r) => r.id)).toEqual(['infra-reviewer']);
     expect(rolesFiringOn('onTeardown').map((r) => r.id)).toEqual(['infra-reviewer']);
     expect(rolesFiringOn('onUnknown').map((r) => r.id)).toEqual([]);
+  });
+
+  it('isValidRoleId accepts both builtin and plugin-namespaced ids', () => {
+    expect(isValidRoleId('infra-reviewer')).toBe(true);
+    expect(isValidRoleId('@scope/plugin:my-role')).toBe(true);
+    expect(isValidRoleId('plugin:my-role')).toBe(true);
+    expect(isValidRoleId('Bad Role')).toBe(false);
+    expect(isValidRoleId('../traversal')).toBe(false);
+    expect(isValidRoleId(':')).toBe(false);
+  });
+});
+
+describe('plugin-contributed roles', () => {
+  it('discovers a role from an enabled scoped plugin', () => {
+    writePlugin('@scope', 'cf', {
+      name: '@scope/cf',
+      roles: [{
+        id: 'reviewer',
+        promptPath: 'roles/reviewer.md',
+        whenUseful: 'when CF stuff',
+        output: { kind: 'features', featureKind: 'infra' },
+        alwaysFireOn: ['onProvisioned'],
+      }],
+    }, { 'roles/reviewer.md': '# reviewer prompt' });
+    enablePluginsForHarness('test-harness', ['@scope/cf']);
+
+    const roles = listRoles('test-harness');
+    expect(roles).toHaveLength(1);
+    expect(roles[0].id).toBe('@scope/cf:reviewer');
+    expect(roles[0].source.kind).toBe('plugin');
+    if (roles[0].source.kind === 'plugin') {
+      expect(roles[0].source.plugin).toBe('@scope/cf');
+      expect(roles[0].source.promptPath).toBe('roles/reviewer.md');
+    }
+    expect(roles[0].alwaysFireOn).toEqual(['onProvisioned']);
+  });
+
+  it('does NOT include plugin roles when the plugin is not enabled', () => {
+    writePlugin('@scope', 'cf', {
+      name: '@scope/cf',
+      roles: [{
+        id: 'reviewer',
+        promptPath: 'roles/reviewer.md',
+        whenUseful: 'x',
+        output: { kind: 'features', featureKind: 'infra' },
+      }],
+    }, { 'roles/reviewer.md': '# x' });
+    enablePluginsForHarness('test-harness', []); // no plugins enabled
+
+    expect(listRoles('test-harness')).toEqual([]);
+  });
+
+  it('skips plugin role with missing prompt file', () => {
+    writePlugin('@scope', 'cf', {
+      name: '@scope/cf',
+      roles: [{
+        id: 'reviewer',
+        promptPath: 'roles/missing.md',
+        whenUseful: 'x',
+        output: { kind: 'features', featureKind: 'infra' },
+      }],
+    });
+    // Note: not writing the prompt file
+    enablePluginsForHarness('test-harness', ['@scope/cf']);
+
+    expect(listRoles('test-harness')).toEqual([]);
+  });
+
+  it('skips plugin role with traversal in promptPath', () => {
+    writePlugin('@scope', 'cf', {
+      name: '@scope/cf',
+      roles: [{
+        id: 'evil',
+        promptPath: '../../../../etc/passwd',
+        whenUseful: 'x',
+        output: { kind: 'features', featureKind: 'infra' },
+      }],
+    });
+    enablePluginsForHarness('test-harness', ['@scope/cf']);
+
+    expect(listRoles('test-harness')).toEqual([]);
+  });
+
+  it('merges builtin and plugin roles, sorted by id', () => {
+    writeRole('infra-reviewer', {
+      id: 'infra-reviewer',
+      whenUseful: 'x',
+      output: { kind: 'features', featureKind: 'infra' },
+    });
+    writePlugin('@scope', 'cf', {
+      name: '@scope/cf',
+      roles: [{
+        id: 'reviewer',
+        promptPath: 'roles/reviewer.md',
+        whenUseful: 'y',
+        output: { kind: 'features', featureKind: 'infra' },
+      }],
+    }, { 'roles/reviewer.md': '# y' });
+    enablePluginsForHarness('test-harness', ['@scope/cf']);
+
+    const roles = listRoles('test-harness');
+    expect(roles.map((r) => r.id)).toEqual(['@scope/cf:reviewer', 'infra-reviewer']);
+    expect(roles[0].source.kind).toBe('plugin');
+    expect(roles[1].source.kind).toBe('builtin');
+  });
+
+  it('rolesFiringOn includes plugin-contributed roles', () => {
+    writePlugin('@scope', 'cf', {
+      name: '@scope/cf',
+      roles: [{
+        id: 'verifier',
+        promptPath: 'roles/v.md',
+        whenUseful: 'x',
+        output: { kind: 'features', featureKind: 'infra' },
+        alwaysFireOn: ['onProvisioned'],
+      }],
+    }, { 'roles/v.md': '# v' });
+    enablePluginsForHarness('test-harness', ['@scope/cf']);
+
+    const matches = rolesFiringOn('onProvisioned', 'test-harness');
+    expect(matches.map((r) => r.id)).toEqual(['@scope/cf:verifier']);
+  });
+
+  it('listRoles() without harness slug returns ONLY builtin roles', () => {
+    writeRole('infra-reviewer', {
+      id: 'infra-reviewer',
+      whenUseful: 'x',
+      output: { kind: 'features', featureKind: 'infra' },
+    });
+    writePlugin('@scope', 'cf', {
+      name: '@scope/cf',
+      roles: [{
+        id: 'reviewer',
+        promptPath: 'roles/reviewer.md',
+        whenUseful: 'y',
+        output: { kind: 'features', featureKind: 'infra' },
+      }],
+    }, { 'roles/reviewer.md': '# y' });
+    enablePluginsForHarness('test-harness', ['@scope/cf']);
+
+    const roles = listRoles();
+    expect(roles.map((r) => r.id)).toEqual(['infra-reviewer']);
+  });
+
+  it('handles symlinked plugin directories', async () => {
+    // Create a real plugin elsewhere, symlink it into global-plugins
+    const realDir = await mkdtemp(join(tmpdir(), 'real-plugin-'));
+    mkdirSync(join(realDir, 'roles'), { recursive: true });
+    writeFileSync(join(realDir, 'papercusp.json'), JSON.stringify({
+      name: '@scope/real',
+      roles: [{
+        id: 'reviewer',
+        promptPath: 'roles/reviewer.md',
+        whenUseful: 'real',
+        output: { kind: 'features', featureKind: 'infra' },
+      }],
+    }), 'utf8');
+    writeFileSync(join(realDir, 'roles', 'reviewer.md'), '# real', 'utf8');
+
+    const linkParent = join(papercuspRoot, 'global-plugins', '@scope');
+    mkdirSync(linkParent, { recursive: true });
+    require('node:fs').symlinkSync(realDir, join(linkParent, 'real'));
+    enablePluginsForHarness('test-harness', ['@scope/real']);
+
+    try {
+      const roles = listRoles('test-harness');
+      expect(roles).toHaveLength(1);
+      expect(roles[0].id).toBe('@scope/real:reviewer');
+    } finally {
+      await rm(realDir, { recursive: true, force: true });
+    }
   });
 });
