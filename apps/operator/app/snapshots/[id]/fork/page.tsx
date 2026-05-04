@@ -1,18 +1,21 @@
 /**
  * /snapshots/<id>/fork — fork-completion UI.
  *
- * Surfaces the share-semantics shape of a snapshot, lets the user fill
- * in stripped fields (`shareable: false`, `secret: true`), and POSTs to
- * /api/snapshots/<id>/instantiate with `pluginConfigOverrides`.
+ * Two-stage flow:
+ *   1. ForkCompletionForm — fill in stripped fields (`shareable: false`,
+ *      `secret: true`), pick a name, POST /instantiate.
+ *   2. ForkProvisioningProgress — for each plugin in pendingProvisioning,
+ *      consent → run → live stream → next. When all done, redirect to
+ *      the harness dashboard.
  *
- * Reachable from the marketplace detail page or the local snapshots
- * list — any place that wants the rich fork experience instead of
- * the "instantiate with default name" prompt.
+ * If the snapshot has no plugins with provision.setup, stage 2 is
+ * skipped and we redirect immediately.
  */
 'use client';
 
-import { use } from 'react';
-import { ForkCompletionForm } from '@/app/_components/ForkCompletionForm';
+import { use, useState } from 'react';
+import { ForkCompletionForm, type ForkSuccessPayload } from '@/app/_components/ForkCompletionForm';
+import { ForkProvisioningProgress } from '@/app/_components/ForkProvisioningProgress';
 
 interface Props {
   params: Promise<{ id: string }>;
@@ -20,12 +23,38 @@ interface Props {
 
 export default function ForkPage({ params }: Props) {
   const { id } = use(params);
+  const [forked, setForked] = useState<ForkSuccessPayload | null>(null);
+
+  if (!forked) {
+    return (
+      <div style={{ padding: '32px 16px' }}>
+        <ForkCompletionForm
+          snapshotId={id}
+          onSuccess={(payload) => {
+            // No provisioning needed → redirect immediately.
+            const queue = payload.pendingProvisioning ?? [];
+            if (queue.length === 0) {
+              window.location.href = `/harness?slug=${payload.newSlug}`;
+              return;
+            }
+            // Otherwise stay on this page and walk the queue.
+            setForked(payload);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: '32px 16px' }}>
-      <ForkCompletionForm
-        snapshotId={id}
-        onSuccess={(slug) => {
-          window.location.href = `/harness?slug=${slug}`;
+      <ForkProvisioningProgress
+        harnessSlug={forked.newSlug}
+        queue={forked.pendingProvisioning ?? []}
+        onAllDone={() => {
+          // Brief delay so the user reads the summary screen.
+          setTimeout(() => {
+            window.location.href = `/harness?slug=${forked.newSlug}`;
+          }, 1500);
         }}
       />
     </div>

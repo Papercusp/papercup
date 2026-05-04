@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { z } from 'zod';
 import { useFormWith, FormField as RhfFormField, SubmitButton } from '@/lib/forms';
-import Link from 'next/link';
+import RouteLink from '@/app/_components/RouteLink';
 import { useParams, useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { ArrowLeft, Save, Loader2, Plus, X, Code2, Sliders } from 'lucide-react';
-import { Toaster, toast } from 'sonner';
+import { toast } from 'sonner';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
@@ -280,8 +280,8 @@ export default function EditTemplatePage() {
   if (loadError) {
     return (
       <div className="pc-shell" style={{ padding: 24 }}>
-        <Toaster position="bottom-right" richColors />
-        <Link href="/installed/templates" style={{ fontSize: 13 }}>← back to templates</Link>
+        {/* Toaster mounted globally in app/layout.tsx. */}
+        <RouteLink href="/installed/templates" style={{ fontSize: 13 }}>← back to templates</RouteLink>
         <div style={{ marginTop: 16, color: '#f87171' }}>Could not load template: {loadError}</div>
       </div>
     );
@@ -295,7 +295,7 @@ export default function EditTemplatePage() {
 
   return (
     <div className="pc-shell" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <Toaster position="bottom-right" richColors />
+      {/* Toaster mounted globally in app/layout.tsx. */}
       {addFileOpen && (
         <AddFileDialog
           existingPaths={(tpl.manifest.configFiles ?? []).map((cf) => cf.path)}
@@ -305,9 +305,9 @@ export default function EditTemplatePage() {
         />
       )}
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
-        <Link href="/installed/templates" style={{ fontSize: 13, color: 'var(--fg-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+        <RouteLink href="/installed/templates" style={{ fontSize: 13, color: 'var(--fg-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <ArrowLeft size={13} /> back
-        </Link>
+        </RouteLink>
         <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{tpl.slug}</h1>
         {(tpl.versions?.length ?? 0) > 1 ? (
           <select

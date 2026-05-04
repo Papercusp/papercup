@@ -102,6 +102,11 @@ export async function pgDumpPerHarness(args: {
       `--schema=harness_${args.slug}`,
       '--no-owner',
       '--no-privileges',
+      // postgres-js (which the restore-side uses for client.unsafe())
+      // doesn't speak `COPY ... FROM stdin` followed by `\.` — it
+      // tokenizes the `\.` as a syntax error. Emit INSERTs instead so
+      // every statement is valid SQL.
+      '--inserts',
     ]);
     await gzipTextToFile(text, outPath);
   } else {
@@ -110,6 +115,7 @@ export async function pgDumpPerHarness(args: {
         `--schema=harness_${args.slug}`,
         '--no-owner',
         '--no-privileges',
+        '--inserts',
         '--compress=4',
         url,
       ],

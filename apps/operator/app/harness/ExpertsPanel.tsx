@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 
 interface ExpertSummary {
@@ -233,28 +234,32 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
           <button onClick={onFork} style={btnSecondary}>fork</button>
         </div>
         {detail.highLevelSpec && detail.highLevelSpec.trim().length > 0 ? (
-          <details style={{ marginTop: 10 }}>
-            <summary style={{
-              fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer',
-              textTransform: 'uppercase', letterSpacing: '0.05em',
-            }}>
-              High-level brief (from scoper)
-            </summary>
-            <div style={{
-              marginTop: 6, padding: '8px 10px',
-              background: 'rgba(255,255,255,0.04)',
-              border: '1px solid var(--border)',
-              borderRadius: 4,
-              fontSize: 12,
-              color: 'var(--fg-dim)',
-              lineHeight: 1.5,
-              maxHeight: 240,
-              overflowY: 'auto',
-              padding: '8px 12px',
-            }}>
-              <MarkdownPreview value={detail.highLevelSpec} />
-            </div>
-          </details>
+          <Collapsible.Root style={{ marginTop: 10 }}>
+            <Collapsible.Trigger asChild>
+              <button type="button" style={{
+                background: 'none', border: 'none', padding: 0, fontSize: 11, color: 'var(--fg-dim)', cursor: 'pointer',
+                textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'left',
+              }}>
+                High-level brief (from scoper)
+              </button>
+            </Collapsible.Trigger>
+            <Collapsible.Content>
+              <div style={{
+                marginTop: 6,
+                background: 'rgba(255,255,255,0.04)',
+                border: '1px solid var(--border)',
+                borderRadius: 4,
+                fontSize: 12,
+                color: 'var(--fg-dim)',
+                lineHeight: 1.5,
+                maxHeight: 240,
+                overflowY: 'auto',
+                padding: '8px 12px',
+              }}>
+                <MarkdownPreview value={detail.highLevelSpec} />
+              </div>
+            </Collapsible.Content>
+          </Collapsible.Root>
         ) : null}
       </div>
 

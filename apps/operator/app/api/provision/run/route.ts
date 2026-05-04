@@ -22,6 +22,7 @@ export const maxDuration = 900;
 
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 function GLOBAL_PLUGINS_DIR() { return papercuspPath('global-plugins'); }
+function PROJECTS_DIR() { return papercuspPath('projects'); }
 
 interface Body {
   harness?: string;
@@ -93,12 +94,24 @@ export async function POST(req: Request) {
       join(HARNESSES_DIR(), harness, 'plugin-configs', `${plugin}.json`),
     )) ?? {};
 
+  // Resolve the harness's project dir if it exists; the runner will
+  // mount it RW and expose it via $PAPERCUSP_PROJECT_DIR. Plugins that
+  // template project files (e.g. cloudflare-stack) need this; plugins
+  // that only touch external APIs (e.g. github-repo) work with it absent.
+  const projectDirCandidate = join(PROJECTS_DIR(), harness);
+  let projectDir: string | undefined;
+  try {
+    const stat = await fs.stat(projectDirCandidate);
+    if (stat.isDirectory()) projectDir = projectDirCandidate;
+  } catch { /* project dir absent: leave undefined */ }
+
   const result = await runPhase(phase, {
     harness,
     plugin,
     publisher: manifest.publisher ?? 'unknown',
     pluginVersion: manifest.version ?? '0.0.0',
     pluginDir,
+    projectDir,
     config,
     provision: manifest.provision,
     consentConfirmed: !!body.consentConfirmed,

@@ -36,7 +36,7 @@ export async function GET(req: Request) {
 
   if (errorParam) {
     return NextResponse.redirect(
-      new URL(`/settings/plugins?oauth_error=${encodeURIComponent(errorParam)}`, req.url),
+      new URL(`/harness?oauth_error=${encodeURIComponent(errorParam)}`, req.url),
     );
   }
 
@@ -67,7 +67,7 @@ export async function GET(req: Request) {
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.redirect(
-      new URL(`/settings/plugins?oauth_error=${encodeURIComponent(msg)}`, req.url),
+      new URL(`/harness/${encodeURIComponent(harness)}?panel=config&oauth_error=${encodeURIComponent(msg)}`, req.url),
     );
   }
 
@@ -79,6 +79,6 @@ export async function GET(req: Request) {
   await fsTokenStorage.update(plugin, harness, patch);
 
   return NextResponse.redirect(
-    new URL(`/settings/plugins?connected=${encodeURIComponent(plugin)}`, req.url),
+    new URL(`/harness/${encodeURIComponent(harness)}?panel=config&oauth_connected=${encodeURIComponent(plugin)}`, req.url),
   );
 }

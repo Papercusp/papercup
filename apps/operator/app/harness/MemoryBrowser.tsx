@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import Editor from '@monaco-editor/react';
+import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { useShortcut } from '../../lib/hotkeys';
 
 type Tier = 'green' | 'yellow' | 'red';
 
@@ -117,17 +119,8 @@ export default function MemoryBrowser({ slug, alive }: Props) {
     }
   }, [active, draft, dirty, slug, loadList]);
 
-  // Ctrl/Cmd+S to save
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault();
-        save();
-      }
-    };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [save]);
+  // Ctrl/Cmd+S to save (works while focus is inside Monaco/vditor too).
+  useShortcut('editor.save', () => save(), {}, [save]);
 
   const grouped = useMemo(() => {
     const g: Record<Tier, MemFile[]> = { green: [], yellow: [], red: [] };
@@ -306,28 +299,38 @@ export default function MemoryBrowser({ slug, alive }: Props) {
           </div>
         )}
 
-        {/* Monaco */}
+        {/* Editor — vditor for markdown, Monaco for everything else */}
         <div style={{ flex: 1, minHeight: 0 }}>
           {loading ? (
             <div style={{ padding: 20, color: '#6b7280', fontSize: 13 }}>loading…</div>
           ) : active ? (
-            <Editor
-              height="100%"
-              language={activeFile?.language === 'json' || activeFile?.language === 'jsonl' ? 'json' : (activeFile?.language ?? 'markdown')}
-              theme="vs-dark"
-              value={draft}
-              onChange={(v) => setDraft(v ?? '')}
-              options={{
-                minimap: { enabled: false },
-                fontSize: 12,
-                wordWrap: 'on',
-                lineNumbers: 'on',
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                tabSize: 2,
-                readOnly: activeFile?.locked ?? false,
-              }}
-            />
+            activeFile?.language === 'markdown' ? (
+              <MarkdownEditor
+                value={draft}
+                onChange={setDraft}
+                mode="ir"
+                outline="left"
+                readOnly={activeFile?.locked ?? false}
+              />
+            ) : (
+              <Editor
+                height="100%"
+                language={activeFile?.language === 'json' || activeFile?.language === 'jsonl' ? 'json' : (activeFile?.language ?? 'markdown')}
+                theme="vs-dark"
+                value={draft}
+                onChange={(v) => setDraft(v ?? '')}
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 12,
+                  wordWrap: 'on',
+                  lineNumbers: 'on',
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                  readOnly: activeFile?.locked ?? false,
+                }}
+              />
+            )
           ) : (
             <div style={{ padding: 20, color: '#6b7280', fontSize: 13 }}>Select a file on the left.</div>
           )}

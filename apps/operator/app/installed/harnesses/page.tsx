@@ -8,7 +8,7 @@
 // staleCount }. Each project corresponds to one installed harness.
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
+import RouteLink from '../../_components/RouteLink';
 import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
@@ -88,9 +88,9 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
       align: 'right',
       render: ({ row }) => (
         row.exists ? (
-          <Link href={`/harness?project=${encodeURIComponent(row.slug)}`} className="pc-button" style={{ padding: '4px 10px' }} onClick={(e) => e.stopPropagation()}>
+          <RouteLink href={`/harness?project=${encodeURIComponent(row.slug)}`} className="pc-button" style={{ padding: '4px 10px' }} onClick={(e) => e.stopPropagation()}>
             Open
-          </Link>
+          </RouteLink>
         ) : null
       ),
     },
@@ -148,7 +148,7 @@ export default function InstalledHarnessesPage() {
         <div style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
           <p style={{ color: 'var(--fg-mute)' }}>No harnesses installed yet.</p>
           <p>
-            <Link href="/marketplace/templates" className="pc-button">Browse the marketplace</Link>
+            <RouteLink href="/marketplace/templates" className="pc-button">Browse the marketplace</RouteLink>
           </p>
         </div>
       )}

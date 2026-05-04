@@ -75,14 +75,23 @@ async function ensureDir(harness: string, plugin: string): Promise<void> {
   await fs.mkdir(provisionDir(harness, plugin), { recursive: true });
 }
 
-async function readWal(harness: string, plugin: string): Promise<RecordedResource[]> {
+/**
+ * WAL entry — either a recorded resource or a `state_set` op the script
+ * called via `papercusp_state_set`. Discriminated on the `$op` tag (only
+ * `state_set` is reserved today).
+ */
+type WalEntry =
+  | RecordedResource
+  | { $op: 'state_set'; key: string; value: unknown };
+
+async function readWal(harness: string, plugin: string): Promise<WalEntry[]> {
   let raw: string;
   try {
     raw = await fs.readFile(walPath(harness, plugin), 'utf8');
   } catch {
     return [];
   }
-  const out: RecordedResource[] = [];
+  const out: WalEntry[] = [];
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     try {
@@ -109,10 +118,18 @@ export async function readState(harness: string, plugin: string): Promise<Provis
   const walEntries = await readWal(harness, plugin);
   if (walEntries.length === 0) return state;
 
-  // Merge WAL into createdResources, dedup on (kind, externalId).
+  // Merge WAL into createdResources (dedup on kind+externalId) and outputs
+  // (last-writer-wins per key).
   const seen = new Map<string, RecordedResource>();
   for (const r of state.createdResources) seen.set(`${r.kind}\0${r.externalId}`, r);
-  for (const r of walEntries) {
+  const outputs: Record<string, unknown> = { ...state.outputs };
+  for (const entry of walEntries) {
+    if ('$op' in entry && entry.$op === 'state_set') {
+      outputs[entry.key] = entry.value;
+      continue;
+    }
+    if (!('kind' in entry) || !('externalId' in entry)) continue;
+    const r = entry;
     const k = `${r.kind}\0${r.externalId}`;
     const existing = seen.get(k);
     if (existing) {
@@ -122,7 +139,7 @@ export async function readState(harness: string, plugin: string): Promise<Provis
       seen.set(k, r);
     }
   }
-  return { ...state, createdResources: [...seen.values()] };
+  return { ...state, createdResources: [...seen.values()], outputs };
 }
 
 export async function writeState(
@@ -154,6 +171,22 @@ export async function appendWalEntry(
 ): Promise<void> {
   await ensureDir(harness, plugin);
   const line = JSON.stringify(entry) + '\n';
+  await fs.appendFile(walPath(harness, plugin), line);
+}
+
+/**
+ * Append a `state_set` op to the WAL. Folds into `state.outputs` on the
+ * next `readState`. This is what the `papercusp_state_set` shell helper
+ * invokes via the FIFO bridge.
+ */
+export async function appendStateOutput(
+  harness: string,
+  plugin: string,
+  key: string,
+  value: unknown,
+): Promise<void> {
+  await ensureDir(harness, plugin);
+  const line = JSON.stringify({ $op: 'state_set', key, value }) + '\n';
   await fs.appendFile(walPath(harness, plugin), line);
 }
 

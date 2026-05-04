@@ -1,4 +1,5 @@
-import Link from 'next/link';
+import RouteLink from '../_components/RouteLink';
+
 import { SupportChatButton } from '../_components/SupportChatButton';
 import { SupportAgentPanel } from '../_components/SupportAgentPanel';
 
@@ -31,17 +32,17 @@ const FAQS: FaqItem[] = [
     a: (
       <>
         <p>
-          Three things to check, in order:
+          Two things to check, in order:
         </p>
         <ol>
           <li>
-            Re-open <Link href="/settings/api-keys">Settings → API keys</Link>. The form preserves <em>missing</em> fields when you save other ones, but it can't show you the existing key (only whether it's set). If the green dot isn't there, your save didn't take.
+            Run <code>claude</code> directly in a terminal. The operator
+            shells out to <code>claude -p</code> for every agent, so if the
+            CLI itself can&rsquo;t reach Anthropic, neither can Papercusp.
+            Re-authenticate with <code>claude /login</code> if needed.
           </li>
           <li>
-            Check that you're not over your <a href="https://console.anthropic.com/settings/limits" target="_blank" rel="noreferrer">monthly Anthropic quota</a>. The CLI returns a generic "can't reach LLM" on rate-limit responses.
-          </li>
-          <li>
-            If you log in via <code>claude /login</code> (Claude Max), the <em>API key</em> field should be empty. Setting both can confuse the auth path; clear the API key and re-run.
+            Check that you&rsquo;re not over your <a href="https://console.anthropic.com/settings/limits" target="_blank" rel="noreferrer">monthly Anthropic quota</a>. The CLI returns a generic &ldquo;can&rsquo;t reach LLM&rdquo; on rate-limit responses.
           </li>
         </ol>
       </>
@@ -73,7 +74,7 @@ const FAQS: FaqItem[] = [
           You'll need a GitHub identity to publish — run <code>papercusp login</code> first. Your namespace is your GitHub login (e.g. <code>@avi/my-template</code>).
         </p>
         <p>
-          Browse what's already there at the <Link href="/marketplace/templates">templates</Link> and <Link href="/marketplace/plugins">plugins</Link> pages.
+          Browse what's already there at the <RouteLink href="/marketplace/templates">templates</RouteLink> and <RouteLink href="/marketplace/plugins">plugins</RouteLink> pages.
         </p>
       </>
     ),
@@ -113,9 +114,9 @@ const FAQS: FaqItem[] = [
 
 export default function SupportPage() {
   return (
-    <div className="pc-shell" style={{ maxWidth: 820, margin: '0 auto', padding: '32px 28px' }}>
+    <div className="pc-shell pc-support-shell" style={{ maxWidth: 820, margin: '0 auto', padding: '32px 28px' }}>
       <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>Support</h1>
-      <p style={{ color: 'var(--fg-mute)', fontSize: 15, marginBottom: 32, lineHeight: 1.55 }}>
+      <p className="pc-support-intro" style={{ color: 'var(--fg-mute)', fontSize: 15, marginBottom: 32, lineHeight: 1.55 }}>
         First check the FAQs below — they cover the most common stuck points. If you're still
         blocked, start a chat with our support team or open a GitHub issue.
       </p>
@@ -124,7 +125,7 @@ export default function SupportPage() {
       <SupportAgentPanel surface="operator" />
 
       {/* Action buttons */}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 40 }}>
+      <div className="pc-support-actions" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 40 }}>
         <SupportChatButton className="pc-button" message="">
           💬 Start support chat
         </SupportChatButton>
@@ -149,10 +150,11 @@ export default function SupportPage() {
       </div>
 
       <h2 style={{ fontSize: 22, fontWeight: 700, marginBottom: 16 }}>Frequently asked</h2>
-      <div>
+      <div className="pc-support-faqs">
         {FAQS.map((f, i) => (
           <details
             key={i}
+            className="pc-support-faq"
             style={{
               padding: '14px 18px',
               marginBottom: 8,
@@ -161,11 +163,12 @@ export default function SupportPage() {
               borderRadius: 8,
             }}
           >
-            <summary style={{ cursor: 'pointer', fontSize: 15, fontWeight: 600, listStyle: 'none' }}>
-              <span style={{ marginRight: 8, color: 'var(--fg-mute)' }}>›</span>
+            <summary className="pc-support-faq-summary" style={{ cursor: 'pointer', fontSize: 15, fontWeight: 600, listStyle: 'none' }}>
+              <span className="pc-support-faq-chevron" style={{ marginRight: 8, color: 'var(--fg-mute)' }}>›</span>
               {f.q}
             </summary>
             <div
+              className="pc-support-faq-answer"
               style={{
                 marginTop: 12,
                 color: 'var(--fg-mute)',
@@ -180,6 +183,7 @@ export default function SupportPage() {
       </div>
 
       <div
+        className="pc-support-resources"
         style={{
           marginTop: 40,
           padding: 20,
@@ -194,7 +198,7 @@ export default function SupportPage() {
         <a href="https://papercuspai.com/docs/" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>full documentation</a>{' '}·{' '}
         <a href="https://papercusp.com" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>marketing site</a>{' '}·{' '}
         <a href="https://github.com/papercupai/papercusp/issues" target="_blank" rel="noreferrer" style={{ color: 'var(--accent)' }}>issue tracker</a>{' '}·{' '}
-        <Link href="/setup" style={{ color: 'var(--accent)' }}>5-step setup</Link>
+        <RouteLink href="/setup" style={{ color: 'var(--accent)' }}>5-step setup</RouteLink>
       </div>
     </div>
   );

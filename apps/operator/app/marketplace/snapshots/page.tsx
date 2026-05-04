@@ -1,6 +1,6 @@
 'use client';
 
-import Link from 'next/link';
+import RouteLink from '../../_components/RouteLink';
 import * as Lucide from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
@@ -187,7 +187,7 @@ export default function MarketplaceSnapshotsPage() {
                   <div className="pc-marketplace-card-head">
                     <span className="pc-marketplace-card-icon snapshot"><Icon size={18} /></span>
                     <div>
-                      <Link href={`/marketplace/${encodeURIComponent(s.slug)}`} className="pc-marketplace-card-title">{s.name}</Link>
+                      <RouteLink href={`/marketplace/${encodeURIComponent(s.slug)}`} className="pc-marketplace-card-title">{s.name}</RouteLink>
                       <span>{s.slug}</span>
                     </div>
                   </div>
@@ -220,7 +220,7 @@ export default function MarketplaceSnapshotsPage() {
         <div className="pc-card pc-marketplace-empty">
           <strong>No snapshots yet.</strong>
           <span>Run a workflow, then click <em>Save snapshot</em> from any harness to capture forkable state. Or browse templates to install your first workflow.</span>
-          <a href="/marketplace/templates" className="pc-button primary">Browse templates</a>
+          <RouteLink href="/marketplace/templates" className="pc-button primary">Browse templates</RouteLink>
         </div>
       )}
 

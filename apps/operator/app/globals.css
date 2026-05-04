@@ -38,14 +38,16 @@
   --ease-mid: cubic-bezier(0.65, 0, 0.35, 1);
   --dur-fast: 120ms;
   --dur-normal: 200ms;
+  --dur-panel: 240ms;
   --dur-slow: 360ms;
 }
 
-/* ── Reusable Radix data-state animations ───────────────────────────
- * Apply by adding `data-anim="pop"` (or `slide-up`, `fade`) to any
- * element whose parent Radix primitive (Dialog, Popover, Dropdown,
- * Tooltip, etc.) sets `data-state="open|closed"`. Native compositor;
- * zero JS animation cost. Skip on prefers-reduced-motion.
+/* ── Reusable Radix / shared motion primitives ────────────────────────
+ * Apply by adding `data-anim="pop"` (or `slide-up`, `slide-down`,
+ * `slide-right`, `fade`, `lift`) to any element whose primitive exposes
+ * `data-state="open|closed"`. Native compositor; zero JS animation cost.
+ * For mount-only entry polish on lightweight surfaces, use the
+ * `.pc-animate-in*` utility classes below.
  */
 @keyframes pc-pop-in {
   from { opacity: 0; transform: scale(0.96) translateY(-2px); }
@@ -65,6 +67,30 @@
   from { opacity: 1; transform: none; }
   to   { opacity: 0; transform: translateY(8px); }
 }
+@keyframes pc-slide-down-in {
+  from { opacity: 0; transform: translateY(-10px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes pc-slide-down-out {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(-10px) scale(0.985); }
+}
+@keyframes pc-slide-right-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes pc-slide-right-out {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateX(16px); }
+}
+@keyframes pc-lift-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+@keyframes pc-lift-out {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: translateY(10px) scale(0.99); }
+}
 
 [data-anim="pop"][data-state="open"]  { animation: pc-pop-in  var(--dur-fast)   var(--ease-out); }
 [data-anim="pop"][data-state="closed"]{ animation: pc-pop-out var(--dur-fast)   var(--ease-in);  }
@@ -72,9 +98,42 @@
 [data-anim="fade"][data-state="closed"]{ animation: pc-fade-out var(--dur-fast)   var(--ease-in);  }
 [data-anim="slide-up"][data-state="open"]  { animation: pc-slide-up-in  var(--dur-normal) var(--ease-out); }
 [data-anim="slide-up"][data-state="closed"]{ animation: pc-slide-up-out var(--dur-fast)   var(--ease-in);  }
+[data-anim="slide-down"][data-state="open"]  { animation: pc-slide-down-in var(--dur-normal) var(--ease-out); }
+[data-anim="slide-down"][data-state="closed"]{ animation: pc-slide-down-out var(--dur-fast) var(--ease-in); }
+[data-anim="slide-right"][data-state="open"]  { animation: pc-slide-right-in var(--dur-panel) var(--ease-out); }
+[data-anim="slide-right"][data-state="closed"]{ animation: pc-slide-right-out var(--dur-normal) var(--ease-in); }
+[data-anim="lift"][data-state="open"]  { animation: pc-lift-in  var(--dur-panel) var(--ease-out); }
+[data-anim="lift"][data-state="closed"]{ animation: pc-lift-out var(--dur-normal) var(--ease-in);  }
+
+.pc-animate-in {
+  animation: pc-lift-in var(--dur-panel) var(--ease-out) both;
+}
+.pc-animate-in--fast {
+  animation-duration: var(--dur-fast);
+}
+.pc-animate-in--down {
+  animation-name: pc-slide-down-in;
+}
+.pc-animate-in--right {
+  animation-name: pc-slide-right-in;
+}
+.pc-animate-in--fade {
+  animation-name: pc-fade-in;
+}
+.pc-animate-in--delay-1 {
+  animation-delay: 35ms;
+}
+.pc-animate-in--delay-2 {
+  animation-delay: 70ms;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  [data-anim] { animation-duration: 0.01ms !important; }
+  [data-anim],
+  .pc-animate-in {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 * {
@@ -122,6 +181,18 @@ body::before {
 body > * {
   position: relative;
   z-index: 1;
+}
+
+/* Sonner toasts must always sit above pc-header (z:1300), OracleDock
+   (z:80), modals (z≥100), and every other chrome surface. The Toaster
+   <section> is mounted at body level via app/layout.tsx — defensive
+   `!important` here covers any stray sub-page <Toaster> too. The aria
+   selectors handle every sonner version (some emit `data-sonner-toaster`,
+   others only the live-region attributes). */
+[data-sonner-toaster],
+section[aria-label*="Notifications"][aria-live] {
+  z-index: 2147483646 !important;
+  position: fixed !important;
 }
 
 main {
@@ -229,6 +300,74 @@ pre, .pc-code {
   -webkit-backdrop-filter: blur(18px) saturate(150%);
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.34);
   overflow: visible;
+}
+
+.pc-route-pending-overlay {
+  position: fixed;
+  top: 76px;
+  left: 50%;
+  z-index: 5000;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, -8px) scale(0.98);
+  border: 1px solid rgba(87, 215, 255, 0.58);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 18% 50%, rgba(255, 255, 255, 0.24), transparent 28%),
+    linear-gradient(135deg, rgba(87, 215, 255, 0.28), rgba(6, 13, 24, 0.96)),
+    rgba(6, 13, 24, 0.96);
+  box-shadow:
+    0 18px 46px rgba(0, 0, 0, 0.52),
+    0 0 0 1px rgba(255, 255, 255, 0.10) inset,
+    0 0 30px rgba(87, 215, 255, 0.36);
+  color: #e0faff;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  line-height: 1;
+  padding: 11px 16px;
+  text-transform: uppercase;
+  text-shadow: 0 0 14px rgba(87, 215, 255, 0.78);
+  transition:
+    opacity 80ms ease-out,
+    transform 120ms ease-out;
+}
+
+html[data-route-pending="true"] .pc-route-pending-overlay {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+.pc-route-pending-overlay.is-route-pending-suppressed {
+  opacity: 0 !important;
+  transform: translate(-50%, -8px) scale(0.98) !important;
+}
+
+
+.pc-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 3px;
+  pointer-events: none;
+  opacity: 0;
+  transform: scaleX(0.12);
+  transform-origin: left center;
+  background: linear-gradient(90deg, #57d7ff, #ffffff, var(--accent), #57d7ff);
+  background-size: 220% 100%;
+  box-shadow: 0 0 14px rgba(87, 215, 255, 0.72);
+  transition:
+    opacity 80ms ease-out,
+    transform 120ms ease-out;
+}
+
+html[data-route-pending="true"] .pc-header::after {
+  opacity: 1;
+  transform: scaleX(1);
+  animation: pc-route-pending-sweep 0.72s linear infinite;
 }
 
 .pc-header-left {
@@ -4313,6 +4452,15 @@ body.h-harness-top-collapsed .pc-header {
 
 /* Operator panel redesign: unified suggestions/activity coordination surface. */
 .operator-panel {
+  --operator-cut: 56px;
+  --operator-frame: 42px;
+  --operator-inner-cut: 24px;
+  --operator-cyan: 19, 245, 255;
+  --operator-arc: 115, 251, 255;
+  --operator-gold: 245, 181, 63;
+  --operator-armor: 133, 19, 30;
+  --operator-armor-dark: 42, 7, 12;
+  --operator-white-hot: 248, 253, 255;
   position: fixed;
   top: 68px;
   left: 22px;
@@ -4322,29 +4470,100 @@ body.h-harness-top-collapsed .pc-header {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
+  padding: var(--operator-frame);
   color: #e8f6ff;
-  border: 1px solid rgba(125, 211, 252, 0.24);
-  border-radius: 18px;
+  border: 0;
+  border-radius: 0;
+  clip-path: polygon(var(--operator-cut) 0, calc(100% - var(--operator-cut)) 0, 100% var(--operator-cut), 100% calc(100% - var(--operator-cut)), calc(100% - var(--operator-cut)) 100%, var(--operator-cut) 100%, 0 calc(100% - var(--operator-cut)), 0 var(--operator-cut));
   background:
-    radial-gradient(circle at 18% 0%, rgba(56, 189, 248, 0.18), transparent 34rem),
-    radial-gradient(circle at 88% 8%, rgba(248, 113, 113, 0.10), transparent 28rem),
-    linear-gradient(180deg, rgba(9, 18, 31, 0.985), rgba(5, 10, 18, 0.975));
+    radial-gradient(ellipse at 50% 2%, rgba(var(--operator-arc), 0.22), transparent 28rem),
+    radial-gradient(circle at 50% 48%, rgba(var(--operator-white-hot), 0.080), rgba(var(--operator-arc), 0.060) 7rem, transparent 22rem),
+    conic-gradient(from 0.125turn at 50% 44%, transparent 0 12%, rgba(var(--operator-arc), 0.045) 13% 15%, transparent 16% 47%, rgba(var(--operator-gold), 0.040) 49% 51%, transparent 52% 100%),
+    radial-gradient(ellipse at 10% 11%, rgba(var(--operator-armor), 0.18), transparent 18rem),
+    radial-gradient(ellipse at 90% 12%, rgba(var(--operator-armor), 0.16), transparent 18rem),
+    radial-gradient(ellipse at 50% 100%, rgba(var(--operator-gold), 0.070), transparent 30rem),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.030), transparent 18%, transparent 82%, rgba(var(--operator-arc), 0.040)),
+    linear-gradient(180deg, rgba(5, 16, 27, 0.992), rgba(var(--operator-armor-dark), 0.94) 58%, rgba(1, 5, 11, 0.992));
   box-shadow:
-    0 28px 80px rgba(0, 0, 0, 0.58),
-    0 0 0 1px rgba(2, 6, 12, 0.88),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    0 0 0 100vmax rgba(2, 7, 14, 0.44),
+    0 64px 176px rgba(0, 0, 0, 0.84),
+    0 0 0 1px rgba(var(--operator-arc), 0.18),
+    0 0 74px rgba(var(--operator-arc), 0.14),
+    0 0 28px rgba(var(--operator-gold), 0.075),
+    inset 0 0 54px rgba(var(--operator-armor), 0.070);
   backdrop-filter: blur(18px) saturate(126%);
+  -webkit-backdrop-filter: blur(18px) saturate(126%);
+  isolation: isolate;
 }
 
 .operator-panel::before {
   content: "";
   position: absolute;
+  z-index: 0;
   inset: 0;
+  padding: var(--operator-frame);
   pointer-events: none;
+  clip-path: polygon(var(--operator-cut) 0, calc(100% - var(--operator-cut)) 0, 100% var(--operator-cut), 100% calc(100% - var(--operator-cut)), calc(100% - var(--operator-cut)) 100%, var(--operator-cut) 100%, 0 calc(100% - var(--operator-cut)), 0 var(--operator-cut));
   background:
-    linear-gradient(90deg, rgba(125, 211, 252, 0.07), transparent 18%, transparent 82%, rgba(248, 113, 113, 0.045)),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 14%);
-  opacity: 0.9;
+    linear-gradient(90deg, transparent 7%, rgba(var(--operator-arc), 0.78) 7% 12%, rgba(var(--operator-gold), 0.58) 12% 13%, transparent 13% 34%, rgba(var(--operator-arc), 0.28) 34% 38%, transparent 38% 62%, rgba(var(--operator-arc), 0.28) 62% 66%, transparent 66% 87%, rgba(var(--operator-gold), 0.58) 87% 88%, rgba(var(--operator-arc), 0.78) 88% 93%, transparent 93%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 10%, rgba(var(--operator-gold), 0.40) 10% 18%, transparent 18% 42%, rgba(var(--operator-arc), 0.62) 42% 58%, transparent 58% 82%, rgba(var(--operator-gold), 0.40) 82% 90%, transparent 90%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-arc), 0.50) 12% 30%, transparent 30% 70%, rgba(var(--operator-gold), 0.40) 70% 88%, transparent 88%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-gold), 0.40) 12% 30%, transparent 30% 70%, rgba(var(--operator-arc), 0.50) 70% 88%, transparent 88%) right 12px center / 1px 100% no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-arc), 0.36) 0 1px, transparent 1px 6px) top 20px right 122px / 78px 7px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.26) 0 1px, transparent 1px 6px) bottom 22px left 124px / 78px 7px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.12), rgba(255,255,255,0.62) 48%, rgba(var(--operator-arc),0.16) 50%, rgba(255,255,255,0.50) 52%, rgba(var(--operator-gold), 0.10)) top 0 center / 430px 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-gold), 0.72), rgba(245, 237, 206, 0.55) 18%, rgba(var(--operator-armor), 0.48) 31%, rgba(24, 38, 56, 0.99) 39%, rgba(76, 95, 116, 0.88) 66%, rgba(var(--operator-gold), 0.42) 100%) top 0 center / 354px 34px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-armor-dark), 0.96), rgba(var(--operator-armor), 0.50) 24%, rgba(91, 110, 132, 0.78) 54%, rgba(var(--operator-gold), 0.36)) bottom 0 center / 292px 30px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.44), rgba(80, 64, 66, 0.84) 27%, rgba(18, 30, 46, 0.99) 62%, rgba(var(--operator-arc), 0.12)) left 0 center / 42px 218px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-arc), 0.12), rgba(18, 30, 46, 0.99) 38%, rgba(80, 64, 66, 0.84) 73%, rgba(var(--operator-gold), 0.44)) right 0 center / 42px 218px no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.66) 0 13%, rgba(var(--operator-armor), 0.66) 14% 34%, rgba(22, 35, 53, 0.99) 35% 70%, rgba(var(--operator-arc), 0.18) 71% 100%) top 0 left 0 / 154px 154px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-gold), 0.66) 0 13%, rgba(var(--operator-armor), 0.66) 14% 34%, rgba(22, 35, 53, 0.99) 35% 70%, rgba(var(--operator-arc), 0.18) 71% 100%) top 0 right 0 / 154px 154px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.44) 0 14%, rgba(var(--operator-armor), 0.52) 15% 34%, rgba(20, 34, 52, 0.99) 35% 70%, rgba(var(--operator-arc), 0.13) 71% 100%) bottom 0 left 0 / 154px 154px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.44) 0 14%, rgba(var(--operator-armor), 0.52) 15% 34%, rgba(20, 34, 52, 0.99) 35% 70%, rgba(var(--operator-arc), 0.13) 71% 100%) bottom 0 right 0 / 154px 154px no-repeat,
+    radial-gradient(circle at 86px 29px, rgba(var(--operator-white-hot),0.82) 0 1px, rgba(var(--operator-gold),0.78) 2px 4px, rgba(28,40,56,0.98) 5px 7px, transparent 8px),
+    radial-gradient(circle at calc(100% - 86px) 29px, rgba(var(--operator-white-hot),0.82) 0 1px, rgba(var(--operator-gold),0.78) 2px 4px, rgba(28,40,56,0.98) 5px 7px, transparent 8px),
+    radial-gradient(circle at 86px calc(100% - 29px), rgba(var(--operator-white-hot),0.64) 0 1px, rgba(var(--operator-gold),0.62) 2px 4px, rgba(28,40,56,0.98) 5px 7px, transparent 8px),
+    radial-gradient(circle at calc(100% - 86px) calc(100% - 29px), rgba(var(--operator-white-hot),0.64) 0 1px, rgba(var(--operator-gold),0.62) 2px 4px, rgba(28,40,56,0.98) 5px 7px, transparent 8px),
+    radial-gradient(circle at 65px 62px, rgba(var(--operator-arc), 0.26), transparent 32px),
+    radial-gradient(circle at calc(100% - 65px) 62px, rgba(var(--operator-arc), 0.26), transparent 32px),
+    radial-gradient(circle at 65px calc(100% - 62px), rgba(var(--operator-gold), 0.16), transparent 32px),
+    radial-gradient(circle at calc(100% - 65px) calc(100% - 62px), rgba(var(--operator-gold), 0.16), transparent 32px),
+    repeating-linear-gradient(104deg, rgba(255,255,255,0.035) 0 1px, rgba(145,157,174,0.024) 1px 8px, rgba(var(--operator-armor),0.050) 8px 22px),
+    linear-gradient(135deg, rgba(148, 169, 188, 0.78), rgba(54, 72, 94, 0.99) 18%, rgba(var(--operator-armor-dark), 0.98) 37%, rgba(184, 202, 218, 0.46) 50%, rgba(33, 50, 72, 0.99) 72%, rgba(112, 135, 158, 0.58));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 10px rgba(var(--operator-cyan), 0.16));
+}
+
+.operator-panel::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  inset: calc(var(--operator-frame) - 3px);
+  padding: 10px;
+  pointer-events: none;
+  clip-path: polygon(var(--operator-inner-cut) 0, calc(100% - var(--operator-inner-cut)) 0, 100% var(--operator-inner-cut), 100% calc(100% - var(--operator-inner-cut)), calc(100% - var(--operator-inner-cut)) 100%, var(--operator-inner-cut) 100%, 0 calc(100% - var(--operator-inner-cut)), 0 var(--operator-inner-cut));
+  background:
+    linear-gradient(90deg, transparent 6%, rgba(var(--operator-arc), 0.60) 6% 14%, transparent 14% 39%, rgba(var(--operator-white-hot), 0.46) 40% 50%, rgba(var(--operator-gold), 0.38) 50% 60%, transparent 61% 86%, rgba(var(--operator-arc), 0.60) 86% 94%, transparent 94%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 9%, rgba(var(--operator-gold), 0.32) 9% 18%, transparent 18% 44%, rgba(var(--operator-arc), 0.42) 44% 56%, transparent 56% 82%, rgba(var(--operator-gold), 0.32) 82% 91%, transparent 91%) bottom 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-arc), 0.36) 12% 28%, transparent 28% 72%, rgba(var(--operator-gold), 0.30) 72% 88%, transparent 88%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-gold), 0.30) 12% 28%, transparent 28% 72%, rgba(var(--operator-arc), 0.36) 72% 88%, transparent 88%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.42), rgba(42, 58, 80, 0.88) 45%, rgba(var(--operator-armor), 0.20)) top left / 52px 52px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-gold), 0.42), rgba(42, 58, 80, 0.88) 45%, rgba(var(--operator-armor), 0.20)) top right / 52px 52px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.30), rgba(38, 54, 76, 0.88) 48%, rgba(var(--operator-armor), 0.18)) bottom left / 52px 52px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.30), rgba(38, 54, 76, 0.88) 48%, rgba(var(--operator-armor), 0.18)) bottom right / 52px 52px no-repeat,
+    linear-gradient(180deg, rgba(151,170,189,0.14), rgba(12,24,39,0.84));
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  box-shadow:
+    0 0 18px rgba(var(--operator-cyan), 0.13),
+    inset 0 0 0 1px rgba(var(--operator-cyan), 0.16);
 }
 
 .operator-panel > * {
@@ -4357,15 +4576,45 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel__header {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(190px, 0.8fr) minmax(320px, 1fr) auto;
   gap: 18px;
   align-items: center;
   padding: 14px 18px 13px;
-  border-bottom: 1px solid rgba(125, 211, 252, 0.18);
+  overflow: hidden;
+  border: 1px solid rgba(var(--operator-arc), 0.22);
+  border-bottom-color: rgba(var(--operator-gold), 0.13);
+  clip-path: polygon(18px 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%, 0 18px);
   background:
-    linear-gradient(90deg, rgba(125, 211, 252, 0.08), rgba(255, 255, 255, 0.018) 44%, rgba(248, 113, 113, 0.045)),
-    rgba(5, 12, 22, 0.78);
+    radial-gradient(ellipse at 50% -38%, rgba(var(--operator-white-hot), 0.18), rgba(var(--operator-arc), 0.12) 7rem, transparent 18rem),
+    linear-gradient(90deg, transparent calc(50% - 144px), rgba(var(--operator-arc), 0.52) calc(50% - 144px) calc(50% + 144px), transparent calc(50% + 144px)) top 5px center / 288px 1px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.30) 0 1px, transparent 1px 6px) top 8px right 144px / 70px 6px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.16), rgba(var(--operator-arc), 0.070) 22%, rgba(255, 255, 255, 0.024) 48%, rgba(var(--operator-gold), 0.055) 72%, rgba(var(--operator-armor), 0.13)),
+    linear-gradient(180deg, rgba(12, 31, 45, 0.94), rgba(2, 9, 17, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(248, 253, 255, 0.12),
+    inset 0 -18px 34px rgba(0, 0, 0, 0.30),
+    inset 0 -1px 0 rgba(var(--operator-gold), 0.16),
+    0 0 18px rgba(var(--operator-arc), 0.075);
+}
+
+.operator-panel__header::before {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: -54px 18% auto;
+  height: 132px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(var(--operator-white-hot), 0.22) 0 2px, rgba(var(--operator-arc), 0.16) 3px 35px, transparent 36px),
+    conic-gradient(from 0.02turn at 50% 50%, transparent 0 12%, rgba(var(--operator-arc), 0.18) 13% 15%, transparent 16% 37%, rgba(var(--operator-gold), 0.15) 38% 40%, transparent 41% 100%);
+  opacity: 0.72;
+}
+
+.operator-panel__header > * {
+  position: relative;
+  z-index: 1;
 }
 
 .operator-panel__eyebrow {
@@ -4390,7 +4639,7 @@ body.h-harness-top-collapsed .pc-header {
   color: #f8fcff;
   line-height: 1.08;
   letter-spacing: -0.025em;
-  text-shadow: 0 0 20px rgba(125, 211, 252, 0.16);
+  text-shadow: 0 0 18px rgba(var(--operator-arc), 0.26), 0 0 34px rgba(var(--operator-gold), 0.070);
 }
 
 .operator-panel__titleline h2 {
@@ -4486,7 +4735,7 @@ body.h-harness-top-collapsed .pc-header {
 .operator-mini-btn,
 .operator-budget-option {
   appearance: none;
-  border: 1px solid rgba(125, 211, 252, 0.22);
+  border: 1px solid rgba(var(--operator-arc), 0.22);
   font-family: inherit;
   cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, transform 140ms ease, color 140ms ease;
@@ -4494,15 +4743,21 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-btn {
   min-height: 32px;
-  padding: 0 11px;
+  padding: 0 12px;
   color: color-mix(in oklab, var(--fg), white 5%);
   font-size: 12px;
   font-weight: 720;
   white-space: nowrap;
   text-decoration: none;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.045);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055);
+  border-radius: 0;
+  clip-path: polygon(9px 0, calc(100% - 9px) 0, 100% 9px, 100% calc(100% - 9px), calc(100% - 9px) 100%, 9px 100%, 0 calc(100% - 9px), 0 9px);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.14), transparent 18% 76%, rgba(var(--operator-arc), 0.11)),
+    linear-gradient(180deg, rgba(42, 51, 62, 0.82), rgba(var(--operator-armor-dark), 0.70) 58%, rgba(4, 12, 22, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(248,253,255,0.12),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.17),
+    0 0 12px rgba(var(--operator-arc), 0.045);
 }
 
 .operator-btn:hover,
@@ -4511,23 +4766,26 @@ body.h-harness-top-collapsed .pc-header {
 .operator-mini-btn:focus-visible,
 .operator-budget-option:hover,
 .operator-budget-option:focus-visible {
-  border-color: rgba(125, 211, 252, 0.46);
-  background: rgba(125, 211, 252, 0.090);
-  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.08), inset 0 1px 0 rgba(255,255,255,0.075);
+  border-color: rgba(var(--operator-arc), 0.48);
+  background: rgba(var(--operator-arc), 0.092);
+  box-shadow: 0 0 0 1px rgba(var(--operator-gold), 0.12), 0 0 20px rgba(var(--operator-arc), 0.12), inset 0 1px 0 rgba(255,255,255,0.10);
   outline: none;
 }
 
 .operator-btn--primary,
 .operator-mini-btn--primary {
-  color: #03131f;
-  border-color: rgba(125, 211, 252, 0.58);
-  background: linear-gradient(180deg, rgba(186, 230, 253, 0.94), rgba(34, 211, 238, 0.72));
-  box-shadow: 0 0 22px rgba(34, 211, 238, 0.20), inset 0 1px 0 rgba(255,255,255,0.45);
+  color: #031118;
+  border-color: rgba(var(--operator-gold), 0.58);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.75), transparent 58%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.46), transparent 20% 80%, rgba(var(--operator-gold), 0.32)),
+    linear-gradient(180deg, rgba(236, 253, 255, 0.96), rgba(var(--operator-arc), 0.86) 48%, rgba(17, 164, 224, 0.90));
+  box-shadow: 0 0 24px rgba(var(--operator-arc), 0.26), 0 0 10px rgba(var(--operator-gold), 0.16), inset 0 1px 0 rgba(255,255,255,0.62), inset 0 -1px 0 rgba(3, 105, 161, 0.32);
 }
 
 .operator-btn--ghost {
   color: color-mix(in oklab, var(--fg-dim), white 22%);
-  background: transparent;
+  background: linear-gradient(180deg, rgba(var(--operator-armor), 0.055), rgba(255, 255, 255, 0.010));
 }
 
 .operator-btn--close {
@@ -4539,37 +4797,109 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel__body {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(230px, 290px) minmax(0, 1fr) minmax(245px, 320px);
   min-height: 0;
   overflow: hidden;
+  border: 1px solid rgba(var(--operator-arc), 0.15);
+  border-top: 0;
+  border-bottom: 0;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(var(--operator-white-hot), 0.040), rgba(var(--operator-arc), 0.050) 8rem, transparent 24rem),
+    conic-gradient(from 0.12turn at 50% 44%, transparent 0 18%, rgba(var(--operator-arc), 0.030) 19% 21%, transparent 22% 46%, rgba(var(--operator-gold), 0.024) 47% 49%, transparent 50% 100%),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.022) 0 1px, transparent 1px 72px),
+    repeating-linear-gradient(180deg, rgba(var(--operator-gold), 0.016) 0 1px, transparent 1px 58px),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.080), transparent 18% 82%, rgba(var(--operator-armor), 0.070)),
+    linear-gradient(180deg, rgba(2, 14, 25, 0.86), rgba(1, 6, 13, 0.93));
+  box-shadow:
+    inset 0 0 0 1px rgba(232, 250, 255, 0.030),
+    inset 0 0 52px rgba(var(--operator-arc), 0.030),
+    inset 0 0 38px rgba(var(--operator-armor), 0.035);
+}
+
+.operator-panel__body::before,
+.operator-panel__body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.operator-panel__body::before {
+  z-index: 0;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(var(--operator-white-hot), 0.10) 0 2px, transparent 3px),
+    radial-gradient(circle at 50% 42%, transparent 0 74px, rgba(var(--operator-arc), 0.20) 75px 76px, transparent 78px 102px, rgba(var(--operator-gold), 0.12) 103px 104px, transparent 106px),
+    repeating-conic-gradient(from 0.04turn at 50% 42%, transparent 0deg 12deg, rgba(var(--operator-arc), 0.11) 12deg 14deg, transparent 14deg 38deg, rgba(var(--operator-gold), 0.080) 38deg 39deg, transparent 39deg 60deg),
+    radial-gradient(circle at 50% 42%, rgba(var(--operator-arc), 0.080), transparent 18rem);
+  opacity: 0.42;
+  mask-image: radial-gradient(circle at 50% 42%, #000 0 16rem, transparent 28rem);
+}
+
+.operator-panel__body::after {
+  z-index: 2;
+  background:
+    repeating-linear-gradient(180deg, transparent 0 3px, rgba(var(--operator-arc), 0.026) 3px 4px),
+    linear-gradient(180deg, transparent 0 42%, rgba(var(--operator-arc), 0.070) 42% calc(42% + 1px), transparent calc(42% + 1px)),
+    linear-gradient(90deg, transparent 0 88%, rgba(var(--operator-gold), 0.10) 88% calc(88% + 1px), transparent calc(88% + 1px));
+  opacity: 0.34;
+  mix-blend-mode: screen;
+}
+
+.operator-panel__body > * {
+  position: relative;
+  z-index: 1;
 }
 
 .operator-panel__rail,
 .operator-panel__feed {
+  position: relative;
   min-height: 0;
   overflow: auto;
-  scrollbar-color: rgba(125, 211, 252, 0.30) transparent;
+  scrollbar-color: rgba(var(--operator-arc), 0.30) transparent;
 }
 
 .operator-panel__rail {
   padding: 16px;
-  background: rgba(5, 12, 22, 0.42);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.070), transparent 26%),
+    linear-gradient(180deg, rgba(var(--operator-armor), 0.11), rgba(4, 16, 27, 0.72) 34%, rgba(1, 8, 15, 0.80)),
+    rgba(5, 12, 22, 0.48);
 }
 
 .operator-panel__rail--left {
-  border-right: 1px solid rgba(125, 211, 252, 0.14);
+  border-right: 1px solid rgba(var(--operator-gold), 0.16);
 }
 
 .operator-panel__rail--right {
-  border-left: 1px solid rgba(125, 211, 252, 0.14);
+  border-left: 1px solid rgba(var(--operator-arc), 0.14);
 }
 
 .operator-panel__feed {
   padding: 18px;
   background:
-    radial-gradient(circle at 50% 0%, rgba(125, 211, 252, 0.065), transparent 24rem),
-    rgba(3, 8, 16, 0.18);
+    radial-gradient(circle at 50% 4%, rgba(var(--operator-white-hot), 0.040), rgba(var(--operator-arc), 0.065) 7rem, transparent 24rem),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.018) 0 1px, transparent 1px 88px),
+    linear-gradient(180deg, rgba(3, 13, 22, 0.40), rgba(1, 5, 11, 0.32));
+}
+
+.operator-panel__feed::before {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.28), transparent 6rem) top left / 11rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.30)) top right / 11rem 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.22), transparent 7rem) top right / 1px 9rem no-repeat;
+  opacity: 0.54;
+}
+
+.operator-panel__feed > * {
+  position: relative;
+  z-index: 1;
 }
 
 .operator-section + .operator-section {
@@ -4599,10 +4929,12 @@ body.h-harness-top-collapsed .pc-header {
 .operator-empty-side,
 .operator-stream,
 .operator-budget-card {
-  border: 1px solid rgba(125, 211, 252, 0.16);
+  border: 1px solid rgba(var(--operator-arc), 0.18);
   border-radius: 14px;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.075), rgba(255, 255, 255, 0.018));
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+  background:
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.075), transparent 24% 76%, rgba(var(--operator-arc), 0.070)),
+    linear-gradient(180deg, rgba(125, 211, 252, 0.060), rgba(255, 255, 255, 0.018));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.052), 0 0 0 1px rgba(var(--operator-gold), 0.030);
 }
 
 .operator-callout {
@@ -4708,12 +5040,26 @@ body.h-harness-top-collapsed .pc-header {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid rgba(125, 211, 252, 0.18);
+  border: 1px solid rgba(var(--operator-arc), 0.19);
   border-radius: 16px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.044), rgba(255, 255, 255, 0.012)),
-    rgba(9, 16, 28, 0.86);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 12px 28px rgba(0,0,0,0.16);
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.055), transparent 18% 82%, rgba(var(--operator-arc), 0.055)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.048), rgba(255, 255, 255, 0.012)),
+    rgba(8, 15, 27, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 12px 28px rgba(0,0,0,0.18), 0 0 0 1px rgba(var(--operator-arc), 0.020);
+}
+
+.operator-entry::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.42), transparent 72px) top left / 118px 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.34)) top right / 118px 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-gold), 0.26), transparent 64px) top left / 1px 92px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.22), transparent 64px) top right / 1px 92px no-repeat;
+  opacity: 0.70;
 }
 
 .operator-entry:focus-visible {
@@ -4722,20 +5068,21 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-entry--pending {
-  border-color: rgba(250, 204, 21, 0.30);
+  border-color: rgba(var(--operator-gold), 0.40);
 }
 
 .operator-entry--dispatched {
-  border-color: rgba(125, 211, 252, 0.34);
+  border-color: rgba(var(--operator-arc), 0.38);
 }
 
 .operator-entry--failed,
 .operator-entry--rejected,
 .operator-entry--escalated {
-  border-color: rgba(248, 113, 113, 0.34);
+  border-color: rgba(255, 94, 94, 0.38);
   background:
-    linear-gradient(180deg, rgba(248, 113, 113, 0.080), rgba(255, 255, 255, 0.014)),
-    rgba(13, 16, 27, 0.88);
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.045), transparent 30%, rgba(var(--operator-armor), 0.12)),
+    linear-gradient(180deg, rgba(248, 113, 113, 0.092), rgba(255, 255, 255, 0.014)),
+    rgba(13, 16, 27, 0.90);
 }
 
 .operator-entry--dismissed,
@@ -4748,8 +5095,8 @@ body.h-harness-top-collapsed .pc-header {
   align-items: flex-start;
   justify-content: center;
   padding-top: 14px;
-  background: linear-gradient(180deg, rgba(125, 211, 252, 0.10), transparent);
-  border-right: 1px solid rgba(125, 211, 252, 0.10);
+  background: linear-gradient(180deg, rgba(var(--operator-arc), 0.12), rgba(var(--operator-gold), 0.035) 46%, transparent);
+  border-right: 1px solid rgba(var(--operator-arc), 0.12);
 }
 
 .operator-entry__rail span {
@@ -4757,12 +5104,13 @@ body.h-harness-top-collapsed .pc-header {
   height: 20px;
   display: grid;
   place-items: center;
-  color: color-mix(in oklab, var(--accent-cool), white 18%);
+  color: color-mix(in oklab, var(--accent-cool), white 22%);
   font-size: 10px;
   font-weight: 900;
-  border: 1px solid rgba(125, 211, 252, 0.32);
+  border: 1px solid rgba(var(--operator-arc), 0.38);
   border-radius: 999px;
-  background: rgba(5, 12, 22, 0.72);
+  background: radial-gradient(circle at 50% 35%, rgba(var(--operator-white-hot), 0.13), rgba(5, 12, 22, 0.76) 58%);
+  box-shadow: 0 0 12px rgba(var(--operator-arc), 0.10), inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
 .operator-entry__content {
@@ -4800,37 +5148,37 @@ body.h-harness-top-collapsed .pc-header {
   line-height: 1;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  border: 1px solid rgba(125, 211, 252, 0.14);
+  border: 1px solid rgba(var(--operator-arc), 0.15);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.036);
+  background: rgba(255, 255, 255, 0.038);
 }
 
 .operator-kind {
-  color: color-mix(in oklab, var(--accent-cool), white 15%);
-  border-color: rgba(125, 211, 252, 0.24);
+  color: color-mix(in oklab, var(--accent-cool), white 18%);
+  border-color: rgba(var(--operator-arc), 0.28);
 }
 
 .operator-tier--high,
 .operator-life--failed,
 .operator-life--rejected,
 .operator-life--escalated {
-  color: color-mix(in oklab, var(--bad), white 16%);
-  border-color: rgba(248, 113, 113, 0.28);
-  background: rgba(248, 113, 113, 0.080);
+  color: color-mix(in oklab, var(--bad), white 18%);
+  border-color: rgba(248, 113, 113, 0.34);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.060), rgba(248, 113, 113, 0.095));
 }
 
 .operator-tier--medium,
 .operator-life--pending {
-  color: color-mix(in oklab, var(--warn), white 12%);
-  border-color: rgba(250, 204, 21, 0.26);
-  background: rgba(250, 204, 21, 0.075);
+  color: color-mix(in oklab, var(--warn), white 14%);
+  border-color: rgba(var(--operator-gold), 0.32);
+  background: rgba(var(--operator-gold), 0.090);
 }
 
 .operator-tier--low,
 .operator-life--consumed {
-  color: color-mix(in oklab, var(--good), white 12%);
-  border-color: rgba(45, 212, 191, 0.26);
-  background: rgba(45, 212, 191, 0.075);
+  color: color-mix(in oklab, var(--good), white 14%);
+  border-color: rgba(45, 212, 191, 0.30);
+  background: rgba(45, 212, 191, 0.080);
 }
 
 .operator-entry__title-row {
@@ -4906,7 +5254,9 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 12px;
   font-weight: 720;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.040);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.060), transparent 70%, rgba(var(--operator-arc), 0.060)),
+    rgba(255, 255, 255, 0.040);
 }
 
 .operator-entry__state {
@@ -4943,9 +5293,9 @@ body.h-harness-top-collapsed .pc-header {
   gap: 9px;
   padding: 10px;
   color: color-mix(in oklab, var(--fg-dim), white 14%);
-  border: 1px solid rgba(125, 211, 252, 0.13);
+  border: 1px solid rgba(var(--operator-arc), 0.15);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.028);
+  background: linear-gradient(135deg, rgba(var(--operator-gold), 0.035), transparent 40%, rgba(var(--operator-arc), 0.040)), rgba(255, 255, 255, 0.028);
 }
 
 .operator-activity-dot {
@@ -4954,7 +5304,7 @@ body.h-harness-top-collapsed .pc-header {
   margin-top: 4px;
   border-radius: 999px;
   background: var(--accent-cool);
-  box-shadow: 0 0 12px rgba(125, 211, 252, 0.36);
+  box-shadow: 0 0 12px rgba(var(--operator-arc), 0.42), 0 0 6px rgba(var(--operator-gold), 0.13);
 }
 
 .operator-activity-item strong {
@@ -4977,8 +5327,13 @@ body.h-harness-top-collapsed .pc-header {
   padding: 8px 18px;
   color: var(--fg-faint);
   font-size: 11px;
-  border-top: 1px solid rgba(125, 211, 252, 0.14);
-  background: rgba(5, 12, 22, 0.70);
+  border: 1px solid rgba(var(--operator-arc), 0.15);
+  border-top-color: rgba(var(--operator-gold), 0.10);
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 14px), calc(100% - 14px) 100%, 14px 100%, 0 calc(100% - 14px));
+  background:
+    linear-gradient(90deg, transparent 6%, rgba(var(--operator-gold), 0.30) 6% 15%, transparent 15% 42%, rgba(var(--operator-arc), 0.30) 42% 58%, transparent 58% 85%, rgba(var(--operator-gold), 0.30) 85% 94%, transparent 94%) bottom 4px left / 100% 1px no-repeat,
+    linear-gradient(180deg, rgba(5, 17, 28, 0.92), rgba(var(--operator-armor-dark), 0.44) 56%, rgba(1, 7, 14, 0.96));
+  box-shadow: inset 0 1px 0 rgba(232, 250, 255, 0.055), 0 -10px 24px rgba(var(--operator-arc), 0.026);
 }
 
 .operator-budget-overlay {
@@ -5015,7 +5370,7 @@ body.h-harness-top-collapsed .pc-header {
   text-align: left;
   color: #f8fcff;
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.045);
+  background: linear-gradient(135deg, rgba(var(--operator-gold), 0.045), transparent 58%, rgba(var(--operator-arc), 0.050)), rgba(255, 255, 255, 0.045);
 }
 
 .operator-budget-option:disabled {
@@ -5069,8 +5424,11 @@ body.h-harness-top-collapsed .pc-header {
 
 @media (max-width: 760px) {
   .operator-panel {
+    --operator-cut: 32px;
+    --operator-frame: 22px;
+    --operator-inner-cut: 18px;
     inset: 58px 10px 10px;
-    border-radius: 14px;
+    padding: 22px 14px 14px;
   }
 
   .operator-panel__body {
@@ -5095,7 +5453,42 @@ body.h-harness-top-collapsed .pc-header {
   justify-items: start;
   gap: 1px;
   padding: 6px 12px;
-  border-radius: 14px;
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(var(--operator-arc), 0.18);
+  border-radius: 0;
+  clip-path: polygon(11px 0, calc(100% - 11px) 0, 100% 11px, 100% calc(100% - 11px), calc(100% - 11px) 100%, 11px 100%, 0 calc(100% - 11px), 0 11px);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.12), transparent 22% 78%, rgba(var(--operator-arc), 0.090)),
+    linear-gradient(180deg, rgba(30, 48, 65, 0.76), rgba(var(--operator-armor-dark), 0.34) 56%, rgba(4, 12, 22, 0.93));
+  box-shadow:
+    inset 0 1px 0 rgba(248, 253, 255, 0.095),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.15),
+    0 0 14px rgba(var(--operator-arc), 0.045),
+    0 0 0 1px rgba(var(--operator-gold), 0.025);
+}
+.operator-panel__metrics span::before,
+.operator-panel__metrics span::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.operator-panel__metrics span::before {
+  top: 6px;
+  right: 8px;
+  width: 18px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(var(--operator-white-hot), 0.74), rgba(var(--operator-gold), 0.64));
+}
+
+.operator-panel__metrics span::after {
+  right: 8px;
+  bottom: 7px;
+  width: 5px;
+  height: 5px;
+  border-right: 1px solid rgba(var(--operator-gold), 0.48);
+  border-bottom: 1px solid rgba(var(--operator-arc), 0.44);
 }
 
 .operator-panel__metrics strong {
@@ -5129,24 +5522,24 @@ body.h-harness-top-collapsed .pc-header {
   color: color-mix(in oklab, var(--fg-dim), white 18%);
   font: inherit;
   font-size: 11px;
-  border: 1px solid rgba(125, 211, 252, 0.15);
+  border: 1px solid rgba(var(--operator-arc), 0.17);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.035);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.040), rgba(255, 255, 255, 0.035), rgba(var(--operator-arc), 0.040));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.046);
   cursor: pointer;
 }
 
 .operator-feed-pills button:hover,
 .operator-feed-pills button:focus-visible {
-  border-color: rgba(125, 211, 252, 0.34);
-  background: rgba(125, 211, 252, 0.075);
+  border-color: rgba(var(--operator-arc), 0.38);
+  background: rgba(var(--operator-arc), 0.082);
   outline: none;
 }
 
 .operator-feed-pills button.is-active {
   color: #f8fcff;
-  border-color: rgba(125, 211, 252, 0.40);
-  background: rgba(125, 211, 252, 0.13);
+  border-color: rgba(var(--operator-gold), 0.42);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.12), rgba(var(--operator-arc), 0.13));
 }
 
 .operator-feed-pills button strong {
@@ -5170,7 +5563,7 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-stream--error {
   border-color: rgba(248, 113, 113, 0.32);
-  background: linear-gradient(180deg, rgba(248, 113, 113, 0.10), rgba(255, 255, 255, 0.018));
+  background: linear-gradient(180deg, rgba(var(--operator-armor), 0.12), rgba(var(--operator-gold), 0.026), rgba(255, 255, 255, 0.018));
 }
 
 .operator-stream-error {
@@ -5225,17 +5618,17 @@ body.h-harness-top-collapsed .pc-header {
 .operator-life--failed,
 .operator-life--rejected,
 .operator-life--escalated {
-  color: color-mix(in oklab, var(--bad), white 24%);
-  border-color: rgba(248, 113, 113, 0.58);
-  background: rgba(248, 113, 113, 0.24);
+  color: color-mix(in oklab, var(--bad), white 26%);
+  border-color: rgba(248, 113, 113, 0.60);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.10), rgba(248, 113, 113, 0.25));
 }
 
 .operator-tier--medium,
 .operator-life--pending,
 .operator-life--auto {
-  color: color-mix(in oklab, var(--warn), white 18%);
-  border-color: rgba(250, 204, 21, 0.52);
-  background: rgba(250, 204, 21, 0.22);
+  color: color-mix(in oklab, var(--warn), white 20%);
+  border-color: rgba(var(--operator-gold), 0.56);
+  background: rgba(var(--operator-gold), 0.22);
 }
 
 .operator-tier--low,
@@ -5251,14 +5644,15 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-entry--tier-high {
-  border-color: rgba(248, 113, 113, 0.42);
+  border-color: rgba(248, 113, 113, 0.46);
 }
 
 .operator-entry--action {
-  border-color: rgba(125, 211, 252, 0.22);
+  border-color: rgba(var(--operator-arc), 0.25);
   background:
-    linear-gradient(180deg, rgba(125, 211, 252, 0.062), rgba(255, 255, 255, 0.012)),
-    rgba(9, 16, 28, 0.84);
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.036), transparent 32%, rgba(var(--operator-arc), 0.070)),
+    linear-gradient(180deg, rgba(125, 211, 252, 0.066), rgba(255, 255, 255, 0.012)),
+    rgba(9, 16, 28, 0.85);
 }
 
 .operator-entry--action .operator-entry__rail span {
@@ -5275,14 +5669,14 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-mini-btn--danger {
   color: #fff7f7;
-  border-color: rgba(248, 113, 113, 0.52);
-  background: rgba(248, 113, 113, 0.20);
+  border-color: rgba(248, 113, 113, 0.54);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.070), rgba(248, 113, 113, 0.22));
 }
 
 .operator-mini-btn--auto {
-  color: color-mix(in oklab, var(--warn), white 18%);
-  border-color: rgba(250, 204, 21, 0.46);
-  background: rgba(250, 204, 21, 0.14);
+  color: color-mix(in oklab, var(--warn), white 20%);
+  border-color: rgba(var(--operator-gold), 0.48);
+  background: rgba(var(--operator-gold), 0.15);
 }
 
 .operator-confirm-strip {
@@ -5410,8 +5804,8 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-entry--tier-high {
-  border-color: rgba(248, 113, 113, 0.52);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 14px 32px rgba(0,0,0,0.18), 0 0 0 1px rgba(248, 113, 113, 0.10);
+  border-color: rgba(248, 113, 113, 0.54);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 14px 32px rgba(0,0,0,0.19), 0 0 0 1px rgba(248, 113, 113, 0.12), 0 0 18px rgba(var(--operator-gold), 0.045);
 }
 
 .operator-entry--tier-high::before {
@@ -5421,17 +5815,17 @@ body.h-harness-top-collapsed .pc-header {
   left: 34px;
   right: 0;
   height: 2px;
-  background: linear-gradient(90deg, rgba(248, 113, 113, 0.85), rgba(248, 113, 113, 0.14));
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.70), rgba(248, 113, 113, 0.82) 28%, rgba(248, 113, 113, 0.14));
 }
 
 .operator-entry--tier-high .operator-entry__rail {
-  background: linear-gradient(180deg, rgba(248, 113, 113, 0.18), transparent);
-  border-right-color: rgba(248, 113, 113, 0.18);
+  background: linear-gradient(180deg, rgba(var(--operator-gold), 0.080), rgba(248, 113, 113, 0.18), transparent);
+  border-right-color: rgba(248, 113, 113, 0.20);
 }
 
 .operator-entry--tier-high .operator-entry__rail span,
 .operator-entry--tier-high .operator-entry__title-row h4 {
-  color: color-mix(in oklab, var(--bad), white 28%);
+  color: color-mix(in oklab, var(--bad), white 30%);
 }
 
 .operator-mini-btn,
@@ -6148,12 +6542,12 @@ body.h-harness-top-collapsed .pc-header {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: color-mix(in oklab, var(--accent-cool), white 14%);
+  color: color-mix(in oklab, var(--accent-cool), white 16%);
   font-size: 13px;
   line-height: 1;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.035);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  background: radial-gradient(circle at 50% 35%, rgba(var(--operator-white-hot), 0.10), rgba(255, 255, 255, 0.035) 56%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), 0 0 10px rgba(var(--operator-arc), 0.055);
 }
 
 .operator-entry__type-glyph--navigate {
@@ -6162,7 +6556,7 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-entry__type-glyph--inform {
   color: color-mix(in oklab, var(--fg-dim), white 10%);
-  background: rgba(255, 255, 255, 0.02);
+  background: rgba(255, 255, 255, 0.022);
 }
 
 .operator-entry__footer {
@@ -6176,38 +6570,39 @@ body.h-harness-top-collapsed .pc-header {
 
 .operator-mini-btn--ghost {
   color: color-mix(in oklab, var(--fg-dim), white 18%);
-  border-color: rgba(148, 163, 184, 0.22);
-  background: rgba(255, 255, 255, 0.025);
+  border-color: rgba(var(--operator-gold), 0.22);
+  background: rgba(255, 255, 255, 0.026);
 }
 
 .operator-mini-btn--ghost:hover,
 .operator-mini-btn--ghost:focus-visible {
   color: #f4fdff;
-  border-color: rgba(125, 211, 252, 0.28);
-  background: rgba(125, 211, 252, 0.055);
+  border-color: rgba(var(--operator-arc), 0.30);
+  background: rgba(var(--operator-arc), 0.060);
 }
 
 .operator-entry--inform-card {
-  border-color: rgba(148, 163, 184, 0.14);
+  border-color: rgba(148, 163, 184, 0.15);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.024), rgba(255, 255, 255, 0.010)),
-    rgba(9, 16, 28, 0.72);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.040), 0 8px 18px rgba(0,0,0,0.12);
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.026), transparent 36%, rgba(var(--operator-arc), 0.030)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), rgba(255, 255, 255, 0.010)),
+    rgba(9, 16, 28, 0.74);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.042), 0 8px 18px rgba(0,0,0,0.12);
 }
 
 .operator-entry--inform-card .operator-entry__rail {
-  background: linear-gradient(180deg, rgba(148, 163, 184, 0.08), transparent);
-  border-right-color: rgba(148, 163, 184, 0.10);
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0.08), rgba(var(--operator-gold), 0.030), transparent);
+  border-right-color: rgba(148, 163, 184, 0.11);
 }
 
 .operator-entry--inform-card .operator-entry__title-row h4 {
   font-size: 14px;
   font-weight: 690;
-  color: color-mix(in oklab, var(--fg-dim), white 10%);
+  color: color-mix(in oklab, var(--fg-dim), white 11%);
 }
 
 .operator-entry--inform-card .operator-entry__why {
-  color: color-mix(in oklab, var(--fg-dim), white 4%);
+  color: color-mix(in oklab, var(--fg-dim), white 5%);
 }
 
 .operator-panel__body.has-empty-activity {
@@ -6305,4 +6700,3583 @@ body.h-harness-top-collapsed .pc-header {
   color: rgba(148, 163, 184, 0.68);
   font-size: 18px;
   line-height: 0.7;
+}
+
+/* Operator panel cinematic HUD pass: legal inspiration from public FUI/JARVIS patterns. */
+.operator-panel {
+  background:
+    radial-gradient(ellipse at 50% 2%, rgba(var(--operator-white-hot), 0.14), rgba(var(--operator-arc), 0.20) 4rem, transparent 30rem),
+    radial-gradient(circle at 50% 48%, rgba(var(--operator-white-hot), 0.10), rgba(var(--operator-arc), 0.090) 7rem, transparent 24rem),
+    conic-gradient(from 0.125turn at 50% 44%, transparent 0 11%, rgba(var(--operator-arc), 0.070) 12% 15%, transparent 16% 47%, rgba(var(--operator-gold), 0.060) 49% 51%, transparent 52% 100%),
+    radial-gradient(ellipse at 10% 11%, rgba(var(--operator-armor), 0.22), transparent 18rem),
+    radial-gradient(ellipse at 90% 12%, rgba(var(--operator-armor), 0.20), transparent 18rem),
+    linear-gradient(110deg, rgba(var(--operator-gold), 0.035), transparent 18% 82%, rgba(var(--operator-arc), 0.050)),
+    linear-gradient(180deg, rgba(5, 16, 27, 0.992), rgba(var(--operator-armor-dark), 0.95) 58%, rgba(1, 5, 11, 0.992));
+  box-shadow:
+    0 0 0 100vmax rgba(2, 7, 14, 0.50),
+    0 64px 176px rgba(0, 0, 0, 0.88),
+    0 0 0 1px rgba(var(--operator-arc), 0.22),
+    0 0 88px rgba(var(--operator-arc), 0.17),
+    0 0 36px rgba(var(--operator-gold), 0.095),
+    inset 0 0 70px rgba(var(--operator-armor), 0.090);
+}
+
+.operator-panel::before {
+  filter: drop-shadow(0 0 14px rgba(var(--operator-arc), 0.24)) drop-shadow(0 0 18px rgba(var(--operator-gold), 0.08));
+}
+
+.operator-panel::after {
+  box-shadow:
+    0 0 22px rgba(var(--operator-arc), 0.18),
+    inset 0 0 0 1px rgba(var(--operator-arc), 0.20),
+    inset 0 0 18px rgba(var(--operator-gold), 0.045);
+}
+
+.operator-panel__header::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  inset: 8px 31% 8px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(var(--operator-white-hot), 0.28) 0 2px, rgba(var(--operator-arc), 0.22) 3px 24px, transparent 25px),
+    radial-gradient(circle at 50% 50%, transparent 0 42px, rgba(var(--operator-arc), 0.24) 43px 44px, transparent 45px 63px, rgba(var(--operator-gold), 0.16) 64px 65px, transparent 66px),
+    repeating-conic-gradient(from 0.05turn at 50% 50%, transparent 0deg 16deg, rgba(var(--operator-arc), 0.18) 16deg 18deg, transparent 18deg 42deg, rgba(var(--operator-gold), 0.12) 42deg 43deg, transparent 43deg 72deg);
+  opacity: 0.55;
+  mask-image: radial-gradient(circle at 50% 50%, #000 0 7rem, transparent 10rem);
+}
+
+.operator-panel__body {
+  background:
+    radial-gradient(circle at 50% 38%, rgba(var(--operator-white-hot), 0.065), rgba(var(--operator-arc), 0.085) 7rem, transparent 23rem),
+    conic-gradient(from 0.13turn at 50% 40%, transparent 0 13%, rgba(var(--operator-arc), 0.050) 14% 16%, transparent 17% 45%, rgba(var(--operator-gold), 0.040) 46% 47%, transparent 48% 100%),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.024) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(180deg, rgba(var(--operator-gold), 0.018) 0 1px, transparent 1px 52px),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.10), transparent 17% 83%, rgba(var(--operator-armor), 0.09)),
+    linear-gradient(180deg, rgba(2, 14, 25, 0.88), rgba(1, 6, 13, 0.94));
+}
+
+.operator-panel__body::before {
+  opacity: 0.64;
+  animation: operator-reactor-orbit 18s linear infinite;
+}
+
+.operator-panel__body::after {
+  opacity: 0.48;
+  background:
+    repeating-linear-gradient(180deg, transparent 0 3px, rgba(var(--operator-arc), 0.030) 3px 4px),
+    linear-gradient(180deg, transparent 0 41%, rgba(var(--operator-white-hot), 0.10) 41% calc(41% + 1px), rgba(var(--operator-arc), 0.080) calc(41% + 1px) calc(41% + 2px), transparent calc(41% + 2px)),
+    linear-gradient(90deg, transparent 0 13%, rgba(var(--operator-gold), 0.10) 13% calc(13% + 1px), transparent calc(13% + 1px) 88%, rgba(var(--operator-arc), 0.12) 88% calc(88% + 1px), transparent calc(88% + 1px));
+  animation: operator-scanline-drift 9s linear infinite;
+}
+
+.operator-panel__rail,
+.operator-panel__feed {
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--operator-white-hot), 0.020),
+    inset 0 0 28px rgba(var(--operator-arc), 0.026),
+    inset 0 0 34px rgba(0, 0, 0, 0.18);
+}
+
+.operator-panel__rail::before {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.36), transparent 5rem) top left / 8rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.34)) bottom right / 8rem 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.22), transparent 6rem) top left / 1px 8rem no-repeat,
+    repeating-linear-gradient(180deg, rgba(var(--operator-arc), 0.022) 0 1px, transparent 1px 18px);
+  opacity: 0.56;
+}
+
+.operator-panel__rail > * {
+  position: relative;
+  z-index: 1;
+}
+
+.operator-panel__feed {
+  background:
+    radial-gradient(circle at 50% 10%, rgba(var(--operator-white-hot), 0.055), rgba(var(--operator-arc), 0.075) 7rem, transparent 25rem),
+    repeating-conic-gradient(from 0.07turn at 50% 16%, transparent 0deg 18deg, rgba(var(--operator-arc), 0.060) 18deg 19deg, transparent 19deg 44deg),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.020) 0 1px, transparent 1px 76px),
+    linear-gradient(180deg, rgba(3, 13, 22, 0.44), rgba(1, 5, 11, 0.34));
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(var(--operator-arc), 0.24);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.12), transparent 18% 82%, rgba(var(--operator-arc), 0.10)),
+    linear-gradient(180deg, rgba(12, 30, 44, 0.58), rgba(2, 9, 17, 0.62));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.070),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.10),
+    0 0 0 1px rgba(var(--operator-gold), 0.040),
+    0 12px 28px rgba(0, 0, 0, 0.18);
+}
+
+.operator-callout::before,
+.operator-stream::before,
+.operator-budget-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.48), transparent 5.5rem) top left / 8rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.38)) top right / 8rem 1px no-repeat,
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(var(--operator-arc), 0.025) 5px 6px);
+  opacity: 0.68;
+}
+
+.operator-panel__metrics span {
+  border-color: rgba(var(--operator-arc), 0.25);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.085), transparent 62%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.16), transparent 22% 78%, rgba(var(--operator-arc), 0.13)),
+    linear-gradient(180deg, rgba(34, 54, 72, 0.84), rgba(var(--operator-armor-dark), 0.42) 56%, rgba(4, 12, 22, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.14),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.20),
+    0 0 18px rgba(var(--operator-arc), 0.075),
+    0 0 0 1px rgba(var(--operator-gold), 0.040);
+}
+
+.operator-panel__metrics strong {
+  color: #ffffff;
+  text-shadow: 0 0 14px rgba(var(--operator-arc), 0.36), 0 0 20px rgba(var(--operator-gold), 0.10);
+}
+
+.operator-btn,
+.operator-mini-btn,
+.operator-budget-option {
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.10),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.14),
+    0 0 0 1px rgba(var(--operator-gold), 0.030);
+}
+
+.operator-btn--primary,
+.operator-mini-btn--primary {
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.88), transparent 58%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.58), transparent 20% 80%, rgba(var(--operator-gold), 0.38)),
+    linear-gradient(180deg, rgba(244, 255, 255, 0.98), rgba(var(--operator-arc), 0.92) 46%, rgba(18, 172, 228, 0.94));
+  box-shadow:
+    0 0 28px rgba(var(--operator-arc), 0.32),
+    0 0 14px rgba(var(--operator-gold), 0.22),
+    inset 0 1px 0 rgba(255,255,255,0.72),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.34);
+}
+
+.operator-feed-pills button {
+  border-color: rgba(var(--operator-arc), 0.22);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.060), rgba(255, 255, 255, 0.040), rgba(var(--operator-arc), 0.060)),
+    rgba(2, 9, 17, 0.50);
+}
+
+.operator-feed-pills button.is-active {
+  border-color: rgba(var(--operator-gold), 0.54);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.10), transparent 70%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.18), rgba(var(--operator-arc), 0.16));
+  box-shadow: 0 0 18px rgba(var(--operator-arc), 0.10), inset 0 1px 0 rgba(var(--operator-white-hot), 0.080);
+}
+
+.operator-entry {
+  border-color: rgba(var(--operator-arc), 0.26);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(var(--operator-white-hot), 0.040), transparent 48%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.080), transparent 18% 78%, rgba(var(--operator-arc), 0.080)),
+    linear-gradient(180deg, rgba(14, 25, 39, 0.92), rgba(6, 11, 22, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.080),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.10),
+    0 16px 34px rgba(0,0,0,0.24),
+    0 0 0 1px rgba(var(--operator-gold), 0.035);
+  backdrop-filter: blur(8px) saturate(125%);
+  -webkit-backdrop-filter: blur(8px) saturate(125%);
+}
+
+.operator-entry::after {
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.60), transparent 7.5rem) top left / 12rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.48)) top right / 12rem 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-gold), 0.34), transparent 6rem) top left / 1px 8rem no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.30), transparent 6rem) top right / 1px 8rem no-repeat,
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(var(--operator-arc), 0.020) 5px 6px);
+  opacity: 0.82;
+}
+
+.operator-entry__rail {
+  background:
+    radial-gradient(circle at 50% 24px, rgba(var(--operator-white-hot), 0.070), rgba(var(--operator-arc), 0.16) 0 22px, transparent 46px),
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.15), rgba(var(--operator-gold), 0.045) 46%, transparent);
+  border-right-color: rgba(var(--operator-arc), 0.18);
+}
+
+.operator-entry__rail span,
+.operator-entry__type-glyph {
+  box-shadow:
+    0 0 14px rgba(var(--operator-arc), 0.16),
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.12),
+    inset 0 0 12px rgba(var(--operator-arc), 0.080);
+}
+
+.operator-entry__title-row h4 {
+  text-shadow: 0 0 18px rgba(var(--operator-arc), 0.13);
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(255, 100, 84, 0.62);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(255, 255, 255, 0.040), transparent 50%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.11), transparent 24%, rgba(var(--operator-armor), 0.18)),
+    linear-gradient(180deg, rgba(47, 18, 27, 0.92), rgba(12, 10, 20, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.080),
+    0 16px 34px rgba(0,0,0,0.25),
+    0 0 0 1px rgba(248, 113, 113, 0.18),
+    0 0 24px rgba(var(--operator-gold), 0.060);
+}
+
+.operator-entry--action {
+  border-color: rgba(var(--operator-arc), 0.34);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(var(--operator-white-hot), 0.045), transparent 48%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.055), transparent 32%, rgba(var(--operator-arc), 0.090)),
+    linear-gradient(180deg, rgba(10, 28, 41, 0.90), rgba(6, 12, 23, 0.94));
+}
+
+.operator-kind,
+.operator-tier,
+.operator-life,
+.operator-target,
+.operator-entry__action-kind,
+.operator-entry__flags span {
+  border-color: rgba(var(--operator-arc), 0.20);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.050), rgba(255, 255, 255, 0.038), rgba(var(--operator-arc), 0.050));
+  box-shadow: inset 0 1px 0 rgba(var(--operator-white-hot), 0.040);
+}
+
+.operator-panel__footer {
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.065),
+    0 -12px 28px rgba(var(--operator-arc), 0.040),
+    0 -1px 0 rgba(var(--operator-gold), 0.080);
+}
+
+.operator-panel__header {
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.15),
+    inset 0 -18px 34px rgba(0, 0, 0, 0.32),
+    inset 0 -1px 0 rgba(var(--operator-gold), 0.20),
+    0 0 22px rgba(var(--operator-arc), 0.10);
+}
+
+.operator-panel__header::after {
+  inset: 4px 27% 4px;
+  opacity: 0.76;
+}
+
+.operator-panel__metrics {
+  position: relative;
+}
+
+.operator-panel__metrics::before {
+  content: "";
+  position: absolute;
+  inset: auto 12px -5px 12px;
+  height: 8px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.55) 0 2px, transparent 2px 9px),
+    linear-gradient(90deg, transparent, rgba(var(--operator-white-hot), 0.35), transparent);
+  opacity: 0.45;
+  filter: drop-shadow(0 0 7px rgba(var(--operator-arc), 0.36));
+  animation: operator-spectrum-breathe 2.8s ease-in-out infinite;
+}
+
+.operator-panel__rail::after {
+  content: "";
+  position: absolute;
+  z-index: 0;
+  right: 18px;
+  bottom: 18px;
+  width: 118px;
+  height: 118px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(var(--operator-white-hot), 0.13) 0 2px, transparent 3px 30px, rgba(var(--operator-arc), 0.32) 31px 32px, transparent 33px 48px, rgba(var(--operator-gold), 0.22) 49px 50px, transparent 51px),
+    repeating-conic-gradient(from 0.02turn at 50% 50%, transparent 0deg 18deg, rgba(var(--operator-arc), 0.24) 18deg 20deg, transparent 20deg 52deg, rgba(var(--operator-gold), 0.18) 52deg 54deg, transparent 54deg 72deg);
+  opacity: 0.34;
+  mask-image: radial-gradient(circle, #000 0 58px, transparent 61px);
+}
+
+.operator-panel__rail--right::after {
+  left: 18px;
+  right: auto;
+}
+
+.operator-panel__feed::after {
+  content: "";
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 18px;
+  z-index: 0;
+  height: 44px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.0) 0 5px, rgba(var(--operator-arc), 0.34) 5px 7px, rgba(var(--operator-white-hot), 0.18) 7px 8px, transparent 8px 16px),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.18), transparent 20% 80%, rgba(var(--operator-arc), 0.22));
+  opacity: 0.18;
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card,
+.operator-entry {
+  border-radius: 0;
+  clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% calc(100% - 14px), calc(100% - 14px) 100%, 14px 100%, 0 calc(100% - 14px), 0 14px);
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card {
+  backdrop-filter: blur(8px) saturate(125%);
+  -webkit-backdrop-filter: blur(8px) saturate(125%);
+}
+
+.operator-entry__content {
+  position: relative;
+}
+
+.operator-entry__content::before {
+  content: "";
+  position: absolute;
+  top: 9px;
+  right: 12px;
+  width: 74px;
+  height: 8px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-gold), 0.58) 0 2px, transparent 2px 7px),
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.32));
+  opacity: 0.42;
+  filter: drop-shadow(0 0 5px rgba(var(--operator-arc), 0.20));
+}
+
+.operator-entry__rail span {
+  border-radius: 0;
+  clip-path: polygon(5px 0, calc(100% - 5px) 0, 100% 5px, 100% calc(100% - 5px), calc(100% - 5px) 100%, 5px 100%, 0 calc(100% - 5px), 0 5px);
+}
+
+.operator-entry--tier-high::after,
+.operator-entry--failed::after,
+.operator-entry--rejected::after,
+.operator-entry--escalated::after {
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.72), rgba(255, 100, 84, 0.56), transparent 8rem) top left / 13rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(255, 100, 84, 0.52)) top right / 12rem 1px no-repeat,
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(255, 100, 84, 0.026) 5px 6px);
+  opacity: 0.88;
+}
+
+.operator-tier--high,
+.operator-life--failed,
+.operator-life--rejected,
+.operator-life--escalated {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.060), 0 0 10px rgba(248, 113, 113, 0.12);
+}
+
+.operator-mini-btn,
+.operator-feed-pills button,
+.operator-kind,
+.operator-tier,
+.operator-life,
+.operator-target,
+.operator-entry__action-kind,
+.operator-entry__flags span {
+  border-radius: 0;
+  clip-path: polygon(7px 0, calc(100% - 7px) 0, 100% 7px, 100% 100%, 0 100%, 0 7px);
+}
+
+@keyframes operator-spectrum-breathe {
+  0%, 100% { opacity: 0.24; transform: scaleX(0.92); }
+  50% { opacity: 0.58; transform: scaleX(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operator-panel__metrics::before {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+@keyframes operator-reactor-orbit {
+  from { transform: rotate(0deg) scale(1); }
+  to { transform: rotate(360deg) scale(1); }
+}
+
+@keyframes operator-scanline-drift {
+  from { background-position: 0 0, 0 0, 0 0; }
+  to { background-position: 0 96px, 0 0, 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operator-panel__body::before,
+  .operator-panel__body::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+/* Operator panel cockpit pass: original CSS tuned toward Vuild-style cinematic dial drama. */
+.operator-panel__header::before {
+  inset: -88px 34% auto;
+  height: 220px;
+  background:
+    radial-gradient(circle at 50% 52%, rgba(var(--operator-white-hot), 0.40) 0 2px, rgba(var(--operator-arc), 0.28) 3px 38px, transparent 39px),
+    radial-gradient(circle at 50% 52%, transparent 0 64px, rgba(var(--operator-arc), 0.28) 65px 66px, transparent 67px 92px, rgba(var(--operator-gold), 0.20) 93px 94px, transparent 95px),
+    repeating-conic-gradient(from 0.02turn at 50% 52%, transparent 0deg 18deg, rgba(var(--operator-arc), 0.18) 18deg 20deg, transparent 20deg 43deg, rgba(var(--operator-gold), 0.12) 43deg 44deg, transparent 44deg 72deg),
+    radial-gradient(circle at 50% 52%, rgba(var(--operator-arc), 0.14), transparent 12rem);
+  opacity: 0.88;
+  filter: drop-shadow(0 0 18px rgba(var(--operator-arc), 0.24)) drop-shadow(0 0 10px rgba(var(--operator-gold), 0.10));
+  animation: operator-vuild-pulse 5.8s ease-in-out infinite;
+}
+
+.operator-panel__header::after {
+  inset: -6px 22% -4px;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(var(--operator-white-hot), 0.34) 0 2px, rgba(var(--operator-arc), 0.20) 3px 26px, transparent 27px),
+    radial-gradient(circle at 50% 50%, transparent 0 54px, rgba(var(--operator-arc), 0.24) 55px 56px, transparent 57px 82px, rgba(var(--operator-gold), 0.16) 83px 84px, transparent 85px),
+    repeating-conic-gradient(from 0.03turn at 50% 50%, transparent 0deg 14deg, rgba(var(--operator-arc), 0.18) 14deg 16deg, transparent 16deg 38deg, rgba(var(--operator-gold), 0.12) 38deg 39deg, transparent 39deg 68deg);
+  opacity: 0.92;
+  mask-image: radial-gradient(circle at 50% 50%, #000 0 8rem, transparent 10.5rem);
+}
+
+.operator-panel__metrics::after {
+  content: "";
+  position: absolute;
+  left: 18%;
+  right: 18%;
+  top: -20px;
+  height: 46px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.46) 0 2px, transparent 2px 10px),
+    linear-gradient(90deg, transparent, rgba(var(--operator-white-hot), 0.34), transparent);
+  opacity: 0.26;
+  mask-image: linear-gradient(90deg, transparent, #000 15%, #000 85%, transparent);
+}
+
+.operator-panel__rail::after {
+  width: 150px;
+  height: 150px;
+  opacity: 0.52;
+  filter: drop-shadow(0 0 16px rgba(var(--operator-arc), 0.18));
+  animation: operator-vuild-sweep 22s linear infinite;
+}
+
+.operator-panel__feed::before {
+  inset: 10px;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.42), transparent 6rem) top left / 12rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.38)) top right / 12rem 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.26), transparent 8rem) top right / 1px 10rem no-repeat,
+    radial-gradient(circle at 50% 8%, rgba(var(--operator-white-hot), 0.16) 0 2px, transparent 3px 52px, rgba(var(--operator-arc), 0.14) 53px 54px, transparent 55px 80px),
+    repeating-conic-gradient(from 0.06turn at 50% 8%, transparent 0deg 18deg, rgba(var(--operator-arc), 0.12) 18deg 19deg, transparent 19deg 42deg, rgba(var(--operator-gold), 0.08) 42deg 43deg, transparent 43deg 72deg);
+  opacity: 0.72;
+}
+
+.operator-panel__feed::after {
+  left: 18px;
+  right: 18px;
+  bottom: 12px;
+  height: 58px;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.0) 0 4px, rgba(var(--operator-arc), 0.40) 4px 7px, rgba(var(--operator-white-hot), 0.22) 7px 8px, transparent 8px 15px),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.22), transparent 18% 82%, rgba(var(--operator-arc), 0.24));
+  opacity: 0.30;
+}
+
+.operator-panel__footer {
+  position: relative;
+  overflow: hidden;
+}
+
+.operator-panel__footer::before {
+  content: "";
+  position: absolute;
+  inset: 0 18px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.48) 0 2px, transparent 2px 9px) center / 100% 10px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-white-hot), 0.22), transparent) center / 100% 16px no-repeat;
+  opacity: 0.24;
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card {
+  border-color: rgba(var(--operator-arc), 0.28);
+  background:
+    radial-gradient(ellipse at 16% 0%, rgba(var(--operator-white-hot), 0.050), transparent 52%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.14), transparent 18% 82%, rgba(var(--operator-arc), 0.12)),
+    linear-gradient(180deg, rgba(15, 34, 49, 0.72), rgba(2, 9, 17, 0.72));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.090),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.12),
+    0 0 0 1px rgba(var(--operator-gold), 0.050),
+    0 18px 38px rgba(0, 0, 0, 0.22);
+}
+
+.operator-entry__content::before {
+  top: 8px;
+  right: 10px;
+  width: 96px;
+  height: 10px;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-gold), 0.62) 0 2px, transparent 2px 7px),
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.38));
+  opacity: 0.60;
+}
+
+.operator-entry__content::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.18), rgba(var(--operator-arc), 0.26) 28%, transparent 72%);
+  opacity: 0.52;
+}
+
+.operator-panel__titleline h2 {
+  letter-spacing: -0.03em;
+  text-shadow: 0 0 20px rgba(var(--operator-arc), 0.34), 0 0 34px rgba(var(--operator-gold), 0.10);
+}
+
+@keyframes operator-vuild-pulse {
+  0%, 100% { opacity: 0.72; transform: scale(0.98); }
+  50% { opacity: 0.96; transform: scale(1); }
+}
+
+@keyframes operator-vuild-sweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operator-panel__header::before,
+  .operator-panel__rail::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+/* Operator panel cockpit intensity pass: original armor/glass treatment, not copied source art. */
+.operator-panel {
+  background:
+    radial-gradient(ellipse at 50% -6%, rgba(var(--operator-white-hot), 0.22), rgba(var(--operator-arc), 0.24) 5rem, transparent 27rem),
+    radial-gradient(circle at 50% 42%, rgba(var(--operator-white-hot), 0.13), rgba(var(--operator-arc), 0.12) 7rem, transparent 23rem),
+    radial-gradient(circle at 12% 82%, rgba(var(--operator-gold), 0.10), transparent 13rem),
+    radial-gradient(circle at 88% 82%, rgba(var(--operator-arc), 0.12), transparent 14rem),
+    conic-gradient(from 0.125turn at 50% 44%, transparent 0 9%, rgba(var(--operator-arc), 0.11) 10% 12%, transparent 13% 45%, rgba(var(--operator-gold), 0.075) 47% 52%, transparent 53% 100%),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.20), transparent 15% 85%, rgba(var(--operator-armor), 0.18)),
+    linear-gradient(180deg, rgba(7, 22, 35, 0.995), rgba(var(--operator-armor-dark), 0.95) 58%, rgba(1, 5, 11, 0.995));
+  box-shadow:
+    0 0 0 100vmax rgba(1, 5, 11, 0.58),
+    0 72px 190px rgba(0, 0, 0, 0.92),
+    0 0 0 1px rgba(var(--operator-arc), 0.30),
+    0 0 110px rgba(var(--operator-arc), 0.22),
+    0 0 46px rgba(var(--operator-gold), 0.13),
+    inset 0 0 88px rgba(var(--operator-armor), 0.14),
+    inset 0 0 44px rgba(var(--operator-arc), 0.055);
+}
+
+.operator-panel::before {
+  opacity: 0.96;
+  background:
+    linear-gradient(90deg, transparent 5%, rgba(var(--operator-arc), 0.90) 5% 12%, rgba(var(--operator-gold), 0.70) 12% 13%, transparent 13% 34%, rgba(var(--operator-arc), 0.36) 34% 39%, transparent 39% 61%, rgba(var(--operator-arc), 0.36) 61% 66%, transparent 66% 87%, rgba(var(--operator-gold), 0.70) 87% 88%, rgba(var(--operator-arc), 0.90) 88% 95%, transparent 95%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 8%, rgba(var(--operator-gold), 0.52) 8% 19%, transparent 19% 42%, rgba(var(--operator-arc), 0.72) 42% 58%, transparent 58% 81%, rgba(var(--operator-gold), 0.52) 81% 92%, transparent 92%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-arc), 0.64) 10% 33%, transparent 33% 66%, rgba(var(--operator-gold), 0.52) 66% 90%, transparent 90%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-gold), 0.52) 10% 33%, transparent 33% 66%, rgba(var(--operator-arc), 0.64) 66% 90%, transparent 90%) right 12px center / 1px 100% no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-arc), 0.46) 0 1px, transparent 1px 6px) top 20px right 122px / 92px 8px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.36) 0 1px, transparent 1px 6px) bottom 22px left 124px / 92px 8px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.18), rgba(255,255,255,0.72) 48%, rgba(var(--operator-arc),0.24) 50%, rgba(255,255,255,0.62) 52%, rgba(var(--operator-gold), 0.16)) top 0 center / 456px 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-gold), 0.82), rgba(245, 237, 206, 0.62) 17%, rgba(var(--operator-armor), 0.62) 31%, rgba(24, 38, 56, 0.99) 39%, rgba(108, 132, 154, 0.86) 66%, rgba(var(--operator-gold), 0.50) 100%) top 0 center / 384px 36px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-armor-dark), 0.98), rgba(var(--operator-armor), 0.62) 24%, rgba(114, 137, 158, 0.78) 54%, rgba(var(--operator-gold), 0.46)) bottom 0 center / 318px 32px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.58), rgba(80, 64, 66, 0.90) 27%, rgba(18, 30, 46, 0.99) 62%, rgba(var(--operator-arc), 0.18)) left 0 center / 48px 246px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-arc), 0.18), rgba(18, 30, 46, 0.99) 38%, rgba(80, 64, 66, 0.90) 73%, rgba(var(--operator-gold), 0.58)) right 0 center / 48px 246px no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.76) 0 13%, rgba(var(--operator-armor), 0.76) 14% 35%, rgba(22, 35, 53, 0.99) 36% 70%, rgba(var(--operator-arc), 0.24) 71% 100%) top 0 left 0 / 166px 166px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-gold), 0.76) 0 13%, rgba(var(--operator-armor), 0.76) 14% 35%, rgba(22, 35, 53, 0.99) 36% 70%, rgba(var(--operator-arc), 0.24) 71% 100%) top 0 right 0 / 166px 166px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.54) 0 14%, rgba(var(--operator-armor), 0.62) 15% 35%, rgba(20, 34, 52, 0.99) 36% 70%, rgba(var(--operator-arc), 0.18) 71% 100%) bottom 0 left 0 / 166px 166px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.54) 0 14%, rgba(var(--operator-armor), 0.62) 15% 35%, rgba(20, 34, 52, 0.99) 36% 70%, rgba(var(--operator-arc), 0.18) 71% 100%) bottom 0 right 0 / 166px 166px no-repeat,
+    radial-gradient(circle at 86px 29px, rgba(var(--operator-white-hot),0.90) 0 1px, rgba(var(--operator-gold),0.84) 2px 4px, rgba(28,40,56,0.98) 5px 8px, transparent 9px),
+    radial-gradient(circle at calc(100% - 86px) 29px, rgba(var(--operator-white-hot),0.90) 0 1px, rgba(var(--operator-gold),0.84) 2px 4px, rgba(28,40,56,0.98) 5px 8px, transparent 9px),
+    repeating-linear-gradient(104deg, rgba(255,255,255,0.045) 0 1px, rgba(145,157,174,0.030) 1px 8px, rgba(var(--operator-armor),0.065) 8px 22px),
+    linear-gradient(135deg, rgba(166, 188, 206, 0.82), rgba(54, 72, 94, 0.99) 18%, rgba(var(--operator-armor-dark), 0.99) 37%, rgba(196, 216, 232, 0.50) 50%, rgba(33, 50, 72, 0.99) 72%, rgba(122, 148, 172, 0.62));
+  filter: drop-shadow(0 0 16px rgba(var(--operator-cyan), 0.22)) drop-shadow(0 0 16px rgba(var(--operator-gold), 0.10));
+}
+
+.operator-panel::after {
+  background:
+    linear-gradient(90deg, transparent 5%, rgba(var(--operator-arc), 0.72) 5% 15%, transparent 15% 38%, rgba(var(--operator-white-hot), 0.58) 40% 50%, rgba(var(--operator-gold), 0.48) 50% 60%, transparent 62% 85%, rgba(var(--operator-arc), 0.72) 85% 95%, transparent 95%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 8%, rgba(var(--operator-gold), 0.40) 8% 19%, transparent 19% 43%, rgba(var(--operator-arc), 0.52) 43% 57%, transparent 57% 81%, rgba(var(--operator-gold), 0.40) 81% 92%, transparent 92%) bottom 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-arc), 0.46) 10% 30%, transparent 30% 70%, rgba(var(--operator-gold), 0.40) 70% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-gold), 0.40) 10% 30%, transparent 30% 70%, rgba(var(--operator-arc), 0.46) 70% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.52), rgba(42, 58, 80, 0.92) 45%, rgba(var(--operator-armor), 0.26)) top left / 58px 58px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-gold), 0.52), rgba(42, 58, 80, 0.92) 45%, rgba(var(--operator-armor), 0.26)) top right / 58px 58px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.36), rgba(38, 54, 76, 0.92) 48%, rgba(var(--operator-armor), 0.22)) bottom left / 58px 58px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.36), rgba(38, 54, 76, 0.92) 48%, rgba(var(--operator-armor), 0.22)) bottom right / 58px 58px no-repeat,
+    linear-gradient(180deg, rgba(151,170,189,0.20), rgba(12,24,39,0.88));
+  box-shadow:
+    0 0 24px rgba(var(--operator-cyan), 0.20),
+    inset 0 0 0 1px rgba(var(--operator-cyan), 0.22),
+    inset 0 0 20px rgba(var(--operator-gold), 0.06);
+}
+
+.operator-panel__header {
+  border-color: rgba(var(--operator-arc), 0.34);
+  background:
+    radial-gradient(ellipse at 50% -54%, rgba(var(--operator-white-hot), 0.26), rgba(var(--operator-arc), 0.16) 8rem, transparent 20rem),
+    linear-gradient(90deg, transparent calc(50% - 168px), rgba(var(--operator-arc), 0.70) calc(50% - 168px) calc(50% + 168px), transparent calc(50% + 168px)) top 5px center / 336px 1px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.40) 0 1px, transparent 1px 6px) top 8px right 144px / 82px 6px no-repeat,
+    repeating-linear-gradient(45deg, rgba(var(--operator-arc), 0.36) 0 1px, transparent 1px 6px) bottom 7px left 178px / 96px 6px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.24), rgba(var(--operator-arc), 0.10) 22%, rgba(255, 255, 255, 0.032) 48%, rgba(var(--operator-gold), 0.075) 72%, rgba(var(--operator-armor), 0.18)),
+    linear-gradient(180deg, rgba(14, 35, 50, 0.96), rgba(2, 9, 17, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(248, 253, 255, 0.18),
+    inset 0 -20px 38px rgba(0, 0, 0, 0.36),
+    inset 0 -1px 0 rgba(var(--operator-gold), 0.24),
+    0 0 26px rgba(var(--operator-arc), 0.14);
+}
+
+.operator-panel__body {
+  background:
+    radial-gradient(circle at 50% 34%, rgba(var(--operator-white-hot), 0.09), rgba(var(--operator-arc), 0.11) 8rem, transparent 22rem),
+    radial-gradient(circle at 13% 88%, rgba(var(--operator-gold), 0.075), transparent 11rem),
+    radial-gradient(circle at 87% 88%, rgba(var(--operator-arc), 0.085), transparent 12rem),
+    conic-gradient(from 0.13turn at 50% 40%, transparent 0 11%, rgba(var(--operator-arc), 0.070) 12% 15%, transparent 16% 44%, rgba(var(--operator-gold), 0.055) 46% 48%, transparent 49% 100%),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.032) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(180deg, rgba(var(--operator-gold), 0.024) 0 1px, transparent 1px 52px),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.13), transparent 17% 83%, rgba(var(--operator-armor), 0.12)),
+    linear-gradient(180deg, rgba(2, 14, 25, 0.90), rgba(1, 6, 13, 0.96));
+}
+
+.operator-panel__rail {
+  background:
+    radial-gradient(circle at 72% 72%, rgba(var(--operator-white-hot), 0.070) 0 2px, rgba(var(--operator-arc), 0.080) 3px 52px, transparent 78px),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.090), transparent 22% 78%, rgba(var(--operator-arc), 0.070)),
+    linear-gradient(180deg, rgba(2, 13, 23, 0.46), rgba(1, 5, 11, 0.38));
+  box-shadow:
+    inset 0 0 0 1px rgba(var(--operator-white-hot), 0.032),
+    inset 0 0 36px rgba(var(--operator-arc), 0.044),
+    inset 0 0 42px rgba(0, 0, 0, 0.22);
+}
+
+.operator-panel__rail--right {
+  background:
+    radial-gradient(circle at 28% 72%, rgba(var(--operator-white-hot), 0.070) 0 2px, rgba(var(--operator-arc), 0.080) 3px 52px, transparent 78px),
+    linear-gradient(90deg, rgba(var(--operator-arc), 0.070), transparent 22% 78%, rgba(var(--operator-gold), 0.090)),
+    linear-gradient(180deg, rgba(2, 13, 23, 0.46), rgba(1, 5, 11, 0.38));
+}
+
+.operator-panel__feed {
+  background:
+    radial-gradient(circle at 50% 9%, rgba(var(--operator-white-hot), 0.080), rgba(var(--operator-arc), 0.095) 8rem, transparent 25rem),
+    radial-gradient(circle at 50% 108%, rgba(var(--operator-gold), 0.070), transparent 18rem),
+    repeating-conic-gradient(from 0.07turn at 50% 16%, transparent 0deg 16deg, rgba(var(--operator-arc), 0.080) 16deg 17deg, transparent 17deg 44deg),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.026) 0 1px, transparent 1px 76px),
+    linear-gradient(180deg, rgba(3, 13, 22, 0.50), rgba(1, 5, 11, 0.38));
+}
+
+.operator-panel__metrics span {
+  border-color: rgba(var(--operator-arc), 0.34);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.12), transparent 62%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.22), transparent 22% 78%, rgba(var(--operator-arc), 0.18)),
+    linear-gradient(180deg, rgba(40, 61, 79, 0.90), rgba(var(--operator-armor-dark), 0.45) 56%, rgba(4, 12, 22, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.18),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.26),
+    0 0 22px rgba(var(--operator-arc), 0.11),
+    0 0 0 1px rgba(var(--operator-gold), 0.060);
+}
+
+.operator-entry {
+  border-color: rgba(var(--operator-arc), 0.32);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(var(--operator-white-hot), 0.060), transparent 48%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.10), transparent 18% 78%, rgba(var(--operator-arc), 0.11)),
+    linear-gradient(180deg, rgba(16, 28, 42, 0.94), rgba(5, 10, 21, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.11),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.14),
+    0 18px 38px rgba(0,0,0,0.28),
+    0 0 0 1px rgba(var(--operator-gold), 0.052);
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(255, 100, 84, 0.74);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(255, 255, 255, 0.055), transparent 50%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.15), transparent 24%, rgba(var(--operator-armor), 0.25)),
+    linear-gradient(180deg, rgba(60, 20, 28, 0.94), rgba(12, 9, 18, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.11),
+    0 18px 38px rgba(0,0,0,0.30),
+    0 0 0 1px rgba(248, 113, 113, 0.24),
+    0 0 28px rgba(var(--operator-gold), 0.090);
+}
+/* Operator panel border repair: remove chunky armor blocks; keep a clean HUD frame. */
+.operator-panel {
+  background:
+    radial-gradient(ellipse at 50% -4%, rgba(var(--operator-white-hot), 0.18), rgba(var(--operator-arc), 0.20) 5rem, transparent 26rem),
+    radial-gradient(circle at 50% 42%, rgba(var(--operator-white-hot), 0.12), rgba(var(--operator-arc), 0.105) 7rem, transparent 23rem),
+    conic-gradient(from 0.125turn at 50% 44%, transparent 0 9%, rgba(var(--operator-arc), 0.095) 10% 12%, transparent 13% 45%, rgba(var(--operator-gold), 0.060) 47% 52%, transparent 53% 100%),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.10), transparent 16% 84%, rgba(var(--operator-armor), 0.090)),
+    linear-gradient(180deg, rgba(6, 18, 31, 0.996), rgba(7, 15, 28, 0.970) 58%, rgba(1, 5, 11, 0.996));
+  box-shadow:
+    0 0 0 100vmax rgba(1, 5, 11, 0.58),
+    0 72px 190px rgba(0, 0, 0, 0.90),
+    0 0 0 1px rgba(var(--operator-arc), 0.26),
+    0 0 92px rgba(var(--operator-arc), 0.20),
+    0 0 32px rgba(var(--operator-gold), 0.09),
+    inset 0 0 72px rgba(var(--operator-arc), 0.050);
+}
+
+.operator-panel::before {
+  background:
+    linear-gradient(90deg, transparent 4%, rgba(var(--operator-arc), 0.82) 4% 18%, transparent 18% 38%, rgba(var(--operator-white-hot), 0.48) 44% 56%, transparent 62% 82%, rgba(var(--operator-arc), 0.82) 82% 96%, transparent 96%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 7%, rgba(var(--operator-gold), 0.38) 7% 18%, transparent 18% 42%, rgba(var(--operator-arc), 0.55) 43% 57%, transparent 58% 82%, rgba(var(--operator-gold), 0.38) 82% 93%, transparent 93%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(var(--operator-arc), 0.58) 8% 34%, transparent 34% 66%, rgba(var(--operator-gold), 0.34) 66% 92%, transparent 92%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(var(--operator-gold), 0.34) 8% 34%, transparent 34% 66%, rgba(var(--operator-arc), 0.58) 66% 92%, transparent 92%) right 12px center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-arc), 0.70) 0 1px, transparent 1px) top 18px left 44px / 112px 112px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-arc), 0.70) 0 1px, transparent 1px) top 18px right 44px / 112px 112px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.46) 0 1px, transparent 1px) bottom 18px left 44px / 112px 112px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.46) 0 1px, transparent 1px) bottom 18px right 44px / 112px 112px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-arc), 0.42) 0 1px, transparent 1px 6px) top 20px right 126px / 96px 8px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.28) 0 1px, transparent 1px 6px) bottom 22px left 126px / 96px 8px no-repeat,
+    radial-gradient(circle at 86px 29px, rgba(var(--operator-white-hot),0.76) 0 1px, rgba(var(--operator-arc),0.70) 2px 3px, transparent 5px),
+    radial-gradient(circle at calc(100% - 86px) 29px, rgba(var(--operator-white-hot),0.76) 0 1px, rgba(var(--operator-arc),0.70) 2px 3px, transparent 5px),
+    linear-gradient(180deg, rgba(13, 29, 43, 0.56), rgba(2, 8, 16, 0.08));
+  filter: drop-shadow(0 0 13px rgba(var(--operator-cyan), 0.20));
+  opacity: 0.88;
+}
+
+.operator-panel::after {
+  background:
+    linear-gradient(90deg, transparent 5%, rgba(var(--operator-arc), 0.66) 5% 17%, transparent 17% 40%, rgba(var(--operator-white-hot), 0.46) 44% 56%, transparent 60% 83%, rgba(var(--operator-arc), 0.66) 83% 95%, transparent 95%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 8%, rgba(var(--operator-gold), 0.30) 8% 20%, transparent 20% 43%, rgba(var(--operator-arc), 0.42) 44% 56%, transparent 57% 80%, rgba(var(--operator-gold), 0.30) 80% 92%, transparent 92%) bottom 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(var(--operator-arc), 0.38) 9% 31%, transparent 31% 69%, rgba(var(--operator-gold), 0.26) 69% 91%, transparent 91%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(var(--operator-gold), 0.26) 9% 31%, transparent 31% 69%, rgba(var(--operator-arc), 0.38) 69% 91%, transparent 91%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-arc), 0.42), transparent 46%) top left / 42px 42px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-arc), 0.42), transparent 46%) top right / 42px 42px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.26), transparent 48%) bottom left / 42px 42px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.26), transparent 48%) bottom right / 42px 42px no-repeat,
+    linear-gradient(180deg, rgba(142, 179, 196, 0.10), rgba(6, 16, 28, 0.26));
+  box-shadow:
+    0 0 18px rgba(var(--operator-cyan), 0.16),
+    inset 0 0 0 1px rgba(var(--operator-cyan), 0.16);
+}
+
+.operator-panel__header {
+  border-color: rgba(var(--operator-arc), 0.28);
+  box-shadow:
+    inset 0 1px 0 rgba(248, 253, 255, 0.16),
+    inset 0 -18px 34px rgba(0, 0, 0, 0.34),
+    inset 0 -1px 0 rgba(var(--operator-gold), 0.19),
+    0 0 22px rgba(var(--operator-arc), 0.11);
+}
+/* Operator panel glass HUD refinement: technique-inspired glow, blur, and linework. */
+.operator-panel {
+  background:
+    radial-gradient(ellipse at 50% -5%, rgba(var(--operator-white-hot), 0.20), rgba(var(--operator-arc), 0.22) 4.5rem, transparent 25rem),
+    radial-gradient(circle at 50% 39%, rgba(var(--operator-white-hot), 0.12), rgba(var(--operator-arc), 0.11) 7rem, transparent 22rem),
+    radial-gradient(circle at 9% 50%, rgba(var(--operator-arc), 0.045), transparent 13rem),
+    radial-gradient(circle at 91% 50%, rgba(var(--operator-arc), 0.045), transparent 13rem),
+    conic-gradient(from 0.125turn at 50% 42%, transparent 0 9%, rgba(var(--operator-arc), 0.085) 10% 12%, transparent 13% 45%, rgba(var(--operator-gold), 0.052) 47% 52%, transparent 53% 100%),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.070), transparent 18% 82%, rgba(var(--operator-armor), 0.060)),
+    linear-gradient(180deg, rgba(5, 18, 31, 0.998), rgba(5, 13, 25, 0.982) 58%, rgba(1, 5, 11, 0.998));
+  box-shadow:
+    0 0 0 100vmax rgba(1, 5, 11, 0.72),
+    0 72px 190px rgba(0, 0, 0, 0.92),
+    0 0 0 1px rgba(var(--operator-arc), 0.28),
+    0 0 86px rgba(var(--operator-arc), 0.20),
+    0 0 28px rgba(var(--operator-gold), 0.080),
+    inset 0 0 72px rgba(var(--operator-arc), 0.050);
+}
+
+.operator-panel::before {
+  background:
+    linear-gradient(90deg, transparent 4%, rgba(var(--operator-arc), 0.84) 4% 18%, transparent 18% 41%, rgba(var(--operator-white-hot), 0.54) 45% 55%, transparent 59% 82%, rgba(var(--operator-arc), 0.84) 82% 96%, transparent 96%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 7%, rgba(var(--operator-gold), 0.32) 7% 18%, transparent 18% 42%, rgba(var(--operator-arc), 0.50) 44% 56%, transparent 58% 82%, rgba(var(--operator-gold), 0.32) 82% 93%, transparent 93%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(var(--operator-arc), 0.52) 8% 34%, transparent 34% 66%, rgba(var(--operator-gold), 0.26) 66% 92%, transparent 92%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(var(--operator-gold), 0.26) 8% 34%, transparent 34% 66%, rgba(var(--operator-arc), 0.52) 66% 92%, transparent 92%) right 12px center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-arc), 0.72) 0 1px, transparent 1px) top 18px left 44px / 128px 128px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-arc), 0.72) 0 1px, transparent 1px) top 18px right 44px / 128px 128px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.40) 0 1px, transparent 1px) bottom 18px left 44px / 128px 128px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.40) 0 1px, transparent 1px) bottom 18px right 44px / 128px 128px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-arc), 0.38) 0 1px, transparent 1px 6px) top 20px right 126px / 108px 8px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.24) 0 1px, transparent 1px 6px) bottom 22px left 126px / 108px 8px no-repeat,
+    linear-gradient(180deg, rgba(13, 29, 43, 0.42), rgba(2, 8, 16, 0.05));
+  opacity: 0.80;
+  filter: drop-shadow(0 0 11px rgba(var(--operator-cyan), 0.18));
+}
+
+.operator-panel::after {
+  inset: calc(var(--operator-frame) - 4px);
+  background:
+    linear-gradient(90deg, transparent 6%, rgba(var(--operator-arc), 0.58) 6% 18%, transparent 18% 42%, rgba(var(--operator-white-hot), 0.38) 45% 55%, transparent 58% 82%, rgba(var(--operator-arc), 0.58) 82% 94%, transparent 94%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 9%, rgba(var(--operator-gold), 0.22) 9% 20%, transparent 20% 43%, rgba(var(--operator-arc), 0.34) 45% 55%, transparent 57% 80%, rgba(var(--operator-gold), 0.22) 80% 91%, transparent 91%) bottom 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-arc), 0.32) 10% 31%, transparent 31% 69%, rgba(var(--operator-gold), 0.20) 69% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-gold), 0.20) 10% 31%, transparent 31% 69%, rgba(var(--operator-arc), 0.32) 69% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-arc), 0.34), transparent 48%) top left / 38px 38px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-arc), 0.34), transparent 48%) top right / 38px 38px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.20), transparent 50%) bottom left / 38px 38px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.20), transparent 50%) bottom right / 38px 38px no-repeat,
+    linear-gradient(180deg, rgba(142, 179, 196, 0.080), rgba(6, 16, 28, 0.18));
+  box-shadow:
+    0 0 16px rgba(var(--operator-cyan), 0.14),
+    inset 0 0 0 1px rgba(var(--operator-cyan), 0.13);
+}
+
+.operator-panel__body::before {
+  opacity: 0.48;
+  filter: drop-shadow(0 0 13px rgba(var(--operator-arc), 0.14));
+}
+
+.operator-panel__body::after {
+  opacity: 0.36;
+  background:
+    repeating-linear-gradient(180deg, transparent 0 3px, rgba(var(--operator-arc), 0.024) 3px 4px),
+    linear-gradient(180deg, transparent 0 41%, rgba(var(--operator-white-hot), 0.075) 41% calc(41% + 1px), rgba(var(--operator-arc), 0.060) calc(41% + 1px) calc(41% + 2px), transparent calc(41% + 2px)),
+    linear-gradient(90deg, transparent 0 13%, rgba(var(--operator-gold), 0.070) 13% calc(13% + 1px), transparent calc(13% + 1px) 88%, rgba(var(--operator-arc), 0.085) 88% calc(88% + 1px), transparent calc(88% + 1px));
+}
+
+.operator-panel__header,
+.operator-panel__feed,
+.operator-panel__rail {
+  backdrop-filter: blur(11px) saturate(135%);
+  -webkit-backdrop-filter: blur(11px) saturate(135%);
+}
+
+.operator-panel__header {
+  background:
+    radial-gradient(ellipse at 50% -54%, rgba(var(--operator-white-hot), 0.24), rgba(var(--operator-arc), 0.15) 8rem, transparent 20rem),
+    linear-gradient(90deg, transparent calc(50% - 168px), rgba(var(--operator-arc), 0.58) calc(50% - 168px) calc(50% + 168px), transparent calc(50% + 168px)) top 5px center / 336px 1px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.32) 0 1px, transparent 1px 6px) top 8px right 144px / 82px 6px no-repeat,
+    repeating-linear-gradient(45deg, rgba(var(--operator-arc), 0.28) 0 1px, transparent 1px 6px) bottom 7px left 178px / 96px 6px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.14), rgba(var(--operator-arc), 0.085) 22%, rgba(255, 255, 255, 0.028) 48%, rgba(var(--operator-gold), 0.055) 72%, rgba(var(--operator-armor), 0.11)),
+    linear-gradient(180deg, rgba(12, 33, 48, 0.95), rgba(2, 9, 17, 0.95));
+}
+
+.operator-feed-head {
+  position: relative;
+}
+
+.operator-feed-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -10px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(var(--operator-arc), 0.52), transparent 42%, rgba(var(--operator-gold), 0.22), transparent);
+  opacity: 0.55;
+}
+
+.operator-panel__metrics::before {
+  opacity: 0.34;
+  filter: drop-shadow(0 0 6px rgba(var(--operator-arc), 0.30));
+}
+
+.operator-panel__metrics::after {
+  opacity: 0.18;
+}
+
+.operator-panel__rail::before {
+  opacity: 0.44;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.26), transparent 5rem) top left / 8rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.30)) bottom right / 8rem 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.18), transparent 6rem) top left / 1px 8rem no-repeat,
+    repeating-linear-gradient(180deg, rgba(var(--operator-arc), 0.017) 0 1px, transparent 1px 18px);
+}
+
+.operator-panel__rail::after {
+  opacity: 0.34;
+  filter: drop-shadow(0 0 12px rgba(var(--operator-arc), 0.14));
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card,
+.operator-entry {
+  border-color: rgba(var(--operator-arc), 0.28);
+  background:
+    radial-gradient(ellipse at 16% 0%, rgba(var(--operator-white-hot), 0.050), transparent 52%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.080), transparent 18% 82%, rgba(var(--operator-arc), 0.090)),
+    linear-gradient(180deg, rgba(12, 28, 42, 0.86), rgba(3, 9, 18, 0.88));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.090),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.12),
+    0 0 0 1px rgba(var(--operator-gold), 0.034),
+    0 14px 30px rgba(0, 0, 0, 0.22),
+    0 0 18px rgba(var(--operator-arc), 0.035);
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(255, 100, 84, 0.64);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(255, 255, 255, 0.050), transparent 50%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.13), transparent 24%, rgba(var(--operator-armor), 0.21)),
+    linear-gradient(180deg, rgba(52, 18, 27, 0.92), rgba(11, 9, 18, 0.95));
+}
+
+.operator-entry__content::before {
+  opacity: 0.42;
+}
+
+.operator-panel__footer::before {
+  opacity: 0.16;
+}
+/* Operator panel finish pass: copy techniques (transparent glowing glass), not source code. */
+.operator-panel {
+  background:
+    radial-gradient(ellipse at 50% -5%, rgba(var(--operator-white-hot), 0.18), rgba(var(--operator-arc), 0.20) 4.5rem, transparent 25rem),
+    radial-gradient(circle at 50% 39%, rgba(var(--operator-white-hot), 0.11), rgba(var(--operator-arc), 0.095) 7rem, transparent 22rem),
+    radial-gradient(circle at 9% 50%, rgba(var(--operator-arc), 0.040), transparent 13rem),
+    radial-gradient(circle at 91% 50%, rgba(var(--operator-arc), 0.040), transparent 13rem),
+    conic-gradient(from 0.125turn at 50% 42%, transparent 0 9%, rgba(var(--operator-arc), 0.075) 10% 12%, transparent 13% 45%, rgba(var(--operator-gold), 0.046) 47% 52%, transparent 53% 100%),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.052), transparent 18% 82%, rgba(var(--operator-armor), 0.046)),
+    linear-gradient(180deg, rgba(4, 17, 30, 0.998), rgba(4, 12, 24, 0.986) 58%, rgba(1, 5, 11, 0.998));
+  box-shadow:
+    0 0 0 100vmax rgba(1, 5, 11, 0.76),
+    0 72px 190px rgba(0, 0, 0, 0.92),
+    0 0 0 1px rgba(var(--operator-arc), 0.26),
+    0 0 80px rgba(var(--operator-arc), 0.18),
+    0 0 24px rgba(var(--operator-gold), 0.070),
+    inset 0 0 68px rgba(var(--operator-arc), 0.046);
+}
+
+.operator-panel::before {
+  background:
+    linear-gradient(90deg, transparent 4%, rgba(var(--operator-arc), 0.80) 4% 18%, transparent 18% 41%, rgba(var(--operator-white-hot), 0.48) 45% 55%, transparent 59% 82%, rgba(var(--operator-arc), 0.80) 82% 96%, transparent 96%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 7%, rgba(var(--operator-gold), 0.26) 7% 18%, transparent 18% 42%, rgba(var(--operator-arc), 0.44) 44% 56%, transparent 58% 82%, rgba(var(--operator-gold), 0.26) 82% 93%, transparent 93%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(var(--operator-arc), 0.46) 8% 34%, transparent 34% 66%, rgba(var(--operator-gold), 0.20) 66% 92%, transparent 92%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(var(--operator-gold), 0.20) 8% 34%, transparent 34% 66%, rgba(var(--operator-arc), 0.46) 66% 92%, transparent 92%) right 12px center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-arc), 0.62) 0 1px, transparent 1px) top 18px left 44px / 134px 134px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-arc), 0.62) 0 1px, transparent 1px) top 18px right 44px / 134px 134px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.32) 0 1px, transparent 1px) bottom 18px left 44px / 134px 134px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.32) 0 1px, transparent 1px) bottom 18px right 44px / 134px 134px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-arc), 0.32) 0 1px, transparent 1px 6px) top 20px right 126px / 112px 8px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.20) 0 1px, transparent 1px 6px) bottom 22px left 126px / 112px 8px no-repeat,
+    linear-gradient(180deg, rgba(13, 29, 43, 0.34), rgba(2, 8, 16, 0.035));
+  opacity: 0.74;
+}
+
+.operator-panel::after {
+  background:
+    linear-gradient(90deg, transparent 7%, rgba(var(--operator-arc), 0.54) 7% 18%, transparent 18% 42%, rgba(var(--operator-white-hot), 0.32) 45% 55%, transparent 58% 82%, rgba(var(--operator-arc), 0.54) 82% 93%, transparent 93%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 10%, rgba(var(--operator-gold), 0.18) 10% 20%, transparent 20% 43%, rgba(var(--operator-arc), 0.28) 45% 55%, transparent 57% 80%, rgba(var(--operator-gold), 0.18) 80% 90%, transparent 90%) bottom 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 11%, rgba(var(--operator-arc), 0.28) 11% 31%, transparent 31% 69%, rgba(var(--operator-gold), 0.16) 69% 89%, transparent 89%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 11%, rgba(var(--operator-gold), 0.16) 11% 31%, transparent 31% 69%, rgba(var(--operator-arc), 0.28) 69% 89%, transparent 89%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-arc), 0.28), transparent 50%) top left / 36px 36px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-arc), 0.28), transparent 50%) top right / 36px 36px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-gold), 0.15), transparent 52%) bottom left / 36px 36px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-gold), 0.15), transparent 52%) bottom right / 36px 36px no-repeat,
+    linear-gradient(180deg, rgba(142, 179, 196, 0.060), rgba(6, 16, 28, 0.14));
+}
+
+.operator-panel__header {
+  border-color: rgba(var(--operator-arc), 0.24);
+  background:
+    radial-gradient(ellipse at 50% -54%, rgba(var(--operator-white-hot), 0.22), rgba(var(--operator-arc), 0.13) 8rem, transparent 20rem),
+    linear-gradient(90deg, transparent calc(50% - 168px), rgba(var(--operator-arc), 0.52) calc(50% - 168px) calc(50% + 168px), transparent calc(50% + 168px)) top 5px center / 336px 1px no-repeat,
+    repeating-linear-gradient(135deg, rgba(var(--operator-gold), 0.26) 0 1px, transparent 1px 6px) top 8px right 144px / 82px 6px no-repeat,
+    repeating-linear-gradient(45deg, rgba(var(--operator-arc), 0.24) 0 1px, transparent 1px 6px) bottom 7px left 178px / 96px 6px no-repeat,
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.10), rgba(var(--operator-arc), 0.072) 22%, rgba(255, 255, 255, 0.024) 48%, rgba(var(--operator-gold), 0.046) 72%, rgba(var(--operator-armor), 0.075)),
+    linear-gradient(180deg, rgba(11, 31, 46, 0.94), rgba(2, 9, 17, 0.95));
+  box-shadow:
+    inset 0 1px 0 rgba(248, 253, 255, 0.14),
+    inset 0 -18px 34px rgba(0, 0, 0, 0.34),
+    inset 0 -1px 0 rgba(var(--operator-gold), 0.16),
+    0 0 19px rgba(var(--operator-arc), 0.095);
+}
+
+.operator-panel__metrics span {
+  border-color: rgba(var(--operator-arc), 0.26);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.090), transparent 62%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.14), transparent 22% 78%, rgba(var(--operator-arc), 0.13)),
+    linear-gradient(180deg, rgba(32, 51, 68, 0.84), rgba(var(--operator-armor-dark), 0.38) 56%, rgba(4, 12, 22, 0.96));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.13),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.20),
+    0 0 16px rgba(var(--operator-arc), 0.070),
+    0 0 0 1px rgba(var(--operator-gold), 0.040);
+}
+
+.operator-panel__metrics span::before {
+  width: 24px;
+  background: linear-gradient(90deg, transparent, rgba(var(--operator-white-hot), 0.64), rgba(var(--operator-arc), 0.52));
+}
+
+.operator-panel__metrics span::after {
+  border-right-color: rgba(var(--operator-arc), 0.38);
+  border-bottom-color: rgba(var(--operator-gold), 0.30);
+}
+
+.operator-feed-head::after {
+  opacity: 0.42;
+  background: linear-gradient(90deg, rgba(var(--operator-arc), 0.46), transparent 38%, rgba(var(--operator-gold), 0.18), transparent);
+}
+
+.operator-entry {
+  border-color: rgba(var(--operator-arc), 0.25);
+  background:
+    radial-gradient(ellipse at 17% 0%, rgba(var(--operator-white-hot), 0.045), transparent 52%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.058), transparent 20% 79%, rgba(var(--operator-arc), 0.070)),
+    linear-gradient(180deg, rgba(11, 24, 37, 0.86), rgba(4, 9, 18, 0.91));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.075),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.10),
+    0 14px 30px rgba(0,0,0,0.22),
+    0 0 0 1px rgba(var(--operator-gold), 0.030);
+}
+
+.operator-entry::after {
+  opacity: 0.66;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.34), transparent 7.5rem) top left / 12rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.34)) top right / 12rem 1px no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-gold), 0.18), transparent 6rem) top left / 1px 8rem no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.22), transparent 6rem) top right / 1px 8rem no-repeat,
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(var(--operator-arc), 0.014) 5px 6px);
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(255, 100, 84, 0.52);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(255, 255, 255, 0.040), transparent 50%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.10), transparent 24%, rgba(var(--operator-armor), 0.15)),
+    linear-gradient(180deg, rgba(39, 15, 24, 0.86), rgba(9, 8, 16, 0.94));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.070),
+    0 14px 30px rgba(0,0,0,0.24),
+    0 0 0 1px rgba(248, 113, 113, 0.14),
+    0 0 18px rgba(var(--operator-gold), 0.040);
+}
+
+.operator-entry--tier-high::after,
+.operator-entry--failed::after,
+.operator-entry--rejected::after,
+.operator-entry--escalated::after {
+  opacity: 0.72;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.52), rgba(255, 100, 84, 0.42), transparent 8rem) top left / 13rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(255, 100, 84, 0.36)) top right / 12rem 1px no-repeat,
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(255, 100, 84, 0.018) 5px 6px);
+}
+
+.operator-entry__rail {
+  border-right-color: rgba(var(--operator-arc), 0.14);
+  background:
+    radial-gradient(circle at 50% 24px, rgba(var(--operator-white-hot), 0.050), rgba(var(--operator-arc), 0.11) 0 22px, transparent 46px),
+    linear-gradient(180deg, rgba(var(--operator-arc), 0.10), rgba(var(--operator-gold), 0.030) 46%, transparent);
+}
+
+.operator-entry__content::before {
+  width: 86px;
+  opacity: 0.34;
+  background:
+    repeating-linear-gradient(90deg, rgba(var(--operator-gold), 0.42) 0 2px, transparent 2px 7px),
+    linear-gradient(90deg, transparent, rgba(var(--operator-arc), 0.30));
+}
+
+.operator-mini-btn,
+.operator-feed-pills button {
+  border-color: rgba(var(--operator-arc), 0.20);
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.035), rgba(255, 255, 255, 0.030), rgba(var(--operator-arc), 0.046)),
+    rgba(2, 9, 17, 0.54);
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.055),
+    0 0 10px rgba(var(--operator-arc), 0.035);
+}
+
+.operator-btn--primary,
+.operator-mini-btn--primary {
+  filter: saturate(0.95);
+}
+/* Operator panel clarity pass: closer to transparent FUI glass, less blocky alert fill. */
+.operator-panel {
+  background:
+    radial-gradient(ellipse at 50% -5%, rgba(var(--operator-white-hot), 0.17), rgba(var(--operator-arc), 0.18) 4.5rem, transparent 25rem),
+    radial-gradient(circle at 50% 39%, rgba(var(--operator-white-hot), 0.10), rgba(var(--operator-arc), 0.085) 7rem, transparent 22rem),
+    radial-gradient(circle at 9% 50%, rgba(var(--operator-arc), 0.035), transparent 13rem),
+    radial-gradient(circle at 91% 50%, rgba(var(--operator-arc), 0.035), transparent 13rem),
+    conic-gradient(from 0.125turn at 50% 42%, transparent 0 9%, rgba(var(--operator-arc), 0.064) 10% 12%, transparent 13% 45%, rgba(var(--operator-gold), 0.040) 47% 52%, transparent 53% 100%),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.040), transparent 18% 82%, rgba(var(--operator-armor), 0.036)),
+    linear-gradient(180deg, rgba(4, 17, 30, 0.998), rgba(3, 11, 22, 0.988) 58%, rgba(1, 5, 11, 0.998));
+  box-shadow:
+    0 0 0 100vmax rgba(1, 5, 11, 0.80),
+    0 72px 190px rgba(0, 0, 0, 0.93),
+    0 0 0 1px rgba(var(--operator-arc), 0.24),
+    0 0 76px rgba(var(--operator-arc), 0.17),
+    0 0 22px rgba(var(--operator-gold), 0.060),
+    inset 0 0 64px rgba(var(--operator-arc), 0.042);
+}
+
+.operator-panel::before {
+  opacity: 0.68;
+  filter: drop-shadow(0 0 9px rgba(var(--operator-cyan), 0.16));
+}
+
+.operator-panel::after {
+  box-shadow:
+    0 0 14px rgba(var(--operator-cyan), 0.12),
+    inset 0 0 0 1px rgba(var(--operator-cyan), 0.11);
+}
+
+.operator-panel__body {
+  background:
+    radial-gradient(circle at 50% 34%, rgba(var(--operator-white-hot), 0.070), rgba(var(--operator-arc), 0.085) 8rem, transparent 22rem),
+    radial-gradient(circle at 13% 88%, rgba(var(--operator-gold), 0.045), transparent 11rem),
+    radial-gradient(circle at 87% 88%, rgba(var(--operator-arc), 0.060), transparent 12rem),
+    conic-gradient(from 0.13turn at 50% 40%, transparent 0 11%, rgba(var(--operator-arc), 0.050) 12% 15%, transparent 16% 44%, rgba(var(--operator-gold), 0.034) 46% 48%, transparent 49% 100%),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.023) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(180deg, rgba(var(--operator-gold), 0.016) 0 1px, transparent 1px 52px),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.060), transparent 17% 83%, rgba(var(--operator-armor), 0.055)),
+    linear-gradient(180deg, rgba(2, 14, 25, 0.91), rgba(1, 6, 13, 0.97));
+}
+
+.operator-panel__header {
+  border-color: rgba(var(--operator-arc), 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(248, 253, 255, 0.13),
+    inset 0 -18px 34px rgba(0, 0, 0, 0.36),
+    inset 0 -1px 0 rgba(var(--operator-gold), 0.13),
+    0 0 17px rgba(var(--operator-arc), 0.085);
+}
+
+.operator-panel__metrics span {
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(var(--operator-white-hot), 0.075), transparent 62%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.10), transparent 23% 77%, rgba(var(--operator-arc), 0.11)),
+    linear-gradient(180deg, rgba(28, 46, 63, 0.82), rgba(var(--operator-armor-dark), 0.34) 56%, rgba(4, 12, 22, 0.96));
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card,
+.operator-entry {
+  border-color: rgba(var(--operator-arc), 0.23);
+  background:
+    radial-gradient(ellipse at 17% 0%, rgba(var(--operator-white-hot), 0.040), transparent 54%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.040), transparent 21% 80%, rgba(var(--operator-arc), 0.055)),
+    linear-gradient(180deg, rgba(10, 22, 34, 0.86), rgba(3, 8, 17, 0.92));
+  box-shadow:
+    inset 0 1px 0 rgba(var(--operator-white-hot), 0.065),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.085),
+    0 12px 26px rgba(0,0,0,0.22),
+    0 0 0 1px rgba(var(--operator-gold), 0.022);
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(255, 100, 84, 0.42);
+  background:
+    radial-gradient(ellipse at 14% 0%, rgba(255, 255, 255, 0.035), transparent 50%),
+    linear-gradient(90deg, rgba(255, 100, 84, 0.11), transparent 16%),
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.070), transparent 28%, rgba(var(--operator-armor), 0.085)),
+    linear-gradient(180deg, rgba(18, 14, 24, 0.88), rgba(6, 7, 15, 0.95));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.055),
+    0 12px 28px rgba(0,0,0,0.24),
+    0 0 0 1px rgba(248, 113, 113, 0.11),
+    0 0 15px rgba(var(--operator-gold), 0.030);
+}
+
+.operator-entry--tier-high .operator-entry__rail,
+.operator-entry--failed .operator-entry__rail,
+.operator-entry--rejected .operator-entry__rail,
+.operator-entry--escalated .operator-entry__rail {
+  background:
+    radial-gradient(circle at 50% 24px, rgba(var(--operator-white-hot), 0.055), rgba(255, 100, 84, 0.13) 0 22px, transparent 46px),
+    linear-gradient(180deg, rgba(255, 100, 84, 0.12), rgba(var(--operator-gold), 0.040) 46%, transparent);
+  border-right-color: rgba(255, 100, 84, 0.16);
+}
+
+.operator-entry--tier-high::after,
+.operator-entry--failed::after,
+.operator-entry--rejected::after,
+.operator-entry--escalated::after {
+  opacity: 0.58;
+  background:
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.42), rgba(255, 100, 84, 0.32), transparent 8rem) top left / 13rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(255, 100, 84, 0.25)) top right / 12rem 1px no-repeat,
+    repeating-linear-gradient(180deg, transparent 0 5px, rgba(255, 100, 84, 0.012) 5px 6px);
+}
+
+.operator-tier--high,
+.operator-life--failed,
+.operator-life--rejected,
+.operator-life--escalated {
+  background:
+    linear-gradient(90deg, rgba(255, 100, 84, 0.12), rgba(var(--operator-gold), 0.055), rgba(255, 100, 84, 0.08));
+  border-color: rgba(255, 100, 84, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045), 0 0 8px rgba(248, 113, 113, 0.075);
+}
+
+.operator-entry__title-row h4 {
+  text-shadow: 0 0 12px rgba(var(--operator-arc), 0.10);
+}
+
+.operator-panel__footer::before {
+  opacity: 0.11;
+}
+/* Operator panel blue-frost theme pass: align with Papercusp site glass, keep subtle futuristic metal. */
+.operator-panel {
+  --operator-cyan: 125, 211, 252;
+  --operator-arc: 56, 189, 248;
+  --operator-gold: 215, 243, 255;
+  --operator-armor: 30, 64, 94;
+  --operator-armor-dark: 7, 16, 29;
+  --operator-white-hot: 231, 247, 255;
+  --operator-cut: 44px;
+  color: var(--fg);
+  background:
+    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.18), rgba(56, 189, 248, 0.17) 5rem, transparent 24rem),
+    radial-gradient(circle at 50% 40%, rgba(125, 211, 252, 0.10), rgba(56, 189, 248, 0.070) 8rem, transparent 23rem),
+    radial-gradient(circle at 8% 54%, rgba(125, 211, 252, 0.050), transparent 14rem),
+    radial-gradient(circle at 92% 54%, rgba(125, 211, 252, 0.050), transparent 14rem),
+    linear-gradient(135deg, rgba(255,255,255,0.050), transparent 20% 80%, rgba(125, 211, 252, 0.050)),
+    var(--frost),
+    linear-gradient(180deg, rgba(7, 16, 29, 0.990), rgba(8, 19, 34, 0.970) 58%, rgba(3, 8, 17, 0.992));
+  box-shadow:
+    0 0 0 100vmax rgba(3, 8, 17, 0.76),
+    0 54px 150px rgba(0, 0, 0, 0.76),
+    0 0 0 1px rgba(125, 211, 252, 0.22),
+    0 0 68px rgba(56, 189, 248, 0.14),
+    inset 0 1px 0 rgba(255,255,255,0.070),
+    inset 0 0 56px rgba(125, 211, 252, 0.040);
+}
+
+.operator-panel::before {
+  background:
+    linear-gradient(90deg, transparent 4%, rgba(125, 211, 252, 0.72) 4% 18%, transparent 18% 42%, rgba(215, 243, 255, 0.42) 45% 55%, transparent 58% 82%, rgba(125, 211, 252, 0.72) 82% 96%, transparent 96%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 8%, rgba(215, 243, 255, 0.20) 8% 20%, transparent 20% 43%, rgba(56, 189, 248, 0.32) 45% 55%, transparent 57% 80%, rgba(215, 243, 255, 0.20) 80% 92%, transparent 92%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(125, 211, 252, 0.34) 9% 32%, transparent 32% 68%, rgba(215, 243, 255, 0.16) 68% 91%, transparent 91%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(215, 243, 255, 0.16) 9% 32%, transparent 32% 68%, rgba(125, 211, 252, 0.34) 68% 91%, transparent 91%) right 12px center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(125, 211, 252, 0.48) 0 1px, transparent 1px) top 18px left 44px / 126px 126px no-repeat,
+    linear-gradient(225deg, rgba(125, 211, 252, 0.48) 0 1px, transparent 1px) top 18px right 44px / 126px 126px no-repeat,
+    linear-gradient(315deg, rgba(215, 243, 255, 0.22) 0 1px, transparent 1px) bottom 18px left 44px / 126px 126px no-repeat,
+    linear-gradient(45deg, rgba(215, 243, 255, 0.22) 0 1px, transparent 1px) bottom 18px right 44px / 126px 126px no-repeat,
+    repeating-linear-gradient(135deg, rgba(125, 211, 252, 0.26) 0 1px, transparent 1px 6px) top 20px right 126px / 108px 8px no-repeat,
+    repeating-linear-gradient(135deg, rgba(215, 243, 255, 0.16) 0 1px, transparent 1px 6px) bottom 22px left 126px / 108px 8px no-repeat,
+    linear-gradient(180deg, rgba(125, 211, 252, 0.10), rgba(7, 16, 29, 0.030));
+  opacity: 0.70;
+  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.14));
+}
+
+.operator-panel::after {
+  background:
+    linear-gradient(90deg, transparent 7%, rgba(125, 211, 252, 0.46) 7% 18%, transparent 18% 42%, rgba(215, 243, 255, 0.26) 45% 55%, transparent 58% 82%, rgba(125, 211, 252, 0.46) 82% 93%, transparent 93%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 10%, rgba(215, 243, 255, 0.14) 10% 20%, transparent 20% 43%, rgba(56, 189, 248, 0.22) 45% 55%, transparent 57% 80%, rgba(215, 243, 255, 0.14) 80% 90%, transparent 90%) bottom 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 11%, rgba(125, 211, 252, 0.24) 11% 31%, transparent 31% 69%, rgba(215, 243, 255, 0.12) 69% 89%, transparent 89%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 11%, rgba(215, 243, 255, 0.12) 11% 31%, transparent 31% 69%, rgba(125, 211, 252, 0.24) 69% 89%, transparent 89%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, rgba(215, 243, 255, 0.050), rgba(7, 16, 29, 0.12));
+  box-shadow:
+    0 0 14px rgba(56, 189, 248, 0.11),
+    inset 0 0 0 1px rgba(125, 211, 252, 0.11);
+}
+
+.operator-panel__header,
+.operator-panel__feed,
+.operator-panel__rail {
+  border-color: rgba(125, 211, 252, 0.16);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(215, 243, 255, 0.085), transparent 68%),
+    var(--frost),
+    rgba(9, 19, 34, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.060),
+    inset 0 -1px 0 rgba(125, 211, 252, 0.060),
+    0 14px 36px rgba(0,0,0,0.20);
+}
+
+.operator-panel__header::before,
+.operator-panel__header::after {
+  opacity: 0.36;
+  filter: drop-shadow(0 0 11px rgba(56, 189, 248, 0.12));
+}
+
+.operator-panel__body {
+  background:
+    radial-gradient(circle at 50% 34%, rgba(215, 243, 255, 0.055), rgba(56, 189, 248, 0.055) 8rem, transparent 22rem),
+    repeating-linear-gradient(90deg, rgba(125, 211, 252, 0.018) 0 1px, transparent 1px 64px),
+    repeating-linear-gradient(180deg, rgba(215, 243, 255, 0.010) 0 1px, transparent 1px 52px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.030), transparent 17% 83%, rgba(125, 211, 252, 0.026)),
+    linear-gradient(180deg, rgba(7, 16, 29, 0.82), rgba(3, 8, 17, 0.92));
+}
+
+.operator-panel__body::before,
+.operator-panel__body::after,
+.operator-panel__feed::before,
+.operator-panel__feed::after,
+.operator-panel__rail::before,
+.operator-panel__rail::after {
+  opacity: 0.24;
+  filter: drop-shadow(0 0 10px rgba(56, 189, 248, 0.10));
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card,
+.operator-entry {
+  clip-path: none;
+  border-radius: 18px;
+  border-color: rgba(125, 211, 252, 0.16);
+  background:
+    radial-gradient(ellipse at 18% 0%, rgba(255,255,255,0.050), transparent 55%),
+    linear-gradient(135deg, rgba(125, 211, 252, 0.040), transparent 26% 78%, rgba(215, 243, 255, 0.030)),
+    var(--frost),
+    rgba(9, 19, 34, 0.68);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.055),
+    inset 0 -1px 0 rgba(125, 211, 252, 0.055),
+    0 18px 42px rgba(0,0,0,0.23),
+    0 0 0 1px rgba(255,255,255,0.018);
+}
+
+.operator-entry::after,
+.operator-callout::before,
+.operator-stream::before,
+.operator-budget-card::before {
+  opacity: 0.32;
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(251, 113, 133, 0.26);
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.070), transparent 18%),
+    radial-gradient(ellipse at 18% 0%, rgba(255,255,255,0.045), transparent 52%),
+    var(--frost),
+    rgba(11, 17, 30, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.052),
+    0 16px 38px rgba(0,0,0,0.24),
+    0 0 0 1px rgba(251, 113, 133, 0.070);
+}
+
+.operator-entry--tier-high::after,
+.operator-entry--failed::after,
+.operator-entry--rejected::after,
+.operator-entry--escalated::after {
+  opacity: 0.42;
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.30), rgba(125, 211, 252, 0.18), transparent 8rem) top left / 13rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.18)) top right / 12rem 1px no-repeat;
+}
+
+.operator-panel__metrics span,
+.operator-mini-btn,
+.operator-feed-pills button,
+.operator-kind,
+.operator-tier,
+.operator-life,
+.operator-target,
+.operator-entry__action-kind,
+.operator-entry__flags span {
+  clip-path: none;
+  border-radius: 999px;
+  border-color: rgba(125, 211, 252, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018)),
+    rgba(9, 19, 34, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+}
+
+.operator-panel__metrics span {
+  border-radius: 15px;
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(215, 243, 255, 0.080), transparent 65%),
+    var(--frost),
+    rgba(9, 19, 34, 0.70);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.060),
+    0 12px 28px rgba(0,0,0,0.18);
+}
+
+.operator-btn--primary,
+.operator-mini-btn--primary {
+  color: var(--accent-ink);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.78), transparent 58%),
+    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgba(125, 211, 252, 0.96) 48%, rgba(56, 189, 248, 0.88));
+  box-shadow:
+    0 16px 32px rgba(14, 165, 233, 0.22),
+    inset 0 1px 0 rgba(255,255,255,0.66),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+}
+
+.operator-feed-pills button.is-active {
+  border-color: rgba(125, 211, 252, 0.30);
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.14), rgba(56, 189, 248, 0.070)),
+    rgba(9, 19, 34, 0.70);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 12px 26px rgba(14, 165, 233, 0.10);
+}
+
+.operator-tier--high,
+.operator-life--failed,
+.operator-life--rejected,
+.operator-life--escalated {
+  color: color-mix(in oklab, var(--bad), white 18%);
+  border-color: rgba(251, 113, 133, 0.26);
+  background: rgba(251, 113, 133, 0.075);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.040);
+}
+
+.operator-life--auto,
+.operator-life--pending,
+.operator-entry__flags span {
+  color: color-mix(in oklab, var(--accent-cool), white 2%);
+  border-color: rgba(125, 211, 252, 0.22);
+  background: rgba(125, 211, 252, 0.075);
+}
+
+.operator-panel__footer {
+  border-color: rgba(125, 211, 252, 0.13);
+  background: rgba(7, 16, 29, 0.68);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.040),
+    0 -10px 24px rgba(56, 189, 248, 0.035);
+}
+
+.operator-panel__footer::before {
+  opacity: 0.060;
+}
+/* Operator panel site-alignment polish: softer shell and calmer semantic alerts. */
+.operator-panel {
+  --operator-cut: 32px;
+  background:
+    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.16), rgba(56, 189, 248, 0.14) 5rem, transparent 24rem),
+    radial-gradient(circle at 50% 40%, rgba(125, 211, 252, 0.085), rgba(56, 189, 248, 0.055) 8rem, transparent 23rem),
+    radial-gradient(circle at 8% 54%, rgba(125, 211, 252, 0.035), transparent 14rem),
+    radial-gradient(circle at 92% 54%, rgba(125, 211, 252, 0.035), transparent 14rem),
+    linear-gradient(135deg, rgba(255,255,255,0.045), transparent 20% 80%, rgba(125, 211, 252, 0.040)),
+    var(--frost),
+    linear-gradient(180deg, rgba(7, 16, 29, 0.990), rgba(8, 19, 34, 0.970) 58%, rgba(3, 8, 17, 0.992));
+  box-shadow:
+    0 0 0 100vmax rgba(3, 8, 17, 0.72),
+    0 52px 142px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(125, 211, 252, 0.20),
+    0 0 58px rgba(56, 189, 248, 0.11),
+    inset 0 1px 0 rgba(255,255,255,0.070),
+    inset 0 0 46px rgba(125, 211, 252, 0.034);
+}
+
+.operator-panel::before,
+.operator-panel::after {
+  opacity: 0.56;
+}
+
+.operator-panel__header::before,
+.operator-panel__header::after,
+.operator-panel__body::before,
+.operator-panel__body::after {
+  opacity: 0.20;
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(251, 113, 133, 0.20);
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.040), transparent 16%),
+    radial-gradient(ellipse at 18% 0%, rgba(255,255,255,0.040), transparent 52%),
+    var(--frost),
+    rgba(9, 19, 34, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.052),
+    0 16px 38px rgba(0,0,0,0.22),
+    0 0 0 1px rgba(251, 113, 133, 0.050);
+}
+
+.operator-entry--tier-high::after,
+.operator-entry--failed::after,
+.operator-entry--rejected::after,
+.operator-entry--escalated::after {
+  opacity: 0.30;
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.22), rgba(125, 211, 252, 0.16), transparent 8rem) top left / 13rem 1px no-repeat,
+    linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.14)) top right / 12rem 1px no-repeat;
+}
+
+.operator-entry--tier-high .operator-entry__rail,
+.operator-entry--failed .operator-entry__rail,
+.operator-entry--rejected .operator-entry__rail,
+.operator-entry--escalated .operator-entry__rail {
+  background:
+    radial-gradient(circle at 50% 24px, rgba(215, 243, 255, 0.048), rgba(251, 113, 133, 0.075) 0 22px, transparent 46px),
+    linear-gradient(180deg, rgba(251, 113, 133, 0.060), rgba(125, 211, 252, 0.032) 46%, transparent);
+  border-right-color: rgba(251, 113, 133, 0.11);
+}
+
+.operator-tier--high,
+.operator-life--failed,
+.operator-life--rejected,
+.operator-life--escalated {
+  color: color-mix(in oklab, var(--bad), white 10%);
+  border-color: rgba(251, 113, 133, 0.18);
+  background: rgba(251, 113, 133, 0.050);
+}
+
+.operator-entry__title-row h4 {
+  text-shadow: none;
+}
+/* ── Motion refinement pass: shell, operator, oracle, marketplace, support ── */
+.pc-header-nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding-inline: 2px;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+.pc-header-nav-link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -5px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent), white 18%), transparent);
+  opacity: 0;
+  transform: scaleX(0.45);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.pc-header-nav-link:hover,
+.pc-header-nav-link[aria-current="page"] {
+  color: var(--fg);
+  transform: translateY(-1px);
+}
+.pc-header-nav-link:hover::after,
+.pc-header-nav-link[aria-current="page"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+.pc-header-nav-link[aria-current="page"] {
+  color: color-mix(in oklab, var(--accent-cool), white 18%);
+}
+
+.pc-header-nav-link.is-route-pending,
+.pc-header-nav-link[data-route-pending="true"] {
+  color: #e0faff;
+  text-shadow: 0 0 12px rgba(87, 215, 255, 0.72);
+  transform: translateY(-1px);
+}
+
+.pc-header-nav-link.is-route-pending::after,
+.pc-header-nav-link[data-route-pending="true"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+  background: linear-gradient(90deg, transparent, #ffffff, var(--accent), #57d7ff, transparent);
+  background-size: 220% 100%;
+  box-shadow: 0 0 12px rgba(87, 215, 255, 0.88);
+  animation: pc-route-pending-sweep 0.72s linear infinite;
+}
+
+@keyframes pc-route-pending-sweep {
+  0% {
+    background-position: -120% 0;
+  }
+
+  100% {
+    background-position: 120% 0;
+  }
+}
+
+.pc-workspace-trigger,
+.pc-workspace-menu-target,
+.pc-workspace-menu-action,
+.pc-workspace-menu-create {
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.pc-workspace-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pc-workspace-trigger:hover,
+.pc-workspace-trigger[aria-expanded="true"] {
+  color: var(--fg) !important;
+  border-color: color-mix(in oklab, var(--accent), transparent 62%) !important;
+  background: color-mix(in oklab, var(--bg-3), var(--accent) 8%) !important;
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.26);
+}
+.pc-workspace-trigger[aria-expanded="true"] .pc-workspace-trigger-caret {
+  transform: translateY(1px) rotate(180deg);
+}
+.pc-workspace-trigger-caret {
+  display: inline-flex;
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.pc-workspace-menu {
+  transform-origin: top right;
+}
+.pc-workspace-menu-row {
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out);
+}
+.pc-workspace-menu-row:hover {
+  transform: translateY(-1px);
+}
+.pc-workspace-menu-row.is-current {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent), transparent 72%);
+}
+.pc-workspace-menu-target:hover,
+.pc-workspace-menu-create:hover {
+  color: var(--fg) !important;
+}
+.pc-workspace-menu-action:hover {
+  color: var(--fg) !important;
+  transform: translateY(-1px);
+}
+.pc-workspace-menu-input:focus {
+  outline: none;
+  border-color: color-mix(in oklab, var(--accent), transparent 52%) !important;
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent), transparent 84%);
+}
+
+.pc-settings-nav-link {
+  position: relative;
+  overflow: hidden;
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.pc-settings-nav-link::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent), white 12%), transparent);
+  opacity: 0;
+  transform: scaleY(0.45);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.pc-settings-nav-link:hover,
+.pc-settings-nav-link[aria-current="page"] {
+  color: var(--fg) !important;
+  transform: translateX(2px);
+}
+.pc-settings-nav-link:hover::before,
+.pc-settings-nav-link[aria-current="page"]::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+.pc-settings-nav-link[aria-current="page"] {
+  background: color-mix(in oklab, var(--bg-3), var(--accent) 10%) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent), transparent 70%);
+}
+
+.operator-panel {
+  transform-origin: top center;
+}
+.operator-panel__metrics span,
+.operator-feed-pills button,
+.operator-entry,
+.operator-activity-item,
+.operator-budget-option {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.operator-panel__metrics span:hover,
+.operator-feed-pills button:hover {
+  transform: translateY(-1px);
+}
+.operator-feed-pills button.is-active,
+.operator-feed-pills button[aria-pressed="true"] {
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+.operator-entry:hover,
+.operator-entry:focus-visible {
+  transform: translateY(-1px);
+}
+.operator-budget-card {
+  transform-origin: top center;
+}
+
+.oracle-fab,
+.oracle-dock,
+.oracle-picker-body {
+  transform-origin: bottom right;
+}
+.oracle-fab {
+  overflow: visible;
+}
+.oracle-fab.has-unread {
+  border-color: color-mix(in oklab, var(--good), var(--accent) 28%);
+  box-shadow:
+    0 18px 46px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(34, 211, 238, 0.12),
+    0 0 26px rgba(34, 211, 238, 0.11);
+}
+.oracle-fab-badge {
+  position: absolute;
+  top: 9px;
+  right: 11px;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 2px solid #07101d;
+  background: linear-gradient(180deg, #67e8f9, #22d3ee);
+  box-shadow: 0 0 0 4px rgba(34, 211, 238, 0.12);
+}
+.oracle-fab.has-unread .oracle-fab-badge {
+  animation: pc-header-cta-pulse 1.6s var(--ease-out) infinite;
+}
+.oracle-tabs {
+  scroll-padding-inline: 10px;
+}
+.oracle-tab,
+.oracle-tab-add {
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.oracle-tab:hover,
+.oracle-tab.is-active,
+.oracle-tab-add:hover,
+.oracle-tab-add.is-open {
+  transform: translateY(-1px);
+}
+.oracle-tab[data-unread="true"] {
+  border-color: color-mix(in oklab, var(--good), transparent 70%);
+  background: color-mix(in oklab, var(--bg-3), var(--good) 9%);
+}
+.oracle-tab[data-busy="true"] {
+  box-shadow: inset 0 -1px 0 color-mix(in oklab, var(--accent), transparent 30%);
+}
+
+.pc-marketplace-toolbar-copy,
+.pc-marketplace-search,
+.pc-marketplace-card,
+.pc-marketplace-dialog,
+.pc-marketplace-harness-list label,
+.pc-marketplace-card-actions .pc-button {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.pc-marketplace-search:focus-within,
+.pc-marketplace-toolbar-copy:hover,
+.pc-marketplace-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--accent), transparent 58%);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.20);
+}
+.pc-marketplace-card:hover .pc-marketplace-card-icon {
+  transform: translateY(-1px) scale(1.03);
+}
+.pc-marketplace-card-icon {
+  transition: transform var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.pc-marketplace-dialog-backdrop {
+  animation: pc-fade-in var(--dur-normal) var(--ease-mid);
+}
+.pc-marketplace-dialog {
+  animation: pc-lift-in var(--dur-panel) var(--ease-out);
+}
+.pc-marketplace-harness-list label:hover {
+  transform: translateY(-1px);
+}
+
+.pc-support-actions .pc-button,
+.pc-support-resources,
+.pc-support-faq {
+  transition:
+    transform var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.pc-support-actions .pc-button:hover,
+.pc-support-resources:hover,
+.pc-support-faq:hover {
+  transform: translateY(-1px);
+}
+.pc-support-faq {
+  overflow: hidden;
+}
+.pc-support-faq-summary {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.pc-support-faq-chevron {
+  display: inline-flex;
+  transition: transform var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.pc-support-faq[open] .pc-support-faq-chevron {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+.pc-support-faq[open] .pc-support-faq-answer {
+  animation: pc-slide-up-in var(--dur-normal) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-header-nav-link,
+  .pc-header-nav-link::after,
+  .pc-header::after,
+  .pc-route-pending-overlay,
+  .pc-workspace-trigger,
+  .pc-workspace-menu-target,
+  .pc-workspace-menu-action,
+  .pc-workspace-menu-create,
+  .pc-workspace-menu-row,
+  .pc-settings-nav-link,
+  .pc-settings-nav-link::before,
+  .operator-panel__metrics span,
+  .operator-feed-pills button,
+  .operator-entry,
+  .operator-activity-item,
+  .operator-budget-option,
+  .oracle-fab,
+  .oracle-fab-badge,
+  .oracle-tab,
+  .oracle-tab-add,
+  .pc-marketplace-toolbar-copy,
+  .pc-marketplace-search,
+  .pc-marketplace-card,
+  .pc-marketplace-dialog,
+  .pc-marketplace-harness-list label,
+  .pc-marketplace-card-actions .pc-button,
+  .pc-support-actions .pc-button,
+  .pc-support-resources,
+  .pc-support-faq,
+  .pc-support-faq-chevron {
+    transition-duration: 0.01ms !important;
+  }
+
+  .pc-marketplace-dialog-backdrop,
+  .pc-marketplace-dialog,
+  .pc-support-faq[open] .pc-support-faq-answer,
+  .oracle-fab.has-unread .oracle-fab-badge,
+  .pc-header::after,
+  .pc-header-nav-link.is-route-pending::after,
+  .pc-header-nav-link[data-route-pending="true"]::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@supports (view-transition-name: root) {
+  ::view-transition-old(root) {
+    animation: pc-fade-out var(--dur-fast) var(--ease-in) both;
+  }
+
+  ::view-transition-new(root) {
+    animation: pc-fade-in var(--dur-panel) var(--ease-mid) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* Operator button rounding pass: match Papercusp rounded frost controls. */
+.operator-panel .operator-btn,
+.operator-panel .operator-mini-btn,
+.operator-panel .operator-feed-pills button,
+.operator-panel .operator-entry__link,
+.operator-panel .operator-budget-option {
+  clip-path: none;
+  border-radius: 999px;
+  border-color: rgba(125, 211, 252, 0.18);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.020)),
+    rgba(9, 19, 34, 0.66);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.050),
+    0 10px 24px rgba(0,0,0,0.16);
+}
+
+.operator-panel .operator-btn:hover,
+.operator-panel .operator-btn:focus-visible,
+.operator-panel .operator-mini-btn:hover,
+.operator-panel .operator-mini-btn:focus-visible,
+.operator-panel .operator-feed-pills button:hover,
+.operator-panel .operator-feed-pills button:focus-visible,
+.operator-panel .operator-entry__link:hover,
+.operator-panel .operator-entry__link:focus-visible,
+.operator-panel .operator-budget-option:hover,
+.operator-panel .operator-budget-option:focus-visible {
+  border-color: rgba(125, 211, 252, 0.34);
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.115), rgba(255,255,255,0.030)),
+    rgba(9, 19, 34, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.065),
+    0 12px 28px rgba(14, 165, 233, 0.12);
+}
+
+.operator-panel .operator-btn--primary,
+.operator-panel .operator-mini-btn--primary {
+  border-color: rgba(125, 211, 252, 0.42);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.78), transparent 58%),
+    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgba(125, 211, 252, 0.94) 52%, rgba(56, 189, 248, 0.86));
+  box-shadow:
+    0 15px 30px rgba(14, 165, 233, 0.22),
+    inset 0 1px 0 rgba(255,255,255,0.66),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+}
+
+.operator-panel .operator-btn--close {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 35% 22%, rgba(255,255,255,0.11), transparent 44%),
+    rgba(9, 19, 34, 0.72);
+}
+
+.operator-panel .operator-feed-pills button.is-active,
+.operator-panel .operator-feed-pills button[aria-pressed="true"] {
+  border-color: rgba(125, 211, 252, 0.34);
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.16), rgba(56, 189, 248, 0.075)),
+    rgba(9, 19, 34, 0.74);
+}
+
+/* Operator simplicity/usability pass: quieter chrome, clearer controls, stronger reading hierarchy. */
+.operator-panel {
+  --operator-cut: 28px;
+  background:
+    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.13), rgba(56, 189, 248, 0.105) 5rem, transparent 24rem),
+    radial-gradient(circle at 50% 40%, rgba(125, 211, 252, 0.060), rgba(56, 189, 248, 0.040) 8rem, transparent 23rem),
+    var(--frost),
+    linear-gradient(180deg, rgba(7, 16, 29, 0.990), rgba(8, 19, 34, 0.970) 58%, rgba(3, 8, 17, 0.992));
+  box-shadow:
+    0 0 0 100vmax rgba(3, 8, 17, 0.74),
+    0 46px 132px rgba(0, 0, 0, 0.72),
+    0 0 0 1px rgba(125, 211, 252, 0.18),
+    0 0 46px rgba(56, 189, 248, 0.085),
+    inset 0 1px 0 rgba(255,255,255,0.065);
+}
+
+.operator-panel::before,
+.operator-panel::after {
+  opacity: 0.38;
+}
+
+.operator-panel__header::before,
+.operator-panel__header::after,
+.operator-panel__body::before,
+.operator-panel__body::after,
+.operator-panel__feed::before,
+.operator-panel__feed::after,
+.operator-panel__rail::before,
+.operator-panel__rail::after,
+.operator-panel__metrics::before,
+.operator-panel__metrics::after,
+.operator-panel__footer::before {
+  opacity: 0.10;
+}
+
+.operator-panel__header,
+.operator-panel__feed,
+.operator-panel__rail {
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(215, 243, 255, 0.060), transparent 70%),
+    var(--frost),
+    rgba(9, 19, 34, 0.70);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.052),
+    inset 0 -1px 0 rgba(125, 211, 252, 0.045),
+    0 12px 30px rgba(0,0,0,0.18);
+}
+
+.operator-callout,
+.operator-stream,
+.operator-budget-card,
+.operator-entry {
+  border-color: rgba(125, 211, 252, 0.13);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.050), rgba(255,255,255,0.018)),
+    rgba(9, 19, 34, 0.72);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.050),
+    0 14px 34px rgba(0,0,0,0.20);
+}
+
+.operator-entry::after,
+.operator-callout::before,
+.operator-stream::before,
+.operator-budget-card::before {
+  opacity: 0.18;
+}
+
+.operator-entry__title-row h4 {
+  color: var(--fg);
+  text-shadow: none;
+}
+
+.operator-entry__why,
+.operator-panel__rail li,
+.operator-stream p,
+.operator-empty-side {
+  color: color-mix(in oklab, var(--fg-dim), white 8%);
+}
+
+.operator-panel__metrics span {
+  border-color: rgba(125, 211, 252, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.018)),
+    rgba(9, 19, 34, 0.70);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.052);
+}
+
+.operator-panel__metrics strong {
+  color: var(--fg);
+  text-shadow: none;
+}
+
+.operator-panel__metrics em {
+  color: color-mix(in oklab, var(--fg-dim), white 10%);
+}
+
+.operator-panel .operator-btn,
+.operator-panel .operator-mini-btn,
+.operator-panel .operator-feed-pills button,
+.operator-panel .operator-entry__link,
+.operator-panel .operator-budget-option {
+  border-color: rgba(125, 211, 252, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.018)),
+    rgba(9, 19, 34, 0.70);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.045);
+}
+
+.operator-panel .operator-btn:hover,
+.operator-panel .operator-mini-btn:hover,
+.operator-panel .operator-feed-pills button:hover,
+.operator-panel .operator-entry__link:hover,
+.operator-panel .operator-budget-option:hover {
+  border-color: rgba(125, 211, 252, 0.30);
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.100), rgba(255,255,255,0.026)),
+    rgba(9, 19, 34, 0.74);
+  box-shadow: 0 10px 24px rgba(14, 165, 233, 0.09), inset 0 1px 0 rgba(255,255,255,0.055);
+}
+
+.operator-panel .operator-btn:focus-visible,
+.operator-panel .operator-mini-btn:focus-visible,
+.operator-panel .operator-feed-pills button:focus-visible,
+.operator-panel .operator-entry__link:focus-visible,
+.operator-panel .operator-budget-option:focus-visible {
+  outline: none;
+  border-color: rgba(125, 211, 252, 0.42);
+  box-shadow:
+    0 0 0 3px rgba(125, 211, 252, 0.18),
+    0 10px 24px rgba(14, 165, 233, 0.10),
+    inset 0 1px 0 rgba(255,255,255,0.060);
+}
+
+.operator-panel .operator-btn--primary,
+.operator-panel .operator-mini-btn--primary {
+  border-color: rgba(125, 211, 252, 0.34);
+  box-shadow:
+    0 12px 26px rgba(14, 165, 233, 0.18),
+    inset 0 1px 0 rgba(255,255,255,0.62);
+}
+
+.operator-feed-pills button.is-active,
+.operator-feed-pills button[aria-pressed="true"] {
+  color: var(--fg);
+  border-color: rgba(125, 211, 252, 0.30);
+}
+
+.operator-tier,
+.operator-life,
+.operator-kind,
+.operator-target,
+.operator-entry__action-kind,
+.operator-entry__flags span {
+  border-color: rgba(125, 211, 252, 0.13);
+  background: rgba(255,255,255,0.040);
+  box-shadow: none;
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(251, 113, 133, 0.18);
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.032), transparent 16%),
+    linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.016)),
+    rgba(9, 19, 34, 0.74);
+}
+
+.operator-mini-btn--danger {
+  border-color: rgba(251, 113, 133, 0.22);
+  background: rgba(251, 113, 133, 0.070);
+  color: color-mix(in oklab, var(--bad), white 22%);
+}
+
+/* Operator usability fix: keep the primary action clearly discoverable. */
+.operator-panel .operator-btn--primary,
+.operator-panel .operator-mini-btn--primary {
+  color: var(--accent-ink);
+  border-color: rgba(125, 211, 252, 0.42);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.76), transparent 58%),
+    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgba(125, 211, 252, 0.94) 52%, rgba(56, 189, 248, 0.86));
+  box-shadow:
+    0 12px 26px rgba(14, 165, 233, 0.20),
+    inset 0 1px 0 rgba(255,255,255,0.62),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+}
+
+.operator-panel .operator-btn--primary:hover,
+.operator-panel .operator-btn--primary:focus-visible,
+.operator-panel .operator-mini-btn--primary:hover,
+.operator-panel .operator-mini-btn--primary:focus-visible {
+  color: var(--accent-ink);
+  border-color: rgba(215, 243, 255, 0.58);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.84), transparent 58%),
+    linear-gradient(180deg, rgba(231, 247, 255, 1), rgba(125, 211, 252, 0.98) 52%, rgba(56, 189, 248, 0.92));
+  box-shadow:
+    0 14px 30px rgba(14, 165, 233, 0.26),
+    inset 0 1px 0 rgba(255,255,255,0.68),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.24);
+}
+
+/* Operator usability polish: reduce decoration, improve scanability, keep action clarity. */
+.operator-panel {
+  --operator-cut: 24px;
+  background:
+    radial-gradient(ellipse at 50% -6%, rgba(215, 243, 255, 0.105), rgba(56, 189, 248, 0.075) 5rem, transparent 24rem),
+    var(--frost),
+    linear-gradient(180deg, rgba(7, 16, 29, 0.992), rgba(8, 19, 34, 0.974) 58%, rgba(3, 8, 17, 0.994));
+  box-shadow:
+    0 0 0 100vmax rgba(3, 8, 17, 0.76),
+    0 44px 126px rgba(0, 0, 0, 0.70),
+    0 0 0 1px rgba(125, 211, 252, 0.16),
+    0 0 38px rgba(56, 189, 248, 0.070),
+    inset 0 1px 0 rgba(255,255,255,0.060);
+}
+
+.operator-panel::before,
+.operator-panel::after,
+.operator-panel__header::before,
+.operator-panel__header::after,
+.operator-panel__body::before,
+.operator-panel__body::after,
+.operator-panel__feed::before,
+.operator-panel__feed::after,
+.operator-panel__rail::before,
+.operator-panel__rail::after,
+.operator-panel__metrics::before,
+.operator-panel__metrics::after,
+.operator-entry__content::before,
+.operator-entry__content::after {
+  opacity: 0.060;
+}
+
+.operator-panel__header,
+.operator-panel__feed,
+.operator-panel__rail,
+.operator-callout,
+.operator-stream,
+.operator-budget-card,
+.operator-entry {
+  border-color: rgba(125, 211, 252, 0.115);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.044), rgba(255,255,255,0.014)),
+    rgba(9, 19, 34, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.046),
+    0 12px 30px rgba(0,0,0,0.18);
+}
+
+.operator-entry:hover,
+.operator-entry:focus-visible {
+  border-color: rgba(125, 211, 252, 0.22);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.056), rgba(255,255,255,0.018)),
+    rgba(10, 22, 38, 0.80);
+}
+
+.operator-entry--tier-high,
+.operator-entry--failed,
+.operator-entry--rejected,
+.operator-entry--escalated {
+  border-color: rgba(251, 113, 133, 0.16);
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.026), transparent 14%),
+    linear-gradient(180deg, rgba(255,255,255,0.044), rgba(255,255,255,0.014)),
+    rgba(9, 19, 34, 0.76);
+}
+
+.operator-entry--tier-high:hover,
+.operator-entry--failed:hover,
+.operator-entry--rejected:hover,
+.operator-entry--escalated:hover {
+  border-color: rgba(251, 113, 133, 0.24);
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.040), transparent 14%),
+    linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.016)),
+    rgba(10, 22, 38, 0.80);
+}
+
+.operator-entry__rail {
+  background:
+    linear-gradient(180deg, rgba(125, 211, 252, 0.060), rgba(255,255,255,0.012));
+  border-right-color: rgba(125, 211, 252, 0.080);
+}
+
+.operator-entry__rail span,
+.operator-entry__type-glyph {
+  box-shadow: none;
+}
+
+.operator-entry__title-row h4 {
+  color: color-mix(in oklab, var(--fg), white 2%);
+}
+
+.operator-entry__why {
+  color: color-mix(in oklab, var(--fg-dim), white 12%);
+}
+
+.operator-kind,
+.operator-tier,
+.operator-life,
+.operator-target,
+.operator-entry__action-kind,
+.operator-entry__flags span {
+  color: color-mix(in oklab, var(--fg-dim), white 16%);
+  border-color: rgba(125, 211, 252, 0.105);
+  background: rgba(255,255,255,0.032);
+}
+
+.operator-tier--high,
+.operator-life--failed,
+.operator-life--rejected,
+.operator-life--escalated {
+  color: color-mix(in oklab, var(--bad), white 16%);
+  border-color: rgba(251, 113, 133, 0.18);
+  background: rgba(251, 113, 133, 0.045);
+}
+
+.operator-tier--medium,
+.operator-life--pending,
+.operator-life--auto {
+  color: color-mix(in oklab, var(--warn), white 8%);
+  border-color: rgba(251, 191, 36, 0.18);
+  background: rgba(251, 191, 36, 0.045);
+}
+
+.operator-tier--low,
+.operator-life--consumed,
+.operator-life--inform {
+  color: color-mix(in oklab, var(--good), white 8%);
+  border-color: rgba(45, 212, 191, 0.16);
+  background: rgba(45, 212, 191, 0.040);
+}
+
+.operator-panel .operator-btn,
+.operator-panel .operator-mini-btn,
+.operator-panel .operator-feed-pills button,
+.operator-panel .operator-entry__link,
+.operator-panel .operator-budget-option {
+  border-color: rgba(125, 211, 252, 0.145);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.052), rgba(255,255,255,0.016)),
+    rgba(9, 19, 34, 0.72);
+}
+
+.operator-panel .operator-btn--primary,
+.operator-panel .operator-mini-btn--primary {
+  border-color: rgba(125, 211, 252, 0.38);
+}
+
+/* Operator final usability guard: primary actions must remain obvious after simplification. */
+.operator-panel .operator-btn--primary,
+.operator-panel .operator-mini-btn--primary {
+  color: var(--accent-ink);
+  border-color: rgba(125, 211, 252, 0.42);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.76), transparent 58%),
+    linear-gradient(180deg, rgba(215, 243, 255, 0.98), rgba(125, 211, 252, 0.94) 52%, rgba(56, 189, 248, 0.86));
+  box-shadow:
+    0 12px 26px rgba(14, 165, 233, 0.20),
+    inset 0 1px 0 rgba(255,255,255,0.62),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.22);
+}
+
+.operator-panel .operator-btn--primary:hover,
+.operator-panel .operator-btn--primary:focus-visible,
+.operator-panel .operator-mini-btn--primary:hover,
+.operator-panel .operator-mini-btn--primary:focus-visible {
+  color: var(--accent-ink);
+  border-color: rgba(215, 243, 255, 0.58);
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.84), transparent 58%),
+    linear-gradient(180deg, rgba(231, 247, 255, 1), rgba(125, 211, 252, 0.98) 52%, rgba(56, 189, 248, 0.92));
+  box-shadow:
+    0 14px 30px rgba(14, 165, 233, 0.26),
+    inset 0 1px 0 rgba(255,255,255,0.68),
+    inset 0 -1px 0 rgba(3, 105, 161, 0.24);
+}
+
+.pc-route-loading-shell {
+  padding-top: 48px;
+}
+
+.pc-route-loading-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4900;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% -14%, rgba(87, 215, 255, 0.18), transparent 30%),
+    linear-gradient(180deg, rgba(3, 8, 16, 0.62), rgba(3, 8, 16, 0.84));
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  animation: pc-route-loading-overlay-fade var(--dur-fast) var(--ease-mid) both;
+}
+
+.pc-route-loading-shell--overlay {
+  width: min(100% - 40px, 1120px);
+  padding-top: 104px;
+  padding-bottom: 44px;
+}
+
+.pc-route-loading--overlay {
+  animation: pc-route-loading-overlay-card-in var(--dur-panel) var(--ease-out) both;
+}
+
+
+.pc-route-loading {
+  position: relative;
+  min-height: clamp(360px, 56vh, 540px);
+  display: grid;
+  gap: 28px;
+  padding: clamp(28px, 4vw, 42px);
+  isolation: isolate;
+}
+
+.pc-route-loading::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 16% 18%, rgba(87, 215, 255, 0.22), transparent 30%),
+    radial-gradient(circle at 84% 20%, rgba(125, 211, 252, 0.18), transparent 24%),
+    linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.01));
+  pointer-events: none;
+}
+
+.pc-route-loading::after {
+  content: "";
+  position: absolute;
+  left: -18%;
+  right: -18%;
+  bottom: 28px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(215, 243, 255, 0.86), rgba(87, 215, 255, 0.82), transparent);
+  opacity: 0.82;
+  pointer-events: none;
+  animation: pc-route-loading-sweep 2.8s linear infinite;
+}
+
+.pc-route-loading__grid {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(125, 211, 252, 0.065) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.065) 1px, transparent 1px),
+    radial-gradient(circle at 50% 54%, rgba(56, 189, 248, 0.11), transparent 42%);
+  background-size: 120px 120px, 120px 120px, 100% 100%;
+  mask-image: linear-gradient(180deg, rgba(0,0,0,0.9), transparent 82%);
+  opacity: 0.75;
+  pointer-events: none;
+  animation: pc-route-loading-grid 16s linear infinite;
+}
+
+.pc-route-loading__copy,
+.pc-route-loading__panels {
+  position: relative;
+  z-index: 1;
+}
+
+.pc-route-loading__copy {
+  display: grid;
+  gap: 14px;
+  max-width: 480px;
+}
+
+.pc-route-loading__copy .pc-eyebrow {
+  margin: 0;
+  letter-spacing: 0.16em;
+}
+
+.pc-route-loading__title {
+  color: var(--fg);
+  font-size: clamp(30px, 5vw, 48px);
+  font-weight: 880;
+  letter-spacing: -0.03em;
+  line-height: 0.96;
+  text-shadow: 0 0 24px rgba(87, 215, 255, 0.18);
+}
+
+.pc-route-loading__meter {
+  display: flex;
+  gap: 10px;
+  max-width: 260px;
+}
+
+.pc-route-loading__meter span {
+  flex: 1 1 0;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(87, 215, 255, 0.18), rgba(215, 243, 255, 0.92), rgba(87, 215, 255, 0.18));
+  box-shadow: 0 0 16px rgba(87, 215, 255, 0.24);
+  transform-origin: left center;
+  animation: pc-route-loading-meter 1.6s var(--ease-out) infinite both;
+}
+
+.pc-route-loading__meter span:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+.pc-route-loading__meter span:nth-child(3) {
+  animation-delay: 240ms;
+}
+
+.pc-route-loading__panels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.pc-route-loading__panel {
+  position: relative;
+  overflow: hidden;
+  min-height: 132px;
+  padding: 16px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.012)),
+    rgba(5, 12, 23, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    0 18px 40px rgba(0, 0, 0, 0.24);
+}
+
+.pc-route-loading__panel::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  background: linear-gradient(115deg, transparent 0 32%, rgba(255,255,255,0.12) 48%, transparent 64%);
+  transform: translateX(-120%);
+  opacity: 0.9;
+  animation: pc-route-loading-sheen 2.2s linear infinite;
+}
+
+.pc-route-loading__panel-top {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.pc-route-loading__panel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(215, 243, 255, 0.68);
+  box-shadow: 0 0 12px rgba(87, 215, 255, 0.24);
+  animation: pc-route-loading-dot 1.8s var(--ease-mid) infinite;
+}
+
+.pc-route-loading__panel-dot:nth-child(2) {
+  animation-delay: 110ms;
+}
+
+.pc-route-loading__panel-dot:nth-child(3) {
+  animation-delay: 220ms;
+}
+
+.pc-route-loading__panel-lines {
+  display: grid;
+  gap: 10px;
+}
+
+.pc-route-loading__line {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.14), rgba(215, 243, 255, 0.76), rgba(125, 211, 252, 0.14));
+  background-size: 200% 100%;
+  animation: pc-route-loading-line 1.5s linear infinite;
+}
+
+.pc-route-loading__line--1 {
+  width: 82%;
+}
+
+.pc-route-loading__line--2 {
+  width: 64%;
+}
+
+.pc-route-loading__line--3 {
+  width: 92%;
+}
+
+@keyframes pc-route-loading-grid {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+  to {
+    background-position: 120px 60px, 120px 60px, 0 0;
+  }
+}
+
+@keyframes pc-route-loading-meter {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scaleX(0.62);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes pc-route-loading-sheen {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes pc-route-loading-dot {
+  0%,
+  100% {
+    opacity: 0.38;
+    transform: scale(0.9);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.14);
+  }
+}
+
+@keyframes pc-route-loading-line {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes pc-route-loading-sweep {
+  0% {
+    transform: translateX(-20%);
+    opacity: 0;
+  }
+
+  18% {
+    opacity: 0.82;
+  }
+
+  50% {
+    opacity: 1;
+  }
+
+  100% {
+    transform: translateX(20%);
+    opacity: 0;
+  }
+}
+
+@keyframes pc-route-loading-overlay-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pc-route-loading-overlay-card-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+
+
+@media (max-width: 900px) {
+  .pc-route-loading {
+    gap: 22px;
+  }
+
+  .pc-route-loading__panels {
+    grid-template-columns: 1fr;
+  }
+
+  .pc-route-loading-shell--overlay {
+    width: min(100% - 28px, 1120px);
+    padding-top: 92px;
+    padding-bottom: 28px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-route-loading-overlay,
+  .pc-route-loading--overlay,
+  .pc-route-loading::after,
+  .pc-route-loading__grid,
+  .pc-route-loading__meter span,
+  .pc-route-loading__panel::after,
+  .pc-route-loading__panel-dot,
+  .pc-route-loading__line {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .pc-route-loading__meter span {
+    transform: none !important;
+    opacity: 0.9;
+  }
+}
+
+/* Operator panel metallic command deck pass.
+   Visual-only: clearer hierarchy and calmer surfaces without changing copy/layout. */
+.pc-header .pc-header-cta--operator {
+  border-color: rgba(186, 230, 253, 0.34) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.105), rgba(255, 255, 255, 0.020)),
+    linear-gradient(90deg, rgba(248, 113, 113, 0.14), rgba(15, 23, 42, 0.92) 38%, rgba(125, 211, 252, 0.13)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 -1px 0 rgba(125, 211, 252, 0.16),
+    0 0 0 1px rgba(2, 6, 12, 0.76),
+    0 10px 28px rgba(0, 0, 0, 0.28),
+    0 0 20px rgba(125, 211, 252, 0.10) !important;
+}
+
+.pc-header .pc-header-cta--operator .pc-header-cta-orb {
+  background:
+    radial-gradient(circle at 36% 30%, #fff7ed 0 10%, #fb7185 11% 24%, #111827 25% 58%, #020617 59% 100%) !important;
+  border-color: rgba(186, 230, 253, 0.46) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.48),
+    0 0 14px rgba(251, 113, 133, 0.30),
+    0 0 22px rgba(125, 211, 252, 0.16) !important;
+}
+
+.pc-header .pc-header-cta--operator:hover,
+.pc-header .pc-header-cta--operator:focus-visible {
+  border-color: rgba(186, 230, 253, 0.62) !important;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.130), rgba(255, 255, 255, 0.026)),
+    linear-gradient(90deg, rgba(248, 113, 113, 0.17), rgba(15, 23, 42, 0.92) 38%, rgba(125, 211, 252, 0.18)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    0 0 0 1px rgba(2, 6, 12, 0.82),
+    0 12px 30px rgba(0, 0, 0, 0.32),
+    0 0 28px rgba(125, 211, 252, 0.18),
+    0 0 20px rgba(248, 113, 113, 0.13) !important;
+}
+
+.operator-panel {
+  --operator-cyan: 125, 211, 252;
+  --operator-arc: 186, 230, 253;
+  --operator-gold: 245, 181, 63;
+  --operator-armor: 248, 113, 113;
+  --operator-armor-dark: 12, 18, 31;
+  --operator-white-hot: 248, 253, 255;
+  color: #edf8ff !important;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(var(--operator-arc), 0.15), transparent 29rem),
+    radial-gradient(circle at 78% 8%, rgba(45, 212, 191, 0.10), transparent 25rem),
+    radial-gradient(circle at 50% 100%, rgba(var(--operator-gold), 0.055), transparent 34rem),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.032), transparent 22% 78%, rgba(var(--operator-arc), 0.034)),
+    linear-gradient(180deg, rgba(8, 19, 33, 0.990), rgba(4, 10, 20, 0.985)) !important;
+  box-shadow:
+    0 0 0 100vmax rgba(2, 7, 14, 0.50),
+    0 54px 156px rgba(0, 0, 0, 0.80),
+    0 0 0 1px rgba(var(--operator-arc), 0.24),
+    0 0 74px rgba(var(--operator-cyan), 0.13),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.035),
+    inset 0 0 58px rgba(var(--operator-cyan), 0.040) !important;
+}
+
+.operator-panel::before {
+  background:
+    linear-gradient(90deg, transparent 6%, rgba(var(--operator-arc), 0.78) 6% 16%, rgba(var(--operator-gold), 0.44) 16% 18%, transparent 18% 82%, rgba(var(--operator-gold), 0.44) 82% 84%, rgba(var(--operator-arc), 0.78) 84% 94%, transparent 94%) top 12px left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 8%, rgba(var(--operator-gold), 0.32) 8% 18%, transparent 18% 42%, rgba(var(--operator-arc), 0.55) 42% 58%, transparent 58% 82%, rgba(var(--operator-gold), 0.32) 82% 92%, transparent 92%) bottom 13px left 0 / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-arc), 0.42) 12% 30%, transparent 30% 70%, rgba(var(--operator-gold), 0.28) 70% 88%, transparent 88%) left 12px center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-gold), 0.28) 12% 30%, transparent 30% 70%, rgba(var(--operator-arc), 0.42) 70% 88%, transparent 88%) right 12px center / 1px 100% no-repeat,
+    repeating-linear-gradient(104deg, rgba(255,255,255,0.044) 0 1px, rgba(145,157,174,0.026) 1px 10px, rgba(var(--operator-cyan),0.045) 10px 22px),
+    linear-gradient(135deg, rgba(196, 211, 226, 0.74), rgba(54, 72, 94, 0.96) 20%, rgba(9, 18, 32, 0.98) 42%, rgba(231, 244, 255, 0.38) 50%, rgba(33, 50, 72, 0.98) 72%, rgba(148, 163, 184, 0.54)) !important;
+  filter: drop-shadow(0 0 14px rgba(var(--operator-cyan), 0.15)) !important;
+}
+
+.operator-panel::after {
+  background:
+    linear-gradient(90deg, transparent 6%, rgba(var(--operator-arc), 0.55) 6% 14%, transparent 14% 40%, rgba(255, 255, 255, 0.46) 40% 50%, rgba(var(--operator-gold), 0.30) 50% 60%, transparent 60% 86%, rgba(var(--operator-arc), 0.55) 86% 94%, transparent 94%) top 0 left 0 / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 9%, rgba(var(--operator-gold), 0.27) 9% 18%, transparent 18% 44%, rgba(var(--operator-arc), 0.36) 44% 56%, transparent 56% 82%, rgba(var(--operator-gold), 0.27) 82% 91%, transparent 91%) bottom 0 left 0 / 100% 1px no-repeat,
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.020) 0 1px, transparent 1px 86px),
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 64px),
+    linear-gradient(180deg, rgba(151,170,189,0.12), rgba(12,24,39,0.76)) !important;
+  box-shadow:
+    0 0 22px rgba(var(--operator-cyan), 0.12),
+    inset 0 0 0 1px rgba(var(--operator-cyan), 0.18) !important;
+}
+
+.operator-panel__header,
+.operator-panel__footer {
+  border-color: rgba(var(--operator-arc), 0.28) !important;
+  background:
+    radial-gradient(ellipse at 50% -38%, rgba(var(--operator-white-hot), 0.15), rgba(var(--operator-arc), 0.12) 7rem, transparent 18rem),
+    linear-gradient(90deg, rgba(var(--operator-armor), 0.10), rgba(var(--operator-arc), 0.080) 28%, rgba(255, 255, 255, 0.024) 50%, rgba(var(--operator-gold), 0.050) 72%, rgba(var(--operator-cyan), 0.080)),
+    linear-gradient(180deg, rgba(13, 31, 48, 0.96), rgba(3, 11, 21, 0.96)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(248, 253, 255, 0.13),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.16),
+    0 0 22px rgba(var(--operator-cyan), 0.070) !important;
+}
+
+.operator-panel__body,
+.operator-panel__feed,
+.operator-panel__rail {
+  border-color: rgba(var(--operator-arc), 0.18) !important;
+  background:
+    radial-gradient(circle at 50% 10%, rgba(var(--operator-white-hot), 0.040), rgba(var(--operator-cyan), 0.050) 8rem, transparent 24rem),
+    repeating-linear-gradient(90deg, rgba(var(--operator-cyan), 0.018) 0 1px, transparent 1px 88px),
+    linear-gradient(180deg, rgba(5, 15, 27, 0.72), rgba(1, 6, 14, 0.86)) !important;
+}
+
+.operator-panel__rail--left {
+  border-right-color: rgba(var(--operator-gold), 0.18) !important;
+}
+
+.operator-panel__rail--right {
+  border-left-color: rgba(var(--operator-arc), 0.18) !important;
+}
+
+.operator-panel__titleline h2,
+.operator-feed-head h3,
+.operator-budget-card h3,
+.operator-empty-state h3 {
+  color: #f8fcff !important;
+  text-shadow: 0 0 18px rgba(var(--operator-cyan), 0.24), 0 0 34px rgba(var(--operator-gold), 0.06) !important;
+}
+
+.operator-status,
+.operator-kind,
+.operator-tier,
+.operator-life,
+.operator-target,
+.operator-entry__action-kind,
+.operator-entry__flags span {
+  border-color: rgba(var(--operator-arc), 0.22) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.014)),
+    rgba(9, 20, 34, 0.62) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055) !important;
+}
+
+.operator-status--acting,
+.operator-status--scanning,
+.operator-status--thinking,
+.operator-kind--activity {
+  color: color-mix(in oklab, var(--accent-cool), white 22%) !important;
+  border-color: rgba(var(--operator-arc), 0.42) !important;
+  background: rgba(var(--operator-cyan), 0.12) !important;
+}
+
+.operator-panel__metrics span,
+.operator-feed-pills button,
+.operator-callout,
+.operator-empty-side,
+.operator-stream,
+.operator-budget-card,
+.operator-empty-state,
+.operator-entry,
+.operator-activity-item,
+.operator-budget-option {
+  border-color: rgba(var(--operator-arc), 0.22) !important;
+  background:
+    linear-gradient(135deg, rgba(var(--operator-gold), 0.055), transparent 22% 78%, rgba(var(--operator-cyan), 0.060)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.060), rgba(255, 255, 255, 0.014)),
+    rgba(7, 16, 29, 0.82) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.070),
+    0 10px 24px rgba(0,0,0,0.16),
+    0 0 0 1px rgba(var(--operator-cyan), 0.026) !important;
+}
+
+.operator-panel__metrics strong,
+.operator-feed-pills button strong,
+.operator-entry__title-row h4,
+.operator-entry__heading h4,
+.operator-activity-item strong,
+.operator-callout strong,
+.operator-empty-side strong {
+  color: #f8fcff !important;
+}
+
+.operator-panel__metrics em,
+.operator-callout p,
+.operator-empty-side p,
+.operator-budget-card p,
+.operator-empty-state p,
+.operator-entry__why,
+.operator-activity-item p,
+.operator-stream pre,
+.operator-empty-small {
+  color: color-mix(in oklab, var(--fg-dim), white 17%) !important;
+}
+
+.operator-btn,
+.operator-mini-btn,
+.operator-budget-option {
+  border-color: rgba(var(--operator-arc), 0.25) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.072), rgba(255,255,255,0.014)),
+    rgba(9, 20, 34, 0.74) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.080),
+    inset 0 -1px 0 rgba(var(--operator-arc), 0.13),
+    0 8px 18px rgba(0,0,0,0.14) !important;
+}
+
+.operator-btn:hover,
+.operator-btn:focus-visible,
+.operator-mini-btn:hover,
+.operator-mini-btn:focus-visible,
+.operator-budget-option:hover,
+.operator-budget-option:focus-visible,
+.operator-feed-pills button:hover,
+.operator-feed-pills button:focus-visible,
+.operator-entry:focus-visible {
+  border-color: rgba(var(--operator-arc), 0.54) !important;
+  background:
+    linear-gradient(180deg, rgba(var(--operator-cyan), 0.16), rgba(255,255,255,0.020)),
+    rgba(10, 23, 39, 0.84) !important;
+  box-shadow:
+    0 0 0 1px rgba(var(--operator-cyan), 0.10),
+    0 0 24px rgba(var(--operator-cyan), 0.15),
+    inset 0 1px 0 rgba(255,255,255,0.10) !important;
+}
+
+.operator-btn--primary,
+.operator-mini-btn--primary,
+.operator-feed-pills button.is-active {
+  color: #eaffff !important;
+  border-color: rgba(45, 212, 191, 0.52) !important;
+  background:
+    radial-gradient(ellipse at 50% 0%, rgba(255,255,255,0.28), transparent 60%),
+    linear-gradient(180deg, rgba(45, 212, 191, 0.32), rgba(20, 184, 166, 0.11)),
+    rgba(6, 18, 29, 0.88) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.16),
+    0 0 26px rgba(45, 212, 191, 0.18) !important;
+}
+
+.operator-btn--close:hover,
+.operator-mini-btn--danger,
+.operator-entry--tier-high {
+  border-color: rgba(251, 113, 133, 0.58) !important;
+  background:
+    linear-gradient(180deg, rgba(251, 113, 133, 0.20), rgba(255,255,255,0.014)),
+    rgba(30, 13, 24, 0.88) !important;
+}
+
+.operator-entry--tier-high::before,
+.operator-entry--action::before {
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.76), rgba(var(--operator-cyan), 0.62), transparent 72%) !important;
+}
+
+.operator-entry__rail {
+  background:
+    linear-gradient(180deg, rgba(var(--operator-cyan), 0.14), rgba(var(--operator-gold), 0.045) 48%, transparent) !important;
+  border-right-color: rgba(var(--operator-arc), 0.16) !important;
+}
+
+.operator-entry__rail span,
+.operator-empty-state__icon,
+.operator-activity-dot {
+  border-color: rgba(var(--operator-arc), 0.44) !important;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(var(--operator-white-hot), 0.20), rgba(5, 12, 22, 0.76) 58%) !important;
+  box-shadow:
+    0 0 14px rgba(var(--operator-cyan), 0.22),
+    inset 0 1px 0 rgba(255,255,255,0.10) !important;
+}
+
+.operator-tier--medium,
+.operator-life--pending,
+.operator-life--auto {
+  color: color-mix(in oklab, var(--warn), white 18%) !important;
+  border-color: rgba(var(--operator-gold), 0.44) !important;
+  background: rgba(var(--operator-gold), 0.13) !important;
+}
+
+.operator-tier--low,
+.operator-life--consumed,
+.operator-life--inform {
+  color: color-mix(in oklab, var(--good), white 18%) !important;
+  border-color: rgba(45, 212, 191, 0.46) !important;
+  background: rgba(45, 212, 191, 0.12) !important;
+}
+
+.operator-state-text--good {
+  color: color-mix(in oklab, var(--good), white 14%) !important;
+}
+
+.operator-state-text--warn,
+.operator-state-text--auto {
+  color: color-mix(in oklab, var(--warn), white 14%) !important;
+}
+
+.operator-state-text--bad {
+  color: color-mix(in oklab, var(--bad), white 18%) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operator-panel *,
+  .operator-panel *::before,
+  .operator-panel *::after {
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+  }
+}
+
+/* Operator summary metrics: distinct semantic cards with CSS-only icons. */
+.operator-panel__metrics span {
+  --operator-metric-accent: rgba(var(--operator-arc), 0.62);
+  --operator-metric-fill: rgba(var(--operator-cyan), 0.16);
+  --operator-metric-glow: rgba(var(--operator-cyan), 0.16);
+  --operator-metric-icon: "•";
+  padding-left: 40px !important;
+  border-color: color-mix(in oklab, var(--operator-metric-accent), transparent 42%) !important;
+  background:
+    radial-gradient(circle at 20px 50%, var(--operator-metric-fill), transparent 36px),
+    linear-gradient(135deg, var(--operator-metric-fill), transparent 26% 74%, rgba(var(--operator-arc), 0.055)),
+    linear-gradient(180deg, rgba(255,255,255,0.062), rgba(255,255,255,0.014)),
+    rgba(7, 16, 29, 0.84) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.080),
+    inset 0 -1px 0 color-mix(in oklab, var(--operator-metric-accent), transparent 72%),
+    0 10px 24px rgba(0,0,0,0.16),
+    0 0 18px var(--operator-metric-glow) !important;
+}
+
+.operator-panel__metrics span::before {
+  content: var(--operator-metric-icon) !important;
+  position: absolute !important;
+  left: 10px !important;
+  top: 50% !important;
+  width: 21px !important;
+  height: 21px !important;
+  display: grid !important;
+  place-items: center !important;
+  color: color-mix(in oklab, var(--operator-metric-accent), white 18%) !important;
+  font-size: 12px !important;
+  font-weight: 900 !important;
+  line-height: 1 !important;
+  transform: translateY(-50%) !important;
+  border: 1px solid color-mix(in oklab, var(--operator-metric-accent), transparent 26%) !important;
+  border-radius: 999px !important;
+  background:
+    radial-gradient(circle at 38% 30%, rgba(255,255,255,0.22), transparent 34%),
+    rgba(3, 10, 20, 0.74) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    0 0 12px var(--operator-metric-glow) !important;
+}
+
+.operator-panel__metrics span strong {
+  color: color-mix(in oklab, var(--operator-metric-accent), white 26%) !important;
+  text-shadow: 0 0 14px var(--operator-metric-glow) !important;
+}
+
+.operator-panel__metrics span em {
+  color: color-mix(in oklab, var(--operator-metric-accent), white 8%) !important;
+}
+
+.operator-panel__metrics span:nth-child(1) {
+  --operator-metric-accent: rgba(245, 181, 63, 0.92);
+  --operator-metric-fill: rgba(245, 181, 63, 0.145);
+  --operator-metric-glow: rgba(245, 181, 63, 0.18);
+  --operator-metric-icon: "…";
+}
+
+.operator-panel__metrics span:nth-child(2) {
+  --operator-metric-accent: rgba(125, 211, 252, 0.96);
+  --operator-metric-fill: rgba(56, 189, 248, 0.150);
+  --operator-metric-glow: rgba(56, 189, 248, 0.20);
+  --operator-metric-icon: "→";
+}
+
+.operator-panel__metrics span:nth-child(3) {
+  --operator-metric-accent: rgba(251, 113, 133, 0.94);
+  --operator-metric-fill: rgba(251, 113, 133, 0.150);
+  --operator-metric-glow: rgba(251, 113, 133, 0.20);
+  --operator-metric-icon: "!";
+}
+
+.operator-panel__metrics span:nth-child(4) {
+  --operator-metric-accent: rgba(45, 212, 191, 0.94);
+  --operator-metric-fill: rgba(45, 212, 191, 0.145);
+  --operator-metric-glow: rgba(45, 212, 191, 0.18);
+  --operator-metric-icon: "✓";
+}
+
+/* Operator clarity pass: make status, controls, and available actions scannable. */
+.operator-panel__actions {
+  position: relative;
+  isolation: isolate;
+  border-radius: 18px;
+  background:
+    linear-gradient(90deg, rgba(125, 211, 252, 0.055), transparent 42%, rgba(45, 212, 191, 0.050));
+  box-shadow:
+    inset 0 0 0 1px rgba(125, 211, 252, 0.12),
+    inset 0 1px 0 rgba(255,255,255,0.045);
+}
+
+.operator-panel__actions .operator-btn {
+  --operator-action-accent: rgba(125, 211, 252, 0.52);
+  --operator-action-fill: rgba(125, 211, 252, 0.095);
+  --operator-action-glow: rgba(125, 211, 252, 0.13);
+  border-color: color-mix(in oklab, var(--operator-action-accent), transparent 28%) !important;
+  background:
+    linear-gradient(180deg, var(--operator-action-fill), rgba(255,255,255,0.014)),
+    rgba(8, 18, 31, 0.84) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.090),
+    0 0 16px var(--operator-action-glow) !important;
+}
+
+.operator-panel__actions .operator-btn--primary {
+  --operator-action-accent: rgba(45, 212, 191, 0.78);
+  --operator-action-fill: rgba(45, 212, 191, 0.20);
+  --operator-action-glow: rgba(45, 212, 191, 0.22);
+}
+
+.operator-panel__actions .operator-btn:not(.operator-btn--primary):not(.operator-btn--close):not(.operator-btn--ghost) {
+  --operator-action-accent: rgba(245, 181, 63, 0.72);
+  --operator-action-fill: rgba(245, 181, 63, 0.125);
+  --operator-action-glow: rgba(245, 181, 63, 0.16);
+}
+
+.operator-panel__actions .operator-btn--ghost {
+  --operator-action-accent: rgba(186, 230, 253, 0.58);
+  --operator-action-fill: rgba(186, 230, 253, 0.085);
+  --operator-action-glow: rgba(125, 211, 252, 0.12);
+}
+
+.operator-panel__actions .operator-btn--close {
+  --operator-action-accent: rgba(251, 113, 133, 0.68);
+  --operator-action-fill: rgba(251, 113, 133, 0.12);
+  --operator-action-glow: rgba(251, 113, 133, 0.16);
+}
+
+.operator-panel__actions .operator-btn:hover,
+.operator-panel__actions .operator-btn:focus-visible {
+  border-color: color-mix(in oklab, var(--operator-action-accent), white 12%) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--operator-action-accent), transparent 74%),
+    0 0 24px var(--operator-action-glow),
+    inset 0 1px 0 rgba(255,255,255,0.12) !important;
+}
+
+.operator-feed-pills button {
+  --operator-filter-accent: rgba(125, 211, 252, 0.42);
+  position: relative;
+  padding-left: 11px !important;
+  border-color: rgba(125, 211, 252, 0.20) !important;
+}
+
+.operator-feed-pills button::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--operator-filter-accent);
+  box-shadow: 0 0 10px var(--operator-filter-accent);
+}
+
+.operator-feed-pills button[aria-pressed="true"],
+.operator-feed-pills button.is-active {
+  --operator-filter-accent: rgba(45, 212, 191, 0.82);
+  border-color: rgba(45, 212, 191, 0.44) !important;
+}
+
+.operator-life {
+  --operator-life-accent: rgba(125, 211, 252, 0.58);
+  gap: 5px;
+  border-color: color-mix(in oklab, var(--operator-life-accent), transparent 58%) !important;
+  background:
+    linear-gradient(90deg, color-mix(in oklab, var(--operator-life-accent), transparent 88%), rgba(255,255,255,0.018)) !important;
+}
+
+.operator-life::before {
+  content: "•";
+  color: color-mix(in oklab, var(--operator-life-accent), white 12%);
+  font-size: 11px;
+  line-height: 1;
+  text-shadow: 0 0 10px var(--operator-life-accent);
+}
+
+.operator-life--pending::before,
+.operator-life--auto::before {
+  content: "…";
+}
+
+.operator-life--pending,
+.operator-life--auto {
+  --operator-life-accent: rgba(245, 181, 63, 0.82);
+}
+
+.operator-life--dispatched {
+  --operator-life-accent: rgba(125, 211, 252, 0.86);
+}
+
+.operator-life--dispatched::before {
+  content: "→";
+}
+
+.operator-life--consumed,
+.operator-life--inform {
+  --operator-life-accent: rgba(45, 212, 191, 0.82);
+}
+
+.operator-life--consumed::before,
+.operator-life--inform::before {
+  content: "✓";
+}
+
+.operator-life--failed,
+.operator-life--rejected,
+.operator-life--escalated {
+  --operator-life-accent: rgba(251, 113, 133, 0.86);
+}
+
+.operator-life--failed::before,
+.operator-life--rejected::before,
+.operator-life--escalated::before {
+  content: "!";
+}
+
+.operator-life--dismissed {
+  --operator-life-accent: rgba(148, 163, 184, 0.62);
+}
+
+.operator-life--dismissed::before {
+  content: "×";
+}
+
+.operator-life--superseded {
+  --operator-life-accent: rgba(186, 230, 253, 0.56);
+}
+
+.operator-life--superseded::before {
+  content: "↻";
+}
+
+.operator-entry__buttons {
+  position: relative;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.08);
+}
+
+.operator-entry__buttons .operator-mini-btn {
+  --operator-mini-accent: rgba(148, 163, 184, 0.48);
+  --operator-mini-fill: rgba(148, 163, 184, 0.070);
+  border-color: color-mix(in oklab, var(--operator-mini-accent), transparent 42%) !important;
+  background:
+    linear-gradient(180deg, var(--operator-mini-fill), rgba(255,255,255,0.012)),
+    rgba(7, 16, 29, 0.82) !important;
+}
+
+.operator-entry__buttons .operator-mini-btn::before,
+.operator-entry__link::before {
+  content: "×";
+  margin-right: 5px;
+  color: color-mix(in oklab, var(--operator-mini-accent), white 12%);
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.operator-entry__buttons .operator-mini-btn--primary,
+.operator-entry__link {
+  --operator-mini-accent: rgba(45, 212, 191, 0.78);
+  --operator-mini-fill: rgba(45, 212, 191, 0.16);
+}
+
+.operator-entry__buttons .operator-mini-btn--primary::before,
+.operator-entry__link::before {
+  content: "→";
+}
+
+.operator-entry__buttons .operator-mini-btn--danger {
+  --operator-mini-accent: rgba(251, 113, 133, 0.82);
+  --operator-mini-fill: rgba(251, 113, 133, 0.15);
+}
+
+.operator-entry__buttons .operator-mini-btn--danger::before {
+  content: "!";
+}
+
+.operator-entry__buttons .operator-mini-btn--ghost {
+  --operator-mini-accent: rgba(186, 230, 253, 0.48);
+  --operator-mini-fill: rgba(186, 230, 253, 0.050);
+}
+
+.operator-stream {
+  --operator-stream-accent: rgba(148, 163, 184, 0.34);
+  border-color: color-mix(in oklab, var(--operator-stream-accent), transparent 42%) !important;
+  box-shadow:
+    inset 3px 0 0 var(--operator-stream-accent),
+    inset 0 1px 0 rgba(255,255,255,0.050) !important;
+}
+
+.operator-stream .operator-section__head em::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 999px;
+  background: var(--operator-stream-accent);
+  box-shadow: 0 0 10px var(--operator-stream-accent);
+  vertical-align: 1px;
+}
+
+.operator-stream:not(.operator-stream--muted):not(.operator-stream--error) {
+  --operator-stream-accent: rgba(45, 212, 191, 0.62);
+}
+
+.operator-stream--muted {
+  --operator-stream-accent: rgba(148, 163, 184, 0.36);
+}
+
+.operator-stream--error {
+  --operator-stream-accent: rgba(251, 113, 133, 0.74);
+}
+
+.operator-feed-head {
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.operator-feed-tools {
+  margin-left: auto;
+  min-width: min(100%, 420px);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.operator-feed-search {
+  flex: 1 1 240px;
+  min-width: 240px;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, rgba(125, 211, 252, 0.055), rgba(255, 255, 255, 0.024), rgba(45, 212, 191, 0.050)),
+    rgba(6, 15, 28, 0.82);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 0 0 1px rgba(125, 211, 252, 0.025);
+}
+
+.operator-feed-search:focus-within {
+  border-color: rgba(125, 211, 252, 0.40);
+  box-shadow:
+    0 0 0 1px rgba(125, 211, 252, 0.08),
+    0 0 18px rgba(125, 211, 252, 0.12),
+    inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+.operator-feed-search.has-value {
+  border-color: rgba(45, 212, 191, 0.26);
+}
+
+.operator-feed-search__icon {
+  flex: 0 0 auto;
+  color: color-mix(in oklab, var(--accent-cool), white 16%);
+  font-size: 13px;
+  line-height: 1;
+  text-shadow: 0 0 10px rgba(125, 211, 252, 0.16);
+}
+
+.operator-feed-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: color-mix(in oklab, var(--fg), white 6%);
+  font: inherit;
+  font-size: 12px;
+}
+
+.operator-feed-search input::placeholder {
+  color: color-mix(in oklab, var(--fg-dim), white 10%);
+}
+
+.operator-feed-search__clear {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: color-mix(in oklab, var(--fg-dim), white 18%);
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.operator-feed-search__clear:hover,
+.operator-feed-search__clear:focus-visible {
+  border-color: rgba(125, 211, 252, 0.34);
+  background: rgba(125, 211, 252, 0.08);
+  color: var(--fg);
+  outline: none;
+}
+
+@media (max-width: 760px) {
+  .operator-feed-tools {
+    width: 100%;
+    min-width: 0;
+    justify-content: stretch;
+  }
+
+  .operator-feed-search {
+    min-width: 0;
+    flex-basis: 100%;
+  }
+}
+
+/* Operator outer frame refinement: much slimmer border, with bolder metallic chrome.
+   Keep the interior usability-focused; spend the visual complexity on the perimeter only. */
+.operator-panel {
+  --operator-cut: 22px;
+  --operator-frame: 11px;
+  --operator-inner-cut: 10px;
+  padding: var(--operator-frame);
+  background:
+    radial-gradient(circle at 50% -8%, rgba(var(--operator-arc), 0.13), transparent 24rem),
+    radial-gradient(circle at 88% 8%, rgba(var(--operator-gold), 0.08), transparent 18rem),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.018), transparent 24% 76%, rgba(var(--operator-arc), 0.024)),
+    linear-gradient(180deg, rgba(6, 16, 28, 0.992), rgba(2, 8, 17, 0.992)) !important;
+  box-shadow:
+    0 0 0 100vmax rgba(2, 7, 14, 0.46),
+    0 52px 148px rgba(0, 0, 0, 0.82),
+    0 0 0 1px rgba(var(--operator-arc), 0.12),
+    0 0 44px rgba(var(--operator-cyan), 0.09),
+    inset 0 0 24px rgba(var(--operator-cyan), 0.028) !important;
+}
+
+.operator-panel::before {
+  padding: var(--operator-frame);
+  background:
+    linear-gradient(90deg, transparent 8%, rgba(var(--operator-arc), 0.82) 10% 18%, rgba(var(--operator-gold), 0.62) 18% 19%, transparent 19% 81%, rgba(var(--operator-gold), 0.62) 81% 82%, rgba(var(--operator-arc), 0.82) 82% 90%, transparent 92%) top 0 left / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 12%, rgba(var(--operator-gold), 0.34) 12% 20%, transparent 20% 80%, rgba(var(--operator-gold), 0.34) 80% 88%, transparent 88%) bottom 0 left / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-arc), 0.52) 10% 28%, transparent 28% 72%, rgba(var(--operator-gold), 0.34) 72% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(var(--operator-gold), 0.34) 10% 28%, transparent 28% 72%, rgba(var(--operator-arc), 0.52) 72% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+    radial-gradient(circle at 20px 20px, rgba(255,255,255,0.86) 0 1px, rgba(var(--operator-gold), 0.72) 2px 3px, rgba(20, 31, 47, 0.98) 4px 6px, transparent 7px),
+    radial-gradient(circle at calc(100% - 20px) 20px, rgba(255,255,255,0.86) 0 1px, rgba(var(--operator-gold), 0.72) 2px 3px, rgba(20, 31, 47, 0.98) 4px 6px, transparent 7px),
+    radial-gradient(circle at 20px calc(100% - 20px), rgba(255,255,255,0.62) 0 1px, rgba(var(--operator-arc), 0.54) 2px 3px, rgba(20, 31, 47, 0.98) 4px 6px, transparent 7px),
+    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.62) 0 1px, rgba(var(--operator-arc), 0.54) 2px 3px, rgba(20, 31, 47, 0.98) 4px 6px, transparent 7px),
+    linear-gradient(135deg, rgba(244, 248, 255, 0.92), rgba(109, 122, 141, 0.68) 14%, rgba(13, 22, 35, 0.99) 34%, rgba(192, 202, 214, 0.40) 48%, rgba(16, 27, 41, 0.99) 68%, rgba(245, 181, 63, 0.24) 100%) !important;
+  filter: drop-shadow(0 0 10px rgba(var(--operator-cyan), 0.12));
+}
+
+.operator-panel::after {
+  inset: calc(var(--operator-frame) - 1px);
+  padding: 4px;
+  background:
+    linear-gradient(90deg, transparent 8%, rgba(var(--operator-arc), 0.60) 8% 18%, transparent 18% 82%, rgba(var(--operator-arc), 0.60) 82% 92%, transparent 92%) top 0 left / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-gold), 0.24) 12% 32%, transparent 32% 68%, rgba(var(--operator-arc), 0.24) 68% 88%, transparent 88%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(var(--operator-arc), 0.24) 12% 32%, transparent 32% 68%, rgba(var(--operator-gold), 0.24) 68% 88%, transparent 88%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(255,255,255,0.18), rgba(var(--operator-arc), 0.12) 22%, rgba(var(--operator-gold), 0.10) 48%, rgba(11, 21, 35, 0.92) 100%) !important;
+  box-shadow:
+    0 0 14px rgba(var(--operator-cyan), 0.08),
+    inset 0 0 0 1px rgba(var(--operator-cyan), 0.12) !important;
+}
+
+@media (max-width: 760px) {
+  .operator-panel {
+    --operator-cut: 16px;
+    --operator-frame: 8px;
+    --operator-inner-cut: 8px;
+  }
+
+  .operator-panel::before {
+    background:
+      linear-gradient(90deg, transparent 8%, rgba(var(--operator-arc), 0.82) 10% 18%, rgba(var(--operator-gold), 0.62) 18% 19%, transparent 19% 81%, rgba(var(--operator-gold), 0.62) 81% 82%, rgba(var(--operator-arc), 0.82) 82% 90%, transparent 92%) top 0 left / 100% 1px no-repeat,
+      linear-gradient(90deg, transparent 12%, rgba(var(--operator-gold), 0.34) 12% 20%, transparent 20% 80%, rgba(var(--operator-gold), 0.34) 80% 88%, transparent 88%) bottom 0 left / 100% 1px no-repeat,
+      linear-gradient(180deg, transparent 10%, rgba(var(--operator-arc), 0.52) 10% 28%, transparent 28% 72%, rgba(var(--operator-gold), 0.34) 72% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+      linear-gradient(180deg, transparent 10%, rgba(var(--operator-gold), 0.34) 10% 28%, transparent 28% 72%, rgba(var(--operator-arc), 0.52) 72% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+      linear-gradient(135deg, rgba(244, 248, 255, 0.92), rgba(109, 122, 141, 0.68) 14%, rgba(13, 22, 35, 0.99) 34%, rgba(192, 202, 214, 0.40) 48%, rgba(16, 27, 41, 0.99) 68%, rgba(245, 181, 63, 0.24) 100%) !important;
+  }
+}
+
+/* Operator outer frame finish: neon cyberpunk perimeter.
+   Border only — keep the inner surfaces readable and restrained. */
+.operator-panel {
+  background:
+    radial-gradient(circle at 50% -8%, rgba(125, 211, 252, 0.16), transparent 22rem),
+    radial-gradient(circle at 14% 14%, rgba(217, 70, 239, 0.12), transparent 16rem),
+    radial-gradient(circle at 88% 10%, rgba(34, 211, 238, 0.12), transparent 18rem),
+    linear-gradient(135deg, rgba(217, 70, 239, 0.04), transparent 24% 72%, rgba(34, 211, 238, 0.045)),
+    linear-gradient(180deg, rgba(6, 12, 24, 0.995), rgba(2, 7, 16, 0.995)) !important;
+  box-shadow:
+    0 0 0 100vmax rgba(1, 5, 12, 0.54),
+    0 52px 148px rgba(0, 0, 0, 0.82),
+    0 0 0 1px rgba(125, 211, 252, 0.12),
+    0 0 54px rgba(34, 211, 238, 0.12),
+    0 0 28px rgba(217, 70, 239, 0.08),
+    inset 0 0 26px rgba(34, 211, 238, 0.026) !important;
+}
+
+.operator-panel::before {
+  background:
+    linear-gradient(90deg, transparent 6%, rgba(34, 211, 238, 0.92) 8% 19%, rgba(217, 70, 239, 0.78) 19% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.78) 80% 81%, rgba(34, 211, 238, 0.92) 81% 92%, transparent 94%) top 0 left / 100% 1px no-repeat,
+    linear-gradient(90deg, transparent 10%, rgba(217, 70, 239, 0.40) 10% 18%, transparent 18% 82%, rgba(34, 211, 238, 0.40) 82% 90%, transparent 90%) bottom 0 left / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(34, 211, 238, 0.62) 10% 30%, transparent 30% 70%, rgba(217, 70, 239, 0.38) 70% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 10%, rgba(217, 70, 239, 0.38) 10% 30%, transparent 30% 70%, rgba(34, 211, 238, 0.62) 70% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+    repeating-linear-gradient(90deg, rgba(34, 211, 238, 0.22) 0 1px, transparent 1px 9px) top 3px center / calc(100% - 42px) 1px no-repeat,
+    repeating-linear-gradient(90deg, rgba(217, 70, 239, 0.16) 0 1px, transparent 1px 10px) bottom 3px center / calc(100% - 54px) 1px no-repeat,
+    radial-gradient(circle at 20px 20px, rgba(255,255,255,0.90) 0 1px, rgba(34, 211, 238, 0.78) 2px 3px, rgba(5, 9, 18, 0.98) 4px 6px, transparent 7px),
+    radial-gradient(circle at calc(100% - 20px) 20px, rgba(255,255,255,0.90) 0 1px, rgba(217, 70, 239, 0.78) 2px 3px, rgba(5, 9, 18, 0.98) 4px 6px, transparent 7px),
+    radial-gradient(circle at 20px calc(100% - 20px), rgba(255,255,255,0.74) 0 1px, rgba(217, 70, 239, 0.62) 2px 3px, rgba(5, 9, 18, 0.98) 4px 6px, transparent 7px),
+    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.74) 0 1px, rgba(34, 211, 238, 0.62) 2px 3px, rgba(5, 9, 18, 0.98) 4px 6px, transparent 7px),
+    linear-gradient(135deg, rgba(201, 236, 255, 0.84), rgba(43, 80, 106, 0.62) 10%, rgba(6, 11, 22, 0.99) 28%, rgba(34, 211, 238, 0.22) 46%, rgba(217, 70, 239, 0.18) 54%, rgba(8, 14, 26, 0.99) 72%, rgba(120, 53, 15, 0.12) 100%) !important;
+  filter:
+    drop-shadow(0 0 10px rgba(34, 211, 238, 0.16))
+    drop-shadow(0 0 16px rgba(217, 70, 239, 0.10));
+}
+
+.operator-panel::after {
+  background:
+    linear-gradient(90deg, transparent 8%, rgba(34, 211, 238, 0.68) 8% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.68) 80% 92%, transparent 92%) top 0 left / 100% 1px no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(217, 70, 239, 0.28) 12% 32%, transparent 32% 68%, rgba(34, 211, 238, 0.28) 68% 88%, transparent 88%) left 0 center / 1px 100% no-repeat,
+    linear-gradient(180deg, transparent 12%, rgba(34, 211, 238, 0.28) 12% 32%, transparent 32% 68%, rgba(217, 70, 239, 0.28) 68% 88%, transparent 88%) right 0 center / 1px 100% no-repeat,
+    linear-gradient(135deg, rgba(255,255,255,0.12), rgba(34, 211, 238, 0.10) 24%, rgba(217, 70, 239, 0.08) 52%, rgba(8, 16, 28, 0.94) 100%) !important;
+  box-shadow:
+    0 0 18px rgba(34, 211, 238, 0.08),
+    0 0 12px rgba(217, 70, 239, 0.05),
+    inset 0 0 0 1px rgba(125, 211, 252, 0.10) !important;
+}
+
+@media (max-width: 760px) {
+  .operator-panel::before {
+    background:
+      linear-gradient(90deg, transparent 6%, rgba(34, 211, 238, 0.92) 8% 19%, rgba(217, 70, 239, 0.78) 19% 20%, transparent 20% 80%, rgba(217, 70, 239, 0.78) 80% 81%, rgba(34, 211, 238, 0.92) 81% 92%, transparent 94%) top 0 left / 100% 1px no-repeat,
+      linear-gradient(90deg, transparent 10%, rgba(217, 70, 239, 0.40) 10% 18%, transparent 18% 82%, rgba(34, 211, 238, 0.40) 82% 90%, transparent 90%) bottom 0 left / 100% 1px no-repeat,
+      linear-gradient(180deg, transparent 10%, rgba(34, 211, 238, 0.62) 10% 30%, transparent 30% 70%, rgba(217, 70, 239, 0.38) 70% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
+      linear-gradient(180deg, transparent 10%, rgba(217, 70, 239, 0.38) 10% 30%, transparent 30% 70%, rgba(34, 211, 238, 0.62) 70% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
+      linear-gradient(135deg, rgba(201, 236, 255, 0.84), rgba(43, 80, 106, 0.62) 10%, rgba(6, 11, 22, 0.99) 28%, rgba(34, 211, 238, 0.22) 46%, rgba(217, 70, 239, 0.18) 54%, rgba(8, 14, 26, 0.99) 72%, rgba(120, 53, 15, 0.12) 100%) !important;
+  }
 }

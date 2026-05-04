@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import * as Lucide from 'lucide-react';
 import { toast } from 'sonner';
+import RouteLink from '../../_components/RouteLink';
 
 interface InstalledPluginRecord {
   name: string;
@@ -81,7 +82,7 @@ export default function InstalledPluginsPage() {
       ) : plugins.length === 0 ? (
         <div className="pc-card pc-marketplace-empty">
           <strong>No plugins installed yet.</strong>
-          <span>Browse the <a href="/marketplace/plugins">plugin catalog</a> to install one.</span>
+          <span>Browse the <RouteLink href="/marketplace/plugins">plugin catalog</RouteLink> to install one.</span>
         </div>
       ) : (
         <div className="pc-marketplace-grid">
@@ -92,7 +93,7 @@ export default function InstalledPluginsPage() {
                 <div className="pc-marketplace-card-head">
                   <span className="pc-marketplace-card-icon plugin"><Lucide.Puzzle size={18} /></span>
                   <div>
-                    <a href={`/marketplace/${encodeURIComponent(p.name)}`} className="pc-marketplace-card-title">{p.name}</a>
+                    <RouteLink href={`/marketplace/${encodeURIComponent(p.name)}`} className="pc-marketplace-card-title">{p.name}</RouteLink>
                     <span>{p.source}</span>
                   </div>
                   <em>Installed</em>

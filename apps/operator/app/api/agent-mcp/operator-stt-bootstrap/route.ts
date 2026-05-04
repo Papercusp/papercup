@@ -15,14 +15,14 @@
 
 import { NextRequest } from 'next/server';
 import { readDeepgramKey } from '@/lib/voice-credentials';
-import { readVoicePrefs } from '@/lib/voice-prefs';
+import { loadVoicePrefs } from '@/lib/voice-prefs';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const engine = url.searchParams.get('engine');
-  const prefs = readVoicePrefs();
+  const prefs = loadVoicePrefs();
   if (!prefs.webSpeechLeakAcked) {
     return new Response('not-acked', { status: 404 });
   }

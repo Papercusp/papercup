@@ -14,7 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Tooltip } from '../harness/Tooltip';
-import Link from 'next/link';
+import RouteLink from './RouteLink';
 import {
   Activity,
   Bot,
@@ -47,7 +47,8 @@ import {
   X,
   type LucideIcon,
 } from 'lucide-react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from '@bprogress/next/app';
+import { usePathname, useSearchParams } from 'next/navigation';
 
 interface ToolCallEntry {
   kind: 'tool';
@@ -932,7 +933,7 @@ export function OracleDock() {
     });
     const SelectedRoleIcon = selectedRole ? roleIcon(selectedRole) : Bot;
     return (
-      <div className="oracle-picker-body" role="dialog" aria-label="Start a new chat">
+      <div className="oracle-picker-body pc-animate-in pc-animate-in--down pc-animate-in--fast" role="dialog" aria-label="Start a new chat">
         <div className="oracle-picker-simple oracle-picker-form">
           <div className="oracle-picker-field">
             <label htmlFor="oracle-picker-harness-trigger">Harness</label>
@@ -958,7 +959,7 @@ export function OracleDock() {
                   <em>⌄</em>
                 </button>
                 {pickerMenuOpen === 'harness' && (
-                  <div className="oracle-picker-menu" role="listbox" aria-label="Choose a harness">
+                  <div className="oracle-picker-menu pc-animate-in pc-animate-in--down pc-animate-in--fast" role="listbox" aria-label="Choose a harness">
                     {displayHarnesses.map((h) => {
                       const isSelected = h.slug === selectedSlug;
                       return (
@@ -1005,7 +1006,7 @@ export function OracleDock() {
               <em>⌄</em>
             </button>
             {pickerMenuOpen === 'agent' && roles.length > 0 && (
-              <div className="oracle-picker-menu" role="listbox" aria-label="Choose an agent">
+              <div className="oracle-picker-menu pc-animate-in pc-animate-in--down pc-animate-in--fast" role="listbox" aria-label="Choose an agent">
                 {orderedRoles.map((role) => {
                   const isSelected = role === selectedRole;
                   const RoleIcon = roleIcon(role);
@@ -1057,7 +1058,11 @@ export function OracleDock() {
   return (
     <>
       {!open && (
-        <button onClick={() => setOpen(true)} aria-label="Open Oracle assistant" className="oracle-fab">
+        <button
+          onClick={() => setOpen(true)}
+          aria-label="Open Oracle assistant"
+          className={`oracle-fab${Object.values(unreadMap).some(Boolean) ? ' has-unread' : ''}`}
+        >
           <img src="/mascot.svg" alt="" height={34} style={{ display: 'block' }} />
           <span>Ask Oracle</span>
           {Object.values(unreadMap).some(Boolean) && <span className="oracle-fab-badge" aria-label="unread" />}
@@ -1065,8 +1070,8 @@ export function OracleDock() {
       )}
 
       {open && (
-        <div className="oracle-dock" data-oracle-dock role="dialog" aria-label="Oracle">
-          <header className="oracle-dock-header">
+        <div className="oracle-dock pc-animate-in pc-animate-in--right" data-oracle-dock role="dialog" aria-label="Oracle">
+          <header className="oracle-dock-header pc-animate-in pc-animate-in--down pc-animate-in--fast">
             <div className="oracle-header-main">
               <span className="oracle-header-badge">
                 <ActiveTargetIcon aria-hidden="true" className="oracle-header-icon" />
@@ -1078,13 +1083,13 @@ export function OracleDock() {
             </div>
             <div className="oracle-header-actions">
               <Tooltip label="Reset this chat"><button onClick={newOracleChat} aria-label="Reset this chat" className="oracle-icon-button"><RefreshCcw aria-hidden="true" className="oracle-header-action-icon" /></button></Tooltip>
-              <Link href="/settings/oracle" className="oracle-icon-button" title="Configure" aria-label="Configure"><Settings2 aria-hidden="true" className="oracle-header-action-icon" /></Link>
+              <RouteLink href="/settings/oracle" className="oracle-icon-button" title="Configure" aria-label="Configure"><Settings2 aria-hidden="true" className="oracle-header-action-icon" /></RouteLink>
               <button onClick={() => setOpen(false)} aria-label="Close" className="oracle-icon-button oracle-icon-button-close"><X aria-hidden="true" className="oracle-header-action-icon" /></button>
             </div>
           </header>
 
           {/* Tab strip */}
-          <div className="oracle-tabs" role="tablist">
+          <div className="oracle-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist">
             {tabs.map((t) => {
               const isActive = t.id === active.id;
               const tabBusy = !!busyMap[t.id];
@@ -1095,6 +1100,8 @@ export function OracleDock() {
                   key={t.id}
                   role="tab"
                   aria-selected={isActive}
+                  data-busy={tabBusy ? 'true' : undefined}
+                  data-unread={!tabBusy && unread ? 'true' : undefined}
                   className={`oracle-tab${isActive ? ' is-active' : ''}`}
                   onClick={() => setActiveId(t.id)}
                 >
@@ -1127,7 +1134,7 @@ export function OracleDock() {
 
           {pickerView ?? (
             <>
-              <div className="oracle-body" style={supportActive ? { display: 'none' } : undefined}>
+              <div className="oracle-body pc-animate-in pc-animate-in--fade pc-animate-in--delay-2" style={supportActive ? { display: 'none' } : undefined}>
                 {active.messages.length === 0 ? (
                   <div className="oracle-empty-state">
                     <span className="oracle-empty-state-icon">

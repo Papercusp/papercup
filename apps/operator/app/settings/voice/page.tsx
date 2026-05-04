@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState, useCallback, useRef } from 'react';
-import { Link } from 'next-view-transitions';
+import RouteLink from '../../_components/RouteLink';
 
 import { toast } from 'sonner';
 import { LazyDetails } from '../../_components/LazyDetails';
@@ -401,7 +401,7 @@ export default function VoiceSettingsPage() {
       <section style={{ marginBottom: 24, padding: 12, border: '1px dashed var(--border)', borderRadius: 4 }}>
         <p style={{ ...hint, margin: 0 }}>
           Cloud API keys (OpenAI, ElevenLabs, Cartesia, Deepgram, Picovoice, Google AI) live on
-          the dedicated <Link href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</Link> page.
+          the dedicated <RouteLink href="/settings/api-keys" style={{ textDecoration: 'underline' }}>API keys</RouteLink> page.
         </p>
       </section>
 

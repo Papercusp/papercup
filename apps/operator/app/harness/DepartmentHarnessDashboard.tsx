@@ -7,7 +7,7 @@ import { Select } from './Select';
 import { Checkbox } from './Checkbox';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
-import { toast, Toaster } from 'sonner';
+import { toast } from 'sonner';
 import { Inbox, Send, FileText, NotebookPen, Workflow, Cpu, Brain } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
@@ -117,7 +117,7 @@ export default function DepartmentHarnessDashboard({ harnessSlug, departmentSlug
 
   return (
     <div className="h-root" style={{ padding: 16 }}>
-      <Toaster position="bottom-right" />
+      {/* Toaster mounted globally in app/layout.tsx — see HarnessDashboard. */}
 
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>

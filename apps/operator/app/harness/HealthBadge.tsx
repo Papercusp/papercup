@@ -72,6 +72,7 @@ export default function HealthBadge({ slug }: Props) {
   const tone: 'good' | 'warn' | 'bad' = data.ok ? 'good' : passed >= Math.ceil(total * 0.7) ? 'warn' : 'bad';
 
   const tooltip = [
+    `health checks: ${passed}/${total} passing`,
     `overall: ${data.ok ? 'OK' : 'degraded'}`,
     `alive: ${data.alive ? 'yes' : 'no'}`,
     `escalated: ${data.escalated ? 'yes' : 'no'}`,
@@ -86,7 +87,7 @@ export default function HealthBadge({ slug }: Props) {
     <Tooltip label={<span style={{ whiteSpace: 'pre-line' }}>{tooltip}</span>}>
       <div>
         <StatCard
-          label="health"
+          label="checks"
           value={`${passed}/${total}`}
           tone={tone}
           icon={<Heart size={13} />}

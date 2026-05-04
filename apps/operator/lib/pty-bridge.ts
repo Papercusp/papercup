@@ -19,6 +19,8 @@
  */
 import { spawn, type IPty } from '@lydell/node-pty';
 import { randomUUID } from 'node:crypto';
+import { Terminal as HeadlessTerminal } from '@xterm/headless';
+import { SerializeAddon } from '@xterm/addon-serialize';
 
 export interface SpawnPtyOpts {
   /** Binary to launch (e.g. 'omp', 'bash', '/usr/local/bin/omp'). */
@@ -52,32 +54,47 @@ export interface PtyHandle {
   /** Fired once the underlying process exits. */
   onExit: Set<(code: number, signal: number) => void>;
   /**
-   * Bytes received before any SSE subscriber connected. Used by the
-   * prewarm path: a handle is spawned eagerly, runs for a few hundred
-   * ms producing the omp banner + initial prompt, and only later does
-   * the UI's SSE consumer attach. Without replay, that early output is
-   * dropped and the user sees an empty pane.
-   *
-   * Capped at REPLAY_CAP_BYTES — once exceeded we drop the oldest
-   * chunk. Cleared after first subscribe.
+   * Persistent ring buffer of bytes the pty has emitted, capped at
+   * HISTORY_CAP_BYTES. Kept as a fallback for clients that don't want
+   * a full screen-state replay (notably the SSE path, which streams
+   * raw bytes anyway and benefits from the same byte representation).
    */
-  replayBuffer: Buffer[];
-  replayBytes: number;
-  replayClosed: boolean;
+  history: Buffer[];
+  historyBytes: number;
+  /**
+   * P4: server-side xterm-headless instance fed every byte the pty
+   * emits. Lets us replay bounded screen state on reconnect (a few KB
+   * of ANSI escapes) instead of the full byte history. Geometry-
+   * correct for vim/htop because the headless Terminal resizes
+   * alongside the pty.
+   */
+  headless: HeadlessTerminal;
+  serializer: SerializeAddon;
 }
 
-const REPLAY_CAP_BYTES = 256 * 1024;
+const HISTORY_CAP_BYTES = 1024 * 1024;
+const HEADLESS_SCROLLBACK = 1000;
 
 const MAX_CONCURRENT_PTYS = 16;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const REAPER_INTERVAL_MS = 30 * 1000;
 
-const handles = new Map<string, PtyHandle>();
-let reaperStarted = false;
+// Pin module state on globalThis so multiple compiled instances of this
+// module share the same Map. Next.js 16 bundles instrumentation.ts and
+// API routes separately — without this, the WS server (lib/pty-ws.ts,
+// imported from instrumentation.ts) sees an empty handles map even
+// though the Hono /spawn route just registered a handle.
+type Globals = typeof globalThis & {
+  __papercuspPtyHandles?: Map<string, PtyHandle>;
+  __papercuspPtyReaperStarted?: boolean;
+};
+const _globals = globalThis as Globals;
+const handles: Map<string, PtyHandle> = _globals.__papercuspPtyHandles ?? new Map<string, PtyHandle>();
+_globals.__papercuspPtyHandles = handles;
 
 function startReaper(): void {
-  if (reaperStarted) return;
-  reaperStarted = true;
+  if (_globals.__papercuspPtyReaperStarted) return;
+  _globals.__papercuspPtyReaperStarted = true;
   setInterval(() => {
     const now = Date.now();
     for (const handle of handles.values()) {
@@ -127,6 +144,14 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
       rows: opts.rows,
       cwd: opts.cwd,
       env,
+      // F3: cooperate with node-pty's built-in XON/XOFF handling for
+      // children that emit flow-control bytes. omp/pi don't normally
+      // emit raw XOFF (they're TUIs that own input directly), but
+      // shells in the pty might. Pairs with the F2 watermark in
+      // pty-ws.ts: F2 throttles on bytes the *server* hasn't yet
+      // ack'd from the client; F3 throttles on the kernel-pty side.
+      // PAPERCUSP_PTY_FLOW_CONTROL=0 disables.
+      handleFlowControl: process.env.PAPERCUSP_PTY_FLOW_CONTROL !== '0',
     });
   } catch (err) {
     throw new PtyError(
@@ -136,6 +161,15 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
   }
 
   const id = randomUUID();
+  const headless = new HeadlessTerminal({
+    cols: opts.cols,
+    rows: opts.rows,
+    scrollback: HEADLESS_SCROLLBACK,
+    allowProposedApi: true,
+  });
+  const serializer = new SerializeAddon();
+  headless.loadAddon(serializer);
+
   const handle: PtyHandle = {
     id,
     pty,
@@ -148,23 +182,31 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
     exitCode: null,
     onData: new Set(),
     onExit: new Set(),
-    replayBuffer: [],
-    replayBytes: 0,
-    replayClosed: false,
+    history: [],
+    historyBytes: 0,
+    headless,
+    serializer,
   };
   handles.set(id, handle);
 
   pty.onData((chunk) => {
     handle.lastActivityMs = Date.now();
     const buf = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : chunk;
-    if (!handle.replayClosed) {
-      handle.replayBuffer.push(buf);
-      handle.replayBytes += buf.length;
-      while (handle.replayBytes > REPLAY_CAP_BYTES && handle.replayBuffer.length > 1) {
-        const dropped = handle.replayBuffer.shift()!;
-        handle.replayBytes -= dropped.length;
-      }
+    // Maintain raw byte ring (SSE fallback path).
+    handle.history.push(buf);
+    handle.historyBytes += buf.length;
+    while (handle.historyBytes > HISTORY_CAP_BYTES && handle.history.length > 1) {
+      const dropped = handle.history.shift()!;
+      handle.historyBytes -= dropped.length;
     }
+    // Mirror into the headless terminal — feeds the SerializeAddon so
+    // getScreenSerialization() always reflects the live pty state.
+    // xterm-headless accepts strings (already-decoded code points)
+    // OR Uint8Array (UTF-8 decode); we have a Buffer so converting
+    // to Uint8Array is the cheap correct thing.
+    try {
+      handle.headless.write(new Uint8Array(buf.buffer, buf.byteOffset, buf.length));
+    } catch { /* a write in the wrong state — drop, the byte ring is authoritative */ }
     for (const sub of handle.onData) {
       try { sub(buf); } catch { /* subscriber threw — drop it next loop */ }
     }
@@ -178,6 +220,15 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
     }
     handle.onData.clear();
     handle.onExit.clear();
+    // Drop the handle from the map after a grace period so a late-
+    // arriving subscriber can still read the final screen state, but
+    // we don't accumulate dead entries that count against the cap or
+    // grow the map indefinitely. 30 s is well past any realistic
+    // reconnect window.
+    setTimeout(() => {
+      handles.delete(id);
+      try { handle.headless.dispose(); } catch { /* */ }
+    }, 30_000).unref?.();
   });
 
   return handle;
@@ -203,6 +254,9 @@ export function resizePty(id: string, cols: number, rows: number): boolean {
   handle.lastActivityMs = Date.now();
   try {
     handle.pty.resize(cols, rows);
+    // Mirror to the headless terminal so the serialized state matches
+    // what curses apps will draw at the new geometry.
+    try { handle.headless.resize(cols, rows); } catch { /* */ }
     return true;
   } catch {
     return false;
@@ -217,6 +271,10 @@ export function killPty(id: string): boolean {
     try { handle.pty.kill(); } catch { /* already dying */ }
     handle.killed = true;
   }
+  // Free the headless terminal — no consumers can ask for replay once
+  // a pty is explicitly killed (vs the soft "client disconnected" path
+  // where the handle stays alive for resume).
+  try { handle.headless.dispose(); } catch { /* already disposed */ }
   return true;
 }
 
@@ -227,20 +285,57 @@ export function markActive(id: string): void {
 }
 
 /**
- * Drain the replay buffer (bytes produced before any SSE subscriber
- * connected) and stop further buffering. Returns the merged Buffer or
- * null if there's nothing buffered. Idempotent — second call returns
- * null.
+ * Snapshot the persistent history buffer. Does NOT drain — survives any
+ * number of subscriber attach/detach cycles so a tab switch (PiPanel
+ * unmount → remount) can replay the full session into a fresh xterm.
+ * Returns null if empty. Used by the SSE fallback path; modern WS
+ * clients prefer getScreenSerialization which is bounded by screen
+ * size rather than session bytes.
  */
-export function consumeReplay(id: string): Buffer | null {
+export function getHistory(id: string): Buffer | null {
   const handle = handles.get(id);
-  if (!handle || handle.replayClosed) return null;
-  handle.replayClosed = true;
-  if (handle.replayBuffer.length === 0) return null;
-  const merged = Buffer.concat(handle.replayBuffer);
-  handle.replayBuffer = [];
-  handle.replayBytes = 0;
-  return merged;
+  if (!handle || handle.history.length === 0) return null;
+  return Buffer.concat(handle.history);
+}
+
+/**
+ * P4 replay: serialize the current xterm-headless screen state to a
+ * string of ANSI escapes. Writing this string into a fresh client
+ * xterm reproduces the exact on-screen state without replaying every
+ * byte the pty has ever emitted.
+ *
+ * Bounded by terminal size + scrollback (HEADLESS_SCROLLBACK rows),
+ * which is typically tens of KB regardless of session length. Uses
+ * VS Code's same approach for remote terminal restore.
+ *
+ * Returns null if the pty is unknown or the headless terminal has
+ * been disposed.
+ */
+export function getScreenSerialization(id: string): string | null {
+  const handle = handles.get(id);
+  if (!handle) return null;
+  try {
+    return handle.serializer.serialize({ scrollback: HEADLESS_SCROLLBACK });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Look up a pty by id. Returns metadata if alive, null if missing/dead.
+ * Used by /pty/spawn to honor a `resumePtyId` request from a remounting
+ * client.
+ */
+export function getPtyMeta(id: string): { id: string; command: string; args: readonly string[]; cwd: string; pid: number } | null {
+  const handle = handles.get(id);
+  if (!handle || handle.killed) return null;
+  return {
+    id: handle.id,
+    command: handle.command,
+    args: handle.args,
+    cwd: handle.cwd,
+    pid: handle.pty.pid,
+  };
 }
 
 /** Stats for an `/api/desktop/pty/stats` debug endpoint or similar. */

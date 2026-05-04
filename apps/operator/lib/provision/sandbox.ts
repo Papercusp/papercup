@@ -16,6 +16,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
 export interface SandboxOptions {
@@ -23,6 +24,12 @@ export interface SandboxOptions {
   pluginDir: string;
   /** Plugin's per-harness scratch dir (read-write mount). */
   scratchDir: string;
+  /**
+   * Harness's project directory (read-write mount) — exposed to scripts
+   * via `$PAPERCUSP_PROJECT_DIR` and used by `papercusp_render_templates`.
+   * Optional: scripts that don't touch project files can omit it.
+   */
+  projectDir?: string;
   /** Allowed outbound hosts (HTTPS only; substrate enforces 443/80). */
   allowedHosts: string[];
   /** Env vars to pass through. */
@@ -40,6 +47,12 @@ export interface SandboxBuildResult {
   active: boolean;
   /** Description of which sandboxer is in use, for audit log. */
   driver: 'bwrap' | 'sandbox-exec' | 'none';
+  /**
+   * Set when the sandbox smoke-test failed and the operator opted into
+   * `PAPERCUSP_ALLOW_NO_SANDBOX=1`. The script will run unsandboxed; the
+   * runner is expected to surface this loudly in the audit log.
+   */
+  smokeBypass?: { reason: string };
 }
 
 /** Substrate-bundled bwrap binary path resolution. */
@@ -83,6 +96,13 @@ function buildBwrapArgv(opts: SandboxOptions, bwrap: string): string[] {
   argv.push('--ro-bind', opts.pluginDir, opts.pluginDir);
   argv.push('--bind', opts.scratchDir, opts.scratchDir);
 
+  // Mount the harness's project dir RW so setup scripts can render
+  // *.tmpl files in place. Only when explicitly provided — keeps
+  // plugins that don't touch project files unable to.
+  if (opts.projectDir && existsSync(opts.projectDir)) {
+    argv.push('--bind', opts.projectDir, opts.projectDir);
+  }
+
   for (const m of opts.extraReadOnlyMounts ?? []) {
     argv.push('--ro-bind', m.src, m.dst);
   }
@@ -106,12 +126,16 @@ function buildBwrapArgv(opts: SandboxOptions, bwrap: string): string[] {
 
 function buildMacOsArgv(opts: SandboxOptions): string[] {
   // sandbox-exec profile constructed inline.
+  const projectWritable = opts.projectDir
+    ? `(allow file-write* (subpath "${opts.projectDir}"))`
+    : '';
   const profile = `
 (version 1)
 (deny default)
 (allow process-fork process-exec)
 (allow file-read*)
 (allow file-write* (subpath "${opts.scratchDir}"))
+${projectWritable}
 (allow file-write* (subpath "/tmp"))
 (allow file-write* (subpath "/private/tmp"))
 (allow network-outbound (remote tcp))
@@ -123,18 +147,77 @@ function buildMacOsArgv(opts: SandboxOptions): string[] {
   return ['sandbox-exec', '-p', profile];
 }
 
+/**
+ * Cached result of the bwrap smoke test. Computed once per process; the
+ * outcome is environmental (kernel policy, AppArmor, bwrap availability)
+ * and doesn't change across runs.
+ */
+let smokeCache: { passed: boolean; reason?: string } | null = null;
+
+function bwrapSmokeSync(bwrap: string): { passed: boolean; reason?: string } {
+  if (smokeCache !== null) return smokeCache;
+  // Per spec: smoke test = `bwrap --ro-bind / / --unshare-all true`.
+  // 5s timeout is generous; a working bwrap completes in <100ms.
+  const r = spawnSync(bwrap, ['--ro-bind', '/', '/', '--unshare-all', 'true'], {
+    timeout: 5_000,
+    encoding: 'utf8',
+  });
+  const passed = r.status === 0;
+  let reason: string | undefined;
+  if (!passed) {
+    if (r.error) {
+      reason = `bwrap-exec-error: ${r.error.message}`;
+    } else if ((r.stderr ?? '').trim()) {
+      // Take the first non-empty stderr line as the reason summary.
+      const firstErrLine = (r.stderr ?? '').trim().split('\n').find((l) => l.trim()) ?? '';
+      reason = `bwrap-exit-${r.status ?? '?'}: ${firstErrLine}`;
+    } else {
+      reason = `bwrap-exit-${r.status ?? '?'}`;
+    }
+  }
+  smokeCache = { passed, reason };
+  return smokeCache;
+}
+
+/** Test-only: clear the smoke cache so a fresh probe runs next call. */
+export function _resetSmokeCacheForTests(): void {
+  smokeCache = null;
+}
+
 export function buildSandbox(opts: SandboxOptions): SandboxBuildResult {
   const env = { ...opts.env };
-  // Escape hatch for test/CI environments where bwrap isn't available.
+  // Escape hatch 1: test/CI environments where bwrap isn't available.
+  // Skips the smoke probe entirely.
   if (process.env.PAPERCUSP_DISABLE_SANDBOX === '1') {
     return { argv: [], env, active: false, driver: 'none' };
   }
   if (process.platform === 'linux') {
     const bwrap = resolveBundledBwrap();
-    if (bwrap) {
+    if (!bwrap) {
+      // No bwrap binary at all. Pre-existing soft-fallback path.
+      return { argv: [], env, active: false, driver: 'none' };
+    }
+    const smoke = bwrapSmokeSync(bwrap);
+    if (smoke.passed) {
       return { argv: buildBwrapArgv(opts, bwrap), env, active: true, driver: 'bwrap' };
     }
-    return { argv: [], env, active: false, driver: 'none' };
+    // Smoke failed. The spec's "sandbox_available: false" path triggers
+    // signed-only mode in production. For dev, the operator can opt into
+    // running scripts unsandboxed by setting PAPERCUSP_ALLOW_NO_SANDBOX=1
+    // — the runner will record a `sandbox-bypass` audit event each run.
+    if (process.env.PAPERCUSP_ALLOW_NO_SANDBOX === '1') {
+      return {
+        argv: [],
+        env,
+        active: false,
+        driver: 'none',
+        smokeBypass: { reason: smoke.reason ?? 'bwrap-smoke-failed' },
+      };
+    }
+    // Default: keep the original fail-loud behavior. We hand back the
+    // bwrap argv anyway; exec time will reproduce the smoke error in
+    // stderr and the runner will surface it as setup-failed.
+    return { argv: buildBwrapArgv(opts, bwrap), env, active: true, driver: 'bwrap' };
   }
   if (process.platform === 'darwin') {
     return { argv: buildMacOsArgv(opts), env, active: true, driver: 'sandbox-exec' };

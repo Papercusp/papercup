@@ -6,6 +6,20 @@ import { papercuspRoot } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+// Plugins that aren't ready for users — hide everywhere they'd be
+// surfaced. Match by basename so `@papercupai/<x>` dirs collapse to `<x>`.
+const HIDDEN_PLUGIN_BASENAMES = new Set([
+  'notion-export',
+  'slack-notifier',
+  'vscode-server',
+  'jira-sync',
+]);
+function isHidden(slugOrName: string | undefined | null): boolean {
+  if (!slugOrName) return false;
+  const base = slugOrName.includes('/') ? slugOrName.split('/').pop()! : slugOrName;
+  return HIDDEN_PLUGIN_BASENAMES.has(base);
+}
+
 /**
  * GET /api/plugins/global — list every plugin installed under
  * ~/.papercusp/global-plugins/. Manifest-only (papercusp.json), no entry
@@ -68,6 +82,7 @@ export async function GET() {
   // Dedup by name — a plugin can exist both at top-level and under its scope.
   const seen = new Set<string>();
   const deduped = plugins.filter((p) => {
+    if (isHidden(p.name)) return false;
     if (seen.has(p.name)) return false;
     seen.add(p.name);
     return true;

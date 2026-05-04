@@ -12,7 +12,7 @@
  */
 
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { SnapshotPlugin } from './manifest';
 import { papercuspPath } from './paths';
 
@@ -122,13 +122,26 @@ export async function buildConsentSummary(
  * plugin-configs/<plugin>.json — the substrate enable flow normally writes
  * these via `papercusp plugin enable`. For restore we write directly so
  * we can re-enable in batch without prompting again.
+ *
+ * Also writes the `enabled-plugins.json` index file from the manifest's
+ * plugin list — without this, the forked harness has plugin configs on
+ * disk but nothing tells the operator they're enabled, so its
+ * `pendingProvisioning` queue stays empty after fork.
+ *
+ * Scoped plugin names (`@papercupai/cloudflare-stack`) are preserved as
+ * directory paths (`plugin-configs/@papercupai/cloudflare-stack.json`),
+ * matching the convention the operator + `papercusp plugin enable` use.
  */
 export async function persistPluginConfigs(args: {
   newSlug: string;
   plugins: ConsentSummary['plugins'];
 }): Promise<void> {
-  const dir = papercuspPath('harnesses', args.newSlug, 'plugin-configs');
-  await fs.mkdir(dir, { recursive: true });
+  const baseDir = papercuspPath('harnesses', args.newSlug, 'plugin-configs');
+  await fs.mkdir(baseDir, { recursive: true });
+
+  const enabled: Record<string, { version: string; enabledAt: string; configHash: string }> = {};
+  const enabledAt = new Date().toISOString();
+
   for (const p of args.plugins) {
     let json: unknown;
     try {
@@ -136,10 +149,21 @@ export async function persistPluginConfigs(args: {
     } catch {
       json = {};
     }
-    const slug = p.name.startsWith('@') ? p.name.split('/').pop() ?? p.name : p.name;
-    await fs.writeFile(
-      join(dir, `${slug}.json`),
-      JSON.stringify(json, null, 2) + '\n',
-    );
+    // Use the full plugin name as the on-disk path. For scoped names
+    // (`@scope/name`), the `/` splits into a sub-directory.
+    const configPath = join(baseDir, `${p.name}.json`);
+    await fs.mkdir(dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, JSON.stringify(json, null, 2) + '\n');
+
+    enabled[p.name] = {
+      version: p.version,
+      enabledAt,
+      configHash: '',
+    };
   }
+
+  // Write the enabled-plugins.json index — without this, the operator's
+  // pendingProvisioning logic finds no enabled plugins after fork.
+  const enabledPath = papercuspPath('harnesses', args.newSlug, 'enabled-plugins.json');
+  await fs.writeFile(enabledPath, JSON.stringify({ enabled }, null, 2) + '\n');
 }

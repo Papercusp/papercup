@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { Tooltip } from './Tooltip';
+import { Modal } from './Modal';
 import { toast } from 'sonner';
 import { ArrowRight, Check, X, Loader2 } from 'lucide-react';
 
@@ -31,11 +32,12 @@ interface Props {
 
 export default function PromotionCard({ slug, item, onResolved }: Props) {
   const [busy, setBusy] = useState<'confirm' | 'cancel' | null>(null);
+  // Confirm-modal state. Two distinct flows ('confirm-low-readiness' shown
+  // only when score < 1.0) so a single modal can host either prompt.
+  const [confirmKind, setConfirmKind] = useState<'low-readiness' | 'cancel' | null>(null);
 
-  const doConfirm = async () => {
-    if (item.readinessScore < 1.0) {
-      if (!window.confirm(`Readiness is only ${Math.round(item.readinessScore * 100)}%. Proceed anyway?`)) return;
-    }
+  const performConfirm = async () => {
+    setConfirmKind(null);
     setBusy('confirm');
     try {
       const res = await fetch(`/api/harness/${slug}/promote/${item.id}/confirm`, { method: 'POST' });
@@ -49,8 +51,17 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
     }
   };
 
-  const doCancel = async () => {
-    if (!window.confirm('Cancel this promotion and lift feature freeze?')) return;
+  const doConfirm = () => {
+    // Below 100% readiness → ask before proceeding.
+    if (item.readinessScore < 1.0) {
+      setConfirmKind('low-readiness');
+      return;
+    }
+    void performConfirm();
+  };
+
+  const performCancel = async () => {
+    setConfirmKind(null);
     setBusy('cancel');
     try {
       const res = await fetch(`/api/harness/${slug}/reviews/${item.id}/resolve`, {
@@ -67,6 +78,8 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
       setBusy(null);
     }
   };
+
+  const doCancel = () => setConfirmKind('cancel');
 
   const scorePct = Math.round(item.readinessScore * 100);
   const ready = item.status === 'ready' || item.readinessScore >= 1.0;
@@ -169,6 +182,34 @@ export default function PromotionCard({ slug, item, onResolved }: Props) {
           <X size={11} /> cancel
         </button>
       </div>
+
+      <Modal
+        open={confirmKind !== null}
+        onOpenChange={(o) => { if (!o) setConfirmKind(null); }}
+        title={confirmKind === 'cancel' ? 'Cancel promotion?' : 'Proceed below 100% readiness?'}
+      >
+        <div style={{ marginBottom: 16, fontSize: 13, color: 'var(--fg-dim)', lineHeight: 1.5 }}>
+          {confirmKind === 'cancel'
+            ? 'This will cancel this promotion and lift the feature freeze.'
+            : `Readiness is only ${Math.round(item.readinessScore * 100)}%. Proceed anyway?`}
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => setConfirmKind(null)}
+            style={{ padding: '6px 12px', fontSize: 12, background: 'transparent', color: 'var(--fg-dim)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer' }}
+          >
+            Keep
+          </button>
+          <button
+            type="button"
+            onClick={() => { if (confirmKind === 'cancel') void performCancel(); else void performConfirm(); }}
+            style={{ padding: '6px 12px', fontSize: 12, background: confirmKind === 'cancel' ? '#ef4444' : '#10b981', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer', fontWeight: 600 }}
+          >
+            {confirmKind === 'cancel' ? 'Cancel promotion' : 'Proceed'}
+          </button>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -16,6 +16,7 @@
 import { promises as fs } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, resolve as pathResolve } from 'node:path';
+import { RUNTIME_LIB_SH } from './runtime/lib-source';
 import { computeConfigHash, computeScriptHash, decideReprovision } from './hashes';
 import {
   acquireClaim,
@@ -25,6 +26,7 @@ import {
 } from './operator-claims';
 import { appendAudit, AuditStream } from './audit-log';
 import {
+  appendStateOutput,
   appendWalEntry,
   provisionDir,
   readState,
@@ -35,7 +37,20 @@ import {
 import { buildSandbox, type SandboxBuildResult } from './sandbox';
 import { buildNetworkPolicy } from './network-policy';
 
-const RUNTIME_LIB_PATH = pathResolve(__dirname, 'runtime/lib.sh');
+/**
+ * Writes the inlined RUNTIME_LIB_SH content to `<scratch>/papercusp-lib.sh`
+ * and returns the path. Called per phase; idempotent (if the file already
+ * exists with the same content, no-op).
+ *
+ * Why per-phase: bundling rewrites `__dirname` so a static path-resolve
+ * doesn't survive Next.js + turbopack. Inlining the helper text + writing
+ * to scratch dodges the bundler entirely.
+ */
+async function materializeRuntimeLib(scratchDir: string): Promise<string> {
+  const path = join(scratchDir, 'papercusp-lib.sh');
+  await fs.writeFile(path, RUNTIME_LIB_SH, { mode: 0o644 });
+  return path;
+}
 
 export interface ProvisionRunInputs {
   harness: string;
@@ -46,6 +61,14 @@ export interface ProvisionRunInputs {
   pluginVersion: string;
   /** Absolute path to the plugin's directory. */
   pluginDir: string;
+  /**
+   * Absolute path to the harness's project directory. Mounted RW into
+   * the sandbox; exposed as `$PAPERCUSP_PROJECT_DIR`. Required for
+   * `papercusp_render_templates` and any setup script that templates
+   * project files. Optional only for plugins that don't touch the
+   * project dir.
+   */
+  projectDir?: string;
   /** Plugin's per-harness config (raw object). */
   config: Record<string, unknown>;
   /** Manifest provision section. */
@@ -220,25 +243,68 @@ export async function runPhase(
     data: { scriptHash, configHash, pluginVersion: inputs.pluginVersion, decision },
   }, inputs.provision.auditLogCapMb);
 
+  // Surface sandbox bypass loudly — built before sandbox so the bypass
+  // reason is recorded once per run, regardless of script outcome.
+  // (We rebuild it just below to apply env vars; this is a cheap pre-check.)
+  {
+    const probe = buildSandbox({
+      pluginDir: inputs.pluginDir,
+      scratchDir: '/tmp', // shape-only probe; not the real scratch
+      allowedHosts: [],
+      env: {},
+    });
+    if (probe.smokeBypass) {
+      await appendAudit(inputs.harness, inputs.plugin, {
+        kind: 'sandbox-bypass',
+        runId,
+        data: { reason: probe.smokeBypass.reason, flag: 'PAPERCUSP_ALLOW_NO_SANDBOX' },
+      }, inputs.provision.auditLogCapMb);
+    }
+  }
+
   const scratch = await ensureScratch(inputs.harness, inputs.plugin);
+  const runtimeLibPath = await materializeRuntimeLib(scratch);
   const networkPolicy = buildNetworkPolicy({
     cloudProvider: inputs.provision.cloudProvider,
     allowedHosts: inputs.provision.allowedHosts,
   });
+  // Snapshot the current state so teardown / verify scripts can read the
+  // resources setup recorded. The state is JSON-encoded into an env var
+  // (`PAPERCUSP_PLUGIN_STATE`) so scripts use either env or stdin form.
+  let pluginStateJson: string | undefined;
+  if (phase === 'teardown' || phase === 'verify') {
+    try {
+      const cur = await readState(inputs.harness, inputs.plugin);
+      pluginStateJson = JSON.stringify(cur);
+    } catch {
+      pluginStateJson = '{"createdResources":[],"outputs":{}}';
+    }
+  }
   const sandbox = buildSandbox({
     pluginDir: inputs.pluginDir,
     scratchDir: scratch,
+    projectDir: inputs.projectDir,
     allowedHosts: networkPolicy.allowedHosts,
     env: {
       PAPERCUSP_PLUGIN_DIR: inputs.pluginDir,
       PAPERCUSP_SCRATCH_DIR: scratch,
-      PAPERCUSP_RUNTIME_LIB: RUNTIME_LIB_PATH,
+      PAPERCUSP_RUNTIME_LIB: runtimeLibPath,
       PAPERCUSP_PLUGIN_NAME: inputs.plugin,
       PAPERCUSP_HARNESS_SLUG: inputs.harness,
       PAPERCUSP_PHASE: phase,
       PAPERCUSP_RECORD_FIFO: join(scratch, '.papercusp-record-fifo'),
       // Pass through plugin config as JSON env var.
       PAPERCUSP_CONFIG: JSON.stringify(inputs.config),
+      // Flattened USER_VAR_* shortcuts for top-level scalar config fields,
+      // so plugin scripts can use envsubst directly without jq-parsing
+      // PAPERCUSP_CONFIG. Mirrors the dev-container Features convention.
+      ...flattenConfigToUserVars(inputs.config),
+      // Project dir (only if provided) — exposed for render-templates and
+      // any script that needs to write into the harness's project files.
+      ...(inputs.projectDir ? { PAPERCUSP_PROJECT_DIR: inputs.projectDir } : {}),
+      // Plugin state snapshot — only set for teardown + verify phases, so
+      // those scripts can read the resources setup recorded.
+      ...(pluginStateJson ? { PAPERCUSP_PLUGIN_STATE: pluginStateJson } : {}),
       PATH: process.env.PATH ?? '',
       HOME: scratch,
     },
@@ -266,6 +332,14 @@ export async function runPhase(
       await audit.write('STDERR: ' + line);
     },
     fifoPath,
+    outputAppender: async (key, value) => {
+      await appendStateOutput(inputs.harness, inputs.plugin, key, value);
+      await appendAudit(inputs.harness, inputs.plugin, {
+        kind: 'state-set',
+        runId,
+        data: { key },
+      }, inputs.provision.auditLogCapMb);
+    },
     walAppender: async (entry) => {
       await appendWalEntry(inputs.harness, inputs.plugin, entry);
       await appendAudit(inputs.harness, inputs.plugin, {
@@ -325,6 +399,8 @@ interface ScriptRunInputs {
   onStderr: (line: string) => Promise<void>;
   fifoPath: string;
   walAppender: (r: RecordedResource) => Promise<void>;
+  /** Called for `papercusp_state_set` writes — folds into state.outputs. */
+  outputAppender: (key: string, value: unknown) => Promise<void>;
 }
 
 interface ScriptRunResult {
@@ -341,7 +417,12 @@ async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
 
   // Tail the FIFO file in 200ms ticks; fold each new line into WAL.
   let fifoPos = 0;
-  const fifoTimer = setInterval(async () => {
+  // Carries an in-progress JSON object across drain ticks. Plugin authors
+  // who emit pretty-printed JSON (e.g. `jq -n` without `-c`) split a
+  // single object across multiple FIFO lines; we accumulate until JSON.parse
+  // succeeds, then dispatch.
+  let pendingChunk = '';
+  const drainFifo = async () => {
     try {
       const stat = await fs.stat(input.fifoPath);
       if (stat.size > fifoPos) {
@@ -351,21 +432,37 @@ async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
         await handle.close();
         fifoPos = stat.size;
         for (const line of buf.toString().split('\n')) {
-          if (!line.trim()) continue;
+          if (!line.trim()) {
+            // blank line is a soft separator — drop any half-formed chunk
+            pendingChunk = '';
+            continue;
+          }
+          pendingChunk = pendingChunk ? pendingChunk + '\n' + line : line;
+          let j: unknown;
           try {
-            const j = JSON.parse(line);
-            if (j && j.kind && j.externalId) {
-              await input.walAppender(j as RecordedResource);
-            }
+            j = JSON.parse(pendingChunk);
           } catch {
-            // skip
+            // Not yet a complete object; wait for next line.
+            // Cap accumulation to avoid unbounded buffer if input is junk.
+            if (pendingChunk.length > 64 * 1024) pendingChunk = '';
+            continue;
+          }
+          pendingChunk = '';
+          if (j && typeof j === 'object') {
+            const obj = j as Record<string, unknown>;
+            if (obj.$op === 'state_set' && typeof obj.key === 'string') {
+              await input.outputAppender(obj.key, obj.value);
+            } else if (typeof obj.kind === 'string' && typeof obj.externalId === 'string') {
+              await input.walAppender(obj as unknown as RecordedResource);
+            }
           }
         }
       }
     } catch {
       // fifo missing — fine
     }
-  }, 200);
+  };
+  const fifoTimer = setInterval(drainFifo, 200);
 
   return await new Promise<ScriptRunResult>((resolve) => {
     const child = spawn(bin, rest, {
@@ -405,7 +502,10 @@ async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
     child.on('error', (err) => {
       clearTimeout(timer);
       clearInterval(fifoTimer);
-      resolve({ ok: false, exitCode: null, error: err.message });
+      // Final FIFO drain in case the script wrote-then-errored.
+      drainFifo().finally(() => {
+        resolve({ ok: false, exitCode: null, error: err.message });
+      });
     });
     child.on('exit', (code) => {
       clearTimeout(timer);
@@ -413,13 +513,46 @@ async function runScript(input: ScriptRunInputs): Promise<ScriptRunResult> {
       // flush remaining stdout/stderr buffers
       if (stdoutBuf) input.onStdout(stdoutBuf).catch(() => { /* ignore */ });
       if (stderrBuf) input.onStderr(stderrBuf).catch(() => { /* ignore */ });
-      if (timedOut) {
-        resolve({ ok: false, exitCode: code, error: `timeout` });
-      } else {
-        resolve({ ok: code === 0, exitCode: code });
-      }
+      // Final FIFO drain — the script may have written record_resource +
+      // state_set entries between the last poll tick and exit. Without
+      // this, end-of-script writes are silently lost.
+      drainFifo().finally(() => {
+        if (timedOut) {
+          resolve({ ok: false, exitCode: code, error: `timeout` });
+        } else {
+          resolve({ ok: code === 0, exitCode: code });
+        }
+      });
     });
   });
+}
+
+/**
+ * Flatten top-level scalar config fields into `USER_VAR_<UPPER_KEY>` env
+ * vars. Strings, numbers, booleans, and null pass through (null → empty).
+ * Objects, arrays, and undefined are skipped — nested values stay
+ * accessible via `$PAPERCUSP_CONFIG` parsed with jq.
+ *
+ * Key transform: lowerCamel → UPPER_SNAKE matching the dev-container
+ * Features `OPTION_NAME` convention. Non-alphanumeric chars become `_`.
+ */
+export function flattenConfigToUserVars(
+  config: Record<string, unknown>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(config)) {
+    if (value === undefined) continue;
+    if (typeof value !== 'string' && typeof value !== 'number' &&
+        typeof value !== 'boolean' && value !== null) continue;
+    const upper = key
+      .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+    if (!upper) continue;
+    out[`USER_VAR_${upper}`] = value === null ? '' : String(value);
+  }
+  return out;
 }
 
 // Re-export heartbeat for runner consumers that want their own loop.

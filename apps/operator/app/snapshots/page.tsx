@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import RouteLink from '../_components/RouteLink';
 
 interface PublishRecord {
   slug: string;
@@ -184,7 +185,7 @@ export default function SnapshotsPage() {
       {!loading && rows.length === 0 && (
         <div className="pc-callout">
           <strong>No snapshots yet.</strong> Open a harness from the{' '}
-          <a href="/harness">Harnesses</a> tab and click <code>Save snapshot</code>.
+          <RouteLink href="/harness">Harnesses</RouteLink> tab and click <code>Save snapshot</code>.
         </div>
       )}
 

@@ -44,8 +44,14 @@ export function IssueDetail({
   return (
     <Drawer.Root open onOpenChange={(o) => { if (!o) onClose(); }} direction="right">
       <Drawer.Portal>
-        <Drawer.Overlay style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.65)' }} />
+        <Drawer.Overlay
+          className="h-issue-detail-overlay"
+          data-anim="fade"
+          style={{ position: 'fixed', inset: 0, zIndex: 80, background: 'rgba(0,0,0,0.65)' }}
+        />
         <Drawer.Content
+          className="h-issue-detail-drawer"
+          data-anim="slide-right"
           aria-describedby={undefined}
           style={{
             position: 'fixed', top: 0, right: 0, bottom: 0,

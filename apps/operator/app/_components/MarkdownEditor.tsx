@@ -94,6 +94,7 @@ export function MarkdownPreview({
         theme: { current: 'dark' },
         math: { engine: 'KaTeX' },
         anchor: 1,
+        lang: 'en_US',
       });
       if (outline && outlineRef.current && ref.current) {
         outlineRef.current.innerHTML = '';
@@ -211,6 +212,7 @@ export function MarkdownEditor({
       const inst = new Vditor(containerRef.current, {
         mode,
         theme: 'dark',
+        lang: 'en_US',
         cache: { enable: false },
         undoDelay: 0,
         minHeight,
@@ -315,7 +317,7 @@ export function MarkdownEditor({
         .pc-md-editor-host.vditor > .vditor-content > .vditor-outline { flex: 0 0 auto; max-width: 240px; overflow: auto; }
         .pc-md-editor-host.vditor > .vditor-content > .vditor-ir,
         .pc-md-editor-host.vditor > .vditor-content > .vditor-wysiwyg,
-        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv { flex: 1 1 0 !important; min-height: 0 !important; overflow: auto !important; }
+        .pc-md-editor-host.vditor > .vditor-content > .vditor-sv { flex: 1 1 0 !important; min-height: 0 !important; overflow: auto !important; background-color: var(--textarea-background-color) !important; }
         .pc-md-editor-host.vditor > .vditor-content > .vditor-ir > pre,
         .pc-md-editor-host.vditor > .vditor-content > .vditor-wysiwyg > pre,
         .pc-md-editor-host.vditor > .vditor-content > .vditor-sv > pre { overflow: visible !important; min-height: 100%; box-sizing: border-box; }

@@ -31,7 +31,7 @@ import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useParams, useSearchParams } from 'next/navigation';
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import dynamic from 'next/dynamic';
-import { Toaster, toast } from 'sonner';
+import { toast } from 'sonner';
 import { Group as PanelGroup, Panel as RPanel, Separator } from 'react-resizable-panels';
 import {
   Activity, Play, Square, SlidersHorizontal, RotateCcw, RefreshCw,
@@ -2204,9 +2204,12 @@ export default function HarnessDashboard() {
 
   /**
    * Empty-SPEC bootstrap: when the active harness has no SPEC.md (or just
-   * whitespace), the harness has nothing to plan against — auto-route the
-   * user to Config → Harness → SPEC.md so they fill it in. One-shot per
-   * slug; we don't keep re-routing if they intentionally leave the editor.
+   * whitespace), the harness has nothing to plan against — surface a
+   * one-shot toast nudge so the user knows. We deliberately do NOT
+   * auto-switch the panel: hijacking the user's view to Config every
+   * time they land on /harness was confusing (their URL would always
+   * mutate to `?panel=config` on first visit). The toast points at the
+   * Config tab; the user clicks if they want to go.
    */
   const [specPromptShownFor, setSpecPromptShownFor] = useState<string | null>(null);
   useEffect(() => {
@@ -2221,11 +2224,16 @@ export default function HarnessDashboard() {
         const empty = !d.spec || !d.spec.trim();
         setSpecPromptShownFor(activeSlug);
         if (empty) {
-          void setActivePanel('config');
-          void setConfigPane('harness');
           toast.message(`Define ${activeSlug}'s goal`, {
-            description: 'SPEC.md is empty — describe what this project should accomplish so the harness can start planning.',
+            description: 'SPEC.md is empty — open Config → Harness → SPEC.md to describe what this project should accomplish.',
             duration: 8000,
+            action: {
+              label: 'Open Config',
+              onClick: () => {
+                void setActivePanel('config');
+                void setConfigPane('harness');
+              },
+            },
           });
         }
       } catch { /* network blip — try again next slug change */ }
@@ -2923,7 +2931,9 @@ export default function HarnessDashboard() {
   return (
     <RTooltip.Provider delayDuration={400}>
     <div className={`h-root${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}>
-      <Toaster theme="dark" position="bottom-right" richColors />
+      {/* Toaster is mounted globally in app/layout.tsx (outside <main>)
+          so it can stack above pc-header. A page-level Toaster trapped
+          inside <main z:70> cannot visually escape. */}
 
       {!topChromeCollapsed && (
         <>

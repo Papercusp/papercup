@@ -10,6 +10,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
 import { useQueryState, parseAsString } from 'nuqs';
+import { useProgress } from '@bprogress/next';
 import {
   Workspace,
   WorkspaceRegistry,
@@ -31,6 +32,7 @@ export default function WorkspaceSwitcher() {
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
   const [, setWsParam] = useQueryState('ws', parseAsString);
+  const progress = useProgress();
 
   useEffect(() => {
     listWorkspaces()
@@ -101,6 +103,7 @@ export default function WorkspaceSwitcher() {
     ) {
       return;
     }
+    progress.start(0.08, 0, true);
     try {
       await switchWorkspace(id, { resetTo: `/harness?ws=${encodeURIComponent(id)}` });
       // The promise above never actually resolves — the Tauri shell calls
@@ -108,6 +111,7 @@ export default function WorkspaceSwitcher() {
       // before the restart took effect; do nothing (the reload is coming).
     } catch (e: any) {
       toast.error(`switch failed: ${e?.message ?? e}`);
+      progress.stop(120);
     }
   };
 
@@ -155,11 +159,12 @@ export default function WorkspaceSwitcher() {
   };
 
   return (
-    <span ref={wrapRef} style={{ position: 'relative', fontSize: 13 }}>
+    <span ref={wrapRef} className="pc-workspace-switcher" style={{ position: 'relative', fontSize: 13 }}>
       <button
         ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
+        className="pc-workspace-trigger"
         style={{
           background: 'transparent',
           border: '1px solid var(--border, #2a2a2a)',
@@ -173,12 +178,13 @@ export default function WorkspaceSwitcher() {
         aria-expanded={open}
         title="Switch or manage workspaces"
       >
-        {current?.name ?? 'workspace'} <span style={{ opacity: 0.6 }}>▾</span>
+        {current?.name ?? 'workspace'} <span className="pc-workspace-trigger-caret" style={{ opacity: 0.6 }}>▾</span>
       </button>
       {open && menuPos && typeof document !== 'undefined' && createPortal(
         <div
           ref={menuRef}
           role="menu"
+          className="pc-workspace-menu pc-animate-in pc-animate-in--down pc-animate-in--fast"
           style={{
             position: 'fixed',
             top: menuPos.top,
@@ -198,7 +204,7 @@ export default function WorkspaceSwitcher() {
             boxShadow: '0 12px 32px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.04)',
           }}
         >
-          <div style={{ padding: '4px 8px', color: 'var(--fg-mute, #777)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          <div className="pc-workspace-menu-title" style={{ padding: '4px 8px', color: 'var(--fg-mute, #777)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>
             Workspaces
           </div>
           {reg.workspaces.map((ws) => {
@@ -207,6 +213,7 @@ export default function WorkspaceSwitcher() {
             return (
               <div
                 key={ws.id}
+                className={`pc-workspace-menu-row${isCurrent ? ' is-current' : ''}`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -226,12 +233,14 @@ export default function WorkspaceSwitcher() {
                       if (e.key === 'Enter') commitRename();
                       if (e.key === 'Escape') setRenamingId(null);
                     }}
+                    className="pc-workspace-menu-input"
                     style={{ flex: 1, font: 'inherit', background: 'var(--bg, #111)', border: '1px solid var(--border, #2a2a2a)', color: 'inherit', padding: '2px 6px', borderRadius: 3 }}
                   />
                 ) : (
                   <button
                     type="button"
                     onClick={() => onSwitch(ws.id)}
+                    className="pc-workspace-menu-target"
                     style={{
                       flex: 1,
                       textAlign: 'left',
@@ -246,7 +255,7 @@ export default function WorkspaceSwitcher() {
                   >
                     {ws.name}
                     {isCurrent && (
-                      <span style={{ marginLeft: 6, color: 'var(--fg-mute, #777)', fontSize: 11 }}>
+                      <span className="pc-workspace-menu-current" style={{ marginLeft: 6, color: 'var(--fg-mute, #777)', fontSize: 11 }}>
                         active
                       </span>
                     )}
@@ -258,6 +267,7 @@ export default function WorkspaceSwitcher() {
                       type="button"
                       onClick={() => startRename(ws)}
                       title="Rename"
+                      className="pc-workspace-menu-action"
                       style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: 'pointer', padding: '0 4px' }}
                     >
                       ✎
@@ -267,6 +277,7 @@ export default function WorkspaceSwitcher() {
                       onClick={() => onDelete(ws)}
                       title="Delete"
                       disabled={isCurrent || reg.workspaces.length <= 1}
+                      className="pc-workspace-menu-action"
                       style={{ background: 'transparent', border: 'none', color: 'var(--fg-mute, #777)', cursor: isCurrent || reg.workspaces.length <= 1 ? 'not-allowed' : 'pointer', padding: '0 4px', opacity: isCurrent || reg.workspaces.length <= 1 ? 0.3 : 1 }}
                     >
                       ✕
@@ -276,10 +287,11 @@ export default function WorkspaceSwitcher() {
               </div>
             );
           })}
-          <div style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />
+          <div className="pc-workspace-menu-divider" style={{ height: 1, background: 'var(--border, #2a2a2a)', margin: '4px 0' }} />
           <button
             type="button"
             onClick={onCreate}
+            className="pc-workspace-menu-create"
             style={{
               width: '100%',
               textAlign: 'left',

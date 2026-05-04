@@ -6,12 +6,22 @@
  * `secret: true` / `oauth`), and POSTs to /api/snapshots/[id]/instantiate
  * with the completed `pluginConfigOverrides`.
  *
+ * Form state via `lib/forms` (react-hook-form + Zod) — matches the
+ * convention the operator uses everywhere else (login, settings/*).
+ * Per-plugin field validation patterns can't be expressed in the static
+ * Zod schema (they're plugin-author-supplied at runtime), so we re-check
+ * them manually in the submit handler before posting and surface
+ * mismatches via `setError`.
+ *
  * Spec: /docs/snapshots/share-semantics + oauth-integration.
  */
 'use client';
 
 import { useEffect, useState } from 'react';
+import type { UseFormRegister, FieldErrors } from 'react-hook-form';
+import { z } from 'zod';
 import { toast } from 'sonner';
+import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 
 interface ShapeField {
   reason: 'secret-strip' | 'secret-include' | 'secret-warn' | 'shareable-false' | 'pattern-fallback';
@@ -44,20 +54,62 @@ interface AdvisoryCheck {
   reason?: string;
 }
 
+export interface PendingProvisioningEntry {
+  plugin: string;
+  publisher?: string;
+  version?: string;
+  displayName?: string;
+  description?: string;
+  scriptPath: string;
+  allowedHosts?: string[];
+  cloudProvider?: { id: string; region?: string; regions?: string[] };
+  timeoutSec?: number;
+}
+
+export interface ForkSuccessPayload {
+  newSlug: string;
+  pendingProvisioning?: PendingProvisioningEntry[];
+}
+
 interface Props {
   snapshotId: string;
-  /** Called after a successful fork. */
-  onSuccess?: (slug: string) => void;
+  /** Called after a successful fork. Passes the new harness slug + the
+   *  list of plugins that declared `provision.setup` (i.e. need
+   *  consent + run before the harness is fully usable). */
+  onSuccess?: (payload: ForkSuccessPayload) => void;
 }
+
+/* ─── Zod schema ────────────────────────────────────────────────────────── */
+
+// Dynamic per-plugin field values are nested two levels deep:
+//   overrides[pluginSlug][fieldName] = string
+// Per-field `pattern` constraints are plugin-author-supplied at runtime,
+// so they can't live in the static schema — we validate them in the
+// submit handler before posting.
+const FormSchema = z.object({
+  name: z.string()
+    .regex(/^[a-z0-9._-]*$/i, 'lowercase letters, digits, dots, underscores, hyphens')
+    .max(64)
+    .optional()
+    .or(z.literal('')),
+  acknowledgeAdvisories: z.boolean(),
+  overrides: z.record(z.string(), z.record(z.string(), z.string())),
+});
+type FormValues = z.infer<typeof FormSchema>;
+
+/* ─── Component ─────────────────────────────────────────────────────────── */
 
 export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
   const [plugins, setPlugins] = useState<PluginShape[] | null>(null);
   const [advisories, setAdvisories] = useState<Record<string, AdvisoryCheck>>({});
-  const [name, setName] = useState('');
-  const [overrides, setOverrides] = useState<Record<string, Record<string, string>>>({});
-  const [forking, setForking] = useState(false);
-  const [acknowledgeAdvisories, setAcknowledgeAdvisories] = useState(false);
 
+  const { register, submit, errors, isSubmitting, setError, watch } =
+    useFormWith(FormSchema, {
+      defaultValues: { name: '', acknowledgeAdvisories: false, overrides: {} },
+    });
+  const acknowledgeAdvisories = watch('acknowledgeAdvisories');
+
+  // Shape fetch + advisory checks (unchanged)
   useEffect(() => {
     fetch(`/api/snapshots/${encodeURIComponent(snapshotId)}/shape`)
       .then((r) => r.json())
@@ -67,7 +119,6 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
           return;
         }
         setPlugins(d.plugins);
-        // Fire advisory checks in parallel for every pinned plugin.
         const list = d.plugins as PluginShape[];
         const pinned = list.filter((p) => p.pluginVersionPinned !== false);
         Promise.all(
@@ -84,29 +135,49 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
               return [p.name, { state: 'unknown' as const, reason: 'network' }] as const;
             }
           }),
-        ).then((entries) => {
-          setAdvisories(Object.fromEntries(entries));
-        });
+        ).then((entries) => setAdvisories(Object.fromEntries(entries)));
       })
       .catch((e) => toast.error(`shape error: ${e?.message ?? e}`));
   }, [snapshotId]);
 
-  function setField(plugin: string, field: string, value: string) {
-    setOverrides((prev) => ({
-      ...prev,
-      [plugin]: { ...(prev[plugin] ?? {}), [field]: value },
-    }));
-  }
+  async function onSubmit(values: FormValues) {
+    // Per-plugin pattern validation — plugin authors declare `pattern` at
+    // runtime, so Zod can't model it. Walk every field that has a pattern
+    // and reject mismatches via setError, which feeds the FormField error
+    // display the same way Zod errors do.
+    let hadPatternMismatch = false;
+    for (const p of plugins ?? []) {
+      if (!p.shape) continue;
+      const slug = pluginSlug(p.name);
+      for (const [fieldName, shape] of Object.entries(p.shape.fields)) {
+        if (!shape.pattern) continue;
+        if (shape.reason === 'secret-include') continue;
+        if (shape.oauth) continue;
+        const v = values.overrides?.[slug]?.[fieldName] ?? '';
+        if (!v) continue; // empty is allowed; server enforces required separately
+        try {
+          if (!new RegExp(shape.pattern).test(v)) {
+            setError(`overrides.${slug}.${fieldName}` as const, {
+              type: 'pattern',
+              message: `must match ${shape.pattern}`,
+            });
+            hadPatternMismatch = true;
+          }
+        } catch {
+          // Bad regex from the plugin manifest — surface but don't block.
+          toast.error(`plugin ${p.name} declared an invalid pattern for ${fieldName}`);
+        }
+      }
+    }
+    if (hadPatternMismatch) return;
 
-  async function fork() {
-    setForking(true);
     try {
       const r = await fetch(`/api/snapshots/${encodeURIComponent(snapshotId)}/instantiate`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          name: name.trim() || undefined,
-          pluginConfigOverrides: overrides,
+          name: (values.name ?? '').trim() || undefined,
+          pluginConfigOverrides: values.overrides ?? {},
         }),
       });
       const d = await r.json();
@@ -115,11 +186,12 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
         return;
       }
       toast.success(`Forked → ${d.newSlug}`);
-      onSuccess?.(d.newSlug);
+      onSuccess?.({
+        newSlug: d.newSlug,
+        pendingProvisioning: d.pendingProvisioning ?? [],
+      });
     } catch (e: any) {
       toast.error(`fork crashed: ${e?.message ?? e}`);
-    } finally {
-      setForking(false);
     }
   }
 
@@ -130,7 +202,7 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
   const blockingAdvisories = flaggedAdvisories.length > 0 && !acknowledgeAdvisories;
 
   return (
-    <div style={{ padding: 16, maxWidth: 640 }}>
+    <form onSubmit={submit(onSubmit)} style={{ padding: 16, maxWidth: 640 }}>
       <h3 style={{ marginTop: 0 }}>Fork this snapshot</h3>
 
       {flaggedAdvisories.length > 0 && (
@@ -152,8 +224,7 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
           <label style={{ marginTop: 8, display: 'inline-block', fontSize: 12 }}>
             <input
               type="checkbox"
-              checked={acknowledgeAdvisories}
-              onChange={(e) => setAcknowledgeAdvisories(e.target.checked)}
+              {...register('acknowledgeAdvisories')}
             />
             <span style={{ marginLeft: 6 }}>
               I understand and want to fork with the pinned vulnerable version anyway.
@@ -162,16 +233,14 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
         </div>
       )}
 
-      <div style={{ marginBottom: 16 }}>
-        <label style={lbl}>New harness name (optional)</label>
+      <FormField label="New harness name (optional)" error={errors.name}>
         <input
           type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
           placeholder="auto-generated if blank"
           style={input}
+          {...register('name')}
         />
-      </div>
+      </FormField>
 
       {pluginsWithFields.length === 0 ? (
         <p style={{ color: 'var(--fg-mute, #aaa)' }}>
@@ -187,17 +256,20 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
             <PluginFields
               key={p.name}
               plugin={p}
-              overrides={overrides[pluginSlug(p.name)] ?? {}}
-              onSetField={(f, v) => setField(pluginSlug(p.name), f, v)}
+              register={register}
+              errors={errors}
             />
           ))}
         </>
       )}
 
-      <button onClick={fork} disabled={forking || blockingAdvisories} style={primary}>
-        {forking ? 'Forking…' : blockingAdvisories ? 'Acknowledge advisories to fork' : 'Fork'}
-      </button>
-    </div>
+      <SubmitButton
+        pending={isSubmitting}
+        aria-disabled={blockingAdvisories ? 'true' : undefined}
+      >
+        {blockingAdvisories ? 'Acknowledge advisories to fork' : 'Fork'}
+      </SubmitButton>
+    </form>
   );
 }
 
@@ -208,20 +280,22 @@ function pluginSlug(name: string): string {
 
 interface PluginFieldsProps {
   plugin: PluginShape;
-  overrides: Record<string, string>;
-  onSetField: (field: string, value: string) => void;
+  register: UseFormRegister<FormValues>;
+  errors: FieldErrors<FormValues>;
 }
 
-function PluginFields({ plugin, overrides, onSetField }: PluginFieldsProps) {
+function PluginFields({ plugin, register, errors }: PluginFieldsProps) {
   const fields = Object.entries(plugin.shape!.fields);
+  const slug = pluginSlug(plugin.name);
   return (
     <div style={pluginCard}>
       <header style={{ marginBottom: 8 }}>
         <strong>{plugin.name}</strong>{' '}
-        <span style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>v{plugin.version}{plugin.pluginVersionPinned && ' · pinned'}</span>
+        <span style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>
+          v{plugin.version}{plugin.pluginVersionPinned && ' · pinned'}
+        </span>
       </header>
       {fields.map(([fieldName, shape]) => {
-        const value = overrides[fieldName] ?? '';
         const reasonLabel =
           shape.reason === 'shareable-false' ? 'publisher-specific' :
           shape.reason === 'secret-strip' ? 'secret' :
@@ -237,14 +311,24 @@ function PluginFields({ plugin, overrides, onSetField }: PluginFieldsProps) {
           );
         }
 
+        // Reach into the nested errors tree for this dynamic field.
+        // The schema is record(record(string)), so each leaf error has
+        // FieldError shape — `message` is the field we surface inline.
+        const fieldError = errors.overrides?.[slug]?.[fieldName];
+
         return (
-          <div key={fieldName} style={{ marginBottom: 12 }}>
-            <label style={lbl}>
-              {fieldName}{' '}
+          <FormField
+            key={fieldName}
+            label={fieldName}
+            error={fieldError}
+          >
+            <div style={{ marginBottom: 4 }}>
               <span style={badge}>{reasonLabel}</span>
-            </label>
+            </div>
             {shape.description && (
-              <div style={{ fontSize: 12, color: 'var(--fg-mute, #888)', marginBottom: 4 }}>{shape.description}</div>
+              <div style={{ fontSize: 12, color: 'var(--fg-mute, #888)', marginBottom: 4 }}>
+                {shape.description}
+              </div>
             )}
             {shape.oauth ? (
               <div style={{ fontSize: 13 }}>
@@ -255,11 +339,10 @@ function PluginFields({ plugin, overrides, onSetField }: PluginFieldsProps) {
             ) : (
               <input
                 type={shape.reason === 'secret-strip' || shape.reason === 'pattern-fallback' ? 'password' : 'text'}
-                value={value}
                 pattern={shape.pattern}
-                onChange={(e) => onSetField(fieldName, e.target.value)}
                 style={input}
                 autoComplete="off"
+                {...register(`overrides.${slug}.${fieldName}` as const)}
               />
             )}
             {shape.pattern && (
@@ -267,17 +350,13 @@ function PluginFields({ plugin, overrides, onSetField }: PluginFieldsProps) {
                 must match <code>{shape.pattern}</code>
               </div>
             )}
-          </div>
+          </FormField>
         );
       })}
     </div>
   );
 }
 
-const lbl: React.CSSProperties = {
-  display: 'block', fontSize: 12, fontWeight: 500, color: 'var(--fg-mute, #ccc)', marginBottom: 4,
-  textTransform: 'uppercase', letterSpacing: '.04em',
-};
 const input: React.CSSProperties = {
   width: '100%', padding: '6px 8px', background: 'var(--bg-1, #141414)',
   border: '1px solid var(--border, #2a2a2a)', borderRadius: 4, color: 'var(--fg, #ddd)',
@@ -292,10 +371,6 @@ const badge: React.CSSProperties = {
   fontSize: 10, fontWeight: 500, textTransform: 'uppercase',
   background: 'rgba(150,150,150,.12)', color: '#aaa', border: '1px solid rgba(150,150,150,.25)',
   letterSpacing: '.04em',
-};
-const primary: React.CSSProperties = {
-  padding: '8px 16px', background: 'var(--accent, #58a6ff)', color: '#000',
-  border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 13, fontWeight: 600,
 };
 const advisoryBanner: React.CSSProperties = {
   padding: 12, marginBottom: 16, borderRadius: 6,

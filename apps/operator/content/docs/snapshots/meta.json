@@ -2,6 +2,7 @@
   "title": "Snapshots",
   "pages": [
     "index",
+    "authoring-build-scripts",
     "build-scripts",
     "share-semantics",
     "oauth-integration",

@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import Link from 'next/link';
+import RouteLink from '../../_components/RouteLink';
 import { Layers, ExternalLink, Loader2, Pencil, Trash2, Play } from 'lucide-react';
-import { toast, Toaster } from 'sonner';
+import { toast } from 'sonner';
 
 interface PublishRecord {
   slug: string;
@@ -166,7 +166,7 @@ export default function InstalledTemplatesPage() {
 
   return (
     <div className="pc-shell pc-marketplace-shell">
-      <Toaster position="bottom-right" richColors />
+      {/* Toaster mounted globally in app/layout.tsx. */}
       <section className="pc-marketplace-pagehead">
         <div>
           <p className="pc-eyebrow">Installed templates</p>
@@ -230,7 +230,7 @@ export default function InstalledTemplatesPage() {
                 </div>
 
                 <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <Link
+                  <RouteLink
                     href={`/installed/templates/${encodeURIComponent(row.slug)}/edit?version=${encodeURIComponent(row.version)}`}
                     style={{
                       padding: '6px 12px',
@@ -247,7 +247,7 @@ export default function InstalledTemplatesPage() {
                     }}
                   >
                     <Pencil size={12} /> edit
-                  </Link>
+                  </RouteLink>
                   <button
                     onClick={() => onInstall(row)}
                     disabled={installing === key}

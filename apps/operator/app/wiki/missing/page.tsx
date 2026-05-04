@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import RouteLink from '@/app/_components/RouteLink';
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
@@ -67,12 +67,12 @@ export default async function WikiMissingPage({
           <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {top.map((c) => (
               <li key={`${c.slug}/${c.filename}`} style={{ padding: '6px 0', borderBottom: '1px solid #2a2a2a' }}>
-                <Link
+                <RouteLink
                   href={`/wiki?target=${encodeURIComponent(c.filename)}&harness=${encodeURIComponent(c.slug)}`}
                   style={{ color: '#6ab0ff', textDecoration: 'none' }}
                 >
                   {c.slug}/{c.filename}
-                </Link>
+                </RouteLink>
               </li>
             ))}
           </ul>
@@ -82,7 +82,7 @@ export default async function WikiMissingPage({
       )}
 
       <div style={{ marginTop: 32 }}>
-        <Link href="/harness" style={{ color: '#6ab0ff' }}>← Back to harness dashboard</Link>
+        <RouteLink href="/harness" style={{ color: '#6ab0ff' }}>← Back to harness dashboard</RouteLink>
       </div>
     </div>
   );

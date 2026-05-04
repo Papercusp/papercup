@@ -4,13 +4,15 @@
  * invocation is OS-specific and tested at the runner-integration level.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildSandbox } from './sandbox';
+import { buildSandbox, _resetSmokeCacheForTests } from './sandbox';
 
 beforeEach(() => {
   process.env.PAPERCUSP_DISABLE_SANDBOX = '1';
+  _resetSmokeCacheForTests();
 });
 afterEach(() => {
   delete process.env.PAPERCUSP_DISABLE_SANDBOX;
+  delete process.env.PAPERCUSP_ALLOW_NO_SANDBOX;
 });
 
 describe('buildSandbox', () => {
@@ -35,5 +37,16 @@ describe('buildSandbox', () => {
       env: { A: '1', B: '2' },
     });
     expect(r.env).toEqual({ A: '1', B: '2' });
+  });
+
+  it('does not surface smokeBypass when DISABLE_SANDBOX short-circuits', () => {
+    // DISABLE takes precedence; we never reach the smoke probe so no bypass marker.
+    const r = buildSandbox({
+      pluginDir: '/p',
+      scratchDir: '/s',
+      allowedHosts: [],
+      env: {},
+    });
+    expect(r.smokeBypass).toBeUndefined();
   });
 });

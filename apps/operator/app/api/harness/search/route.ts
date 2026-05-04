@@ -62,20 +62,7 @@ export async function GET(req: Request) {
   const messageHits: MessageHit[] = [];
   const featureHits: FeatureHit[] = [];
   const errors: string[] = [];
-  const pattern = `%${q.replace(/[%_\\]/g, '\\  const { sql } = getOrgPg();
-  const messageHits: MessageHit[] = [];
-  const featureHits: FeatureHit[] = [];
-  const errors: string[] = [];
   const pattern = `%${q.replace(/[%_\\]/g, '\\$&')}%`;
-
-  if (kind === 'messages' || kind === 'all') {
-    // Per-harness scan: enumerate schemas, query each. The shared
-    // harness_features_consolidated view doesn't include messages; scan
-    // each per-harness messages table directly.
-    const schemas = await sql<{ nspname: string }[]>`
-      SELECT nspname FROM pg_namespace
-      WHERE nspname LIKE 'harness\\_%' AND nspname <> 'harness_shared'
-    `;')}%`;
 
   // Workspace-scope the schema enumeration: only harnesses whose
   // projects row is in the active workspace are queried. The pg_namespace

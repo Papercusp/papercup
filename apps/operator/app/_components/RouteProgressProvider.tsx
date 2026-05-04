@@ -1,17 +1,19 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 
 import { ProgressProvider } from '@bprogress/next/app';
 import { usePathname } from 'next/navigation';
 import { useProgress } from '@bprogress/next';
 
-// See RouteLink.tsx + /docs/performance #A16. The 3000ms minimum-visible
-// debounce + 8000ms fallback dominated the perceived navigation latency
-// — every nav showed a 3-second progress bar regardless of how fast the
-// route actually loaded. Dropped to 0/1500 so the bar reflects ACTUAL
-// pending state. Both copies in this app must stay in sync.
-const ROUTE_PROGRESS_MIN_VISIBLE_MS = 0;
-const ROUTE_PROGRESS_FALLBACK_MS = 1500;
+import ControlPlaneLoading from './ControlPlaneLoading';
+import {
+  ROUTE_PROGRESS_FALLBACK_MS,
+  beginRoutePending,
+  finishRoutePending,
+  getRoutePendingTarget,
+  scheduleRoutePendingClear,
+  subscribeRoutePending,
+} from './routePending';
 
 function shouldStartDocumentRouteProgress(event: MouseEvent | PointerEvent): HTMLAnchorElement | null {
   if (event.defaultPrevented) return null;
@@ -68,39 +70,61 @@ function RouteProgressCompletion() {
       return;
     }
     progress.stop(120);
+    scheduleRoutePendingClear();
   }, [pathname, progress]);
 
   return null;
+}
+
+function RoutePendingOverlay() {
+  const pendingTarget = useSyncExternalStore(
+    subscribeRoutePending,
+    getRoutePendingTarget,
+    getRoutePendingTarget,
+  );
+  const harnessPending = pendingTarget === 'harness';
+
+  return (
+    <>
+      <div
+        className={`pc-route-pending-overlay${harnessPending ? ' is-route-pending-suppressed' : ''}`}
+        aria-atomic={harnessPending ? undefined : 'true'}
+        aria-hidden={harnessPending || undefined}
+        aria-live={harnessPending ? undefined : 'polite'}
+        data-route-pending-target={pendingTarget ?? undefined}
+      >
+        Loading…
+      </div>
+      {harnessPending ? <ControlPlaneLoading label="Mission Control" mode="overlay" /> : null}
+    </>
+  );
 }
 
 function DocumentRouteProgressCapture() {
   const progress = useProgress();
 
   useEffect(() => {
-    let clearTimer: number | null = null;
-
-    const clearPending = () => {
-      document.documentElement.removeAttribute('data-route-pending');
-      clearTimer = null;
-    };
+    let fallbackTimer: number | null = null;
 
     const startPending = (event: MouseEvent | PointerEvent) => {
       const anchor = shouldStartDocumentRouteProgress(event);
       if (!anchor) return;
 
-      if (clearTimer !== null) window.clearTimeout(clearTimer);
-      document.documentElement.setAttribute('data-route-pending', 'true');
+      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer);
+      beginRoutePending(anchor.href);
       progress.set(0.08);
       progress.start(0.08, 0, true);
-
-      clearTimer = window.setTimeout(clearPending, ROUTE_PROGRESS_MIN_VISIBLE_MS);
-      window.setTimeout(() => progress.stop(120), ROUTE_PROGRESS_FALLBACK_MS);
+      fallbackTimer = window.setTimeout(() => {
+        progress.stop(120);
+        scheduleRoutePendingClear();
+      }, ROUTE_PROGRESS_FALLBACK_MS);
     };
 
     document.addEventListener('pointerdown', startPending, true);
     return () => {
       document.removeEventListener('pointerdown', startPending, true);
-      if (clearTimer !== null) window.clearTimeout(clearTimer);
+      if (fallbackTimer !== null) window.clearTimeout(fallbackTimer);
+      finishRoutePending();
     };
   }, [progress]);
 
@@ -121,9 +145,7 @@ export default function RouteProgressProvider({ children }: { children: React.Re
       {children}
       <BProgressBusyClassCleanup />
       <RouteProgressCompletion />
-      <div className="pc-route-pending-overlay" aria-live="polite" aria-atomic="true">
-        Loading…
-      </div>
+      <RoutePendingOverlay />
       <DocumentRouteProgressCapture />
     </ProgressProvider>
   );

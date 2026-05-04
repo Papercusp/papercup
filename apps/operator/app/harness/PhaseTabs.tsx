@@ -327,6 +327,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
     </div>
     {openMenu && menuPos && typeof document !== 'undefined' && createPortal(
       <div
+        className="h-phase-action-menu"
         ref={menuContainerRef}
         onClick={(e) => e.stopPropagation()}
         style={{
@@ -344,6 +345,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
           return (
             <div
               key={a.name}
+              className={`h-phase-action-menu-item${blocked ? ' blocked' : ''}`}
               style={{
                 display: 'flex', flexDirection: 'column',
                 gap: 2,
@@ -355,6 +357,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
             >
               <button
                 type="button"
+                className="h-phase-action-menu-btn"
                 disabled={blocked}
                 onClick={(e) => {
                   e.stopPropagation();
@@ -383,12 +386,13 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
                 )}
               </button>
               {blocked && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 10 }}>
+                <div className="h-phase-action-menu-note" style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 10 }}>
                   <span style={{ color: '#f59e0b' }}>
                     needs: {a.envStatus.missing.map((m) => m.name).join(', ')}
                   </span>
                   {configurePlugin && (
                     <a
+                      className="h-phase-action-menu-link"
                       href={`/harness/${slug}?panel=plugins&plugin=${encodeURIComponent(configurePlugin)}`}
                       onClick={(e) => { e.stopPropagation(); setOpenMenu(null); }}
                       style={{

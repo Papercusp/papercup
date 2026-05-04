@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import RouteLink from '../_components/RouteLink';
 
 const LoginSchema = z.object({
   email: z.string().email('Please enter a valid email'),
@@ -78,10 +79,10 @@ function LoginForm() {
 
       <div style={{ marginTop: 32, color: 'var(--fg-mute)', fontSize: 12 }}>
         <p>
-          You don&rsquo;t need an account to use Papercusp locally. Visit{' '}
-          <a href="/settings/api-keys">settings</a> to add your API keys
-          and start running harnesses on your own machine right now.
-          Sign-in is for syncing profile preferences across devices.
+          You don&rsquo;t need an account to use Papercusp locally. The
+          operator runs every agent through the <code>claude</code> CLI on
+          your machine — see <RouteLink href="/setup">Setup</RouteLink> if you haven&rsquo;t
+          authenticated <code>claude</code> yet.
         </p>
       </div>
     </div>

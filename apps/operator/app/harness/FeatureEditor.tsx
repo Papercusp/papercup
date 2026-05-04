@@ -98,6 +98,28 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
     }
   }, [slug, feature, onClose, onSaved]);
 
+  // Audit history (lazy-loaded when expanded).
+  type AuditEntry = { ts: number; field: string; old: unknown; new: unknown; actor: string };
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyRows, setHistoryRows] = useState<AuditEntry[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!historyOpen || isCreate || !feature?.id) return;
+    if (historyRows !== null) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/harness/${slug}/features/${feature.id}/audit`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        if (!cancelled) setHistoryRows(Array.isArray(d?.audit) ? d.audit : []);
+      } catch (e) {
+        if (!cancelled) setHistoryError(String((e as Error).message ?? e));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [historyOpen, isCreate, slug, feature?.id, historyRows]);
+
   // Cmd+S save
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
@@ -274,6 +296,53 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                 Code is not auto-removed when a feature is deprecated; the row stays for audit and is hidden from default queue views.
               </p>
             </div>
+          )}
+
+          {!isCreate && (
+            <details
+              open={historyOpen}
+              onToggle={(e) => setHistoryOpen((e.target as HTMLDetailsElement).open)}
+              style={{ marginTop: '0.5rem', borderTop: '1px solid #1f2937', paddingTop: '0.6rem' }}
+            >
+              <summary style={{ cursor: 'pointer', fontSize: '0.8rem', color: '#9ca3af', userSelect: 'none' }}>
+                History {historyRows ? `(${historyRows.length})` : ''}
+              </summary>
+              <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', maxHeight: 240, overflowY: 'auto' }}>
+                {historyError && <div style={{ color: '#f87171' }}>Failed to load: {historyError}</div>}
+                {!historyError && historyRows === null && historyOpen && (
+                  <div style={{ color: '#9ca3af' }}>Loading…</div>
+                )}
+                {!historyError && historyRows !== null && historyRows.length === 0 && (
+                  <div style={{ color: '#9ca3af' }}>No edit history yet.</div>
+                )}
+                {historyRows && historyRows.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                    {historyRows.map((row, i) => {
+                      const fmt = (v: unknown) => {
+                        if (v === null || v === undefined) return '∅';
+                        if (typeof v === 'string') return v.length > 40 ? v.slice(0, 37) + '…' : v;
+                        return JSON.stringify(v).slice(0, 40);
+                      };
+                      return (
+                        <div key={i} style={{ display: 'grid', gridTemplateColumns: '11ch 9ch 1fr', gap: '0.5rem', alignItems: 'baseline', color: '#e5e7eb' }}>
+                          <span style={{ color: '#6b7280', fontVariantNumeric: 'tabular-nums' }}>
+                            {new Date(row.ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          <span style={{ color: '#a1a1aa' }}>{row.actor}</span>
+                          <span>
+                            <code style={{ color: '#fbbf24' }}>{row.field}</code>
+                            <span style={{ color: '#9ca3af' }}>: </span>
+                            <span style={{ color: '#9ca3af' }}>{fmt(row.old)}</span>
+                            <span style={{ color: '#9ca3af' }}> → </span>
+                            <span>{fmt(row.new)}</span>
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </details>
           )}
         </div>
       </Modal>

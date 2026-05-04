@@ -13926,3 +13926,97 @@ body:has(.h-root) .pc-header nav button:not(.pc-header-cta):hover {
 @media (prefers-reduced-motion: reduce) {
   .h-panel-maximize { transition: none; }
 }
+
+
+/* Reapplied feature queue status filter chrome: strong colors, same behavior. */
+.h-feature-filter {
+  --h-feature-filter-tone: var(--accent);
+  color: color-mix(in oklab, var(--h-feature-filter-tone), white 24%) !important;
+  border-color: color-mix(in oklab, var(--h-feature-filter-tone), transparent 38%) !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--h-feature-filter-tone), transparent 80%),
+    color-mix(in oklab, var(--bg-3), white 4%)
+  ) !important;
+  box-shadow:
+    0 8px 18px rgba(0,0,0,0.18),
+    0 0 0 1px color-mix(in oklab, var(--h-feature-filter-tone), transparent 82%),
+    inset 0 1px 0 rgba(255,255,255,0.055) !important;
+  letter-spacing: 0.015em;
+  transition: transform 120ms var(--ease-out), color 120ms var(--ease-out), border-color 120ms var(--ease-out), background 120ms var(--ease-out), box-shadow 120ms var(--ease-out) !important;
+}
+
+.h-feature-filter:nth-child(1) { --h-feature-filter-tone: var(--accent); }
+.h-feature-filter:nth-child(2) { --h-feature-filter-tone: var(--accent-strong); }
+.h-feature-filter:nth-child(3) { --h-feature-filter-tone: var(--warn); }
+.h-feature-filter:nth-child(4) { --h-feature-filter-tone: var(--bad); }
+.h-feature-filter:nth-child(5) { --h-feature-filter-tone: color-mix(in oklab, var(--fg-dim), white 16%); }
+.h-feature-filter:nth-child(6) { --h-feature-filter-tone: var(--good); }
+.h-feature-filter:nth-child(7) { --h-feature-filter-tone: #c084fc; }
+
+.h-feature-filter:hover,
+.h-feature-filter:focus-visible {
+  color: color-mix(in oklab, var(--h-feature-filter-tone), white 38%) !important;
+  border-color: color-mix(in oklab, var(--h-feature-filter-tone), transparent 24%) !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--h-feature-filter-tone), transparent 72%),
+    color-mix(in oklab, var(--bg-3), white 6%)
+  ) !important;
+  box-shadow:
+    0 10px 24px rgba(0,0,0,0.24),
+    0 0 0 1px color-mix(in oklab, var(--h-feature-filter-tone), transparent 68%),
+    inset 0 1px 0 rgba(255,255,255,0.07) !important;
+  transform: translateY(-0.5px);
+}
+
+.h-feature-filter.active {
+  color: color-mix(in oklab, var(--h-feature-filter-tone), white 44%) !important;
+  border-color: color-mix(in oklab, var(--h-feature-filter-tone), transparent 12%) !important;
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklab, var(--h-feature-filter-tone), transparent 66%),
+    color-mix(in oklab, var(--bg-3), white 8%)
+  ) !important;
+  box-shadow:
+    0 12px 28px rgba(0,0,0,0.28),
+    0 0 0 1px color-mix(in oklab, var(--h-feature-filter-tone), transparent 52%),
+    inset 0 1px 0 rgba(255,255,255,0.08) !important;
+}
+
+.h-feature-filter strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  padding: 0 5px;
+  color: inherit !important;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--h-feature-filter-tone), transparent 82%) !important;
+  border: 1px solid color-mix(in oklab, var(--h-feature-filter-tone), transparent 46%) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055);
+  opacity: 1 !important;
+}
+
+.h-feature-search,
+.h-feature-project-filter,
+.h-feature-tag-filter,
+.h-feature-mode,
+.h-feature-add {
+  border-color: color-mix(in oklab, var(--border), white 8%) !important;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--bg-3), white 3%), color-mix(in oklab, var(--bg-2), black 2%)) !important;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.04) !important;
+}
+
+.h-feature-search:focus-within,
+.h-feature-project-filter:focus-within,
+.h-feature-tag-filter:focus {
+  border-color: color-mix(in oklab, var(--accent), transparent 46%) !important;
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 68%), 0 10px 22px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.05) !important;
+}
+
+.h-feature-mode-btn.active,
+.h-feature-add:hover {
+  color: color-mix(in oklab, var(--fg), var(--accent) 16%) !important;
+  background: color-mix(in oklab, var(--accent), transparent 84%) !important;
+}

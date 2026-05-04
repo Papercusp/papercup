@@ -213,7 +213,7 @@ const article: React.CSSProperties = {
   overflowY: 'auto',
   overflowX: 'auto',
   scrollPaddingTop: 24,
-  padding: '28px clamp(28px, 5vw, 56px) 48px',
+  padding: '28px clamp(20px, 2.4vw, 32px) 48px',
   maxWidth: 'none',
   margin: 0,
   width: '100%',
@@ -271,6 +271,30 @@ const projectDocsCss = `
   }
   .project-docs-nav-link:focus-visible { box-shadow: inset 3px 0 0 var(--accent, #38bdf8); }
   .project-docs-article { scrollbar-color: rgba(125, 211, 252, 0.30) transparent; }
+  .project-docs-article > div:not(.project-docs-breadcrumb) {
+    display: block !important;
+    width: 100%;
+    max-width: none;
+  }
+  .project-docs-article .pc-md-outline {
+    position: static !important;
+    width: 100% !important;
+    max-height: none !important;
+    margin: 0 0 18px !important;
+    padding: 0 0 10px !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid rgba(125, 211, 252, 0.12);
+  }
+  .project-docs-article .pc-md-outline ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    padding-left: 0 !important;
+  }
+  .project-docs-article .pc-md-preview {
+    width: 100% !important;
+    max-width: none;
+  }
   .project-docs-article .vditor-reset {
     color: var(--fg-dim, #b9d4e8);
     line-height: 1.62;
@@ -332,7 +356,7 @@ const projectDocsCss = `
   }
   .project-docs-article table {
     width: 100%;
-    min-width: 720px;
+    min-width: 100%;
     margin: 16px 0 28px;
     border-collapse: separate;
     border-spacing: 0;

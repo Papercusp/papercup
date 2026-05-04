@@ -176,6 +176,10 @@ export async function rewritePgDump(args: {
   function rewriteLine(line: string): string {
     if (reCreate.test(line)) return `-- (rewritten) ${line}`;
     if (reAlter.test(line)) return `-- (rewritten) ${line}`;
+    // PG 17+ pg_dump emits `\restrict <token>` / `\unrestrict <token>` psql
+    // meta-commands at the start/end of dumps. They're not valid SQL and
+    // crash postgres-js with `syntax error at or near "\"`. Strip them.
+    if (/^\\(?:restrict|unrestrict)\b/.test(line)) return `-- (stripped psql meta) ${line}`;
     const m = reSetPath.exec(line);
     if (m) {
       // SET search_path AND swap any further harness_<orig>. references on the line.

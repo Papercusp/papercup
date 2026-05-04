@@ -1,8 +1,9 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { Tooltip } from './Tooltip';
 import { Select } from './Select';
 import { Checkbox } from './Checkbox';
@@ -10,6 +11,7 @@ import { openFeatureChat } from '@restart/papercup-shared';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, BOARD_COLUMN_ORDER, HarnessStatus, getStatusMeta } from './theme';
 import { StatusPill, IdPill, IconButton, KbdHint } from './primitives';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { useShortcut } from '../../lib/hotkeys';
 
 const OperatorNoteForm = dynamic(() => import('./OperatorNoteForm'), { ssr: false });
 interface Feature {
@@ -125,51 +127,72 @@ export default function FeatureList({
     if (focusIdx >= filtered.length) setFocusIdx(Math.max(0, filtered.length - 1));
   }, [filtered.length, focusIdx]);
 
-  // Keyboard navigation on the list panel when it has focus (or nothing else does)
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // Skip if user is typing in a text field
-      const tgt = e.target as HTMLElement | null;
-      if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'TEXTAREA' || tgt.isContentEditable)) {
-        // Allow search focus
-        if (e.key === 'Escape' && tgt === searchRef.current) {
-          searchRef.current?.blur();
-          e.preventDefault();
-        }
-        return;
-      }
-      // Skip if a modal is open (peek panel / dialog)
-      if (document.querySelector('[data-harness-modal="true"]')) return;
+  // All feature-list shortcuts route through the registry so they show
+  // up in the cheat-sheet and are rebindable from /settings/shortcuts.
+  // Modal-open guard via `ignoreEventWhen` keeps keys from firing while
+  // a peek/dialog has focus.
+  const ignoreWhenModalOpen = (_e: KeyboardEvent) =>
+    !!document.querySelector('[data-harness-modal="true"]');
 
-      if (e.key === 'j' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        setFocusIdx((i) => Math.min(filtered.length - 1, i + 1));
-      } else if (e.key === 'k' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        setFocusIdx((i) => Math.max(0, i - 1));
-      } else if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        const f = filtered[focusIdx];
-        if (f) onSelect(f);
-      } else if (e.key === '/') {
-        e.preventDefault();
-        searchRef.current?.focus();
-      } else if (e.key === 'r' || e.key === 'R') {
-        const f = filtered[focusIdx];
-        if (f) onReset(f.id);
-      } else if (e.key === 'x' || e.key === 'X') {
-        const f = filtered[focusIdx];
-        if (!f) return;
-        setSelected((s) => {
-          const next = new Set(s);
-          if (next.has(f.id)) next.delete(f.id); else next.add(f.id);
-          return next;
-        });
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [filtered, focusIdx, onReset, onSelect]);
+  useShortcut('feature.move-down', () => {
+    setFocusIdx((i) => Math.min(filtered.length - 1, i + 1));
+  }, { ignoreEventWhen: ignoreWhenModalOpen }, [filtered.length]);
+
+  useShortcut('feature.move-up', () => {
+    setFocusIdx((i) => Math.max(0, i - 1));
+  }, { ignoreEventWhen: ignoreWhenModalOpen });
+
+  useShortcut('feature.next', () => {
+    setFocusIdx((i) => Math.min(filtered.length - 1, i + 1));
+    const f = filtered[Math.min(filtered.length - 1, focusIdx + 1)];
+    if (f) onSelect(f);
+  }, { ignoreEventWhen: ignoreWhenModalOpen }, [filtered, focusIdx, onSelect]);
+
+  useShortcut('feature.prev', () => {
+    setFocusIdx((i) => Math.max(0, i - 1));
+    const f = filtered[Math.max(0, focusIdx - 1)];
+    if (f) onSelect(f);
+  }, { ignoreEventWhen: ignoreWhenModalOpen }, [filtered, focusIdx, onSelect]);
+
+  useShortcut('feature.open', () => {
+    const f = filtered[focusIdx];
+    if (f) onSelect(f);
+  }, { ignoreEventWhen: ignoreWhenModalOpen }, [filtered, focusIdx, onSelect]);
+
+  useShortcut('feature.search', () => {
+    searchRef.current?.focus();
+  }, { ignoreEventWhen: ignoreWhenModalOpen });
+
+  // Mod+/ also focuses search, but works even when the feature list
+  // doesn't have keyboard focus (so users can search without `/`'s
+  // form-tag restrictions).
+  useShortcut('feature.search-global', () => {
+    searchRef.current?.focus();
+  }, { ignoreEventWhen: ignoreWhenModalOpen, enableOnFormTags: ['INPUT', 'TEXTAREA'] });
+
+  useShortcut('feature.reset', () => {
+    const f = filtered[focusIdx];
+    if (f) onReset(f.id);
+  }, { ignoreEventWhen: ignoreWhenModalOpen }, [filtered, focusIdx, onReset]);
+
+  useShortcut('feature.toggle-select', () => {
+    const f = filtered[focusIdx];
+    if (!f) return;
+    setSelected((s) => {
+      const next = new Set(s);
+      if (next.has(f.id)) next.delete(f.id); else next.add(f.id);
+      return next;
+    });
+  }, { ignoreEventWhen: ignoreWhenModalOpen }, [filtered, focusIdx]);
+
+  // Esc inside the search input blurs it. Form-input scope opt-in.
+  useShortcut('feature.search-blur', (e) => {
+    const tgt = e.target as HTMLElement | null;
+    if (tgt === searchRef.current) {
+      e.preventDefault();
+      searchRef.current?.blur();
+    }
+  });
 
   // Auto-scroll focused row into view
   useEffect(() => {
@@ -326,6 +349,7 @@ export default function FeatureList({
             onEdit={onEdit}
             onSwitchToPi={onSwitchToPi}
             compact={isCompact}
+            scrollRef={listRef}
           />
         ) : (
           <BoardView
@@ -358,7 +382,7 @@ export default function FeatureList({
 // ─── List view ─────────────────────────────────────────────────────
 
 function ListView({
-  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onSwitchToPi, compact = false,
+  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onSwitchToPi, compact = false, scrollRef,
 }: {
   slug: string;
   features: Feature[];
@@ -371,6 +395,7 @@ function ListView({
   onEdit: (f: Feature) => void;
   onSwitchToPi?: () => void;
   compact?: boolean;
+  scrollRef: MutableRefObject<HTMLDivElement | null>;
 }) {
   const [noteFeatureId, setNoteFeatureId] = useState<string | null>(null);
   const [chatBusyId, setChatBusyId] = useState<string | null>(null);
@@ -448,7 +473,8 @@ function ListView({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0, width: '100%' }}>
               <span className="h-feature-row-title" title={row.title} style={{
                 color: COLORS.text, fontSize: SIZES.sm,
-                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2,
+                overflow: 'hidden',
               }}>{row.summary || row.title}</span>
               <span className="h-feature-row-meta" style={{ display: 'flex', alignItems: 'center', gap: 7, color: COLORS.textDim, fontSize: SIZES.xs }}>
                 <StatusPill status={row.status} showLabel={false} size="xs" />
@@ -469,7 +495,8 @@ function ListView({
           <span className="h-feature-row-main" style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0, width: '100%' }}>
             <span className="h-feature-row-title" title={row.title} style={{
               color: COLORS.text, fontSize: SIZES.sm,
-              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2,
+              overflow: 'hidden',
             }}>{row.summary || row.title}</span>
             {claimsCount > 0 && (
               <span className="h-feature-claims-chip" style={{
@@ -601,9 +628,28 @@ function ListView({
     [activeId, selected],
   );
 
+  // Virtualize the row body: only mount the visible window of rows. Without
+  // this, a 343-row dashboard rendered 8000+ DOM nodes on tab switch and
+  // paid the full layout/paint cost up front. The virtualizer attaches to
+  // FeatureList's scroll container (passed in via scrollRef); since
+  // RichGrid is in `inline` mode, the scroll element lives in the parent.
+  const virtualizer = useVirtualizer({
+    count: features.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 36,
+    overscan: 8,
+  });
+  // Re-measure when filter/sort changes the list contents — `count` change
+  // alone doesn't invalidate cached row positions.
+  useEffect(() => { virtualizer.measure(); }, [features, virtualizer]);
+
   return (
     <RichGrid<Feature>
-      rows={features}
+      virtualMode={{
+        virtualizer,
+        totalRows: features.length,
+        rowAt: (i) => features[i],
+      }}
       columns={columns}
       getRowId={(f) => f.id}
       onRowClick={(f) => onSelect(f)}
@@ -639,9 +685,15 @@ function BoardView({
   onToggleSelect: (id: string) => void;
 }) {
   const cols: Record<HarnessStatus, Feature[]> = {
-    todo: [], in_progress: [], validating: [], failing: [], blocked: [], passed: [],
+    todo: [], in_progress: [], validating: [], failing: [], blocked: [], passed: [], deprecated: [],
   };
-  for (const f of features) cols[f.status].push(f);
+  for (const f of features) {
+    // Defensive: a feature may surface a status not in BOARD_COLUMN_ORDER
+    // (e.g. a future state added before the column order is updated).
+    // Skip rather than throw on undefined `cols[f.status]`.
+    const bucket = cols[f.status];
+    if (bucket) bucket.push(f);
+  }
 
   return (
     <div style={{

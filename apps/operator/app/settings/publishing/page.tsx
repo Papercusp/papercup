@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 
 interface MaskedCreds {
@@ -123,16 +124,22 @@ export default function PublishingSettingsPage() {
         </div>
       )}
 
-      <details style={{ marginTop: 24 }}>
-        <summary>BYO Cloudflare (eject path)</summary>
-        <p>
-          Per-harness plugin config also accepts <code>byoCloudflareToken</code>{' '}
-          and <code>byoCloudflareAccountId</code>. When both are set, the
-          substrate publishes directly to your own Cloudflare account and{' '}
-          <strong>does not</strong> contact <code>{creds?.publishHost ?? 'publish.papercuspai.com'}</code>.
-          See <code>libs/papercusp/plugins/cloudflare-pages-hosted/README.md</code>.
-        </p>
-      </details>
+      <Collapsible.Root style={{ marginTop: 24 }}>
+        <Collapsible.Trigger asChild>
+          <button type="button" style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit', textAlign: 'left' }}>
+            BYO Cloudflare (eject path)
+          </button>
+        </Collapsible.Trigger>
+        <Collapsible.Content>
+          <p>
+            Per-harness plugin config also accepts <code>byoCloudflareToken</code>{' '}
+            and <code>byoCloudflareAccountId</code>. When both are set, the
+            substrate publishes directly to your own Cloudflare account and{' '}
+            <strong>does not</strong> contact <code>{creds?.publishHost ?? 'publish.papercuspai.com'}</code>.
+            See <code>libs/papercusp/plugins/cloudflare-pages-hosted/README.md</code>.
+          </p>
+        </Collapsible.Content>
+      </Collapsible.Root>
     </div>
   );
 }

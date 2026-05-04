@@ -1,6 +1,7 @@
 import * as Lucide from 'lucide-react';
-import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
+import RouteLink from '@/app/_components/RouteLink';
 
+import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
 interface DetailResponse {
   slug: string;
   versions: string[];
@@ -78,7 +79,7 @@ export default async function HarnessDetailPage({ params }: { params: Promise<{ 
         <h1>{slug}</h1>
         <p style={{ color: 'var(--bad)' }}>This package isn&rsquo;t in the catalog.</p>
         <p>
-          <a href="/marketplace" className="pc-button">← back to marketplace</a>
+          <RouteLink href="/marketplace" className="pc-button">← back to marketplace</RouteLink>
         </p>
       </div>
     );
@@ -97,10 +98,12 @@ export default async function HarnessDetailPage({ params }: { params: Promise<{ 
   return (
     <div className="pc-shell pc-marketplace-detail">
       <p style={{ marginBottom: 12 }}>
-        <a href={`/marketplace/${kind === 'plugin' ? 'plugins' : kind === 'snapshot' ? 'snapshots' : 'templates'}`}
-           style={{ color: 'var(--fg-mute)', fontSize: 12 }}>
+        <RouteLink
+          href={`/marketplace/${kind === 'plugin' ? 'plugins' : kind === 'snapshot' ? 'snapshots' : 'templates'}`}
+          style={{ color: 'var(--fg-mute)', fontSize: 12 }}
+        >
           ← back to {kind === 'plugin' ? 'plugins' : kind === 'snapshot' ? 'snapshots' : 'templates'}
-        </a>
+        </RouteLink>
       </p>
 
       <header className="pc-marketplace-detail-head">
@@ -152,7 +155,7 @@ export default async function HarnessDetailPage({ params }: { params: Promise<{ 
                   const autoEnable = typeof p === 'object' && p.autoEnable;
                   return (
                     <li key={`${pSlug}-${i}`}>
-                      <a href={`/marketplace/${encodeURIComponent(pSlug)}`}><code>{pSlug}</code></a>
+                      <RouteLink href={`/marketplace/${encodeURIComponent(pSlug)}`}><code>{pSlug}</code></RouteLink>
                       {autoEnable && <span className="pc-marketplace-detail-tag">auto-enabled</span>}
                     </li>
                   );

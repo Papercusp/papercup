@@ -1,4 +1,4 @@
-import Link from 'next/link';
+import RouteLink from '../_components/RouteLink';
 
 export const metadata = {
   title: 'Setup · Papercusp',
@@ -8,15 +8,15 @@ export default function SetupPage() {
   return (
     <div className="pc-shell" style={{ maxWidth: 760, margin: '0 auto', padding: '32px 28px' }}>
       <p style={{ marginBottom: 8 }}>
-        <Link href="/" style={{ color: 'var(--fg-mute)', fontSize: 12 }}>← back to home</Link>
+        <RouteLink href="/" style={{ color: 'var(--fg-mute)', fontSize: 12 }}>← back to home</RouteLink>
       </p>
       <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>Setup</h1>
       <p style={{ color: 'var(--fg-mute)', fontSize: 15, marginBottom: 32, lineHeight: 1.55 }}>
         Five-minute checklist from fresh install to your first running harness. Already have a
         running harness? Skip to{' '}
-        <Link href="/harness" style={{ color: 'var(--accent)' }}>
+        <RouteLink href="/harness" style={{ color: 'var(--accent)' }}>
           /harness
-        </Link>
+        </RouteLink>
         .
       </p>
 
@@ -27,45 +27,36 @@ export default function SetupPage() {
         </p>
         <pre className="pc-code">npm install -g @anthropic-ai/claude-cli</pre>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
-          Requires Node.js 20+ on PATH. The <Link href="/" style={{ color: 'var(--accent)' }}>home page</Link> shows
+          Requires Node.js 20+ on PATH. The <RouteLink href="/" style={{ color: 'var(--accent)' }}>home page</RouteLink> shows
           a red dot if Papercusp can&rsquo;t find <code>claude</code>; green when it can.
         </p>
       </Step>
 
-      <Step n={2} title="Add your Anthropic API key">
+      <Step n={2} title="Authenticate the claude CLI">
         <p>
-          Open{' '}
-          <Link href="/settings/api-keys" style={{ color: 'var(--accent)' }}>
-            Settings → API keys
-          </Link>{' '}
-          and paste your{' '}
+          Run <code>claude</code> in a terminal and follow the sign-in
+          prompt. The operator invokes <code>claude -p</code> for every
+          agent run; there&rsquo;s no separate API-key step inside the
+          UI. See{' '}
           <a
-            href="https://console.anthropic.com/settings/keys"
+            href="https://docs.anthropic.com/claude/docs/claude-code"
             target="_blank"
             rel="noreferrer"
             style={{ color: 'var(--accent)' }}
           >
-            Anthropic API key
-          </a>
-          .
-        </p>
-        <p style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
-          The key writes to <code>~/.papercusp/credentials.json</code> (mode 0600). It is{' '}
-          <strong style={{ color: 'var(--fg)' }}>never sent to or stored on Papercusp&rsquo;s servers</strong>.
-        </p>
-        <p style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
-          Already have a Claude Max subscription? Run <code>claude /login</code> in a terminal
-          once — Papercusp will use that token automatically and you can leave the API-key field
-          empty.
+            Claude Code documentation
+          </a>{' '}
+          for sign-in options. Whatever credentials <code>claude</code> picks
+          up, the operator inherits.
         </p>
       </Step>
 
       <Step n={3} title="Install a harness template">
         <p>
           Click{' '}
-          <Link href="/marketplace" style={{ color: 'var(--accent)' }}>
+          <RouteLink href="/marketplace" style={{ color: 'var(--accent)' }}>
             Marketplace
-          </Link>{' '}
+          </RouteLink>{' '}
           and install a template. <em>papercup-coding</em> is the simplest place to start.
         </p>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
@@ -89,7 +80,7 @@ export default function SetupPage() {
 
       <Step n={5} title="Watch the dashboard">
         <p>
-          Open <Link href="/harness" style={{ color: 'var(--accent)' }}>/harness</Link> and pick
+          Open <RouteLink href="/harness" style={{ color: 'var(--accent)' }}>/harness</RouteLink> and pick
           your project. The dashboard shows live mission state, feature progress, agent traces,
           and an embedded <em>pi</em> terminal pane for direct interaction.
         </p>

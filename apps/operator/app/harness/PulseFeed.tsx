@@ -195,7 +195,7 @@ function PulseRow({
     return (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: COLORS.text }}>
         <span style={{ color: COLORS.accent }}>iteration {e.iteration}</span>
-        <span style={{ color: COLORS.textFaint }}>{age}</span>
+        <span style={{ color: COLORS.textFaint }}>last pulse {age} ago</span>
       </span>
     );
   }

@@ -5,6 +5,7 @@ import { Tooltip } from './Tooltip';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { Trash2, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
+import { useShortcut } from '../../lib/hotkeys';
 
 interface Props {
   slug: string;
@@ -111,19 +112,11 @@ export default function PromptsTab({ slug, alive }: Props) {
     }
   }, [slug, selected, data, reloadList]);
 
-  // Ctrl/Cmd+S saves when on override scope
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-        if (selected?.scope === 'override' && dirty) {
-          e.preventDefault();
-          saveOverride();
-        }
-      }
-    };
-    window.addEventListener('keydown', h);
-    return () => window.removeEventListener('keydown', h);
-  }, [selected, dirty, saveOverride]);
+  // Ctrl/Cmd+S saves when on override scope. Sourced from the registry
+  // so /settings/shortcuts can rebind it.
+  useShortcut('editor.save', () => {
+    if (selected?.scope === 'override' && dirty) saveOverride();
+  }, {}, [selected, dirty, saveOverride]);
 
   const scope = selected?.scope ?? 'global';
   const editorValue = !data

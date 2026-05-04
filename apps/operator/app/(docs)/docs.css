@@ -1,1 +1,55 @@
 @import "fumadocs-ui/style.css";
+
+#nd-docs-layout {
+  animation: pc-fade-in var(--dur-panel) var(--ease-mid);
+}
+
+#nd-sidebar a,
+#nd-sidebar button,
+button[data-search],
+button[data-search-full],
+button[aria-label="Collapse Sidebar"],
+button[aria-label="Open Search"],
+[data-toc-popover-trigger] {
+  transition:
+    color var(--dur-fast) var(--ease-out),
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+#nd-sidebar a:hover,
+#nd-sidebar a[data-active="true"],
+#nd-sidebar button:hover,
+button[data-search]:hover,
+button[data-search-full]:hover,
+button[aria-label="Collapse Sidebar"]:hover,
+button[aria-label="Open Search"]:hover,
+[data-toc-popover-trigger]:hover {
+  transform: translateX(2px);
+}
+
+#nd-sidebar a[data-active="true"] {
+  box-shadow: inset 2px 0 0 color-mix(in oklab, var(--accent), white 8%);
+}
+
+button[data-search],
+button[data-search-full],
+[data-toc-popover-trigger] {
+  transform-origin: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #nd-docs-layout,
+  #nd-sidebar a,
+  #nd-sidebar button,
+  button[data-search],
+  button[data-search-full],
+  button[aria-label="Collapse Sidebar"],
+  button[aria-label="Open Search"],
+  [data-toc-popover-trigger] {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

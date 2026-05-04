@@ -16,7 +16,7 @@
  * or dismiss each.
  */
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useDeferredValue, useEffect, useState, useCallback, useRef } from 'react';
 import { MarkdownPreview } from './MarkdownEditor';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
@@ -168,6 +168,34 @@ interface DecisionRow {
   target: string;
 }
 
+function searchableTextForCard(card: SuggestionCard): string {
+  return [
+    card.title,
+    card.why,
+    card.reason,
+    card.failureReason,
+    card.target_harness,
+    card.directive_kind,
+    card.directive_subject,
+    card.directive_body,
+    card.target_resource,
+    card.body,
+    card.action,
+    tierLabel(card.actualTier),
+    lifecycleLabelForCard(card),
+  ]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase();
+}
+
+function searchableTextForDecision(row: DecisionRow): string {
+  return [row.action, row.target]
+    .filter(Boolean)
+    .join('\n')
+    .toLowerCase();
+}
+
 import {
   broadcastState,
   setOperatorState,
@@ -260,10 +288,12 @@ export function OperatorPanel(): JSX.Element | null {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<EventSource | null>(null);
   const [feedFilter, setFeedFilter] = useState<FeedFilter>('all');
+  const [feedQuery, setFeedQuery] = useState('');
   const [scanStatus, setScanStatus] = useState<ScanStatus>('idle');
   const [scanError, setScanError] = useState<string | null>(null);
   const [confirmingHigh, setConfirmingHigh] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
+  const deferredFeedQuery = useDeferredValue(feedQuery.trim().toLowerCase());
 
 
   // Subscribe to shared state.
@@ -303,6 +333,11 @@ export function OperatorPanel(): JSX.Element | null {
     // cuts the steady-state render rate by 10×. See /docs/performance #A7.
     const t = window.setInterval(() => setNow(Date.now()), 5000);
     return () => window.clearInterval(t);
+  }, [state.open]);
+
+  useEffect(() => {
+    if (state.open) return;
+    setFeedQuery('');
   }, [state.open]);
 
 
@@ -859,22 +894,34 @@ export function OperatorPanel(): JSX.Element | null {
       return b.index - a.index;
     })
     .map(({ s }) => s);
-  const visibleSuggestions = sortedSuggestions;
-  const visibleDecisions = feedFilter === 'suggestions' ? [] : decisions;
+  const filterActive = deferredFeedQuery.length > 0;
+  const filteredSuggestions = filterActive
+    ? sortedSuggestions.filter((s) => searchableTextForCard(s).includes(deferredFeedQuery))
+    : sortedSuggestions;
+  const filteredDecisions = filterActive
+    ? decisions.filter((r) => searchableTextForDecision(r).includes(deferredFeedQuery))
+    : decisions;
+  const visibleSuggestions = filteredSuggestions;
+  const visibleDecisions = feedFilter === 'suggestions' ? [] : filteredDecisions;
   const hasFeedEntries = visibleSuggestions.length > 0 || visibleDecisions.length > 0;
+  const hasTimelineEntries = sortedSuggestions.length > 0 || decisions.length > 0;
   const streamMuted = scanStatus === 'complete' && suggestions.length > 0;
   const emptyTitle = scanStatus === 'error'
     ? 'Operator scan needs setup'
-    : scanStatus === 'scanning'
-      ? 'Scanning workspace…'
-      : scanStarted
-        ? "Operator hasn't surfaced anything"
-        : 'No operator entries yet';
+    : filterActive && hasTimelineEntries && !hasFeedEntries
+      ? 'No timeline entries match your filter'
+      : scanStatus === 'scanning'
+        ? 'Scanning workspace…'
+        : scanStarted
+          ? "Operator hasn't surfaced anything"
+          : 'No operator entries yet';
   const emptyBody = scanStatus === 'error'
     ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
-    : scanStatus === 'scanning'
-      ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
-      : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
+    : filterActive && hasTimelineEntries && !hasFeedEntries
+      ? 'Try a different title, harness, status, or action term — or clear the filter to see the full timeline again.'
+      : scanStatus === 'scanning'
+        ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
+        : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
   const statusLabel = state.paused ? 'paused' : state.iconState.replace('-', ' ');
 
   if (!state.open) return null;
@@ -981,9 +1028,6 @@ export function OperatorPanel(): JSX.Element | null {
           <section className="operator-section">
             <PerHarnessStatus />
           </section>
-          <section className="operator-section">
-            <OtherWorkspacesPanel />
-          </section>
           <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
             <div className="operator-section__head">
               <span>Stream</span>
@@ -1009,22 +1053,46 @@ export function OperatorPanel(): JSX.Element | null {
               <span className="operator-panel__eyebrow">Unified timeline</span>
               <h3>Timeline</h3>
             </div>
-            <div className="operator-feed-pills" aria-label="Timeline view">
-              {[
-                { key: 'all' as FeedFilter, label: 'All', count: suggestions.length + decisions.length },
-                { key: 'suggestions' as FeedFilter, label: 'Suggestions', count: suggestions.length },
-              ].map((pill) => (
-                <button
-                  key={pill.key}
-                  type="button"
-                  className={feedFilter === pill.key ? 'is-active' : undefined}
-                  aria-pressed={feedFilter === pill.key}
-                  onClick={() => setFeedFilter(pill.key)}
-                >
-                  <span>{pill.label}</span>
-                  <strong>{pill.count}</strong>
-                </button>
-              ))}
+            <div className="operator-feed-tools">
+              <div className="operator-feed-pills" aria-label="Timeline view">
+                {[
+                  { key: 'all' as FeedFilter, label: 'All', count: filteredSuggestions.length + filteredDecisions.length },
+                  { key: 'suggestions' as FeedFilter, label: 'Suggestions', count: filteredSuggestions.length },
+                ].map((pill) => (
+                  <button
+                    key={pill.key}
+                    type="button"
+                    className={feedFilter === pill.key ? 'is-active' : undefined}
+                    aria-pressed={feedFilter === pill.key}
+                    onClick={() => setFeedFilter(pill.key)}
+                  >
+                    <span>{pill.label}</span>
+                    <strong>{pill.count}</strong>
+                  </button>
+                ))}
+              </div>
+              <div className={`operator-feed-search${filterActive ? ' has-value' : ''}`}>
+                <span className="operator-feed-search__icon" aria-hidden="true">⌕</span>
+                <input
+                  type="search"
+                  value={feedQuery}
+                  onChange={(e) => setFeedQuery(e.target.value)}
+                  placeholder="Filter title, harness, or action"
+                  aria-label="Filter unified timeline"
+                  spellCheck={false}
+                  enterKeyHint="search"
+                />
+                {feedQuery && (
+                  <button
+                    type="button"
+                    className="operator-feed-search__clear"
+                    onClick={() => setFeedQuery('')}
+                    aria-label="Clear timeline filter"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
             </div>
           </div>
 
@@ -1304,84 +1372,6 @@ function PerHarnessStatus(): JSX.Element | null {
           <li style={{ opacity: 0.5 }}>+{rows.length - 8} more</li>
         )}
       </ul>
-    </div>
-  );
-}
-
-interface ForeignCard {
-  workspaceId: string;
-  workspaceName: string;
-  card: { id?: string; title?: string; action?: string; auto_dispatch?: boolean };
-  dismissed: boolean;
-}
-
-interface MultiWorkspaceSnapshot {
-  cards: ForeignCard[];
-  workspaces: { id: string; name: string; cardCount: number; scanCompletedAt: string | null }[];
-}
-
-function OtherWorkspacesPanel(): JSX.Element | null {
-  const [snap, setSnap] = useState<MultiWorkspaceSnapshot | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/agent-mcp/operator-multi-workspace')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled || !d) return;
-        setSnap(d as MultiWorkspaceSnapshot);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  if (!snap?.workspaces?.length) return null;
-  const switchTo = async (id: string) => {
-    try {
-      const m = await import('../../lib/workspaces-tauri');
-      await m.switchWorkspace(id, { resetTo: `/harness?ws=${encodeURIComponent(id)}` });
-    } catch {
-      // Web mode — fall back to a hard navigate.
-      window.location.assign(`/harness?ws=${encodeURIComponent(id)}`);
-    }
-  };
-  const visibleCards = snap.cards.filter((c) => !c.dismissed).slice(0, 3);
-  return (
-    <div className="operator-workspaces">
-      <h3>
-        Other workspaces
-      </h3>
-      <ul className="operator-workspace-list">
-        {snap.workspaces.map((w) => (
-          <li key={w.id} className="operator-workspace-row">
-            <button
-              type="button"
-              onClick={() => void switchTo(w.id)}
-            >
-              {w.name}
-            </button>
-            <span className={`operator-workspace-count${w.cardCount > 0 ? '' : ' is-quiet'}`}>
-              {w.cardCount > 0 ? `${w.cardCount} active` : '•'}
-            </span>
-          </li>
-        ))}
-      </ul>
-      {visibleCards.length > 0 && (
-        <ul className="operator-workspace-cards">
-          {visibleCards.map((c, i) => (
-            <li key={`${c.workspaceId}-${c.card.id ?? i}`}>
-              <button
-                type="button"
-                onClick={() => void switchTo(c.workspaceId)}
-                title={`${c.workspaceName} · ${c.card.title ?? '(untitled)'}`}
-              >
-                {c.card.title ?? '(untitled)'}
-              </button>
-              <span>{c.card.auto_dispatch ? 'auto' : 'ask'}</span>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   );
 }

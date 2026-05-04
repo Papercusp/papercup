@@ -19,12 +19,12 @@ import { readLastScan } from '@/lib/operator-last-scan';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
+  const last = readLastScan();
   const reconstructed = await reconstructCards();
   if (!reconstructed.length) {
     // No reconstruction possible (no scan + no audit) — return an empty
     // snapshot so the panel renders cleanly.
-    const last = readLastScan();
-    return Response.json({ snapshot: last ? { cards: last.cards } : null });
+    return Response.json({ snapshot: last ? { cards: last.cards, scanCompletedAt: last.scanCompletedAt } : null });
   }
   return Response.json({
     snapshot: {
@@ -35,6 +35,7 @@ export async function GET() {
         _ackedAt: c.ackedAt,
         _undoCancelled: c.undoCancelled,
       })),
+      scanCompletedAt: last?.scanCompletedAt ?? null,
     },
   });
 }

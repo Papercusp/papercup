@@ -1,11 +1,14 @@
 'use client';
 
-import Link from 'next/link';
+import { useProgress } from '@bprogress/next';
+
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
 import * as Lucide from 'lucide-react';
+import { Checkbox } from '../harness/Checkbox';
 import InstallButton from './InstallButton';
+import RouteLink from '../_components/RouteLink';
 
 interface CatalogEntry {
   slug: string;
@@ -63,6 +66,7 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
   const [busySlug, setBusySlug] = useState<string | null>(null);
   const [enablePicker, setEnablePicker] = useState<string | null>(null);
   const [enabledMap, setEnabledMap] = useState<Record<string, string[]>>({});
+  const progress = useProgress();
 
   const installedSlugs = useMemo(() => {
     return new Set(isPlugin ? installedPlugins.map((p) => p.name) : installedTemplates.map((h) => h.slug));
@@ -130,6 +134,8 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
   async function uninstall(slug: string) {
     if (!confirm(`Remove ${slug}?\n\n${isPlugin ? 'Plugin will be disabled in every harness it was enabled in.' : 'Projects you initialised from this template will be untouched.'}`)) return;
     setBusySlug(slug);
+    progress.start(0.08, 0, true);
+    let stopProgress = true;
     try {
       const url = isPlugin ? '/api/plugins/uninstall' : '/api/marketplace/uninstall';
       const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ slug }) });
@@ -139,11 +145,13 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
         return;
       }
       toast.success(`${slug} removed`, { description: d.log?.slice(-400) });
+      stopProgress = false;
       setTimeout(() => window.location.reload(), 600);
     } catch (e: any) {
       toast.error(`uninstall failed: ${e?.message ?? e}`);
     } finally {
       setBusySlug(null);
+      if (stopProgress) progress.stop(120);
     }
   }
 
@@ -222,9 +230,9 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
               <div className="pc-marketplace-card-head">
                 <CardIcon name={p.icon} kind={kind} />
                 <div>
-                  <Link href={`/marketplace/${encodeURIComponent(p.slug)}`} className="pc-marketplace-card-title">
+                  <RouteLink href={`/marketplace/${encodeURIComponent(p.slug)}`} className="pc-marketplace-card-title">
                     {p.name}
-                  </Link>
+                  </RouteLink>
                   <span>{p.slug}</span>
                 </div>
                 {installed && <em>Installed</em>}
@@ -304,8 +312,11 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
 
 function InstallPluginButton({ slug }: { slug: string }) {
   const [busy, setBusy] = useState(false);
+  const progress = useProgress();
   async function go() {
     setBusy(true);
+    progress.start(0.08, 0, true);
+    let stopProgress = true;
     try {
       const r = await fetch('/api/marketplace/install-plugin', {
         method: 'POST',
@@ -318,11 +329,13 @@ function InstallPluginButton({ slug }: { slug: string }) {
         return;
       }
       toast.success(`${slug} installed`);
+      stopProgress = false;
       setTimeout(() => window.location.reload(), 600);
     } catch (e: any) {
       toast.error(`install failed: ${e?.message ?? e}`);
     } finally {
       setBusy(false);
+      if (stopProgress) progress.stop(120);
     }
   }
   return (
@@ -389,7 +402,7 @@ function EnablePicker({ slug, harnesses, enabledIn, onCancel, onApply }: EnableP
               return (
                 <li key={h.slug}>
                   <label className={on ? 'active' : ''}>
-                    <input type="checkbox" checked={on} onChange={() => toggle(h.slug)} />
+                    <Checkbox checked={on} onChange={() => toggle(h.slug)} ariaLabel={`Select ${h.slug}`} />
                     <span>
                       <code>{h.slug}</code>
                       {h.version && <em>v{h.version}</em>}

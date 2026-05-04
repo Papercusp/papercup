@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import * as Lucide from 'lucide-react';
-import { toast, Toaster } from 'sonner';
+import { toast } from 'sonner';
 
 interface PublishRecord {
   slug: string;
@@ -105,7 +105,7 @@ export default function InstalledSnapshotsPage() {
 
   return (
     <div className="pc-shell pc-marketplace-shell">
-      <Toaster position="bottom-right" richColors />
+      {/* Toaster mounted globally in app/layout.tsx. */}
       <section className="pc-marketplace-pagehead">
         <div>
           <p className="pc-eyebrow">Installed snapshots</p>
