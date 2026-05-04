@@ -408,22 +408,6 @@ async function maybeStartFullAgent(): Promise<boolean> {
       onTranscript: (text) => {
         setState({ lastTranscript: text });
       },
-      onIntentOpen: () => {
-        window.dispatchEvent(new CustomEvent('operator:open-request'));
-      },
-      onIntentScan: (query) => {
-        window.dispatchEvent(new CustomEvent('operator:scan-request', { detail: { query: query ?? '' } }));
-      },
-      onIntentApprove: (slug, capability) => {
-        void fetch('/api/agent-mcp/operator-standing-approvals', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ targetHarness: slug, capability, decision: 'approve' }),
-        });
-      },
-      onIntentAcrossWorkspaces: () => {
-        window.dispatchEvent(new CustomEvent('operator:across-workspaces'));
-      },
       onError: (err) => {
         console.error('[realtime]', err);
         void emitVoiceToast('error', `Realtime runtime error: ${err?.message ?? String(err)}`);

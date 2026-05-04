@@ -20,3 +20,4 @@ import './workspace';
 import './harness';
 import './chat';
 import './delegation';
+import './operator';

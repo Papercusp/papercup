@@ -16,20 +16,11 @@
  */
 
 import { RealtimeAgent, RealtimeSession, tool } from '@openai/agents-realtime';
-import { z } from 'zod';
 
 export interface RealtimeEngineCallbacks {
   onTranscript?: (text: string) => void;
   onAssistantText?: (text: string) => void;
   onError?: (err: Error) => void;
-  /** Fired when the model invokes the `open_operator` tool. */
-  onIntentOpen?: () => void;
-  /** Fired when the model invokes the `scan` tool. */
-  onIntentScan?: (query?: string) => void;
-  /** Fired when the model invokes the `approve` tool. */
-  onIntentApprove?: (slug: string, capability?: string) => void;
-  /** Fired when the model invokes the `across_workspaces` tool. */
-  onIntentAcrossWorkspaces?: () => void;
 }
 
 export interface RealtimeEngineHandle {
@@ -49,56 +40,11 @@ export async function startRealtimeSession(
   apiKey: string,
   callbacks: RealtimeEngineCallbacks = {},
 ): Promise<RealtimeEngineHandle> {
-  const openTool = tool({
-    name: 'open_operator',
-    description: 'Open the Operator panel in the UI.',
-    parameters: z.object({}).strict(),
-    execute: async () => {
-      callbacks.onIntentOpen?.();
-      return { ok: true };
-    },
-  });
-
-  const scanTool = tool({
-    name: 'scan',
-    description: 'Open the Operator panel and trigger a scan with an optional query.',
-    parameters: z.object({
-      query: z.string().nullable().describe('Optional natural-language query to seed the scan.'),
-    }).strict(),
-    execute: async ({ query }) => {
-      callbacks.onIntentScan?.(query ?? undefined);
-      return { ok: true };
-    },
-  });
-
-  const approveTool = tool({
-    name: 'approve',
-    description: 'Approve a pending capability for a harness slug.',
-    parameters: z.object({
-      slug: z.string().describe('Harness slug, e.g. "sheets" or "forms".'),
-      capability: z.string().nullable().describe('Optional capability id, e.g. "tasks-write". Omit if there is exactly one pending.'),
-    }).strict(),
-    execute: async ({ slug, capability }) => {
-      callbacks.onIntentApprove?.(slug, capability ?? undefined);
-      return { ok: true };
-    },
-  });
-
-  const acrossTool = tool({
-    name: 'across_workspaces',
-    description: 'Read out a summary of pending suggestions across all workspaces.',
-    parameters: z.object({}).strict(),
-    execute: async () => {
-      callbacks.onIntentAcrossWorkspaces?.();
-      return { ok: true };
-    },
-  });
-
   const registryTools = await buildRegistryTools();
   const agent = new RealtimeAgent({
     name: 'Operator',
     instructions: INSTRUCTIONS,
-    tools: [openTool, scanTool, approveTool, acrossTool, ...registryTools],
+    tools: registryTools,
   });
 
   const session = new RealtimeSession(agent);
