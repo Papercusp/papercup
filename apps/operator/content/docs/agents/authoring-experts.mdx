@@ -16,7 +16,7 @@ Add an expert when:
 - The work is **cross-cutting** — affects features the scoper would otherwise produce in isolation. Infra, security audits, schema migrations, accessibility audits, docs scaffolding.
 - The decision **happens at planning time**, not implementation time. (If it's "during the build, do X," that's a build-script change, not an expert.)
 - You want the **scoper to reason about whether to consult**. If it's "always run on every accept," that belongs in `MODE=replan` directly.
-- The output is **features**, not specs. (For roles that produce intermediate SPECs for the scoper to translate, see Future work below — that pattern isn't supported in v1.)
+- The output is **features** OR **spec bullets** (see "Output modes" below). Most cross-cutting roles want features; exploratory roles can use spec bullets that feed back into scoper's planning loop.
 
 If those don't fit, you probably want a feature, a build-script change, a plugin, or a new scoper mode.
 
@@ -169,13 +169,22 @@ These are all live and require no per-role configuration beyond the sidecar mani
 - **Cross-writer guard at `/features/import`** — features with `kind != 'product'` cannot be overwritten except by an updater whose payload also carries the matching `kind`. Scoper-replan can't trample expert features even if it generates a colliding id.
 - **Operator integration** — every dispatch records a `user_actions` row with `kind: 'expert.dispatch'`, `summary`, `detail_url` to the run log, and lifecycle (running → succeeded/failed). OperatorActionLog renders these alongside other long-running actions.
 
-## Future work (not in v1)
+## Output modes
 
-These are deliberate omissions in the current substrate:
+Both built-in and plugin-contributed roles support two output modes:
 
-- **`output: 'spec'` mode** — a role that produces an intermediate SPEC for scoper to translate. Useful for roles that benefit from scoper's holistic synthesis. Add when a real role needs it.
-- **ExpertsPanel UI integration** — autonomous experts surface only in OperatorActionLog today. Adding them to the chat-driven ExpertsPanel would require an `identity.json` shim with a different schema than chat-driven experts use. Defer until users ask for it.
-- **Per-role cost cap enforcement** — `budgetCents` in the role manifest is informational; the dispatcher doesn't currently kill an over-budget run. The harness substrate's existing per-role timeout (`config.json` `timeouts`) is a coarser substitute. Tighten when telemetry shows real over-spend.
+- **`output: { kind: 'features', featureKind: '<kind>' }`** — agent POSTs feature rows directly to `/features/import`. Worker agents pick them up alongside scoper's product features. Tagged with the given `featureKind` so scoper-replan's cross-writer guard preserves them. Most cross-cutting roles (infra, security, docs) use this.
+
+- **`output: { kind: 'spec', specSection?: '<heading>' }`** — agent writes bullets to `$STATE_DIR/expert-spec-bullets/<expertId>.md`. On successful exit, the dispatcher appends those bullets to the project's `SPEC.md` under a marker comment. The next scoper-replan picks them up like user-authored bullets. Useful for exploratory roles (user-research, requirements-discovery) where features aren't yet the right output.
+
+## Cost-cap enforcement
+
+The role manifest's `budgetCents` is enforced two ways:
+
+1. **Self-throttling**: `EXPERT_BUDGET_CENTS` env var passed to the agent's prompt; well-behaved agents stop early when approaching it.
+2. **Hard kill**: the dispatcher polls the agent's stream-json log every 2s, sums `total_cost_usd`, and kills the entire process group via `SIGTERM` (escalating to `SIGKILL`) if cumulative cost exceeds `budgetCents × 1.15` (15% overshoot tolerance for the in-flight chunk that triggered the check). The user_actions summary records `KILLED — over budget at $X.XX (cap $Y.YY)`.
+
+The 15% overshoot is intentional: `total_cost_usd` only updates at message boundaries, so a hard cap at exactly the budget would race the in-flight token batch.
 
 ## What this pattern lets you avoid
 

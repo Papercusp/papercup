@@ -339,7 +339,27 @@ export async function dispatchExpert(
           } catch { return 0; }
         };
 
+        // For `output.kind === 'spec'` roles, the agent writes its
+        // bullets to a known per-expert file. On success, we append them
+        // to the project's SPEC.md under a marker comment. The next
+        // scoper-replan picks them up alongside user-authored bullets.
+        const appendSpecBulletsIfNeeded = async (status: 'succeeded' | 'failed') => {
+          if (status !== 'succeeded') return;
+          if (roleManifest?.output?.kind !== 'spec') return;
+          const fs = require('node:fs');
+          const bulletsPath = join(stateDir, 'expert-spec-bullets', `${expertId}.md`);
+          let bullets = '';
+          try { bullets = fs.readFileSync(bulletsPath, 'utf8').trim(); } catch { /* nothing to append */ }
+          if (!bullets) return;
+          const specPath = join(project.path, 'SPEC.md');
+          if (!fs.existsSync(specPath)) return;
+          const section = (roleManifest.output as { specSection?: string }).specSection ?? `expert:${role}`;
+          const block = `\n<!-- appended by ${role} (${expertId}) at ${new Date().toISOString()} — section: ${section} -->\n${bullets}\n`;
+          try { fs.appendFileSync(specPath, block, 'utf8'); } catch { /* best-effort */ }
+        };
+
         const finalise = async (status: 'succeeded' | 'failed', summary: string) => {
+          await appendSpecBulletsIfNeeded(status).catch(() => undefined);
           releaseLock(project.path, role);
           // Compute cost vs budget for telemetry. If we're over budget,
           // append a warning to the summary so the OperatorActionLog row
@@ -362,16 +382,59 @@ export async function dispatchExpert(
             detailUrl: resultPath,
           }).catch(() => undefined);
         };
+        // Hard cost-cap enforcement: if the agent's cumulative
+        // total_cost_usd exceeds budgetCents (with a small overshoot
+        // tolerance for the in-flight chunk that triggered the check),
+        // kill the entire process group. detached:true above means the
+        // child became its own group leader; `process.kill(-pid)`
+        // signals every descendant including claude + its tool calls.
+        // Without this, a runaway prompt could quietly burn through
+        // the budget despite our advisory env-var hint.
+        const childPid = child.pid;
+        const HARD_KILL_OVERSHOOT_RATIO = 1.15; // allow 15% slop before killing
+        let killedForBudget = false;
+
         const poll = setInterval(() => {
           let done = false;
           try {
             const txt = readFileSync(resultPath, 'utf8');
             done = txt.includes('__EXPERT_DONE__');
           } catch { /* not yet */ }
+
+          // Mid-run budget check (cheap; sums one or two .jsonl files).
+          if (!done && !killedForBudget && typeof budgetCents === 'number' && budgetCents > 0 && childPid) {
+            try {
+              const cost = sumCostUsd();
+              const cents = Math.round(cost * 100);
+              if (cents > budgetCents * HARD_KILL_OVERSHOOT_RATIO) {
+                killedForBudget = true;
+                clearInterval(poll);
+                try { process.kill(-childPid, 'SIGTERM'); } catch { /* group may already be gone */ }
+                // Give SIGTERM a beat; if it didn't take, escalate.
+                setTimeout(() => {
+                  try { process.kill(-childPid, 'SIGKILL'); } catch { /* ignore */ }
+                }, 2000);
+                void finalise(
+                  'failed',
+                  `${role} KILLED — over budget at ${cost.toFixed(3)} (cap ${(budgetCents / 100).toFixed(2)})`,
+                );
+                return;
+              }
+            } catch { /* cost calc failure shouldn't crash the poll */ }
+          }
+
           if (done) {
             clearInterval(poll);
             void finalise('succeeded', `${role} completed (${Math.floor((Date.now() - startTs) / 1000)}s)`);
           } else if (Date.now() - startTs > LOCK_TTL_MS) {
+            // Wall-clock timeout — also a SIGTERM the child group; otherwise
+            // detached children outlive their tracking.
+            if (childPid) {
+              try { process.kill(-childPid, 'SIGTERM'); } catch { /* ignore */ }
+              setTimeout(() => {
+                try { process.kill(-childPid, 'SIGKILL'); } catch { /* ignore */ }
+              }, 2000);
+            }
             clearInterval(poll);
             void finalise('failed', `${role} timed out (>5min)`);
           }

@@ -115,13 +115,14 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0, background: 'rgba(4, 10, 20, 0.32)' }}>
         <div style={{ width: 280, borderRight: '1px solid var(--border)', overflow: 'auto', background: 'rgba(6, 13, 24, 0.46)' }}>
+          <AutonomousExpertsSection harnessSlug={harnessSlug} />
           {error && <div style={{ padding: 12, color: 'var(--bad)' }}>{error}</div>}
           {!experts && !error && <div style={{ padding: 12, color: 'var(--fg-mute)' }}>loading…</div>}
           {experts && experts.length === 0 && (
             <div style={{ padding: 12, color: 'var(--fg-dim)', fontSize: 12, lineHeight: 1.5 }}>
-              No experts yet. The scoper spawns them automatically when{' '}
-              <code>scoper.useExperts: true</code> is set in <code>.harness/config.json</code>,
-              or you can spawn one manually with the button above.
+              No manual experts yet. Spawn one with the button above, or watch the
+              autonomous-expert section above for runs triggered by scoper or
+              plugin events.
             </div>
           )}
           {experts && experts.map((e) => (
@@ -741,3 +742,156 @@ const inputStyle: React.CSSProperties = {
   border: '1px solid var(--border)', borderRadius: 8, width: '100%', fontFamily: 'inherit',
   background: 'rgba(4,10,20,0.58)', color: 'var(--fg)',
 };
+
+/**
+ * AutonomousExpertsSection — lists recent autonomous expert dispatches
+ * (scoper-driven, plugin-event-triggered, manual CLI). Sourced from
+ * `harness_shared.user_actions` filtered to `kind='expert.dispatch'`.
+ *
+ * Distinct from the chat-driven manual experts list below (which uses
+ * `.harness/experts/EXP-NNN/` directory state). Autonomous experts have
+ * no chat surface; their lifecycle is fire-and-forget with telemetry
+ * captured via user_actions. Click an entry → opens its run log in a
+ * new tab.
+ */
+function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
+  interface DispatchRow {
+    id: number;
+    summary: string | null;
+    status: 'running' | 'succeeded' | 'failed' | 'cancelled';
+    detailUrl?: string | null;
+    invocationId?: string | null;
+    startedAt: number;
+    finishedAt?: number | null;
+  }
+  const [rows, setRows] = useState<DispatchRow[] | null>(null);
+  const [open, setOpen] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch(`/api/user-actions/${harnessSlug}?limit=20`);
+        if (!r.ok) return;
+        const d = await r.json() as { actions: Array<DispatchRow & { kind: string }> };
+        if (cancelled) return;
+        const filtered = (d.actions ?? []).filter((a) => a.kind === 'expert.dispatch');
+        setRows(filtered);
+      } catch { /* ignore */ }
+    };
+    load();
+    const t = setInterval(load, 5000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [harnessSlug]);
+
+  const dotColor = (status: DispatchRow['status']): string =>
+    status === 'running' ? '#3b82f6' :
+    status === 'succeeded' ? '#16a34a' :
+    status === 'failed' ? '#dc2626' :
+    '#737373';
+
+  const formatElapsed = (startMs: number, endMs?: number | null): string => {
+    const dur = (endMs ?? Date.now()) - startMs;
+    if (dur < 1000) return `${dur}ms`;
+    if (dur < 60_000) return `${Math.floor(dur / 1000)}s`;
+    return `${Math.floor(dur / 60_000)}m${Math.floor((dur % 60_000) / 1000)}s`;
+  };
+
+  const formatRelative = (ms: number): string => {
+    const ago = Date.now() - ms;
+    if (ago < 60_000) return 'just now';
+    if (ago < 3_600_000) return `${Math.floor(ago / 60_000)}m ago`;
+    if (ago < 86_400_000) return `${Math.floor(ago / 3_600_000)}h ago`;
+    return `${Math.floor(ago / 86_400_000)}d ago`;
+  };
+
+  if (!rows) {
+    return (
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--border)', fontSize: 11, color: 'var(--fg-mute)' }}>
+        loading autonomous dispatches…
+      </div>
+    );
+  }
+
+  return (
+    <Collapsible.Root open={open} onOpenChange={setOpen}>
+      <Collapsible.Trigger asChild>
+        <button
+          type="button"
+          style={{
+            width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '8px 12px', borderBottom: '1px solid var(--border)',
+            background: 'rgba(8, 16, 28, 0.3)', border: 'none', cursor: 'pointer',
+            fontSize: 11, fontWeight: 600, color: 'var(--fg-dim)', letterSpacing: '0.04em', textTransform: 'uppercase',
+          }}
+        >
+          <span>{open ? '▾' : '▸'} Autonomous dispatches ({rows.length})</span>
+          <span style={{ fontSize: 9, opacity: 0.7, textTransform: 'none' }}>via scoper / triggers / CLI</span>
+        </button>
+      </Collapsible.Trigger>
+      <Collapsible.Content>
+        {rows.length === 0 ? (
+          <div style={{ padding: '8px 12px', fontSize: 11, color: 'var(--fg-dim)', borderBottom: '1px solid var(--border)' }}>
+            None yet. Scoper spawns one when a SPEC change matches a role's
+            <code style={{ margin: '0 3px' }}>whenUseful</code>; plugin events fire roles
+            with matching <code>alwaysFireOn</code>; or use{' '}
+            <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px' }}>bin/dispatch-expert</code>.
+          </div>
+        ) : (
+          <ul style={{ listStyle: 'none', padding: 0, margin: 0, borderBottom: '1px solid var(--border)' }}>
+            {rows.map((r) => (
+              <li key={r.id} style={{
+                padding: '6px 12px',
+                fontSize: 11,
+                color: 'var(--fg)',
+                borderBottom: '1px solid rgba(255,255,255,0.04)',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 8,
+              }}>
+                <span aria-label={r.status} style={{
+                  width: 7, height: 7, borderRadius: '50%',
+                  background: dotColor(r.status),
+                  marginTop: 5,
+                  flexShrink: 0,
+                  animation: r.status === 'running' ? 'pulse 1.4s ease-in-out infinite' : undefined,
+                }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: 'ui-monospace, monospace', opacity: 0.8, marginBottom: 2 }}>
+                    {r.invocationId ?? `ua-${r.id}`}
+                  </div>
+                  <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', opacity: 0.95 }}>
+                    {r.summary ?? <em style={{ opacity: 0.5 }}>(no summary)</em>}
+                  </div>
+                  <div style={{ fontSize: 10, opacity: 0.55, marginTop: 1 }}>
+                    {formatElapsed(r.startedAt, r.finishedAt)} · {formatRelative(r.startedAt)}
+                    {r.detailUrl && (
+                      <>
+                        {' · '}
+                        <a
+                          href={r.detailUrl.startsWith('http') ? r.detailUrl : '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: 'var(--accent-cool)', textDecoration: 'none' }}
+                          onClick={(e) => {
+                            // Local file paths can't be opened via http; surface as copyable text.
+                            if (!r.detailUrl?.startsWith('http')) {
+                              e.preventDefault();
+                              navigator.clipboard?.writeText(r.detailUrl ?? '').catch(() => undefined);
+                            }
+                          }}
+                        >
+                          {r.detailUrl.startsWith('http') ? 'log↗' : 'copy log path'}
+                        </a>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Collapsible.Content>
+    </Collapsible.Root>
+  );
+}

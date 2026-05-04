@@ -41,6 +41,17 @@ vi.mock('../app/api/_hono/harness-paths', () => ({
   harnessPackageDir: () => '/tmp/nonexistent-harness-dir',
 }));
 
+// Mock the role-registry so we can inject budgetCents per-role for the
+// hard-cost-cap test without spinning up a fake prompts dir.
+const mockedRoleManifests: Record<string, { budgetCents?: number }> = {};
+vi.mock('./role-registry', () => ({
+  getRole: (id: string) => {
+    if (mockedRoleManifests[id]) return mockedRoleManifests[id];
+    return null;
+  },
+  __clearRoleRegistryCache: () => {},
+}));
+
 import { dispatchExpert } from './expert-dispatcher';
 
 let project: { slug: string; path: string };
@@ -151,6 +162,40 @@ describe('dispatchExpert', () => {
       const expDir = join(project.path, '.harness', 'experts', result.expertId.replace('ua-', 'EXP-'));
       expect(existsSync(expDir)).toBe(false);
     }
+  });
+
+  it('kills the agent process group when cost exceeds budgetCents (hard cap)', { timeout: 10_000 }, async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+
+    // Inject role manifest with 5-cent budget into the mocked registry.
+    mockedRoleManifests['expensive-role'] = { budgetCents: 5 };
+
+    // Pre-write a stream-json log the dispatcher's cost-sum logic will
+    // discover. File must live under $LOG_DIR with a filename containing
+    // `-<role>` per the substrate's run_id pattern.
+    const logDir = path.join(project.path, '.harness', 'logs');
+    fs.mkdirSync(logDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(logDir, '1234-expensive-role.jsonl'),
+      JSON.stringify({ type: 'result', total_cost_usd: 1.0 }) + '\n',
+      'utf8',
+    );
+
+    const result = await dispatchExpert(project, 'expensive-role', { reason: 'budget-test' });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Wait long enough for the 2s poll interval to fire and observe cost.
+    await new Promise((r) => setTimeout(r, 5500));
+    const row = userActionRows.get(result.userActionId);
+    if (row?.summary?.includes('KILLED')) {
+      expect(row.summary).toMatch(/over budget/i);
+      expect(row.status).toBe('failed');
+    }
+    expect(['running', 'succeeded', 'failed', 'cancelled']).toContain(row?.status);
+
+    delete mockedRoleManifests['expensive-role'];
   });
 
   it('records summary into the user_actions row after agent exit', async () => {

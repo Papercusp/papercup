@@ -62,10 +62,21 @@ export interface RoleManifest {
   /** Free-form description scoper uses to decide whether to consult. */
   whenUseful: string;
   /**
-   * What the role produces. Today only `kind: 'features'` is supported;
-   * `kind: 'spec'` is reserved for future intermediate-spec roles.
+   * What the role produces:
+   *   - `features`: writes feature rows to harness_features tagged with
+   *     `featureKind`. The most common shape; scoper coordinates via
+   *     the kind-mismatch guard so it doesn't trample expert features.
+   *   - `spec`: appends bullets to SPEC.md under a marker comment,
+   *     letting scoper-replan pick them up alongside user-authored
+   *     bullets in its next pass. Useful for roles that want their
+   *     output to feed back into the planning loop instead of jumping
+   *     straight to feature creation. The agent writes to
+   *     `$STATE_DIR/expert-spec-bullets/<expertId>.md` and the
+   *     dispatcher appends with provenance comment on agent exit.
    */
-  output: { kind: 'features'; featureKind: string };
+  output:
+    | { kind: 'features'; featureKind: string }
+    | { kind: 'spec'; specSection?: string };
   /**
    * Plugin lifecycle / event names that trigger this role outside of
    * scoper-decides flow. The substrate's expert-triggers module reads
@@ -112,8 +123,16 @@ function readBuiltinRoles(promptsDir: string): RoleManifest[] {
       const parsed = JSON.parse(raw) as Omit<RoleManifest, 'source'>;
       if (parsed.id !== id) continue;
       if (!parsed.whenUseful || typeof parsed.whenUseful !== 'string') continue;
-      if (!parsed.output || parsed.output.kind !== 'features' || !parsed.output.featureKind) continue;
-      if (!ROLE_ID_RE.test(parsed.output.featureKind)) continue;
+      if (!parsed.output) continue;
+      if (parsed.output.kind === 'features') {
+        if (!parsed.output.featureKind || !ROLE_ID_RE.test(parsed.output.featureKind)) continue;
+      } else if (parsed.output.kind === 'spec') {
+        // spec output is structurally simpler — optional `specSection`
+        // names the heading the agent's bullets will get appended under.
+        // No required fields beyond `kind`.
+      } else {
+        continue; // unrecognised output shape
+      }
       if (!existsSync(join(promptsDir, `${id}.md`))) continue;
       out.push({ ...parsed, source: { kind: 'builtin' } });
     } catch { /* skip silently */ }
@@ -136,8 +155,14 @@ function readPluginRolesFromDir(pluginDir: string, pluginName: string): RoleMani
     if (!decl.promptPath || typeof decl.promptPath !== 'string') continue;
     if (decl.promptPath.includes('..')) continue; // basic traversal guard
     if (!decl.whenUseful || typeof decl.whenUseful !== 'string') continue;
-    if (!decl.output || decl.output.kind !== 'features' || !decl.output.featureKind) continue;
-    if (!ROLE_ID_RE.test(decl.output.featureKind)) continue;
+    if (!decl.output) continue;
+    if (decl.output.kind === 'features') {
+      if (!decl.output.featureKind || !ROLE_ID_RE.test(decl.output.featureKind)) continue;
+    } else if (decl.output.kind === 'spec') {
+      // ok — no required fields beyond `kind`.
+    } else {
+      continue;
+    }
     const promptAbs = join(pluginDir, decl.promptPath);
     if (!existsSync(promptAbs)) continue;
     out.push({

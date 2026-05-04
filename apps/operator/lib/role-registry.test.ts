@@ -106,11 +106,31 @@ describe('role-registry', () => {
     expect(listRoles()).toEqual([]);
   });
 
-  it('skips roles missing output.featureKind', () => {
+  it('skips roles missing output.featureKind for kind=features', () => {
     writeRole('infra-reviewer', {
       id: 'infra-reviewer',
       whenUseful: 'x',
       output: { kind: 'features' },
+    });
+    expect(listRoles()).toEqual([]);
+  });
+
+  it('accepts roles with output.kind=spec (no featureKind required)', () => {
+    writeRole('user-research', {
+      id: 'user-research',
+      whenUseful: 'when SPEC implies questions to answer',
+      output: { kind: 'spec', specSection: 'Discovery' },
+    });
+    const roles = listRoles();
+    expect(roles).toHaveLength(1);
+    expect(roles[0].output.kind).toBe('spec');
+  });
+
+  it('skips roles with unrecognised output kinds', () => {
+    writeRole('weird', {
+      id: 'weird',
+      whenUseful: 'x',
+      output: { kind: 'something-else' },
     });
     expect(listRoles()).toEqual([]);
   });
