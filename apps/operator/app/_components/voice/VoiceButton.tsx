@@ -210,8 +210,12 @@ export function VoiceButton(): JSX.Element {
   const title = vs.supported
     ? `Voice mode: ${MODE_LABEL[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
     : 'Voice mode unsupported in this browser';
-  const showWakeHint = vs.mode === 'always-on' && vs.supported && !wakeHintSeen;
-  const showPttHint = vs.mode === 'push-to-talk' && vs.supported && !pttHintSeen;
+  // The hint bubbles ("Say <wakeWord>" / "Hold ` to talk") are persistent
+  // affordances — keep them visible whenever the matching mode is active.
+  // The historical 'seen' localStorage flags are kept up-to-date so any
+  // future opt-out toggle can read them, but they no longer gate render.
+  const showWakeHint = vs.mode === 'always-on' && vs.supported;
+  const showPttHint = vs.mode === 'push-to-talk' && vs.supported;
 
   return (
     <div className={`pc-voice-control${showWakeHint || showPttHint ? ' has-wake-hint' : ''}`}>
