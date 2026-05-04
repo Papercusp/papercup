@@ -2899,6 +2899,28 @@ export default function HarnessDashboard() {
       { id: 'kbd:feature-enter', section: 'Keyboard shortcuts', title: 'Feature list — open selected', icon: '⌨', shortcut: '↵', keywords: 'feature list open enter', perform: () => { /* see FeatureList */ } },
       { id: 'kbd:feature-r', section: 'Keyboard shortcuts', title: 'Feature list — reset selected', icon: '⌨', shortcut: 'R', keywords: 'feature list reset', perform: () => { /* see FeatureList */ } },
     );
+
+    // Registry-derived palette items — every CommandDef tagged with
+    // `paletteEntry` shows up here automatically. New palette entries
+    // are added by registering a def, not by editing this file.
+    try {
+      const ws = (typeof window !== 'undefined'
+        ? new URL(window.location.href).searchParams.get('ws')
+        : null) ?? 'default';
+      const tabId = typeof window !== 'undefined'
+        ? (window.sessionStorage.getItem('pc-voice-tab-id') ?? undefined)
+        : undefined;
+      // Synchronously require the palette-shim — it's a thin layer over
+      // the registry which is already loaded if the dashboard is open.
+      const { buildRegistryPaletteItems } = require('@/lib/commands/shims/palette-shim') as typeof import('@/lib/commands/shims/palette-shim');
+      const registryItems = buildRegistryPaletteItems({ workspace: ws, sessionId: tabId });
+      cs.push(...registryItems);
+    } catch (err) {
+      // If the registry hasn't loaded yet (rare — the palette is built
+      // long after page mount), skip silently. Items will appear on the
+      // next memo run.
+      void err;
+    }
     return cs;
   }, [projects, activeSlug, status, agents, launchHarness, stopHarness, loadAgent]);
 
