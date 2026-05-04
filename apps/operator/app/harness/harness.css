@@ -13836,3 +13836,93 @@ body:has(.h-root) .pc-header nav button:not(.pc-header-cta):hover {
 @media (prefers-reduced-motion: reduce) {
   .h-panel-maximize { transition: none; }
 }
+
+/* ── Panel maximize / restore ───────────────────────────────────────────
+   The Panel primitive (libs/ui-primitives/src/Panel.tsx) renders an icon
+   button at the top-right corner of every panel that toggles a
+   "maximized" state. When maximized the panel portals itself to
+   document.body and pins to the viewport via `position: fixed`. View
+   Transitions API animates the morph; ESC or clicking the icon restores. */
+
+/* Maximize button: absolute on .h-panel root (not inside .h-panel-head)
+   because some panels (Feature queue) hide their head via CSS — a button
+   inside the head would disappear with it. Top-right corner is the only
+   layout-stable spot across all panel layouts. */
+.h-panel { position: relative; }
+.h-panel-maximize {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: color-mix(in oklab, var(--bg-2), transparent 25%);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--fg-dim);
+  cursor: pointer;
+  opacity: 0.45;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease, opacity 120ms ease;
+}
+.h-panel:hover > .h-panel-maximize,
+.h-panel-maximize:focus-visible,
+.h-panel.h-panel-maximized > .h-panel-maximize {
+  opacity: 1;
+}
+.h-panel-maximize:hover {
+  background: color-mix(in oklab, var(--bg-2), white 8%);
+  border-color: var(--border);
+  color: var(--fg);
+}
+.h-panel-maximize:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Maximized overlay: pin to viewport. z-index 1600 sits above
+   .pc-header (z:1300) AND the collapse-top-section button (z:1500) which
+   would otherwise visibly poke through the top of the maximized panel.
+   Below cmd-palette overlay (5000+) so ⌘K still covers it. */
+.h-panel.h-panel-maximized {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 1600 !important;
+  height: 100vh !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: 0 -2px 60px rgba(0, 0, 0, 0.55);
+  background: var(--bg-2);
+}
+.h-panel.h-panel-maximized .h-panel-head { padding: 11px 18px; }
+.h-panel.h-panel-maximized .h-panel-body { padding: 14px 22px; }
+
+/* Restore button when maximized: bigger and more visible so the user
+   has an obvious way out (in addition to ESC). */
+.h-panel.h-panel-maximized > .h-panel-maximize {
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  background: color-mix(in oklab, var(--bg-2), white 8%);
+  border-color: var(--border);
+  color: var(--fg);
+  opacity: 1;
+  z-index: 3;
+}
+
+/* Placeholder keeps the grid slot from collapsing while the real panel
+   is portaled to body. Visually invisible but reserves layout space. */
+.h-panel.h-panel-placeholder {
+  background: transparent;
+  border-color: transparent;
+  pointer-events: none;
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .h-panel-maximize { transition: none; }
+}
