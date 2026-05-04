@@ -11028,7 +11028,16 @@ body:has(.h-root) .pc-header nav button {
   text-rendering: geometricPrecision !important;
 }
 
-.h-header,
+/* Note: .h-header omitted from this group on purpose. Adding any
+   backdrop-filter to .h-header turns it into a containing block for
+   `position: fixed` descendants (per CSS spec), which traps the
+   .h-top-collapse-btn (rendered inside .h-header) inside .h-header's
+   coordinate space — making it impossible for the button to render
+   above the sticky .pc-header chrome bar above it. The button now
+   portals to body so this would be moot, but keeping .h-header out of
+   this group also keeps fixed-positioning predictable for any future
+   descendants. The visual punch from saturate(1.10) on .h-header is
+   negligible. */
 .h-phase-plan-row,
 .h-quick-action-row,
 .h-tabs.h-main-tabs {
@@ -13735,4 +13744,21 @@ body:has(.h-root) .pc-header nav button:not(.pc-header-cta):hover {
 
 .h-phase-action-menu-link:hover {
   background: rgba(88, 166, 255, 0.12);
+}
+/* Collapse/expand top-section tab is portaled to document.body (see
+   CollapseTopSectionPortalButton in HarnessDashboard.tsx) so it lives
+   in body's root stacking context, escaping the .h-root container
+   which globals.css clamps to z-index:1 via `body > *`. position:fixed
+   pins it to the seam between .pc-header (sticky chrome bar at
+   z-index:1300, ~58px tall) and .h-header below. z-index:1500 sits
+   above the chrome bar but below modal/route-pending overlays so ⌘K
+   and dialogs still cover it. */
+.h-top-collapse-btn.h-top-collapse-inline,
+.h-top-collapse-btn.h-top-collapse-floating {
+  position: fixed !important;
+  top: 49px !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 1500 !important;
+  pointer-events: auto !important;
 }

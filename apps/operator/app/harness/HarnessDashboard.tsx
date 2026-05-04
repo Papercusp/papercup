@@ -347,6 +347,38 @@ function safeParseClaims(raw: unknown): string[] | undefined {
 // ─── Component ─────────────────────────────────────────────────────────
 
 /**
+ * Portal-rendered tab that lets the user collapse / expand the top header
+ * section. Lives at document.body so it escapes the .h-root stacking
+ * context (which globals.css clamps to z-index:1 via `body > *`). Pinned
+ * via fixed CSS in harness.css. Mount-gate avoids SSR/hydration mismatch.
+ */
+function CollapseTopSectionPortalButton({ direction, onClick, expanded }: {
+  direction: 'collapse' | 'expand';
+  onClick: () => void;
+  expanded: boolean;
+}): JSX.Element | null {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+  if (!mounted || typeof document === 'undefined') return null;
+  const isCollapse = direction === 'collapse';
+  return createPortal(
+    <button
+      type="button"
+      className={`h-top-collapse-btn h-top-collapse-${isCollapse ? 'inline' : 'floating'}`}
+      onClick={onClick}
+      aria-expanded={expanded}
+      title={isCollapse ? 'Collapse the top header section to free vertical space' : 'Expand the top header section'}
+    >
+      {isCollapse
+        ? <LChevronUp className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
+        : <LChevronDown className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />}
+      <span className="h-top-collapse-label">{isCollapse ? 'Collapse top section' : 'Expand top section'}</span>
+    </button>,
+    document.body
+  );
+}
+
+/**
  * Plugin tab trigger.
  */
 function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activeSlug }: {
@@ -2895,19 +2927,17 @@ export default function HarnessDashboard() {
 
       {!topChromeCollapsed && (
         <>
+      {/* Collapse-top-section button is portaled to body to escape the
+          .h-root stacking context (forced to z-index:1 by globals.css's
+          `body > *` rule). Without the portal, the sticky chrome bar
+          .pc-header (z-index:1300) covers the top half of this tab. */}
+      <CollapseTopSectionPortalButton
+        direction="collapse"
+        onClick={() => setTopChromeCollapsed(true)}
+        expanded={!topChromeCollapsed}
+      />
       {/* ── Mission header ─────────────────────────────────── */}
       <div className={`h-header${status?.alive ? ' alive' : ''}`}>
-        <Tooltip label="Collapse the top header section to free vertical space">
-          <button
-          type="button"
-          className="h-top-collapse-btn h-top-collapse-inline"
-          onClick={() => setTopChromeCollapsed(true)}
-          aria-expanded={!topChromeCollapsed}
-        >
-          <LChevronUp className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
-          <span className="h-top-collapse-label">Collapse top section</span>
-        </button>
-        </Tooltip>
         <div className="h-header-main">
 
           <div className="h-project-card">
@@ -3250,19 +3280,11 @@ export default function HarnessDashboard() {
       )}
 
       {topChromeCollapsed && (
-        <div className="h-top-collapse-row">
-          <Tooltip label="Expand the top header section">
-            <button
-            type="button"
-            className="h-top-collapse-btn h-top-collapse-floating"
-            onClick={() => setTopChromeCollapsed(false)}
-            aria-expanded={!topChromeCollapsed}
-          >
-            <LChevronDown className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
-            <span className="h-top-collapse-label">Expand top section</span>
-          </button>
-          </Tooltip>
-        </div>
+        <CollapseTopSectionPortalButton
+          direction="expand"
+          onClick={() => setTopChromeCollapsed(false)}
+          expanded={!topChromeCollapsed}
+        />
       )}
 
       {/* ── Main-area tab switcher ─────────────────────────────── */}
