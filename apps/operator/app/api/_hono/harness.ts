@@ -1193,10 +1193,24 @@ harness.post('/:slug/features/import', async (c) => {
   const now = Date.now();
   let inserted = 0;
   let updated = 0;
+  let skippedKindMismatch = 0;
   await dbc.transaction(async (tx) => {
     for (const f of features) {
-      const existing = await tx.prepare('SELECT 1 AS x FROM harness_features WHERE harness_slug = ? AND feature_id = ?').get(project.slug, f.id);
+      const existing = await tx.prepare(
+        'SELECT kind FROM harness_features WHERE harness_slug = ? AND feature_id = ?',
+      ).get(project.slug, f.id) as { kind: string | null } | undefined;
       if (existing) {
+        // Cross-writer guard: if the existing row was authored by a non-product
+        // writer (kind set to something other than null/'product'), only allow
+        // updates from the same kind. Prevents scoper-replan from accidentally
+        // overwriting an expert-authored infra feature when feature ids collide.
+        // Treats null and 'product' as equivalent (legacy product rows pre-migration).
+        const existingKind = existing.kind ?? 'product';
+        const incomingKind = f.kind ?? 'product';
+        if (existingKind !== 'product' && existingKind !== incomingKind) {
+          skippedKindMismatch++;
+          continue;
+        }
         await tx.prepare(`
           UPDATE harness_features SET
             title = ?,
@@ -1230,7 +1244,7 @@ harness.post('/:slug/features/import', async (c) => {
       }
     }
   });
-  return c.json({ ok: true, inserted, updated, total: features.length });
+  return c.json({ ok: true, inserted, updated, total: features.length, skippedKindMismatch });
 });
 
 harness.post('/:slug/features', async (c) => {

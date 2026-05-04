@@ -1,0 +1,159 @@
+---
+title: Authoring autonomous experts
+description: How to add a new direct-writing expert role that hooks into scoper-replan.
+---
+
+# Authoring autonomous experts
+
+A "direct-writing expert" is an autonomous specialist agent that the scoper consults during `MODE=replan` and that writes its own features into `harness_features` (tagged with a non-`product` `kind`). The first concrete role is `infra-reviewer`. This page is the recipe for adding the next one.
+
+The pattern is intentionally thin — almost everything an expert needs is already in the substrate.
+
+## When to add an expert (vs a feature)
+
+Add an expert when:
+
+- The work is **cross-cutting** — affects features the scoper would otherwise produce in isolation. Infra, security audits, schema migrations, accessibility audits, docs scaffolding.
+- The decision **happens at planning time**, not implementation time. (If it's "during the build, do X," that's a build-script change, not an expert.)
+- You want the **scoper to reason about whether to consult**. If it's "always run on every accept," that belongs in `MODE=replan` directly.
+- The output is **features**, not specs. (For roles that produce intermediate SPECs for the scoper to translate, see Future work below — that pattern isn't supported in v1.)
+
+If those don't fit, you probably want a feature, a build-script change, a plugin, or a new scoper mode.
+
+## What you need to ship
+
+For each new role, exactly two artifacts:
+
+1. **A prompt file** at `prompts/<role>.md` (in the harness package).
+2. **A line in `prompts/scoper.md`** under "Cross-cutting experts" that names your role and tells scoper when to consult it.
+
+That's it. Substrate-side, the dispatcher and the `kind`-aware features import endpoint already handle every role. No new code.
+
+## Step 1 — write the prompt
+
+Use `prompts/infra-reviewer.md` as the template. The required sections:
+
+### Inputs the agent reads
+
+The dispatcher sets these env vars; document them at the top of your prompt so the agent knows where to look:
+
+| Env var | Source |
+|---|---|
+| `EXPERT_ID` | `ua-<n>`; matches `user_actions.id`. Stamp this on every feature you emit so the row traces back to your run. |
+| `EXPERT_ROLE` | Your role's id (the `<role>` of `prompts/<role>.md`). |
+| `EXPERT_REASON` | One-sentence summary of why you were dispatched (set by scoper). |
+| `EXPERT_CONTEXT` | JSON blob with caller-supplied context — typically `{ linkedProposalId, newSpecBullets }`. Parse with `jq`. |
+| `HARNESS_SLUG` | The harness's slug (set by run.sh's `harness_slug` helper). |
+| `STATE_DIR` | `.harness/` in the project. |
+| `PROJECT_DIR` | Project root. |
+
+### Decision: should you emit features?
+
+The agent's job is to read the SPEC change + any role-specific context (e.g. infra-contract for `infra-reviewer`) and decide whether the change requires features in your domain. Most consults should produce zero features — only emit when there's genuinely something to do.
+
+### Emitting features
+
+POST each feature directly to `/api/harness/$HARNESS_SLUG/features/import`. Always set `kind` to your role's tag (e.g. `'infra'`, `'security'`) and `metadata.expert_id` to `$EXPERT_ID`:
+
+```bash
+curl -sS -X POST "http://localhost:3055/api/harness/$HARNESS_SLUG/features/import" \
+  -H "content-type: application/json" \
+  -d "$(cat <<JSON
+{
+  "features": [
+    {
+      "id": "F-<KIND>-NNN",
+      "title": "Concrete one-liner",
+      "summary": "Self-contained description; worker agent shouldn't need to re-read the proposal",
+      "status": "todo",
+      "kind": "<your-kind>",
+      "claims": ["<KIND>-NNN-assertion-id"],
+      "metadata": {
+        "expert_id": "$EXPERT_ID",
+        "proposed_by": "expert:<your-role>",
+        "proposal_id": "<from EXPERT_CONTEXT.linkedProposalId or null>"
+      }
+    }
+  ]
+}
+JSON
+)"
+```
+
+The `/features/import` endpoint enforces a cross-writer guard: if a feature with this id already exists with a non-`product` `kind`, it will only accept the update if the incoming `kind` matches the existing one. This means the scoper can't accidentally overwrite your features.
+
+### Final stdout line
+
+End with a single summary line so the substrate's telemetry can parse it:
+
+```
+::papercusp::<your-role>-done features=<N> reason="<EXPERT_REASON>"
+```
+
+## Step 2 — register with the scoper
+
+Add a bullet to `prompts/scoper.md` under "Cross-cutting experts (post-replan)":
+
+```markdown
+- **<your-role>**: Consult when SPEC additions imply <your domain>.
+  Do NOT consult for <out-of-scope cases>. Most replans should NOT
+  consult it.
+```
+
+Be specific about both when to consult AND when not to. The "do not" half is more important than the "do" half — overconsultation is the failure mode.
+
+## Step 3 — verify
+
+Dispatch your new role manually before relying on autonomous triggering:
+
+```bash
+curl -sS -X POST -H 'content-type: application/json' \
+  -d '{"role":"<your-role>","reason":"manual smoke","context":{}}' \
+  http://localhost:3055/api/harness/<slug>/experts/dispatch
+```
+
+You'll get back `{ ok: true, expertId: "ua-N", userActionId: N }`. Watch the run via:
+
+- `tail -f $PROJECT_DIR/.harness/experts/runs/<role>-ua-N.log`
+- The OperatorActionLog "Recent actions" panel in the harness dashboard
+- `harness-features list <slug>` for the resulting features
+
+## Lifecycle nuances
+
+### Lockfile-based dedup
+
+The dispatcher writes `.harness/experts/<role>.dispatch-lock` on entry and removes it on exit. Concurrent dispatches for the same role return HTTP 409 — by design. Scoper's prompt instructs it to NOT retry on 409 (the in-flight dispatch sees the same SPEC). The lock has a 5-minute TTL; orphaned locks (from dispatcher process crashes) get overwritten on the next legitimate dispatch.
+
+### Dispatcher process owns the lifecycle
+
+The dispatcher polls the agent's log file for the `__EXPERT_DONE__` sentinel and finalises the `user_actions` row when it appears. This means:
+
+- If the dev server restarts during an expert run, the polling stops — the `user_actions` row stays at `running` until the next list query, then gets marked `failed` by the orphan-cleanup heuristic in `branch-actions.listRuns()` (yes, branch-actions; same heuristic applies).
+- If the agent runs longer than the lock TTL, the dispatcher kills polling and marks the row failed. Tune `LOCK_TTL_MS` in `lib/expert-dispatcher.ts` if your role needs more time.
+
+### Expert features survive scoper-replan
+
+Scoper-replan's prompt explicitly preserves features where `kind` is anything other than `'product'` (or NULL — NULL is treated as legacy product). It can mark them deprecated but never deletes them. The `/features/import` endpoint enforces the same rule at the substrate level.
+
+The next dispatch of the responsible expert is the only thing that should retire its own features.
+
+## Future work (not in v1)
+
+These are deliberate omissions in the current substrate:
+
+- **`output: 'spec'` mode** — a role that produces an intermediate SPEC for scoper to translate. Useful for roles that benefit from scoper's holistic synthesis. Add when a real role needs it.
+- **`alwaysFireOn` triggers** — roles that fire on plugin events, smoke-build failures, or manual CLI invocations independent of scoper. Add when ops needs them.
+- **Role registry** — a JSON sidecar `prompts/<role>.role.json` that scoper reads at runtime instead of having roles named in its prompt. Worth doing when there are 3+ roles and the scoper prompt section is getting long.
+- **ExpertsPanel UI integration** — autonomous experts currently surface only in OperatorActionLog (the "Recent actions" panel). Adding them to the chat-driven ExpertsPanel UI would require an `identity.json` shim. Defer until users ask for it.
+
+## What this pattern lets you avoid
+
+You don't need to:
+
+- Write substrate code for a new role
+- Migrate the schema
+- Touch the scoper's runtime path (just its prompt)
+- Manage agent spawn / log capture / telemetry yourself
+- Coordinate with worker agents (they pick up your features the same way they pick up scoper's)
+
+If you find yourself doing any of those, you're going off the rails — push back on the design before adding it.
