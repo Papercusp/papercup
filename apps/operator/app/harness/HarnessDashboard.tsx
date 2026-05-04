@@ -17,6 +17,9 @@ import { Select } from './Select';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
+import { useReducedMotion } from 'motion/react';
 import { useForm } from 'react-hook-form';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { makeAjvResolver } from '@/lib/forms';
@@ -62,6 +65,8 @@ function PluginIcon({ name, size = 13 }: { name?: string | null; size?: number }
   return <Icon size={size} />;
 }
 
+gsap.registerPlugin(useGSAP);
+
 const CODE_SERVER_PORT = 8082;
 
 function vscodeUrl(projectPath: string): string {
@@ -106,6 +111,7 @@ import ArchitectInbox from './ArchitectInbox';
 import PhaseTabs, { type Phase } from './PhaseTabs';
 import TestsTab from './TestsTab';
 import ProposalsPanel from './ProposalsPanel';
+import HarnessHudOverlay from './HarnessHudOverlay';
 
 /**
  * Wrap a `dynamic()` import with retry + visible loading state so that a
@@ -2037,6 +2043,8 @@ const tagStyle: React.CSSProperties = {
 };
 
 export default function HarnessDashboard() {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const reducedMotion = useReducedMotion() ?? false;
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
 
@@ -2950,9 +2958,94 @@ export default function HarnessDashboard() {
     <RecentAgentsTable agents={agents} onSelect={loadAgent} />
   );
 
+  useGSAP(
+    () => {
+      if (!rootRef.current || reducedMotion) return;
+      const q = gsap.utils.selector(rootRef.current);
+      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+
+      intro
+        .fromTo(
+          q('.h-hud-dial'),
+          { autoAlpha: 0, scale: 0.72, rotate: -42 },
+          { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.96 },
+          0,
+        )
+        .fromTo(
+          q('.h-header, .h-phase-plan-row, .h-quick-action-row, .h-tabs.h-main-tabs'),
+          { autoAlpha: 0, y: -18 },
+          { autoAlpha: 1, y: 0, duration: 0.56, stagger: 0.06 },
+          0.08,
+        )
+        .fromTo(
+          q('.h-dashboard-panel-anchor'),
+          { autoAlpha: 0, y: 28, rotationX: 8 },
+          { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.64, stagger: 0.08 },
+          0.22,
+        );
+
+      const loops = [
+        gsap.to(q('.h-hud-dial-ring--outer'), { rotate: 360, duration: 22, ease: 'none', repeat: -1 }),
+        gsap.to(q('.h-hud-dial-ring--inner'), { rotate: -360, duration: 13, ease: 'none', repeat: -1 }),
+        gsap.to(q('.h-hud-overlay__grid'), { backgroundPosition: '0px 180px', duration: 8, ease: 'none', repeat: -1 }),
+        gsap.fromTo(
+          q('.h-hud-overlay__scanline'),
+          { xPercent: -18, autoAlpha: 0.08 },
+          { xPercent: 24, autoAlpha: 0.42, duration: 2.9, ease: 'sine.inOut', repeat: -1, yoyo: true },
+        ),
+        gsap.to(q('.h-hud-node'), { y: -5, duration: 2.2, ease: 'sine.inOut', yoyo: true, repeat: -1, stagger: 0.24 }),
+      ];
+
+      if (status?.alive) {
+        loops.push(
+          gsap.to(q('.h-running-lane.live'), {
+            y: -2,
+            boxShadow: '0 0 0 1px rgba(103, 232, 249, 0.24), 0 0 28px rgba(34, 211, 238, 0.22)',
+            duration: 1.3,
+            ease: 'sine.inOut',
+            yoyo: true,
+            repeat: -1,
+            stagger: 0.1,
+          }),
+        );
+        loops.push(
+          gsap.fromTo(
+            q('.h-pulse-dot.live'),
+            { scale: 0.8, boxShadow: '0 0 0 0 rgba(34, 211, 238, 0.48)' },
+            { scale: 1.18, boxShadow: '0 0 0 15px rgba(34, 211, 238, 0)', duration: 1.28, ease: 'power2.out', repeat: -1 },
+          ),
+        );
+        loops.push(
+          gsap.fromTo(
+            q('.h-header.alive'),
+            { filter: 'brightness(1)' },
+            { filter: 'brightness(1.08)', duration: 1.9, ease: 'sine.inOut', repeat: -1, yoyo: true },
+          ),
+        );
+      }
+
+      return () => {
+        intro.kill();
+        loops.forEach((loop) => loop.kill());
+      };
+    },
+    { scope: rootRef, dependencies: [reducedMotion, activePanel, topChromeCollapsed, !!status?.alive, activeLanes.length, todoCount] },
+  );
+
   return (
     <RTooltip.Provider delayDuration={400}>
-    <div className={`h-root${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}>
+    <div
+      ref={rootRef}
+      data-hud-panel={activePanel}
+      className={`h-root h-root--maximal-hud${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}
+    >
+      <HarnessHudOverlay
+        alive={!!status?.alive}
+        activePanel={activePanel}
+        laneCount={activeLanes.length}
+        pendingCount={todoCount}
+        escalated={!!status?.escalated}
+      />
       {/* Toaster is mounted globally in app/layout.tsx (outside <main>)
           so it can stack above pc-header. A page-level Toaster trapped
           inside <main z:70> cannot visually escape. */}

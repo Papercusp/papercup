@@ -1,7 +1,10 @@
 'use client';
 
-import { Suspense, lazy, useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
+import { useReducedMotion } from 'motion/react';
 import { OperatorButton } from './OperatorPanel';
 import { VoiceButton } from './voice/VoiceButton';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
@@ -47,8 +50,12 @@ const CHROMELESS_PATH_PREFIXES: readonly string[] = [
   '/project-docs',
 ];
 
+gsap.registerPlugin(useGSAP);
+
 export default function ChromeShell() {
+  const headerRef = useRef<HTMLElement | null>(null);
   const pathname = usePathname() ?? '';
+  const reducedMotion = useReducedMotion() ?? false;
   const chromeless = CHROMELESS_PATH_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
@@ -57,9 +64,60 @@ export default function ChromeShell() {
   // no-op. Render a non-link span with `is-current` styling so it's
   // visibly distinct from the active CTA elsewhere in the app.
   const onHarness = pathname === '/harness' || pathname.startsWith('/harness/');
+  const navLinkProps = (href: string) => {
+    const active = pathname === href || pathname.startsWith(`${href}/`);
+    return active
+      ? { className: 'pc-header-nav-link active', 'aria-current': 'page' as const }
+      : { className: 'pc-header-nav-link' };
+  };
+
+  useGSAP(
+    () => {
+      if (!headerRef.current || reducedMotion) return;
+      const q = gsap.utils.selector(headerRef.current);
+      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+
+      intro
+        .fromTo(
+          q('.pc-header-left > *, .pc-header-center > *, .pc-header-right > *'),
+          { autoAlpha: 0, y: -14 },
+          { autoAlpha: 1, y: 0, duration: 0.42, stagger: 0.035 },
+          0,
+        )
+        .fromTo(
+          q('.pc-header-hud-line'),
+          { autoAlpha: 0.18, scaleX: 0 },
+          { autoAlpha: 1, scaleX: 1, duration: 0.64, stagger: 0.08 },
+          0.06,
+        );
+
+      const loops = [
+        gsap.fromTo(
+          q('.pc-header-hud-line--primary'),
+          { xPercent: -16 },
+          { xPercent: 16, duration: 3.2, ease: 'sine.inOut', repeat: -1, yoyo: true },
+        ),
+        gsap.fromTo(
+          q('.pc-header-hud-line--secondary'),
+          { xPercent: 12 },
+          { xPercent: -12, duration: 4.1, ease: 'sine.inOut', repeat: -1, yoyo: true },
+        ),
+        gsap.to(q('.pc-header-quote'), { textShadow: '0 0 18px rgba(87, 215, 255, 0.28)', duration: 1.8, ease: 'sine.inOut', repeat: -1, yoyo: true }),
+      ];
+
+      return () => {
+        intro.kill();
+        loops.forEach((loop) => loop.kill());
+      };
+    },
+    { scope: headerRef, dependencies: [pathname, reducedMotion] },
+  );
+
   return (
     <>
-      <header className="pc-header">
+      <header ref={headerRef} className="pc-header pc-header--maximal-hud">
+        <span className="pc-header-hud-line pc-header-hud-line--primary" aria-hidden="true" />
+        <span className="pc-header-hud-line pc-header-hud-line--secondary" aria-hidden="true" />
         {/*
           Three-region grid: left = brand + quote, centre = primary CTAs
           (Mission Control, Operator, Voice), right = nav. CSS Grid in
@@ -68,10 +126,10 @@ export default function ChromeShell() {
           and the nav on the right grow.
         */}
         <div className="pc-header-left">
-          <a href="/" className="brand" aria-label="papercusp" style={{ display: 'flex', alignItems: 'center' }}>
+          <a href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" style={{ display: 'flex', alignItems: 'center' }}>
             <img src="/wordmark.svg" alt="papercusp" height={22} style={{ display: 'block' }} />
           </a>
-          <span className="pc-header-quote">Nothing is so painful to the human mind as a great and sudden change</span>
+          <span className="pc-header-quote pc-header-quote--hud">Nothing is so painful to the human mind as a great and sudden change</span>
         </div>
         <div className="pc-header-center">
           {onHarness ? (
@@ -93,13 +151,13 @@ export default function ChromeShell() {
           <VoiceButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
-          <a href="/marketplace/">Marketplace</a>
-          <a href="/installed/harnesses">Harnesses</a>
-          <a href="/installed/plugins">Plugins</a>
-          <a href="/installed/snapshots">Snapshots</a>
-          <a href="/support">Support</a>
-          <a href="/settings/operator">Settings</a>
-          <a href="https://github.com/papercupai/papercusp" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
+          <a href="/installed/harnesses" {...navLinkProps('/installed/harnesses')}>Harnesses</a>
+          <a href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</a>
+          <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
+          <a href="/support" {...navLinkProps('/support')}>Support</a>
+          <a href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</a>
+          <a href="https://github.com/papercupai/papercusp" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           <TutorialButton />
           <UpdateChip />
           <WorkspaceSwitcher />

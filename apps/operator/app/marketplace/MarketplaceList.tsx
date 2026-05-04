@@ -2,13 +2,18 @@
 
 import { useProgress } from '@bprogress/next';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
+import { useReducedMotion } from 'motion/react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
 import * as Lucide from 'lucide-react';
 import { Checkbox } from '../harness/Checkbox';
 import InstallButton from './InstallButton';
 import RouteLink from '../_components/RouteLink';
+
+gsap.registerPlugin(useGSAP);
 
 interface CatalogEntry {
   slug: string;
@@ -59,6 +64,8 @@ function CardIcon({ name, kind }: { name: string | null | undefined; kind: 'plug
 }
 
 export default function MarketplaceList({ kind, catalog, installedTemplates, installedPlugins }: Props) {
+  const listRef = useRef<HTMLElement | null>(null);
+  const reducedMotion = useReducedMotion() ?? false;
   const isPlugin = kind === 'plugin';
   const label = isPlugin ? 'plugins' : 'templates';
   const catalogForKind = useMemo(() => catalog.filter((c) => (c.kind ?? 'template') === kind), [catalog, kind]);
@@ -178,6 +185,43 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
     }
   }
 
+  useGSAP(
+    () => {
+      if (!listRef.current || reducedMotion) return;
+      const q = gsap.utils.selector(listRef.current);
+      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+
+      intro
+        .fromTo(
+          q('.pc-marketplace-toolbar-copy, .pc-marketplace-search'),
+          { autoAlpha: 0, y: -18 },
+          { autoAlpha: 1, y: 0, duration: 0.44, stagger: 0.06 },
+          0,
+        )
+        .fromTo(
+          q('.pc-marketplace-card, .pc-marketplace-empty'),
+          { autoAlpha: 0, y: 28, rotateX: 10 },
+          { autoAlpha: 1, y: 0, rotateX: 0, duration: 0.54, stagger: 0.06 },
+          0.12,
+        );
+
+      const sweep = gsap.to(q('.pc-marketplace-card'), {
+        boxShadow: '0 20px 42px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(125, 211, 252, 0.06)',
+        duration: 2.4,
+        ease: 'sine.inOut',
+        repeat: -1,
+        yoyo: true,
+        stagger: 0.16,
+      });
+
+      return () => {
+        intro.kill();
+        sweep.kill();
+      };
+    },
+    { scope: listRef, dependencies: [kind, visibleCatalog.length, enablePicker, reducedMotion] },
+  );
+
   async function disableIn(slug: string, harnessSlugs: string[]) {
     if (harnessSlugs.length === 0) return;
     setBusySlug(slug);
@@ -201,7 +245,7 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
   }
 
   return (
-    <section className="pc-marketplace-list">
+    <section ref={listRef} className="pc-marketplace-list pc-marketplace-list--maximal-hud" data-marketplace-kind={kind}>
       <div className="pc-marketplace-toolbar">
         <div className="pc-marketplace-toolbar-copy">
           <span>{isPlugin ? 'Plugin catalog' : 'Template catalog'}</span>
@@ -220,13 +264,13 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
       </div>
 
       <div className="pc-marketplace-grid">
-        {visibleCatalog.map((p) => {
+        {visibleCatalog.map((p, index) => {
           const installed = installedSlugs.has(p.slug);
           const enabledHere: string[] = isPlugin
             ? Object.entries(enabledMap).filter(([, slugs]) => slugs.includes(p.slug)).map(([h]) => h)
             : [];
           return (
-            <article key={p.slug} className={`pc-card pc-marketplace-card${installed ? ' installed' : ''}`}>
+            <article key={p.slug} data-card-index={index} className={`pc-card pc-marketplace-card${installed ? ' installed' : ''}`}>
               <div className="pc-marketplace-card-head">
                 <CardIcon name={p.icon} kind={kind} />
                 <div>

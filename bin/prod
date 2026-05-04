@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Build @papercusp/web and run the production server. Tails the log.
-# Usage: bin/prod                         (uses defaults below)
+# Usage: bin/prod                         (defaults: PORT=3070 PTY=3056)
 #        PORT=3170 PTY=3156 bin/prod      (override ports)
 # Stop server later:  fuser -k $PORT/tcp
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
-LOG=/tmp/prod-main.log
-PORT="${PORT:-3170}"
-PTY="${PTY:-3156}"
+LOG="${LOG:-/tmp/prod.log}"
+PORT="${PORT:-3070}"
+PTY="${PTY:-3056}"
 
 echo "==> killing prior server + builds on :$PORT"
 pkill -f "next start -p $PORT" 2>/dev/null
+pkill -f "next-server"           2>/dev/null
 pkill -9 -f "next build"         2>/dev/null
 pkill -9 -f "fumadocs-mdx"       2>/dev/null
 fuser -k "$PORT/tcp"             2>/dev/null
