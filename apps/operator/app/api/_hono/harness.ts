@@ -98,7 +98,34 @@ function tailLastResultLine(filePath: string, lookbackBytes = 8 * 1024): { obj: 
 
 interface CostAggregate { cost: number; inputTokens: number; outputTokens: number }
 
-const __costCache = new Map<string, { sig: string; expires: number; value: CostAggregate }>();
+// Pinned to globalThis (see __costPerFileCache below for rationale).
+type CostCacheEntry = { sig: string; expires: number; value: CostAggregate };
+const __costCacheKey = '__papercuspCostCache';
+type CostCacheGlobals = { [__costCacheKey]?: Map<string, CostCacheEntry> };
+const __costCache: Map<string, CostCacheEntry> = (() => {
+  const g = globalThis as CostCacheGlobals;
+  if (!g[__costCacheKey]) g[__costCacheKey] = new Map();
+  return g[__costCacheKey]!;
+})();
+
+// Per-file mtime-keyed cache. Old log files NEVER change after the run
+// finishes — re-tailing them on every request is pure waste. We tail
+// each file ONCE per mtime; only files newer than the cached mtime get
+// re-read. With 220 jsonl files across a 178 MiB log dir, this turns
+// a 5-10 second per-call cost into "tail only the actively-running runs."
+//
+// Pinned to `globalThis` because Next.js dev re-evaluates the catch-all
+// route module across requests (visible in the dev log as repeated
+// [plugin-mount] lines), which would otherwise reset module-local caches
+// every request. See /docs/performance #A5.
+type CostPerFileEntry = { mtimeMs: number; size: number; cost: number; inputTokens: number; outputTokens: number };
+const __costPerFileCacheKey = '__papercuspCostPerFileCache';
+type CostGlobals = { [__costPerFileCacheKey]?: Map<string, CostPerFileEntry> };
+const __costPerFileCache: Map<string, CostPerFileEntry> = (() => {
+  const g = globalThis as CostGlobals;
+  if (!g[__costPerFileCacheKey]) g[__costPerFileCacheKey] = new Map();
+  return g[__costPerFileCacheKey]!;
+})();
 
 function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggregate {
   const now = Date.now();
@@ -117,14 +144,34 @@ function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggregate {
     if (existsSync(logDir)) {
       for (const f of readdirSync(logDir)) {
         if (!f.endsWith('.jsonl')) continue;
-        const { obj } = tailLastResultLine(join(logDir, f));
-        if (!obj) continue;
-        out.cost += Number(obj.total_cost_usd ?? 0) || 0;
-        const usage = obj.usage as { input_tokens?: number; output_tokens?: number } | undefined;
-        if (usage) {
-          out.inputTokens += Number(usage.input_tokens ?? 0) || 0;
-          out.outputTokens += Number(usage.output_tokens ?? 0) || 0;
+        const fp = join(logDir, f);
+        let st: { mtimeMs: number; size: number };
+        try { st = statSync(fp); } catch { continue; }
+        const perFile = __costPerFileCache.get(fp);
+        let row: { cost: number; inputTokens: number; outputTokens: number };
+        if (perFile && perFile.mtimeMs === st.mtimeMs && perFile.size === st.size) {
+          // File hasn't changed since we last tailed it; reuse the
+          // cached aggregate row instead of re-reading 8 KiB of tail.
+          row = perFile;
+        } else {
+          const { obj } = tailLastResultLine(fp);
+          row = {
+            cost: obj ? (Number(obj.total_cost_usd ?? 0) || 0) : 0,
+            inputTokens: 0,
+            outputTokens: 0,
+          };
+          if (obj) {
+            const usage = obj.usage as { input_tokens?: number; output_tokens?: number } | undefined;
+            if (usage) {
+              row.inputTokens = Number(usage.input_tokens ?? 0) || 0;
+              row.outputTokens = Number(usage.output_tokens ?? 0) || 0;
+            }
+          }
+          __costPerFileCache.set(fp, { mtimeMs: st.mtimeMs, size: st.size, ...row });
         }
+        out.cost += row.cost;
+        out.inputTokens += row.inputTokens;
+        out.outputTokens += row.outputTokens;
       }
     }
   } catch {}
@@ -272,12 +319,28 @@ function auditFeatureChange(harnessSlug: string, featureId: string, field: strin
 }
 
 function tailFile(path: string, maxBytes = 64 * 1024): string {
+  // Read only the last `maxBytes` of the file via openSync+readSync(offset).
+  // Previously did `readFileSync(path).slice(...)` which read the WHOLE file
+  // then sliced the tail in memory — on a 12 MB run.log that's 12 MB of
+  // alloc per call, called 3× per /phases request × multiple harnesses on
+  // the dashboard. Same pattern as the /log/stream fix (see /docs/performance
+  // — A1 family + the streaming-log discussion).
+  let fd = -1;
   try {
     const stat = statSync(path);
+    if (stat.size === 0) return '';
     if (stat.size <= maxBytes) return readFileSync(path, 'utf8');
-    const fd = readFileSync(path, 'utf8');
-    return fd.slice(fd.length - maxBytes);
-  } catch { return ''; }
+    const len = maxBytes;
+    const start = stat.size - len;
+    fd = openSync(path, 'r');
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, start);
+    return buf.toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd >= 0) try { closeSync(fd); } catch {}
+  }
 }
 
 /**
@@ -5664,7 +5727,19 @@ function resolvePhasedProject(slug: string, phase: Phase | undefined): ProjectEn
  * `Promise.all([3 phases])` previously did this scan 3× in parallel and
  * dominated the endpoint's app-code time on busy hosts (1000+ PIDs).
  */
+// 5-second cache for the /proc walk: even when pgrep is empty, the walk
+// itself is the dominant cost on /phases. Walking /proc 3+ times per
+// /phases request × multiple harness pages adds up. Cache for 5s — alive
+// state needs to be near-real-time but not fresher than a few seconds.
+type ScanCacheEntry = { ts: number; value: Array<{ pid: string; cwd: string }> };
+const __scanCacheKey = '__papercuspRunShScanCache';
+type ScanCacheGlobals = { [__scanCacheKey]?: ScanCacheEntry | null };
 function scanRunShProcesses(): Array<{ pid: string; cwd: string }> {
+  const g = globalThis as ScanCacheGlobals;
+  const now = Date.now();
+  const cached = g[__scanCacheKey];
+  if (cached && now - cached.ts < 5000) return cached.value;
+
   const out: Array<{ pid: string; cwd: string }> = [];
   try {
     for (const pid of readdirSync('/proc')) {
@@ -5677,6 +5752,7 @@ function scanRunShProcesses(): Array<{ pid: string; cwd: string }> {
       } catch { /* proc went away or unreadable — skip */ }
     }
   } catch {}
+  g[__scanCacheKey] = { ts: now, value: out };
   return out;
 }
 
@@ -5684,6 +5760,12 @@ async function computePhaseInfo(
   project: ProjectEntry,
   phase: Phase,
   runShProcs?: Array<{ pid: string; cwd: string }>,
+  /** Pre-fetched features for this slug. parseFeatures takes seconds in
+   *  Next.js dev under load (per-harness PG pool max=1, queries serialize
+   *  when the same slug is asked across phases). Hoist the fetch to the
+   *  caller (single fetch shared across all phases) to cut /phases time
+   *  by ~3×. See /docs/performance #A2/#A15. */
+  preFetchedFeatures?: Array<{ status?: string }>,
 ): Promise<PhaseInfo> {
   const path = phasePath(project, phase);
   const branch = phase === 'staging'
@@ -5709,9 +5791,10 @@ async function computePhaseInfo(
     return { phase, path, branch, port, publicUrl, exists: false, alive: false, passed: 0, total: 0, cost: 0, iteration: 0, promotionInFlight: null };
   }
 
-  // features / counts
-  const feats = await parseFeatures(scopedProject);
-  const counts = feats.reduce((a: Record<string, number>, f: any) => { a[f.status] = (a[f.status] ?? 0) + 1; return a; }, {} as Record<string, number>);
+  // Features: use pre-fetched if caller passed them (the /phases handler
+  // does this — same slug, same data, no need to re-query per phase).
+  const feats = preFetchedFeatures ?? await parseFeatures(scopedProject);
+  const counts = feats.reduce((a: Record<string, number>, f) => { a[f.status ?? ''] = (a[f.status ?? ''] ?? 0) + 1; return a; }, {} as Record<string, number>);
   const passed = counts.passed ?? 0;
   const total = feats.length;
 
@@ -5727,7 +5810,6 @@ async function computePhaseInfo(
   } catch {}
 
   // alive: any pre-scanned run.sh proc whose cwd lies under this phase's path.
-  // If the caller didn't pass a pre-scan list (back-compat), scan now.
   const procs = runShProcs ?? scanRunShProcesses();
   const alive = procs.some((p) => p.cwd.startsWith(path));
 
@@ -5755,10 +5837,13 @@ async function computePhaseInfo(
 harness.get('/:slug/phases', async (c) => {
   const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  // Single /proc scan shared across all phases — was the dominant cost
-  // on this endpoint when run 3× in parallel from `Promise.all`.
+  // Pre-fetch features ONCE (the slug is the same across all 3 phases —
+  // querying 3× was costing 3× the per-harness PG pool's serialization
+  // latency, ~15s on a busy day). Pre-scan procs ONCE (same logic).
+  // See /docs/performance #A2 + #A15.
   const runShProcs = scanRunShProcesses();
-  const out = await Promise.all(PHASE_ORDER.map((p) => computePhaseInfo(project, p, runShProcs)));
+  const features = await parseFeatures(project);
+  const out = await Promise.all(PHASE_ORDER.map((p) => computePhaseInfo(project, p, runShProcs, features)));
   return c.json({ phases: out });
 });
 
