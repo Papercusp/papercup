@@ -13,8 +13,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
+import { useReducedMotion } from 'motion/react';
 import { Tooltip } from '../harness/Tooltip';
 import RouteLink from './RouteLink';
+import { HudFrameCorners, HudReticleGlyph } from './hud/HudPrimitives';
 import {
   Activity,
   Bot,
@@ -49,6 +53,8 @@ import {
 } from 'lucide-react';
 import { useRouter } from '@bprogress/next/app';
 import { usePathname, useSearchParams } from 'next/navigation';
+
+gsap.registerPlugin(useGSAP);
 
 interface ToolCallEntry {
   kind: 'tool';
@@ -307,6 +313,7 @@ export function OracleDock() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const reducedMotion = useReducedMotion() ?? false;
   const [open, setOpen] = useState(false);
   const [tabs, setTabs] = useState<ChatTab[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -326,6 +333,8 @@ export function OracleDock() {
   const inFlightRef = useRef<Map<string, AbortController>>(new Map());
   const endRef = useRef<HTMLDivElement>(null);
   const chatwootFrameRef = useRef<HTMLIFrameElement>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const fabRef = useRef<HTMLButtonElement | null>(null);
   // Tracks the last path Oracle navigated the user to during a tutorial,
   // so we can detect when the user has manually moved elsewhere and
   // suppress further auto-navigation. See the navigate handler below.
@@ -883,24 +892,100 @@ export function OracleDock() {
   }, [openTab]);
 
   // ── Render ────────────────────────────────────────────────────────────
-  if (tabs.length === 0) {
+  const active = activeTab ?? tabs[0] ?? null;
+  const activeBusy = active ? !!busyMap[active.id] : false;
+  const activeError = active ? errors[active.id] : undefined;
+  const lastMsg = active ? active.messages[active.messages.length - 1] : undefined;
+  const showThinking = !!(activeBusy && lastMsg && lastMsg.role === 'assistant' && !lastMsg.content && !lastMsg.tools?.length);
+  const headerLabel = active ? targetLabel(active.target) : 'Oracle';
+  const ActiveTargetIcon = active ? targetIcon(active.target) : Sparkles;
+  const headerSubtitle = active ? targetSubtitle(active.target) : 'general help across Papercusp';
+
+  useGSAP(() => {
+    if (reducedMotion) return;
+
+    if (!open) {
+      if (!fabRef.current) return;
+      const tween = gsap.fromTo(
+        fabRef.current,
+        { autoAlpha: 0, y: 18, scale: 0.88 },
+        { autoAlpha: 1, y: 0, scale: 1, duration: 0.48, ease: 'power3.out' },
+      );
+      return () => tween.kill();
+    }
+
+    if (!dockRef.current) return;
+    const q = gsap.utils.selector(dockRef.current);
+    const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+
+    intro
+      .fromTo(
+        q('.oracle-hud-reticle, .oracle-hud-frame'),
+        { autoAlpha: 0, scale: 0.72, rotate: -24 },
+        { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.72 },
+        0,
+      )
+      .fromTo(
+        q('.oracle-dock-header'),
+        { autoAlpha: 0, y: -18 },
+        { autoAlpha: 1, y: 0, duration: 0.42 },
+        0.06,
+      )
+      .fromTo(
+        q('.oracle-tab, .oracle-tab-add'),
+        { autoAlpha: 0, y: 12 },
+        { autoAlpha: 1, y: 0, duration: 0.32, stagger: 0.04 },
+        0.12,
+      )
+      .fromTo(
+        q('.oracle-msg, .oracle-empty-state, .oracle-support-loading, .oracle-form'),
+        { autoAlpha: 0, y: 18 },
+        { autoAlpha: 1, y: 0, duration: 0.4, stagger: 0.05 },
+        0.18,
+      );
+
+    const loops = [
+      gsap.to(q('.oracle-hud-reticle'), { rotate: 360, duration: 18, ease: 'none', repeat: -1 }),
+      gsap.fromTo(
+        q('.oracle-hud-scanline'),
+        { xPercent: -18, autoAlpha: 0.12 },
+        { xPercent: 24, autoAlpha: 0.48, duration: 2.6, ease: 'sine.inOut', repeat: -1, yoyo: true },
+      ),
+      gsap.to(q('.oracle-tab.is-active'), {
+        boxShadow: '0 0 0 1px rgba(125, 211, 252, 0.16), 0 0 24px rgba(34, 211, 238, 0.18)',
+        duration: 1.2,
+        ease: 'sine.inOut',
+        repeat: -1,
+        yoyo: true,
+      }),
+    ];
+
+    if (showThinking) {
+      loops.push(
+        gsap.to(q('.oracle-thinking-dots span'), { y: -4, duration: 0.42, ease: 'sine.inOut', repeat: -1, yoyo: true, stagger: 0.1 }),
+      );
+    }
+
+    return () => {
+      intro.kill();
+      loops.forEach((loop) => loop.kill());
+    };
+  }, { dependencies: [open, activeId, active?.messages.length ?? 0, showThinking, supportActive, reducedMotion] });
+
+  if (!active) {
     // Pre-bootstrap; render only the FAB so we never flash an empty dock.
     return open ? null : (
-      <button onClick={() => setOpen(true)} aria-label="Open Oracle assistant" className="oracle-fab">
+      <button
+        ref={fabRef}
+        onClick={() => setOpen(true)}
+        aria-label="Open Oracle assistant"
+        className="oracle-fab oracle-fab--maximal-hud"
+      >
         <img src="/mascot.svg" alt="" height={34} style={{ display: 'block' }} />
         <span>Ask Oracle</span>
       </button>
     );
   }
-
-  const active = activeTab!;
-  const activeBusy = !!busyMap[active.id];
-  const activeError = errors[active.id];
-  const lastMsg = active.messages[active.messages.length - 1];
-  const showThinking = activeBusy && lastMsg && lastMsg.role === 'assistant' && !lastMsg.content && !lastMsg.tools?.length;
-  const headerLabel = targetLabel(active.target);
-  const ActiveTargetIcon = targetIcon(active.target);
-  const headerSubtitle = targetSubtitle(active.target);
 
   const pickerView = pickerOpen ? (() => {
     const allHarnesses = pickerHarnesses ?? [];
@@ -1059,9 +1144,10 @@ export function OracleDock() {
     <>
       {!open && (
         <button
+          ref={fabRef}
           onClick={() => setOpen(true)}
           aria-label="Open Oracle assistant"
-          className={`oracle-fab${Object.values(unreadMap).some(Boolean) ? ' has-unread' : ''}`}
+          className={`oracle-fab oracle-fab--maximal-hud${Object.values(unreadMap).some(Boolean) ? ' has-unread' : ''}`}
         >
           <img src="/mascot.svg" alt="" height={34} style={{ display: 'block' }} />
           <span>Ask Oracle</span>
@@ -1070,7 +1156,19 @@ export function OracleDock() {
       )}
 
       {open && (
-        <div className="oracle-dock pc-animate-in pc-animate-in--right" data-oracle-dock role="dialog" aria-label="Oracle">
+        <div
+          ref={dockRef}
+          className="oracle-dock oracle-dock--maximal-hud pc-animate-in pc-animate-in--right"
+          data-oracle-dock
+          data-target-kind={active.target.kind}
+          role="dialog"
+          aria-label="Oracle"
+        >
+          <div className="oracle-hud-overlay" aria-hidden="true">
+            <div className="oracle-hud-scanline" />
+            <HudReticleGlyph className="oracle-hud-reticle" size={92} />
+            <HudFrameCorners className="oracle-hud-frame" />
+          </div>
           <header className="oracle-dock-header pc-animate-in pc-animate-in--down pc-animate-in--fast">
             <div className="oracle-header-main">
               <span className="oracle-header-badge">
@@ -1090,7 +1188,7 @@ export function OracleDock() {
 
           {/* Tab strip */}
           <div className="oracle-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist">
-            {tabs.map((t) => {
+            {tabs.map((t, index) => {
               const isActive = t.id === active.id;
               const tabBusy = !!busyMap[t.id];
               const unread = !!unreadMap[t.id];
@@ -1100,6 +1198,7 @@ export function OracleDock() {
                   key={t.id}
                   role="tab"
                   aria-selected={isActive}
+                  data-tab-index={index}
                   data-busy={tabBusy ? 'true' : undefined}
                   data-unread={!tabBusy && unread ? 'true' : undefined}
                   className={`oracle-tab${isActive ? ' is-active' : ''}`}
@@ -1154,7 +1253,7 @@ export function OracleDock() {
                     const MessageIcon = m.role === 'user' ? Users : ActiveTargetIcon;
                     const messageLabel = m.role === 'user' ? 'You' : headerLabel;
                     return (
-                      <div key={i} className={`oracle-msg oracle-msg-${m.role}`}>
+                      <div key={i} data-message-index={i} className={`oracle-msg oracle-msg-${m.role}`}>
                         <span className="oracle-msg-avatar" aria-hidden="true">
                           <MessageIcon className="oracle-msg-icon" />
                         </span>

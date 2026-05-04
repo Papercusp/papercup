@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
 import { Toaster } from 'sonner';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
 import * as Tooltip from '@radix-ui/react-tooltip';
@@ -27,16 +28,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
             <RouteProgressProvider>
               <GlobalShortcutDispatcher />
-              <NuqsAdapter>
-                <ChromeShell />
-                <main>{children}</main>
+              <Suspense fallback={null}>
+                <NuqsAdapter>
+                  <ChromeShell />
+                  <main>{children}</main>
                 {/* Single app-wide Toaster, outside <main> so toasts can stack
                     above pc-header (z:1300) and OracleDock (z:80). Sub-pages
                     must not mount their own — those are trapped inside
                     <main z:70> and can't visually escape regardless of
                     inline z-index. */}
-                <Toaster theme="dark" position="top-right" richColors style={{ zIndex: 2147483646 }} />
-              </NuqsAdapter>
+                  <Toaster theme="dark" position="top-right" richColors style={{ zIndex: 2147483646 }} />
+                </NuqsAdapter>
+              </Suspense>
             </RouteProgressProvider>
           </Tooltip.Provider>
         </body>

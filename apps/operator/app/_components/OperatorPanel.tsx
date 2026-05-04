@@ -18,11 +18,15 @@
 
 import { useDeferredValue, useEffect, useState, useCallback, useRef } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import gsap from 'gsap';
+import { useGSAP } from '@gsap/react';
 import { MarkdownPreview } from './MarkdownEditor';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
 import RouteLink from './RouteLink';
+import { OperatorReactorCore } from './hud/OperatorReactorCore';
+import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
 const ICON_GLYPH: Record<IconState, string> = {
@@ -203,6 +207,8 @@ import {
   subscribeOperatorState,
   type OperatorState,
 } from './operator-shared-state';
+
+gsap.registerPlugin(useGSAP);
 
 export { setOperatorState };
 
@@ -923,33 +929,155 @@ export function OperatorPanel(): JSX.Element | null {
         ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
         : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
   const statusLabel = state.paused ? 'paused' : state.iconState.replace('-', ' ');
-  const reducedMotion = useReducedMotion();
+  const reducedMotion = useReducedMotion() ?? false;
   const panelMotion = reducedMotion
     ? {
         initial: { opacity: 0 },
-        animate: { opacity: 1 },
-        exit: { opacity: 0 },
-        transition: { duration: 0.16, ease: [0.2, 0, 0, 1] as const },
+        animate: { opacity: 1, transition: { duration: 0.16, ease: [0.2, 0, 0, 1] as const } },
+        exit: { opacity: 0, transition: { duration: 0.14, ease: [0.7, 0, 0.84, 0] as const } },
       }
     : {
-        initial: { opacity: 0, x: 36, y: -72, scale: 0.94, rotate: -4 },
+        initial: {
+          opacity: 0,
+          x: 196,
+          y: -188,
+          scale: 0.72,
+          rotate: -18,
+          rotateX: -26,
+          rotateY: 22,
+          skewX: -7,
+        },
         animate: {
-          opacity: 1,
-          x: 0,
-          y: 0,
-          scale: 1,
-          rotate: 0,
-          transition: { duration: 0.38, ease: [0.16, 1, 0.3, 1] as const },
+          opacity: [0, 1, 1, 1],
+          x: [196, -28, 9, 0],
+          y: [-188, 20, -7, 0],
+          scale: [0.72, 1.06, 0.985, 1],
+          rotate: [-18, 4, -1.25, 0],
+          rotateX: [-26, 8, -2.25, 0],
+          rotateY: [22, -6, 1.75, 0],
+          skewX: [-7, 2.2, -0.55, 0],
+          transition: {
+            duration: 1.05,
+            times: [0, 0.62, 0.84, 1],
+            ease: [0.16, 1, 0.3, 1] as const,
+            opacity: { duration: 0.24, ease: [0.16, 1, 0.3, 1] as const },
+          },
         },
         exit: {
           opacity: 0,
-          x: 24,
-          y: -34,
-          scale: 0.975,
-          rotate: 2.25,
-          transition: { duration: 0.22, ease: [0.7, 0, 0.84, 0] as const },
+          x: 220,
+          y: -184,
+          scale: 0.68,
+          rotate: 20,
+          rotateX: 26,
+          rotateY: -28,
+          skewX: 8,
+          transition: {
+            duration: 0.48,
+            ease: [0.7, 0, 0.84, 0] as const,
+          },
         },
       };
+
+  useGSAP(
+    () => {
+      if (!panelRef.current || reducedMotion) return;
+      const q = gsap.utils.selector(panelRef.current);
+      const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+
+      intro
+        .fromTo(
+          q('.operator-reactor-shell'),
+          { autoAlpha: 0, scale: 0.52, rotate: -82 },
+          { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.92 },
+          0,
+        )
+        .fromTo(
+          q('.operator-panel__header'),
+          { autoAlpha: 0, y: -36, rotationX: 18 },
+          { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.78 },
+          0.06,
+        )
+        .fromTo(
+          q('.operator-panel__metric-card'),
+          { autoAlpha: 0, y: 18, scale: 0.9 },
+          { autoAlpha: 1, y: 0, scale: 1, duration: 0.42, stagger: 0.05 },
+          0.2,
+        )
+        .fromTo(
+          q('.operator-panel__actions > *'),
+          { autoAlpha: 0, x: 24 },
+          { autoAlpha: 1, x: 0, duration: 0.34, stagger: 0.04 },
+          0.24,
+        )
+        .fromTo(
+          q('.operator-panel__rail--left, .operator-panel__feed, .operator-panel__rail--right'),
+          { autoAlpha: 0, y: 34, rotationX: 10 },
+          { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.68, stagger: 0.08 },
+          0.16,
+        )
+        .fromTo(
+          q('.operator-entry'),
+          { autoAlpha: 0, y: 28, x: 18, rotateX: 10 },
+          { autoAlpha: 1, y: 0, x: 0, rotateX: 0, duration: 0.44, stagger: 0.05 },
+          0.4,
+        )
+        .fromTo(
+          q('.operator-panel__lock-flash'),
+          { autoAlpha: 0.12, scaleX: 0.06 },
+          { autoAlpha: 0.92, scaleX: 1, duration: 0.18, repeat: 1, yoyo: true },
+          0.34,
+        )
+        .fromTo(
+          q('.operator-hud-bracket'),
+          { autoAlpha: 0, scaleY: 0.15 },
+          { autoAlpha: 1, scaleY: 1, duration: 0.18, stagger: 0.02 },
+          0.5,
+        );
+
+      const loops: gsap.core.Tween[] = [
+        gsap.to(q('.operator-hud-ring--outer'), { rotate: 360, duration: 18, ease: 'none', repeat: -1 }),
+        gsap.to(q('.operator-hud-ring--mid'), { rotate: -360, duration: 12, ease: 'none', repeat: -1 }),
+        gsap.to(q('.operator-hud-ring--inner'), { rotate: 360, duration: 7, ease: 'none', repeat: -1 }),
+        gsap.fromTo(
+          q('.operator-hud-scan-beam'),
+          { yPercent: -120, autoAlpha: 0.14 },
+          { yPercent: 140, autoAlpha: 0.9, duration: 1.85, ease: 'power2.inOut', repeat: -1, repeatDelay: 0.35 },
+        ),
+        gsap.fromTo(
+          q('.operator-hud-beam'),
+          { xPercent: -100, autoAlpha: 0 },
+          { xPercent: 110, autoAlpha: 0.78, duration: 2.8, ease: 'none', repeat: -1, stagger: 0.4 },
+        ),
+        gsap.to(q('.operator-entry__scanline'), { xPercent: 120, duration: 1.5, ease: 'none', repeat: -1, stagger: 0.12 }),
+        gsap.to(q('.operator-panel__title-scan span'), { autoAlpha: 0.32, yoyo: true, repeat: -1, duration: 0.9, stagger: 0.18 }),
+      ];
+
+      if (state.paused) {
+        loops.push(
+          gsap.to(q('.operator-reactor-core__orb'), { scale: 0.88, autoAlpha: 0.7, duration: 1.1, yoyo: true, repeat: -1, ease: 'sine.inOut' }),
+        );
+      } else if (state.iconState === 'acting') {
+        loops.push(
+          gsap.to(q('.operator-reactor-core__orb'), { scale: 1.2, duration: 0.34, yoyo: true, repeat: -1, ease: 'power2.inOut' }),
+        );
+      } else if (state.iconState === 'thinking') {
+        loops.push(
+          gsap.to(q('.operator-reactor-core__orb'), { scale: 1.1, duration: 0.72, yoyo: true, repeat: -1, ease: 'sine.inOut' }),
+        );
+      } else if (state.iconState === 'scanning') {
+        loops.push(
+          gsap.to(q('.operator-hud-reticle'), { rotate: '+=18', duration: 2.2, ease: 'none', repeat: -1 }),
+        );
+      }
+
+      return () => {
+        intro.kill();
+        loops.forEach((loop) => loop.kill());
+      };
+    },
+    { scope: panelRef, dependencies: [reducedMotion, state.iconState, state.paused, scanStatus, suggestions.length, decisions.length] },
+  );
 
   return (
     <AnimatePresence initial={false}>
@@ -958,27 +1086,46 @@ export function OperatorPanel(): JSX.Element | null {
           ref={panelRef}
           role="dialog"
           aria-label="Operator panel"
-          className={`operator-panel operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
+          data-operator-state={state.paused ? 'paused' : state.iconState}
+          data-scan-status={scanStatus}
+          className={`operator-panel operator-panel--snap-lock operator-panel--maximal-hud operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
           initial={panelMotion.initial}
           animate={panelMotion.animate}
           exit={panelMotion.exit}
-          transition={panelMotion.transition}
+          style={reducedMotion ? undefined : { transformPerspective: 1800 }}
         >
+          <span className="operator-panel__lock-flash" aria-hidden="true" />
+          <OperatorScanOverlay
+            state={state.paused ? 'paused' : state.iconState}
+            pendingCount={pendingCount}
+            inFlightCount={inFlightCount}
+            failedCount={failedCount}
+            reducedMotion={reducedMotion}
+          />
           <header className="operator-panel__header pc-animate-in pc-animate-in--down pc-animate-in--fast">
             <div className="operator-panel__titleblock">
-              <div className="operator-panel__titleline">
-                <h2>Operator</h2>
-                <span className={`operator-status operator-status--${state.paused ? 'paused' : state.iconState}`}>
-                  {statusLabel}
-                </span>
+              <OperatorReactorCore state={state.paused ? 'paused' : state.iconState} reducedMotion={reducedMotion} />
+              <div className="operator-panel__titlecopy">
+                <div className="operator-panel__title-overline" aria-hidden="true" />
+                <div className="operator-panel__titleline">
+                  <h2>Operator</h2>
+                  <span className={`operator-status operator-status--${state.paused ? 'paused' : state.iconState}`}>
+                    {statusLabel}
+                  </span>
+                </div>
+                <div className="operator-panel__title-scan" aria-hidden="true">
+                  <span>{pendingCount} pending</span>
+                  <span>{inFlightCount} transit</span>
+                  <span>{failedCount} alert</span>
+                </div>
               </div>
             </div>
 
             <div className="operator-panel__metrics pc-animate-in pc-animate-in--down pc-animate-in--delay-1" aria-label="Operator panel summary">
-              <span title="pending = pending suggestions"><strong>{pendingCount}</strong><em>pending</em></span>
-              <span title="in flight = dispatched suggestions"><strong>{inFlightCount}</strong><em>in flight</em></span>
-              <span title="attention = escalated, failed, or rejected suggestions"><strong>{failedCount}</strong><em>attention</em></span>
-              <span title="resolved = consumed, dismissed, or superseded suggestions"><strong>{terminalCount}</strong><em>resolved</em></span>
+              <span className="operator-panel__metric-card" title="pending = pending suggestions"><strong>{pendingCount}</strong><em>pending</em></span>
+              <span className="operator-panel__metric-card" title="in flight = dispatched suggestions"><strong>{inFlightCount}</strong><em>in flight</em></span>
+              <span className="operator-panel__metric-card" title="attention = escalated, failed, or rejected suggestions"><strong>{failedCount}</strong><em>attention</em></span>
+              <span className="operator-panel__metric-card" title="resolved = consumed, dismissed, or superseded suggestions"><strong>{terminalCount}</strong><em>resolved</em></span>
             </div>
 
             <div className="operator-panel__actions pc-animate-in pc-animate-in--down pc-animate-in--delay-2">
@@ -1142,14 +1289,24 @@ export function OperatorPanel(): JSX.Element | null {
                 </div>
               ) : (
                 <ul role="list" aria-label="Operator timeline" className="operator-feed-list">
-                  {visibleSuggestions.map((s) => (
+                  {visibleSuggestions.map((s, index) => (
                     <li
                       key={s.id}
                       role="article"
                       aria-label={`${s.title} — ${s.actualTier} tier, ${s.auto_dispatch ? 'auto-dispatched' : 'awaiting your decision'}`}
+                      data-entry-index={index}
+                      data-entry-state={s.status}
+                      data-entry-tier={s.actualTier}
                       tabIndex={0}
                       className={`operator-entry operator-entry--suggestion operator-entry--${s.status} operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
                     >
+                      <span className="operator-entry__scanline" aria-hidden="true" />
+                      <span className="operator-entry__target-brackets" aria-hidden="true">
+                        <span className="operator-hud-bracket operator-hud-bracket--tl" />
+                        <span className="operator-hud-bracket operator-hud-bracket--tr" />
+                        <span className="operator-hud-bracket operator-hud-bracket--br" />
+                        <span className="operator-hud-bracket operator-hud-bracket--bl" />
+                      </span>
                       <div className="operator-entry__rail">
                         <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
                           {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '⚠' : '✋'}
@@ -1300,8 +1457,15 @@ export function OperatorPanel(): JSX.Element | null {
                       </div>
                     </li>
                   ))}
-                  {visibleDecisions.map((r) => (
-                    <li key={`activity:${r.id}`} role="article" className="operator-entry operator-entry--action" tabIndex={0}>
+                  {visibleDecisions.map((r, index) => (
+                    <li key={`activity:${r.id}`} role="article" className="operator-entry operator-entry--action" data-entry-index={index} tabIndex={0}>
+                      <span className="operator-entry__scanline" aria-hidden="true" />
+                      <span className="operator-entry__target-brackets" aria-hidden="true">
+                        <span className="operator-hud-bracket operator-hud-bracket--tl" />
+                        <span className="operator-hud-bracket operator-hud-bracket--tr" />
+                        <span className="operator-hud-bracket operator-hud-bracket--br" />
+                        <span className="operator-hud-bracket operator-hud-bracket--bl" />
+                      </span>
                       <div className="operator-entry__rail">
                         <span title="User-initiated activity">↻</span>
                       </div>

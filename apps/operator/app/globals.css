@@ -8431,7 +8431,66 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 .operator-panel {
-  transform-origin: top center;
+  transform-origin: top right;
+  transform-style: preserve-3d;
+  backface-visibility: hidden;
+  will-change: transform, opacity;
+}
+
+.operator-panel__lock-flash {
+  position: absolute !important;
+  z-index: 4 !important;
+  inset: calc(var(--operator-frame) - 12px);
+  pointer-events: none;
+  opacity: 0;
+  clip-path: polygon(var(--operator-inner-cut) 0, calc(100% - var(--operator-inner-cut)) 0, 100% var(--operator-inner-cut), 100% calc(100% - var(--operator-inner-cut)), calc(100% - var(--operator-inner-cut)) 100%, var(--operator-inner-cut) 100%, 0 calc(100% - var(--operator-inner-cut)), 0 var(--operator-inner-cut));
+  background:
+    linear-gradient(90deg, transparent 4%, rgba(215, 243, 255, 0.96) 4% 18%, transparent 18% 82%, rgba(215, 243, 255, 0.96) 82% 96%, transparent 96%) top 0 left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 8%, rgba(56, 189, 248, 0.88) 8% 24%, transparent 24% 76%, rgba(56, 189, 248, 0.88) 76% 92%, transparent 92%) bottom 0 left / 100% 2px no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(215, 243, 255, 0.92) 8% 24%, transparent 24% 76%, rgba(56, 189, 248, 0.82) 76% 92%, transparent 92%) left 0 top / 2px 100% no-repeat,
+    linear-gradient(180deg, transparent 8%, rgba(56, 189, 248, 0.82) 8% 24%, transparent 24% 76%, rgba(215, 243, 255, 0.92) 76% 92%, transparent 92%) right 0 top / 2px 100% no-repeat,
+    radial-gradient(circle at 50% 50%, rgba(215, 243, 255, 0.32), rgba(56, 189, 248, 0.16) 18%, transparent 42%);
+  box-shadow:
+    0 0 0 1px rgba(215, 243, 255, 0.62) inset,
+    0 0 38px rgba(56, 189, 248, 0.42),
+    0 0 92px rgba(56, 189, 248, 0.18);
+  transform: scale(0.985);
+  animation: operator-panel-lock-snap 1.05s var(--ease-out) both;
+}
+
+@keyframes operator-panel-lock-snap {
+  0%,
+  56% {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+
+  64% {
+    opacity: 0.96;
+    transform: scale(1.035);
+  }
+
+  74% {
+    opacity: 0.26;
+    transform: scale(0.992);
+  }
+
+  84% {
+    opacity: 0.72;
+    transform: scale(1.012);
+  }
+
+  100% {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operator-panel__lock-flash {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 .operator-panel__metrics span,
 .operator-feed-pills button,
@@ -10329,48 +10388,53 @@ body.h-harness-top-collapsed .pc-header {
 }
 
 /* Restored Operator panel finish: visible Blade Runner neon perimeter.
-   This intentionally overrides the subtle chrome/cyberpunk frame blocks above. */
+   Border-only retune: brighter wet-street cyan + sodium amber neon tubes. */
 .operator-panel {
   --operator-cut: 22px;
   --operator-frame: 11px;
   --operator-inner-cut: 10px;
   padding: var(--operator-frame);
   background:
-    radial-gradient(circle at 52% -10%, rgba(103, 232, 249, 0.24), transparent 24rem),
-    radial-gradient(circle at 12% 15%, rgba(251, 146, 60, 0.18), transparent 16rem),
-    radial-gradient(circle at 88% 12%, rgba(34, 211, 238, 0.18), transparent 19rem),
-    linear-gradient(125deg, rgba(251, 146, 60, 0.055), transparent 22% 74%, rgba(34, 211, 238, 0.060)),
-    linear-gradient(180deg, rgba(7, 12, 23, 0.996), rgba(1, 5, 13, 0.996)) !important;
+    radial-gradient(ellipse at 50% -10%, rgba(103, 232, 249, 0.34), transparent 25rem),
+    radial-gradient(ellipse at 18% 7%, rgba(251, 191, 36, 0.24), transparent 18rem),
+    radial-gradient(ellipse at 88% 10%, rgba(34, 211, 238, 0.26), transparent 20rem),
+    radial-gradient(ellipse at 82% 100%, rgba(251, 146, 60, 0.16), transparent 26rem),
+    linear-gradient(125deg, rgba(251, 146, 60, 0.07), transparent 20% 72%, rgba(34, 211, 238, 0.075)),
+    linear-gradient(180deg, rgba(6, 10, 20, 0.998), rgba(1, 4, 12, 0.998)) !important;
   box-shadow:
-    0 0 0 100vmax rgba(1, 4, 10, 0.58),
-    0 52px 148px rgba(0, 0, 0, 0.84),
-    0 0 0 1px rgba(103, 232, 249, 0.82),
-    0 0 9px rgba(103, 232, 249, 0.62),
-    0 0 28px rgba(34, 211, 238, 0.38),
-    0 0 58px rgba(251, 146, 60, 0.24),
-    inset 0 0 0 1px rgba(255, 237, 213, 0.22),
-    inset 0 0 28px rgba(34, 211, 238, 0.075) !important;
+    0 0 0 100vmax rgba(1, 4, 10, 0.60),
+    0 58px 160px rgba(0, 0, 0, 0.86),
+    0 0 0 1px rgba(219, 251, 255, 0.78),
+    0 0 8px rgba(219, 251, 255, 0.72),
+    0 0 24px rgba(103, 232, 249, 0.58),
+    0 0 56px rgba(34, 211, 238, 0.42),
+    0 0 82px rgba(251, 146, 60, 0.28),
+    inset 0 0 0 1px rgba(255, 244, 214, 0.30),
+    inset 0 0 30px rgba(34, 211, 238, 0.10) !important;
 }
 
 .operator-panel::before {
   opacity: 1 !important;
   padding: var(--operator-frame);
   background:
-    linear-gradient(90deg, transparent 4%, rgba(103, 232, 249, 1) 5% 28%, rgba(251, 191, 36, 0.98) 28% 36%, transparent 36% 64%, rgba(251, 191, 36, 0.98) 64% 72%, rgba(103, 232, 249, 1) 72% 95%, transparent 96%) top 0 left / 100% 2px no-repeat,
-    linear-gradient(90deg, transparent 6%, rgba(251, 191, 36, 0.88) 6% 24%, rgba(103, 232, 249, 0.72) 24% 36%, transparent 36% 64%, rgba(103, 232, 249, 0.72) 64% 76%, rgba(251, 191, 36, 0.88) 76% 94%, transparent 94%) bottom 0 left / 100% 2px no-repeat,
-    linear-gradient(180deg, transparent 6%, rgba(103, 232, 249, 0.94) 7% 36%, rgba(251, 191, 36, 0.70) 36% 47%, transparent 47% 58%, rgba(251, 191, 36, 0.70) 58% 69%, rgba(103, 232, 249, 0.94) 69% 94%, transparent 95%) left 0 center / 2px 100% no-repeat,
-    linear-gradient(180deg, transparent 6%, rgba(251, 191, 36, 0.82) 7% 32%, rgba(103, 232, 249, 0.76) 32% 44%, transparent 44% 58%, rgba(103, 232, 249, 0.76) 58% 70%, rgba(251, 191, 36, 0.82) 70% 94%, transparent 95%) right 0 center / 2px 100% no-repeat,
-    repeating-linear-gradient(102deg, rgba(103, 232, 249, 0.46) 0 1px, transparent 1px 10px) top 4px center / calc(100% - 44px) 2px no-repeat,
-    repeating-linear-gradient(102deg, rgba(251, 191, 36, 0.34) 0 1px, transparent 1px 11px) bottom 4px center / calc(100% - 54px) 2px no-repeat,
-    radial-gradient(circle at 20px 20px, rgba(255,255,255,1) 0 1px, rgba(103, 232, 249, 1) 2px 4px, rgba(34, 211, 238, 0.34) 5px 13px, transparent 15px),
-    radial-gradient(circle at calc(100% - 20px) 20px, rgba(255,255,255,1) 0 1px, rgba(251, 191, 36, 0.98) 2px 4px, rgba(251, 146, 60, 0.32) 5px 13px, transparent 15px),
-    radial-gradient(circle at 20px calc(100% - 20px), rgba(255,255,255,0.86) 0 1px, rgba(251, 191, 36, 0.88) 2px 4px, rgba(251, 146, 60, 0.26) 5px 13px, transparent 15px),
-    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.86) 0 1px, rgba(103, 232, 249, 0.88) 2px 4px, rgba(34, 211, 238, 0.28) 5px 13px, transparent 15px),
-    linear-gradient(135deg, rgba(12, 18, 31, 0.96), rgba(34, 211, 238, 0.30) 16%, rgba(9, 14, 25, 0.98) 34%, rgba(251, 146, 60, 0.22) 52%, rgba(8, 13, 24, 0.99) 72%, rgba(103, 232, 249, 0.24) 100%) !important;
+    linear-gradient(90deg, transparent 3%, rgba(236, 254, 255, 1) 4% 8%, rgba(103, 232, 249, 1) 8% 31%, rgba(255, 216, 97, 1) 31% 39%, transparent 39% 61%, rgba(255, 216, 97, 1) 61% 69%, rgba(103, 232, 249, 1) 69% 92%, rgba(236, 254, 255, 1) 92% 96%, transparent 97%) top 0 left / 100% 3px no-repeat,
+    linear-gradient(90deg, transparent 4%, rgba(103, 232, 249, 0.66) 5% 34%, transparent 34% 66%, rgba(255, 186, 73, 0.66) 66% 95%, transparent 96%) top 4px left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 4%, rgba(255, 216, 97, 0.98) 5% 27%, rgba(103, 232, 249, 0.88) 27% 38%, transparent 38% 62%, rgba(103, 232, 249, 0.88) 62% 73%, rgba(255, 216, 97, 0.98) 73% 95%, transparent 96%) bottom 0 left / 100% 3px no-repeat,
+    linear-gradient(90deg, transparent 6%, rgba(255, 186, 73, 0.45) 6% 35%, transparent 35% 65%, rgba(103, 232, 249, 0.48) 65% 94%, transparent 94%) bottom 4px left / 100% 2px no-repeat,
+    linear-gradient(180deg, transparent 4%, rgba(236, 254, 255, 1) 5% 9%, rgba(103, 232, 249, 0.98) 9% 37%, rgba(255, 186, 73, 0.76) 37% 48%, transparent 48% 57%, rgba(255, 186, 73, 0.76) 57% 68%, rgba(103, 232, 249, 0.98) 68% 92%, rgba(236, 254, 255, 0.90) 92% 96%, transparent 97%) left 0 center / 3px 100% no-repeat,
+    linear-gradient(180deg, transparent 4%, rgba(255, 216, 97, 0.98) 5% 32%, rgba(103, 232, 249, 0.88) 32% 45%, transparent 45% 56%, rgba(103, 232, 249, 0.88) 56% 69%, rgba(255, 216, 97, 0.98) 69% 94%, transparent 96%) right 0 center / 3px 100% no-repeat,
+    repeating-linear-gradient(102deg, rgba(236, 254, 255, 0.62) 0 1px, rgba(103, 232, 249, 0.30) 1px 2px, transparent 2px 10px) top 7px center / calc(100% - 44px) 2px no-repeat,
+    repeating-linear-gradient(102deg, rgba(255, 216, 97, 0.50) 0 1px, rgba(251, 146, 60, 0.22) 1px 2px, transparent 2px 11px) bottom 7px center / calc(100% - 54px) 2px no-repeat,
+    radial-gradient(circle at 20px 20px, rgba(255,255,255,1) 0 2px, rgba(103, 232, 249, 1) 3px 6px, rgba(34, 211, 238, 0.55) 7px 18px, transparent 21px),
+    radial-gradient(circle at calc(100% - 20px) 20px, rgba(255,255,255,1) 0 2px, rgba(255, 216, 97, 1) 3px 6px, rgba(251, 146, 60, 0.50) 7px 18px, transparent 21px),
+    radial-gradient(circle at 20px calc(100% - 20px), rgba(255,255,255,0.96) 0 2px, rgba(255, 216, 97, 0.95) 3px 6px, rgba(251, 146, 60, 0.42) 7px 18px, transparent 21px),
+    radial-gradient(circle at calc(100% - 20px) calc(100% - 20px), rgba(255,255,255,0.96) 0 2px, rgba(103, 232, 249, 0.95) 3px 6px, rgba(34, 211, 238, 0.44) 7px 18px, transparent 21px),
+    linear-gradient(135deg, rgba(5, 9, 18, 0.98), rgba(34, 211, 238, 0.44) 14%, rgba(7, 11, 22, 0.99) 32%, rgba(255, 186, 73, 0.32) 52%, rgba(7, 12, 23, 0.99) 74%, rgba(103, 232, 249, 0.34) 100%) !important;
   filter:
-    drop-shadow(0 0 5px rgba(103, 232, 249, 0.86))
-    drop-shadow(0 0 18px rgba(34, 211, 238, 0.54))
-    drop-shadow(0 0 26px rgba(251, 146, 60, 0.36)) !important;
+    drop-shadow(0 0 4px rgba(236, 254, 255, 0.86))
+    drop-shadow(0 0 13px rgba(103, 232, 249, 0.80))
+    drop-shadow(0 0 28px rgba(34, 211, 238, 0.58))
+    drop-shadow(0 0 34px rgba(251, 146, 60, 0.42)) !important;
 }
 
 .operator-panel::after {
@@ -10378,16 +10442,17 @@ body.h-harness-top-collapsed .pc-header {
   inset: calc(var(--operator-frame) - 1px);
   padding: 4px;
   background:
-    linear-gradient(90deg, transparent 5%, rgba(103, 232, 249, 0.92) 5% 24%, transparent 24% 76%, rgba(251, 191, 36, 0.82) 76% 95%, transparent 95%) top 0 left / 100% 2px no-repeat,
-    linear-gradient(90deg, transparent 8%, rgba(251, 191, 36, 0.58) 8% 22%, transparent 22% 78%, rgba(103, 232, 249, 0.58) 78% 92%, transparent 92%) bottom 0 left / 100% 1px no-repeat,
-    linear-gradient(180deg, transparent 10%, rgba(251, 191, 36, 0.44) 10% 32%, transparent 32% 68%, rgba(103, 232, 249, 0.44) 68% 90%, transparent 90%) left 0 center / 1px 100% no-repeat,
-    linear-gradient(180deg, transparent 10%, rgba(103, 232, 249, 0.44) 10% 32%, transparent 32% 68%, rgba(251, 191, 36, 0.44) 68% 90%, transparent 90%) right 0 center / 1px 100% no-repeat,
-    linear-gradient(135deg, rgba(255,255,255,0.12), rgba(34, 211, 238, 0.12) 24%, rgba(251, 146, 60, 0.10) 54%, rgba(8, 15, 26, 0.95) 100%) !important;
+    linear-gradient(90deg, transparent 4%, rgba(236, 254, 255, 0.82) 5% 8%, rgba(103, 232, 249, 0.95) 8% 27%, transparent 27% 73%, rgba(255, 216, 97, 0.92) 73% 92%, rgba(255,255,255,0.72) 92% 96%, transparent 97%) top 0 left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 7%, rgba(255, 216, 97, 0.70) 7% 24%, transparent 24% 76%, rgba(103, 232, 249, 0.72) 76% 93%, transparent 93%) bottom 0 left / 100% 2px no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(255, 216, 97, 0.52) 9% 33%, transparent 33% 67%, rgba(103, 232, 249, 0.56) 67% 91%, transparent 91%) left 0 center / 2px 100% no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(103, 232, 249, 0.56) 9% 33%, transparent 33% 67%, rgba(255, 216, 97, 0.52) 67% 91%, transparent 91%) right 0 center / 2px 100% no-repeat,
+    linear-gradient(135deg, rgba(255,255,255,0.16), rgba(34, 211, 238, 0.16) 24%, rgba(251, 146, 60, 0.14) 54%, rgba(8, 15, 26, 0.95) 100%) !important;
   box-shadow:
-    0 0 10px rgba(103, 232, 249, 0.42),
-    0 0 24px rgba(34, 211, 238, 0.24),
-    0 0 18px rgba(251, 146, 60, 0.18),
-    inset 0 0 0 1px rgba(103, 232, 249, 0.34) !important;
+    0 0 12px rgba(236, 254, 255, 0.36),
+    0 0 24px rgba(103, 232, 249, 0.34),
+    0 0 34px rgba(34, 211, 238, 0.26),
+    0 0 28px rgba(251, 146, 60, 0.24),
+    inset 0 0 0 1px rgba(219, 251, 255, 0.42) !important;
 }
 
 /* Restored Operator panel usability: timeline controls, dispatch status box, action chrome. */
@@ -10545,11 +10610,11 @@ body.h-harness-top-collapsed .pc-header {
 
   .operator-panel::before {
     background:
-      linear-gradient(90deg, transparent 4%, rgba(103, 232, 249, 1) 5% 28%, rgba(251, 191, 36, 0.98) 28% 36%, transparent 36% 64%, rgba(251, 191, 36, 0.98) 64% 72%, rgba(103, 232, 249, 1) 72% 95%, transparent 96%) top 0 left / 100% 2px no-repeat,
-      linear-gradient(90deg, transparent 6%, rgba(251, 191, 36, 0.88) 6% 24%, rgba(103, 232, 249, 0.72) 24% 36%, transparent 36% 64%, rgba(103, 232, 249, 0.72) 64% 76%, rgba(251, 191, 36, 0.88) 76% 94%, transparent 94%) bottom 0 left / 100% 2px no-repeat,
-      linear-gradient(180deg, transparent 6%, rgba(103, 232, 249, 0.94) 7% 36%, rgba(251, 191, 36, 0.70) 36% 47%, transparent 47% 58%, rgba(251, 191, 36, 0.70) 58% 69%, rgba(103, 232, 249, 0.94) 69% 94%, transparent 95%) left 0 center / 2px 100% no-repeat,
-      linear-gradient(180deg, transparent 6%, rgba(251, 191, 36, 0.82) 7% 32%, rgba(103, 232, 249, 0.76) 32% 44%, transparent 44% 58%, rgba(103, 232, 249, 0.76) 58% 70%, rgba(251, 191, 36, 0.82) 70% 94%, transparent 95%) right 0 center / 2px 100% no-repeat,
-      linear-gradient(135deg, rgba(12, 18, 31, 0.96), rgba(34, 211, 238, 0.30) 16%, rgba(9, 14, 25, 0.98) 34%, rgba(251, 146, 60, 0.22) 52%, rgba(8, 13, 24, 0.99) 72%, rgba(103, 232, 249, 0.24) 100%) !important;
+      linear-gradient(90deg, transparent 3%, rgba(236, 254, 255, 1) 4% 8%, rgba(103, 232, 249, 1) 8% 31%, rgba(255, 216, 97, 1) 31% 39%, transparent 39% 61%, rgba(255, 216, 97, 1) 61% 69%, rgba(103, 232, 249, 1) 69% 92%, rgba(236, 254, 255, 1) 92% 96%, transparent 97%) top 0 left / 100% 3px no-repeat,
+      linear-gradient(90deg, transparent 4%, rgba(255, 216, 97, 0.98) 5% 27%, rgba(103, 232, 249, 0.88) 27% 38%, transparent 38% 62%, rgba(103, 232, 249, 0.88) 62% 73%, rgba(255, 216, 97, 0.98) 73% 95%, transparent 96%) bottom 0 left / 100% 3px no-repeat,
+      linear-gradient(180deg, transparent 4%, rgba(236, 254, 255, 1) 5% 9%, rgba(103, 232, 249, 0.98) 9% 37%, rgba(255, 186, 73, 0.76) 37% 48%, transparent 48% 57%, rgba(255, 186, 73, 0.76) 57% 68%, rgba(103, 232, 249, 0.98) 68% 92%, rgba(236, 254, 255, 0.90) 92% 96%, transparent 97%) left 0 center / 3px 100% no-repeat,
+      linear-gradient(180deg, transparent 4%, rgba(255, 216, 97, 0.98) 5% 32%, rgba(103, 232, 249, 0.88) 32% 45%, transparent 45% 56%, rgba(103, 232, 249, 0.88) 56% 69%, rgba(255, 216, 97, 0.98) 69% 94%, transparent 96%) right 0 center / 3px 100% no-repeat,
+      linear-gradient(135deg, rgba(5, 9, 18, 0.98), rgba(34, 211, 238, 0.44) 14%, rgba(7, 11, 22, 0.99) 32%, rgba(255, 186, 73, 0.32) 52%, rgba(7, 12, 23, 0.99) 74%, rgba(103, 232, 249, 0.34) 100%) !important;
   }
 
   .operator-feed-head {
@@ -10566,4 +10631,845 @@ body.h-harness-top-collapsed .pc-header {
     flex: 1 1 100% !important;
     max-width: none;
   }
+}
+
+/* Research-informed Operator border: Cybercore glow + augmented HUD brackets + Iron-Man-style white core.
+   Pure CSS, border-only; no layout or interior control changes. */
+.operator-panel {
+  --operator-neon-cyan: 103, 232, 249;
+  --operator-neon-blue: 34, 211, 238;
+  --operator-neon-amber: 255, 216, 97;
+  --operator-neon-orange: 251, 146, 60;
+  --operator-neon-white: 236, 254, 255;
+  background:
+    radial-gradient(ellipse at 50% -14%, rgba(var(--operator-neon-cyan), 0.40), transparent 27rem),
+    radial-gradient(ellipse at 10% 10%, rgba(var(--operator-neon-amber), 0.26), transparent 18rem),
+    radial-gradient(ellipse at 92% 8%, rgba(var(--operator-neon-blue), 0.28), transparent 21rem),
+    radial-gradient(ellipse at 50% 100%, rgba(var(--operator-neon-orange), 0.18), transparent 30rem),
+    linear-gradient(125deg, rgba(var(--operator-neon-orange), 0.075), transparent 20% 72%, rgba(var(--operator-neon-blue), 0.085)),
+    linear-gradient(180deg, rgba(5, 9, 18, 0.998), rgba(1, 4, 12, 0.998)) !important;
+  box-shadow:
+    0 0 0 100vmax rgba(1, 4, 10, 0.62),
+    0 62px 172px rgba(0, 0, 0, 0.88),
+    0 0 0 1px rgba(var(--operator-neon-white), 0.88),
+    0 0 10px rgba(var(--operator-neon-white), 0.76),
+    0 0 28px rgba(var(--operator-neon-cyan), 0.66),
+    0 0 64px rgba(var(--operator-neon-blue), 0.48),
+    0 0 96px rgba(var(--operator-neon-orange), 0.34),
+    inset 0 0 0 1px rgba(255, 244, 214, 0.34),
+    inset 0 0 34px rgba(var(--operator-neon-blue), 0.12) !important;
+}
+
+.operator-panel::before {
+  opacity: 1 !important;
+  padding: var(--operator-frame);
+  background:
+    linear-gradient(90deg, transparent 2.5%, rgba(var(--operator-neon-white), 1) 3.5% 7%, rgba(var(--operator-neon-cyan), 1) 7% 30%, rgba(var(--operator-neon-amber), 1) 30% 38%, transparent 38% 62%, rgba(var(--operator-neon-amber), 1) 62% 70%, rgba(var(--operator-neon-cyan), 1) 70% 93%, rgba(var(--operator-neon-white), 1) 93% 96.5%, transparent 97.5%) top 0 left / 100% 4px no-repeat,
+    linear-gradient(90deg, transparent 4%, rgba(var(--operator-neon-cyan), 0.62) 5% 36%, transparent 36% 64%, rgba(var(--operator-neon-orange), 0.58) 64% 95%, transparent 96%) top 6px left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 3%, rgba(var(--operator-neon-amber), 1) 4% 29%, rgba(var(--operator-neon-white), 0.92) 29% 31%, rgba(var(--operator-neon-cyan), 0.92) 31% 40%, transparent 40% 60%, rgba(var(--operator-neon-cyan), 0.92) 60% 69%, rgba(var(--operator-neon-white), 0.92) 69% 71%, rgba(var(--operator-neon-amber), 1) 71% 96%, transparent 97%) bottom 0 left / 100% 4px no-repeat,
+    linear-gradient(90deg, transparent 5%, rgba(var(--operator-neon-orange), 0.54) 6% 36%, transparent 36% 64%, rgba(var(--operator-neon-cyan), 0.58) 64% 94%, transparent 95%) bottom 6px left / 100% 2px no-repeat,
+    linear-gradient(180deg, transparent 3%, rgba(var(--operator-neon-white), 1) 4% 8%, rgba(var(--operator-neon-cyan), 1) 8% 38%, rgba(var(--operator-neon-amber), 0.78) 38% 48%, transparent 48% 57%, rgba(var(--operator-neon-amber), 0.78) 57% 68%, rgba(var(--operator-neon-cyan), 1) 68% 93%, rgba(var(--operator-neon-white), 0.92) 93% 96%, transparent 97%) left 0 center / 4px 100% no-repeat,
+    linear-gradient(180deg, transparent 3%, rgba(var(--operator-neon-amber), 1) 4% 33%, rgba(var(--operator-neon-cyan), 0.94) 33% 45%, transparent 45% 56%, rgba(var(--operator-neon-cyan), 0.94) 56% 69%, rgba(var(--operator-neon-amber), 1) 69% 96%, transparent 97%) right 0 center / 4px 100% no-repeat,
+    linear-gradient(135deg, rgba(var(--operator-neon-cyan), 0.98) 0 18%, transparent 18% 38%, rgba(var(--operator-neon-white), 0.92) 38% 43%, transparent 43%) top 0 left 0 / 92px 92px no-repeat,
+    linear-gradient(225deg, rgba(var(--operator-neon-amber), 0.98) 0 18%, transparent 18% 38%, rgba(var(--operator-neon-white), 0.92) 38% 43%, transparent 43%) top 0 right 0 / 92px 92px no-repeat,
+    linear-gradient(315deg, rgba(var(--operator-neon-amber), 0.86) 0 18%, transparent 18% 38%, rgba(var(--operator-neon-white), 0.72) 38% 43%, transparent 43%) bottom 0 left 0 / 92px 92px no-repeat,
+    linear-gradient(45deg, rgba(var(--operator-neon-cyan), 0.86) 0 18%, transparent 18% 38%, rgba(var(--operator-neon-white), 0.72) 38% 43%, transparent 43%) bottom 0 right 0 / 92px 92px no-repeat,
+    repeating-linear-gradient(102deg, rgba(var(--operator-neon-white), 0.62) 0 1px, rgba(var(--operator-neon-cyan), 0.30) 1px 2px, transparent 2px 9px) top 9px center / calc(100% - 72px) 2px no-repeat,
+    repeating-linear-gradient(102deg, rgba(var(--operator-neon-amber), 0.54) 0 1px, rgba(var(--operator-neon-orange), 0.24) 1px 2px, transparent 2px 10px) bottom 9px center / calc(100% - 82px) 2px no-repeat,
+    radial-gradient(circle at 22px 22px, rgba(255,255,255,1) 0 2px, rgba(var(--operator-neon-cyan), 1) 3px 7px, rgba(var(--operator-neon-blue), 0.58) 8px 22px, transparent 25px),
+    radial-gradient(circle at calc(100% - 22px) 22px, rgba(255,255,255,1) 0 2px, rgba(var(--operator-neon-amber), 1) 3px 7px, rgba(var(--operator-neon-orange), 0.58) 8px 22px, transparent 25px),
+    radial-gradient(circle at 22px calc(100% - 22px), rgba(255,255,255,0.96) 0 2px, rgba(var(--operator-neon-amber), 0.98) 3px 7px, rgba(var(--operator-neon-orange), 0.46) 8px 22px, transparent 25px),
+    radial-gradient(circle at calc(100% - 22px) calc(100% - 22px), rgba(255,255,255,0.96) 0 2px, rgba(var(--operator-neon-cyan), 0.98) 3px 7px, rgba(var(--operator-neon-blue), 0.50) 8px 22px, transparent 25px),
+    conic-gradient(from 0.62turn at 50% 50%, rgba(var(--operator-neon-cyan), 0.96) 0 10%, rgba(var(--operator-neon-white), 0.96) 11% 12%, rgba(var(--operator-neon-amber), 1) 13% 23%, rgba(var(--operator-neon-orange), 0.82) 24% 29%, rgba(var(--operator-neon-cyan), 0.90) 30% 46%, rgba(var(--operator-neon-white), 0.88) 47% 48%, rgba(var(--operator-neon-amber), 0.94) 49% 60%, rgba(var(--operator-neon-blue), 0.94) 61% 82%, rgba(var(--operator-neon-white), 0.88) 83% 84%, rgba(var(--operator-neon-cyan), 0.96) 85% 100%) !important;
+  background-blend-mode: screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, normal;
+  filter:
+    drop-shadow(0 0 4px rgba(var(--operator-neon-white), 0.92))
+    drop-shadow(0 0 14px rgba(var(--operator-neon-cyan), 0.88))
+    drop-shadow(0 0 32px rgba(var(--operator-neon-blue), 0.64))
+    drop-shadow(0 0 42px rgba(var(--operator-neon-orange), 0.50)) !important;
+  animation: operator-neon-breathe 4.8s ease-in-out infinite alternate;
+}
+
+.operator-panel::after {
+  opacity: 1 !important;
+  inset: calc(var(--operator-frame) - 1px);
+  padding: 4px;
+  background:
+    linear-gradient(90deg, transparent 4%, rgba(var(--operator-neon-white), 0.92) 5% 8%, rgba(var(--operator-neon-cyan), 0.95) 8% 28%, transparent 28% 72%, rgba(var(--operator-neon-amber), 0.95) 72% 92%, rgba(var(--operator-neon-white), 0.80) 92% 96%, transparent 97%) top 0 left / 100% 2px no-repeat,
+    linear-gradient(90deg, transparent 7%, rgba(var(--operator-neon-amber), 0.76) 7% 24%, transparent 24% 76%, rgba(var(--operator-neon-cyan), 0.78) 76% 93%, transparent 93%) bottom 0 left / 100% 2px no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(var(--operator-neon-amber), 0.58) 9% 33%, transparent 33% 67%, rgba(var(--operator-neon-cyan), 0.62) 67% 91%, transparent 91%) left 0 center / 2px 100% no-repeat,
+    linear-gradient(180deg, transparent 9%, rgba(var(--operator-neon-cyan), 0.62) 9% 33%, transparent 33% 67%, rgba(var(--operator-neon-amber), 0.58) 67% 91%, transparent 91%) right 0 center / 2px 100% no-repeat,
+    conic-gradient(from 0.62turn at 50% 50%, rgba(var(--operator-neon-cyan), 0.36), rgba(var(--operator-neon-amber), 0.28), rgba(var(--operator-neon-blue), 0.30), rgba(var(--operator-neon-orange), 0.24), rgba(var(--operator-neon-cyan), 0.36)) !important;
+  box-shadow:
+    0 0 14px rgba(var(--operator-neon-white), 0.40),
+    0 0 28px rgba(var(--operator-neon-cyan), 0.38),
+    0 0 38px rgba(var(--operator-neon-blue), 0.30),
+    0 0 32px rgba(var(--operator-neon-orange), 0.28),
+    inset 0 0 0 1px rgba(var(--operator-neon-white), 0.48) !important;
+}
+
+@keyframes operator-neon-breathe {
+  0% {
+    filter:
+      drop-shadow(0 0 3px rgba(var(--operator-neon-white), 0.80))
+      drop-shadow(0 0 11px rgba(var(--operator-neon-cyan), 0.74))
+      drop-shadow(0 0 26px rgba(var(--operator-neon-blue), 0.54))
+      drop-shadow(0 0 32px rgba(var(--operator-neon-orange), 0.38));
+  }
+  100% {
+    filter:
+      drop-shadow(0 0 5px rgba(var(--operator-neon-white), 0.96))
+      drop-shadow(0 0 18px rgba(var(--operator-neon-cyan), 0.94))
+      drop-shadow(0 0 40px rgba(var(--operator-neon-blue), 0.70))
+      drop-shadow(0 0 52px rgba(var(--operator-neon-orange), 0.54));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operator-panel::before {
+    animation: none !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .operator-panel::before {
+    background:
+      linear-gradient(90deg, transparent 2.5%, rgba(var(--operator-neon-white), 1) 3.5% 7%, rgba(var(--operator-neon-cyan), 1) 7% 30%, rgba(var(--operator-neon-amber), 1) 30% 38%, transparent 38% 62%, rgba(var(--operator-neon-amber), 1) 62% 70%, rgba(var(--operator-neon-cyan), 1) 70% 93%, rgba(var(--operator-neon-white), 1) 93% 96.5%, transparent 97.5%) top 0 left / 100% 4px no-repeat,
+      linear-gradient(90deg, transparent 3%, rgba(var(--operator-neon-amber), 1) 4% 29%, rgba(var(--operator-neon-white), 0.92) 29% 31%, rgba(var(--operator-neon-cyan), 0.92) 31% 40%, transparent 40% 60%, rgba(var(--operator-neon-cyan), 0.92) 60% 69%, rgba(var(--operator-neon-white), 0.92) 69% 71%, rgba(var(--operator-neon-amber), 1) 71% 96%, transparent 97%) bottom 0 left / 100% 4px no-repeat,
+      linear-gradient(180deg, transparent 3%, rgba(var(--operator-neon-white), 1) 4% 8%, rgba(var(--operator-neon-cyan), 1) 8% 38%, rgba(var(--operator-neon-amber), 0.78) 38% 48%, transparent 48% 57%, rgba(var(--operator-neon-amber), 0.78) 57% 68%, rgba(var(--operator-neon-cyan), 1) 68% 93%, rgba(var(--operator-neon-white), 0.92) 93% 96%, transparent 97%) left 0 center / 4px 100% no-repeat,
+      linear-gradient(180deg, transparent 3%, rgba(var(--operator-neon-amber), 1) 4% 33%, rgba(var(--operator-neon-cyan), 0.94) 33% 45%, transparent 45% 56%, rgba(var(--operator-neon-cyan), 0.94) 56% 69%, rgba(var(--operator-neon-amber), 1) 69% 96%, transparent 97%) right 0 center / 4px 100% no-repeat,
+      conic-gradient(from 0.62turn at 50% 50%, rgba(var(--operator-neon-cyan), 0.96) 0 10%, rgba(var(--operator-neon-white), 0.96) 11% 12%, rgba(var(--operator-neon-amber), 1) 13% 23%, rgba(var(--operator-neon-orange), 0.82) 24% 29%, rgba(var(--operator-neon-cyan), 0.90) 30% 46%, rgba(var(--operator-neon-white), 0.88) 47% 48%, rgba(var(--operator-neon-amber), 0.94) 49% 60%, rgba(var(--operator-neon-blue), 0.94) 61% 82%, rgba(var(--operator-neon-white), 0.88) 83% 84%, rgba(var(--operator-neon-cyan), 0.96) 85% 100%) !important;
+  }
+}
+
+
+/* Maximal HUD experiment branch: shell/operator/oracle/marketplace/support */
+@keyframes pc-hud-flicker {
+  0%, 18%, 22%, 74%, 100% { opacity: 1; }
+  20%, 21%, 76% { opacity: 0.46; }
+}
+@keyframes pc-hud-scan-rise {
+  0% { transform: translate3d(0, -16%, 0); opacity: 0; }
+  22% { opacity: 0.22; }
+  50% { opacity: 0.62; }
+  100% { transform: translate3d(0, 108%, 0); opacity: 0; }
+}
+@keyframes pc-hud-beam-drift {
+  0% { transform: translate3d(-16%, 0, 0) scaleX(0.85); opacity: 0; }
+  14% { opacity: 0.8; }
+  100% { transform: translate3d(16%, 0, 0) scaleX(1.14); opacity: 0; }
+}
+@keyframes pc-hud-marquee {
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-50%, 0, 0); }
+}
+@keyframes pc-hud-spin-snap {
+  0% { transform: rotate(0deg) scale(0.96); }
+  50% { transform: rotate(180deg) scale(1.02); }
+  100% { transform: rotate(360deg) scale(0.96); }
+}
+
+.hud-frame-corners,
+.hud-telemetry-marquee {
+  pointer-events: none;
+}
+.hud-frame-corners {
+  position: absolute;
+  inset: 0;
+}
+.hud-frame-corners__corner {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-color: rgba(190, 243, 255, 0.78);
+  border-style: solid;
+  filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.22));
+}
+.hud-frame-corners__corner--tl { top: 0; left: 0; border-width: 1px 0 0 1px; }
+.hud-frame-corners__corner--tr { top: 0; right: 0; border-width: 1px 1px 0 0; }
+.hud-frame-corners__corner--br { right: 0; bottom: 0; border-width: 0 1px 1px 0; }
+.hud-frame-corners__corner--bl { bottom: 0; left: 0; border-width: 0 0 1px 1px; }
+
+.hud-ring-glyph,
+.hud-reticle-glyph {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.hud-ring-glyph__orbit,
+.hud-ring-glyph__inner,
+.hud-ring-glyph__pulse,
+.hud-ring-glyph__spoke,
+.hud-ring-glyph__crosshair,
+.hud-reticle-glyph__frame,
+.hud-reticle-glyph__halo,
+.hud-reticle-glyph__core,
+.hud-reticle-glyph__axis {
+  fill: none;
+  stroke: rgba(194, 248, 255, 0.78);
+  stroke-width: 1.15;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.hud-ring-glyph__pulse {
+  stroke-dasharray: 4 8;
+  opacity: 0.78;
+}
+.hud-ring-glyph__spoke {
+  opacity: 0.42;
+}
+.hud-ring-glyph__inner {
+  opacity: 0.58;
+}
+.hud-reticle-glyph__halo {
+  stroke-dasharray: 5 9;
+  opacity: 0.54;
+}
+.hud-reticle-glyph__core {
+  fill: rgba(235, 251, 255, 0.88);
+  stroke: none;
+}
+.hud-telemetry-marquee {
+  position: absolute;
+  inset: auto 18px 10px 18px;
+  display: flex;
+  overflow: hidden;
+  gap: 18px;
+  mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent);
+}
+.hud-telemetry-marquee__track {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: max-content;
+  gap: 18px;
+  animation: pc-hud-marquee 18s linear infinite;
+}
+.hud-telemetry-marquee__track:nth-child(2) {
+  animation-delay: -9s;
+}
+.hud-telemetry-marquee__segment {
+  color: rgba(188, 239, 255, 0.72);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  text-shadow: 0 0 10px rgba(34, 211, 238, 0.18);
+}
+
+.operator-panel--maximal-hud {
+  --operator-reactor-core: 125, 240, 255;
+  --operator-reactor-glow: 245, 181, 63;
+  overflow: hidden;
+  isolation: isolate;
+}
+.operator-panel--maximal-hud[data-operator-state="scanning"] {
+  --operator-reactor-core: 87, 215, 255;
+  --operator-reactor-glow: 251, 191, 36;
+}
+.operator-panel--maximal-hud[data-operator-state="thinking"] {
+  --operator-reactor-core: 138, 180, 255;
+  --operator-reactor-glow: 95, 211, 255;
+}
+.operator-panel--maximal-hud[data-operator-state="acting"] {
+  --operator-reactor-core: 255, 151, 122;
+  --operator-reactor-glow: 255, 212, 102;
+}
+.operator-panel--maximal-hud[data-operator-state="paused"] {
+  --operator-reactor-core: 255, 136, 136;
+  --operator-reactor-glow: 255, 208, 208;
+}
+.operator-panel--maximal-hud[data-operator-state="awaiting-input"] {
+  --operator-reactor-core: 255, 220, 132;
+  --operator-reactor-glow: 255, 247, 214;
+}
+.operator-panel--maximal-hud > .operator-hud-overlay {
+  position: absolute !important;
+  inset: 0;
+  z-index: 0 !important;
+}
+.operator-panel--maximal-hud .operator-panel__header,
+.operator-panel--maximal-hud .operator-panel__body,
+.operator-panel--maximal-hud .operator-panel__footer,
+.operator-panel--maximal-hud .operator-budget-overlay {
+  position: relative;
+  z-index: 1;
+}
+.operator-panel--maximal-hud .operator-panel__titleblock {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+.operator-panel--maximal-hud .operator-panel__titlecopy {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.operator-panel--maximal-hud .operator-panel__title-overline {
+  height: 1px;
+  width: 180px;
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.56), rgba(var(--operator-arc), 0.54), transparent);
+  filter: drop-shadow(0 0 10px rgba(var(--operator-arc), 0.18));
+}
+.operator-panel--maximal-hud .operator-panel__title-scan {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.operator-panel--maximal-hud .operator-panel__title-scan span,
+.operator-panel--maximal-hud .operator-hud-telemetry__values span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid rgba(var(--operator-arc), 0.18);
+  background: linear-gradient(90deg, rgba(var(--operator-gold), 0.06), rgba(255, 255, 255, 0.03), rgba(var(--operator-arc), 0.08));
+  color: rgba(216, 246, 255, 0.74);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%, 0 8px);
+}
+.operator-panel--maximal-hud .operator-panel__metric-card {
+  overflow: hidden;
+  position: relative;
+  animation: pc-hud-flicker 9s linear infinite;
+}
+.operator-panel--maximal-hud .operator-panel__metric-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(120deg, transparent 0 38%, rgba(var(--operator-white-hot), 0.16) 46%, transparent 52%) -120% 0 / 45% 100% no-repeat,
+    linear-gradient(180deg, rgba(var(--operator-gold), 0.06), transparent 60%);
+  animation: pc-hud-beam-drift 2.4s linear infinite;
+}
+.operator-panel--maximal-hud .operator-panel__metric-card strong {
+  text-shadow: 0 0 18px rgba(var(--operator-arc), 0.32), 0 0 26px rgba(var(--operator-gold), 0.14);
+}
+
+.operator-reactor-shell {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  flex: 0 0 120px;
+  pointer-events: none;
+  filter: drop-shadow(0 0 22px rgba(var(--operator-reactor-core), 0.22));
+}
+.operator-reactor-shell__backplate,
+.operator-reactor-shell__glow,
+.operator-reactor-shell__rings,
+.operator-reactor-reticle,
+.operator-reactor-frame,
+.operator-reactor-core {
+  position: absolute;
+  inset: 0;
+}
+.operator-reactor-shell__backplate {
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, rgba(var(--operator-reactor-core), 0.16) 0 22%, rgba(var(--operator-arc), 0.12) 23% 48%, transparent 72%),
+    conic-gradient(from 0deg, rgba(var(--operator-gold), 0.12), transparent 22%, rgba(var(--operator-reactor-core), 0.18) 42%, transparent 58%, rgba(var(--operator-gold), 0.1) 80%, transparent);
+  animation: pc-hud-spin-snap 16s linear infinite;
+}
+.operator-reactor-shell__glow {
+  inset: 18%;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(var(--operator-reactor-glow), 0.12), transparent 72%);
+  filter: blur(18px);
+}
+.operator-reactor-shell__rings {
+  animation: pc-hud-flicker 11s linear infinite;
+}
+.operator-hud-ring {
+  position: absolute;
+  inset: 0;
+}
+.operator-reactor-core {
+  inset: 27%;
+  display: grid;
+  place-items: center;
+}
+.operator-reactor-core__pulse,
+.operator-reactor-core__orb,
+.operator-reactor-core__flare {
+  position: absolute;
+  border-radius: 50%;
+}
+.operator-reactor-core__pulse {
+  inset: 0;
+  border: 1px solid rgba(var(--operator-reactor-core), 0.26);
+  box-shadow: 0 0 24px rgba(var(--operator-reactor-core), 0.18), inset 0 0 22px rgba(var(--operator-reactor-core), 0.12);
+}
+.operator-reactor-core__orb {
+  inset: 18%;
+  background:
+    radial-gradient(circle at 50% 35%, rgba(255,255,255,0.96), rgba(var(--operator-reactor-core), 0.84) 32%, rgba(var(--operator-reactor-core), 0.16) 68%, transparent 100%);
+  box-shadow:
+    0 0 34px rgba(var(--operator-reactor-core), 0.32),
+    0 0 60px rgba(var(--operator-reactor-glow), 0.18);
+}
+.operator-reactor-core__flare {
+  inset: 5%;
+  border: 1px solid rgba(var(--operator-reactor-glow), 0.3);
+  animation: pc-header-cta-pulse 1.8s ease-out infinite;
+}
+.operator-reactor-reticle {
+  inset: -8px;
+  opacity: 0.82;
+}
+.operator-reactor-frame {
+  inset: 4px;
+}
+.operator-reactor-readout {
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+.operator-reactor-readout span,
+.operator-reactor-readout strong {
+  color: rgba(218, 247, 255, 0.76);
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-shadow: 0 0 10px rgba(var(--operator-reactor-core), 0.22);
+}
+.operator-reactor-readout strong {
+  font-size: 10px;
+  color: #ffffff;
+}
+
+.operator-hud-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.operator-hud-overlay__grid,
+.operator-hud-overlay__noise,
+.operator-hud-scan-beam,
+.operator-hud-beam,
+.operator-hud-reticle,
+.operator-hud-telemetry,
+.operator-hud-marquee {
+  position: absolute;
+}
+.operator-hud-overlay__grid {
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(var(--operator-white-hot), 0.04), transparent 28%),
+    linear-gradient(90deg, rgba(var(--operator-gold), 0.04), transparent 24%, transparent 76%, rgba(var(--operator-arc), 0.06)),
+    repeating-linear-gradient(90deg, rgba(var(--operator-arc), 0.045) 0 1px, transparent 1px 58px),
+    repeating-linear-gradient(180deg, rgba(var(--operator-arc), 0.032) 0 1px, transparent 1px 46px);
+  opacity: 0.26;
+}
+.operator-hud-overlay__noise {
+  inset: 0;
+  background:
+    radial-gradient(circle at 20% 18%, rgba(var(--operator-gold), 0.08), transparent 14rem),
+    radial-gradient(circle at 82% 22%, rgba(var(--operator-reactor-core), 0.1), transparent 18rem),
+    radial-gradient(circle at 50% 76%, rgba(var(--operator-arc), 0.08), transparent 18rem);
+  mix-blend-mode: screen;
+  opacity: 0.42;
+}
+.operator-hud-scan-beam {
+  left: -12%;
+  right: -12%;
+  top: -20%;
+  height: 40%;
+  background: linear-gradient(180deg, transparent, rgba(var(--operator-reactor-core), 0.18), transparent);
+  filter: blur(10px);
+  transform: translateY(-120%);
+}
+.operator-hud-beam {
+  left: 8%;
+  right: 8%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(var(--operator-reactor-core), 0.92), rgba(var(--operator-gold), 0.48), transparent);
+  opacity: 0;
+}
+.operator-hud-beam--top { top: 62px; }
+.operator-hud-beam--bottom { bottom: 52px; }
+.operator-hud-reticle {
+  width: 94px;
+  height: 94px;
+  opacity: 0.66;
+  filter: drop-shadow(0 0 16px rgba(var(--operator-reactor-core), 0.16));
+}
+.operator-hud-reticle--left {
+  top: 132px;
+  left: 14px;
+}
+.operator-hud-reticle--right {
+  right: 14px;
+  bottom: 118px;
+}
+.operator-hud-telemetry {
+  top: 34px;
+  right: 46px;
+  display: grid;
+  gap: 8px;
+  min-width: 280px;
+}
+.operator-hud-telemetry__eyebrow {
+  color: rgba(219, 247, 255, 0.68);
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+}
+.operator-hud-telemetry__values {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.operator-hud-telemetry__values strong {
+  color: #fff;
+  font-size: 11px;
+  text-shadow: 0 0 12px rgba(var(--operator-reactor-core), 0.28);
+}
+.operator-hud-marquee {
+  inset: auto 24px 18px 24px;
+}
+
+.operator-entry__scanline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -28%;
+  width: 28%;
+  background: linear-gradient(90deg, transparent, rgba(var(--operator-white-hot), 0.16), rgba(var(--operator-reactor-core), 0.24), transparent);
+  mix-blend-mode: screen;
+  opacity: 0.72;
+  pointer-events: none;
+}
+.operator-entry__target-brackets {
+  position: absolute;
+  inset: 7px;
+  pointer-events: none;
+}
+.operator-hud-bracket {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-color: rgba(var(--operator-reactor-core), 0.72);
+  border-style: solid;
+  border-width: 0;
+  filter: drop-shadow(0 0 10px rgba(var(--operator-reactor-core), 0.2));
+}
+.operator-hud-bracket--tl { top: 0; left: 0; border-top-width: 1px; border-left-width: 1px; transform-origin: top left; }
+.operator-hud-bracket--tr { top: 0; right: 0; border-top-width: 1px; border-right-width: 1px; transform-origin: top right; }
+.operator-hud-bracket--br { right: 0; bottom: 0; border-right-width: 1px; border-bottom-width: 1px; transform-origin: bottom right; }
+.operator-hud-bracket--bl { bottom: 0; left: 0; border-bottom-width: 1px; border-left-width: 1px; transform-origin: bottom left; }
+
+.pc-header--maximal-hud {
+  overflow: hidden;
+  isolation: isolate;
+}
+.pc-header--maximal-hud > * {
+  position: relative;
+  z-index: 1;
+}
+.pc-header-hud-line {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(87, 215, 255, 0.84), rgba(255, 255, 255, 0.56), rgba(251, 191, 36, 0.52), transparent);
+  transform-origin: center;
+  opacity: 0.86;
+  pointer-events: none;
+}
+.pc-header-hud-line--primary { top: 8px; }
+.pc-header-hud-line--secondary { bottom: 7px; opacity: 0.5; }
+.pc-header-brand-wrap {
+  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.12));
+}
+.pc-header-quote--hud {
+  text-shadow: 0 0 12px rgba(87, 215, 255, 0.12);
+}
+.pc-header--maximal-hud .pc-header-nav-link {
+  position: relative;
+}
+.pc-header--maximal-hud .pc-header-nav-link::before {
+  content: "";
+  position: absolute;
+  inset: auto 0 -7px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(87, 215, 255, 0.88), transparent);
+  opacity: 0;
+  transform: scaleX(0.2);
+  transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.pc-header--maximal-hud .pc-header-nav-link:hover::before,
+.pc-header--maximal-hud .pc-header-nav-link.active::before,
+.pc-header--maximal-hud .pc-header-nav-link[aria-current="page"]::before {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.oracle-fab--maximal-hud {
+  overflow: hidden;
+}
+.oracle-fab--maximal-hud::before,
+.oracle-fab--maximal-hud::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.oracle-fab--maximal-hud::before {
+  background: linear-gradient(120deg, transparent 0 34%, rgba(255,255,255,0.16) 44%, transparent 52%);
+  opacity: 0.8;
+  animation: pc-hud-beam-drift 2.6s linear infinite;
+}
+.oracle-fab--maximal-hud::after {
+  inset: 4px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%, 0 10px);
+}
+.oracle-dock--maximal-hud {
+  overflow: hidden;
+  isolation: isolate;
+}
+.oracle-dock--maximal-hud > * {
+  position: relative;
+  z-index: 1;
+}
+.oracle-dock--maximal-hud > .oracle-hud-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+}
+.oracle-hud-overlay {
+  overflow: hidden;
+}
+.oracle-hud-scanline {
+  position: absolute;
+  inset: 0 auto 0 -16%;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.12), rgba(255, 255, 255, 0.24), transparent);
+  opacity: 0.36;
+}
+.oracle-hud-reticle {
+  position: absolute;
+  top: 16px;
+  right: 14px;
+  width: 86px;
+  height: 86px;
+  opacity: 0.72;
+  filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.18));
+}
+.oracle-hud-frame {
+  inset: 8px;
+}
+.oracle-dock--maximal-hud .oracle-tabs,
+.oracle-dock--maximal-hud .oracle-body,
+.oracle-dock--maximal-hud .oracle-form {
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+.oracle-dock--maximal-hud .oracle-msg {
+  position: relative;
+  isolation: isolate;
+}
+.oracle-dock--maximal-hud .oracle-msg::before {
+  content: "";
+  position: absolute;
+  inset: -2px -6px;
+  border: 1px solid rgba(125, 211, 252, 0.06);
+  clip-path: polygon(10px 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%, 0 10px);
+  opacity: 0.6;
+  pointer-events: none;
+}
+.oracle-dock--maximal-hud .oracle-msg-content {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 10px 22px rgba(2, 8, 23, 0.18);
+}
+.oracle-dock--maximal-hud .oracle-thinking-row {
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  background: linear-gradient(90deg, rgba(56, 189, 248, 0.08), rgba(255,255,255,0.02));
+}
+.oracle-dock--maximal-hud .oracle-tab,
+.oracle-dock--maximal-hud .oracle-tab-add {
+  clip-path: polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 0 100%, 0 8px);
+}
+
+.pc-marketplace-list--maximal-hud .pc-marketplace-toolbar-copy,
+.pc-marketplace-list--maximal-hud .pc-marketplace-search,
+.pc-marketplace-list--maximal-hud .pc-marketplace-card,
+.pc-marketplace-list--maximal-hud .pc-marketplace-dialog {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+.pc-marketplace-list--maximal-hud .pc-marketplace-card::before,
+.pc-marketplace-list--maximal-hud .pc-marketplace-dialog::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(120deg, transparent 0 34%, rgba(255,255,255,0.18) 44%, transparent 52%) -120% 0 / 34% 100% no-repeat,
+    radial-gradient(circle at 14% 0%, rgba(125, 211, 252, 0.08), transparent 12rem);
+  opacity: 0.86;
+  animation: pc-hud-beam-drift 3.1s linear infinite;
+  pointer-events: none;
+}
+.pc-marketplace-list--maximal-hud .pc-marketplace-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(125, 211, 252, 0.12);
+  clip-path: polygon(14px 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%, 0 14px);
+  pointer-events: none;
+}
+.pc-marketplace-list--maximal-hud .pc-marketplace-card:hover {
+  transform: translateY(-4px) scale(1.01);
+}
+.pc-marketplace-list--maximal-hud .pc-marketplace-card-title {
+  text-shadow: 0 0 16px rgba(34, 211, 238, 0.14);
+}
+.pc-marketplace-list--maximal-hud .pc-marketplace-enabled code,
+.pc-marketplace-list--maximal-hud .pc-marketplace-meta span {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 14px rgba(34, 211, 238, 0.06);
+}
+.pc-marketplace-list--maximal-hud .pc-marketplace-dialog-actions .pc-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.pc-support-shell {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border: 1px solid rgba(125, 211, 252, 0.1);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.09), transparent 26rem),
+    radial-gradient(circle at 88% 0%, rgba(251, 191, 36, 0.06), transparent 20rem),
+    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)),
+    rgba(6, 13, 24, 0.82);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255,255,255,0.06);
+}
+.pc-support-shell::before,
+.pc-support-shell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.pc-support-shell::before {
+  background:
+    repeating-linear-gradient(90deg, rgba(125, 211, 252, 0.035) 0 1px, transparent 1px 72px),
+    repeating-linear-gradient(180deg, rgba(125, 211, 252, 0.025) 0 1px, transparent 1px 58px);
+  opacity: 0.34;
+}
+.pc-support-shell::after {
+  inset: 14px;
+  border: 1px solid rgba(125, 211, 252, 0.12);
+  clip-path: polygon(16px 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%, 0 16px);
+}
+.pc-support-shell > * {
+  position: relative;
+  z-index: 1;
+}
+.pc-support-shell .pc-support-actions .pc-button,
+.pc-support-shell .pc-support-resources,
+.pc-support-shell .pc-support-faq {
+  border-radius: 0 !important;
+  clip-path: polygon(12px 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%, 0 12px);
+}
+.pc-support-shell .pc-support-actions .pc-button,
+.pc-support-shell .pc-support-resources {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 16px 34px rgba(0,0,0,0.16);
+}
+.pc-support-shell .pc-support-faq {
+  position: relative;
+  isolation: isolate;
+}
+.pc-support-shell .pc-support-faq::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(120deg, transparent 0 38%, rgba(255,255,255,0.12) 46%, transparent 52%) -100% 0 / 36% 100% no-repeat,
+    linear-gradient(180deg, rgba(125, 211, 252, 0.06), rgba(255,255,255,0.01));
+  animation: pc-hud-beam-drift 3.4s linear infinite;
+  pointer-events: none;
+}
+.pc-support-shell .pc-support-faq[open] {
+  box-shadow: 0 16px 32px rgba(0,0,0,0.18), 0 0 0 1px rgba(125, 211, 252, 0.08);
+}
+.pc-support-shell .pc-support-faq-summary {
+  position: relative;
+  z-index: 1;
+}
+.pc-support-shell .pc-support-faq-answer {
+  position: relative;
+  z-index: 1;
+}
+.pc-support-shell .pc-support-resources a {
+  text-shadow: 0 0 10px rgba(34, 211, 238, 0.14);
+}
+
+@media (max-width: 1100px) {
+  .operator-panel--maximal-hud .operator-panel__titleblock {
+    align-items: flex-start;
+  }
+  .operator-panel--maximal-hud .operator-hud-telemetry {
+    right: 22px;
+    min-width: 220px;
+  }
+}
+@media (max-width: 760px) {
+  .operator-panel--maximal-hud .operator-panel__titleblock {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .operator-panel--maximal-hud .operator-reactor-shell {
+    width: 102px;
+    height: 102px;
+    flex-basis: 102px;
+  }
+  .operator-panel--maximal-hud .operator-hud-telemetry,
+  .operator-panel--maximal-hud .operator-hud-reticle--right {
+    display: none;
+  }
+  .pc-header-hud-line {
+    left: 16px;
+    right: 16px;
+  }
+  .pc-support-shell {
+    border-radius: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-telemetry-marquee__track,
+  .operator-reactor-shell__backplate,
+  .operator-reactor-core__flare,
+  .operator-panel--maximal-hud .operator-panel__metric-card,
+  .operator-panel--maximal-hud .operator-panel__metric-card::before,
+  .operator-hud-scan-beam,
+  .pc-header-hud-line,
+  .oracle-fab--maximal-hud::before,
+  .oracle-hud-scanline,
+  .pc-marketplace-list--maximal-hud .pc-marketplace-card::before,
+  .pc-marketplace-list--maximal-hud .pc-marketplace-dialog::before,
+  .pc-support-shell .pc-support-faq::before {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* Maximal HUD experiment branch: oracle stacking fix */
+.oracle-fab--maximal-hud,
+.oracle-dock--maximal-hud {
+  z-index: 1450 !important;
 }

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Build @papercusp/web and run the production server on :3070, tailing the log.
+# Usage: bin/prod      (from anywhere; resolves repo root from script location)
+# Stop server later:    pkill -f 'next start -p 3070'
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG=/tmp/prod.log
+PORT=3070
+
+echo "==> killing prior server + builds"
+pkill -f "next start -p $PORT" 2>/dev/null
+pkill -f "next-server"          2>/dev/null
+pkill -9 -f "next build"        2>/dev/null
+pkill -9 -f "fumadocs-mdx"      2>/dev/null
+fuser -k "$PORT/tcp"            2>/dev/null
+rm -f "$REPO/apps/operator/.next/.build-lock" \
+      "$REPO/apps/operator/.next/lock" \
+      "$REPO/apps/operator/.next/dev/lock"
+sleep 2
+
+echo "==> tailing $LOG"
+: > "$LOG"
+tail -F "$LOG" &
+TAIL_PID=$!
+trap 'kill $TAIL_PID 2>/dev/null' EXIT INT
+
+echo "==> building @papercusp/web"
+cd "$REPO"
+if ! npm --workspace @papercusp/web run build >> "$LOG" 2>&1; then
+  echo "==> build failed — see $LOG"
+  exit 1
+fi
+
+echo "==> starting prod server on :$PORT"
+cd "$REPO/apps/operator"
+nohup npx next start -p "$PORT" >> "$LOG" 2>&1 &
+disown
+echo "==> server pid $! — Ctrl-C stops the tail; server keeps running"
+echo "==> kill server later: pkill -f 'next start -p $PORT'"
+wait $TAIL_PID
