@@ -369,7 +369,7 @@ function syncSttToLeader(): void {
   });
 }
 
-let realtimeSession: { stop(): Promise<void>; sendSystem(text: string): void } | null = null;
+let realtimeSession: { stop(): Promise<void>; sendSystem?: (text: string) => void } | null = null;
 
 function stopRealtimeSession(): void {
   if (!realtimeSession) return;
@@ -386,6 +386,10 @@ async function maybeStartFullAgent(): Promise<boolean> {
     const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
     if (!prefsR.ok) return false;
     const prefs = await prefsR.json();
+    // ElevenLabs Conv AI — primary path in v5+
+    if (prefs.fullAgentEngine === 'elevenlabs-conv' || prefs.fullAgentEngine === 'elevenlabs-conversational') {
+      return await startElevenLabsConvAgent(prefs);
+    }
     if (prefs.fullAgentEngine !== 'openai-realtime') return false;
     stage = 'bootstrap';
     const bootR = await fetch('/api/agent-mcp/operator-realtime-bootstrap');
@@ -435,6 +439,83 @@ async function maybeStartFullAgent(): Promise<boolean> {
   }
 }
 
+// ── ElevenLabs Conv AI ──────────────────────────────────────────────────
+
+async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
+  let stage: 'bootstrap' | 'connect' | 'runtime' = 'bootstrap';
+  try {
+    const bootR = await fetch('/api/agent-mcp/operator-elevenlabs-bootstrap');
+    if (!bootR.ok) {
+      const body = await bootR.json().catch(() => ({}));
+      const hint = body?.hint ?? '';
+      void emitVoiceToast(
+        'error',
+        `ElevenLabs: ${body?.error ?? `HTTP ${bootR.status}`}. ${hint}`,
+      );
+      return false;
+    }
+    const { conversationToken, agentId } = (await bootR.json()) as {
+      conversationToken: string; agentId: string;
+    };
+    if (!conversationToken || !agentId) {
+      void emitVoiceToast('error', 'ElevenLabs bootstrap returned no token. Check agent ID.');
+      return false;
+    }
+    stage = 'connect';
+    const { startElevenLabsConv } = await import('../../../lib/voice-engines/elevenlabs-conv');
+    const tabId = getOrAssignTabId();
+    const handle = await startElevenLabsConv({
+      agentId,
+      conversationToken,
+      workspace: getBrowserWorkspaceId(),
+      tabId,
+      onTranscript: (text) => { setState({ lastTranscript: text }); },
+      onError: (err) => {
+        console.error('[elevenlabs-conv]', err);
+        void emitVoiceToast('error', `ElevenLabs runtime error: ${err.message}`);
+      },
+    });
+    realtimeSession = {
+      async stop() { await handle.endSession(); },
+    };
+    setState({ status: 'listening' });
+    void emitVoiceToast('info', 'ElevenLabs connected — speak to talk to the operator.');
+    return true;
+  } catch (err: any) {
+    console.warn('[voice] elevenlabs-conv start failed at stage=' + stage + ':', err);
+    void emitVoiceToast(
+      'error',
+      `ElevenLabs failed at ${stage}: ${err?.message ?? String(err)}. Falling back to Whisper.`,
+    );
+    return false;
+  }
+}
+
+function getOrAssignTabId(): string {
+  if (typeof window === 'undefined') return 'srv';
+  const KEY = 'pc-voice-tab-id';
+  let id = window.sessionStorage.getItem(KEY);
+  if (!id) {
+    id = `tab-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    window.sessionStorage.setItem(KEY, id);
+  }
+  return id;
+}
+
+/**
+ * Browser-side workspace lookup. Reads the `ws` query-string param the
+ * workspace switcher writes; falls back to 'default'. Avoids importing
+ * lib/workspace-registry (node:fs) into the client bundle.
+ */
+function getBrowserWorkspaceId(): string {
+  if (typeof window === 'undefined') return 'default';
+  try {
+    const ws = new URL(window.location.href).searchParams.get('ws');
+    if (ws) return ws;
+  } catch { /* ignore */ }
+  return 'default';
+}
+
 // Best-effort sonner toast — sonner only ships in the browser bundle, so
 // a dynamic import keeps the SSR build clean.
 async function emitVoiceToast(level: 'info' | 'error', text: string): Promise<void> {
@@ -448,14 +529,43 @@ async function emitVoiceToast(level: 'info' | 'error', text: string): Promise<vo
 
 // React to leader-election changes: when we're newly elected leader,
 // start STT; when we lose leadership, stop. Subscribed once at module
-// load.
+// load. Also opens the cross-process SSE bridge (so cross-process callers
+// like Oracle / EL webhook can deliver browser:'required' commands here).
 if (typeof window !== 'undefined') {
   void (async () => {
     try {
-      const { subscribeVoiceLeader, bootVoiceLeader } = await import('./voice-leader');
+      const { subscribeVoiceLeader, bootVoiceLeader, getVoiceLeaderState } =
+        await import('./voice-leader');
       await bootVoiceLeader();
       subscribeVoiceLeader(() => {
         if (state.mode !== 'off') syncSttToLeader();
+      });
+
+      // Leader-bridge wiring: subscribe to the SSE channel when we're
+      // the elected leader for the workspace. Cross-process callers
+      // (Oracle MCP, EL webhook, Pi) deliver 'browser:required' commands
+      // through this bridge. See plan §3.3.
+      const { startLeaderBridge } = await import('../../../lib/commands/leader-bridge');
+      await import('../../../lib/commands/defs');
+      let teardown: (() => void) | null = null;
+      const leaderListeners = new Set<() => void>();
+      const bridgeOpts = {
+        getWorkspace: () => getBrowserWorkspaceId(),
+        isLeader: () => getVoiceLeaderState().isLeader,
+        onLeaderChange: (cb: () => void) => {
+          leaderListeners.add(cb);
+          return () => leaderListeners.delete(cb);
+        },
+        tabId: getOrAssignTabId(),
+      };
+      teardown = startLeaderBridge(bridgeOpts);
+      subscribeVoiceLeader(() => {
+        for (const cb of leaderListeners) cb();
+      });
+      // Re-bridge on workspace change (URL nav).
+      window.addEventListener('popstate', () => {
+        teardown?.();
+        teardown = startLeaderBridge(bridgeOpts);
       });
     } catch { /* leader module missing — STT runs ungated, prior behavior */ }
   })();

@@ -328,16 +328,39 @@ export default function VoiceSettingsPage() {
                   <option value="gemini-live" disabled={!allCreds?.google?.configured}>
                     Google Gemini Live (multimodal){!allCreds?.google?.configured ? ' — needs Google AI key' : ''}
                   </option>
-                  <option value="elevenlabs-conversational" disabled={!allCreds?.elevenlabs?.configured}>
-                    ElevenLabs Conversational AI{!allCreds?.elevenlabs?.configured ? ' — needs ElevenLabs key' : ''}
+                  <option value="elevenlabs-conv" disabled={!allCreds?.elevenlabs?.configured}>
+                    ElevenLabs Conversational AI (Claude Haiku){!allCreds?.elevenlabs?.configured ? ' — needs ElevenLabs key' : ''}
+                  </option>
+                  <option value="elevenlabs-conversational" disabled style={{ display: 'none' }}>
+                    elevenlabs-conversational (legacy alias)
                   </option>
                 </select>
                 <p style={hint}>
                   Full-agent mode replaces the STT + TTS pair with a single conversational session.
-                  Costs ~$0.06/min audio in + $0.24/min audio out (~$18/hr). Requires an OpenAI API key.
-                  Intents (open / scan / approve / across workspaces) become tool calls — the model handles them naturally.
+                  Recommended: ElevenLabs Conv AI with Claude Haiku underneath — best voice quality,
+                  delegates complex tasks to Claude. OpenAI Realtime is a working fallback.
                 </p>
               </div>
+
+              {(prefs?.fullAgentEngine === 'elevenlabs-conv' ||
+                prefs?.fullAgentEngine === 'elevenlabs-conversational') && (
+                <div style={{ marginBottom: 16 }}>
+                  <label style={lbl}>ElevenLabs Agent ID</label>
+                  <input
+                    type="text"
+                    value={prefs?.elevenLabsAgentId ?? ''}
+                    onChange={(e) => savePrefsPatch({ elevenLabsAgentId: e.target.value.trim() })}
+                    placeholder="agent_…"
+                    style={{ ...sel, fontFamily: "'SF Mono', monospace", fontSize: 12 }}
+                    disabled={savingPrefs}
+                  />
+                  <p style={hint}>
+                    Find this in your ElevenLabs Conv AI agent's settings page —
+                    starts with <code>agent_</code>. Paired with your ElevenLabs API key
+                    (set in /settings/api-keys), this is what voice connects to.
+                  </p>
+                </div>
+              )}
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, ...sttTtsDimStyle }}
                    aria-disabled={fullAgentOn}>
@@ -517,6 +540,45 @@ export default function VoiceSettingsPage() {
             Voicemode (local Whisper) and Web Speech are free; only Deepgram accrues spend.
             Recorded server-side from the capture loop's heartbeat.
           </p>
+        </section>
+      )}
+
+      {/* ── OUTPUT BEHAVIOR (delegation-related) ─────────────────── */}
+      {prefs && (
+        <section style={{ marginBottom: 32 }}>
+          <h2 style={{ fontSize: 16, marginBottom: 12 }}>Output behavior</h2>
+          <div style={{ display: 'grid', gap: 12, fontSize: 13 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={prefs.voicePanelAutoOpen ?? true}
+                onChange={(e) => savePrefsPatch({ voicePanelAutoOpen: e.target.checked })}
+                disabled={savingPrefs}
+              />
+              <span>Auto-open the Operator panel when voice delegates a complex task to Claude</span>
+            </label>
+            <div>
+              <label style={lbl}>
+                Max spoken words for cached / readout content (longer → speak gist + show in panel)
+              </label>
+              <input
+                type="number"
+                min={20}
+                max={500}
+                value={prefs.voiceMaxSpokenWords ?? 120}
+                onChange={(e) => {
+                  const v = Math.max(20, Math.min(500, parseInt(e.target.value, 10) || 120));
+                  savePrefsPatch({ voiceMaxSpokenWords: v });
+                }}
+                style={{ ...sel, width: 120 }}
+                disabled={savingPrefs}
+              />
+              <p style={hint}>
+                Default 120 words ≈ 60 seconds of speech. Above this threshold,
+                voice speaks a one-sentence gist and the panel shows the full content.
+              </p>
+            </div>
+          </div>
         </section>
       )}
 

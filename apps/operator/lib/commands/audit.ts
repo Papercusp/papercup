@@ -1,20 +1,20 @@
 /**
- * Agent Action Registry — audit log.
+ * Agent Action Registry — audit log buffer.
  *
  * See /docs/agents/action-registry §6 for table schemas.
  *
- * Two tables:
- *   - harness_shared.agent_actions  — every command, full args/status/error
- *   - harness_shared.agent_queries  — queries, sampled per-def policy
- *
- * Both writes are batched (1s flush) to avoid hammering PG on bursty
- * agent activity. Failures to insert are logged but never propagate —
- * audit must not break the action.
+ * The registry calls `audit()` and `auditQuery()` after every command.
+ * The buffer is flushed by a registered callback on a 1s timer. Server-
+ * side code registers the flush callback at module load (it imports PG);
+ * browser-side code never registers one, so audits are silently dropped
+ * in the browser. The cross-process `run-command` HTTP endpoint runs
+ * server-side and writes its audits — which is the path that matters for
+ * delegated / cross-tab commands.
  */
 
 import type { AgentId } from './types';
 
-interface ActionRow {
+export interface ActionRow {
   id: string;
   agent: AgentId;
   workspace: string;
@@ -26,7 +26,7 @@ interface ActionRow {
   durationMs: number;
 }
 
-interface QueryRow {
+export interface QueryRow {
   id: string;
   agent: AgentId;
   workspace: string;
@@ -41,6 +41,17 @@ const queryBuffer: QueryRow[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 const FLUSH_MS = 1000;
 
+type FlushFn = (actions: ActionRow[], queries: QueryRow[]) => Promise<void>;
+let flushImpl: FlushFn | null = null;
+
+/**
+ * Server-side modules call this once at boot to register the PG inserter.
+ * Browser-side code never calls this; flushes become no-ops there.
+ */
+export function registerAuditFlush(fn: FlushFn): void {
+  flushImpl = fn;
+}
+
 export function audit(row: ActionRow): void {
   actionBuffer.push(row);
   scheduleFlush();
@@ -48,7 +59,6 @@ export function audit(row: ActionRow): void {
 
 export function auditQuery(row: QueryRow): void {
   // Sampling: 1-in-20 with a per-(agent,id) burst-rate cap of 2/sec.
-  // Implemented coarsely — anything that hits the burst cap is dropped.
   if (row.sample) {
     if (Math.random() > 0.05) return;
     const key = `${row.agent}:${row.id}`;
@@ -62,7 +72,6 @@ const burstWindow = new Map<string, number[]>();
 function burstAllow(key: string): boolean {
   const now = Date.now();
   const window = burstWindow.get(key) ?? [];
-  // Drop entries older than 1s
   while (window.length && now - window[0] > 1000) window.shift();
   if (window.length >= 2) return false;
   window.push(now);
@@ -82,11 +91,10 @@ async function flush(): Promise<void> {
   const actions = actionBuffer.splice(0, actionBuffer.length);
   const queries = queryBuffer.splice(0, queryBuffer.length);
   if (!actions.length && !queries.length) return;
+  if (!flushImpl) return; // browser side or before server-init
   try {
-    const { writeAuditRows } = await import('./audit-writer');
-    await writeAuditRows(actions, queries);
+    await flushImpl(actions, queries);
   } catch (e: unknown) {
-    // Don't crash the action layer over a logging failure.
     console.warn('[agent-audit] flush failed:', e);
   }
 }

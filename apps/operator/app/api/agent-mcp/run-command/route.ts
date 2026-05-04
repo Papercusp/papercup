@@ -24,6 +24,7 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { get, runCommand, runQuery } from '@/lib/commands/registry';
 import { deliver as deliverToTab } from '@/lib/commands/session-registry';
 import type { AgentId, CommandContext, CommandResult } from '@/lib/commands/types';
+import '@/lib/commands/audit-server';
 import '@/lib/commands/defs';
 
 export const dynamic = 'force-dynamic';
