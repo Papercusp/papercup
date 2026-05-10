@@ -1,0 +1,59 @@
+/**
+ * plugins:fire_event — fire a free-form plugin event OR a typed
+ * lifecycle hook through the in-process host runtime. Diagnostic-
+ * shaped, useful for smoke-testing handler wiring.
+ *
+ * Mirrors POST /api/plugins/runtime/fire-event. Discriminated by
+ * `mode`:
+ *   - { mode: 'event',     event,     payload? }
+ *   - { mode: 'lifecycle', lifecycle, slug, args? }
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { firePluginEvent, firePluginLifecycle } from '@/lib/plugin-host-runtime';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
+
+export default defineTool({
+  name: 'plugins:fire_event',
+  description: 'Fire a free-form plugin event or typed lifecycle hook via the in-process host. Diagnostic — architect/operator only.',
+  capability: 'plugins:write',
+  requirePrincipal: false,
+  roles: ['architect', 'operator'],
+  rolesQuota: { architect: { perRun: 30 }, operator: { perRun: 100 } },
+  args: z.discriminatedUnion('mode', [
+    z.object({
+      mode: z.literal('event'),
+      event: z.string().min(1),
+      payload: z.unknown().optional(),
+    }),
+    z.object({
+      mode: z.literal('lifecycle'),
+      lifecycle: z.string().min(1),
+      slug: z.string().min(1),
+      args: z.array(z.unknown()).optional(),
+    }),
+  ]),
+  async handler(args) {
+    if (args.mode === 'event') {
+      await firePluginEvent(args.event, args.payload ?? {});
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, fired: args.event }) }] };
+    }
+    const project = (await loadHarnessRegistry()).projects.find((p) => p.slug === args.slug) ?? null;
+    const ctxArgs = {
+      installSlug: args.slug,
+      projectDir: project?.path ?? '/tmp',
+      stateDir: project ? `${project.path}/.harness` : '/tmp',
+    };
+    const lifecycleArgs = args.args ?? [];
+    // Same dynamic-name dispatch the legacy route uses; firePluginLifecycle's
+    // type expects a known PluginHooks key but the diagnostic surface accepts
+    // any string the host registered.
+    await (firePluginLifecycle as unknown as (
+      name: string,
+      ctx: typeof ctxArgs,
+      ...rest: unknown[]
+    ) => Promise<void>)(args.lifecycle, ctxArgs, ...lifecycleArgs);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, fired: args.lifecycle, slug: args.slug }) }] };
+  },
+});

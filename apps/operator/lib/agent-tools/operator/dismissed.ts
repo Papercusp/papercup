@@ -1,0 +1,31 @@
+/**
+ * operator:dismissed — record a card-id as dismissed so the suggestion
+ * parser filters re-emissions during the cooldown window. Mirrors the
+ * legacy /api/agent-mcp/operator-dismissed route.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { recordDismissed } from '@/lib/operator-dismissed-cache';
+
+export default defineTool({
+  name: 'operator:dismissed',
+  description: 'Record a card-id as dismissed so the parser filters re-emissions during the cooldown window.',
+  capability: 'operator:write',
+  requirePrincipal: false,
+  roles: ['operator', 'architect', 'scoper'],
+  rolesQuota: {
+    architect: { perRun: 50 },
+    operator: { perRun: 200 },
+    scoper: { perRun: 50 },
+  },
+  args: z.object({
+    id: z.string().min(1),
+  }),
+  async handler(args) {
+    await recordDismissed(args.id);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, id: args.id }) }],
+    };
+  },
+});
