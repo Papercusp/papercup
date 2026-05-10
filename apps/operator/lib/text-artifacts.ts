@@ -1,0 +1,147 @@
+/**
+ * PG-canonical text artifacts (Migration 035, Phase 2).
+ *
+ * Reads/writes for free-form text files keyed (harness_slug, rel_path).
+ * The on-disk files at `<harness_dir>/.harness/<rel_path>` are written
+ * as best-effort mirrors on each save so tools running INSIDE the
+ * harness process (orchestrator, workers, plugin scripts) see the same
+ * content. PG remains canonical.
+ *
+ * The orchestrator's role-prompt + snapshot-state read these files
+ * directly: supervisor-notes.md, issues.md, memory/*.md, prompts/*.md,
+ * etc. If a write only lands in PG and never on disk, the operator UI
+ * reads it via loadTextArtifact but the orchestrator/worker is blind
+ * to it (verified at round 18: PG=146986b vs file=148628b drift on
+ * sheets/issues.md after operator-side edits).
+ *
+ * Path normalization: PG keys are relative-to-harness-dir (no leading
+ * `.harness/`). Some callers pass paths with `.harness/` prefix (e.g. the
+ * memory-file UI uses MEMORY_MAP entries that include the prefix); those
+ * get stripped here so reads/writes always hit the same row. Disk path
+ * always restores `<harness_dir>/.harness/<key>`.
+ */
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { getOrgPg } from '@restart/db-org';
+import { ensureTextArtifactsTable } from './ensure-schema';
+import { loadHarnessRegistry } from './harness-registry';
+import { notifySyncInvalidate } from './sync-sse';
+
+function normalizeRelPath(rel: string): string {
+  // Drop leading `.harness/` so the PG key is consistent with the bare
+  // relative-to-harness-dir convention.
+  return rel.replace(/^\.harness\//, '');
+}
+
+async function notifyTextArtifactChange(slug: string, _key: string): Promise<void> {
+  // Generic invalidation — clients subscribed to harnessTextArtifact.byHarness
+  // refetch. The query returns all rows for the slug, so per-relPath args
+  // would be ignored. (Renamed from byHarnessAndPath in the eager-fetch arc.)
+  await notifySyncInvalidate('harnessTextArtifact.byHarness', {
+    harnessSlug: slug,
+  });
+}
+
+/** Resolve `<harness_dir>/.harness/<rel_path>` for the given slug. Returns
+ *  null when the harness isn't in the registry (operator-side write to a
+ *  not-yet-registered harness — ignore the disk mirror in that case). */
+async function diskPathFor(slug: string, key: string): Promise<string | null> {
+  const reg = await loadHarnessRegistry();
+  const project = reg.projects.find((p) => p.slug === slug);
+  if (!project) return null;
+  return join(project.path, '.harness', key);
+}
+
+/** Best-effort mirror to disk. PG row is canonical; disk is for the
+ *  orchestrator/worker process to read via `<harness_dir>/.harness/<rel>`. */
+async function mirrorToDisk(slug: string, key: string, content: string): Promise<void> {
+  try {
+    const path = await diskPathFor(slug, key);
+    if (!path) return;
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content, 'utf8');
+  } catch {
+    /* file write failed — PG already won; orchestrator will see stale on
+     *  disk until next write. Acceptable for V1; the alternative (failing
+     *  the PG write) trades a worse failure mode (silent UI loss). */
+  }
+}
+
+export async function loadTextArtifact(slug: string, relPath: string): Promise<string | null> {
+  await ensureTextArtifactsTable();
+  const key = normalizeRelPath(relPath);
+  const { sql } = getOrgPg();
+  const rows = await sql<{ content: string }[]>`
+    SELECT content FROM harness_shared.harness_text_artifacts
+     WHERE harness_slug = ${slug} AND rel_path = ${key}
+     LIMIT 1
+  `;
+  return rows[0]?.content ?? null;
+}
+
+export interface SaveTextArtifactOpts {
+  /** Override the disk mirror path. Default: `<project.path>/.harness/<rel_path>`.
+   *  Use for files whose canonical disk location is NOT under .harness/ —
+   *  e.g. .mcp.json at project root, .claude/settings.json. The PG row is
+   *  always keyed by the rel_path passed in, regardless of disk location. */
+  customDiskPath?: string;
+}
+
+export async function saveTextArtifact(slug: string, relPath: string, content: string, opts: SaveTextArtifactOpts = {}): Promise<void> {
+  await ensureTextArtifactsTable();
+  const key = normalizeRelPath(relPath);
+  const { sql } = getOrgPg();
+  const now = Date.now();
+  await sql`
+    INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
+    VALUES (${slug}, ${key}, ${content}, ${now})
+    ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
+      content    = EXCLUDED.content,
+      updated_at = EXCLUDED.updated_at
+  `;
+  if (opts.customDiskPath) {
+    try {
+      await mkdir(dirname(opts.customDiskPath), { recursive: true });
+      await writeFile(opts.customDiskPath, content, 'utf8');
+    } catch { /* mirror best-effort */ }
+  } else {
+    await mirrorToDisk(slug, key, content);
+  }
+  await notifyTextArtifactChange(slug, key);
+}
+
+export async function appendTextArtifact(slug: string, relPath: string, suffix: string): Promise<void> {
+  await ensureTextArtifactsTable();
+  const key = normalizeRelPath(relPath);
+  const { sql } = getOrgPg();
+  const now = Date.now();
+  // The PG INSERT … DO UPDATE concatenates server-side; we need the full
+  // post-append content for the disk mirror. Returning syntax pulls the
+  // canonical post-update content out in one round trip.
+  const rows = await sql<{ content: string }[]>`
+    INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
+    VALUES (${slug}, ${key}, ${suffix}, ${now})
+    ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
+      content    = harness_text_artifacts.content || EXCLUDED.content,
+      updated_at = EXCLUDED.updated_at
+    RETURNING content
+  `;
+  const merged = rows[0]?.content ?? suffix;
+  await mirrorToDisk(slug, key, merged);
+  await notifyTextArtifactChange(slug, key);
+}
+
+export async function deleteTextArtifact(slug: string, relPath: string): Promise<void> {
+  await ensureTextArtifactsTable();
+  const key = normalizeRelPath(relPath);
+  const { sql } = getOrgPg();
+  await sql`
+    DELETE FROM harness_shared.harness_text_artifacts
+     WHERE harness_slug = ${slug} AND rel_path = ${key}
+  `;
+  // Don't unlink the file — the harness contract may have a different
+  // process (orchestrator, harness-CLI) treating the file as primary. A
+  // PG delete from the operator UI just stops mirroring; the file stays
+  // until something else removes it.
+  await notifyTextArtifactChange(slug, key);
+}
