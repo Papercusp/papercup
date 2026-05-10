@@ -1,0 +1,8 @@
+mesh.papercuspai.com {
+	reverse_proxy core:8000
+	encode gzip
+	log {
+		output file /data/access.log
+		level INFO
+	}
+}
