@@ -88,7 +88,7 @@ async function listInstalled(): Promise<InstalledManifest[]> {
   });
 }
 
-function isNewerVersion(available: string, installed: string): boolean {
+export function isNewerVersion(available: string, installed: string): boolean {
   if (available === installed) return false;
   const norm = (v: string) => v.replace(/^v/, '');
   const a = norm(available).split(/[.+-]/);
@@ -104,7 +104,7 @@ function isNewerVersion(available: string, installed: string): boolean {
   return false;
 }
 
-function computeCapChange(from: string[] = [], to: string[] = []): CapChange {
+export function computeCapChange(from: string[] = [], to: string[] = []): CapChange {
   const fromSet = new Set(from);
   const toSet = new Set(to);
   const added: string[] = [];
