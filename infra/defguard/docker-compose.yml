@@ -1,0 +1,82 @@
+# Defguard control plane for Papercusp mobile mesh.
+# Deploy on a $5/mo Hetzner CX22 box (or equivalent).
+#
+# Prereqs (on the VPS):
+#   - Docker + docker-compose installed
+#   - DNS A records: mesh.papercuspai.com → <vps-ip>, relay.papercuspai.com → <vps-ip> (Cloudflare proxy OFF)
+#   - Ports 80, 443, 50051 (gRPC), 51820/UDP (WireGuard) open in the Hetzner firewall
+#
+# Bring up:
+#   cp .env.example .env && vim .env  # set DEFGUARD_SECRET_KEY, RP_ID, etc.
+#   docker compose pull
+#   docker compose up -d
+#
+# First-time bootstrap: the `core` container will print an admin enrollment URL on
+# first boot (see `docker compose logs core`). Open it once to create the admin account.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: defguard
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: defguard
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  core:
+    image: ghcr.io/defguard/defguard:latest
+    restart: unless-stopped
+    depends_on: [postgres]
+    environment:
+      DEFGUARD_DB_HOST: postgres
+      DEFGUARD_DB_PORT: 5432
+      DEFGUARD_DB_NAME: defguard
+      DEFGUARD_DB_USER: defguard
+      DEFGUARD_DB_PASSWORD: ${DB_PASSWORD}
+      DEFGUARD_SECRET_KEY: ${DEFGUARD_SECRET_KEY}
+      DEFGUARD_AUTH_SECRET: ${DEFGUARD_AUTH_SECRET}
+      DEFGUARD_GATEWAY_SECRET: ${DEFGUARD_GATEWAY_SECRET}
+      DEFGUARD_YUBIBRIDGE_SECRET: ${DEFGUARD_YUBIBRIDGE_SECRET}
+      DEFGUARD_URL: https://mesh.papercuspai.com
+      DEFGUARD_WEBAUTHN_RP_ID: mesh.papercuspai.com
+      DEFGUARD_ENROLLMENT_URL: https://mesh.papercuspai.com/enroll
+      DEFGUARD_DEFAULT_ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+    ports:
+      - "127.0.0.1:8000:8000"  # HTTP (behind Caddy)
+      - "0.0.0.0:50051:50051"  # gRPC for gateways
+    volumes:
+      - core-data:/var/lib/defguard
+
+  gateway:
+    image: ghcr.io/defguard/gateway:latest
+    restart: unless-stopped
+    depends_on: [core]
+    cap_add: [NET_ADMIN]
+    environment:
+      DEFGUARD_GRPC_URL: http://core:50051
+      DEFGUARD_TOKEN: ${GATEWAY_TOKEN}
+      DEFGUARD_GATEWAY_NAME: papercusp-gateway
+    ports:
+      - "0.0.0.0:51820:51820/udp"
+    sysctls:
+      - net.ipv4.ip_forward=1
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [core]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  pgdata:
+  core-data:
+  caddy-data:
+  caddy-config:
