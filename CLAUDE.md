@@ -1,5 +1,85 @@
 # Papercup — agent guide
 
+## Branch discipline: **the main directory always stays on `main`**
+
+The repo at `/home/marsh-office/papercupai-workspace/papercup` is the
+canonical checkout and **must always have `main` checked out**. Other
+agents (paperclip, the operator UI, Next.js dev/prod, the harness
+fleet) all assume this. Branch-switching there breaks them all.
+
+If you need to work on a branch (review-merge work, experimental
+spike, multi-day feature, anything that isn't a quick fix on main),
+**use a git worktree** in a sibling directory:
+
+```bash
+git -C /home/marsh-office/papercupai-workspace/papercup \
+    worktree add /home/marsh-office/papercupai-workspace/papercup-<topic> <branch>
+ln -s /home/marsh-office/papercupai-workspace/papercup/node_modules \
+      /home/marsh-office/papercupai-workspace/papercup-<topic>/node_modules
+```
+
+The worktree has its own working copy + index but shares git history
+with the main checkout. Symlinking node_modules avoids a full
+`npm install` (workspace hoisting means dev tooling resolves through
+the root). Drop the worktree with `git worktree remove <path>` when
+done.
+
+**Symptoms that you've forgotten this rule:**
+- `git status` shows `On branch <not-main>` in the main checkout —
+  switch back immediately, recover any in-flight work via
+  `git stash` or worktree.
+- Paperclip starts editing files that look stale or wrong — it
+  almost certainly thinks it's on a different branch than you.
+- Dev/prod servers start serving 404s or HMR-error pages for routes
+  that exist on disk — branch divergence between server and
+  source.
+
+**Existing worktrees** (don't reuse without checking):
+- `/tmp/papercup-migration` (`feat/hetzner-deploy`)
+- `/tmp/papercup-tauri-mobile-ref` (detached HEAD, mobile reference)
+
+## Commit discipline: **commit before ending every turn**
+
+Multiple agents (paperclip, claude, others) write to this repo
+concurrently and will rewrite each other's uncommitted edits.
+
+**Rule: before you hand control back to the user (end of every turn),
+run `git add` + `git commit --no-verify` for any edits you made that
+turn. Don't wait for the next turn — by then paperclip may have
+overwritten the file.**
+
+A small number of larger commits per session is fine; uncommitted work
+sitting between turns is not. Use `git checkout -- <path>` to recover
+from a stomp (works only if you committed).
+
+Files paperclip is most likely to rewrite:
+- `apps/operator-mobile/**`
+- `apps/operator/app/api/_hono/mobile.ts`
+- `apps/operator/app/api/mobile/qr.svg/route.ts`
+- `apps/operator/lib/mobile-*.ts`
+
+## Running the operator: prefer `bin/prod` over `bin/dev`
+
+Two scripts exist; pick the right one:
+
+- **`bin/prod`** — produces a real production build and serves it on `:3070`.
+  ~30 s rebuild cycle; warm endpoints serve in 3–10 ms; server idles at
+  <1 % CPU and ~200 MB RSS. **Default for any change that isn't pure
+  React-component CSS tweaking.** Includes server-side handlers, lib code,
+  schema changes, API endpoints, page logic.
+- **`bin/dev`** — Turbopack dev server on `:3055`. Has HMR (when it works)
+  but the dev process is currently fragile: ~20 GB RSS, 5,800 % CPU
+  sustained, fumadocs-mdx-driven crash-and-restart cycle, 14 s cold
+  compiles after each restart. HMR also frequently degrades to a full
+  reload (`[Fast Refresh] performing full reload …`), at which point dev
+  is slower than prod. Use `bin/dev` only when iterating on the visual
+  appearance of a React component and you genuinely need sub-second
+  feedback.
+
+Audit (2026-05-05): same `/api/auth/status` was 1638 ms avg on dev vs
+50 ms avg on prod — a 33× delta. The app code is fine; the dev tooling
+isn't. Trust prod numbers, not dev numbers, when reasoning about perf.
+
 ## Read this before changing code
 
 Performance regressions in this repo have repeatedly come from the same
@@ -8,7 +88,7 @@ gating, duplicate React keys, stale Radix pointer-events overrides, etc.).
 **Read the operator docs site's performance page before any non-trivial
 change**:
 
-→ <http://localhost:3055/docs/performance>
+→ <http://localhost:3070/docs/performance> (or `:3055` if running dev)
 → Source: `apps/operator/content/docs/performance.mdx`
 
 Pay particular attention to the "What NOT to do" sections (A1–A14). If
@@ -16,6 +96,84 @@ your change matches one of those anti-patterns, change the approach
 before writing the code. The audit findings (2026-05-03) at the bottom
 of that page are real and were causing the dashboard's TTFB to be ~19s
 on localhost.
+
+## Storage policy: Postgres by default
+
+**New durable state goes in Postgres unless there is a specific reason it
+must be a file.** Across rounds 1-14 of the file→PG migration arc we
+moved ~30 distinct surfaces (operator state, credentials, system
+principals, registries, feature notes, provision state, audit log, trust
+store, OAuth nonces, mobile pair tokens, rate limits, user-profile
+preferences, …) from JSON files / in-memory Maps into PG. The pattern
+keeps recurring: someone "temporarily" stores state in a file or a
+module-local `Map`, it survives, and a later session has to migrate it
+under load. Skip the cycle.
+
+**Default: Postgres.** Storage helpers live in `apps/operator/lib/operator-state-pg.ts`
+(single-row-per-workspace JSONB pattern) and various dedicated modules
+for compound-key tables. Add a column to an existing table or write a
+migration in `libs/papercusp/libs/db/sql/<NNN>-...sql`.
+
+### Database topology — embedded-pg is the product, native PG is a dev crutch
+
+The shipped product is a **desktop app backed by embedded Postgres**
+(`embedded-postgres-server`, per-harness instance). The Next.js webapp
+on `:3055` / `:3070` and the system-native PG on `:5432` exist for
+**developer convenience only** — we use them because hot-reload and
+`psql` shells are nicer than poking at embedded-pg from a desktop shell.
+The desktop app is currently pointed at native PG in dev for the same
+reason.
+
+**At public release: embedded-pg is the only target.** Native PG goes
+away. Anything that depends on system PG `:5432` being there will break.
+
+Practical implications when writing code today:
+
+- **SQL migrations** in `libs/papercusp/libs/db/sql/<NNN>-*.sql` are
+  applied automatically by the embedded-pg boot runner
+  (`libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js`,
+  added 2026-05-05). For native PG you still apply manually with
+  `psql -f` — but **don't write code that depends on the manual step
+  having happened**; embedded-pg is the source of truth, and the
+  schema must work there. The manual `psql -f` is a dev-only chore,
+  not an architectural requirement.
+- **Don't add features that only make sense against native PG**
+  (cross-database queries, `pg_extension` not available in
+  embedded-pg, OS-level pg tooling). If embedded-pg can't run it, the
+  product can't ship it.
+- **Connection-string assumptions:** prefer the workspace-resolved PG
+  connection that the embedded-pg path returns; don't hard-code
+  `localhost:5432`.
+- **No system-PG-only migration runner** is planned, because the
+  system PG is going away. The brief's "system PG :5432 has no runner
+  → run psql -f" warning is correct *for dev today* but is not
+  describing a long-term architectural gap.
+
+**Acceptable file uses (the short list):**
+- Bootstrap state that must be readable before a PG connection exists
+  (`~/.papercusp-workspaces/registry.json`, `db-encryption-key`).
+- Postgres's own data files (`pglite-data/`, `embedded-pg-data/`).
+- Code, scripts, templates, snapshots — files that ARE the spec.
+- Harness contract artifacts in `<harness>/.harness/*` — read by tools
+  running inside the harness; the file IS the contract surface.
+- Append-only logs at high volume (`.harness/action-runs/<run>.log`)
+  where SQL log tables would dwarf the actual state.
+- Per-process locks via O_EXCL semantics (legitimate FS atomicity).
+- Plugin-sandbox storage (the plugin host exposes a virtual FS to plugins
+  by design).
+
+**NOT acceptable:**
+- Plain JSON state files for app-level data the operator reads/writes.
+- Module-scoped `Map`s holding TTL'd auth/session/rate-limit state.
+- localStorage that should sync across devices (per-user preferences).
+- "PG mirror" patterns where the file is primary and PG is best-effort —
+  the file always drifts ahead. Either go full PG or document a real
+  reason the file must be authoritative.
+
+If you find yourself reaching for `fs.writeFileSync('something.json')`,
+ask whether you can put it in PG instead. The answer is almost always
+yes. See `apps/operator/content/docs/system/storage-policy.mdx` for the
+full guide and the historical migration arc.
 
 ## Tests after editing
 
@@ -112,3 +270,12 @@ skip flakes.
 API keys for tests use the `TEST_<SERVICE>_KEY` naming convention,
 stored in GH Actions repository secrets and surfaced as env vars in
 the workflows. Do **not** check live keys into fixtures.
+
+## Use Context7 for current library docs
+
+Before using non-trivial APIs from third-party libraries (Vditor,
+BlockNote, mind-elixir, Excalidraw, Tauri 2, Next.js 15, nuqs, Zero,
+Hono, Radix, Vercel AI SDK, etc.), call the `context7` MCP tools
+(`resolve-library-id` then `get-library-docs`) to fetch the current
+API surface. Library APIs change faster than training cutoffs; do not
+guess method names from memory.

@@ -3,10 +3,16 @@ import { z } from 'zod';
 import { defineTool } from '../define-tool';
 import { _resetCatalogForTests, getCatalog, lookup } from '../registry';
 import { tierFor } from '../capability-tiers';
+import {
+  _resetProjectionRegistryForTests,
+  lookupByMcpName,
+} from '../tool-projection';
+import { dispatchProjectedTool } from '../dispatch-projected';
 
 describe('defineTool', () => {
   beforeEach(() => {
     _resetCatalogForTests();
+    _resetProjectionRegistryForTests();
   });
 
   it('registers a tool with explicit name', () => {
@@ -58,6 +64,79 @@ describe('defineTool', () => {
         },
       }),
     ).toThrow(/collision/);
+  });
+
+  it('role-gated tools dispatch without a principal', async () => {
+    const def = defineTool({
+      name: 'operator:scan_test',
+      description: 'role-gated probe',
+      capability: 'operator:scan',
+      requirePrincipal: false,
+      roles: ['operator', 'reviewer'],
+      args: z.object({ x: z.number() }),
+      async handler(args, ctx) {
+        return { content: [{ type: 'text', text: `ok ${args.x} role=${ctx.role}` }] };
+      },
+    });
+    expect(def.requirePrincipal).toBe(false);
+    expect(def.roles).toEqual(['operator', 'reviewer']);
+    // NOT in the legacy catalog (only principal-gated tools land there).
+    expect(lookup('operator:scan_test')).toBeUndefined();
+
+    const tool = lookupByMcpName('operator:scan_test');
+    expect(tool).toBeDefined();
+    expect(tool!.roles).toEqual(['operator', 'reviewer']);
+
+    // No principal on ctx — would be 401 for principal-gated tools, but
+    // role-gated should pass through to the handler.
+    const result = await dispatchProjectedTool(
+      tool!,
+      'operator:scan_test',
+      { x: 7 },
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_T',
+      },
+      {},
+    );
+    expect(result.ok).toBe(true);
+    expect(result.result?.content[0]).toEqual({ type: 'text', text: 'ok 7 role=operator' });
+  });
+
+  it('role-gated tools enforce the role allowlist', async () => {
+    defineTool({
+      name: 'operator:scan_role_gate',
+      description: 'role-gate probe',
+      capability: 'operator:scan',
+      requirePrincipal: false,
+      roles: ['operator'],
+      args: z.object({}),
+      async handler() {
+        return { content: [{ type: 'text', text: 'should not run' }] };
+      },
+    });
+    const tool = lookupByMcpName('operator:scan_role_gate')!;
+    const result = await dispatchProjectedTool(
+      tool,
+      'operator:scan_role_gate',
+      {},
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        workspaceId: 'default',
+        role: 'worker',
+        runId: 'run_T',
+        chunkId: 'ck_T',
+      },
+      {},
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error?.code).toBe('role_not_allowed');
   });
 
   it('exposes the catalog', () => {
