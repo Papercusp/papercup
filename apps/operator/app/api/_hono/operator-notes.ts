@@ -13,10 +13,10 @@ import type { Hono } from 'hono';
 import { appendOperatorNote, readOperatorNotes } from '../../../lib/operator-notes';
 
 export function registerOperatorNotes(harness: Hono): void {
-  harness.get('/:slug/features/:featureId/notes', (c) => {
+  harness.get('/:slug/features/:featureId/notes', async (c) => {
     const slug = c.req.param('slug');
     const featureId = c.req.param('featureId');
-    const result = readOperatorNotes(slug, featureId);
+    const result = await readOperatorNotes(slug, featureId);
     if ('error' in result) return c.json({ error: result.error }, 400);
     return c.json(result);
   });

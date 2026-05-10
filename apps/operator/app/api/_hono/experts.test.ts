@@ -30,16 +30,23 @@ function jsonReq(method: string, url: string, body?: unknown): Request {
   });
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   TMP = mkdtempSync(join(tmpdir(), 'experts-test-'));
   PROJECT_DIR = join(TMP, 'project');
   mkdirSync(join(PROJECT_DIR, '.harness'), { recursive: true });
 
   // Stub the registry so lookupProjectDir resolves SLUG → PROJECT_DIR.
-  ORIG_HOME = process.env.HOME;
-  process.env.HOME = TMP;
+  // The registry path moved from `~/.restart-harness-projects.json` to
+  // `~/.papercusp-workspaces/<ws>/.papercusp/registry.json`. Use
+  // PAPERCUSP_HOME (not HOME) — papercusp-root caches against it +
+  // bypasses homedir() resolution.
+  ORIG_HOME = process.env.PAPERCUSP_HOME;
+  process.env.PAPERCUSP_HOME = join(TMP, '.papercusp');
+  const { _resetPapercuspRootForTests } = await import('@/lib/papercusp-root');
+  _resetPapercuspRootForTests();
+  mkdirSync(process.env.PAPERCUSP_HOME!, { recursive: true });
   writeFileSync(
-    join(TMP, '.restart-harness-projects.json'),
+    join(process.env.PAPERCUSP_HOME!, 'registry.json'),
     JSON.stringify({ projects: [{ slug: SLUG, path: PROJECT_DIR }] }),
     'utf8',
   );
@@ -49,7 +56,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (ORIG_HOME !== undefined) process.env.HOME = ORIG_HOME;
+  if (ORIG_HOME !== undefined) process.env.PAPERCUSP_HOME = ORIG_HOME;
+  else delete process.env.PAPERCUSP_HOME;
   rmSync(TMP, { recursive: true, force: true });
 });
 

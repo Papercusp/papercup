@@ -20,3 +20,16 @@ export function harnessPackageDir(): string {
 export function harnessPath(...segments: string[]): string {
   return join(harnessPackageDir(), ...segments);
 }
+
+/**
+ * Absolute path to the TypeScript orchestrator entry point
+ * (`@papercusp/orchestrator/bin/run.ts`). Sibling of the harness package.
+ *
+ * Used by spawn sites that previously invoked `bash run.sh` for the
+ * full main loop. The bash run.sh remains as a function library for
+ * sites that source individual helpers (e.g. invokeScoperBackground)
+ * but is no longer the canonical iteration driver.
+ */
+export function orchestratorRunBin(): string {
+  return join(harnessPackageDir(), '..', 'orchestrator', 'bin', 'run.ts');
+}

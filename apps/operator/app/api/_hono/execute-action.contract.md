@@ -199,7 +199,7 @@ Timeout is enforced server-side via `AbortSignal.timeout(...)` on the request ha
 
 ## Tier 3 inspect-on-demand mechanism
 
-**Verified 2026-05-01:** `claude -p` invocations from `run.sh` and the TS orchestrator (`libs/papercusp/packages/orchestrator/src/invoke.ts`) do NOT restrict `--allowed-tools`, so `Bash` is available by default. Agents can `curl` the read APIs directly from inside a tool call.
+**Verified 2026-05-01:** Agent CLI invocations from `run.sh` and the TS orchestrator (`libs/papercusp/packages/orchestrator/src/invoke.ts`) — both `omp -p` (default) and `claude -p` — do NOT restrict `--allowed-tools`, so `Bash` is available by default. Agents can `curl` the read APIs directly from inside a tool call.
 
 **Decision: Tier 3 ships as curl-from-Bash.** Step 2.5 is documentation only — wiring `mcp__papercusp__inspect*` MCP tools is unnecessary.
 

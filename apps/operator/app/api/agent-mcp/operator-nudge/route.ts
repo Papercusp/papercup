@@ -32,6 +32,6 @@ export async function POST(req: NextRequest) {
   if (!ALLOWED.has(kind)) {
     return new Response('kind must be budget|breaker|pause', { status: 400 });
   }
-  const fired = maybeFireNudge(kind);
+  const fired = await maybeFireNudge(kind);
   return Response.json({ fired, kind });
 }

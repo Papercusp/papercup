@@ -19,6 +19,6 @@ export async function POST(req: NextRequest) {
   }
   const id = typeof body.id === 'string' ? body.id : '';
   if (!id) return new Response('id required', { status: 400 });
-  recordDismissed(id);
+  await recordDismissed(id);
   return Response.json({ ok: true });
 }

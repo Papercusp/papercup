@@ -8,6 +8,7 @@
  */
 import { Hono } from 'hono';
 import { handle } from 'hono/vercel';
+import { compress } from 'hono/compress';
 import { harness } from '../_hono/harness';
 import { plugins } from '../_hono/plugins';
 import { registerPty } from '../_hono/pty';
@@ -17,8 +18,15 @@ import { registerExperts } from '../_hono/experts';
 import { registerProjects } from '../_hono/projects';
 import { registerOracle } from '../_hono/oracle';
 import { registerCrossHarness } from '../_hono/cross-harness';
+import { registerMobile } from '../_hono/mobile';
 import { mountPluginApiRoutes, installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
 import { startAutoLoopOnce } from '../../../lib/autoloop';
+import { ensureHarnessFsWatcher } from '../../../lib/harness-fs-watcher';
+import { ensureHarnessStatusSweep } from '../../../lib/harness-status-sweep';
+import { registerAllExpirables } from '../../../lib/expirable-registrations';
+import { startMobileVoiceWs } from '../../../lib/mobile-voice-ws';
+import { startPushCredentialRefresher } from '../../../lib/mobile-push-credentials';
+import { startMobileInterventionWatcher } from '../../../lib/mobile-intervention-watcher';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +44,15 @@ const adminPreviewCors = async (c: any, next: any) => {
   if (c.req.method === 'OPTIONS') return c.body(null, 204);
   await next();
 };
+
+// Compress JSON bodies. Next 16 with output:'standalone' skips its built-in
+// gzip even when running via `next start`, so the operator's API responses
+// were going out uncompressed. agentRunsSheets.all is 85 KB raw vs 12 KB
+// gzipped (7.3x), and Zero polls it every 3 s — enabling compression here
+// saves ~1.4 MB/min of bandwidth on a typical dashboard session.
+// `threshold: 1024` skips small responses where gzip overhead exceeds the
+// payload (e.g. /api/auth/status at 151 B).
+app.use('*', compress({ threshold: 1024 }));
 
 app.use('/harness/*', adminPreviewCors);
 app.use('/plugins/*', adminPreviewCors);
@@ -75,8 +92,46 @@ mountPluginApiRoutes(plugins)
 
 app.route('/plugins', plugins);
 
+// Mobile API (pair, push, voice, workspaces) — see _hono/mobile.ts
+app.route('/mobile', registerMobile);
+
 // AutoLoop ticker — periodic fires of harnesses with autoLoop=true. Idempotent.
 startAutoLoopOnce();
+startMobileVoiceWs();
+startPushCredentialRefresher();
+startMobileInterventionWatcher();
+
+// Harness FS watcher — mirrors .harness/{summary.md,pending-reviews,proposals}
+// to PG so panels can read via Zero push instead of polling. Idempotent;
+// pinned to globalThis to survive Next dev module re-evaluation.
+try {
+  ensureHarnessFsWatcher();
+} catch (e) {
+  console.warn('[api] harness-fs-watcher failed to start:', (e as Error)?.message ?? e);
+}
+
+// Identity files: now written at producer time by bash run.sh's
+// `_post_curator_outputs` after `invoke curator` finishes. The
+// chokidar watcher (lib/identity-files-watcher.ts) is retired.
+
+// Phase 3: harness_status / harness_lanes sweeper. PID-liveness based —
+// clears stale `agent_runs.running` and `harness_lanes` rows whose
+// recorded PID is gone. (TTL-based sweeps for status/scan-locks/claims/
+// auth live in the expirable registry below.) Idempotent.
+try {
+  ensureHarnessStatusSweep();
+} catch (e) {
+  console.warn('[api] harness-status-sweep failed to start:', (e as Error)?.message ?? e);
+}
+
+// TTL-based row expiry. Replaces ad-hoc lazy-deletes scattered across
+// operator-scan-lock, operator-claims, harness_status stalled-detection,
+// auth.magic_links, auth.sessions. One sweep loop, registered tables.
+try {
+  registerAllExpirables();
+} catch (e) {
+  console.warn('[api] expirable-registry failed to start:', (e as Error)?.message ?? e);
+}
 
 // Opt-in dev-mode hot-reload — watches ~/.papercusp/global-plugins/ and
 // resets the in-process runtime cache whenever a manifest or entry file

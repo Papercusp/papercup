@@ -57,7 +57,7 @@ export async function GET(req: Request) {
   const scopes = scopesRaw ? scopesRaw.split(',').map((s) => s.trim()).filter(Boolean) : [];
   const providerHost = new URL(provider.config.authorizeUrl).host;
 
-  const state = signState({
+  const state = await signState({
     plugin,
     harness,
     field,

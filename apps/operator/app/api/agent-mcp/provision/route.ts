@@ -20,6 +20,7 @@ const ORACLE_CAPS = [
   'harness:read',
   'messages:read',
   'audit:read',
+  'intel:read',
   'hindsight:recall',
   'search:read',
   'messages:write',

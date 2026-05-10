@@ -19,7 +19,7 @@ import { readLastScan } from '@/lib/operator-last-scan';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const last = readLastScan();
+  const last = await readLastScan();
   const reconstructed = await reconstructCards();
   if (!reconstructed.length) {
     // No reconstruction possible (no scan + no audit) — return an empty

@@ -16,7 +16,7 @@ export async function POST(req: Request) {
   const existing = await readProfile();
   const next = { ...existing, ...body };
   // Sanity: never accept arbitrary keys.
-  const allowed = ['email', 'display_name', 'default_project_dir', 'preferred_models', 'theme'];
+  const allowed = ['email', 'display_name', 'default_project_dir', 'preferred_models', 'theme', 'auto_scan', 'auto_accept', 'toast_last_seen_ms'];
   for (const k of Object.keys(next)) {
     if (!allowed.includes(k) && k !== 'updated_at') delete (next as any)[k];
   }

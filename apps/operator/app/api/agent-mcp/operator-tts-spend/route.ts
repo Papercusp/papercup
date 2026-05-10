@@ -10,7 +10,7 @@ import { loadSpend, saveSpend } from '@/lib/tts-spend';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  return Response.json(loadSpend());
+  return Response.json(await loadSpend());
 }
 
 export async function PUT(req: NextRequest) {
@@ -20,7 +20,7 @@ export async function PUT(req: NextRequest) {
   } catch {
     return new Response('invalid JSON', { status: 400 });
   }
-  const cur = loadSpend();
+  const cur = await loadSpend();
   const next = { ...cur };
   if (typeof body.perKCharRate === 'number' && body.perKCharRate >= 0) {
     next.perKCharRate = body.perKCharRate;
@@ -31,6 +31,6 @@ export async function PUT(req: NextRequest) {
   }
   if (typeof body.softCapUsd === 'number' && body.softCapUsd >= 0) next.softCapUsd = body.softCapUsd;
   if (typeof body.hardCapUsd === 'number' && body.hardCapUsd >= 0) next.hardCapUsd = body.hardCapUsd;
-  saveSpend(next);
+  await saveSpend(next);
   return Response.json(next);
 }

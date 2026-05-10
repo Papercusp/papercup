@@ -19,104 +19,22 @@
  */
 import type { Hono } from 'hono';
 import { randomUUID } from 'node:crypto';
-import { getLegacyClient, withWorkspaceLegacy } from '@restart/db-org';
+import { withWorkspaceLegacy } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import {
+  getProjectDetail,
+  listProjectsForHarness,
+  projectFeatureCounts,
+  rowToProject,
+} from '@/lib/projects-data';
 import { runProjectManager } from '../../../lib/pm-dispatch';
-
-interface ProjectRow {
-  id: string;
-  name: string;
-  status: string;
-  budget_cents: number | null;
-  spent_cents: number;
-  owning_dept: string | null;
-  vertical: string | null;
-  spec: string | null;
-  spec_updated_at: string | null;
-  spec_manually_edited_at: string | null;
-  created_ts: number;
-  updated_ts: number;
-}
-
-interface ProjectWithCounts extends ProjectRow {
-  feature_counts: {
-    todo: number;
-    in_progress: number;
-    validating: number;
-    failing: number;
-    blocked: number;
-    passed: number;
-    rejected: number;
-    total: number;
-  };
-}
-
-function dbForSlug(slug: string) {
-  return getLegacyClient(slug);
-}
-
-function rowToProject(r: any): ProjectRow {
-  const num = (v: unknown) => (typeof v === 'bigint' ? Number(v) : (v as number | null));
-  return {
-    id: r.id,
-    name: r.name,
-    status: r.status,
-    budget_cents: num(r.budget_cents),
-    spent_cents: num(r.spent_cents) ?? 0,
-    owning_dept: r.owning_dept ?? null,
-    vertical: r.vertical ?? null,
-    spec: r.spec ?? null,
-    spec_updated_at: r.spec_updated_at ?? null,
-    spec_manually_edited_at: r.spec_manually_edited_at ?? null,
-    created_ts: num(r.created_ts) ?? 0,
-    updated_ts: num(r.updated_ts) ?? 0,
-  };
-}
-
-async function projectFeatureCounts(slug: string, projectId: string): Promise<ProjectWithCounts['feature_counts']> {
-  try {
-    const db = dbForSlug(slug);
-    const rows = (await db.prepare(
-      `SELECT status, COUNT(*)::bigint AS n FROM harness_features WHERE project_id = ? GROUP BY status`,
-    ).all(projectId)) as Array<{ status: string; n: number | bigint }>;
-    const counts = {
-      todo: 0, in_progress: 0, validating: 0, failing: 0,
-      blocked: 0, passed: 0, rejected: 0, total: 0,
-    };
-    for (const r of rows) {
-      const n = typeof r.n === 'bigint' ? Number(r.n) : r.n;
-      if (r.status in counts) (counts as any)[r.status] = n;
-      counts.total += n;
-    }
-    return counts;
-  } catch {
-    return { todo: 0, in_progress: 0, validating: 0, failing: 0, blocked: 0, passed: 0, rejected: 0, total: 0 };
-  }
-}
 
 export function registerProjects(harness: Hono): void {
   // ── List projects (cross-harness; filtered by features that exist in this harness) ──
   harness.get('/:slug/projects', async (c) => {
     const slug = c.req.param('slug');
     try {
-      // Workspace-scoped: opens a tx with `app.workspace_id` set so RLS
-      // predicates pass on the active workspace's projects rows.
-      const rows = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
-        return (await db.prepare(`
-          SELECT p.* FROM harness_shared.projects p
-          WHERE EXISTS (
-            SELECT 1 FROM harness_features f
-            WHERE f.harness_slug = ? AND f.project_id = p.id
-          )
-          ORDER BY p.updated_ts DESC
-        `).all(slug)) as any[];
-      });
-      const projects: ProjectWithCounts[] = await Promise.all(
-        rows.map(async (r) => ({
-          ...rowToProject(r),
-          feature_counts: await projectFeatureCounts(slug, r.id),
-        })),
-      );
+      const projects = await listProjectsForHarness(slug);
       return c.json({ projects });
     } catch (e) {
       return c.json({ error: `failed to list projects: ${(e as Error).message}` }, 500);
@@ -128,27 +46,9 @@ export function registerProjects(harness: Hono): void {
     const slug = c.req.param('slug');
     const id = c.req.param('id');
     try {
-      const result = await withWorkspaceLegacy(slug, activeWorkspaceId(), async (db) => {
-        const row = (await db.prepare('SELECT * FROM harness_shared.projects WHERE id = ?').get(id)) as any;
-        if (!row) return null;
-        const lastRev = (await db.prepare(
-          'SELECT id, summary, author_role, ts FROM harness_shared.project_spec_revisions WHERE project_id = ? ORDER BY ts DESC LIMIT 1',
-        ).get(id)) as any;
-        return { row, lastRev };
-      });
-      if (!result) return c.json({ error: 'project not found' }, 404);
-      const project = rowToProject(result.row);
-      const counts = await projectFeatureCounts(slug, id);
-      return c.json({
-        ...project,
-        feature_counts: counts,
-        last_spec_revision: result.lastRev ? {
-          id: typeof result.lastRev.id === 'bigint' ? Number(result.lastRev.id) : result.lastRev.id,
-          summary: result.lastRev.summary,
-          author_role: result.lastRev.author_role,
-          ts: result.lastRev.ts,
-        } : null,
-      });
+      const detail = await getProjectDetail(slug, id);
+      if (!detail) return c.json({ error: 'project not found' }, 404);
+      return c.json(detail);
     } catch (e) {
       return c.json({ error: `failed to load project: ${(e as Error).message}` }, 500);
     }

@@ -19,11 +19,12 @@
 
 import { NextRequest } from 'next/server';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { runClaudeChat } from '@/lib/claude-chat-stream';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { readSystemPrincipal } from '@/lib/system-principal';
 import { getSessionUser } from '@/lib/auth';
+import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 import {
   buildOperatorPrompt,
   markFirstRunShown,
@@ -33,6 +34,9 @@ import { loadPreferences } from '@/lib/operator-preferences';
 import { acquireScanLock, releaseScanLock } from '@/lib/operator-scan-lock';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { writeLastScan } from '@/lib/operator-last-scan';
+import { startOperatorScan, completeOperatorScan, failOperatorScan } from '@/lib/operator-scans';
+import { isScannerResumeEnabled, getOrCreateScannerSessionId, bumpScannerSession } from '@/lib/operator-scanner-session';
+import { buildScannerBootstrap } from '@/lib/operator-scanner-bootstrap';
 import { checkRate, record503, recordSuccess } from '@/lib/operator-rate-limit';
 import { canShortCircuit, writeSnapshot } from '@/lib/operator-idle-snapshot';
 import { fingerprint, readTriggerState } from '@/lib/operator-trigger-state';
@@ -50,43 +54,37 @@ interface SystemPrincipalConfig {
   capabilities: string[];
 }
 
-function loadOperatorBearer(): SystemPrincipalConfig | null {
-  const path = papercuspPath('system', 'operator', 'config.json');
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, 'utf8')) as SystemPrincipalConfig;
-  } catch {
-    return null;
-  }
+/**
+ * Pull the scanner's trailing one-line status out of the assistant
+ * text. The scanner.md role tells it to write exactly that after the
+ * <suggestion> blocks (e.g. "Scanned 7 harnesses, surfaced 3
+ * suggestions."). Falls back to a generic summary if the model didn't
+ * follow the convention this turn.
+ */
+function extractScanSummary(text: string): string | null {
+  if (!text) return null;
+  // Drop everything inside <suggestion> blocks; keep the prose around them.
+  const stripped = text.replace(/<suggestion>[\s\S]*?<\/suggestion>/g, '').trim();
+  if (!stripped) return null;
+  // Use the LAST non-empty line — that's where the persona puts the
+  // status sentence. Cap at 280 chars to keep the History view tidy.
+  const lines = stripped.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const last = lines[lines.length - 1] ?? null;
+  if (!last) return null;
+  return last.length > 280 ? last.slice(0, 277) + '…' : last;
 }
 
-const ALL_AGENT_MCP_TOOLS = [
-  'mcp__agentmcp__harness:list',
-  'mcp__agentmcp__harness:get',
-  'mcp__agentmcp__harness:status',
-  'mcp__agentmcp__tasks:list',
-  'mcp__agentmcp__tasks:get',
-  'mcp__agentmcp__tasks:create',
-  'mcp__agentmcp__tasks:update',
-  'mcp__agentmcp__tasks:close',
-  'mcp__agentmcp__goals:list',
-  'mcp__agentmcp__goals:get',
-  'mcp__agentmcp__issues:list',
-  'mcp__agentmcp__messages:inbox',
-  'mcp__agentmcp__messages:outbox',
-  'mcp__agentmcp__messages:send',
-  'mcp__agentmcp__audit:list',
-  'mcp__agentmcp__pending_events:list',
-  'mcp__agentmcp__hindsight:recall',
-  'mcp__agentmcp__search:query',
-];
+async function loadOperatorBearer(): Promise<SystemPrincipalConfig | null> {
+  const p = await readSystemPrincipal('operator');
+  return p ? { bearer: p.bearer, name: p.name, workspaceId: p.workspaceId, capabilities: p.capabilities } : null;
+}
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const requestText = url.searchParams.get('request') ?? 'Scan the workspace and surface up to 5 next-action suggestions.';
   const isBackground = url.searchParams.get('background') === '1';
 
-  const principal = loadOperatorBearer();
+  const principal = await loadOperatorBearer();
   if (!principal) {
     return new Response('Operator principal not provisioned. POST /api/agent-mcp/provision first.', {
       status: 503,
@@ -106,7 +104,7 @@ export async function GET(req: NextRequest) {
   // Per-workspace rate limit + 503 circuit breaker — background scans only.
   // Manual scans bypass per §4 decision 3 (errors should surface, not be silenced).
   if (isBackground) {
-    const rate = checkRate(workspaceId);
+    const rate = await checkRate(workspaceId);
     if (!rate.allowed) {
       return new Response(`Background scan throttled (${rate.reason}).`, {
         status: 429,
@@ -122,7 +120,7 @@ export async function GET(req: NextRequest) {
     try {
       const state = await readTriggerState();
       const fp = fingerprint(state);
-      const snap = canShortCircuit(fp);
+      const snap = await canShortCircuit(fp);
       if (snap) {
         // Stream the cached cards as a degenerate scan response.
         const enc = new TextEncoder();
@@ -150,7 +148,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const budget = checkBudget();
+  const budget = await checkBudget();
   if (budget.state && budget.exceeded) {
     return new Response(
       `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
@@ -176,12 +174,37 @@ export async function GET(req: NextRequest) {
     lock = { holderId: '' };
   }
 
-  const { promptText, isFirstRun } = buildOperatorPrompt({ request: requestText, userId });
-  const preferences = loadPreferences();
+  const { promptText: basePromptText, isFirstRun } = await buildOperatorPrompt({ request: requestText, userId });
+  const preferences = await loadPreferences();
   // Warm the plugin-tier cache so the (sync) parser can consult it
   // when classifying plugin-defined caps from this scan's suggestions.
   await resolvePluginAwareTier('__warm__').catch(() => {});
   await refreshDismissedFromPg().catch(() => {});
+
+  // Phase 3: persistent scanner session + state bootstrap. Gated
+  // behind OPERATOR_SCANNER_RESUME=1 until it stabilizes — the
+  // baseline cold-start flow is unaffected when the env var is unset.
+  const useResume = isScannerResumeEnabled();
+  const scannerSessionId = useResume ? await getOrCreateScannerSessionId() : null;
+  const bootstrap = useResume
+    ? await buildScannerBootstrap({ workspaceId }).catch(() => '')
+    : '';
+  const promptText = bootstrap + basePromptText;
+
+  // Persist a scan-history row so the Scan History tab can show this
+  // run even if it errors. Best-effort: a DB hiccup shouldn't block
+  // the user's scan from running.
+  let scanHistoryId: number | null = null;
+  try {
+    scanHistoryId = await startOperatorScan({
+      workspaceId,
+      claudeSessionId: scannerSessionId,
+      startedAt: new Date(),
+      requestText: requestText.length > 1000 ? requestText.slice(0, 1000) + '…' : requestText,
+    });
+  } catch (e) {
+    console.warn('[operator-scan] history-start failed:', e);
+  }
 
   const stream = new ReadableStream({
     async start(controller) {
@@ -192,6 +215,7 @@ export async function GET(req: NextRequest) {
 
       let costUsd = 0;
       let assistantText = '';
+      let finalCards: Record<string, unknown>[] = [];
 
       if (isFirstRun) {
         send('first_run', {});
@@ -203,19 +227,22 @@ export async function GET(req: NextRequest) {
           mcpConfig: {
             mcpServers: {
               agentmcp: {
-                command: './node_modules/.bin/tsx',
-                args: [join(process.cwd(), 'packages/agent-mcp/src/server-entry.ts')],
-                env: {
-                  AGENT_MCP_BEARER: principal.bearer,
-                  OPERATOR_BASE_URL: 'http://localhost:3055',
-                },
+                type: 'http',
+                url: `http://127.0.0.1:3055/api/mcp?harness=system&workspace=${encodeURIComponent(workspaceId)}&role=operator&run=op-scan-${Date.now()}&spawn=op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                headers: { Authorization: `Bearer ${principal.bearer}` },
               },
             },
           },
-          allowedTools: ALL_AGENT_MCP_TOOLS,
+          allowedTools: [...ALL_AGENT_MCP_TOOLS],
           toolEventFilter: (raw) =>
             raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
           permissionMode: 'bypassPermissions',
+          // Phase 3: resume the workspace's persistent scanner session
+          // so each scan can refer to prior turns. sessionMode 'force'
+          // means create-or-resume — claude won't error if our uuid
+          // doesn't yet have a session record.
+          sessionId: scannerSessionId ?? undefined,
+          sessionMode: scannerSessionId ? 'force' : undefined,
         });
 
         for await (const ev of events) {
@@ -226,8 +253,8 @@ export async function GET(req: NextRequest) {
             send('tool_call', { name: ev.name, input: ev.input });
           } else if (ev.type === 'result') {
             costUsd = ev.costUsd;
-            recordSpend(costUsd);
-            const parsed = parseSuggestions(ev.finalText || assistantText, preferences);
+            void recordSpend(costUsd);
+            const parsed = await parseSuggestions(ev.finalText || assistantText, preferences);
             const cards: Record<string, unknown>[] = [];
             for (const block of parsed.blocks) {
               const payload = {
@@ -258,8 +285,9 @@ export async function GET(req: NextRequest) {
             } catch (e) {
               console.warn('[operator-scan] plugin suggestions failed:', e);
             }
+            finalCards = cards;
             try {
-              writeLastScan({
+              await writeLastScan({
                 scanCompletedAt: new Date().toISOString(),
                 scanCostUsd: costUsd,
                 cards,
@@ -271,11 +299,11 @@ export async function GET(req: NextRequest) {
             // the next background scan.
             try {
               const state = await readTriggerState();
-              writeSnapshot(fingerprint(state), cards);
+              await writeSnapshot(fingerprint(state), cards);
             } catch (e) {
               console.warn('[operator-scan] writeSnapshot failed:', e);
             }
-            recordSuccess(workspaceId);
+            await recordSuccess(workspaceId);
             send('done', {
               costUsd,
               suggestions: parsed.blocks.length,
@@ -284,14 +312,45 @@ export async function GET(req: NextRequest) {
           } else if (ev.type === 'error') {
             // Treat downstream 503-ish failures as breaker hits (background only).
             if (isBackground && /503|service unavailable|connection refused|ECONNREFUSED/i.test(ev.message)) {
-              record503(workspaceId);
+              await record503(workspaceId);
             }
             send('error', { message: ev.message });
           }
         }
-        if (isFirstRun) markFirstRunShown(userId);
+        if (isFirstRun) void markFirstRunShown(userId);
+        // Finalize the history row on the happy path. The summary is
+        // the trailing one-liner the scanner emits after the
+        // <suggestion> blocks (the scanner.md role tells it to write
+        // exactly that as a status line).
+        if (scanHistoryId != null) {
+          try {
+            const summary = extractScanSummary(assistantText);
+            await completeOperatorScan({
+              id: scanHistoryId,
+              endedAt: new Date(),
+              summary,
+              suggestions: finalCards,
+              costUsd,
+              claudeSessionId: scannerSessionId,
+            });
+          } catch (e) {
+            console.warn('[operator-scan] history-complete failed:', e);
+          }
+        }
+        if (scannerSessionId) void bumpScannerSession();
       } catch (err) {
         send('error', { message: err instanceof Error ? err.message : String(err) });
+        if (scanHistoryId != null) {
+          try {
+            await failOperatorScan({
+              id: scanHistoryId,
+              endedAt: new Date(),
+              error: err instanceof Error ? err.message : String(err),
+            });
+          } catch (e2) {
+            console.warn('[operator-scan] history-fail failed:', e2);
+          }
+        }
       } finally {
         if (lock.holderId) await releaseScanLock(lock.holderId);
         controller.close();

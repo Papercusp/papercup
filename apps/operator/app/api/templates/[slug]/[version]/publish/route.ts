@@ -21,10 +21,7 @@ const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localho
 const MARKETPLACE_SITE_URL =
   process.env.PAPERCUSP_MARKETPLACE_SITE_URL ?? 'http://localhost:3060';
 
-// Marketplace secrets are per-workspace; resolve at call time.
-function secretsPath(): string {
-  return papercuspPath('marketplace-secrets.env');
-}
+import { readFirstServiceToken } from '@/lib/marketplace-token';
 
 interface Body {
   marketplaceSlug?: string;
@@ -47,7 +44,7 @@ export async function POST(
     return NextResponse.json({ ok: false, error: 'template missing papercusp.json' }, { status: 400 });
   }
 
-  const token = await readServiceToken();
+  const token = await readFirstServiceToken();
   if (!token) {
     return NextResponse.json(
       {
@@ -174,16 +171,7 @@ async function recordPublish(dir: string, rec: PublishRecord): Promise<void> {
   await fs.writeFile(sidecar, JSON.stringify(next, null, 2), 'utf8');
 }
 
-async function readServiceToken(): Promise<string | null> {
-  try {
-    const raw = await fs.readFile(secretsPath(), 'utf8');
-    for (const line of raw.split('\n')) {
-      const m = /^PAPERCUSP_MARKETPLACE_SERVICE_TOKENS\s*=\s*'(.+?)'\s*$/.exec(line.trim());
-      if (m) {
-        const arr = JSON.parse(m[1]!) as { token: string }[];
-        return arr[0]?.token ?? null;
-      }
-    }
-  } catch { /* file missing */ }
-  return null;
-}
+// Service token now PG-backed via marketplace-token helper module
+// (migration 024). The local readServiceToken() is replaced with
+// readFirstServiceToken() from @/lib/marketplace-token, which preserves
+// the env-var override path (PAPERCUSP_MARKETPLACE_SERVICE_TOKENS).

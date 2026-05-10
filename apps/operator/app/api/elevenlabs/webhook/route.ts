@@ -36,6 +36,7 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { get, runCommand, runQuery } from '@/lib/commands/registry';
 import { deliver as deliverToTab } from '@/lib/commands/session-registry';
 import type { CommandContext, CommandResult } from '@/lib/commands/types';
+import { verifyElevenLabsSignature } from '@/lib/elevenlabs-webhook-auth';
 import '@/lib/commands/audit-server';
 import '@/lib/commands/defs';
 
@@ -53,9 +54,23 @@ interface ElevenLabsWebhookPayload {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
+  // Read raw body up front — signature verification needs the bytes, not
+  // the parsed object (JSON re-stringify isn't byte-identical with EL's).
+  const rawBody = await req.text();
+  const sig = verifyElevenLabsSignature({
+    rawBody,
+    signatureHeader: req.headers.get('elevenlabs-signature'),
+  });
+  if (!sig.ok) {
+    return Response.json(
+      { ok: false, error: { code: 'auth', message: `signature: ${sig.reason}`, retryable: false } },
+      { status: 401 },
+    );
+  }
+
   let payload: ElevenLabsWebhookPayload;
   try {
-    payload = (await req.json()) as ElevenLabsWebhookPayload;
+    payload = JSON.parse(rawBody) as ElevenLabsWebhookPayload;
   } catch {
     return Response.json(
       { ok: false, error: { code: 'invalid-json', message: 'body is not JSON', retryable: false } },

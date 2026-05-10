@@ -24,6 +24,6 @@ export async function POST(req: NextRequest) {
   if (!capability || !targetHarness) {
     return new Response('capability + targetHarness required', { status: 400 });
   }
-  markCandidateShown(capability, targetHarness);
+  await markCandidateShown(capability, targetHarness);
   return Response.json({ ok: true });
 }

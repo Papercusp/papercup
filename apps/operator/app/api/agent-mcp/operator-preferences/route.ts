@@ -18,7 +18,7 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  return Response.json({ entries: listPreferenceEntries() });
+  return Response.json({ entries: await listPreferenceEntries() });
 }
 
 export async function POST(req: NextRequest) {
@@ -30,14 +30,14 @@ export async function POST(req: NextRequest) {
   }
   const entry = typeof body.entry === 'string' ? body.entry.trim() : '';
   if (!entry) return new Response('entry required', { status: 400 });
-  appendPreferenceEntry(entry);
+  await appendPreferenceEntry(entry);
   return Response.json({ ok: true });
 }
 
 export async function DELETE(req: NextRequest) {
   const key = new URL(req.url).searchParams.get('key');
   if (!key) return new Response('key required', { status: 400 });
-  const removed = removePreferenceEntry(key);
+  const removed = await removePreferenceEntry(key);
   if (!removed) return new Response('not found', { status: 404 });
   return Response.json({ ok: true });
 }

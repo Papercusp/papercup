@@ -54,7 +54,7 @@ export async function POST(req: Request, { params }: Params) {
   // explicitly confirms via a "run anyway" affordance.
   const force = url.searchParams.get('force') === '1';
 
-  const reg = loadHarnessRegistry();
+  const reg = await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === slug);
   if (!project) return NextResponse.json({ error: 'unknown project' }, { status: 404 });
 

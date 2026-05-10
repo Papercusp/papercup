@@ -5,6 +5,8 @@ import { promisify } from 'node:util';
 import net from 'node:net';
 import { harnessRoot, harnessPath } from '@papercusp/harness/paths';
 
+const MERIDIAN_BASE = process.env.MERIDIAN_BASE_URL ?? 'http://127.0.0.1:3456';
+
 const exec = promisify(execFile);
 
 type CheckStatus = 'ok' | 'missing' | 'error';
@@ -62,16 +64,42 @@ async function checkPi(): Promise<Check> {
     name: 'pi',
     status: 'missing',
     detail: 'omp not on PATH or known install paths',
-    hint: 'Install via: brew install can1357/oh-my-pi/oh-my-pi (or see https://github.com/can1357/oh-my-pi). Optional — required only for the in-app pi tab.',
+    hint: 'Install via: `npm install -g @oh-my-pi/cli` (or see https://github.com/can1357/oh-my-pi). Required — omp is the default agent backend.',
   };
 }
 
 async function checkPostgres(): Promise<Check> {
-  // In desktop builds we ship pglite-server and Tauri main spawns it on a
-  // unix socket (PAPERCUSP_USE_PGLITE=1 is the production default). When
-  // that's the active DB, "postgres on :5432" isn't the right probe — the
-  // socket-dir env var is, and if it exists with a `.s.PGSQL.5432` socket
-  // inside, the harness has a working DB.
+  // Preferred desktop path: embedded-postgres-server on a workspace-scoped
+  // TCP port. Tauri main sets PAPERCUSP_USE_EMBEDDED_PG=1 + PAPERCUSP_PG_PORT
+  // when it spawned successfully. Probe the loopback port.
+  if (process.env.PAPERCUSP_USE_EMBEDDED_PG === '1') {
+    const portStr = process.env.PAPERCUSP_PG_PORT;
+    const port = portStr ? Number(portStr) : NaN;
+    if (!Number.isFinite(port) || port <= 0) {
+      return {
+        name: 'postgres',
+        status: 'missing',
+        detail: 'PAPERCUSP_USE_EMBEDDED_PG=1 but PAPERCUSP_PG_PORT unset/invalid',
+        hint: 'embedded-postgres-server may still be starting; reload in a few seconds.',
+      };
+    }
+    return await new Promise<Check>((resolve) => {
+      const socket = new net.Socket();
+      let settled = false;
+      const finish = (status: CheckStatus, detail: string) => {
+        if (settled) return;
+        settled = true;
+        try { socket.destroy(); } catch { /* ignore */ }
+        resolve({ name: 'postgres', status, detail });
+      };
+      socket.setTimeout(2000);
+      socket.once('connect', () => finish('ok', `embedded-postgres on 127.0.0.1:${port}`));
+      socket.once('timeout', () => finish('missing', `embedded-postgres 127.0.0.1:${port} timeout`));
+      socket.once('error', (e) => finish('missing', `embedded-postgres 127.0.0.1:${port} unreachable (${e.message})`));
+      socket.connect(port, '127.0.0.1');
+    });
+  }
+  // Legacy desktop path: pglite-server on a unix socket.
   if (process.env.PAPERCUSP_USE_PGLITE === '1') {
     const socketDir = process.env.PAPERCUSP_PGLITE_SOCKET_DIR;
     if (socketDir && existsSync(`${socketDir}/.s.PGSQL.5432`)) {
@@ -103,17 +131,52 @@ async function checkPostgres(): Promise<Check> {
   });
 }
 
+/**
+ * Probe meridian's HTTP daemon on 127.0.0.1:3456. omp routes through
+ * meridian to use the user's Claude Max subscription instead of API
+ * keys; if meridian is down, omp invocations fall back to direct API
+ * calls (which require ANTHROPIC_API_KEY) or fail.
+ */
+async function checkMeridian(): Promise<Check> {
+  return new Promise((resolve) => {
+    const url = new URL(MERIDIAN_BASE);
+    const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (status: CheckStatus, detail: string, extra: Partial<Check> = {}) => {
+      if (settled) return;
+      settled = true;
+      try { socket.destroy(); } catch { /* ignore */ }
+      resolve({ name: 'meridian', status, detail, ...extra });
+    };
+    socket.setTimeout(2000);
+    socket.once('connect', () => finish('ok', `${url.hostname}:${port} reachable`));
+    socket.once('timeout', () => finish('missing', `${url.hostname}:${port} timeout`, {
+      hint: 'Start meridian: `meridian` (or `npm install -g @rynfar/meridian` if not installed). meridian routes omp through your Claude Max subscription.',
+    }));
+    socket.once('error', (e: any) => finish('missing', `${url.hostname}:${port} ${e?.code ?? 'unreachable'}`, {
+      hint: 'Start meridian: `meridian` (or `npm install -g @rynfar/meridian` if not installed). meridian routes omp through your Claude Max subscription.',
+    }));
+    socket.connect(port, url.hostname);
+  });
+}
+
 function checkHarnessDir(): Check {
+  // The TS orchestrator entry is the canonical proof the harness/orchestrator
+  // pair is installed. run.sh is no longer the iteration driver but is still
+  // checked as a fallback for installs that pre-date the TS migration.
+  const harnessRootPath = harnessRoot();
+  const orchBin = `${harnessRootPath}/../orchestrator/bin/run.ts`;
   const runScript = harnessPath('run.sh');
-  if (!existsSync(runScript)) {
+  if (!existsSync(orchBin) && !existsSync(runScript)) {
     return {
       name: 'harness',
       status: 'missing',
-      detail: `${runScript} not found`,
-      hint: 'Reinstall workspace deps (npm install) so @papercusp/harness resolves; PAPERCUSP_HARNESS_DIR overrides if set.',
+      detail: `neither ${orchBin} nor ${runScript} found`,
+      hint: 'Reinstall workspace deps (npm install) so @papercusp/orchestrator + @papercusp/harness resolve; PAPERCUSP_HARNESS_DIR overrides if set.',
     };
   }
-  return { name: 'harness', status: 'ok', detail: harnessRoot() };
+  return { name: 'harness', status: 'ok', detail: harnessRootPath };
 }
 
 const CORS_HEADERS = {
@@ -148,19 +211,28 @@ async function checkSoftPrereq(name: string, hint: string): Promise<Check> {
 }
 
 export async function GET() {
-  const [node, claude, bash, postgres, pi, ...softs] = await Promise.all([
+  const [node, claude, bash, postgres, pi, meridian, ...softs] = await Promise.all([
     checkBinary('node'),
     checkBinary('claude'),
     checkBinary('bash'),
     checkPostgres(),
     checkPi(),
+    checkMeridian(),
     ...SOFT_PREREQS.map((p) => checkSoftPrereq(p.name, p.hint)),
   ]);
+  // claude is now optional (only required if AGENT_BACKEND=claude-code).
+  // omp + meridian are the default path; pi (omp) becomes a hard
+  // requirement and meridian is hard too. claude is still surfaced as
+  // a hint so users can opt into claude-code if they prefer.
+  const claudeOptional: Check = { ...claude, optional: true, hint: claude.status === 'ok'
+    ? undefined
+    : 'Optional unless AGENT_BACKEND=claude-code. Install: https://docs.anthropic.com/en/docs/claude-code/setup' };
   const harness = checkHarnessDir();
-  const checks = [node, postgres, claude, bash, harness, pi, ...softs];
-  // Optional checks (pi + soft prereqs) don't block boot — only the
-  // core hard deps (node/postgres/claude/bash/harness) do.
-  const required = checks.filter((c) => !c.optional && c.name !== 'pi');
+  const checks = [node, postgres, pi, meridian, bash, harness, claudeOptional, ...softs];
+  // Hard requirements: node/postgres/pi/meridian/bash/harness. claude is
+  // optional (only used when AGENT_BACKEND=claude-code). soft prereqs
+  // (git/tar/curl) are also optional.
+  const required = checks.filter((c) => !c.optional);
   const allOk = required.every((c) => c.status === 'ok');
   return NextResponse.json({ ok: allOk, checks }, { headers: CORS_HEADERS });
 }

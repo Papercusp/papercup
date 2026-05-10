@@ -75,7 +75,7 @@ export async function POST(req: Request) {
     body = await req.json();
   } catch { /* empty body is fine */ }
 
-  const reg = loadHarnessRegistry();
+  const reg = await loadHarnessRegistry();
   const { removed, kept } = pruneRegistry(reg, body);
 
   if (!body.dryRun && removed.length > 0) {

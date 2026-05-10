@@ -16,7 +16,7 @@ export async function POST(req: NextRequest) {
   try { body = await req.json(); } catch { /* fall through */ }
   const apiKey = typeof body.apiKey === 'string' && body.apiKey.length > 0
     ? body.apiKey
-    : readDeepgramKey();
+    : await readDeepgramKey();
   if (!apiKey) {
     return Response.json({ ok: false, error: 'no API key configured' }, { status: 400 });
   }

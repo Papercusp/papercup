@@ -5,27 +5,31 @@ import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
 
 /**
- * One-click "Install Claude + Meridian" for desktop builds.
+ * One-click "Install AI Stack" for desktop builds — claude + meridian + omp.
  *
  * The Claude CLI ships under Anthropic's Commercial Terms of Service
  * — "all rights reserved" — so we don't redistribute the binary
- * inside our installer. Meridian (rynfar/meridian, MIT) is also not
- * vendored because it depends on @anthropic-ai/claude-code and would
- * pull the Claude binary into our installer transitively.
+ * inside our installer. Meridian and omp are MIT but pulled at install
+ * time so users can update via `npm update -g` independent of our
+ * desktop release cadence.
  *
- * Instead, this route runs the *official* installers on demand:
+ * This route runs the *official* installers on demand:
  *
  *   1. Claude CLI: curl -fsSL https://claude.ai/install.sh | bash
- *      (install.ps1 on Windows). This is Anthropic's published install
- *      flow; the binary downloads from downloads.claude.ai under the
- *      user's existing personal-use license.
- *   2. Meridian: npm install -g @rynfar/meridian@<pinned> using the
- *      bundled Node + npm at sidecar/bin/.
+ *      (install.ps1 on Windows). Optional — only needed if the user
+ *      switches AGENT_BACKEND to claude-code.
+ *   2. Meridian: npm install --prefix <root> @rynfar/meridian@<pinned>.
+ *      Routes omp/pi-coding-agent through the user's Claude Max
+ *      subscription (via Claude Code SDK) instead of API keys.
+ *   3. omp: npm install --prefix <root> @oh-my-pi/cli (latest).
+ *      Default agent backend; talks HTTP to meridian on :3456.
  *
  * Streams progress as Server-Sent Events so the UI can show a live log.
  */
 
-const MERIDIAN_VERSION = '1.41.1';
+const MERIDIAN_VERSION = '1.42.1';
+// omp moves fast; track latest from @oh-my-pi/cli rather than pinning.
+const OMP_PACKAGE = '@oh-my-pi/cli';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -187,7 +191,10 @@ export async function POST() {
               name: 'papercusp-runtime',
               version: '0.0.0',
               private: true,
-              dependencies: { '@rynfar/meridian': MERIDIAN_VERSION },
+              dependencies: {
+                '@rynfar/meridian': MERIDIAN_VERSION,
+                [OMP_PACKAGE]: 'latest',
+              },
             },
             null,
             2,
@@ -208,7 +215,25 @@ export async function POST() {
           code: meridianRc,
         });
         if (meridianRc !== 0) {
-          send('done', { ok: false, reason: 'meridian install failed' });
+          send('done', { ok: false, reason: 'meridian + omp install failed' });
+          controller.close();
+          return;
+        }
+
+        // Step 3: omp install — already installed by the package.json
+        // dependency above, but fire a separate step to surface progress
+        // and emit a recognisable label in the UI log.
+        send('step', { name: 'omp', status: 'running' });
+        send('log', { label: 'omp', line: `→ ${OMP_PACKAGE} installed via meridian step\n` });
+        const ompBin = join(installRoot, 'node_modules', '.bin', isWin ? 'omp.cmd' : 'omp');
+        const ompFound = existsSync(ompBin);
+        send('step', {
+          name: 'omp',
+          status: ompFound ? 'ok' : 'failed',
+          code: ompFound ? 0 : 1,
+        });
+        if (!ompFound) {
+          send('done', { ok: false, reason: `omp binary missing at ${ompBin}` });
           controller.close();
           return;
         }
@@ -224,9 +249,8 @@ export async function POST() {
           ok: true,
           claudePath: claudeFound ?? null,
           meridianRoot: installRoot,
-          hint: claudeFound
-            ? 'Claude + Meridian installed. Restart the app for the preflight check to pick up the new binary.'
-            : 'Install completed but claude binary not found at expected paths. Run `claude --version` in a new terminal to verify.',
+          ompPath: ompBin,
+          hint: 'AI stack installed (claude + meridian + omp). Next: run `claude login` to authenticate, then start meridian (`meridian` in a terminal). Restart the app afterward.',
         });
         controller.close();
       } catch (e: any) {

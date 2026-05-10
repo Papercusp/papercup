@@ -22,7 +22,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slug)) {
     return NextResponse.json({ error: 'invalid slug' }, { status: 400 });
   }
-  const reg = loadHarnessRegistry();
+  const reg = await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === slug);
   if (!project) return NextResponse.json({ error: 'unknown project' }, { status: 404 });
 

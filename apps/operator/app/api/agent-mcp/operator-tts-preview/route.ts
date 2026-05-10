@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
   const engine = body.engine;
 
   if (engine === 'elevenlabs') {
-    const key = readElevenLabsKey();
+    const key = await readElevenLabsKey();
     if (!key) return new Response('no-key', { status: 404 });
     const voice = body.voiceId ?? '21m00Tcm4TlvDq8ikWAM';
     const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}/stream?optimize_streaming_latency=2`, {
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (engine === 'openai') {
-    const key = readOpenAiKey();
+    const key = await readOpenAiKey();
     if (!key) return new Response('no-key', { status: 404 });
     const r = await fetch('https://api.openai.com/v1/audio/speech', {
       method: 'POST',
@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (engine === 'cartesia') {
-    const key = readCartesiaKey();
+    const key = await readCartesiaKey();
     if (!key) return new Response('no-key', { status: 404 });
     const r = await fetch('https://api.cartesia.ai/tts/bytes', {
       method: 'POST',

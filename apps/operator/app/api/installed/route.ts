@@ -65,13 +65,48 @@ export function annotateProjectExistence(
   return { annotated, staleCount };
 }
 
-export async function GET() {
-  const reg = loadHarnessRegistry();
+// 2-second TTL cache. The data sources here (registry JSON, fs.readdir over
+// the harnesses dir, existsSync on each project path) are cheap on a clean
+// machine but expensive on a dev box where paperclip is concurrently
+// rewriting `~/.papercusp-workspaces/<id>/.papercusp/harnesses`: fs cache
+// thrash + Turbopack route module re-evaluation pushed steady-state
+// /api/installed to 2.3-4.4s in diagnostic 2026-05-06. Pin to globalThis so
+// dev's per-request module re-eval doesn't reset it.
+type Payload = { projects: AnnotatedProject[]; staleCount: number; harnesses: Awaited<ReturnType<typeof listInstalledHarnesses>> };
+const CACHE_TTL_MS = 2000;
+type _G = {
+  __installedCache?: { ts: number; payload: Payload };
+  __installedInflight?: Promise<Payload>;
+};
+const _g = globalThis as unknown as _G;
+
+async function compute(): Promise<Payload> {
+  const reg = await loadHarnessRegistry();
   const { annotated, staleCount } = annotateProjectExistence(reg.projects);
   const harnesses = await listInstalledHarnesses();
-  return NextResponse.json({
-    projects: annotated,
-    staleCount,
-    harnesses,
-  });
+  return { projects: annotated, staleCount, harnesses };
+}
+
+export async function GET() {
+  const now = Date.now();
+  const hit = _g.__installedCache;
+  if (hit && now - hit.ts < CACHE_TTL_MS) {
+    return NextResponse.json(hit.payload, {
+      headers: { 'X-Cache': 'HIT', 'X-Cache-Age': String(now - hit.ts) },
+    });
+  }
+  // Single-flight: collapse concurrent burst (dashboard mount fires this
+  // from multiple effects on the same tick) into one fs walk.
+  if (_g.__installedInflight) {
+    const payload = await _g.__installedInflight;
+    return NextResponse.json(payload, { headers: { 'X-Cache': 'COALESCED' } });
+  }
+  _g.__installedInflight = compute();
+  try {
+    const payload = await _g.__installedInflight;
+    _g.__installedCache = { ts: Date.now(), payload };
+    return NextResponse.json(payload, { headers: { 'X-Cache': 'MISS' } });
+  } finally {
+    _g.__installedInflight = undefined;
+  }
 }

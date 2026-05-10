@@ -23,9 +23,13 @@ import { randomUUID } from 'node:crypto';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { runClaudeChat } from '@/lib/claude-chat-stream';
-function ORACLE_DIR() { return papercuspPath('oracle'); }
-function PROMPT_PATH() { return join(ORACLE_DIR(), 'prompt.md'); }
-function MEMORY_PATH() { return join(ORACLE_DIR(), 'memory.md'); }
+import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
+import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+// Oracle prompt + memory now PG-backed (migration 024). Display paths kept
+// for legacy callers that surfaced them in the settings UI.
+const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
+const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
 const MCP_SERVER_PATH = join(process.cwd(), 'lib', 'oracle-mcp-server.mjs');
 
 /**
@@ -166,24 +170,72 @@ Examples:
 - Conventions specific to your workflow
 `;
 
+/**
+ * Workspace-at-a-glance block injected into the Oracle's prompt every
+ * turn. Saves a round-trip on the most common questions ("what
+ * harnesses do I have", "who's working on X").
+ *
+ * Stays small — top 6 harnesses + top 8 active agents. The Oracle
+ * still has listHarnesses / listAgents / getHarnessStatus tools for
+ * deeper queries.
+ */
+async function buildWorkspaceInventoryBlock(): Promise<string> {
+  const workspace = activeWorkspaceId();
+  const port = process.env.PORT ?? '3055';
+  const base = process.env.INTERNAL_API_BASE ?? `http://127.0.0.1:${port}`;
+  let projects: Array<{ slug: string; path: string }> = [];
+  try {
+    const r = await fetch(`${base}/api/harness/projects`);
+    if (r.ok) {
+      const d = await r.json();
+      projects = (d?.projects ?? []).map((p: any) => ({ slug: p.slug, path: p.path }));
+    }
+  } catch { /* degraded */ }
+
+  let agents: Array<{ slug: string; role: string; chat_count: number; last_active: string | null }> = [];
+  try { agents = await listAgentsAcrossWorkspace({ limit: 8 }); } catch { /* degraded */ }
+
+  if (!projects.length && !agents.length) return '';
+
+  const projectLines = projects.slice(0, 6).map((p) => `  - ${p.slug}`);
+  const agentLines = agents.map((a) => {
+    const ago = a.last_active ? `${Math.round((Date.now() - new Date(a.last_active).getTime()) / 60000)}m ago` : 'idle';
+    return `  - ${a.slug}/${a.role} (${a.chat_count} chats, ${ago})`;
+  });
+
+  return [
+    '\n\n## Workspace at a glance',
+    `\nWorkspace: ${workspace}`,
+    projectLines.length ? `\nHarnesses (${projects.length}${projects.length > 6 ? ', showing 6' : ''}):\n${projectLines.join('\n')}` : '',
+    agentLines.length ? `\nMost-active agents:\n${agentLines.join('\n')}` : '',
+    '\n\nThis is a snapshot. For deeper info call listHarnesses / listAgents / getHarnessStatus.',
+  ].join('');
+}
+
 async function ensureDefaults() {
-  await fs.mkdir(ORACLE_DIR(), { recursive: true, mode: 0o700 });
-  for (const [path, content] of [
-    [PROMPT_PATH(), DEFAULT_PROMPT],
-    [MEMORY_PATH(), DEFAULT_MEMORY],
+  // Initialize the two PG rows with default content if missing.
+  for (const [table, content] of [
+    ['operator_oracle_prompt', DEFAULT_PROMPT],
+    ['operator_oracle_memory', DEFAULT_MEMORY],
   ] as const) {
-    try { await fs.access(path); }
-    catch { await fs.writeFile(path, content, { mode: 0o600 }); }
+    const existing = await readOperatorState<{ content?: string }>(table);
+    if (existing && typeof existing.content === 'string') continue;
+    await writeOperatorState(table, { content });
   }
 }
 
 async function readConfig() {
   await ensureDefaults();
-  const [prompt, memory] = await Promise.all([
-    fs.readFile(PROMPT_PATH(), 'utf8'),
-    fs.readFile(MEMORY_PATH(), 'utf8'),
+  const [pRow, mRow] = await Promise.all([
+    readOperatorState<{ content?: string }>('operator_oracle_prompt'),
+    readOperatorState<{ content?: string }>('operator_oracle_memory'),
   ]);
-  return { prompt, memory, prompt_path: PROMPT_PATH(), memory_path: MEMORY_PATH() };
+  return {
+    prompt: pRow?.content ?? '',
+    memory: mRow?.content ?? '',
+    prompt_path: ORACLE_PROMPT_TABLE,
+    memory_path: ORACLE_MEMORY_TABLE,
+  };
 }
 
 export function registerOracle(app: Hono) {
@@ -191,12 +243,11 @@ export function registerOracle(app: Hono) {
 
   app.put('/oracle/config', async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    await ensureDefaults();
     if (typeof body.prompt === 'string') {
-      await fs.writeFile(PROMPT_PATH(), body.prompt, { mode: 0o600 });
+      await writeOperatorState('operator_oracle_prompt', { content: body.prompt });
     }
     if (typeof body.memory === 'string') {
-      await fs.writeFile(MEMORY_PATH(), body.memory, { mode: 0o600 });
+      await writeOperatorState('operator_oracle_memory', { content: body.memory });
     }
     return c.json(await readConfig());
   });
@@ -223,7 +274,14 @@ export function registerOracle(app: Hono) {
       `  - mcp__oracle__getHarnessStatus({ slug }): get the current state of a harness — feature counts by status, recent features, and a summary excerpt. Use for "what's the state of <slug>", "is X done", "what is X working on".\n` +
       `  - mcp__oracle__dispatchToAgent({ slug, role, message, featureId? }): start a chat with a role-scoped agent in a harness and send the first message. Roles include architect, orchestrator, scoper, worker, validator, reviewer, documenter, debugger, project_manager. The user is auto-navigated to the harness and the chat opens. Use when the user says things like "ask the architect to ..." or "have the orchestrator do ...".\n` +
       `  - mcp__oracle__listChats({ slug, role? }): list recent chats in a harness (id, role, title, message_count, updated_at), optionally filtered by role. Use before resumeChat to find a chatId, or to answer "what chats have I had with X".\n` +
+      `  - mcp__oracle__listAgents({ slug? }): enumerate role-scoped agents with recent activity, optionally scoped to one harness. Returns [{slug, role, chat_count, last_active}]. Use to answer "which agents are working on X" or to pick the most-active matching role before dispatchToAgent.\n` +
       `  - mcp__oracle__resumeChat({ slug, chatId }): re-open an existing chat (use listChats to discover the id).\n`;
+
+    // Auto-context: cheap workspace inventory the Oracle would
+    // otherwise have to round-trip an MCP tool to get. Refreshed every
+    // turn so the snapshot stays current; lookups are local PG / file
+    // scans so cost is ~10-30ms.
+    const inventoryBlock = await buildWorkspaceInventoryBlock().catch(() => '');
 
     const ctxBlock = currentPath
       ? `\n\n## Runtime context\n\nThe user is currently on path: ${currentPath}\n`
@@ -242,6 +300,7 @@ export function registerOracle(app: Hono) {
     const promptText = [
       prompt.trim(),
       toolBlock,
+      inventoryBlock,
       ctxBlock,
       tutorialBlock,
       memory.trim() ? `\n---\n\n## Persistent memory\n\n${memory.trim()}\n` : '',
@@ -275,13 +334,9 @@ export function registerOracle(app: Hono) {
         //      provisioned; absent, agentmcp tools are simply unavailable.
         let oracleBearer: string | null = null;
         try {
-          const oraclePrincipalPath = papercuspPath('system', 'oracle', 'config.json');
-          if ((await import('node:fs')).existsSync(oraclePrincipalPath)) {
-            const cfg = JSON.parse(
-              (await import('node:fs')).readFileSync(oraclePrincipalPath, 'utf8'),
-            ) as { bearer?: string };
-            oracleBearer = cfg.bearer ?? null;
-          }
+          const { readSystemPrincipal } = await import('@/lib/system-principal');
+          const p = await readSystemPrincipal('oracle');
+          oracleBearer = p?.bearer ?? null;
         } catch {
           oracleBearer = null;
         }
@@ -310,6 +365,7 @@ export function registerOracle(app: Hono) {
         const allowedTools = [
           'mcp__oracle__navigate',
           'mcp__oracle__listHarnesses',
+          'mcp__oracle__listAgents',
           'mcp__oracle__dispatchToAgent',
           'mcp__oracle__getHarnessStatus',
           'mcp__oracle__listChats',
