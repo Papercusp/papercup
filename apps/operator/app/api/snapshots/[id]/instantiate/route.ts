@@ -7,6 +7,7 @@ import { withSnapshotLock } from '@/lib/snapshot-locks';
 import { recordUserAction } from '@/lib/user-actions';
 import { mirrorPluginConfig } from '@/lib/plugin-configs-pg';
 import { resolveAliases, type ConfigSchema } from '@/lib/snapshot-shape';
+import { copyGrantsToNewHarness } from '@/lib/plugin-grants';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 export const dynamic = 'force-dynamic';
@@ -111,6 +112,17 @@ async function instantiate(id: string, body: Body): Promise<NextResponse> {
     }
 
     const finalSlug = userName && userName !== result.newSlug ? userName : result.newSlug;
+
+    // Carry per-(plugin, harness) capability grants from the source harness
+    // to the new fork. Without this, plugins would silently degrade to
+    // file-fallback or no-grants on first invocation in the fork until the
+    // user re-grants in /installed/plugins/<slug>/permissions. Best-effort
+    // — grants are advisory; a failure here doesn't fail the fork.
+    if (snap.harnessSlug && snap.harnessSlug !== finalSlug) {
+      try {
+        await copyGrantsToNewHarness(snap.harnessSlug, finalSlug);
+      } catch { /* PG unavailable or table missing — fall through silently */ }
+    }
 
     // Apply share-semantics: per-plugin overrides for stripped fields +
     // resolve schema-evolution aliases against the *current* installed

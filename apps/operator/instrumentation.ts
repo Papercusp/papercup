@@ -59,8 +59,14 @@ async function backfillGrantsOnce(): Promise<void> {
   // Build the (harness, plugin[]) shape the backfill expects from the
   // loaded plugin list. Plugins surface in host.loaded once per discovery
   // root; we cross-product against the enabled-plugins.json files on disk.
-  const { existsSync, promises: fs } = await import('node:fs');
-  const { join } = await import('node:path');
+  // Edge-runtime build refuses static-analysable node:* imports here
+  // even though this code path only runs under NEXT_RUNTIME=nodejs (see
+  // the guard in register()). createRequire escapes the analysis.
+  const { createRequire } = await import('node:module');
+  const req = createRequire(import.meta.url);
+  const fsMod = req('node:fs') as typeof import('node:fs');
+  const { existsSync, promises: fs } = fsMod;
+  const { join } = req('node:path') as typeof import('node:path');
   const { papercuspRoot } = await import('./lib/papercusp-root');
   const harnessesDir = join(papercuspRoot(), 'harnesses');
   if (!existsSync(harnessesDir)) return;
