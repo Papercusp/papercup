@@ -18,6 +18,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
@@ -68,6 +69,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          submodules: recursive
 
       - uses: actions/setup-node@v4
         with:
@@ -112,3 +114,85 @@ jobs:
           path: apps/operator/junit-e2e.xml
           reporter: java-junit
           fail-on-error: false
+
+  visual:
+    name: Visual regression (Lost Pixel)
+    needs: affected
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Per spec §1.11: visual regression is opt-in via PR label, plus
+    # auto-applied when story files touch (CODEOWNERS handles the latter
+    # by adding the label automatically — wire that separately).
+    if: |
+      contains(github.event.pull_request.labels.*.name, 'run-visual') ||
+      github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('**/package-lock.json') }}
+
+      - name: Install Lost Pixel's pinned Chromium
+        run: node node_modules/lost-pixel/node_modules/playwright-core/cli.js install chromium
+
+      - name: Build Storybook (ui-primitives)
+        working-directory: libs/ui-primitives
+        run: npm run build-storybook
+
+      - name: Lost Pixel comparison (ui-primitives)
+        working-directory: libs/ui-primitives
+        run: npm run lostpixel
+
+      - name: Build Storybook (marketplace-public-ui)
+        working-directory: libs/marketplace-public-ui
+        run: npm run build-storybook
+
+      - name: Lost Pixel comparison (marketplace-public-ui)
+        working-directory: libs/marketplace-public-ui
+        run: npm run lostpixel
+
+      - name: Build Storybook (agent-chat)
+        working-directory: libs/agent-chat
+        run: npm run build-storybook
+
+      - name: Lost Pixel comparison (agent-chat)
+        working-directory: libs/agent-chat
+        run: npm run lostpixel
+
+      - name: Build Storybook (operator)
+        working-directory: apps/operator
+        run: npm run build-storybook
+
+      - name: Lost Pixel comparison (operator)
+        working-directory: apps/operator
+        run: npm run lostpixel
+
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lost-pixel-diffs
+          path: |
+            libs/ui-primitives/lostpixel-current
+            libs/ui-primitives/lostpixel-diff
+            libs/marketplace-public-ui/lostpixel-current
+            libs/marketplace-public-ui/lostpixel-diff
+            libs/agent-chat/lostpixel-current
+            libs/agent-chat/lostpixel-diff
+            apps/operator/lostpixel-current
+            apps/operator/lostpixel-diff
+          if-no-files-found: ignore

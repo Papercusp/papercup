@@ -1,0 +1,16 @@
+# Auto-applied PR labels — read by .github/workflows/labeler.yml
+# Per testing-spec §1.11 visual-regression and §1.9 E2E policy.
+
+run-visual:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'libs/**/*.stories.@(ts|tsx)'
+      - 'libs/**/lostpixel.config.ts'
+      - 'libs/**/.storybook/**'
+      - 'libs/**/lostpixel-baseline/**'
+
+run-e2e:
+  - changed-files:
+    - any-glob-to-any-file:
+      - 'apps/**/e2e/**'
+      - 'apps/**/playwright.config.ts'
