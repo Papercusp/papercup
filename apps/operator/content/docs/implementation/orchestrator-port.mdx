@@ -8,10 +8,10 @@ import { Callout } from 'fumadocs-ui/components/callout';
 
 ## Why this exists
 
-The autonomous-harness orchestrator was historically a 2,122-line bash script (`libs/papercusp/packages/harness/run.sh`). The desktop app needs to drop the bash prereq for Windows users (Git for Windows is currently required to run the loop). A TypeScript port of `run.sh` achieves that without losing Claude Max subscription support — the port keeps `claude -p` as a child-process spawn rather than switching to the SDK.
+The autonomous-harness orchestrator was historically a 2,122-line bash script (`libs/papercusp/packages/harness/run.sh`). The desktop app needs to drop the bash prereq for Windows users (Git for Windows is currently required to run the loop). A TypeScript port of `run.sh` achieves that without losing Claude Max subscription support — the port keeps the agent CLI (`omp -p` by default, `claude -p` opt-in) as a child-process spawn rather than switching to the SDK.
 
 <Callout type="warn" title="Hard constraint for handoff">
-Do **not** swap `claude -p` for `@anthropic-ai/sdk`. The CLI handles Claude Max auth via the user's Claude Code session; the SDK route requires API keys and breaks Max users. The whole point of the port is to drop bash, not Claude Code.
+Do **not** swap the agent CLI (`omp -p` or `claude -p`) for `@anthropic-ai/sdk`. Both CLIs handle Claude Max auth via the user's Claude Code session (omp via Meridian's SDK-bridge, claude directly); the SDK route requires API keys and breaks Max users. The whole point of the port is to drop bash, not the CLI layer.
 </Callout>
 
 ## Where it lives
@@ -43,7 +43,7 @@ New package `@papercusp/orchestrator` at `libs/papercusp/packages/orchestrator/`
 
 ## Branch + tag state
 
-- **Branch:** `feat/desktop-app` on `aviynw/Restart`, currently at `4e4103ea` (top commit: *chore: bump libs/papercusp — orchestrator Stage 5d*)
+- **Branch:** `feat/desktop-app` on `papercupai/papercup`, currently at `4e4103ea` (top commit: *chore: bump libs/papercusp — orchestrator Stage 5d*)
 - **Submodule:** `libs/papercusp` at `papercupai/papercusp@202234d`
 - **Latest desktop release:** `desktop-v0.0.1` (draft on GitHub Releases). Stage 0 → 5d work was done after the v0.0.1 cut; will land on v0.0.2.
 

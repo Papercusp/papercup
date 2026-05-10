@@ -31,7 +31,7 @@ In scope:
 Out of scope:
 
 - Per-harness schemas (`harness_<slug>`). These are already isolated by name; reads route through DI services that resolve workspace from session.
-- pglite desktop mode. Each desktop workspace runs its own pglite-data directory and is socket-isolated; the GUC contract is a no-op there but does not interfere.
+- Single-workspace desktop modes. The default desktop backend (`embedded-postgres`) and the legacy backend (`pglite`) each run their own per-workspace data directory; both are isolated by process + data dir, so the GUC contract is a no-op there but does not interfere.
 - Cross-workspace queries. Not exposed through any v1 surface.
 
 ## Schema
@@ -149,7 +149,7 @@ These hold by construction once the migration completes:
 
 - **A compromised `harness_admin` role.** Admin bypasses RLS by design (migrations).
 - **A leaked workspace bearer token.** Token holder can act as that workspace; recovery is workspace-level (analogous to the per-harness recovery in `auth-and-identity`).
-- **pglite single-workspace mode.** Where each workspace runs its own pglite instance, RLS is redundant but not harmful.
+- **Single-workspace desktop modes.** Both the default `embedded-postgres` backend and the legacy `pglite` backend run one PG instance per workspace, so RLS is redundant but not harmful.
 
 ## Compatibility
 

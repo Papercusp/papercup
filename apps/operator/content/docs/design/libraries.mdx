@@ -215,13 +215,13 @@ return (
 
 **Do not** introduce `formik`, `@rjsf/core`, `@jsonforms/react`, `uniforms`, or `@formily/react`. They were all considered and rejected in favour of RHF — adding any of them creates two parallel form systems.
 
-## `motion` + `@formkit/auto-animate` + `next-view-transitions`
+## `motion` + `@formkit/auto-animate` + `next-transition-router`
 
 **What:** The animation stack. Three libraries that complement each other; **use them together, not as alternatives.**
 
 - **`motion`** (the rebrand of `framer-motion` — same engine, same author) — the general-purpose React animation lib. WAAPI-backed since v10, so transforms run on the native compositor. ~41 KB gzip.
 - **`@formkit/auto-animate`** — purpose-built for one job: animate when children of an element are added, removed, or reordered. Drop-in via `useAutoAnimate()`. WAAPI direct, zero React re-renders. ~3 KB gzip.
-- **`next-view-transitions`** — thin wrapper for the **native View Transitions API** in Next.js App Router. ~2 KB. Use for cross-route page transitions; browser does the work.
+- **`next-transition-router`** — the route-transition layer we use in App Router. It coordinates internal navigations through a shared transition provider.
 
 **The rule of three** (memorize this):
 
@@ -230,7 +230,7 @@ return (
 | Modal / popover / dropdown / tab open + close | **CSS** with `[data-anim="pop"]` / `[data-anim="fade"]` keyed off Radix `data-state="open"` | Native compositor, zero JS cost, no library import. Tokens live in `globals.css` (`--ease-*`, `--dur-*`). |
 | **List item add / remove / reorder** | **`auto-animate`** | One-line `useAutoAnimate()` ref. Don't reach for `motion.li` + `AnimatePresence` — it's more code, more re-renders, same visual result. |
 | Counter tweens, choreography, drag, `layout` shifts, `whileHover` / `whileTap` | **`motion`** | `useMotionValue` + `animate()` for counters; `<motion.div layout>` for FLIP layout; gestures via `<motion.div drag>`. |
-| Cross-route page transitions | **native View Transitions API** via `next-view-transitions` | Browser-native compositor; zero JS animation cost. |
+| Cross-route page transitions | **`next-transition-router`** via the shared `RouteTransitionProvider` | Centralized control over app-wide route choreography and transition lifecycle. |
 
 **Don't use** for app UI: `gsap`, `@theatre/core`, `@react-spring/web`, `popmotion`. They're either overkill, abandoned, or duplicates of what `motion` covers in our context. GSAP/Theatre are right for marketing scrolly pages, not app chrome.
 

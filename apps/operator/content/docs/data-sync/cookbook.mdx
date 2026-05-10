@@ -14,7 +14,8 @@ panel.
 import { useMemo } from 'react';
 import { useQuery } from '@rocicorp/zero/react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
-import { queries, slugToSnapshotsKey, type SnapshotRow } from '@restart/zero-harness';
+import type { SnapshotConsolidatedRow } from '@restart/zero-harness';
+import { useSyncQuery } from '@restart/sync';
 
 interface Props {
   slug: string;
@@ -22,7 +23,10 @@ interface Props {
 }
 
 export default function MySnapshotsPanel({ slug, onSelect }: Props) {
-  const [rows] = useQuery(queries.snapshots(slugToSnapshotsKey(slug)));
+  const { data: rows } = useSyncQuery<SnapshotConsolidatedRow>({
+    queryName: 'snapshotsConsolidated.bySlug',
+    args: [slug],
+  });
 
   const columns = useMemo<ColumnDef<SnapshotRow>[]>(() => [
     {
