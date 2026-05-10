@@ -17,9 +17,12 @@
  */
 
 import { stripWakeWordAndPrefix } from '../../../lib/wake-word';
+import { createOperatorVoiceTagObserver } from '../../../lib/operator-converse-voice';
+import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-client';
 
 export type VoiceModeStatus =
   | 'off'                    // Voice mode disabled
+  | 'connecting'             // Bringing up full-agent session (EL/Realtime negotiating)
   | 'idle'                   // Listening for wake word (or idle in PTT)
   | 'listening'              // Actively recording user speech
   | 'speaking'               // Reading agent text
@@ -40,10 +43,22 @@ export interface VoiceState {
   lastTranscript: string;
   /** Currently-speaking role (e.g. 'orchestrator', 'operator', 'system:oracle'). */
   speakingRole: string | null;
-  /** Pulses true for ~1.2s when a wake word is detected (any engine —
+  /** Pulses true for ~2.5s when a wake word is detected (any engine —
    *  Porcupine, openWakeWord, or string-match in transcript). UI uses
-   *  this to flash a visual indicator on the voice button. */
+   *  this to flash an amber visual indicator on the voice button. */
   wakeDetected: boolean;
+  /** Pulses true for ~2s when the user just finished an utterance the
+   *  voice engine accepted (EL Conv AI transcript, Whisper finalized,
+   *  Realtime turn end). Distinct from wakeDetected — flashes cyan, not
+   *  amber, so the user can tell "wake word fired" from "agent heard
+   *  the full utterance". */
+  userSpoke: boolean;
+  /** True while a full-agent engine (EL Conv AI / OpenAI Realtime) owns
+   *  the microphone. Suppresses our local useMicLevel analyser so two
+   *  concurrent getUserMedia consumers don't fight for the device —
+   *  some browsers serialize this and the second-acquired track
+   *  delivers no media, breaking WebRTC negotiation downstream. */
+  micOwnedByFullAgent: boolean;
 }
 
 interface VoiceConfig {
@@ -78,6 +93,8 @@ let state: VoiceState = {
   lastTranscript: '',
   speakingRole: null,
   wakeDetected: false,
+  userSpoke: false,
+  micOwnedByFullAgent: false,
 };
 
 // Pulse the wake-detected flag for ~1.2s. Auto-clears so the visual
@@ -94,7 +111,24 @@ export function signalWakeDetected(): void {
   wakeDetectedTimer = setTimeout(() => {
     wakeDetectedTimer = null;
     setState({ wakeDetected: false });
-  }, 1200);
+  }, 2500);
+}
+
+// Pulse the "user-spoke" flag for ~2s. Different state + different
+// color from wakeDetected so the user can tell "wake word fired" apart
+// from "agent received my full utterance". Used by EL Conv AI's
+// onTranscript callback and the legacy Whisper finalized-result path.
+let userSpokeTimer: ReturnType<typeof setTimeout> | null = null;
+export function pulseUserSpoken(): void {
+  if (userSpokeTimer) {
+    clearTimeout(userSpokeTimer);
+    userSpokeTimer = null;
+  }
+  setState({ userSpoke: true });
+  userSpokeTimer = setTimeout(() => {
+    userSpokeTimer = null;
+    setState({ userSpoke: false });
+  }, 2000);
 }
 
 let config: VoiceConfig = { ...DEFAULT_CONFIG };
@@ -173,6 +207,21 @@ export function updateVoiceConfig(patch: Partial<VoiceConfig>): void {
 export function initVoiceMode(): void {
   if (typeof window === 'undefined') return;
   config = loadConfig();
+
+  // Release the EL/Realtime session immediately on tab close or refresh.
+  // Without this, the EL workspace concurrency slot stays held for ~30s
+  // server-side, blocking the next page load (and any other tab) from
+  // minting a new session. pagehide fires for both close and refresh
+  // (beforeunload doesn't fire reliably on mobile / on hidden tabs).
+  // .stop() is fire-and-forget — the page is going away.
+  const releaseOnUnload = () => {
+    if (realtimeSession) {
+      try { void realtimeSession.stop(); } catch { /* page is gone, swallow */ }
+      realtimeSession = null;
+    }
+  };
+  window.addEventListener('pagehide', releaseOnUnload);
+  window.addEventListener('beforeunload', releaseOnUnload);
   // Voice mode is "supported" as long as the runtime can plausibly speak
   // OR transcribe via *some* engine. Web Speech is sufficient but not
   // required — Tauri/WebKitGTK lacks it but Voicemode (local Kokoro +
@@ -185,29 +234,53 @@ export function initVoiceMode(): void {
   const hasWebSpeechTTS = !!window.speechSynthesis;
   setState({ supported: true, hasWebSpeechSTT, hasWebSpeechTTS });
 
-  // Prime the TTS engine cache so the first speak() routes through
-  // the user's chosen engine instead of defaulting to Browser TTS.
-  void fetchPreferredEngine();
+  // Defer the network-touching + heavy-import parts of init until the
+  // browser has done first paint and is otherwise idle. Without this,
+  // mounting the global VoiceButton synchronously triggers:
+  //   - fetch /api/agent-mcp/operator-voice-prefs (~tens of ms)
+  //   - fetch /api/agent-mcp/operator-elevenlabs-bootstrap (2.4s cold)
+  //   - dynamic import of @elevenlabs/client (~3 MB chunk parse)
+  //   - WebRTC handshake to the EL workspace
+  // …on every page load even for users who don't use voice. Pushing this
+  // to requestIdleCallback gets it off the critical path; the visible
+  // VoiceButton renders immediately, and the user-perceived "Connecting…"
+  // status appears within ~100ms of paint instead of blocking it.
+  const runDeferred = () => {
+    // Prime the TTS engine cache so the first speak() routes through
+    // the user's chosen engine instead of defaulting to Browser TTS.
+    void fetchPreferredEngine();
 
-  // Restore last mode from config so navigation preserves user choice.
-  // Skip if state.mode is already non-off (init may run again on hot reload).
-  if (state.mode === 'off' && config.lastMode !== 'off') {
-    setVoiceMode(config.lastMode);
+    // Restore last mode from config so navigation preserves user choice.
+    // Skip if state.mode is already non-off (init may run again on hot reload).
+    if (state.mode === 'off' && config.lastMode !== 'off') {
+      setVoiceMode(config.lastMode);
+    }
+  };
+  const ric = (window as Window & { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number }).requestIdleCallback;
+  if (typeof ric === 'function') {
+    ric(runDeferred, { timeout: 1500 });
+  } else {
+    setTimeout(runDeferred, 50);
   }
 
   // Pre-populate available voices once they're loaded by the browser.
-  const populateVoices = () => {
-    const voices = window.speechSynthesis.getVoices();
-    if (voices.length && !config.defaultVoice) {
-      // Prefer en-US voices; fallback to first available.
-      const preferred = voices.find((v) => v.lang.startsWith('en-US'));
-      config.defaultVoice = (preferred ?? voices[0]).name;
-      saveConfig();
+  // Skip on runtimes without the Web Speech API (Tauri/WebKitGTK has no
+  // SpeechSynthesis) — `hasWebSpeechTTS` is set above; cloud engines and
+  // local Voicemode handle the speak path on those runtimes.
+  if (hasWebSpeechTTS) {
+    const populateVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
+      if (voices.length && !config.defaultVoice) {
+        // Prefer en-US voices; fallback to first available.
+        const preferred = voices.find((v) => v.lang.startsWith('en-US'));
+        config.defaultVoice = (preferred ?? voices[0]).name;
+        saveConfig();
+      }
+    };
+    populateVoices();
+    if (typeof window.speechSynthesis.onvoiceschanged !== 'undefined') {
+      window.speechSynthesis.onvoiceschanged = populateVoices;
     }
-  };
-  populateVoices();
-  if (typeof window.speechSynthesis.onvoiceschanged !== 'undefined') {
-    window.speechSynthesis.onvoiceschanged = populateVoices;
   }
 }
 
@@ -285,7 +358,10 @@ function voiceForRole(roleOrComposite: string): string | null {
 
   // Auto-assign a voice for this role if not configured. We hash the
   // role name to a stable index into the available voices list.
+  // Tauri/WebKitGTK lacks SpeechSynthesis — fall back to defaultVoice
+  // (cloud / Voicemode engines have their own role-pool logic elsewhere).
   if (typeof window === 'undefined') return null;
+  if (!window.speechSynthesis) return config.defaultVoice;
   const voices = window.speechSynthesis.getVoices();
   if (!voices.length) return config.defaultVoice;
   const enVoices = voices.filter((v) => v.lang.startsWith('en'));
@@ -319,10 +395,28 @@ export function setVoiceMode(mode: VoiceMode): void {
   if (mode === 'off') {
     cancelAllSpeech();
     stopWhisperCaptureIfRunning();
-    setState({ mode, status: 'off' });
+    setState({ mode, status: 'off', micOwnedByFullAgent: false });
     return;
   }
-  setState({ mode, status: 'idle' });
+  // Claim mic ownership SYNCHRONOUSLY in the same setState that flips
+  // the mode. Without this, React renders once with mode='always-on'
+  // but micOwnedByFullAgent=false → useMicLevel opens getUserMedia → a
+  // microtask later maybeStartFullAgent flips the flag → useMicLevel
+  // tears down its stream — and EL has now also opened getUserMedia in
+  // parallel on top of the cleanup, getting a silent track. Setting
+  // both flags in one render eliminates the window entirely.
+  setState({ mode, status: 'connecting', micOwnedByFullAgent: true });
+  // User-clicked-voice-on is also a "take voice over here" gesture.
+  // Request the lead so any other tab currently running EL/STT yields.
+  // No-op if we're already leader, or if BroadcastChannel is unavailable
+  // (Safari private windows / WebViews — single-tab fallback handles it).
+  try {
+    const { requestVoiceLead, getVoiceLeaderState } = require('./voice-leader') as typeof import('./voice-leader');
+    const ls = getVoiceLeaderState();
+    if (ls.available && !ls.isLeader) {
+      requestVoiceLead(`user-set-mode-${mode}`);
+    }
+  } catch { /* leader module not yet loaded — initial subscriber boot will handle */ }
   // STT capture is leader-gated: only one tab in the BroadcastChannel
   // group opens the mic + transcribes. Followers stay silent so we don't
   // run N parallel getUserMedia + N transcription pipelines + dispatch
@@ -348,11 +442,15 @@ function syncSttToLeader(): void {
   if (state.mode === 'off') {
     stopWhisperCaptureIfRunning();
     stopRealtimeSession();
+    stopWakeWordGate();
+    // Clear the WebRTC-blocked gate so the user can retry the full
+    // EL stack after switching networks / disabling VPN / etc.
     return;
   }
   if (!maybeIsLeader()) {
     stopWhisperCaptureIfRunning();
     stopRealtimeSession();
+    stopWakeWordGate();
     if (recognition) {
       try { recognition.stop(); } catch { /* ignore */ }
       recognition = null;
@@ -370,24 +468,308 @@ function syncSttToLeader(): void {
 }
 
 let realtimeSession: { stop(): Promise<void>; sendSystem?: (text: string) => void } | null = null;
+/** Timestamp of last EL onConnect; reset to 0 in onDisconnect. Used to
+ *  differentiate immediate-disconnect (negotiation failure) vs. mid-session
+ *  drops vs. natural session-end so the toast wording matches reality. */
+let elConnectedAt = 0;
 
-function stopRealtimeSession(): void {
-  if (!realtimeSession) return;
-  void realtimeSession.stop();
-  realtimeSession = null;
+// One-shot gate: set when EL fails with a WebRTC negotiation error so
+// subsequent toggles in the same session skip EL and go straight to
+// Whisper. Cleared on voice-mode 'off' or on prefs change.
+
+// Idle-disconnect timer for EL Conv AI / Realtime sessions. Mic streams
+// continuously while connected; silence still bills minutes. The timer
+// is reset by every transcript event + voice-button click. Default
+// timeout from voice-prefs (5 min); 0 = disabled.
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+let idleTimeoutMs = 5 * 60_000;
+
+function clearIdleTimer(): void {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
 }
+
+function armIdleTimer(): void {
+  clearIdleTimer();
+  if (idleTimeoutMs <= 0) return;
+  if (!realtimeSession) return;
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (!realtimeSession) return;
+    const labelMin = Math.round(idleTimeoutMs / 60_000);
+    const labelSec = Math.round(idleTimeoutMs / 1000);
+    const label = labelMin >= 1 ? `${labelMin}m` : `${labelSec}s`;
+    void emitVoiceToast('info', wakeGated
+      ? `Voice idle ${label} — going back to wake-word listening.`
+      : `Voice idle ${label} — disconnecting to save minutes. Tap the button to resume.`);
+    stopRealtimeSession();
+    setState({ status: state.mode === 'off' ? 'off' : 'idle' });
+    // Wake-word-gated mode: restart the local listener so the next
+    // wake utterance brings the session back. Always-on mode just
+    // sits idle until the user taps the button again.
+    if (wakeGated && state.mode !== 'off') {
+      void startWakeWordGate(wakeGatedPrefsCache).catch(() => {});
+    }
+  }, idleTimeoutMs);
+}
+
+/** Public hook so other modules can reset the idle clock. */
+/**
+ * Push a system-style note into the live EL session so the agent
+ * sees it on its next turn. Used by the async delegate path: when
+ * a long delegate finishes, the OperatorDelegationListener calls
+ * this with the result headline so the agent can speak about it
+ * naturally instead of having said "looking into that" minutes ago
+ * and never followed up.
+ *
+ * No-op when there's no active full-agent session (the user might
+ * be on the Whisper-only path, or have voice off entirely). Result
+ * still lands in the panel via the parallel
+ * operator:delegation-complete event.
+ */
+export function sendSystemToActiveSession(text: string): boolean {
+  if (!realtimeSession?.sendSystem) return false;
+  try {
+    realtimeSession.sendSystem(text);
+    return true;
+  } catch (e) {
+    console.warn('[voice-mode] sendSystem failed:', e);
+    return false;
+  }
+}
+
+export function nudgeFullAgentIdle(): void {
+  if (realtimeSession) armIdleTimer();
+}
+
+/**
+ * Drain the delegate-inbox into the live EL session. Folds all pending
+ * notifications into a single contextual update so the agent gets one
+ * compact briefing, not a flood. No-op if nothing pending or no session.
+ */
+async function drainDelegateInboxOnConnect(): Promise<void> {
+  if (!realtimeSession?.sendSystem) return;
+  try {
+    const r = await fetch('/api/agent-mcp/delegate-inbox?drain=1');
+    if (!r.ok) return;
+    const data = await r.json();
+    const items: Array<{ headline: string }> = data?.items ?? [];
+    if (items.length === 0) return;
+    const header = items.length === 1
+      ? '[While you were away, 1 update]'
+      : `[While you were away, ${items.length} updates]`;
+    const body = items.map((it, i) => `${i + 1}. ${it.headline}`).join(' ');
+    realtimeSession.sendSystem(`${header} ${body}`);
+  } catch (e) {
+    console.warn('[voice-mode] inbox drain failed:', e);
+  }
+}
+
+// Tracks the in-flight stop so a re-entry (rapid off→on, focus-follows-
+// tab swap, syncSttToLeader cascade) waits for the previous session's
+// mic track to fully release before getUserMedia retries. Without this
+// gate, Chrome throws NotReadableError → 'Could not start audio source'
+// because the device looks busy mid-teardown.
+let stopInFlight: Promise<void> | null = null;
+function stopRealtimeSession(): Promise<void> {
+  clearIdleTimer();
+  if (!realtimeSession) return stopInFlight ?? Promise.resolve();
+  const session = realtimeSession;
+  realtimeSession = null;
+  setState({ micOwnedByFullAgent: false });
+  stopInFlight = (async () => {
+    try { await session.stop(); }
+    catch { /* swallow — best effort */ }
+    // Belt-and-suspenders: a tiny grace window for Chrome to flush the
+    // device handle. The SDK's endSession resolves before the underlying
+    // MediaStreamTrack.stop() has propagated to the OS-level audio
+    // session, so a follow-up getUserMedia on the same tick can still
+    // see the device busy. 150ms is below user-perceptible delay and
+    // empirically enough on macOS/Linux/Windows.
+    await new Promise<void>((res) => setTimeout(res, 150));
+  })();
+  stopInFlight.finally(() => { stopInFlight = null; });
+  return stopInFlight;
+}
+
+/** Public wait-for-stop used by maybeStartFullAgent before re-acquiring. */
+export function waitForRealtimeSessionStop(): Promise<void> {
+  return stopInFlight ?? Promise.resolve();
+}
+
+// ── Wake-word-gated EL session ──────────────────────────────────────
+// When voicePrivacyMode='wake-word-gated', the local wake-word engine
+// (Porcupine / openWakeWord) listens on-device. mic-to-EL streaming
+// only happens between wake-fire and idle-disconnect.
+
+let wakeGated = false;
+let wakeGatedPrefsCache: any = null;
+let wakeGateHandle: { stop(): Promise<void> } | null = null;
+
+async function startWakeWordGate(prefs: any): Promise<boolean> {
+  if (wakeGateHandle) return true;
+  // Pick the engine: prefs.wakeWordEngine ('porcupine' | 'openwakeword').
+  // 'off' is invalid here — the gated path requires a real engine.
+  const engine = prefs?.wakeWordEngine ?? 'off';
+  if (engine === 'off') {
+    void emitVoiceToast(
+      'error',
+      'Wake-word-gated privacy mode needs a wake-word engine. Set wakeWordEngine to porcupine or openwakeword in /settings/voice.',
+    );
+    return false;
+  }
+  try {
+    if (engine === 'porcupine') {
+      const bootR = await fetch('/api/agent-mcp/operator-picovoice-bootstrap').catch(() => null);
+      if (!bootR?.ok) {
+        void emitVoiceToast('error', 'Wake-word gate: missing Picovoice key. Add it in /settings/api-keys.');
+        return false;
+      }
+      const apiKey: string | null = (await bootR.json())?.apiKey ?? null;
+      if (!apiKey) return false;
+      const { startWakeWordDetection } = await import('../../../lib/voice-engines/porcupine');
+      wakeGateHandle = await startWakeWordDetection({
+        accessKey: apiKey,
+        keyword: prefs.porcupineKeyword ?? 'Computer',
+        onWake: () => { signalWakeDetected(); void onWakeFireGated(prefs); },
+        onError: (err) => console.warn('[wake-gate]', err),
+      });
+    } else if (engine === 'openwakeword') {
+      const { startOpenWakeWordDetection } = await import('../../../lib/voice-engines/openwakeword');
+      wakeGateHandle = await startOpenWakeWordDetection({
+        keyword: prefs.openwakewordKeyword ?? 'hey_jarvis',
+        threshold: 0.5,
+        onWake: () => { signalWakeDetected(); void onWakeFireGated(prefs); },
+        onError: (err) => console.warn('[wake-gate]', err),
+      });
+    } else {
+      return false;
+    }
+    setState({ status: 'idle' });
+    void emitVoiceToast('info', `Listening for "${prefs.porcupineKeyword ?? prefs.openwakewordKeyword ?? 'wake word'}". Mic stays on-device until you say it.`);
+    return true;
+  } catch (err) {
+    console.warn('[wake-gate] start failed:', err);
+    return false;
+  }
+}
+
+function stopWakeWordGate(): void {
+  if (!wakeGateHandle) return;
+  void wakeGateHandle.stop().catch(() => {});
+  wakeGateHandle = null;
+}
+
+async function onWakeFireGated(prefs: any): Promise<void> {
+  // Tear down the local listener before bringing up EL — they share
+  // the mic and Porcupine's stream is in the way of EL's WebRTC capture.
+  stopWakeWordGate();
+  // Honor the per-gated idle budget rather than the always-on default.
+  const gatedSec = Math.max(5, Math.min(300, Number(prefs?.wakeGatedIdleTimeoutSec ?? 20)));
+  idleTimeoutMs = gatedSec * 1000;
+  const ok = await startElevenLabsConvAgent(prefs);
+  if (!ok) {
+    // Failed to bring up EL — go back to listening so the user can retry.
+    void startWakeWordGate(prefs).catch(() => {});
+  }
+}
+
+let fullAgentStarting: Promise<boolean> | null = null;
 
 async function maybeStartFullAgent(): Promise<boolean> {
   if (realtimeSession) return true;
+  // Reentrancy guard: syncSttToLeader can fire from multiple sources
+  // (tab focus, leader-change, mode-change) within the same tick. Without
+  // this, two concurrent startElevenLabsConv calls each call
+  // getUserMedia — Chrome arbitrates by giving one a working track and
+  // the other a silent one, and EL ends up with the silent one (zero
+  // audio in/out for the entire session).
+  if (fullAgentStarting) return fullAgentStarting;
+  fullAgentStarting = (async () => {
+    try {
+      // Wait for any in-flight stop from a previous session to fully
+      // release the device before we acquire it again. Without this,
+      // a quick off→on toggle (or a focus-follows-tab handover) calls
+      // getUserMedia while Chrome's still tearing down the previous
+      // track, which throws NotReadableError → "Could not start audio
+      // source" → fallback to Whisper. The wait is bounded inside
+      // stopRealtimeSession (~150ms) so it's invisible if there's no
+      // prior session.
+      await waitForRealtimeSessionStop();
+      return await maybeStartFullAgentInner();
+    } finally { fullAgentStarting = null; }
+  })();
+  return fullAgentStarting;
+}
+
+async function maybeStartFullAgentInner(): Promise<boolean> {
+  // Optimistically show "Connecting…" + claim the mic so useMicLevel
+  // does NOT spin up its own getUserMedia in the gap between the
+  // mode-change and the EL SDK's mic acquisition. Two consumers in
+  // close succession on Chrome can leave EL's published track silent
+  // (60s ICE timeout, no audio reaches the agent — exact field bug).
+  // Reset both below if no full-agent engine ends up applying.
+  if (state.mode !== 'off' && state.status !== 'connecting') {
+    setState({ status: 'connecting', micOwnedByFullAgent: true });
+  }
+  const resetIfNotStarted = () => {
+    if (!realtimeSession && state.status === 'connecting') {
+      setState({
+        status: state.mode === 'off' ? 'off' : 'idle',
+        micOwnedByFullAgent: false,
+      });
+    }
+  };
   // Track which "stage" we reached so the failure toast can point at the
   // exact thing that broke (prefs / bootstrap / SDK connect / runtime err).
   let stage: 'prefs' | 'bootstrap' | 'connect' | 'runtime' = 'prefs';
   try {
-    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs');
+    const prefsR = await fetch('/api/agent-mcp/operator-voice-prefs', { signal: AbortSignal.timeout(10000) });
     if (!prefsR.ok) return false;
     const prefs = await prefsR.json();
+    // Pull idle-timeout pref so both EL and Realtime paths can use it.
+    if (typeof prefs.fullAgentIdleTimeoutMin === 'number') {
+      idleTimeoutMs = Math.max(0, prefs.fullAgentIdleTimeoutMin) * 60_000;
+    }
+    // Wake-word-gated mode: don't open EL/Realtime yet — start the local
+    // wake-word engine instead. The onWake callback brings up EL only
+    // when the wake word fires.
+    wakeGated = prefs.voicePrivacyMode === 'wake-word-gated';
+    wakeGatedPrefsCache = prefs;
+    if (wakeGated && (prefs.fullAgentEngine === 'elevenlabs-conv' || prefs.fullAgentEngine === 'elevenlabs-conversational' || prefs.fullAgentEngine === 'openai-realtime')) {
+      const started = await startWakeWordGate(prefs);
+      // Even if the gate failed to start, return true so we don't fall
+      // through to Whisper-always-on; surfacing the error toast is enough.
+      return started;
+    }
     // ElevenLabs Conv AI — primary path in v5+
     if (prefs.fullAgentEngine === 'elevenlabs-conv' || prefs.fullAgentEngine === 'elevenlabs-conversational') {
+      // Spend-cap check. Skip silently if the endpoint isn't reachable
+      // (degraded mode); refuse only on a hard "over_cap: true". Warn
+      // (toast, don't refuse) at 80% so the user has time to react.
+      try {
+        const sr = await fetch('/api/agent-mcp/operator-el-spend', { signal: AbortSignal.timeout(5000) });
+        if (sr.ok) {
+          const spend = await sr.json() as {
+            over_cap?: boolean; minutes_used?: number; minutes_cap?: number | null; pct_used?: number | null;
+          };
+          if (spend.over_cap) {
+            void emitVoiceToast(
+              'error',
+              `EL monthly cap hit (${spend.minutes_used}/${spend.minutes_cap} min). Raise the cap in /settings/voice or wait for next month.`,
+            );
+            return false;
+          }
+          if (spend.pct_used != null && spend.pct_used >= 0.8 && spend.minutes_cap) {
+            void emitVoiceToast(
+              'info',
+              `EL usage ${Math.round((spend.pct_used) * 100)}% of monthly cap (${spend.minutes_used}/${spend.minutes_cap} min). Auto-disconnect after idle keeps the meter down.`,
+            );
+          }
+        }
+      } catch { /* fail-open if check is broken — the user explicitly toggled voice on */ }
       return await startElevenLabsConvAgent(prefs);
     }
     if (prefs.fullAgentEngine !== 'openai-realtime') return false;
@@ -404,31 +786,62 @@ async function maybeStartFullAgent(): Promise<boolean> {
     }
     stage = 'connect';
     const { startRealtimeSession } = await import('../../../lib/voice-engines/openai-realtime');
+    // Same tag observer as the EL Conv AI path — operator can flip
+    // mode / set sleep timer via tags emitted in either voice engine.
+    const realtimeTagObserver = createOperatorVoiceTagObserver();
     realtimeSession = await startRealtimeSession(apiKey, {
       onTranscript: (text) => {
         setState({ lastTranscript: text });
+        void persistOperatorVoiceTurn({ role: 'user', text, source: 'voice_stt' });
+        nudgeFullAgentIdle();
+      },
+      onAssistantText: (text) => {
+        realtimeTagObserver.push(text);
+        void persistOperatorVoiceTurn({ role: 'assistant', text, source: 'voice_tts' });
+        nudgeFullAgentIdle();
       },
       onError: (err) => {
         console.error('[realtime]', err);
+        try { realtimeTagObserver.flush(); realtimeTagObserver.dispose(); } catch { /* ignore */ }
         void emitVoiceToast('error', `Realtime runtime error: ${err?.message ?? String(err)}`);
       },
     });
-    setState({ status: 'listening' });
+    setState({ status: 'listening', micOwnedByFullAgent: true });
     void emitVoiceToast('info', 'Realtime connected — speak to talk to the operator.');
+    armIdleTimer();
     return true;
   } catch (err: any) {
     console.warn('[voice] realtime start failed at stage=' + stage + ':', err);
     void emitVoiceToast('error', `Realtime failed at ${stage}: ${err?.message ?? String(err)}. Falling back to Whisper.`);
     return false;
+  } finally {
+    // Always clear the optimistic 'connecting' if no session ended up
+    // attached — covers every early-return path inside the try block.
+    resetIfNotStarted();
   }
 }
 
 // ── ElevenLabs Conv AI ──────────────────────────────────────────────────
 
+function debugLog(event: string, detail?: unknown): void {
+  if (typeof window === 'undefined') return;
+  console.log(`[voice-debug] ${event}`, detail ?? '');
+  void fetch('/api/agent-mcp/voice-debug', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ event, detail, ts: Date.now() }),
+  }).catch(() => { /* best-effort */ });
+}
+
 async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
+  debugLog('el-conv:start-attempt', { mode: state.mode });
+  // Claim the mic NOW — before useMicLevel's effect spins up its own
+  // getUserMedia. Two concurrent getUserMedia consumers on Chrome can
+  // leave EL's WebRTC track empty, breaking ICE media negotiation.
+  setState({ micOwnedByFullAgent: true });
   let stage: 'bootstrap' | 'connect' | 'runtime' = 'bootstrap';
   try {
-    const bootR = await fetch('/api/agent-mcp/operator-elevenlabs-bootstrap');
+    const bootR = await fetch('/api/agent-mcp/operator-elevenlabs-bootstrap', { signal: AbortSignal.timeout(15000) });
     if (!bootR.ok) {
       const body = await bootR.json().catch(() => ({}));
       const hint = body?.hint ?? '';
@@ -436,6 +849,10 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
         'error',
         `ElevenLabs: ${body?.error ?? `HTTP ${bootR.status}`}. ${hint}`,
       );
+      setState({
+        status: state.mode === 'off' ? 'off' : 'idle',
+        micOwnedByFullAgent: false,
+      });
       return false;
     }
     const { conversationToken, agentId } = (await bootR.json()) as {
@@ -443,34 +860,170 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
     };
     if (!conversationToken || !agentId) {
       void emitVoiceToast('error', 'ElevenLabs bootstrap returned no token. Check agent ID.');
+      setState({
+        status: state.mode === 'off' ? 'off' : 'idle',
+        micOwnedByFullAgent: false,
+      });
       return false;
     }
     stage = 'connect';
+    // Diagnostic: ?elPure=1 in URL bypasses our wrapper entirely and
+    // runs the *exact same code path as the standalone bare-test page*
+    // inside the operator app's React tree. If this works inside the
+    // operator → our wrapper has a bug; if it doesn't → React-tree
+    // environment is interfering with EL's mic publish independently
+    // of any wrapping we do.
+    const isPureMode = typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('elPure') === '1';
+    if (isPureMode) {
+      console.log('[voice] PURE MODE — using bare-test page code path');
+      try {
+        const mod = await import('@elevenlabs/client');
+        // 20s deadline so we surface "still connecting" diagnostics
+        // instead of hanging silently when the SDK never resolves.
+        const t0 = Date.now();
+        const deadline = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error(`startSession deadline 20s exceeded`)), 20000),
+        );
+        const startPromise = mod.Conversation.startSession({
+          conversationToken,
+          connectionType: 'webrtc',
+          textOnly: false,
+          clientTools: {},
+          onConnect: ({ conversationId }: any) => {
+            debugLog('el-pure:onConnect', { conversationId });
+            void emitVoiceToast('info', `EL pure connected: ${conversationId.slice(0, 12)}…`);
+            setState({ status: 'listening' });
+          },
+          onDisconnect: (d: any) => debugLog('el-pure:onDisconnect', d),
+          onMessage: ({ message, source }: any) => {
+            debugLog('el-pure:message', { source, message: String(message).slice(0, 120) });
+            if (source === 'user') setState({ lastTranscript: message });
+          },
+          onError: (m: string) => {
+            debugLog('el-pure:error', { m });
+            void emitVoiceToast('error', `EL pure error: ${m}`);
+          },
+          onModeChange: (m: any) => debugLog('el-pure:mode', m),
+          onStatusChange: (s: any) => debugLog('el-pure:status', s),
+        });
+        const conv = await Promise.race([startPromise, deadline]) as any;
+        debugLog('el-pure:start-resolved', { ms: Date.now() - t0 });
+        realtimeSession = { async stop() { await conv.endSession(); } };
+        return true;
+      } catch (err: any) {
+        debugLog('el-pure:start-failed', { msg: err?.message ?? String(err) });
+        void emitVoiceToast('error', `EL pure failed: ${err?.message ?? String(err)}`);
+        setState({
+          status: state.mode === 'off' ? 'off' : 'idle',
+          micOwnedByFullAgent: false,
+        });
+        return false;
+      }
+    }
     const { startElevenLabsConv } = await import('../../../lib/voice-engines/elevenlabs-conv');
     const tabId = getOrAssignTabId();
+    // Voice-side bridge to the operator-converse tag dispatcher. When
+    // the agent emits a turn that contains <set_mode>/<sleep> tags
+    // (active-mode replies), this observer parses + dispatches the side
+    // effects via the same sessionStorage hooks the text path uses, so
+    // the navbar toggle stays in sync regardless of which surface the
+    // operator flipped from. <say> content is NOT re-rendered — TTS
+    // already speaks it via the agent itself.
+    const tagObserver = createOperatorVoiceTagObserver();
     const handle = await startElevenLabsConv({
       agentId,
       conversationToken,
       workspace: getBrowserWorkspaceId(),
       tabId,
-      onTranscript: (text) => { setState({ lastTranscript: text }); },
+      onTranscript: (text) => {
+        setState({ lastTranscript: text });
+        debugLog('el-conv:user-transcript', { text });
+        pulseUserSpoken();
+        if (text && text.trim().length > 1) onUtteranceFinal(text);
+        const elConvId = handle?.getConversationId?.() ?? null;
+        void persistOperatorVoiceTurn({ role: 'user', text, source: 'voice_stt', elConvId });
+        nudgeFullAgentIdle();
+      },
+      onAssistantText: (text) => {
+        debugLog('el-conv:agent-text', { text: String(text).slice(0, 200) });
+        tagObserver.push(text);
+        const elConvId = handle?.getConversationId?.() ?? null;
+        void persistOperatorVoiceTurn({ role: 'assistant', text, source: 'voice_tts', elConvId });
+        nudgeFullAgentIdle();
+      },
+      onConnect: () => {
+        debugLog('el-conv:connected', { ts: Date.now() });
+        elConnectedAt = Date.now();
+        armIdleTimer();
+        // Hindsight inbox: deliver any async-delegate completions that
+        // arrived while no session was live. Done after a small delay so
+        // the SDK is past the "first turn" handshake before we shove a
+        // contextual update in.
+        setTimeout(() => { void drainDelegateInboxOnConnect(); }, 1500);
+      },
+      onDisconnect: () => {
+        const aliveMs = elConnectedAt > 0 ? Date.now() - elConnectedAt : 0;
+        debugLog('el-conv:disconnected', { ts: Date.now(), aliveMs });
+        elConnectedAt = 0;
+        // Force-flush + dispose the tag observer so any in-buffer
+        // partial utterance still gets parsed for tag side effects
+        // before we tear down.
+        try { tagObserver.flush(); tagObserver.dispose(); } catch { /* ignore */ }
+        // Tear down our reference so the next mic event spawns a fresh
+        // session instead of pushing into the dead handle. Reset the UI
+        // status so the voice button doesn't lie about being live.
+        realtimeSession = null;
+        setState({
+          status: state.mode === 'off' ? 'off' : 'idle',
+          micOwnedByFullAgent: false,
+        });
+        // Surface a user-visible toast — the prior code silently swallowed
+        // disconnects, leading to "voice connects then disconnects with no
+        // error message" reports. Differentiate the common cases.
+        if (aliveMs >= 5_000 && aliveMs < 30_000) {
+          void emitVoiceToast(
+            'warn',
+            `ElevenLabs disconnected after ${Math.round(aliveMs / 1000)}s. Click the voice button to reconnect.`,
+          );
+        } else if (aliveMs >= 30_000) {
+          void emitVoiceToast(
+            'info',
+            `ElevenLabs session ended (${Math.round(aliveMs / 1000)}s). Click the voice button to start another.`,
+          );
+        }
+        // <5s disconnects are handled by the negotiation-error path in
+        // elevenlabs-conv.ts and surface as runtime errors via onError.
+      },
       onError: (err) => {
-        console.error('[elevenlabs-conv]', err);
-        void emitVoiceToast('error', `ElevenLabs runtime error: ${err.message}`);
+        const msg = err?.message ?? String(err);
+        debugLog('el-conv:error', { msg });
+        void emitVoiceToast('error', `ElevenLabs runtime error: ${msg}`);
       },
     });
+    debugLog('el-conv:start-session-resolved');
     realtimeSession = {
       async stop() { await handle.endSession(); },
+      sendSystem: (text: string) => handle.sendSystem(text),
     };
-    setState({ status: 'listening' });
+    setState({ status: 'listening', micOwnedByFullAgent: true });
     void emitVoiceToast('info', 'ElevenLabs connected — speak to talk to the operator.');
     return true;
   } catch (err: any) {
+    const msg = err?.message ?? String(err);
+    debugLog('el-conv:start-failed', { stage, msg });
     console.warn('[voice] elevenlabs-conv start failed at stage=' + stage + ':', err);
     void emitVoiceToast(
       'error',
-      `ElevenLabs failed at ${stage}: ${err?.message ?? String(err)}. Falling back to Whisper.`,
+      `ElevenLabs failed at ${stage}: ${msg}. Falling back to Whisper.`,
     );
+    // Release the mic + drop the connecting indicator. Without resetting
+    // status, the wake-hint stays "Connecting…" forever after a bootstrap
+    // failure (Failed to fetch / 429 cooldown / etc.).
+    setState({
+      status: state.mode === 'off' ? 'off' : 'idle',
+      micOwnedByFullAgent: false,
+    });
     return false;
   }
 }
@@ -502,12 +1055,19 @@ function getBrowserWorkspaceId(): string {
 
 // Best-effort sonner toast — sonner only ships in the browser bundle, so
 // a dynamic import keeps the SSR build clean.
-async function emitVoiceToast(level: 'info' | 'error', text: string): Promise<void> {
+async function emitVoiceToast(
+  level: 'info' | 'error',
+  text: string,
+  opts?: { actionLabel?: string; onAction?: () => void },
+): Promise<void> {
   if (typeof window === 'undefined') return;
   try {
     const { toast } = await import('sonner');
-    if (level === 'error') toast.error(text, { duration: 8000 });
-    else toast(text);
+    const action = opts?.actionLabel && opts?.onAction
+      ? { label: opts.actionLabel, onClick: opts.onAction }
+      : undefined;
+    if (level === 'error') toast.error(text, { duration: 8000, action });
+    else toast(text, { action });
   } catch { /* sonner not in bundle on this page; drop */ }
 }
 
@@ -518,12 +1078,76 @@ async function emitVoiceToast(level: 'info' | 'error', text: string): Promise<vo
 if (typeof window !== 'undefined') {
   void (async () => {
     try {
-      const { subscribeVoiceLeader, bootVoiceLeader, getVoiceLeaderState } =
+      const { subscribeVoiceLeader, bootVoiceLeader, getVoiceLeaderState, requestVoiceLead } =
         await import('./voice-leader');
       await bootVoiceLeader();
-      subscribeVoiceLeader(() => {
+      // Track previous leadership so we only toast on actual transitions.
+      let prevIsLeader = getVoiceLeaderState().isLeader;
+      subscribeVoiceLeader((ls) => {
+        // Toast only when voice is on (mode !== 'off'); silent otherwise so
+        // dormant tabs don't flash unrelated notifications.
+        if (state.mode !== 'off' && ls.available && ls.isLeader !== prevIsLeader) {
+          if (ls.isLeader) {
+            void emitVoiceToast('info', 'Listening here now');
+          } else {
+            void emitVoiceToast('info', 'Listening moved to another tab — click to bring back', {
+              actionLabel: 'Bring back',
+              onAction: () => requestVoiceLead('toast-action'),
+            });
+          }
+        }
+        prevIsLeader = ls.isLeader;
         if (state.mode !== 'off') syncSttToLeader();
       });
+
+      // Focus-follows-tab leadership: when this tab is visible+focused
+      // for FOCUS_TAKEOVER_DELAY_MS continuously, take the lead. The
+      // delay prevents a quick alt-tab from thrashing the EL session
+      // (each handover tears down the WebRTC PC + frees a workspace
+      // concurrency slot, which the new leader's connect must re-claim
+      // — flapping at 1Hz would be expensive).
+      //
+      // Cancellation: any visibility loss before the timer fires
+      // discards the pending takeover. Only sustained focus claims it.
+      const FOCUS_TAKEOVER_DELAY_MS = 4_000;
+      let focusTakeoverTimer: ReturnType<typeof setTimeout> | null = null;
+      const cancelFocusTakeover = () => {
+        if (focusTakeoverTimer) {
+          clearTimeout(focusTakeoverTimer);
+          focusTakeoverTimer = null;
+        }
+      };
+      const scheduleFocusTakeover = () => {
+        cancelFocusTakeover();
+        // Skip when there's nothing to take: voice off, or we're
+        // already leader, or we're in single-tab fallback mode.
+        if (state.mode === 'off') return;
+        const ls = getVoiceLeaderState();
+        if (!ls.available || ls.isLeader) return;
+        focusTakeoverTimer = setTimeout(() => {
+          focusTakeoverTimer = null;
+          // Re-check at fire time — state may have flipped.
+          if (state.mode === 'off') return;
+          const cur = getVoiceLeaderState();
+          if (!cur.available || cur.isLeader) return;
+          if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+          requestVoiceLead('focus-follows-tab');
+        }, FOCUS_TAKEOVER_DELAY_MS);
+      };
+      const onVisibility = () => {
+        if (document.visibilityState === 'visible') scheduleFocusTakeover();
+        else cancelFocusTakeover();
+      };
+      window.addEventListener('visibilitychange', onVisibility);
+      window.addEventListener('focus', scheduleFocusTakeover);
+      window.addEventListener('blur', cancelFocusTakeover);
+      // If the page is already visible at boot (likely), arm the timer
+      // so a tab that loads while focused earns the lead after the
+      // delay. Without this, a freshly-opened-already-focused tab
+      // would only take over after the user blur+focuses it.
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        scheduleFocusTakeover();
+      }
 
       // Leader-bridge wiring: subscribe to the SSE channel when we're
       // the elected leader for the workspace. Cross-process callers
@@ -896,6 +1520,8 @@ export function onFinalUtterance(listener: (text: string) => void): () => void {
   };
 }
 
+
+
 function onUtteranceFinal(text: string): void {
   for (const l of utteranceListeners) {
     try {
@@ -942,6 +1568,14 @@ export function speak(
     // Lazy-import to avoid pulling React-side bus into non-React callers.
     void import('./aria-live-bus').then((m) => m.publishAriaLive(priority, text));
   } catch { /* ignore */ }
+  // When a full-agent engine (EL Conv AI / OpenAI Realtime) is active,
+  // the agent itself is the voice. Local speak() calls — spend-cap
+  // warnings, op-narration, anything else routed through here — would
+  // talk over the agent in a different voice. Drop them silently after
+  // the aria-live publish above so screen readers still see the text.
+  // Callers who genuinely need to override (test buttons in
+  // /settings/voice) already pass force:true.
+  if (realtimeSession && !options.force) return;
   // Leader-election gate (v4 §2i): only the leader tab actually emits TTS.
   // Followers are silent; aria-live still publishes so screen-readers in any
   // tab see the text.

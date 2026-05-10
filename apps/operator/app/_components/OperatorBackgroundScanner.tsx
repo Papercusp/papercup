@@ -20,8 +20,9 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { sharedState, subscribeOperatorState } from './operator-shared-state';
+import { isAutoAcceptedByThreshold, pushAutoAcceptEvent, sharedState, subscribeOperatorState } from './operator-shared-state';
 import { speak, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { loadVoicePrefsClient } from './voice/voice-prefs-client';
@@ -53,12 +54,36 @@ export function OperatorBackgroundScanner() {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inFlightRef = useRef<EventSource | null>(null);
   const pausedRef = useRef<boolean>(sharedState.paused);
+  const autoAcceptRef = useRef<typeof sharedState.autoAccept>(sharedState.autoAccept);
+  // Server-side pause flag (CLI `operator pause` / API POST). Cached so
+  // each tick doesn't pay an HTTP round-trip; refreshed on mount and
+  // whenever the SSE bus signals `operatorPauseFlag` invalidation.
+  const cliPausedRef = useRef<boolean>(false);
 
   useEffect(() => {
     return subscribeOperatorState((s) => {
       if (typeof s.paused === 'boolean') pausedRef.current = s.paused;
+      if (s.autoAccept) autoAcceptRef.current = s.autoAccept;
     });
   }, []);
+
+  // Pause-flag via useQuery with the SSE-keyed cache prefix. The
+  // SSEAdapter mounted by HarnessZeroProvider (root layout) matches
+  // queryKey[1] === 'operatorPauseFlag' on the invalidate event from
+  // setPaused/setResumed and triggers a refetch. Tick reads the
+  // cached ref so the per-tick HTTP round-trip is gone.
+  const pauseFlagQuery = useQuery<{ paused?: boolean }>({
+    queryKey: ['sync', 'operatorPauseFlag', {}],
+    queryFn: async ({ signal }) => {
+      const r = await fetch('/api/agent-mcp/operator-pause-flag', { signal });
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    },
+    staleTime: Infinity, // refetch only on SSE invalidate
+  });
+  useEffect(() => {
+    cliPausedRef.current = pauseFlagQuery.data?.paused === true;
+  }, [pauseFlagQuery.data]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -66,6 +91,9 @@ export function OperatorBackgroundScanner() {
     const triggerScan = () => {
       if (inFlightRef.current) return;
       if (pausedRef.current) return;
+      // Background scans run unconditionally now — the threshold gates
+      // auto-fire, not whether scans run at all. Cards can still surface
+      // for user review even when autoAccept is 'off'.
       const es = new EventSource('/api/agent-mcp/operator-scan?background=1&request=Background+scan%3A+surface+next-action+suggestions.');
       inFlightRef.current = es;
       // Fire scan-start event for OperatorVoiceAnnouncer.
@@ -80,6 +108,10 @@ export function OperatorBackgroundScanner() {
           suggestionsCount++;
           if (s.auto_dispatch) autoDispatchedCount++;
           if (!s.auto_dispatch) return; // ask-first → wait for the user to open the panel
+          // Threshold gate: only auto-fire if the user's autoAccept level
+          // permits this card's tier. Otherwise treat as ask-first — the
+          // card will surface in the panel for manual review.
+          if (!isAutoAcceptedByThreshold(s.actualTier, autoAcceptRef.current)) return;
           armAutoFireToast(s);
         } catch {
           /* ignore */
@@ -109,14 +141,13 @@ export function OperatorBackgroundScanner() {
 
     const tick = async () => {
       if (pausedRef.current) return;
+      // Tick runs the periodic poll regardless of autoAccept — the threshold
+      // controls auto-firing of cards, not whether scans run.
       // CLI pause sentinel: respect `operator pause` even when the panel
-      // hasn't been opened (so sharedState.paused never flipped).
-      try {
-        const flag = await fetch('/api/agent-mcp/operator-pause-flag');
-        if (flag.ok && (await flag.json()).paused) return;
-      } catch {
-        /* ignore */
-      }
+      // hasn't been opened (so sharedState.paused never flipped). Pulled
+      // from the cached ref refreshed via SSE — the previous per-tick
+      // fetch is gone (notify-driven now).
+      if (cliPausedRef.current) return;
       try {
         const r = await fetch('/api/agent-mcp/operator-trigger-state');
         if (!r.ok) return;
@@ -240,19 +271,11 @@ function armAutoFireToast(s: SuggestionEvent) {
 
 async function dispatchSuggestion(s: SuggestionEvent) {
   if (s.action !== 'send_directive' || !s.target_harness) return;
-  void fetch('/api/agent-mcp/operator-audit', {
+  const r = await fetch('/api/agent-mcp/operator-dispatch', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
-      cardId: s.id,
-      kind: 'dispatched',
-      context: { action: s.action, capability: s.capability ?? null, target: s.target_harness },
-    }),
-  });
-  const r = await fetch('/api/admin/execute-action', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
+      actionId: `${s.id}:dispatch`,
       op: 'send_message',
       to: [s.target_harness],
       kind: s.directive_kind ?? 'Directive',
@@ -262,10 +285,33 @@ async function dispatchSuggestion(s: SuggestionEvent) {
     }),
   });
   if (r.ok) {
+    pushAutoAcceptEvent({
+      id: s.id,
+      title: s.title,
+      tier: s.actualTier,
+      targetHarness: s.target_harness,
+      acceptedAt: Date.now(),
+      source: 'auto-fire',
+    });
     void fetch('/api/agent-mcp/operator-audit', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cardId: s.id, kind: 'acked' }),
+      body: JSON.stringify({
+        cardId: s.id,
+        kind: 'accepted',
+        context: { action: s.action, capability: s.capability ?? null, target: s.target_harness, source: 'auto-fire' },
+      }),
+    });
+  } else {
+    const text = await r.text().catch(() => '');
+    void fetch('/api/agent-mcp/operator-audit', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        cardId: s.id,
+        kind: 'accept_failed',
+        context: { action: s.action, target: s.target_harness, reason: text || `HTTP ${r.status}`, source: 'auto-fire' },
+      }),
     });
   }
 }

@@ -13,10 +13,11 @@
  * Spec: /docs/snapshots/build-scripts (consent + live-stream UI).
  */
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { ProvisionStream } from './ProvisionStream';
 import type { PendingProvisioningEntry } from './ForkCompletionForm';
+import type { NarrationHandle } from '@/lib/voice-narration';
 
 interface Props {
   /** New harness slug returned by /instantiate. */
@@ -34,15 +35,32 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
   const [status, setStatus] = useState<PerPluginStatus>('awaiting-consent');
   const [history, setHistory] = useState<{ plugin: string; outcome: PerPluginStatus }[]>([]);
   const [runStartedAt, setRunStartedAt] = useState<string | undefined>(undefined);
+  // Narration handle for the current plugin's announceOpStart. Cleared on advance.
+  const narrationHandle = useRef<NarrationHandle | null>(null);
 
   const current = queue[index];
   const allDone = index >= queue.length;
 
-  function recordAndAdvance(outcome: PerPluginStatus) {
+  async function recordAndAdvance(outcome: PerPluginStatus) {
     if (!current) return;
     setHistory((prev) => [...prev, { plugin: current.plugin, outcome }]);
     setStatus('awaiting-consent');
     setRunStartedAt(undefined);
+    // Side-channel narration for the just-completed plugin.
+    if (outcome === 'success' || outcome === 'failed') {
+      const { announceOpEnd } = await import('@/lib/voice-narration');
+      announceOpEnd(
+        'provision',
+        outcome === 'success'
+          ? { outcome: 'ok', slug: current.plugin }
+          : { outcome: 'fail', slug: current.plugin, reason: 'setup script failed' },
+        narrationHandle.current ?? undefined,
+      );
+      narrationHandle.current = null;
+    } else if (narrationHandle.current) {
+      narrationHandle.current.cancel();
+      narrationHandle.current = null;
+    }
     const next = index + 1;
     setIndex(next);
     if (next >= queue.length) {
@@ -60,6 +78,12 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
     if (!current) return;
     setStatus('running');
     setRunStartedAt(new Date().toISOString());
+    // Side-channel kickoff narration. Plugin name is short and stable
+    // → fits the slug template ("Provisioning <name>.").
+    try {
+      const { announceOpStart } = await import('@/lib/voice-narration');
+      narrationHandle.current = announceOpStart('provision', { slug: current.plugin });
+    } catch { /* narration is best-effort */ }
     try {
       const r = await fetch('/api/provision/run', {
         method: 'POST',
@@ -90,13 +114,13 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
 
   if (allDone) {
     return (
-      <div style={{ padding: 16 }}>
+      <div className="pc-fork-provision-complete" style={{ padding: 16 }}>
         <h3 style={{ marginTop: 0 }}>Provisioning complete</h3>
         <ul style={{ paddingLeft: 18 }}>
           {history.map((h, i) => (
-            <li key={i} style={{ marginBottom: 4 }}>
+            <li key={i} className="pc-fork-provision-history-item" style={{ marginBottom: 4 }}>
               <strong>{h.plugin}</strong>{' '}
-              <span style={{
+              <span className={`pc-fork-provision-outcome pc-fork-provision-outcome--${h.outcome}`} style={{
                 color: h.outcome === 'success' ? '#3fb950'
                   : h.outcome === 'failed' ? '#f85149'
                   : '#8b949e',
@@ -106,7 +130,7 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
             </li>
           ))}
         </ul>
-        <p style={{ color: '#8b949e', marginTop: 16 }}>
+        <p className="pc-fork-provision-redirect" style={{ color: '#8b949e', marginTop: 16 }}>
           Redirecting to the harness dashboard…
         </p>
       </div>
@@ -116,17 +140,17 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
   if (!current) return null;
 
   return (
-    <div style={{ padding: 16, maxWidth: 920 }}>
+    <div className="pc-fork-provision-shell" style={{ padding: 16, maxWidth: 920 }}>
       <h3 style={{ marginTop: 0 }}>
         Provisioning {index + 1} / {queue.length}: {current.displayName ?? current.plugin}
       </h3>
       {history.length > 0 && (
-        <div style={{ fontSize: 12, color: '#8b949e', marginBottom: 12 }}>
+        <div className="pc-fork-provision-history" style={{ fontSize: 12, color: '#8b949e', marginBottom: 12 }}>
           Done:{' '}
           {history.map((h, i) => (
-            <span key={i} style={{ marginRight: 8 }}>
+            <span key={i} className="pc-fork-provision-history-chip" style={{ marginRight: 8 }}>
               {h.plugin}{' '}
-              <span style={{
+              <span className={`pc-fork-provision-outcome pc-fork-provision-outcome--${h.outcome}`} style={{
                 color: h.outcome === 'success' ? '#3fb950'
                   : h.outcome === 'failed' ? '#f85149'
                   : '#8b949e',
@@ -145,7 +169,7 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
       )}
 
       {status === 'running' && (
-        <div>
+        <div className="pc-fork-provision-stream-wrap">
           <ProvisionStream
             harness={harnessSlug}
             plugin={current.plugin}
@@ -161,7 +185,7 @@ export function ForkProvisioningProgress({ harnessSlug, queue, onAllDone }: Prop
               }
             }}
           />
-          <button onClick={skipCurrent} style={skipBtnRunning}>
+          <button className="pc-fork-provision-skip-running" onClick={skipCurrent} style={skipBtnRunning}>
             Skip remaining (mark this plugin as skipped)
           </button>
         </div>
@@ -180,8 +204,8 @@ function ConsentCard({
   onSkip: () => void;
 }) {
   return (
-    <div style={consentCard}>
-      <div style={{ marginBottom: 12 }}>
+    <div className="pc-fork-consent-card" style={consentCard}>
+      <div className="pc-fork-consent-head" style={{ marginBottom: 12 }}>
         <strong>{entry.plugin}</strong>
         {entry.version && <span style={{ color: '#8b949e', marginLeft: 8 }}>v{entry.version}</span>}
         {entry.publisher && <span style={{ color: '#8b949e', marginLeft: 8 }}>by {entry.publisher}</span>}
@@ -189,7 +213,7 @@ function ConsentCard({
       {entry.description && (
         <p style={{ marginTop: 0, marginBottom: 12, fontSize: 13 }}>{entry.description}</p>
       )}
-      <div style={{ fontSize: 12, color: '#8b949e' }}>
+      <div className="pc-fork-consent-meta" style={{ fontSize: 12, color: '#8b949e' }}>
         <div>script: <code>{entry.scriptPath}</code></div>
         {entry.cloudProvider && (
           <div>cloud: {entry.cloudProvider.id}{entry.cloudProvider.region ? ` (${entry.cloudProvider.region})` : ''}</div>
@@ -199,13 +223,13 @@ function ConsentCard({
         )}
         {entry.timeoutSec && <div>timeout: {entry.timeoutSec}s</div>}
       </div>
-      <p style={{ fontSize: 12, color: '#8b949e', marginTop: 12, marginBottom: 12 }}>
+      <p className="pc-fork-consent-copy" style={{ fontSize: 12, color: '#8b949e', marginTop: 12, marginBottom: 12 }}>
         This script runs in a sandbox with the listed restrictions.
         Stdout, stderr, and recorded resources stream to the audit log.
       </p>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button onClick={onApprove} style={approveBtn}>Approve and run</button>
-        <button onClick={onSkip} style={skipBtn}>Skip</button>
+      <div className="pc-fork-consent-actions" style={{ display: 'flex', gap: 8 }}>
+        <button className="pc-fork-consent-approve" onClick={onApprove} style={approveBtn}>Approve and run</button>
+        <button className="pc-fork-consent-skip" onClick={onSkip} style={skipBtn}>Skip</button>
       </div>
     </div>
   );

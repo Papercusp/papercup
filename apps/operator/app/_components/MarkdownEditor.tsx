@@ -11,7 +11,22 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import 'vditor/dist/index.css';
+
+// Vditor's CSS (~45 KB / 302 rules) is loaded lazily alongside the editor
+// JS. Importing it at module level pulls the whole stylesheet into every
+// bundle that imports anything from this file — including consumers that
+// only use the lightweight `MarkdownPreview` (banner/toast/support panels)
+// and never instantiate Vditor. Diagnostic 2026-05-06: the dashboard had
+// 302 vditor-* CSS rules loaded but 0 vditor DOM elements.
+//
+// Implementation: mounted by `loadVditorCss()` below, called once before
+// the first `new Vditor(...)`. Uses `import()` so Turbopack/webpack code-
+// split it into its own CSS chunk and load on demand.
+let _vditorCssPromise: Promise<unknown> | null = null;
+function loadVditorCss(): Promise<unknown> {
+  if (!_vditorCssPromise) _vditorCssPromise = import('vditor/dist/index.css');
+  return _vditorCssPromise;
+}
 
 export type MarkdownEditorMode = 'ir' | 'wysiwyg' | 'sv';
 
@@ -87,6 +102,7 @@ export function MarkdownPreview({
     if (!ref.current) return;
     let cancelled = false;
     (async () => {
+      await loadVditorCss();
       const Vditor = (await import('vditor')).default;
       if (cancelled || !ref.current) return;
       await Vditor.preview(ref.current, expandWikiLinks(value ?? ''), {
@@ -129,14 +145,14 @@ export function MarkdownPreview({
   if (outline) {
     const position = outline === 'right' ? 'right' : 'left';
     return (
-      <div className={className} style={{ display: 'flex', gap: 16, ...style }}>
+      <div className={className} style={{ display: 'flex', gap: 16, background: '#19232A', ...style }}>
         {position === 'left' && (
           <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
         )}
         <div
           ref={ref}
           className="vditor-reset pc-md-preview"
-          style={{ flex: 1, background: 'var(--bg-1, #0b0d10)', color: 'var(--text-1, #e6e6e6)', minWidth: 0 }}
+          style={{ flex: 1, background: '#19232A', color: '#e6e6e6', minWidth: 0 }}
         />
         {position === 'right' && (
           <div ref={outlineRef} className="pc-md-outline" style={outlinePanelStyle} />
@@ -145,8 +161,9 @@ export function MarkdownPreview({
           .pc-md-outline ul { list-style: none; padding-left: 12px; margin: 0; }
           .pc-md-outline > ul { padding-left: 0; }
           .pc-md-outline li { margin: 2px 0; }
-          .pc-md-outline a { color: var(--text-2, #aaa); text-decoration: none; font-size: 12px; line-height: 1.5; display: block; padding: 1px 4px; border-radius: 2px; }
-          .pc-md-outline a:hover { color: var(--text-1, #fff); background: var(--bg-2, #15181c); }
+          .pc-md-outline a { color: #aaa; text-decoration: none; font-size: 12px; line-height: 1.5; display: block; padding: 1px 4px; border-radius: 2px; }
+          .pc-md-outline a:hover { color: #fff; background: #232E37; }
+          .pc-md-preview, .pc-md-preview pre, .pc-md-preview code { background-color: #19232A !important; }
         `}</style>
       </div>
     );
@@ -156,7 +173,7 @@ export function MarkdownPreview({
     <div
       ref={ref}
       className={`vditor-reset ${className ?? ''}`}
-      style={{ background: 'var(--bg-1, #0b0d10)', color: 'var(--text-1, #e6e6e6)', ...style }}
+      style={{ background: '#19232A', color: '#e6e6e6', ...style }}
     />
   );
 }
@@ -207,6 +224,7 @@ export function MarkdownEditor({
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      await loadVditorCss();
       const Vditor = (await import('vditor')).default;
       if (cancelled || !containerRef.current) return;
       const inst = new Vditor(containerRef.current, {
@@ -311,6 +329,25 @@ export function MarkdownEditor({
          * element is the scroll container — Vditor's outline click handler
          * does \`vditor.ir.element.scrollTop = …\`, so .vditor-ir MUST be the
          * overflow:auto layer (not its inner <pre>) for outline links to work. */
+        /* Use the darker blue-tinted gray (#19232A) that the user identified
+         * from the screenshot as the preferred tone. Vditor's default dark
+         * theme bleeds the lighter greenish-gray (#26-282E ~ #262D32) into
+         * scrolled regions. Apply uniformly so scroll never reveals a delta. */
+        .pc-md-editor-host.vditor--dark {
+          --panel-background-color: #19232A !important;
+          --toolbar-background-color: #19232A !important;
+          --textarea-background-color: #19232A !important;
+          background-color: #19232A !important;
+        }
+        .pc-md-editor-host.vditor--dark .vditor-content,
+        .pc-md-editor-host.vditor--dark .vditor-ir,
+        .pc-md-editor-host.vditor--dark .vditor-wysiwyg,
+        .pc-md-editor-host.vditor--dark .vditor-sv,
+        .pc-md-editor-host.vditor--dark .vditor-reset,
+        .pc-md-editor-host.vditor--dark .vditor-outline,
+        .pc-md-editor-host.vditor--dark .vditor-toolbar {
+          background-color: #19232A !important;
+        }
         .pc-md-editor-host.vditor { display: flex !important; flex-direction: column !important; height: 100% !important; min-height: 0; }
         .pc-md-editor-host.vditor > .vditor-toolbar { flex: 0 0 auto; }
         .pc-md-editor-host.vditor > .vditor-content { flex: 1 1 0 !important; min-height: 0 !important; display: flex !important; overflow: hidden !important; }

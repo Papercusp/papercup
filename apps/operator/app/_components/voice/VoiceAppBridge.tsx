@@ -119,14 +119,18 @@ export function VoiceAppBridge(): null {
       if (voiceStateRef.current.mode === 'off') return;
       if (!text || text.trim().length < 2) return;
 
-      // Wake-word intents (v4 §2f + Phase 5b): "operator <verb>" prefix
-      // captures take precedence over consumer routing AND Oracle. This
-      // way the user can say "operator open" or "operator approve foo"
-      // from anywhere without first opening the panel.
-      // Gated by `wakeWordIntents` toggle.
+      // Skip intent parsing when a full-agent engine is in charge — EL
+      // Conv AI / OpenAI Realtime already process intents via their own
+      // LLM + tool calls. Firing parseOperatorIntent here would double-
+      // dispatch (e.g. open the panel twice on "open the operator").
+      // Test wake-word + other onFinalUtterance listeners still receive
+      // the transcript; only the legacy intent path is bypassed.
       try {
         const { loadVoicePrefsClient } = await import('./voice-prefs-client');
         const prefs = loadVoicePrefsClient();
+        if (prefs.fullAgentEngine && prefs.fullAgentEngine !== 'off') {
+          throw new Error('full-agent in charge');
+        }
         if (!prefs.wakeWordIntents) {
           // Skip intent parsing; fall through to consumer/Oracle routing.
           throw new Error('wake-word disabled');

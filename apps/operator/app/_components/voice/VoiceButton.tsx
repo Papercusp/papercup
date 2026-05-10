@@ -7,7 +7,7 @@
  * Long-press while in push-to-talk holds the mic open.
  */
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -21,10 +21,10 @@ import {
   type VoiceMode,
 } from './voice-mode';
 import { useMicLevel } from './useMicLevel';
-import { usePathname } from 'next/navigation';
 
 const ICON: Record<VoiceState['status'], string> = {
   off: '🚫',
+  connecting: '⏳',
   idle: '🎤',
   listening: '🔴',
   speaking: '🔊',
@@ -136,18 +136,32 @@ export function VoiceButton(): JSX.Element {
     setVoiceMode(NEXT_MODE[vs.mode]);
   }, [markWakeHintSeen, vs.mode, vs.supported]);
 
+  // Hold-detection threshold: a regular click (mousedown→mouseup within
+  // ~250ms) is treated as a mode-cycle click only — onClick handles it.
+  // Only sustained holds engage push-to-talk. Without this, every click
+  // simultaneously fired startPushToTalk (loading MicVAD/Whisper) AND
+  // setVoiceMode (loading EL/Realtime), and the two competed for the
+  // mic — leaving EL's published track silent and the agent unable to
+  // hear anything.
+  const pttHoldTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onPttDown = useCallback(() => {
-    // Mouse-hold on the button works regardless of mode — same semantics
-    // as the keyboard shortcut. startPushToTalk() dispatches on the
-    // configured sttEngine (voicemode/deepgram/web-speech), so the gate
-    // here is just "any voice path is viable" — Web Speech specifically
-    // is no longer required.
     if (!vs.supported) return;
-    setPttHeld(true);
-    startPushToTalk();
+    if (pttHoldTimerRef.current) clearTimeout(pttHoldTimerRef.current);
+    pttHoldTimerRef.current = setTimeout(() => {
+      pttHoldTimerRef.current = null;
+      setPttHeld(true);
+      startPushToTalk();
+    }, 250);
   }, [vs.supported]);
 
   const onPttUp = useCallback(() => {
+    // Held shorter than the threshold? Cancel the pending PTT start so
+    // the click semantics (mode-cycle via onClick) are the only effect.
+    if (pttHoldTimerRef.current) {
+      clearTimeout(pttHoldTimerRef.current);
+      pttHoldTimerRef.current = null;
+      return;
+    }
     if (!pttHeld) return;
     setPttHeld(false);
     stopPushToTalk();
@@ -195,30 +209,44 @@ export function VoiceButton(): JSX.Element {
     };
   }, [markPttHintSeen, pttHeld, vs.supported]);
 
-  // Live mic level — only sample when the mic is actually open AND we're
-  // on a route where the visual is worth the CPU. Skip on /settings/* so
-  // the settings UI stays responsive (the actual STT VAD is already
-  // running another analyser on the same mic when always-on is enabled).
-  const pathname = usePathname();
-  const onSettingsRoute = pathname?.startsWith('/settings') ?? false;
+  // Live mic level — only sample when the mic is actually open. The
+  // /settings/* skip from earlier was about avoiding contention with a
+  // separate Whisper analyser on the same mic; the EL Conv AI path
+  // doesn't have that competing analyser, so we can leave the visual
+  // on everywhere when always-on or listening. Without this, the
+  // settings page (where users go to test voice) shows a dead button.
+  // 'micActive' for the CSS class — the user should see "mic is hot"
+  // regardless of which engine owns the device.
   const micActive =
-    !onSettingsRoute &&
-    (vs.mode === 'always-on' || vs.status === 'listening' || pttHeld);
-  const { ref: micRef } = useMicLevel(micActive);
+    vs.mode === 'always-on' || vs.status === 'listening' || pttHeld;
+  // 'analyserActive' for our local useMicLevel analyser — skip it
+  // when a full-agent engine (EL Conv AI / OpenAI Realtime) owns the
+  // mic. Two concurrent getUserMedia consumers can break WebRTC media
+  // negotiation on Chrome: the second-acquired track delivers no
+  // frames, ICE completes signaling, peer connection times out 16s
+  // later (the exact symptom in the field-reported bug). Letting EL
+  // be the sole consumer is the real fix.
+  const analyserActive = micActive && !vs.micOwnedByFullAgent && vs.status !== 'connecting';
+  const { ref: micRef } = useMicLevel(analyserActive);
 
-  const labelText = vs.supported ? MODE_LABEL[vs.mode] : 'No mic';
-  const title = vs.supported
+  const labelText = vs.status === 'connecting'
+    ? 'Connecting…'
+    : vs.supported ? MODE_LABEL[vs.mode] : 'No mic';
+  const title = vs.status === 'connecting'
+    ? 'Voice mode: connecting to agent (waiting for WebRTC negotiation)…'
+    : vs.supported
     ? `Voice mode: ${MODE_LABEL[vs.mode]} (click to cycle, hold button for PTT, hold ${PTT_SHORTCUT_LABEL} for keyboard PTT)`
     : 'Voice mode unsupported in this browser';
   // The hint bubbles ("Say <wakeWord>" / "Hold ` to talk") are persistent
   // affordances — keep them visible whenever the matching mode is active.
   // The historical 'seen' localStorage flags are kept up-to-date so any
   // future opt-out toggle can read them, but they no longer gate render.
-  const showWakeHint = vs.mode === 'always-on' && vs.supported;
-  const showPttHint = vs.mode === 'push-to-talk' && vs.supported;
+  const showConnectingHint = vs.status === 'connecting' && vs.supported;
+  const showWakeHint = !showConnectingHint && vs.mode === 'always-on' && vs.supported;
+  const showPttHint = !showConnectingHint && vs.mode === 'push-to-talk' && vs.supported;
 
   return (
-    <div className={`pc-voice-control${showWakeHint || showPttHint ? ' has-wake-hint' : ''}`}>
+    <div className={`pc-voice-control${showWakeHint || showPttHint || showConnectingHint ? ' has-wake-hint' : ''}${showConnectingHint ? ' is-connecting' : ''}`}>
       <button
         type="button"
         aria-label="Voice mode"
@@ -230,7 +258,7 @@ export function VoiceButton(): JSX.Element {
         onTouchStart={onPttDown}
         onTouchEnd={onPttUp}
         ref={micRef as React.RefObject<HTMLButtonElement>}
-        className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}${vs.wakeDetected ? ' is-wake-detected' : ''}`}
+        className={`pc-voice-btn pc-voice-btn--mode-${vs.mode} pc-voice-btn--status-${vs.status}${pttHeld ? ' is-held' : ''}${vs.supported ? '' : ' is-unsupported'}${micActive ? ' is-mic-active' : ''}${vs.wakeDetected ? ' is-wake-detected' : ''}${vs.userSpoke ? ' is-user-spoke' : ''}`}
       >
         <span className="pc-voice-btn-orb" aria-hidden="true">
           <span className="pc-voice-btn-level" aria-hidden="true" />
@@ -247,9 +275,11 @@ export function VoiceButton(): JSX.Element {
         <Settings2 size={14} aria-hidden="true" />
         <span className="pc-voice-settings-text">Voice</span>
       </a>
-      {(showWakeHint || showPttHint) && (
+      {(showWakeHint || showPttHint || showConnectingHint) && (
         <div className="pc-voice-wake-hint" aria-live="polite">
-          {showWakeHint ? (
+          {showConnectingHint ? (
+            <>Connecting<span className="pc-voice-wake-hint-dots" aria-hidden="true">…</span></>
+          ) : showWakeHint ? (
             <>
               Say <strong>{wakeWord}</strong>
             </>

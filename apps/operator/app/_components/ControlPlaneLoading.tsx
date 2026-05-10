@@ -1,5 +1,14 @@
 const statLabels = ['pulse', 'passed', '$ spent', 'lanes'];
-const tabs = ['brainstorm', 'proposals', 'dashboard', 'summary', 'experts', 'insights', 'config'];
+const tabs = ['brainstorm', 'proposals', 'experts', 'dashboard', 'summary', 'insights', 'config'];
+const tabAccentClass: Record<string, string> = {
+  brainstorm: 'h-tab--brainstorm',
+  proposals: 'h-tab--proposals',
+  dashboard: 'h-tab--dashboard',
+  summary: 'h-tab--summary',
+  experts: 'h-tab--experts',
+  insights: 'h-tab--insights',
+  config: 'h-tab--config',
+};
 const filterLabels = ['All', 'Running', 'Blocked'];
 const featureRows = Array.from({ length: 5 }, (_, index) => index);
 const agentRows = Array.from({ length: 4 }, (_, index) => index);
@@ -87,24 +96,6 @@ export default function ControlPlaneLoading({
         </div>
       </div>
 
-      <div className="h-phase-plan-row" aria-hidden="true">
-        <div className="h-focus-card h-phase-plan-focus todo h-loading-surface h-loading-focus-card">
-          <span className="h-overline">Mission focus</span>
-          <strong><span className="h-loading-block h-loading-block--focus-verb" /></strong>
-          <span className="h-focus-title"><span className="h-loading-block h-loading-block--focus-title" /></span>
-        </div>
-        <div className="h-plan-review-banner compact h-loading-surface h-loading-review-card">
-          <span className="h-overline">Plan review</span>
-          <span className="h-loading-block h-loading-block--review" />
-        </div>
-        <div className="h-header-actions h-phase-plan-actions h-loading-action-row">
-          <span className="h-btn ghost h-loading-action" />
-          <span className="h-btn ghost h-loading-action" />
-          <span className="h-btn ghost h-loading-action" />
-          <span className="h-btn primary h-loading-action h-loading-action--primary" />
-        </div>
-      </div>
-
       <div className="h-quick-action-row h-loading-quick-row" aria-hidden="true">
         <div className="h-quick-action-copy">
           <span className="h-loading-block h-loading-block--quick-label" />
@@ -119,7 +110,7 @@ export default function ControlPlaneLoading({
 
       <div className="h-tabs h-main-tabs" aria-hidden="true">
         {tabs.map((tab) => (
-          <span key={tab} className={`h-tab${tab === 'dashboard' ? ' on' : ''} h-loading-tab`}>
+          <span key={tab} className={`h-tab ${tabAccentClass[tab] ?? 'h-tab--plugin'}${tab === 'dashboard' ? ' on' : ''} h-loading-tab`}>
             {tab}
           </span>
         ))}

@@ -16,8 +16,13 @@
  * or dismiss each.
  */
 
-import { useDeferredValue, useEffect, useState, useCallback, useRef } from 'react';
+import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { usePathname } from 'next/navigation';
+import { useQueryState, parseAsStringLiteral } from 'nuqs';
+import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
+import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { MarkdownPreview } from './MarkdownEditor';
@@ -27,6 +32,8 @@ import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
 import RouteLink from './RouteLink';
 import { OperatorReactorCore } from './hud/OperatorReactorCore';
 import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
+import DelegatesSection from './DelegatesSection';
+import ScanHistorySection from './ScanHistorySection';
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
 const ICON_GLYPH: Record<IconState, string> = {
@@ -66,74 +73,77 @@ interface ParsedSuggestion {
 }
 
 type LifecycleState =
-  | 'pending'
-  | 'dispatched'
-  | 'consumed'
-  | 'escalated'
-  | 'rejected'
-  | 'failed'
-  | 'dismissed'
-  | 'superseded';
+  | 'pending'   // waiting for user decision
+  | 'accepted'  // user clicked Accept and the action succeeded
+  | 'ignored';  // user clicked Ignore
 
+
+function normalizeLifecycleState(status: unknown): LifecycleState {
+  if (status === 'accepted' || status === 'dispatched' || status === 'consumed') return 'accepted';
+  if (status === 'ignored' || status === 'dismissed' || status === 'superseded') return 'ignored';
+  return 'pending';
+}
 interface SuggestionCard extends ParsedSuggestion {
   status: LifecycleState;
-  failureReason?: string;
-  /** Local time we transitioned to `dispatched`. Used for the "unconsumed" warning glyph. */
-  dispatchedAt?: number;
-  /** Local deadline for foreground auto-dispatch affordance. */
+  /** Local time we transitioned to `accepted`. Used for sort + audit. */
+  acceptedAt?: number;
+  /** Local deadline for foreground auto-accept affordance. */
   autoDispatchAt?: number;
-  /** True when dismiss came from undo-window cancel (audit-only, no preferences entry). */
+  /** True when ignore came from undo-window cancel (audit-only, no preferences entry). */
   undoCancelled?: boolean;
-  /** Set after a successful send_message dispatch — drives receiving-state polling. */
+  /** Set after a successful directive accept — kept for traceability/dedup. */
   messageId?: string;
+  /** Number of visually-identical pending recommendations collapsed into this card. */
+  duplicateCount?: number;
+  /** Count of failed Accept clicks while pending. Cleared on success. */
+  failedAttempts?: number;
+  /** Human-readable reason for the most recent Accept failure (HTTP, no message_id, etc.). */
+  lastFailureReason?: string;
+  /** Timestamp of the most recent Accept failure. */
+  lastFailureAt?: number;
 }
 
-const UNCONSUMED_AGE_MS = 4 * 60_000; // 3 × 60s cadence + 60s grace = 4 min — fallback
-
-function ageMs(card: SuggestionCard): number | null {
-  return card.dispatchedAt ? Date.now() - card.dispatchedAt : null;
+/**
+ * Turn a raw failure string (HTTP body, exception .message) into a short
+ * human-readable reason. Long error bodies (HTML 500 pages, multi-line
+ * stack traces) overflow the row; pick the most informative line and
+ * trim. Recognised network-error strings get friendlier rewrites.
+ */
+function humanizeFailure(raw: string | undefined): string {
+  if (!raw) return 'unknown error';
+  const trimmed = raw.trim();
+  if (!trimmed) return 'unknown error';
+  if (/^TypeError: Failed to fetch$/i.test(trimmed) || /NetworkError/i.test(trimmed)) {
+    return 'network unreachable';
+  }
+  if (/aborted|AbortError/i.test(trimmed)) return 'request cancelled';
+  if (/^HTTP\s+5\d\d/i.test(trimmed)) return 'server error';
+  if (/^HTTP\s+4\d\d/i.test(trimmed)) return 'request rejected';
+  // Strip HTML envelope if the server returned a page.
+  const stripped = trimmed.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  // First line, capped.
+  const firstLine = stripped.split(/\r?\n/, 1)[0] ?? stripped;
+  return firstLine.length > 120 ? firstLine.slice(0, 117) + '…' : firstLine;
 }
 
-interface AckLatencyTable {
-  perHarness: Record<string, number>;
-  fallbackMs: number;
-}
-
-function unconsumedThresholdFor(card: SuggestionCard, table: AckLatencyTable | null): number {
-  if (!table) return UNCONSUMED_AGE_MS;
-  const target = card.target_harness;
-  if (target && table.perHarness[target]) return table.perHarness[target];
-  return table.fallbackMs;
-}
-
-function lifecycleLabel(status: LifecycleState): string {
-  switch (status) {
+function lifecycleLabel(status: unknown): string {
+  switch (normalizeLifecycleState(status)) {
     case 'pending':
       return 'Needs decision';
-    case 'dispatched':
-      return 'In flight';
-    case 'consumed':
-      return 'Consumed';
-    case 'escalated':
-      return 'Escalated';
-    case 'rejected':
-      return 'Rejected';
-    case 'failed':
-      return 'Failed';
-    case 'dismissed':
-      return 'Dismissed';
-    case 'superseded':
-      return 'Superseded';
+    case 'accepted':
+      return 'Accepted';
+    case 'ignored':
+      return 'Ignored';
     default:
-      return status;
+      return String(status);
   }
 }
 
 function tierLabel(tier: SuggestionCard['actualTier']): string {
-  return tier === 'high' ? 'High safety' : tier === 'medium' ? 'Medium safety' : 'Low safety';
+  return tier === 'high' ? 'High risk' : tier === 'medium' ? 'Medium risk' : 'Low risk';
 }
 
-type FeedFilter = 'all' | 'suggestions';
+type MainView = 'cards' | 'accepted' | 'ignored' | 'scan-history';
 type ScanStatus = 'idle' | 'scanning' | 'complete' | 'error';
 
 function lifecycleLabelForCard(card: SuggestionCard): string {
@@ -147,6 +157,8 @@ function lifecycleClassForCard(card: SuggestionCard): string {
   if (card.auto_dispatch && card.status === 'pending') return 'auto';
   return card.status;
 }
+
+
 
 function autoDispatchSeconds(card: SuggestionCard, now: number): number {
   if (!card.autoDispatchAt) return 0;
@@ -165,6 +177,49 @@ function actionGlyphForCard(card: SuggestionCard): string {
   return '✉';
 }
 
+function normalizeDuplicateText(value: string | null | undefined): string {
+  return (value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function duplicateKeyForCard(card: ParsedSuggestion | SuggestionCard): string {
+  return [
+    card.action,
+    card.actualTier,
+    String(card.auto_dispatch),
+    normalizeDuplicateText(card.target_harness),
+    normalizeDuplicateText(card.title),
+    normalizeDuplicateText(card.why),
+    normalizeDuplicateText(card.directive_kind),
+    normalizeDuplicateText(card.directive_subject),
+    normalizeDuplicateText(card.directive_body),
+    normalizeDuplicateText(card.target_resource),
+    normalizeDuplicateText(card.body),
+  ].join('\u001f');
+}
+
+function bumpDuplicateCount(card: SuggestionCard): SuggestionCard {
+  return { ...card, duplicateCount: (card.duplicateCount ?? 1) + 1 };
+}
+
+function dedupePendingSuggestionCards(cards: SuggestionCard[]): SuggestionCard[] {
+  const out: SuggestionCard[] = [];
+  const pendingByKey = new Map<string, number>();
+  for (const card of cards) {
+    if (card.status === 'pending') {
+      const key = duplicateKeyForCard(card);
+      const existingIndex = pendingByKey.get(key);
+      if (existingIndex !== undefined) {
+        out[existingIndex] = bumpDuplicateCount(out[existingIndex]);
+        continue;
+      }
+      pendingByKey.set(key, out.length);
+    }
+    out.push(card);
+  }
+  return out;
+}
+
+
 interface DecisionRow {
   id: string;
   ts: number;
@@ -177,7 +232,7 @@ function searchableTextForCard(card: SuggestionCard): string {
     card.title,
     card.why,
     card.reason,
-    card.failureReason,
+    card.lastFailureReason,
     card.target_harness,
     card.directive_kind,
     card.directive_subject,
@@ -193,18 +248,16 @@ function searchableTextForCard(card: SuggestionCard): string {
     .toLowerCase();
 }
 
-function searchableTextForDecision(row: DecisionRow): string {
-  return [row.action, row.target]
-    .filter(Boolean)
-    .join('\n')
-    .toLowerCase();
-}
 
 import {
   broadcastState,
+  hydrateOperatorStateFromPg,
+  isAutoAcceptedByThreshold,
+  pushAutoAcceptEvent,
   setOperatorState,
   sharedState,
   subscribeOperatorState,
+  type AutoAcceptLevel,
   type OperatorState,
 } from './operator-shared-state';
 
@@ -218,6 +271,7 @@ export function OperatorButton(): JSX.Element {
   useEffect(() => {
     const fn = (partial: Partial<OperatorState>) =>
       setState((s) => ({ ...s, ...partial }));
+    void hydrateOperatorStateFromPg();
     return subscribeOperatorState(fn);
   }, []);
 
@@ -247,7 +301,11 @@ export function OperatorButton(): JSX.Element {
     broadcastState({ open: !sharedState.open });
   }, []);
 
-  const glyph = state.paused ? ICON_GLYPH.paused : ICON_GLYPH[state.iconState];
+  // Pause is "no autonomous work" — manual scan/think/act are user-driven
+  // and should override the paused indicator while they're running. Pause
+  // re-asserts itself when iconState falls back to idle/awaiting-input.
+  const pausedActive = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
+  const glyph = pausedActive ? ICON_GLYPH.paused : ICON_GLYPH[state.iconState];
   const titleByState: Record<IconState, string> = {
     idle: 'Operator — idle',
     scanning: 'Operator — scanning workspace',
@@ -256,20 +314,223 @@ export function OperatorButton(): JSX.Element {
     paused: 'Operator — paused (autonomous actions disabled)',
     'awaiting-input': 'Operator — awaiting your decision on pending suggestions',
   };
-  const title = state.paused ? titleByState.paused : titleByState[state.iconState];
+  const title = pausedActive
+    ? titleByState.paused
+    : state.paused
+      ? `${titleByState[state.iconState]} (paused — auto-dispatch off)`
+      : titleByState[state.iconState];
+
+  const scanning = state.iconState === 'scanning' || state.iconState === 'thinking';
+
+  // Always-visible count bubbles under the header Operator button. Counts come
+  // from sharedState.cards (mirrored from the panel's suggestion array).
+  const counts = useMemo(() => {
+    const c = { pending: 0, accepted: 0, ignored: 0 };
+    for (const card of state.cards) {
+      if (card.status === 'pending') c.pending++;
+      else if (card.status === 'accepted') c.accepted++;
+      else if (card.status === 'ignored') c.ignored++;
+    }
+    return c;
+  }, [state.cards]);
+
 
   return (
+    <span className="pc-header-cta-shell pc-header-cta-shell--operator">
+      <button
+        className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
+        aria-label={title}
+        title={title}
+        onClick={toggle}
+        aria-expanded={state.open}
+        style={{ marginLeft: 8 }}
+      >
+        <span className="pc-header-cta-orb" aria-hidden="true">
+          <span className="pc-header-cta-glyph">{glyph}</span>
+          {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
+          {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
+        </span>
+        <span className="pc-header-cta-label">Operator</span>
+      </button>
+      <div
+        role="status"
+        aria-label={`Operator card counts: ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored`}
+        aria-live="polite"
+        className="pc-operator-popdown"
+      >
+        <OperatorCountBubble label="pending" count={counts.pending} tone="pending" />
+        <OperatorCountBubble label="accepted" count={counts.accepted} tone="accepted" />
+        <OperatorCountBubble label="ignored" count={counts.ignored} tone="ignored" />
+      </div>
+      <OperatorAutoAcceptFeed events={state.recentAutoAccepts} />
+    </span>
+  );
+}
+
+const TIER_DOT_COLOR: Record<'low' | 'medium' | 'high', string> = {
+  low: '#10b981',
+  medium: '#f59e0b',
+  high: '#ef4444',
+};
+
+function formatRelativeAgo(now: number, then: number): string {
+  const ms = Math.max(0, now - then);
+  const sec = Math.floor(ms / 1000);
+  if (sec < 5) return 'just now';
+  if (sec < 60) return `${sec}s ago`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ago`;
+}
+
+function CustomBudgetEntry({ disabled, onSet }: { disabled: boolean; onSet: (cap: number) => void | Promise<void> }): JSX.Element {
+  const [value, setValue] = useState<string>('');
+  const parsed = Number(value);
+  const valid = Number.isFinite(parsed) && parsed > 0 && parsed <= 1000;
+  const submit = () => {
+    if (!valid || disabled) return;
+    void onSet(Math.round(parsed * 100) / 100);
+    setValue('');
+  };
+  return (
+    <form
+      className="operator-budget-custom"
+      onSubmit={(e) => { e.preventDefault(); submit(); }}
+      aria-label="Custom daily budget"
+    >
+      <label className="operator-budget-custom__label">
+        Or set a custom amount
+      </label>
+      <div className="operator-budget-custom__row">
+        <span className="operator-budget-custom__prefix" aria-hidden="true">$</span>
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0.01"
+          max="1000"
+          step="0.01"
+          placeholder="e.g. 7.50"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          aria-label="Custom daily budget in USD"
+          className="operator-budget-custom__input"
+          disabled={disabled}
+        />
+        <span className="operator-budget-custom__suffix">/day</span>
+        <button
+          type="submit"
+          disabled={!valid || disabled}
+          className="operator-budget-custom__submit"
+        >
+          Set
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function OperatorAutoAcceptFeed({ events }: { events: readonly import('./operator-shared-state').AutoAcceptEvent[] }): JSX.Element | null {
+  // Tick once per 30s so relative-time labels refresh while the feed is visible.
+  const [, forceTick] = useState(0);
+  useEffect(() => {
+    if (events.length === 0) return;
+    const t = setInterval(() => forceTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, [events.length]);
+  if (events.length === 0) return null;
+  const now = Date.now();
+
+  return (
+    <div
+      role="region"
+      aria-label="Recent auto-accepted cards"
+      className="pc-operator-auto-feed"
+    >
+      <div className="pc-operator-auto-feed__head">
+        <span className="pc-operator-auto-feed__title">Auto-accepted</span>
+        <span className="pc-operator-auto-feed__count">{events.length}</span>
+      </div>
+      <ul className="pc-operator-auto-feed__list">
+        {events.slice(0, 5).map((e) => (
+          <li key={e.id} className="pc-operator-auto-feed__row">
+            <span
+              aria-hidden="true"
+              className="pc-operator-auto-feed__tier-dot"
+              style={{ background: TIER_DOT_COLOR[e.tier] }}
+            />
+            <span className="pc-operator-auto-feed__title-cell" title={e.title}>{e.title}</span>
+            {e.targetHarness && (
+              <span className="pc-operator-auto-feed__harness">{e.targetHarness}</span>
+            )}
+            <span className="pc-operator-auto-feed__age">{formatRelativeAgo(now, e.acceptedAt)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function OperatorCountBubble({
+  label,
+  count,
+  tone,
+}: {
+  label: 'pending' | 'accepted' | 'ignored';
+  count: number;
+  tone: 'pending' | 'accepted' | 'ignored';
+}): JSX.Element {
+  return (
+    <span
+      className={`pc-operator-count-bubble pc-operator-count-bubble--${tone}`}
+      aria-label={`${count} ${label}`}
+      title={`${count} ${label}`}
+    >
+      {count}
+    </span>
+  );
+}
+
+// Auto-accept threshold cycler. Single click steps Off → Low → Medium → High → Off.
+// Tooltip explains what each level means; the visible label is the current level.
+const AUTO_ACCEPT_LEVELS_ORDER: readonly AutoAcceptLevel[] = ['off', 'low', 'medium', 'high'];
+const AUTO_ACCEPT_LABEL: Record<AutoAcceptLevel, string> = {
+  off: 'off',
+  low: 'low',
+  medium: 'med',
+  high: 'high',
+};
+const AUTO_ACCEPT_TOOLTIP: Record<AutoAcceptLevel, string> = {
+  off: 'Auto-accept: OFF. Every suggestion waits for your decision. Background scans still run; cards just queue up. Click to cycle: Off → Low → Medium → High.',
+  low: 'Auto-accept: LOW. Only low-risk cards auto-accept after a 5s undo window. Medium and high still wait for you. Click to cycle.',
+  medium: 'Auto-accept: MEDIUM. Low and medium-risk cards auto-accept after the undo window. High-risk still waits for you. Click to cycle.',
+  high: 'Auto-accept: HIGH. Every card the operator marks as auto_dispatch fires automatically — including high-risk ones. Use with care. Click to cycle.',
+};
+
+export function OperatorAutoScanToggle(): JSX.Element {
+  const [autoAccept, setAutoAcceptState] = useState<AutoAcceptLevel>(sharedState.autoAccept);
+  useEffect(() => {
+    return subscribeOperatorState((s) => {
+      if (s.autoAccept) setAutoAcceptState(s.autoAccept);
+    });
+  }, []);
+  const cycle = useCallback(() => {
+    const i = AUTO_ACCEPT_LEVELS_ORDER.indexOf(sharedState.autoAccept);
+    const next = AUTO_ACCEPT_LEVELS_ORDER[(i + 1) % AUTO_ACCEPT_LEVELS_ORDER.length];
+    broadcastState({ autoAccept: next });
+  }, []);
+  const title = AUTO_ACCEPT_TOOLTIP[autoAccept];
+  return (
     <button
-      className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}`}
+      type="button"
+      className={`pc-header-cta-mini pc-header-cta-mini--auto pc-header-cta-mini--auto-${autoAccept}${autoAccept !== 'off' ? ' is-on' : ''}`}
       aria-label={title}
       title={title}
-      onClick={toggle}
-      style={{ marginLeft: 8 }}
+      onClick={cycle}
+      style={{ marginLeft: 4 }}
     >
-      <span className="pc-header-cta-orb" aria-hidden="true">
-        <span className="pc-header-cta-glyph">{glyph}</span>
-      </span>
-      <span className="pc-header-cta-label">Operator</span>
+      <span className="pc-header-cta-mini-dot" aria-hidden="true" />
+      <span className="pc-header-cta-mini-label">auto: {AUTO_ACCEPT_LABEL[autoAccept]}</span>
     </button>
   );
 }
@@ -289,18 +550,115 @@ export function OperatorPanel(): JSX.Element | null {
   const [scanStarted, setScanStarted] = useState(false);
   const [firstRun, setFirstRun] = useState(false);
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null);
+
+  // Eager Zero subscriptions for operator-budget + operator-last-scan.
+  // Replaces the lazy REST fetches that fired when the panel opens, so
+  // the user sees current state same-frame on open. Existing
+  // refreshBudget / hydrateFromLastScan callbacks remain as back-stops
+  // for post-mutation refresh and as REST fallback while the
+  // subscription warms up.
+  const operatorWorkspaceId = useWorkspaceId();
+  const { data: budgetRows } = useSyncQuery<{ workspaceId: string; payload: BudgetSnapshot; updatedAt: number }>({
+    queryName: 'operatorBudget.byWorkspace',
+    args: { workspaceId: operatorWorkspaceId },
+    enabled: !!operatorWorkspaceId,
+  });
+  useEffect(() => {
+    if (!Array.isArray(budgetRows) || budgetRows.length === 0) return;
+    setBudget(budgetRows[0].payload as BudgetSnapshot);
+  }, [budgetRows]);
+  const { data: lastScanRows } = useSyncQuery<{ workspaceId: string; payload: unknown; updatedAt: number }>({
+    queryName: 'operatorLastScan.byWorkspace',
+    args: { workspaceId: operatorWorkspaceId },
+    enabled: !!operatorWorkspaceId,
+  });
+  const lastScanPayloadRef = useRef<unknown>(null);
+  useEffect(() => {
+    if (!Array.isArray(lastScanRows) || lastScanRows.length === 0) return;
+    lastScanPayloadRef.current = lastScanRows[0].payload;
+  }, [lastScanRows]);
+
+  // Eager Zero subscription for the Decisions rail. Replaces the lazy
+  // /api/agent-mcp/decisions?limit=20 fetch on panel open. The view's
+  // workspace RLS doesn't apply to Zero (BYPASSRLS), so the query
+  // filters by workspace + actor='system:operator' explicitly.
+  // Schema row uses `subject` (the underlying audit_log column);
+  // operator_decisions view aliases it to `target` — we map here.
+  const { data: decisionRows } = useSyncQuery<{
+    id: string;
+    ts: number;
+    action: string;
+    subject: string;
+  }>({
+    queryName: 'auditLog.operatorDecisions',
+    args: { workspaceId: operatorWorkspaceId, limit: 20 },
+    enabled: !!operatorWorkspaceId,
+  });
+  useEffect(() => {
+    if (!Array.isArray(decisionRows)) return;
+    setDecisions(decisionRows.map((r) => ({
+      id: r.id,
+      ts: r.ts,
+      action: r.action,
+      target: r.subject,
+    })));
+  }, [decisionRows]);
   const [budgetSaving, setBudgetSaving] = useState(false);
-  const [ackLatency, setAckLatency] = useState<AckLatencyTable | null>(null);
+
+  // Budget tiers are PG-backed (Migration 037). Falls back to a static
+  // 3-tier list if the API is down — the picker should never be empty.
+  const [budgetTiers, setBudgetTiers] = useState<Array<{ label: string; cap: number; blurb: string }>>([
+    { label: 'Light',  cap: 5,  blurb: '~50 scans/day with default model' },
+    { label: 'Active', cap: 20, blurb: 'recommended for daily use' },
+    { label: 'Heavy',  cap: 50, blurb: 'large workspaces or always-on background' },
+  ]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/operator/budget-tiers')
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled || !Array.isArray(d.tiers) || d.tiers.length === 0) return;
+        setBudgetTiers(d.tiers);
+      })
+      .catch(() => { /* keep static fallback */ });
+    return () => { cancelled = true; };
+  }, []);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<EventSource | null>(null);
-  const [feedFilter, setFeedFilter] = useState<FeedFilter>('all');
   const [feedQuery, setFeedQuery] = useState('');
+  const [mainView, setMainView] = useQueryState<MainView>(
+    'view',
+    parseAsStringLiteral(['cards', 'accepted', 'ignored', 'scan-history'] as const).withDefault('cards'),
+  );
+  // Active harness filter — selected from the card toolbar dropdown.
+  // null = all harnesses.
+  const [harnessFilter, setHarnessFilter] = useState<string | null>(null);
+  const [harnessRows, setHarnessRows] = useState<HarnessOneLiner[]>([]);
   const [scanStatus, setScanStatus] = useState<ScanStatus>('idle');
   const [scanError, setScanError] = useState<string | null>(null);
-  const [confirmingHigh, setConfirmingHigh] = useState<Record<string, boolean>>({});
+  const [provisioning, setProvisioning] = useState(false);
+  const [confirmingDispatch, setConfirmingDispatch] = useState<Record<string, boolean>>({});
   const [now, setNow] = useState(() => Date.now());
   const deferredFeedQuery = useDeferredValue(feedQuery.trim().toLowerCase());
+  // Detect when the panel is rendered on the settings page itself, so
+  // the "Set up Operator →" CTA doesn't become a useless self-link.
+  const pathname = usePathname();
+  const onSettingsPage = pathname === '/settings/operator';
 
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/agent-mcp/operator-trigger-state')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (cancelled || !d?.state?.perHarness) return;
+        setHarnessRows(d.state.perHarness);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Subscribe to shared state.
   useEffect(() => {
@@ -388,28 +746,48 @@ export function OperatorPanel(): JSX.Element | null {
     es.addEventListener('suggestion', (ev: MessageEvent) => {
       try {
         const raw = JSON.parse(ev.data) as ParsedSuggestion;
-        // Pause → foreground convert auto→ask BEFORE render.
-        const s: ParsedSuggestion = sharedState.paused && raw.auto_dispatch
+        // Convert auto→ask before render when:
+        //   - the operator is paused, OR
+        //   - the user's auto-accept threshold doesn't permit this tier.
+        const tierAllowed = isAutoAcceptedByThreshold(raw.actualTier, sharedState.autoAccept);
+        const shouldDowngrade = raw.auto_dispatch && (sharedState.paused || !tierAllowed);
+        const s: ParsedSuggestion = shouldDowngrade
           ? { ...raw, auto_dispatch: false }
           : raw;
         setSuggestions((prev) => {
+          const autoDispatchAt = s.auto_dispatch ? Date.now() + 5_000 : undefined;
           const idx = prev.findIndex((c) => c.id === s.id);
           if (idx >= 0) {
-            // Stable-id collision = supersede the prior card. Drop terminal
-            // statuses to 'superseded' so reconstruction sees the move.
+            // Stable-id collision. Pending cards get their content
+            // refreshed in place (operator refined the same suggestion).
+            // Terminal cards (accepted / ignored) stay as the user's
+            // recorded decision — the new emission lands as a separate
+            // pending card so the user can see it again.
             const next = prev.slice();
             const prior = prev[idx];
-            const wasTerminal = prior.status === 'dispatched' || prior.status === 'dismissed';
-            const autoDispatchAt = s.auto_dispatch ? Date.now() + 5_000 : undefined;
-            next[idx] = wasTerminal
-              ? { ...prior, status: 'superseded' as LifecycleState }
-              : { ...prior, ...s, status: 'pending', autoDispatchAt };
-            if (wasTerminal) next.push({ ...s, status: 'pending', autoDispatchAt });
+            if (prior.status === 'pending') {
+              next[idx] = {
+                ...prior,
+                ...s,
+                status: 'pending',
+                autoDispatchAt,
+                duplicateCount: prior.duplicateCount,
+              };
+            } else {
+              next.push({ ...s, status: 'pending', autoDispatchAt });
+            }
+            return next;
+          }
+          const exactKey = duplicateKeyForCard(s);
+          const exactIdx = prev.findIndex((c) => c.status === 'pending' && duplicateKeyForCard(c) === exactKey);
+          if (exactIdx >= 0) {
+            const next = prev.slice();
+            next[exactIdx] = bumpDuplicateCount(next[exactIdx]);
             return next;
           }
           // Fuzzy dedup: titles that paraphrase a still-pending card
           // collapse rather than stack. Only collapse against pending —
-          // dispatched/dismissed cards have user-visible decisions we
+          // accepted/ignored cards have user-visible decisions we
           // shouldn't mask.
           const candidates = prev
             .filter((c) => c.status === 'pending')
@@ -424,14 +802,15 @@ export function OperatorPanel(): JSX.Element | null {
                 ...s,
                 id: prev[fIdx].id,
                 status: 'pending',
-                autoDispatchAt: s.auto_dispatch ? Date.now() + 5_000 : undefined,
+                autoDispatchAt,
+                duplicateCount: (prev[fIdx].duplicateCount ?? 1) + 1,
               };
               return dup;
             }
           }
           return [
             ...prev,
-            { ...s, status: 'pending', autoDispatchAt: s.auto_dispatch ? Date.now() + 5_000 : undefined },
+            { ...s, status: 'pending', autoDispatchAt },
           ];
         });
         // Voice mode: speak the suggestion title + why-line.
@@ -475,6 +854,30 @@ export function OperatorPanel(): JSX.Element | null {
     });
   }, []);
 
+  const provisionAndRescan = useCallback(async () => {
+    setProvisioning(true);
+    setScanError(null);
+    try {
+      const r = await fetch('/api/agent-mcp/provision', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        setScanError(`Provision failed (${r.status}): ${text || 'no detail'}`);
+        return;
+      }
+      // Provisioned — clear the error state and kick off a real scan.
+      setScanStatus('idle');
+      startScan();
+    } catch (err) {
+      setScanError(`Provision failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setProvisioning(false);
+    }
+  }, [startScan]);
+
   const refreshDecisions = useCallback(async () => {
     try {
       const r = await fetch('/api/agent-mcp/decisions?limit=20');
@@ -486,85 +889,10 @@ export function OperatorPanel(): JSX.Element | null {
     }
   }, []);
 
-  // Receiving-state polling: while the panel is open, every 10s ask the
-  // server for the current message.status of any 'dispatched' card with a
-  // tracked messageId. Flip the card's lifecycle when the recipient picks
-  // it up.
-  useEffect(() => {
-    if (!state.open) return;
-    let cancelled = false;
-    const tick = async () => {
-      const cards = suggestionsRef.current.filter(
-        (c) => c.status === 'dispatched' && c.messageId,
-      );
-      if (!cards.length) return;
-      const ids = cards.map((c) => c.messageId!).join(',');
-      try {
-        const r = await fetch(`/api/agent-mcp/operator-message-status?ids=${encodeURIComponent(ids)}`);
-        if (!r.ok || cancelled) return;
-        const { rows } = (await r.json()) as {
-          rows: { messageId: string; receivingState: 'dispatched' | 'consumed' | 'escalated' | 'rejected' }[];
-        };
-        if (cancelled || !rows.length) return;
-        const byMsgId = new Map(rows.map((r) => [r.messageId, r.receivingState]));
-        // Voice-mode flip announcements (v4 §2d): consumed gated by
-        // `speakReceivingFlips` (chatty, default OFF), escalated/rejected
-        // always speak via assertive priority (significant).
-        const voiceOn = getVoiceState().mode !== 'off';
-        const prefsP = voiceOn ? import('./voice/voice-prefs-client').then((m) => m.loadVoicePrefsClient()) : null;
-        setSuggestions((prev) =>
-          prev.map((c) => {
-            if (!c.messageId || c.status !== 'dispatched') return c;
-            const next = byMsgId.get(c.messageId);
-            if (!next || next === 'dispatched') return c;
-            void logAudit(c.id, next as 'consumed' | 'escalated' | 'rejected');
-            if (voiceOn && prefsP) {
-              void prefsP.then((prefs) => {
-                const harness = c.target_harness ?? 'a harness';
-                if (next === 'consumed' && prefs.speakReceivingFlips) {
-                  speak(`${harness} consumed the directive.`, 'harness', 'polite');
-                } else if (next === 'escalated' && prefs.speakEscalations) {
-                  speak(`${harness} escalated the directive.`, 'harness', 'assertive');
-                } else if (next === 'rejected' && prefs.speakEscalations) {
-                  speak(`${harness} rejected the directive.`, 'harness', 'assertive');
-                }
-              }).catch(() => {});
-            }
-            return { ...c, status: next };
-          }),
-        );
-      } catch {
-        /* network blip — try again next tick */
-      }
-    };
-    void tick();
-    const t = setInterval(() => void tick(), 10_000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [state.open]);
-
-  // Adaptive unconsumed thresholds: refresh on open + every 30 min.
-  useEffect(() => {
-    if (!state.open) return;
-    let cancelled = false;
-    const fetchOnce = async () => {
-      try {
-        const r = await fetch('/api/agent-mcp/operator-ack-latency');
-        if (!r.ok || cancelled) return;
-        setAckLatency((await r.json()) as AckLatencyTable);
-      } catch {
-        /* keep last */
-      }
-    };
-    void fetchOnce();
-    const t = setInterval(() => void fetchOnce(), 30 * 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [state.open]);
+  // Receiving-state polling (Zero watcher + REST fallback) was removed
+  // when the lifecycle simplified to {pending, accepted, ignored}. Once
+  // a card is accepted, it stays accepted — we no longer try to track
+  // what the harness did with the directive afterward.
 
   const hydrateFromLastScan = useCallback(async () => {
     try {
@@ -573,7 +901,7 @@ export function OperatorPanel(): JSX.Element | null {
       const { snapshot } = (await r.json()) as {
         snapshot: {
           cards: (ParsedSuggestion & {
-            _status?: LifecycleState;
+            _status?: string;
             _dispatchedAt?: number;
             _undoCancelled?: boolean;
           })[];
@@ -584,17 +912,17 @@ export function OperatorPanel(): JSX.Element | null {
       // in-flight scan.
       setSuggestions((prev) => {
         if (prev.length > 0) return prev;
-        return snapshot.cards.map((c) => {
+        return dedupePendingSuggestionCards(snapshot.cards.map((c) => {
           const { _status, _dispatchedAt, _undoCancelled, ...rest } = c;
-          const status = (_status ?? 'pending') as LifecycleState;
+          const status = normalizeLifecycleState(_status);
           return {
             ...rest,
             status,
-            dispatchedAt: _dispatchedAt,
+            acceptedAt: status === 'accepted' ? _dispatchedAt : undefined,
             autoDispatchAt: rest.auto_dispatch && status === 'pending' ? Date.now() + 5_000 : undefined,
             undoCancelled: _undoCancelled,
           };
-        });
+        }));
       });
     } catch {
       /* ignore */
@@ -670,7 +998,7 @@ export function OperatorPanel(): JSX.Element | null {
   // Reset to 'click' otherwise.
   const actorMethodRef = useRef<'voice' | 'click' | 'api'>('click');
 
-  const logAudit = useCallback(async (cardId: string, kind: 'dispatched' | 'acked' | 'undo_cancel' | 'consumed' | 'escalated' | 'rejected' | 'failed' | 'dismissed' | 'superseded', context?: Record<string, unknown>) => {
+  const logAudit = useCallback(async (cardId: string, kind: 'accepted' | 'ignored' | 'accept_failed' | 'undo_cancel', context?: Record<string, unknown>) => {
     try {
       await fetch('/api/agent-mcp/operator-audit', {
         method: 'POST',
@@ -685,30 +1013,99 @@ export function OperatorPanel(): JSX.Element | null {
   const dispatchSuggestion = useCallback(async (id: string) => {
     const card = suggestionsRef.current.find((c) => c.id === id);
     if (!card) return;
-    setConfirmingHigh((prev) => {
+    setConfirmingDispatch((prev) => {
       const { [id]: _removed, ...rest } = prev;
       return rest;
     });
-    const dispatchedAt = Date.now();
-    setSuggestions((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, status: 'dispatched', dispatchedAt } : c)),
-    );
     setState((s) => ({ ...s, iconState: 'acting' }));
-    void logAudit(id, 'dispatched', {
-      action: card.action,
-      capability: card.capability ?? null,
-      target: card.target_harness ?? null,
-    });
+
+    // Side-effect by kind. On any failure we stay pending and bump the
+    // failure counters; on success we flip to 'accepted' once.
+    const recordFailure = (reason: string) => {
+      setSuggestions((prev) =>
+        prev.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                failedAttempts: (c.failedAttempts ?? 0) + 1,
+                lastFailureReason: reason,
+                lastFailureAt: Date.now(),
+              }
+            : c,
+        ),
+      );
+      void logAudit(id, 'accept_failed', {
+        action: card.action,
+        target: card.target_harness ?? null,
+        reason,
+      });
+    };
+
+    const recordSuccess = (extra: Partial<SuggestionCard> = {}) => {
+      setSuggestions((prev) =>
+        prev.map((c) =>
+          c.id === id
+            ? {
+                ...c,
+                ...extra,
+                status: 'accepted',
+                acceptedAt: Date.now(),
+                failedAttempts: undefined,
+                lastFailureReason: undefined,
+                lastFailureAt: undefined,
+              }
+            : c,
+        ),
+      );
+      // Auto-fired (auto_dispatch was true)? Surface in the popdown feed.
+      // Manual Accept clicks aren't included — those are user-initiated.
+      if (card.auto_dispatch) {
+        pushAutoAcceptEvent({
+          id: card.id,
+          title: card.title,
+          tier: card.actualTier,
+          targetHarness: card.target_harness,
+          acceptedAt: Date.now(),
+          source: 'panel-auto',
+        });
+      }
+      void logAudit(id, 'accepted', {
+        action: card.action,
+        capability: card.capability ?? null,
+        target: card.target_harness ?? null,
+      });
+    };
+
     try {
-      if (card.action !== 'send_directive' || !card.target_harness) {
-        // navigate / inform are advisory; ack immediately and exit.
-        void logAudit(id, 'acked');
+      if (card.action === 'inform') {
+        // No side effect — the audit log entry is the whole action.
+        recordSuccess();
         return;
       }
-      const r = await fetch('/api/admin/execute-action', {
+      if (card.action === 'navigate') {
+        const url = card.target_resource ?? null;
+        if (!url) {
+          recordFailure('navigate card has no target_resource');
+          return;
+        }
+        const opened = typeof window !== 'undefined' ? window.open(url, '_blank', 'noopener,noreferrer') : null;
+        if (!opened) {
+          recordFailure('window.open blocked (popup blocker?) — try clicking again');
+          return;
+        }
+        recordSuccess();
+        return;
+      }
+      // send_directive (the only remaining kind).
+      if (!card.target_harness) {
+        recordFailure('directive card has no target_harness');
+        return;
+      }
+      const r = await fetch('/api/agent-mcp/operator-dispatch', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
+          actionId: `${card.id}:dispatch`,
           op: 'send_message',
           to: [card.target_harness],
           kind: card.directive_kind ?? 'Directive',
@@ -719,41 +1116,25 @@ export function OperatorPanel(): JSX.Element | null {
       });
       if (!r.ok) {
         const text = await r.text().catch(() => '');
-        setSuggestions((prev) =>
-          prev.map((c) =>
-            c.id === id ? { ...c, status: 'failed', failureReason: text } : c,
-          ),
-        );
-      } else {
-        // Path-(b) ack: dispatch returned without error. Capture the
-        // messageId so receiving-state polling can flip 'dispatched' →
-        // 'consumed' once the recipient harness picks it up.
-        let messageId: string | undefined;
-        try {
-          const data = await r.clone().json();
-          messageId = data?.result?.inserted?.[0]?.messageId;
-        } catch {
-          /* response wasn't JSON — that's fine */
-        }
-        if (messageId) {
-          setSuggestions((prev) =>
-            prev.map((c) => (c.id === id ? { ...c, messageId } : c)),
-          );
-        }
-        void logAudit(id, 'acked');
+        recordFailure(text || `HTTP ${r.status}`);
+        return;
       }
+      // Hard-fail when 200 but no messageId — without it we'd lose
+      // traceability for any future per-card lookups.
+      let messageId: string | undefined;
+      try {
+        const data = await r.clone().json();
+        messageId = data?.result?.inserted?.[0]?.messageId;
+      } catch {
+        /* response wasn't JSON */
+      }
+      if (!messageId) {
+        recordFailure('dispatch returned 200 but no message_id');
+        return;
+      }
+      recordSuccess({ messageId });
     } catch (err) {
-      setSuggestions((prev) =>
-        prev.map((c) =>
-          c.id === id
-            ? {
-                ...c,
-                status: 'failed',
-                failureReason: err instanceof Error ? err.message : String(err),
-              }
-            : c,
-        ),
-      );
+      recordFailure(err instanceof Error ? err.message : String(err));
     } finally {
       setState((s) => ({ ...s, iconState: 'idle' }));
       void refreshDecisions();
@@ -768,10 +1149,17 @@ export function OperatorPanel(): JSX.Element | null {
   useEffect(() => {
     if (!state.open || state.paused) return;
     const due = suggestions.find(
-      (s) => s.status === 'pending' && s.auto_dispatch && s.autoDispatchAt && s.autoDispatchAt <= now,
+      (s) =>
+        s.status === 'pending' &&
+        s.auto_dispatch &&
+        s.autoDispatchAt &&
+        s.autoDispatchAt <= now &&
+        // Re-check threshold at fire time so a user dropping the level
+        // mid-window (e.g. High → Off) prevents the deadline firing.
+        isAutoAcceptedByThreshold(s.actualTier, state.autoAccept),
     );
     if (due) void dispatchSuggestion(due.id);
-  }, [dispatchSuggestion, now, state.open, state.paused, suggestions]);
+  }, [dispatchSuggestion, now, state.open, state.paused, state.autoAccept, suggestions]);
 
   /**
    * Deliberate dismiss — user clicked Dismiss in the panel. Optionally
@@ -783,7 +1171,7 @@ export function OperatorPanel(): JSX.Element | null {
     const card = suggestionsRef.current.find((c) => c.id === id);
     setSuggestions((prev) =>
       prev.map((c) =>
-        c.id === id ? { ...c, status: 'dismissed', undoCancelled: false } : c,
+        c.id === id ? { ...c, status: 'ignored', undoCancelled: false } : c,
       ),
     );
     // Record dismissal for the cooldown filter (so re-scans don't re-emit).
@@ -792,11 +1180,10 @@ export function OperatorPanel(): JSX.Element | null {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ id }),
     });
-    // Lifecycle telemetry: dismissed (deliberate, not undo-cancel).
-    void logAudit(id, 'dismissed');
+    void logAudit(id, 'ignored');
     if (!card) return;
     const reason = typeof window !== 'undefined'
-      ? window.prompt('Why dismiss this? (optional — leave blank to skip learning)')
+      ? window.prompt('Why ignore this? (optional — leave blank to skip learning)')
       : '';
     if (!reason || !reason.trim()) return;
     const entry = `- [USER-TYPED] [DISMISS] "${card.title.replace(/"/g, '\\"')}" — reason: "${reason.trim().replace(/"/g, '\\"')}"`;
@@ -818,7 +1205,7 @@ export function OperatorPanel(): JSX.Element | null {
     (id: string) => {
       setSuggestions((prev) =>
         prev.map((c) =>
-          c.id === id ? { ...c, status: 'dismissed', undoCancelled: true } : c,
+          c.id === id ? { ...c, status: 'ignored', undoCancelled: true } : c,
         ),
       );
       void logAudit(id, 'undo_cancel');
@@ -884,53 +1271,199 @@ export function OperatorPanel(): JSX.Element | null {
     };
   }, [state.open, startScan, dispatchSuggestion, dismissSuggestion]);
 
+  // Voice / Oracle / palette can drive cards via window events. The
+  // registry's panel.dispatch-card / panel.dismiss-card commands fire
+  // these; we forward to the existing local handlers so behavior is
+  // identical to a click.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onDispatch = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id;
+      if (id) void dispatchSuggestion(id);
+    };
+    const onDismiss = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id;
+      if (id) dismissSuggestion(id);
+    };
+    window.addEventListener('operator:dispatch-card', onDispatch as EventListener);
+    window.addEventListener('operator:dismiss-card', onDismiss as EventListener);
+    return () => {
+      window.removeEventListener('operator:dispatch-card', onDispatch as EventListener);
+      window.removeEventListener('operator:dismiss-card', onDismiss as EventListener);
+    };
+  }, [dispatchSuggestion, dismissSuggestion]);
+
+  // Bridge the operator.scan-request / operator.across-workspaces
+  // events the registry fires from voice/Oracle. Voice has been firing
+  // these without listeners since PR 5; consume them now so the
+  // commands actually do something.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onScan = (e: Event) => {
+      const query = (e as CustomEvent).detail?.query as string | undefined;
+      // Open + start scan; query is informational (panel doesn't currently
+      // accept a seed query but we stash it on state so future UI can use it).
+      broadcastState({ open: true });
+      void startScan(query);
+    };
+    const onOpen = () => broadcastState({ open: true });
+    window.addEventListener('operator:scan-request', onScan as EventListener);
+    window.addEventListener('operator:open-request', onOpen as EventListener);
+    return () => {
+      window.removeEventListener('operator:scan-request', onScan as EventListener);
+      window.removeEventListener('operator:open-request', onOpen as EventListener);
+    };
+  }, [startScan]);
+
   const pendingCount = suggestions.filter((s) => s.status === 'pending').length;
-  const inFlightCount = suggestions.filter((s) => s.status === 'dispatched').length;
-  const failedCount = suggestions.filter((s) =>
-    s.status === 'failed' || s.status === 'escalated' || s.status === 'rejected',
-  ).length;
-  const terminalCount = suggestions.filter((s) =>
-    s.status === 'consumed' || s.status === 'dismissed' || s.status === 'superseded',
-  ).length;
-  const sortedSuggestions = suggestions
-    .map((s, index) => ({ s, index }))
-    .sort((a, b) => {
-      const tierDelta = TIER_SORT_RANK[b.s.actualTier] - TIER_SORT_RANK[a.s.actualTier];
-      if (tierDelta !== 0) return tierDelta;
-      return b.index - a.index;
-    })
-    .map(({ s }) => s);
-  const filterActive = deferredFeedQuery.length > 0;
-  const filteredSuggestions = filterActive
-    ? sortedSuggestions.filter((s) => searchableTextForCard(s).includes(deferredFeedQuery))
-    : sortedSuggestions;
-  const filteredDecisions = filterActive
-    ? decisions.filter((r) => searchableTextForDecision(r).includes(deferredFeedQuery))
-    : decisions;
+  const acceptedCount = suggestions.filter((s) => s.status === 'accepted').length;
+  const ignoredCount = suggestions.filter((s) => s.status === 'ignored').length;
+
+  const sortedSuggestions = useMemo(
+    () => suggestions
+      .map((s, index) => ({ s, index }))
+      .sort((a, b) => {
+        // Pending cards with prior failures float above clean pending so the
+        // user can retry them without hunting.
+        const aRetry = a.s.status === 'pending' && (a.s.failedAttempts ?? 0) > 0 ? 1 : 0;
+        const bRetry = b.s.status === 'pending' && (b.s.failedAttempts ?? 0) > 0 ? 1 : 0;
+        if (aRetry !== bRetry) return bRetry - aRetry;
+        const tierDelta = TIER_SORT_RANK[b.s.actualTier] - TIER_SORT_RANK[a.s.actualTier];
+        if (tierDelta !== 0) return tierDelta;
+        return b.index - a.index;
+      })
+      .map(({ s }) => s),
+    [suggestions],
+  );
+  const textFilterActive = deferredFeedQuery.length > 0;
+  const filterActive = textFilterActive || harnessFilter != null;
+  const harnessOptions = useMemo(() => {
+    const slugs = new Set<string>();
+    harnessRows.forEach((h) => slugs.add(h.slug));
+    suggestions.forEach((s) => {
+      if (s.target_harness) slugs.add(s.target_harness);
+    });
+    decisions.forEach((d) => {
+      const target = d.target?.replace(/^harness:/, '').split('/')[0];
+      if (target) slugs.add(target);
+    });
+    return [
+      { value: '_all', label: 'All harnesses' },
+      ...Array.from(slugs).sort().map((slug) => ({ value: slug, label: slug })),
+    ];
+  }, [decisions, harnessRows, suggestions]);
+  const activeFilterParts = [
+    harnessFilter,
+    feedQuery.trim() ? `“${feedQuery.trim()}”` : null,
+  ].filter((part): part is string => Boolean(part));
+  const lastScanUpdatedAt = Array.isArray(lastScanRows) ? lastScanRows[0]?.updatedAt : undefined;
+  const lastScanAgeLabel = useMemo(() => {
+    if (typeof lastScanUpdatedAt !== 'number' || !Number.isFinite(lastScanUpdatedAt)) return null;
+    const timestamp = lastScanUpdatedAt < 1_000_000_000_000 ? lastScanUpdatedAt * 1000 : lastScanUpdatedAt;
+    const minutes = Math.max(0, Math.round((now - timestamp) / 60_000));
+    if (minutes < 1) return 'just now';
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 48) return `${hours}h ago`;
+    return `${Math.round(hours / 24)}d ago`;
+  }, [lastScanUpdatedAt, now]);
+  const filteredSuggestions = useMemo(() => {
+    let list = sortedSuggestions;
+    if (mainView === 'cards') {
+      list = list.filter((s) => s.status === 'pending');
+    } else if (mainView === 'accepted') {
+      list = list.filter((s) => s.status === 'accepted');
+    } else if (mainView === 'ignored') {
+      list = list.filter((s) => s.status === 'ignored');
+    }
+    if (harnessFilter != null) {
+      list = list.filter((s) => s.target_harness === harnessFilter);
+    }
+    if (textFilterActive) {
+      list = list.filter((s) => searchableTextForCard(s).includes(deferredFeedQuery));
+    }
+    return list;
+  }, [deferredFeedQuery, harnessFilter, mainView, sortedSuggestions, textFilterActive]);
   const visibleSuggestions = filteredSuggestions;
-  const visibleDecisions = feedFilter === 'suggestions' ? [] : filteredDecisions;
-  const hasFeedEntries = visibleSuggestions.length > 0 || visibleDecisions.length > 0;
-  const hasTimelineEntries = sortedSuggestions.length > 0 || decisions.length > 0;
+  // Publish a compact snapshot of visible cards so registry queries
+  // (panel.cards) can be answered without re-fetching from the server.
+  // Uses the imported broadcastState helper to avoid a render loop.
+  // Broadcast ALL suggestions (not just the current view) so the
+  // OperatorButton popdown can show pending/accepted/ignored counts
+  // independent of the user's active tab/filter.
+  useEffect(() => {
+    broadcastState({
+      cards: suggestions.slice(0, 200).map((c) => ({
+        id: c.id,
+        title: c.title,
+        action: c.action,
+        tier: c.actualTier,
+        status: c.status,
+        targetHarness: c.target_harness,
+        reason: c.reason,
+        autoDispatch: !!c.auto_dispatch,
+      })),
+    });
+  }, [suggestions]);
+  const hasFeedEntries = visibleSuggestions.length > 0;
+  const hasCardEntries = sortedSuggestions.some((s) => (
+    mainView === 'cards'
+      ? s.status === 'pending'
+      : mainView === 'accepted'
+        ? s.status === 'accepted'
+        : mainView === 'ignored'
+          ? s.status === 'ignored'
+          : s.status !== 'pending'
+  ));
+  const filteredEmpty = filterActive && hasCardEntries && !hasFeedEntries;
   const streamMuted = scanStatus === 'complete' && suggestions.length > 0;
-  const emptyTitle = scanStatus === 'error'
-    ? 'Operator scan needs setup'
-    : filterActive && hasTimelineEntries && !hasFeedEntries
-      ? 'No timeline entries match your filter'
+  const emptyTitle = filteredEmpty
+    ? (mainView === 'accepted' ? 'No accepted actions match your filter' : mainView === 'ignored' ? 'No ignored actions match your filter' : 'No pending actions match your filter')
+    : scanStatus === 'error'
+      ? 'Operator scan needs setup'
       : scanStatus === 'scanning'
         ? 'Scanning workspace…'
-        : scanStarted
-          ? "Operator hasn't surfaced anything"
-          : 'No operator entries yet';
-  const emptyBody = scanStatus === 'error'
-    ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
-    : filterActive && hasTimelineEntries && !hasFeedEntries
-      ? 'Try a different title, harness, status, or action term — or clear the filter to see the full timeline again.'
+        : state.paused
+          ? 'Operator is paused'
+          : scanStatus === 'complete' && suggestions.length === 0
+            ? 'No suggestions found'
+            : mainView === 'accepted'
+              ? 'No accepted actions yet'
+              : mainView === 'ignored'
+                ? 'No ignored actions yet'
+                : scanStarted
+                  ? "Operator hasn't surfaced any pending actions"
+                  : 'Operator has not scanned yet';
+  const emptyBody = filteredEmpty
+    ? 'Filters are narrowing this view. Clear the active filters or choose a different harness.'
+    : scanStatus === 'error'
+      ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
       : scanStatus === 'scanning'
         ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
-        : 'Suggestions and long-running user actions will appear here in one timeline. Use Re-scan when you want Operator to reassess the workspace.';
-  const statusLabel = state.paused ? 'paused' : state.iconState.replace('-', ' ');
+        : state.paused
+          ? 'Resume Operator before automatic scans continue. You can still run a manual scan from the controls above.'
+          : scanStatus === 'complete' && suggestions.length === 0
+            ? `Last scan completed ${lastScanAgeLabel ?? 'recently'} and found no actions. Run Scan again when the workspace changes.`
+            : mainView === 'accepted'
+              ? 'Accepted actions will appear here after you accept them.'
+              : mainView === 'ignored'
+                ? 'Ignored actions will appear here after you ignore them.'
+                : scanStarted
+                  ? `Last scan completed ${lastScanAgeLabel ?? 'recently'} without pending actions. Run Scan to reassess the workspace.`
+                  : 'Click Scan to check workspace state, recent decisions, and pending harness work.';
+  // Pause is masked by active states (scanning/thinking/acting) so manual
+  // user-driven work is visible even when auto-dispatch is paused.
+  const pausedVisible = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
+  const effectiveIconState: IconState = pausedVisible ? 'paused' : state.iconState;
+  const statusLabel = pausedVisible
+    ? 'paused'
+    : state.paused
+      ? `${state.iconState.replace('-', ' ')} (paused)`
+      : state.iconState.replace('-', ' ');
   const reducedMotion = useReducedMotion() ?? false;
-  const panelMotion = reducedMotion
+  const visualEffectsEnabled = useFancyEffectsEnabled();
+  const calmMotion = reducedMotion || !visualEffectsEnabled;
+  const panelMotion = calmMotion
     ? {
         initial: { opacity: 0 },
         animate: { opacity: 1, transition: { duration: 0.16, ease: [0.2, 0, 0, 1] as const } },
@@ -981,7 +1514,7 @@ export function OperatorPanel(): JSX.Element | null {
 
   useGSAP(
     () => {
-      if (!panelRef.current || reducedMotion) return;
+      if (!panelRef.current || calmMotion) return;
       const q = gsap.utils.selector(panelRef.current);
       const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
 
@@ -1027,12 +1560,6 @@ export function OperatorPanel(): JSX.Element | null {
           { autoAlpha: 0.12, scaleX: 0.06 },
           { autoAlpha: 0.92, scaleX: 1, duration: 0.18, repeat: 1, yoyo: true },
           0.34,
-        )
-        .fromTo(
-          q('.operator-hud-bracket'),
-          { autoAlpha: 0, scaleY: 0.15 },
-          { autoAlpha: 1, scaleY: 1, duration: 0.18, stagger: 0.02 },
-          0.5,
         );
 
       const loops: gsap.core.Tween[] = [
@@ -1044,13 +1571,7 @@ export function OperatorPanel(): JSX.Element | null {
           { yPercent: -120, autoAlpha: 0.14 },
           { yPercent: 140, autoAlpha: 0.9, duration: 1.85, ease: 'power2.inOut', repeat: -1, repeatDelay: 0.35 },
         ),
-        gsap.fromTo(
-          q('.operator-hud-beam'),
-          { xPercent: -100, autoAlpha: 0 },
-          { xPercent: 110, autoAlpha: 0.78, duration: 2.8, ease: 'none', repeat: -1, stagger: 0.4 },
-        ),
-        gsap.to(q('.operator-entry__scanline'), { xPercent: 120, duration: 1.5, ease: 'none', repeat: -1, stagger: 0.12 }),
-        gsap.to(q('.operator-panel__title-scan span'), { autoAlpha: 0.32, yoyo: true, repeat: -1, duration: 0.9, stagger: 0.18 }),
+
       ];
 
       if (state.paused) {
@@ -1076,7 +1597,7 @@ export function OperatorPanel(): JSX.Element | null {
         loops.forEach((loop) => loop.kill());
       };
     },
-    { scope: panelRef, dependencies: [reducedMotion, state.iconState, state.paused, scanStatus, suggestions.length, decisions.length] },
+    { scope: panelRef, dependencies: [calmMotion, state.iconState, state.paused, scanStatus, suggestions.length, decisions.length] },
   );
 
   return (
@@ -1085,71 +1606,80 @@ export function OperatorPanel(): JSX.Element | null {
         <motion.div
           ref={panelRef}
           role="dialog"
+          aria-modal="true"
           aria-label="Operator panel"
-          data-operator-state={state.paused ? 'paused' : state.iconState}
+          data-harness-modal="true"
+          data-operator-state={effectiveIconState}
           data-scan-status={scanStatus}
-          className={`operator-panel operator-panel--snap-lock operator-panel--maximal-hud operator-panel--${state.iconState}${state.paused ? ' is-paused' : ''}`}
+          data-main-view={mainView}
+          className={`operator-panel operator-panel--snap-lock operator-panel--maximal-hud operator-panel--${effectiveIconState}${state.paused ? ' is-paused' : ''}`}
           initial={panelMotion.initial}
           animate={panelMotion.animate}
           exit={panelMotion.exit}
-          style={reducedMotion ? undefined : { transformPerspective: 1800 }}
+          style={calmMotion ? undefined : { transformPerspective: 1800 }}
         >
+          <svg className="operator-panel__svg-frame" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+            <defs>
+              <linearGradient id="operatorPanelFrameRail" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stopColor="rgb(238 254 255)" stopOpacity="0.86" />
+                <stop offset="34%" stopColor="rgb(99 230 255)" stopOpacity="0.92" />
+                <stop offset="58%" stopColor="rgb(255 184 68)" stopOpacity="0.78" />
+                <stop offset="100%" stopColor="rgb(16 185 235)" stopOpacity="0.86" />
+              </linearGradient>
+              <filter id="operatorPanelFrameGlow" x="-10%" y="-18%" width="120%" height="136%">
+                <feGaussianBlur stdDeviation="2.6" result="softGlow" />
+                <feMerge>
+                  <feMergeNode in="softGlow" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
+            <path className="operator-panel__svg-frame-spine" d="M46 10 H414 L448 27 H552 L586 10 H954 L990 46 V554 L954 590 H46 L10 554 V46 Z" />
+          </svg>
           <span className="operator-panel__lock-flash" aria-hidden="true" />
           <OperatorScanOverlay
-            state={state.paused ? 'paused' : state.iconState}
-            pendingCount={pendingCount}
-            inFlightCount={inFlightCount}
-            failedCount={failedCount}
-            reducedMotion={reducedMotion}
+            state={effectiveIconState}
+            reducedMotion={calmMotion}
           />
           <header className="operator-panel__header pc-animate-in pc-animate-in--down pc-animate-in--fast">
             <div className="operator-panel__titleblock">
-              <OperatorReactorCore state={state.paused ? 'paused' : state.iconState} reducedMotion={reducedMotion} />
+              <OperatorReactorCore state={effectiveIconState} reducedMotion={calmMotion} />
               <div className="operator-panel__titlecopy">
                 <div className="operator-panel__title-overline" aria-hidden="true" />
                 <div className="operator-panel__titleline">
                   <h2>Operator</h2>
-                  <span className={`operator-status operator-status--${state.paused ? 'paused' : state.iconState}`}>
+                  <span className={`operator-status operator-status--${effectiveIconState}`}>
                     {statusLabel}
                   </span>
-                </div>
-                <div className="operator-panel__title-scan" aria-hidden="true">
-                  <span>{pendingCount} pending</span>
-                  <span>{inFlightCount} transit</span>
-                  <span>{failedCount} alert</span>
                 </div>
               </div>
             </div>
 
-            <div className="operator-panel__metrics pc-animate-in pc-animate-in--down pc-animate-in--delay-1" aria-label="Operator panel summary">
-              <span className="operator-panel__metric-card" title="pending = pending suggestions"><strong>{pendingCount}</strong><em>pending</em></span>
-              <span className="operator-panel__metric-card" title="in flight = dispatched suggestions"><strong>{inFlightCount}</strong><em>in flight</em></span>
-              <span className="operator-panel__metric-card" title="attention = escalated, failed, or rejected suggestions"><strong>{failedCount}</strong><em>attention</em></span>
-              <span className="operator-panel__metric-card" title="resolved = consumed, dismissed, or superseded suggestions"><strong>{terminalCount}</strong><em>resolved</em></span>
-            </div>
 
             <div className="operator-panel__actions pc-animate-in pc-animate-in--down pc-animate-in--delay-2">
-              <button
-                type="button"
-                className="operator-btn operator-btn--primary operator-btn--icon"
-                onClick={() => startScan()}
-                aria-label="Re-scan Operator suggestions"
-              >
-                <span aria-hidden="true">↻</span>
-                <span>Scan</span>
-              </button>
-              <button
-                type="button"
-                className="operator-btn operator-btn--icon"
-                onClick={() => broadcastState({ paused: !state.paused })}
-                aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
-              >
-                <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
-                <span>{state.paused ? 'Resume' : 'Pause'}</span>
-              </button>
-              <RouteLink className="operator-btn operator-btn--ghost" href="/settings/operator">
-                Settings
-              </RouteLink>
+              <div className="operator-panel__action-strip" aria-label="Operator controls">
+                <button
+                  type="button"
+                  className="operator-btn operator-btn--primary operator-btn--icon"
+                  onClick={() => startScan()}
+                  aria-label="Re-scan Operator suggestions"
+                >
+                  <span aria-hidden="true">↻</span>
+                  <span>Scan</span>
+                </button>
+                <button
+                  type="button"
+                  className="operator-btn operator-btn--icon"
+                  onClick={() => broadcastState({ paused: !state.paused })}
+                  aria-label={state.paused ? 'Resume autonomous actions' : 'Pause autonomous actions'}
+                >
+                  <span aria-hidden="true">{state.paused ? '▶' : '⏸'}</span>
+                  <span>{state.paused ? 'Resume' : 'Pause'}</span>
+                </button>
+                <RouteLink className="operator-btn operator-btn--ghost" href="/settings/operator">
+                  Settings
+                </RouteLink>
+              </div>
               <button
                 type="button"
                 className="operator-btn operator-btn--close"
@@ -1171,11 +1701,7 @@ export function OperatorPanel(): JSX.Element | null {
                   You can change this any time at <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
                 </p>
                 <div className="operator-budget-options">
-                  {[
-                    { label: 'Light', cap: 5, blurb: '~50 scans/day with default model' },
-                    { label: 'Active', cap: 20, blurb: 'recommended for daily use' },
-                    { label: 'Heavy', cap: 50, blurb: 'large workspaces or always-on background' },
-                  ].map(({ label, cap, blurb }) => (
+                  {budgetTiers.map(({ label, cap, blurb }) => (
                     <button
                       key={cap}
                       type="button"
@@ -1188,93 +1714,101 @@ export function OperatorPanel(): JSX.Element | null {
                     </button>
                   ))}
                 </div>
+                <CustomBudgetEntry disabled={budgetSaving} onSet={setBudgetCap} />
               </div>
             </div>
           )}
 
           <div className={`operator-panel__body${decisions.length === 0 ? ' has-empty-activity' : ''} pc-animate-in pc-animate-in--down pc-animate-in--delay-1`}>
             <aside className="operator-panel__rail operator-panel__rail--left">
-              {firstRun && (
-                <section className="operator-callout">
-                  <strong>First-run intro</strong>
-                  <p>
-                    I have full write authority across all harnesses in this workspace.
-                    Edit my prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
-                  </p>
-                </section>
-              )}
-              <section className="operator-section">
-                <PerHarnessStatus />
-              </section>
-              <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
-                <div className="operator-section__head">
-                  <span>Stream</span>
-                  <em>{scanStatus === 'error' ? 'error' : scanStatus === 'scanning' ? 'live scan' : scanStatus === 'complete' ? 'complete' : 'quiet'}</em>
-                </div>
-                {scanStatus === 'error' ? (
-                  <div className="operator-stream-error">
-                    <strong>Scan errored</strong>
-                    <p>{scanError || 'Operator substrate is not ready.'}</p>
-                    <RouteLink href="/settings/operator">Set up Operator →</RouteLink>
-                  </div>
-                ) : streamLog.length === 0 ? (
-                  <p className="operator-empty-small">(no stream yet)</p>
-                ) : (
-                  <pre>{streamLog.join('\n')}</pre>
-                )}
-              </section>
+              <DelegatesSection />
             </aside>
 
             <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-              <div className="operator-feed-head">
-                <div className="operator-feed-title">
-                  <span className="operator-panel__eyebrow">Unified timeline</span>
-                  <h3>Timeline</h3>
-                </div>
-                <div className="operator-feed-tools">
-                  <div className={`operator-feed-search${filterActive ? ' has-value' : ''}`}>
-                    <span className="operator-feed-search__icon" aria-hidden="true">⌕</span>
-                    <input
-                      type="search"
-                      value={feedQuery}
-                      onChange={(e) => setFeedQuery(e.target.value)}
-                      placeholder="Filter title, harness, or action"
-                      aria-label="Filter unified timeline"
-                      spellCheck={false}
-                      enterKeyHint="search"
-                    />
-                    {feedQuery && (
-                      <button
-                        type="button"
-                        className="operator-feed-search__clear"
-                        onClick={() => setFeedQuery('')}
-                        aria-label="Clear timeline filter"
-                      >
-                        ×
-                      </button>
-                    )}
-                  </div>
-                  <div className="operator-feed-pills" aria-label="Timeline view">
-                    {[
-                      { key: 'all' as FeedFilter, label: 'All', count: filteredSuggestions.length + filteredDecisions.length },
-                      { key: 'suggestions' as FeedFilter, label: 'Suggestions', count: filteredSuggestions.length },
-                    ].map((pill) => (
-                      <button
-                        key={pill.key}
-                        type="button"
-                        className={feedFilter === pill.key ? 'is-active' : undefined}
-                        aria-pressed={feedFilter === pill.key}
-                        onClick={() => setFeedFilter(pill.key)}
-                      >
-                        <span>{pill.label}</span>
-                        <strong>{pill.count}</strong>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+              <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Operator action views">
+                {[
+                  { key: 'cards' as MainView, count: pendingCount, label: 'Pending' },
+                  { key: 'accepted' as MainView, count: acceptedCount, label: 'Accepted' },
+                  { key: 'ignored' as MainView, count: ignoredCount, label: 'Ignored' },
+                  { key: 'scan-history' as MainView, count: null, label: 'Scans' },
+                ].map((view) => (
+                  <button
+                    key={view.key}
+                    type="button"
+                    role="tab"
+                    className="operator-panel__metric-card operator-panel__metric-card--tab"
+                    aria-selected={mainView === view.key}
+                    aria-pressed={mainView === view.key}
+                    onClick={() => { void setMainView(view.key); }}
+                  >
+                    <em>{view.label}</em>
+                    {typeof view.count === 'number' ? <strong>{view.count}</strong> : null}
+                  </button>
+                ))}
               </div>
+              <div className="operator-feed-head">
+                {mainView !== 'scan-history' && (
+                  <div className="operator-feed-tools">
+                    <div className={`operator-feed-search${textFilterActive ? ' has-value' : ''}`}>
+                      <span className="operator-feed-search__icon" aria-hidden="true">⌕</span>
+                      <input
+                        type="search"
+                        value={feedQuery}
+                        onChange={(e) => setFeedQuery(e.target.value)}
+                        placeholder="Filter title or action"
+                        aria-label={mainView === 'accepted' ? 'Filter accepted actions by title or action' : mainView === 'ignored' ? 'Filter ignored actions by title or action' : 'Filter pending actions by title or action'}
+                        spellCheck={false}
+                        enterKeyHint="search"
+                      />
+                      {feedQuery && (
+                        <button
+                          type="button"
+                          className="operator-feed-search__clear"
+                          onClick={() => setFeedQuery('')}
+                          aria-label="Clear action filter"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                    <div className="operator-feed-harness-filter">
+                      <select
+                        value={harnessFilter ?? '_all'}
+                        onChange={(e) => setHarnessFilter(e.target.value === '_all' ? null : e.target.value)}
+                        aria-label="Filter actions by harness"
+                        className="operator-feed-harness-select"
+                      >
+                        {harnessOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {mainView !== 'scan-history' && filterActive && (
+                <div className="operator-feed-active-filters" aria-label="Active filters">
+                  <span>Filtered</span>
+                  {activeFilterParts.map((part) => (
+                    <em key={part}>{part}</em>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFeedQuery('');
+                      setHarnessFilter(null);
+                    }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
 
-              {!hasFeedEntries ? (
+              {mainView === 'scan-history' ? (
+                <ScanHistorySection />
+              ) : !hasFeedEntries ? (
                 <div className={`operator-empty-state operator-empty-state--${scanStatus}`}>
                   <div className="operator-empty-state__icon" aria-hidden="true">
                     {scanStatus === 'error' ? '!' : scanStatus === 'scanning' ? '◐' : '·'}
@@ -1282,31 +1816,29 @@ export function OperatorPanel(): JSX.Element | null {
                   <h3>{emptyTitle}</h3>
                   <p>{emptyBody}</p>
                   {scanStatus === 'error' && (
-                    <RouteLink className="operator-btn operator-btn--primary" href="/settings/operator">
-                      Set up Operator →
-                    </RouteLink>
+                    <button
+                      type="button"
+                      className="operator-btn operator-btn--primary"
+                      onClick={() => provisionAndRescan()}
+                      disabled={provisioning}
+                    >
+                      {provisioning ? 'Setting up…' : 'Set up Operator →'}
+                    </button>
                   )}
                 </div>
               ) : (
-                <ul role="list" aria-label="Operator timeline" className="operator-feed-list">
+                <ul role="list" aria-label="Operator actions" className="operator-feed-list">
                   {visibleSuggestions.map((s, index) => (
                     <li
                       key={s.id}
                       role="article"
-                      aria-label={`${s.title} — ${s.actualTier} tier, ${s.auto_dispatch ? 'auto-dispatched' : 'awaiting your decision'}`}
+                      aria-label={`${s.title} — ${tierLabel(s.actualTier)}, ${s.status === 'accepted' ? 'accepted' : s.status === 'ignored' ? 'ignored' : s.auto_dispatch ? 'auto-accepting' : 'awaiting your decision'}`}
                       data-entry-index={index}
                       data-entry-state={s.status}
                       data-entry-tier={s.actualTier}
                       tabIndex={0}
-                      className={`operator-entry operator-entry--suggestion operator-entry--${s.status} operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
+                      className={`operator-entry operator-entry--suggestion operator-entry--tier-${s.actualTier}${s.action === 'inform' ? ' operator-entry--inform-card' : ''}`}
                     >
-                      <span className="operator-entry__scanline" aria-hidden="true" />
-                      <span className="operator-entry__target-brackets" aria-hidden="true">
-                        <span className="operator-hud-bracket operator-hud-bracket--tl" />
-                        <span className="operator-hud-bracket operator-hud-bracket--tr" />
-                        <span className="operator-hud-bracket operator-hud-bracket--br" />
-                        <span className="operator-hud-bracket operator-hud-bracket--bl" />
-                      </span>
                       <div className="operator-entry__rail">
                         <span title={s.auto_dispatch ? 'Auto-dispatch suggestion' : s.actualTier === 'high' ? 'High-risk review required' : 'Needs your decision'}>
                           {s.auto_dispatch ? '⚡' : s.actualTier === 'high' ? '⚠' : '✋'}
@@ -1315,8 +1847,12 @@ export function OperatorPanel(): JSX.Element | null {
                       <div className="operator-entry__content">
                         <div className="operator-entry__meta">
                           <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
-                          <span className="operator-meta-sep" aria-hidden="true">·</span>
-                          <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
+                          {!(mainView === 'cards' && s.status === 'pending') && (
+                            <>
+                              <span className="operator-meta-sep" aria-hidden="true">·</span>
+                              <span className={`operator-life operator-life--${lifecycleClassForCard(s)}`}>{lifecycleLabelForCard(s)}</span>
+                            </>
+                          )}
                           {s.target_harness && (
                             <>
                               <span className="operator-meta-sep" aria-hidden="true">·</span>
@@ -1332,8 +1868,102 @@ export function OperatorPanel(): JSX.Element | null {
                             </span>
                             <h4>{s.title}</h4>
                           </div>
+                          <div className="operator-entry__title-actions">
+                            <div className="operator-entry__state">
+                              {s.status === 'pending' && s.auto_dispatch && (
+                                <span className="operator-state-text operator-state-text--auto">
+                                  ⚡ Auto-accepting in {autoDispatchSeconds(s, now)}s
+                                </span>
+                              )}
+                              {s.status === 'pending' && (s.failedAttempts ?? 0) > 0 && (
+                                <span
+                                  className="operator-state-text operator-state-text--warn"
+                                  title={s.lastFailureReason ?? 'unknown error'}
+                                >
+                                  ⚠ Last attempt failed: {humanizeFailure(s.lastFailureReason)} — try again
+                                </span>
+                              )}
+                              {s.status === 'accepted' && (
+                                <span className="operator-state-text operator-state-text--good">✓ accepted</span>
+                              )}
+                              {s.status === 'ignored' && (
+                                <span className="operator-state-text operator-state-text--muted">ignored</span>
+                              )}
+                            </div>
+                            <div className="operator-entry__buttons">
+                              {/* Auto-fire countdown: Cancel turns it into a regular pending card; otherwise the timer fires the same Accept flow. */}
+                              {s.status === 'pending' && s.auto_dispatch && (
+                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
+                                  Cancel auto
+                                </button>
+                              )}
+
+                              {/* High-risk send_directive: gate Accept behind a preview-and-confirm strip. */}
+                              {s.status === 'pending' && !s.auto_dispatch && s.action === 'send_directive' && s.actualTier === 'high' && confirmingDispatch[s.id] && (
+                                <div
+                                  className="operator-confirm-strip operator-confirm-strip--preview"
+                                  role="group"
+                                  aria-label={`Accept preview for ${s.title}`}
+                                >
+                                  <div className="operator-confirm-strip__copy">
+                                    <strong>Send to {s.target_harness ?? 'target harness'}?</strong>
+                                    <span>The harness will receive: “{s.directive_subject || s.title}”</span>
+                                    <span>Picked up at the next scan tick (~30s). Estimated agent time: 2–5 min.</span>
+                                  </div>
+                                  <div className="operator-confirm-strip__actions">
+                                    <button
+                                      type="button"
+                                      className="operator-mini-btn operator-mini-btn--danger"
+                                      onClick={() => dispatchSuggestion(s.id)}
+                                    >
+                                      Accept
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="operator-mini-btn operator-mini-btn--ghost"
+                                      onClick={() => setConfirmingDispatch((prev) => {
+                                        const { [s.id]: _removed, ...rest } = prev;
+                                        return rest;
+                                      })}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Default Accept button — visible on every pending card except auto-fire (countdown) and the high-risk-confirm sub-flow. */}
+                              {s.status === 'pending' && !s.auto_dispatch && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingDispatch[s.id]) && (
+                                <button
+                                  type="button"
+                                  className={`operator-mini-btn ${s.actualTier === 'high' ? 'operator-mini-btn--danger' : 'operator-mini-btn--primary'}`}
+                                  onClick={() => {
+                                    if (s.action === 'send_directive' && s.actualTier === 'high') {
+                                      setConfirmingDispatch((prev) => ({ ...prev, [s.id]: true }));
+                                    } else {
+                                      void dispatchSuggestion(s.id);
+                                    }
+                                  }}
+                                >
+                                  {(s.failedAttempts ?? 0) > 0 ? 'Retry Accept →' : 'Accept →'}
+                                </button>
+                              )}
+
+                              {/* Ignore button — visible on every pending card. */}
+                              {s.status === 'pending' && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingDispatch[s.id]) && (
+                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => dismissSuggestion(s.id)}>
+                                  Ignore
+                                </button>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        <p className="operator-entry__why">{s.why}</p>
+                        {s.action !== 'send_directive' && <p className="operator-entry__why">{s.why}</p>}
+                        {s.duplicateCount && s.duplicateCount > 1 ? (
+                          <p className="operator-entry__duplicate-note">
+                            {s.duplicateCount} matching recommendations grouped here.
+                          </p>
+                        ) : null}
 
                         {(s.provenanceFlags?.tierMismatch || s.provenanceFlags?.capabilityUnknown) && (
                           <div className="operator-entry__flags" aria-label="Provenance warnings">
@@ -1370,118 +2000,6 @@ export function OperatorPanel(): JSX.Element | null {
                           </a>
                         )}
 
-                        <div className="operator-entry__footer">
-                          <div className="operator-entry__state">
-                            {s.status === 'pending' && s.auto_dispatch && (
-                              <span className="operator-state-text operator-state-text--auto">
-                                ⚡ Auto-dispatching in {autoDispatchSeconds(s, now)}s
-                              </span>
-                            )}
-                            {s.status === 'pending' && s.action === 'inform' && (
-                              <span className="operator-state-text operator-state-text--muted">read-only</span>
-                            )}
-                            {s.status === 'dispatched' && (() => {
-                              const age = ageMs(s);
-                              const threshold = unconsumedThresholdFor(s, ackLatency);
-                              const unconsumed = age !== null && age > threshold;
-                              return unconsumed ? (
-                                <span className="operator-state-text operator-state-text--warn" title={`pending for ${Math.round(age! / 60000)}m (threshold ${Math.round(threshold / 60000)}m)`}>
-                                  ⏳ unconsumed — harness may be paused
-                                </span>
-                              ) : (
-                                <span className="operator-state-text operator-state-text--good">✓ dispatched</span>
-                              );
-                            })()}
-                            {s.status === 'consumed' && (
-                              <span className="operator-state-text operator-state-text--good">✓ consumed</span>
-                            )}
-                            {s.status === 'escalated' && (
-                              <span className="operator-state-text operator-state-text--warn">↑ escalated</span>
-                            )}
-                            {s.status === 'rejected' && (
-                              <span className="operator-state-text operator-state-text--bad">✗ rejected</span>
-                            )}
-                            {s.status === 'failed' && (
-                              <span className="operator-state-text operator-state-text--bad">✗ failed: {s.failureReason}</span>
-                            )}
-                            {s.status === 'superseded' && (
-                              <span className="operator-state-text operator-state-text--muted">↻ superseded</span>
-                            )}
-                          </div>
-                          <div className="operator-entry__buttons">
-                            {s.action === 'navigate' && s.target_resource && (
-                              <a className="operator-mini-btn operator-mini-btn--primary" href={s.target_resource} target="_blank" rel="noreferrer">
-                                Open link
-                              </a>
-                            )}
-                            {s.action === 'send_directive' && s.status === 'pending' && s.auto_dispatch && (
-                              <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
-                                Dismiss
-                              </button>
-                            )}
-                            {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier !== 'high' && (
-                              <button
-                                type="button"
-                                className={`operator-mini-btn ${s.actualTier === 'medium' ? 'operator-mini-btn--primary' : ''}`}
-                                onClick={() => dispatchSuggestion(s.id)}
-                              >
-                                Dispatch →
-                              </button>
-                            )}
-                            {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && !confirmingHigh[s.id] && (
-                              <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => setConfirmingHigh((prev) => ({ ...prev, [s.id]: true }))}>
-                                Review now
-                              </button>
-                            )}
-                            {s.action === 'send_directive' && s.status === 'pending' && !s.auto_dispatch && s.actualTier === 'high' && confirmingHigh[s.id] && (
-                              <div className="operator-confirm-strip">
-                                <span>Confirm high-risk dispatch{s.target_harness ? ` to ${s.target_harness}` : ''}</span>
-                                <button type="button" className="operator-mini-btn operator-mini-btn--danger" onClick={() => dispatchSuggestion(s.id)}>
-                                  Dispatch →
-                                </button>
-                                <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => setConfirmingHigh((prev) => {
-                                  const { [s.id]: _removed, ...rest } = prev;
-                                  return rest;
-                                })}>
-                                  Dismiss
-                                </button>
-                              </div>
-                            )}
-                            {s.status === 'pending' && !(s.action === 'send_directive' && s.auto_dispatch) && !(s.action === 'send_directive' && s.actualTier === 'high' && confirmingHigh[s.id]) && (
-                              <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => dismissSuggestion(s.id)}>
-                                Dismiss
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </li>
-                  ))}
-                  {visibleDecisions.map((r, index) => (
-                    <li key={`activity:${r.id}`} role="article" className="operator-entry operator-entry--action" data-entry-index={index} tabIndex={0}>
-                      <span className="operator-entry__scanline" aria-hidden="true" />
-                      <span className="operator-entry__target-brackets" aria-hidden="true">
-                        <span className="operator-hud-bracket operator-hud-bracket--tl" />
-                        <span className="operator-hud-bracket operator-hud-bracket--tr" />
-                        <span className="operator-hud-bracket operator-hud-bracket--br" />
-                        <span className="operator-hud-bracket operator-hud-bracket--bl" />
-                      </span>
-                      <div className="operator-entry__rail">
-                        <span title="User-initiated activity">↻</span>
-                      </div>
-                      <div className="operator-entry__content">
-                        <div className="operator-entry__meta">
-                          <span className="operator-kind operator-kind--activity">Activity</span>
-                          <span className="operator-meta-sep" aria-hidden="true">·</span>
-                          <span className="operator-life operator-life--consumed">Recorded</span>
-                          <span className="operator-meta-sep" aria-hidden="true">·</span>
-                          <span className="operator-target">{r.target}</span>
-                        </div>
-                        <div className="operator-entry__title-row">
-                          <h4>{r.action}</h4>
-                          <span className="operator-entry__action-kind">{new Date(r.ts).toLocaleString()}</span>
-                        </div>
-                        <p className="operator-entry__why">User-initiated action recorded by Operator.</p>
                       </div>
                     </li>
                   ))}
@@ -1490,40 +2008,79 @@ export function OperatorPanel(): JSX.Element | null {
             </main>
 
             <aside className={`operator-panel__rail operator-panel__rail--right${decisions.length === 0 ? ' is-empty' : ''} pc-animate-in pc-animate-in--fade pc-animate-in--delay-2`}>
-              {decisions.length === 0 ? (
-                <div className="operator-empty-rail">
-                  <strong>Activity</strong>
-                  <span>waiting</span>
-                  <em>0</em>
-                </div>
-              ) : (
-                <>
-                  <div className="operator-section__head">
-                    <span>Activity</span>
-                    <em>recent decisions</em>
-                  </div>
-                <ul className="operator-activity-list">
-                  {decisions.map((r) => (
-                    <li key={r.id} className="operator-activity-item">
-                      <span className="operator-activity-dot" aria-hidden="true" />
-                      <div>
-                        <strong>{r.action}</strong>
-                        <p>
-                          {r.target}{' '}
-                          <span>· {new Date(r.ts).toLocaleString()}</span>
-                        </p>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-                </>
+              {firstRun && (
+                <section className="operator-callout">
+                  <strong>First-run intro</strong>
+                  <p>
+                    I have full write authority across all harnesses in this workspace.
+                    Edit my prompt or preferences from <RouteLink href="/settings/operator">/settings/operator</RouteLink>.
+                  </p>
+                </section>
               )}
+              <section className="operator-section">
+                {decisions.length === 0 ? (
+                  <div className="operator-empty-rail">
+                    <strong>Decisions</strong>
+                    <span>no recent decisions</span>
+                    <em>0</em>
+                  </div>
+                ) : (
+                  <>
+                    <div className="operator-section__head">
+                      <span>Decisions</span>
+                      <em>recent</em>
+                    </div>
+                    <ul className="operator-activity-list">
+                      {decisions.map((r) => (
+                        <li key={r.id} className="operator-activity-item">
+                          <span className="operator-activity-dot" aria-hidden="true" />
+                          <div>
+                            <strong>{r.action}</strong>
+                            <p>
+                              {r.target}{' '}
+                              <span>· {new Date(r.ts).toLocaleString()}</span>
+                            </p>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </section>
+              <section className={`operator-section operator-stream${streamMuted ? ' operator-stream--muted' : ''}${scanStatus === 'error' ? ' operator-stream--error' : ''}`}>
+                <div className="operator-section__head">
+                  <span>Stream</span>
+                  <em>{scanStatus === 'error' ? 'error' : scanStatus === 'scanning' ? 'scanning' : scanStatus === 'complete' ? 'complete' : 'quiet'}</em>
+                </div>
+                {scanStatus === 'error' ? (
+                  <div className="operator-stream-error">
+                    <strong>Scan errored</strong>
+                    <p>{scanError || 'Operator substrate is not ready.'}</p>
+                    <button
+                      type="button"
+                      className="operator-btn operator-btn--ghost"
+                      onClick={() => provisionAndRescan()}
+                      disabled={provisioning}
+                    >
+                      {provisioning ? 'Setting up…' : 'Set up Operator →'}
+                    </button>
+                    {onSettingsPage ? null : (
+                      <RouteLink className="operator-btn operator-btn--muted" href="/settings/operator">
+                        Open settings
+                      </RouteLink>
+                    )}
+                  </div>
+                ) : streamLog.length === 0 ? (
+                  <p className="operator-empty-small">(no stream yet)</p>
+                ) : (
+                  <pre>{streamLog.join('\n')}</pre>
+                )}
+              </section>
             </aside>
           </div>
 
           <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
             <span>Cmd/Ctrl+K then O to toggle • Click outside to close</span>
-            <span>Operator MCP v0.1.0</span>
           </footer>
         </motion.div>
       ) : null}
@@ -1535,40 +2092,4 @@ interface HarnessOneLiner {
   slug: string;
   status: string;
   lastTouched: string | null;
-}
-
-function PerHarnessStatus(): JSX.Element | null {
-  const [rows, setRows] = useState<HarnessOneLiner[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/agent-mcp/operator-trigger-state')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (cancelled || !d?.state?.perHarness) return;
-        setRows(d.state.perHarness);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  if (!rows?.length) return null;
-  return (
-    <div style={{ marginBottom: 16 }}>
-      <h3 style={{ margin: 0, marginBottom: 8, fontSize: 12, opacity: 0.7, textTransform: 'uppercase' }}>
-        Harnesses
-      </h3>
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 4, fontSize: 12 }}>
-        {rows.slice(0, 8).map((h) => (
-          <li key={h.slug} style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ fontFamily: 'var(--mono, monospace)' }}>{h.slug}</span>
-            <span style={{ opacity: 0.6 }}>{h.status}</span>
-          </li>
-        ))}
-        {rows.length > 8 && (
-          <li style={{ opacity: 0.5 }}>+{rows.length - 8} more</li>
-        )}
-      </ul>
-    </div>
-  );
 }
