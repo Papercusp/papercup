@@ -1,14 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { papercuspPath } from './papercusp-root';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 /**
  * Operator preferences storage (workspace-scoped).
  *
- * Source of truth is `<papercuspRoot>/system/operator/preferences.md` —
- * a free-form markdown notebook with provenance-tagged entries. The
- * panel renders a parsed view; the LLM gets the raw markdown appended
- * to its prompt.
+ * Source of truth is `harness_shared.operator_preferences` (PG, migration
+ * 022). The JSONB payload stores the markdown body as `{ content: "..." }`.
+ * Was previously `<papercuspRoot>/system/operator/preferences.md`; the
+ * file format is preserved (the LLM prompt + the parsing logic still
+ * operate on the raw markdown text).
  *
  * Standing approvals (§4 Phase 4e) are encoded as a specific entry
  * shape so the server-side classifier can read them without re-parsing
@@ -31,24 +30,20 @@ export interface OperatorPreferences {
   standingApprovals: StandingApproval[];
 }
 
-function PREFS_PATH() {
-  return papercuspPath('system', 'operator', 'preferences.md');
+async function readMarkdown(): Promise<string> {
+  const raw = await readOperatorState<{ content?: string }>('operator_preferences');
+  return typeof raw?.content === 'string' ? raw.content : '';
+}
+
+async function writeMarkdown(content: string): Promise<void> {
+  await writeOperatorState('operator_preferences', { content });
 }
 
 const APPROVAL_RE =
   /\[OPERATOR-PROPOSED-USER-CONFIRMED-(\d{4}-\d{2}-\d{2})\]\s*\[STANDING-APPROVE\][\s\S]*?capability=([^\s,]+)[\s\S]*?target=([^\s\n]+)/g;
 
-export function loadPreferences(): OperatorPreferences {
-  const path = PREFS_PATH();
-  if (!existsSync(path)) {
-    return { raw: '', standingApprovals: [] };
-  }
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf8');
-  } catch {
-    return { raw: '', standingApprovals: [] };
-  }
+export async function loadPreferences(): Promise<OperatorPreferences> {
+  const raw = await readMarkdown();
   return { raw, standingApprovals: parseStandingApprovals(raw) };
 }
 
@@ -60,20 +55,20 @@ export function parseStandingApprovals(markdown: string): StandingApproval[] {
   return out;
 }
 
-/** Append a provenance-tagged entry. Creates the file if needed. */
-export function appendPreferenceEntry(entry: string): void {
-  const path = PREFS_PATH();
-  mkdirSync(dirname(path), { recursive: true });
+/** Append a provenance-tagged entry. Atomic via PG upsert. */
+export async function appendPreferenceEntry(entry: string): Promise<void> {
   const today = new Date().toISOString().slice(0, 10);
   const headerPattern = new RegExp(`(^|\\n)## ${today}\\n`);
-  const existing = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const existing = await readMarkdown();
   const trimmed = entry.trimEnd();
+  let next: string;
   if (headerPattern.test(existing)) {
-    writeFileSync(path, `${existing.trimEnd()}\n${trimmed}\n`);
+    next = `${existing.trimEnd()}\n${trimmed}\n`;
   } else {
     const sep = existing.trim() ? '\n\n' : '';
-    writeFileSync(path, `${existing.trimEnd()}${sep}## ${today}\n${trimmed}\n`);
+    next = `${existing.trimEnd()}${sep}## ${today}\n${trimmed}\n`;
   }
+  await writeMarkdown(next);
 }
 
 /**
@@ -100,23 +95,16 @@ export interface PreferenceEntry {
 
 const TAG_RE = /\[([A-Z][A-Z0-9_-]+(?:-\d{4}-\d{2}-\d{2})?)\]/g;
 
-export function listPreferenceEntries(): PreferenceEntry[] {
-  const path = PREFS_PATH();
-  if (!existsSync(path)) return [];
-  let raw: string;
-  try {
-    raw = readFileSync(path, 'utf8');
-  } catch {
-    return [];
-  }
+export async function listPreferenceEntries(): Promise<PreferenceEntry[]> {
+  const raw = await readMarkdown();
+  if (!raw) return [];
   const out: PreferenceEntry[] = [];
-  const sections = raw.split(/^## /m).filter((s) => s.trim());
+  const sections = raw.split(/^## /m).filter((s: string) => s.trim());
   for (const sec of sections) {
     const firstNL = sec.indexOf('\n');
     if (firstNL < 0) continue;
     const date = sec.slice(0, firstNL).trim();
     const tail = sec.slice(firstNL + 1);
-    // Split into bullets — top-level lines starting with `- `.
     const lines = tail.split('\n');
     let cur: string[] = [];
     const flush = () => {
@@ -146,19 +134,17 @@ export function listPreferenceEntries(): PreferenceEntry[] {
   return out;
 }
 
-export function removePreferenceEntry(key: string): boolean {
-  const entries = listPreferenceEntries();
+export async function removePreferenceEntry(key: string): Promise<boolean> {
+  const entries = await listPreferenceEntries();
   const target = entries.find((e) => e.key === key);
   if (!target) return false;
-  const path = PREFS_PATH();
-  const raw = readFileSync(path, 'utf8');
+  const raw = await readMarkdown();
   const updated = raw.replace(target.body, '').replace(/\n{3,}/g, '\n\n');
-  writeFileSync(path, updated);
+  await writeMarkdown(updated);
   return true;
 }
 
 function hashEntry(date: string, body: string): string {
-  // Cheap stable digest — no `crypto` import needed in the hot path.
   let h = 0;
   const s = `${date}::${body}`;
   for (let i = 0; i < s.length; i++) {
@@ -168,6 +154,5 @@ function hashEntry(date: string, body: string): string {
 }
 
 function dateToIso(date: string): string {
-  // YYYY-MM-DD → midnight UTC ISO. Best-effort.
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date}T00:00:00.000Z` : new Date(0).toISOString();
 }

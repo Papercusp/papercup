@@ -3,19 +3,35 @@
  * Oracle MCP server — exposes UI/server tools to claude -p.
  *
  * Spawned by the operator's /api/oracle/chat endpoint per-request with
- * `ORACLE_SESSION_ID` and `ORACLE_BASE` env vars. Each tool either
- * (a) does work directly and returns the result to claude, or
- * (b) forwards a UI command to the dock by POSTing to the operator's
- *     /api/oracle/sessions/:id/ui-command endpoint, which in turn relays
- *     the command to the connected browser via the chat's SSE stream.
+ * `ORACLE_SESSION_ID` and `ORACLE_BASE` env vars. Tools either:
+ *   (a) do work directly and return the result to claude (shared with
+ *       the delegate MCP server via lib/agent-tools-shared.mjs), or
+ *   (b) forward a UI command to the dock by POSTing to the operator's
+ *       /api/oracle/sessions/:id/ui-command endpoint, which relays the
+ *       command to the connected browser via the chat's SSE stream.
+ *
+ * Oracle-specific tools (have a UI channel via ORACLE_SESSION_ID):
+ *   - navigate
+ *   - resumeChat
+ *   - dispatchToAgent (extends the shared dispatch with auto-navigate)
+ *
+ * Shared with delegate-mcp-server (no UI bolt-on needed):
+ *   - listHarnesses, getHarnessStatus, listChats
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
+  ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
+import { SHARED_TOOLS, runSharedTool, runDispatchToAgent, text, errText } from './agent-tools-shared.mjs';
+import { listSharedResources, runSharedResource } from './agent-resources-shared.mjs';
+import { SHARED_PROMPTS, runSharedPrompt } from './agent-prompts-shared.mjs';
 
 const SESSION_ID = process.env.ORACLE_SESSION_ID;
 const BASE = process.env.ORACLE_BASE ?? 'http://localhost:3055';
@@ -32,163 +48,116 @@ async function pushUiCommand(command) {
     body: JSON.stringify(command),
   });
   if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`ui-command push failed: HTTP ${r.status} ${text}`);
+    const t = await r.text().catch(() => '');
+    throw new Error(`ui-command push failed: HTTP ${r.status} ${t}`);
   }
 }
 
-const TOOLS = [
+// Oracle-specific tools — the ones with a UI-command bolt-on. listAgents
+// + the read-only shared tools come from agent-tools-shared.mjs.
+const ORACLE_ONLY_TOOLS = [
   {
     name: 'navigate',
     description:
-      'Navigate the user\'s browser to a path within the operator app. ' +
+      "Navigate the user's browser to a path within the operator app. " +
       'Use this when the user asks you to take them somewhere, or when an ' +
-      'action requires the user to be on a specific page (e.g. /harness, ' +
-      '/marketplace/templates, /settings/oracle). Returns immediately; the ' +
-      'browser executes the navigation asynchronously.',
+      'action requires the user to be on a specific page. Returns immediately; ' +
+      'the browser executes the navigation asynchronously.',
     inputSchema: {
       type: 'object',
       properties: {
         path: {
           type: 'string',
-          description:
-            'Path to navigate to, starting with /. Examples: "/harness", ' +
-            '"/marketplace/plugins", "/settings/oracle".',
+          description: 'Path to navigate to, starting with /. Examples: "/harness", "/marketplace/plugins", "/settings/oracle".',
         },
       },
       required: ['path'],
     },
   },
   {
-    name: 'listHarnesses',
-    description:
-      'List harnesses registered on this machine (slug, path, whether they have state and a SPEC.md). ' +
-      'Use to answer questions like "what harnesses do I have", or to find the right slug ' +
-      'before navigating to /harness/<slug>.',
-    inputSchema: { type: 'object', properties: {} },
-  },
-  {
-    name: 'listChats',
-    description:
-      'List recent agent chats in a harness, optionally filtered by role. Returns id, role, ' +
-      'title, feature_id, last-message timestamp, and message count for each. Use to find a chatId ' +
-      'before calling resumeChat, or to answer "what chats have I had", "where did I leave off with the architect".',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        slug: { type: 'string', description: 'Harness slug.' },
-        role: { type: 'string', description: 'Optional role filter (architect, orchestrator, etc).' },
-      },
-      required: ['slug'],
-    },
-  },
-  {
     name: 'resumeChat',
     description:
-      'Open an existing chat panel for the user (the chat they had earlier, identified by chatId). ' +
-      'Use after listChats has surfaced a candidate id. Navigates the user to the harness dock and ' +
-      'opens that chat tab.',
+      'Open an existing chat panel for the user (identified by chatId). Use after listChats has ' +
+      'surfaced a candidate id.',
     inputSchema: {
       type: 'object',
       properties: {
         slug: { type: 'string', description: 'Harness slug.' },
-        chatId: { type: 'string', description: 'The id of an existing chat (use listChats to find).' },
+        chatId: { type: 'string', description: 'Existing chat id (use listChats to find).' },
       },
       required: ['slug', 'chatId'],
     },
   },
-  {
-    name: 'getHarnessStatus',
-    description:
-      'Get the current status of a harness: its summary (latest progress notes) plus a compact ' +
-      'breakdown of features by status (passed/in-progress/failed/blocked). Use to answer ' +
-      '"what\'s the state of <slug>", "is <slug> still running", "what is <slug> working on".',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        slug: { type: 'string', description: 'Harness slug (use listHarnesses to find).' },
-      },
-      required: ['slug'],
-    },
-  },
-  {
-    name: 'dispatchToAgent',
-    description:
-      'Start a new chat with a role-scoped agent in a specific harness, and send the agent a message ' +
-      'on the user\'s behalf. The user is navigated to the harness dashboard and the chat panel opens ' +
-      'automatically so they can watch the agent respond. Use this when the user asks you to "ask the architect ' +
-      'to ...", "have the orchestrator do ...", etc. Common roles: architect, orchestrator, scoper, worker, ' +
-      'validator, reviewer, documenter, debugger, project_manager.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        slug: { type: 'string', description: 'Harness slug (use listHarnesses to find).' },
-        role: {
-          type: 'string',
-          description:
-            'Agent role to chat with. One of: orchestrator, scoper, worker, validator, reviewer, ' +
-            'documenter, summarizer, architect, curator, debugger, crosscheck, ui-qa, project_manager, ' +
-            'director, coordinator, auditor, tester, test-writer, security-reviewer, monitor.',
-        },
-        message: { type: 'string', description: 'The first message to send the agent.' },
-        featureId: {
-          type: 'string',
-          description: 'Optional feature/issue id to scope the chat to (e.g. F-001, BRIEF-BRF-12).',
-        },
-      },
-      required: ['slug', 'role', 'message'],
-    },
-  },
 ];
 
+// dispatchToAgent has shared logic + Oracle-specific UI bolt-on, so we
+// override the shared definition to keep the auto-navigate description.
+const ORACLE_DISPATCH_TOOL = {
+  name: 'dispatchToAgent',
+  description:
+    'Start a new chat with a role-scoped agent in a harness and send the first message. The user is ' +
+    'auto-navigated to the harness dashboard and the chat panel opens. Common roles: orchestrator, scoper, ' +
+    'worker, validator, reviewer, documenter, architect, debugger, project_manager.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      slug: { type: 'string', description: 'Harness slug (use listHarnesses to find).' },
+      role: { type: 'string', description: 'Agent role.' },
+      message: { type: 'string', description: 'The first message to send the agent.' },
+      featureId: { type: 'string', description: 'Optional feature/issue id (F-001, BRIEF-BRF-12).' },
+    },
+    required: ['slug', 'role', 'message'],
+  },
+};
+
+// SHARED_TOOLS includes a generic dispatchToAgent — strip it and use Oracle's variant.
+const SHARED_MINUS_DISPATCH = SHARED_TOOLS.filter((t) => t.name !== 'dispatchToAgent');
+const TOOLS = [...ORACLE_ONLY_TOOLS, ORACLE_DISPATCH_TOOL, ...SHARED_MINUS_DISPATCH];
+
 const server = new Server(
-  { name: 'oracle', version: '0.1.0' },
-  { capabilities: { tools: {} } },
+  { name: 'oracle', version: '0.2.0' },
+  { capabilities: { tools: {}, resources: {}, prompts: {} } },
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
+// Resources — see agent-resources-shared.mjs (shared with delegate).
+server.setRequestHandler(ListResourcesRequestSchema, async () => {
+  const resources = await listSharedResources({ base: BASE });
+  return { resources };
+});
+
+server.setRequestHandler(ReadResourceRequestSchema, async (req) => {
+  const contents = await runSharedResource(req.params.uri, { base: BASE });
+  return { contents: [contents] };
+});
+
+// Prompts — see agent-prompts-shared.mjs.
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  prompts: SHARED_PROMPTS,
+}));
+
+server.setRequestHandler(GetPromptRequestSchema, async (req) => {
+  return runSharedPrompt(req.params.name, req.params.arguments ?? {});
+});
+
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  const { name, arguments: args } = req.params;
+  const name = req.params.name;
+  const args = req.params.arguments ?? {};
   try {
     if (name === 'navigate') {
       const path = String(args?.path ?? '');
-      if (!path.startsWith('/')) {
-        return { content: [{ type: 'text', text: `error: path must start with /` }], isError: true };
-      }
+      if (!path.startsWith('/')) return errText('path must start with /');
       await pushUiCommand({ type: 'navigate', path });
-      return { content: [{ type: 'text', text: `Navigation to ${path} dispatched.` }] };
+      return text(`Navigation to ${path} dispatched.`);
     }
-    if (name === 'listChats') {
-      const slug = String(args?.slug ?? '').trim();
-      if (!slug) return { content: [{ type: 'text', text: 'error: slug required' }], isError: true };
-      const r = await fetch(`${BASE}/api/harness/${encodeURIComponent(slug)}/agent-chats`);
-      if (!r.ok) return { content: [{ type: 'text', text: `listChats failed: HTTP ${r.status}` }], isError: true };
-      const d = await r.json();
-      const wantRole = args?.role ? String(args.role).trim() : null;
-      const chats = (Array.isArray(d?.chats) ? d.chats : [])
-        .filter((c) => !wantRole || c.role === wantRole)
-        .map((c) => ({
-          id: c.id,
-          role: c.role,
-          title: c.title,
-          feature_id: c.feature_id ?? null,
-          message_count: Array.isArray(c.transcript) ? c.transcript.length : 0,
-          updated_at: c.updated_at,
-        }))
-        .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)))
-        .slice(0, 20);
-      return { content: [{ type: 'text', text: JSON.stringify(chats, null, 2) }] };
-    }
+
     if (name === 'resumeChat') {
       const slug = String(args?.slug ?? '').trim();
       const chatId = String(args?.chatId ?? '').trim();
-      if (!slug || !chatId) {
-        return { content: [{ type: 'text', text: 'error: slug and chatId required' }], isError: true };
-      }
-      // Validate the chat exists so we don't navigate to an empty panel.
+      if (!slug || !chatId) return errText('slug and chatId required');
       const r = await fetch(`${BASE}/api/harness/${encodeURIComponent(slug)}/agent-chats/${encodeURIComponent(chatId)}`);
-      if (!r.ok) return { content: [{ type: 'text', text: `chat not found: HTTP ${r.status}` }], isError: true };
+      if (!r.ok) return errText(`chat not found: HTTP ${r.status}`);
       const chat = await r.json();
       await pushUiCommand({
         type: 'openChat',
@@ -198,98 +167,33 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         title: chat.title ?? chat.role,
         featureId: chat.feature_id ?? undefined,
       });
-      return {
-        content: [{ type: 'text', text: `Resuming chat ${chatId} (${chat.role}) in ${slug}; navigating now.` }],
-      };
+      return text(`Resuming chat ${chatId} (${chat.role}) in ${slug}; navigating now.`);
     }
-    if (name === 'getHarnessStatus') {
-      const slug = String(args?.slug ?? '').trim();
-      if (!slug) return { content: [{ type: 'text', text: 'error: slug required' }], isError: true };
-      const [statusR, summaryR] = await Promise.all([
-        fetch(`${BASE}/api/harness/${encodeURIComponent(slug)}/status?phase=staging`),
-        fetch(`${BASE}/api/harness/${encodeURIComponent(slug)}/summary`),
-      ]);
-      if (!statusR.ok) {
-        return { content: [{ type: 'text', text: `status fetch failed: HTTP ${statusR.status}` }], isError: true };
-      }
-      const status = await statusR.json();
-      const summary = summaryR.ok ? await summaryR.json().catch(() => null) : null;
-      const features = Array.isArray(status?.features) ? status.features : [];
-      const counts = features.reduce((acc, f) => {
-        const s = f?.status ?? 'unknown';
-        acc[s] = (acc[s] ?? 0) + 1;
-        return acc;
-      }, {});
-      const result = {
-        slug,
-        path: status?.project?.path,
-        feature_counts: counts,
-        feature_total: features.length,
-        recent_features: features.slice(-5).map((f) => ({ id: f.id, status: f.status, title: f.title })),
-        summary_excerpt: typeof summary?.summary === 'string' ? summary.summary.slice(0, 1200) : null,
-      };
-      return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
-    }
+
     if (name === 'dispatchToAgent') {
-      const slug = String(args?.slug ?? '').trim();
-      const role = String(args?.role ?? '').trim();
-      const message = String(args?.message ?? '').trim();
-      const featureId = args?.featureId ? String(args.featureId).trim() : undefined;
-      if (!slug || !role || !message) {
-        return { content: [{ type: 'text', text: 'error: slug, role, and message are required' }], isError: true };
-      }
-      const createR = await fetch(`${BASE}/api/harness/${encodeURIComponent(slug)}/agent-chats`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, feature_id: featureId, title: featureId ? `${role} · ${featureId}` : role }),
-      });
-      if (!createR.ok) {
-        const t = await createR.text().catch(() => '');
-        return { content: [{ type: 'text', text: `failed to create chat: HTTP ${createR.status} ${t}` }], isError: true };
-      }
-      const chat = await createR.json();
-      const chatId = chat.id;
-      // Kick off the first message — fire-and-forget. The server-side
-      // claude run will finish even if we don't read the SSE response;
-      // the assistant's reply is persisted to the chat transcript and the
-      // user's chat panel will load it on mount.
-      fetch(`${BASE}/api/harness/${encodeURIComponent(slug)}/agent-chats/${encodeURIComponent(chatId)}/messages`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ content: message }),
-      }).catch(() => {});
+      const result = await runDispatchToAgent(args, { base: BASE });
+      if (result.error) return result.error;
+      const { chat, slug, role, featureId } = result;
       await pushUiCommand({
         type: 'openChat',
         slug,
-        chatId,
+        chatId: chat.id,
         role,
         title: chat.title ?? (featureId ? `${role} · ${featureId}` : role),
         featureId,
       });
-      return {
-        content: [{
-          type: 'text',
-          text: `Started chat ${chatId} with ${role} in harness ${slug}; message dispatched. Navigating the user there.`,
-        }],
-      };
+      return text(
+        `Started chat ${chat.id} with ${role} in harness ${slug}; message dispatched. Navigating the user there.`,
+      );
     }
-    if (name === 'listHarnesses') {
-      const r = await fetch(`${BASE}/api/harness/projects`);
-      if (!r.ok) {
-        return { content: [{ type: 'text', text: `listHarnesses failed: HTTP ${r.status}` }], isError: true };
-      }
-      const d = await r.json();
-      const summary = (d?.projects ?? []).map((p) => ({
-        slug: p.slug,
-        path: p.path,
-        hasState: !!p.hasState,
-        hasSpec: !!p.hasSpec,
-      }));
-      return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+
+    if (SHARED_TOOLS.some((t) => t.name === name)) {
+      return await runSharedTool(name, args, { base: BASE });
     }
-    return { content: [{ type: 'text', text: `unknown tool: ${name}` }], isError: true };
+
+    return errText(`unknown tool: ${name}`);
   } catch (e) {
-    return { content: [{ type: 'text', text: `tool error: ${e?.message ?? String(e)}` }], isError: true };
+    return errText(`tool error: ${e?.message ?? String(e)}`);
   }
 });
 

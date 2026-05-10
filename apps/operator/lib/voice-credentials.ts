@@ -1,53 +1,36 @@
 /**
- * Voice credentials reader (Phase 1c).
+ * Voice credentials reader/writer.
  *
- * Lives in `~/.papercusp/credentials.json` per the existing credentials
- * pattern (file mode 0600, GET masks values, PUT preserves missing fields).
- * Already on the snapshot private list — keys never travel.
+ * Persisted in `harness_shared.operator_voice_credentials` (PG, migration
+ * 023). NOT in the zero_harness publication — credentials must not be
+ * broadcast over WS. Read by 10 voice/STT/TTS bootstrap routes; written
+ * by /api/agent-mcp/operator-credentials.
  *
- * v4 §1.2.4: ElevenLabs key sits alongside any other plugin/service keys.
+ * Was previously `~/.papercusp/credentials.json`. The PG migration also
+ * closes a bifurcation bug: `lib/credentials.ts` already moved to PG in
+ * round 1 (operator_credentials), but voice-credentials.ts kept reading
+ * the file. Both modules used the same physical file with different
+ * shapes — after that round, writes split between PG and file. Both are
+ * now PG-resident in their own tables.
  */
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-
-interface CredentialsFile {
+interface CredentialsPayload {
   elevenlabs?: { apiKey: string };
   openai?: { apiKey: string };
   cartesia?: { apiKey: string };
   deepgram?: { apiKey: string };
-  // Other plugin/service keys may live here too — we only read/write
-  // our own slice.
-  [k: string]: unknown;
+  picovoice?: { apiKey: string };
+  google?: { apiKey: string };
 }
 
-function PATH(): string {
-  return join(homedir(), '.papercusp', 'credentials.json');
+async function readAll(): Promise<CredentialsPayload> {
+  const raw = await readOperatorState<CredentialsPayload>('operator_voice_credentials');
+  return raw && typeof raw === 'object' ? raw : {};
 }
 
-function readAll(): CredentialsFile {
-  const path = PATH();
-  if (!existsSync(path)) return {};
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8'));
-    return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
-  } catch {
-    return {};
-  }
-}
-
-function writeAll(creds: CredentialsFile): void {
-  const path = PATH();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(creds, null, 2));
-  try { chmodSync(path, 0o600); } catch { /* best-effort on filesystems without mode */ }
-}
-
-/** Return the raw ElevenLabs key (server-side only). Null if not configured. */
-export function readElevenLabsKey(): string | null {
-  const all = readAll();
-  return all.elevenlabs?.apiKey ?? null;
+async function writeAll(creds: CredentialsPayload): Promise<void> {
+  await writeOperatorState('operator_voice_credentials', creds);
 }
 
 /** Mask a key for client display. `sk_••••3c2a` style. */
@@ -57,85 +40,69 @@ export function maskKey(key: string | null): string | null {
   return `${key.slice(0, 3)}_••••${tail}`;
 }
 
-/** Set the ElevenLabs key. Pass `null` to clear. */
-export function writeElevenLabsKey(apiKey: string | null): void {
-  const all = readAll();
-  if (apiKey === null) {
-    delete all.elevenlabs;
-  } else {
-    all.elevenlabs = { ...all.elevenlabs, apiKey };
-  }
-  writeAll(all);
+/** Return the raw ElevenLabs key (server-side only). Null if not configured. */
+export async function readElevenLabsKey(): Promise<string | null> {
+  return (await readAll()).elevenlabs?.apiKey ?? null;
 }
 
-export function readOpenAiKey(): string | null {
-  const all = readAll();
-  return all.openai?.apiKey ?? null;
+export async function writeElevenLabsKey(apiKey: string | null): Promise<void> {
+  const all = await readAll();
+  if (apiKey === null) delete all.elevenlabs;
+  else all.elevenlabs = { ...all.elevenlabs, apiKey };
+  await writeAll(all);
 }
 
-export function writeOpenAiKey(apiKey: string | null): void {
-  const all = readAll();
-  if (apiKey === null) {
-    delete all.openai;
-  } else {
-    all.openai = { ...all.openai, apiKey };
-  }
-  writeAll(all);
+export async function readOpenAiKey(): Promise<string | null> {
+  return (await readAll()).openai?.apiKey ?? null;
 }
 
-export function readCartesiaKey(): string | null {
-  const all = readAll();
-  return all.cartesia?.apiKey ?? null;
+export async function writeOpenAiKey(apiKey: string | null): Promise<void> {
+  const all = await readAll();
+  if (apiKey === null) delete all.openai;
+  else all.openai = { ...all.openai, apiKey };
+  await writeAll(all);
 }
 
-export function writeCartesiaKey(apiKey: string | null): void {
-  const all = readAll();
-  if (apiKey === null) {
-    delete all.cartesia;
-  } else {
-    all.cartesia = { ...all.cartesia, apiKey };
-  }
-  writeAll(all);
+export async function readCartesiaKey(): Promise<string | null> {
+  return (await readAll()).cartesia?.apiKey ?? null;
 }
 
-export function readDeepgramKey(): string | null {
-  const all = readAll();
-  return all.deepgram?.apiKey ?? null;
+export async function writeCartesiaKey(apiKey: string | null): Promise<void> {
+  const all = await readAll();
+  if (apiKey === null) delete all.cartesia;
+  else all.cartesia = { ...all.cartesia, apiKey };
+  await writeAll(all);
 }
 
-export function writeDeepgramKey(apiKey: string | null): void {
-  const all = readAll();
-  if (apiKey === null) {
-    delete all.deepgram;
-  } else {
-    all.deepgram = { ...all.deepgram, apiKey };
-  }
-  writeAll(all);
+export async function readDeepgramKey(): Promise<string | null> {
+  return (await readAll()).deepgram?.apiKey ?? null;
 }
 
-export function readPicovoiceKey(): string | null {
-  const all = readAll();
-  return (all.picovoice as { apiKey?: string } | undefined)?.apiKey ?? null;
+export async function writeDeepgramKey(apiKey: string | null): Promise<void> {
+  const all = await readAll();
+  if (apiKey === null) delete all.deepgram;
+  else all.deepgram = { ...all.deepgram, apiKey };
+  await writeAll(all);
 }
 
-export function writePicovoiceKey(apiKey: string | null): void {
-  const all = readAll();
-  if (apiKey === null) {
-    delete all.picovoice;
-  } else {
-    all.picovoice = { ...(all.picovoice as object || {}), apiKey };
-  }
-  writeAll(all);
+export async function readPicovoiceKey(): Promise<string | null> {
+  return (await readAll()).picovoice?.apiKey ?? null;
 }
 
-export function readGoogleKey(): string | null {
-  const all = readAll();
-  return (all.google as { apiKey?: string } | undefined)?.apiKey ?? null;
+export async function writePicovoiceKey(apiKey: string | null): Promise<void> {
+  const all = await readAll();
+  if (apiKey === null) delete all.picovoice;
+  else all.picovoice = { ...all.picovoice, apiKey };
+  await writeAll(all);
 }
 
-export function writeGoogleKey(apiKey: string | null): void {
-  const all = readAll();
+export async function readGoogleKey(): Promise<string | null> {
+  return (await readAll()).google?.apiKey ?? null;
+}
+
+export async function writeGoogleKey(apiKey: string | null): Promise<void> {
+  const all = await readAll();
   if (apiKey === null) delete all.google;
-  else all.google = { ...(all.google as object || {}), apiKey };
-  writeAll(all);
+  else all.google = { ...all.google, apiKey };
+  await writeAll(all);
 }

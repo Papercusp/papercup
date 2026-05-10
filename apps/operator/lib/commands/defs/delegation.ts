@@ -1,7 +1,7 @@
 /**
  * delegate_to_claude — voice's deep-work escape hatch.
  *
- * Plus the claude-sessions list/get queries voice uses to pick which
+ * Plus the delegates.list/get queries voice uses to pick which
  * session a delegation lands in. See /docs/agents/action-registry §5
  * + the session-management decisions in §10 (#17).
  */
@@ -15,25 +15,32 @@ function baseUrl(): string {
   return `http://127.0.0.1:${port}`;
 }
 
-// ─── Queries: claude-sessions.list / claude-sessions.get ─────────────
+// ─── Queries: delegates.list / delegates.get ─────────────
 
-const ListSessionsArgs = z.object({
+const ListDelegatesArgs = z.object({
   status: z.enum(['open', 'archived', 'all']).default('open').optional()
     .describe('Filter by status. Default: open.'),
   limit: z.number().int().min(1).max(50).default(20).optional()
     .describe('Max sessions to return (default 20, cap 50).'),
 });
 
-const claudeSessionsList: QueryDef<z.infer<typeof ListSessionsArgs>> = {
-  id: 'claude-sessions.list',
+const claudeSessionsList: QueryDef<z.infer<typeof ListDelegatesArgs>> = {
+  id: 'delegates.list',
   kind: 'query',
   description: 'List Claude conversation sessions for the workspace.',
   promptDescription:
-    'Returns currently-open Claude conversations as ' +
-    '[{id, title, summary, lastActiveAt, turnCount, claudeSessionId}, ...]. ' +
-    'Use to pick which session to pass to delegate_to_claude — match the ' +
-    'user\'s request to a session by title/topic.',
-  schema: ListSessionsArgs,
+    'Returns Claude conversation sessions as ' +
+    '[{id, title, summary, lastActiveAt, turnCount, claudeSessionId, status}, ...]. ' +
+    "Use to pick which session to pass to delegate_to_claude — match the " +
+    "user's request to a session by title/topic. " +
+    "\n\nIMPORTANT: status='open' means 'available to resume' — NOT 'currently " +
+    "running'. Delegates do NOT run in the background; each delegate_to_claude " +
+    "call is synchronous and complete by the time you see its return. A delegate " +
+    "session listed here is at rest. Never tell the user 'the delegate is still " +
+    "running' based on this list — if you want to know how recently a session " +
+    "was active, use lastActiveAt. status='archived' means the user explicitly " +
+    "dismissed it.",
+  schema: ListDelegatesArgs,
   agents: ['oracle', 'operator'],
   audit: 'sample',
   tier: 'fast-query',
@@ -43,12 +50,12 @@ const claudeSessionsList: QueryDef<z.infer<typeof ListSessionsArgs>> = {
       const params = new URLSearchParams();
       if (status) params.set('status', status);
       if (limit) params.set('limit', String(limit));
-      const r = await fetch(`/api/agent-mcp/claude-sessions?${params}`);
-      if (!r.ok) throw new Error(`claude-sessions.list failed: HTTP ${r.status}`);
+      const r = await fetch(`/api/agent-mcp/delegates?${params}`);
+      if (!r.ok) throw new Error(`delegates.list failed: HTTP ${r.status}`);
       return await r.json();
     }
-    const { listClaudeSessions } = await import('../../claude-sessions');
-    const rows = await listClaudeSessions({ workspace: ctx.workspace, status, limit });
+    const { listDelegates } = await import('../../delegates');
+    const rows = await listDelegates({ workspace: ctx.workspace, status, limit });
     return { sessions: rows };
   },
 };
@@ -58,7 +65,7 @@ const GetSessionArgs = z.object({
 });
 
 const claudeSessionsGet: QueryDef<z.infer<typeof GetSessionArgs>> = {
-  id: 'claude-sessions.get',
+  id: 'delegates.get',
   kind: 'query',
   description: 'Get full metadata for a single Claude conversation session.',
   promptDescription:
@@ -71,15 +78,52 @@ const claudeSessionsGet: QueryDef<z.infer<typeof GetSessionArgs>> = {
   tier: 'fast-query',
   handler: async ({ id }, ctx) => {
     if (typeof window !== 'undefined') {
-      const r = await fetch(`/api/agent-mcp/claude-sessions?id=${encodeURIComponent(id)}`);
-      if (!r.ok) throw new Error(`claude-sessions.get failed: HTTP ${r.status}`);
+      const r = await fetch(`/api/agent-mcp/delegates?id=${encodeURIComponent(id)}`);
+      if (!r.ok) throw new Error(`delegates.get failed: HTTP ${r.status}`);
       return await r.json();
     }
-    const { getClaudeSession } = await import('../../claude-sessions');
-    const row = await getClaudeSession(ctx.workspace, id);
+    const { getDelegate } = await import('../../delegates');
+    const row = await getDelegate(ctx.workspace, id);
     return { session: row };
   },
 };
+
+// ─── Query: delegates.search ─────────────────────────────────────────
+
+const SearchDelegatesArgs = z.object({
+  query: z.string().min(1).describe('Free-text needle. Matches against title, summary, and the kickoff message.'),
+  limit: z.number().int().min(1).max(50).default(10).optional()
+    .describe('Max sessions to return (default 10).'),
+});
+
+const claudeSessionsSearch: QueryDef<z.infer<typeof SearchDelegatesArgs>> = {
+  id: 'delegates.search',
+  kind: 'query',
+  description: 'Search Claude conversation sessions by free-text (title/summary/kickoff).',
+  promptDescription:
+    'Returns matching sessions as { sessions: [{id, title, summary, lastActiveAt, ...}, ...] }. ' +
+    'Use when the user names a topic and you want to find a related past delegate without ' +
+    'paging through delegates.list. After picking a hit, pass its claudeSessionId to ' +
+    'delegate_to_claude to resume the conversation. Always confirm with the user before resuming.',
+  schema: SearchDelegatesArgs,
+  agents: ['oracle', 'operator'],
+  audit: 'sample',
+  tier: 'fast-query',
+  handler: async ({ query, limit }, ctx) => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams({ q: query });
+      if (limit) params.set('limit', String(limit));
+      const r = await fetch(`/api/agent-mcp/delegates?${params}`);
+      if (!r.ok) throw new Error(`delegates.search failed: HTTP ${r.status}`);
+      return await r.json();
+    }
+    const { searchDelegates } = await import('../../delegates');
+    const rows = await searchDelegates({ workspace: ctx.workspace, query, limit });
+    return { sessions: rows };
+  },
+};
+
+register(claudeSessionsSearch);
 
 // ─── Command: delegate_to_claude ─────────────────────────────────────
 
@@ -106,71 +150,170 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
     'summary and say "I\'ve put the details in the operator panel."',
   schema: DelegateArgs,
   agents: ['operator'],
-  // Server-side delegation; the panel-update side-effect happens via SSE
-  // to a separately-subscribed UI listener (see §5 + PR 3 wiring of the
-  // panel auto-open hook). Tagged 'optional' because the call works even
-  // if the panel isn't visible — server still streams Claude.
-  browser: 'optional',
+  // Has to be 'required' because EL's clientTool registration is
+  // browser-side (the agent's tool list is wired through buildClientTools,
+  // which only exposes browser:'required'). With 'optional' the agent
+  // would see the tool on the dashboard, call it, and crash with
+  // "Client tool with name delegate_to_claude is not defined on client".
+  // The actual SSE stream still happens server-side; the browser-side
+  // handler just proxies the call to /api/agent-mcp/delegate-chat.
+  browser: 'required',
   concurrent: 'queue',
   tier: 'delegation',
   handler: async ({ task, context, sessionId, newSession }, _ctx) => {
-    // Accumulate the SSE stream into a single response shape voice consumes.
+    // Race-with-timeout: short delegates (the bell-number kind) finish
+    // in 5-15s — return their `fullText` synchronously so the agent
+    // can summarize on the same turn. Long delegates (file reads,
+    // multi-step planning, asking another agent) blow past EL's 120s
+    // tool-call wall — return early with `{ status: 'started', ... }`
+    // and let the SSE stream finish in the background. When done, the
+    // result hits the panel via operator:delegation-complete (existing)
+    // AND the live EL session via sendSystem() so the agent can speak
+    // about it on its next turn (new). See docs/design/delegate-async-plan.
     const params = new URLSearchParams({ request: task });
     if (context) params.set('context', context);
     if (sessionId && !newSession) params.set('sessionId', sessionId);
     if (newSession) params.set('newSession', '1');
 
-    const url = `${baseUrl()}/api/agent-mcp/operator-chat?${params}`;
+    const url = `${baseUrl()}/api/agent-mcp/delegate-chat?${params}`;
     const res = await fetch(url, { headers: { accept: 'text/event-stream' } });
     if (!res.ok || !res.body) {
       throw new Error(`delegate_to_claude: HTTP ${res.status}`);
     }
 
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('operator:delegation-start', { detail: { task } }));
+      } catch { /* ignore */ }
+    }
+
+    const SYNC_DEADLINE_MS = 10_000;
+    const deadline = Date.now() + SYNC_DEADLINE_MS;
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
-    let buf = '';
-    let fullText = '';
-    let cost = 0;
-    let resolvedSession: string | null = null;
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const events = buf.split(/\n\n/);
-      buf = events.pop() ?? '';
+
+    /** State accumulated as the SSE stream progresses. */
+    const state = {
+      buf: '',
+      fullText: '',
+      cost: 0,
+      claudeSessionId: null as string | null,
+      done: false,
+      errored: null as string | null,
+    };
+
+    /** Process whatever the reader has emitted so far. Pure on `state`. */
+    const processChunk = (chunk: Uint8Array | undefined) => {
+      if (chunk) state.buf += decoder.decode(chunk, { stream: true });
+      const events = state.buf.split(/\n\n/);
+      state.buf = events.pop() ?? '';
       for (const block of events) {
         const event = parseEventBlock(block);
         if (!event) continue;
         if (event.event === 'session') {
-          resolvedSession = (event.data as any)?.claudeSessionId ?? null;
+          state.claudeSessionId = (event.data as any)?.claudeSessionId ?? null;
         } else if (event.event === 'delta') {
-          fullText += (event.data as any)?.text ?? '';
+          state.fullText += (event.data as any)?.text ?? '';
         } else if (event.event === 'done') {
-          fullText = (event.data as any)?.fullText ?? fullText;
-          cost = (event.data as any)?.costUsd ?? 0;
+          state.fullText = (event.data as any)?.fullText ?? state.fullText;
+          state.cost = (event.data as any)?.costUsd ?? 0;
+          state.done = true;
         } else if (event.event === 'error') {
-          throw new Error(`Claude error: ${(event.data as any)?.message ?? 'unknown'}`);
+          state.errored = (event.data as any)?.message ?? 'unknown';
         }
       }
+    };
+
+    /** Fire the panel + voice notification when the stream finishes. */
+    const notifyComplete = () => {
+      const result = {
+        status: 'complete' as const,
+        fullText: state.fullText,
+        claudeSessionId: state.claudeSessionId,
+        costUsd: state.cost,
+      };
+      if (typeof window !== 'undefined') {
+        try {
+          window.dispatchEvent(
+            new CustomEvent('operator:delegation-complete', { detail: result }),
+          );
+          // New: a separate event the voice-mode listener picks up to
+          // sendSystem() into the live EL session. delegation-complete
+          // is panel-targeted; this one is voice-targeted. Fired even
+          // for sync completions so callers can ignore the sync branch's
+          // duplicate (voice-mode listener checks "did we already speak
+          // about this turn" — see voice-mode.ts).
+          window.dispatchEvent(
+            new CustomEvent('operator:delegation-async-complete', {
+              detail: { ...result, task },
+            }),
+          );
+        } catch { /* ignore */ }
+      }
+      return result;
+    };
+
+    // ── Sync window: pump events until done OR deadline ──────────────
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      const readP = reader.read();
+      const timeoutP = new Promise<{ timeout: true }>((res) =>
+        setTimeout(() => res({ timeout: true }), Math.max(0, remaining)),
+      );
+      const winner = await Promise.race([readP, timeoutP]);
+      if ('timeout' in winner) break;
+      const { value, done } = winner;
+      if (done) {
+        // Stream closed before a 'done' event — treat as error if we
+        // haven't already captured one.
+        if (!state.done && !state.errored) state.errored = 'stream closed unexpectedly';
+        break;
+      }
+      processChunk(value);
+      if (state.errored) throw new Error(`Claude error: ${state.errored}`);
+      if (state.done) break;
     }
 
-    const result = {
-      status: 'complete' as const,
-      fullText,
-      claudeSessionId: resolvedSession,
-      costUsd: cost,
-    };
-    // Browser-side: dispatch a delegation-complete event so a) the panel
-    // can show the result, b) the panel auto-opens if voicePanelAutoOpen
-    // is set, c) the voice layer can be told to speak the gist.
-    if (typeof window !== 'undefined') {
+    // Sync win: stream finished within the deadline.
+    if (state.done) return notifyComplete();
+
+    // ── Async path: drain in the background, return ack now ───────────
+    void (async () => {
       try {
-        window.dispatchEvent(
-          new CustomEvent('operator:delegation-complete', { detail: result }),
-        );
-      } catch { /* ignore */ }
-    }
-    return result;
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            if (!state.done && !state.errored) state.errored = 'stream closed unexpectedly';
+            break;
+          }
+          processChunk(value);
+          if (state.errored || state.done) break;
+        }
+        if (state.errored) {
+          // Surface the error via the same channel as completion so the
+          // panel + voice listener can show "Delegate failed: <msg>".
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('operator:delegation-async-complete', {
+              detail: { status: 'error', message: state.errored, task, claudeSessionId: state.claudeSessionId },
+            }));
+          }
+          return;
+        }
+        notifyComplete();
+      } catch (e) {
+        console.warn('[delegate_to_claude] background drain failed:', e);
+      }
+    })();
+
+    return {
+      status: 'started' as const,
+      claudeSessionId: state.claudeSessionId,
+      // Hint for the agent's response — "I'll let you know when it's done"
+      // is the right vibe; specific seconds is too precise. Persona will
+      // tell it what to say.
+      message: 'Delegate is running; result will arrive shortly.',
+    };
   },
 };
 
@@ -190,3 +333,15 @@ function parseEventBlock(block: string): { event: string; data: unknown } | null
 register(claudeSessionsList);
 register(claudeSessionsGet);
 register(delegateToClaude);
+
+// Backend-neutral alias. Voice agent definitions are migrating from
+// `delegate_to_claude` → `delegate_to_agent`; we register both so
+// in-flight EL agents keep working while new ones use the neutral name.
+// Once el-suite-test confirms all published agents reference the new
+// name, the legacy alias above can be retired.
+const delegateToAgent: CommandDef<z.infer<typeof DelegateArgs>> = {
+  ...delegateToClaude,
+  id: 'delegate_to_agent',
+  description: delegateToClaude.description.replace(/Claude/g, 'the configured agent'),
+};
+register(delegateToAgent);

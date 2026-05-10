@@ -38,7 +38,12 @@ export const fsTokenStorage: TokenStorage = {
     }
     const next = { ...existing, ...patch };
     await fs.mkdir(join(HARNESSES_DIR(), harness, 'plugin-configs'), { recursive: true });
-    await fs.writeFile(path, JSON.stringify(next, null, 2) + '\n', 'utf8');
+    // Mode 0600: plugin-config files hold OAuth tokens. PG mirror is
+    // encrypted (Migration 039); the file remains plaintext because the
+    // substrate plugin loader reads it synchronously and cannot decrypt.
+    // Tighter mode at least narrows filesystem-snapshot exposure.
+    await fs.writeFile(path, JSON.stringify(next, null, 2) + '\n', { encoding: 'utf8', mode: 0o600 });
+    try { await fs.chmod(path, 0o600); } catch { /* file may have just been replaced */ }
     try {
       await mirrorPluginConfig(harness, plugin, next);
     } catch {

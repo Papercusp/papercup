@@ -117,6 +117,20 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
     // logging path is a normal request handler.
     perMessageDeflate: false, // we send mostly small frames, deflate adds latency
   });
+  // EADDRINUSE recovery — if HMR re-imports this module and the
+  // globalThis guard above doesn't carry across the new instance, the
+  // bind will fail. Tear down cleanly so we don't accumulate orphan
+  // listeners and reset wsState so a subsequent restart can rebind.
+  wss.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.warn(`[pty-ws] port ${opts.port} already in use — skipping`);
+      try { wss.close(); } catch { /* */ }
+      wsState.started = false;
+      wsState.serverRef = null;
+    } else {
+      console.error('[pty-ws] server error:', err);
+    }
+  });
   wsState.serverRef = wss;
 
   const originOpts: OriginCheckOptions = {
@@ -146,7 +160,7 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
       return;
     }
 
-    attachWsToPty(ws, ptyId);
+    void attachWsToPty(ws, ptyId);
   });
 
   // ── Heartbeat (gotty / ttyd shape) ──────────────────────────────────
@@ -195,7 +209,7 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
   return wss;
 }
 
-function attachWsToPty(ws: WebSocket, ptyId: string): void {
+async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
   const handle = getPty(ptyId);
   if (!handle) { ws.close(); return; }
 
@@ -251,7 +265,7 @@ function attachWsToPty(ws: WebSocket, ptyId: string): void {
   // that has run more than a few seconds, and inherently
   // geometry-correct for vim/htop because the headless Terminal
   // resizes alongside the pty.
-  const replay = getScreenSerialization(ptyId);
+  const replay = await getScreenSerialization(ptyId);
   if (replay && replay.length > 0) {
     const buf = Buffer.from(replay, 'utf8');
     unacked += buf.length;

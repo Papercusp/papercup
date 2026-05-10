@@ -6,44 +6,26 @@
  * Tauri commands. The pty fork lives in the Rust process, output is
  * delivered via Tauri events (in-process IPC), input via invoke().
  *
- * The harness-aware config (omp args, worktree cwd, env) still comes
- * from the operator — POST /pty/resolve returns what /pty/spawn would
- * have built, without forking. We then hand that to invoke('pty_spawn').
- *
- * Why split control plane from data plane?
- *   - The operator already knows about feature prompts, worktrees, MCP
- *     server registration, the papercusp-pi extension, etc. Re-implementing
- *     all of that in Rust would mean duplicating ~500 lines of resolution
- *     logic that's already battle-tested in pty.ts.
- *   - The data path is what's latency-critical, and that's where Tauri's
- *     in-process IPC beats localhost WebSocket.
+ * Command calls go through the typed tauri-bindings (tauri-specta);
+ * pty-data / pty-exit events still use the raw __TAURI__.event.listen
+ * surface because they aren't declared as tauri_specta::Event.
  *
  * Public API mirrors what PiPanel needs:
  *   - isTauriNative()           — feature-detect
- *   - openNativeSession(opts)   — POST /resolve + invoke pty_spawn + listen
- *
- * The returned NativeSession object exposes onData/onExit subscriptions,
- * write/resize/kill methods, and a history() helper for resume.
+ *   - openNativeSession(opts)   — POST /resolve + spawn + listen
  */
 
-type TauriInvoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+import type { PtySpawnOpts as BindingsPtySpawnOpts } from './tauri-bindings';
+
 type TauriListenFn = <T>(
   event: string,
   handler: (event: { payload: T }) => void,
 ) => Promise<() => void>;
 
-interface PaperclipTauriBridge {
-  invoke: TauriInvoke;
-  listen: TauriListenFn;
-}
-
 interface WindowWithTauri extends Window {
-  __PAPERCUSP_TAURI__?: { kind: 'native'; bridge?: PaperclipTauriBridge };
-  __TAURI__?: {
-    core?: { invoke: TauriInvoke };
-    event?: { listen: TauriListenFn };
-  };
-  __TAURI_INTERNALS__?: { invoke: TauriInvoke };
+  __PAPERCUSP_TAURI__?: { kind: 'native' };
+  __TAURI__?: { event?: { listen: TauriListenFn } };
+  __TAURI_INTERNALS__?: { invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T> };
 }
 
 /**
@@ -54,16 +36,7 @@ export function isTauriNative(): boolean {
   if (typeof window === 'undefined') return false;
   const w = window as WindowWithTauri;
   if (w.__PAPERCUSP_TAURI__?.kind !== 'native') return false;
-  // Tauri 2 exposes invoke under __TAURI_INTERNALS__ (preferred) or
-  // __TAURI__.core.invoke. Either is fine.
-  return Boolean(w.__TAURI_INTERNALS__?.invoke ?? w.__TAURI__?.core?.invoke);
-}
-
-function tauriInvoke(): TauriInvoke {
-  const w = window as WindowWithTauri;
-  const fn = w.__TAURI_INTERNALS__?.invoke ?? w.__TAURI__?.core?.invoke;
-  if (!fn) throw new Error('Tauri invoke not available');
-  return fn;
+  return Boolean(w.__TAURI_INTERNALS__?.invoke);
 }
 
 function tauriListen(): TauriListenFn {
@@ -114,25 +87,25 @@ export interface NativeSession {
  * through to a fresh spawn if `resumePtyId` is missing or stale.
  */
 export async function openNativeSession(opts: OpenNativeOpts): Promise<NativeSession> {
-  const invoke = tauriInvoke();
+  const { commands } = await import('./tauri-bindings');
   const listen = tauriListen();
 
-  // Try resume first.
   let id: string | null = null;
   let pid: number | null = null;
   let resumed = false;
   let history: Uint8Array = new Uint8Array(new ArrayBuffer(0));
 
   if (opts.resumePtyId) {
-    const alive = await invoke<boolean>('pty_is_alive', { id: opts.resumePtyId }).catch(() => false);
+    const alive = await commands.ptyIsAlive(opts.resumePtyId).catch(() => false);
     if (alive) {
       id = opts.resumePtyId;
       resumed = true;
-      // Pull history.
-      const b64 = await invoke<string>('pty_history', { id }).catch(() => '');
-      if (b64) history = base64ToBytes(b64);
+      const histRes = await commands.ptyHistory(id).catch(() => null);
+      if (histRes && histRes.status === 'ok' && histRes.data) {
+        history = base64ToBytes(histRes.data);
+      }
       // Resize to the new dims now that the renderer is ready.
-      try { await invoke<void>('pty_resize', { id, cols: opts.cols, rows: opts.rows }); } catch { /* ignore */ }
+      await commands.ptyResize(id, opts.cols, opts.rows).catch(() => undefined);
     }
   }
 
@@ -148,18 +121,18 @@ export async function openNativeSession(opts: OpenNativeOpts): Promise<NativeSes
       throw new Error(errBody.error ?? `pty/resolve HTTP ${r.status}`);
     }
     const cfg = (await r.json()) as ResolveResult;
-    const result = await invoke<{ id: string; pid: number | null }>('pty_spawn', {
-      opts: {
-        command: cfg.command,
-        args: cfg.args,
-        cwd: cfg.cwd,
-        env: cfg.env,
-        cols: opts.cols,
-        rows: opts.rows,
-      },
-    });
-    id = result.id;
-    pid = result.pid;
+    const spawnOpts: BindingsPtySpawnOpts = {
+      command: cfg.command,
+      args: [...cfg.args],
+      cwd: cfg.cwd,
+      env: cfg.env,
+      cols: opts.cols,
+      rows: opts.rows,
+    };
+    const spawnRes = await commands.ptySpawn(spawnOpts);
+    if (spawnRes.status === 'error') throw new Error(spawnRes.error);
+    id = spawnRes.data.id;
+    pid = spawnRes.data.pid;
   }
 
   // Subscribe to pty-data / pty-exit. These are global events keyed by
@@ -177,21 +150,24 @@ export async function openNativeSession(opts: OpenNativeOpts): Promise<NativeSes
     exitHandlers.forEach((h) => { try { h(ev.payload.code); } catch { /* ignore */ } });
   });
 
+  const sessionId = id!;
   return {
-    id: id!,
+    id: sessionId,
     pid,
     resumed,
     history,
     onData(handler) { dataHandlers.add(handler); return () => dataHandlers.delete(handler); },
     onExit(handler) { exitHandlers.add(handler); return () => exitHandlers.delete(handler); },
     async write(data) {
-      await invoke<void>('pty_write', { id, data: bytesToBase64(data) });
+      const r = await commands.ptyWrite(sessionId, bytesToBase64(data));
+      if (r.status === 'error') throw new Error(r.error);
     },
     async resize(cols, rows) {
-      await invoke<void>('pty_resize', { id, cols, rows });
+      const r = await commands.ptyResize(sessionId, cols, rows);
+      if (r.status === 'error') throw new Error(r.error);
     },
     async kill() {
-      try { await invoke<void>('pty_kill', { id }); } catch { /* already dead */ }
+      try { await commands.ptyKill(sessionId); } catch { /* already dead */ }
     },
     dispose() {
       dataHandlers.clear();

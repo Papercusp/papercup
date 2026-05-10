@@ -1,16 +1,22 @@
 /**
- * Provision audit log.
+ * Provision audit log — PG-backed (migration 026).
  *
- * Append-only log of every provision event for `(harness, plugin)`,
- * with size cap. When the log exceeds the cap, oldest entries are
- * truncated and a `truncated` notice is recorded at the head.
+ * Append-only log of every provision event for `(workspace, harness, plugin)`.
+ * Each audit entry is one row in `harness_shared.provision_audit_log`,
+ * indexed for the common "all events for (harness, plugin) ordered by
+ * ts" query.
+ *
+ * Was previously per-(harness, plugin) audit.log files with a 10MB
+ * size cap and oldest-25%-truncation logic. PG can absorb the volume
+ * without truncation; if a future retention policy is needed it lives
+ * as a scheduled DELETE rather than in-band file rewriting.
  *
  * Spec: /docs/snapshots/build-scripts#audit-log.
  */
 
-import { promises as fs, createWriteStream } from 'node:fs';
-import { join } from 'node:path';
-import { provisionDir } from './state-store';
+import { getOrgPg } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { publish as publishAudit } from '@/lib/provision-audit-bus';
 
 export type AuditKind =
   | 'consent-granted'
@@ -26,7 +32,9 @@ export type AuditKind =
   | 'verify-failed'
   | 'resource-recorded'
   | 'script-output'
-  | 'log-truncated';
+  | 'log-truncated'
+  | 'sandbox-bypass'
+  | 'state-set';
 
 export interface AuditEntry {
   ts: string;
@@ -37,50 +45,27 @@ export interface AuditEntry {
   data?: Record<string, unknown>;
 }
 
-const DEFAULT_CAP_MB = 10;
-
-function auditPath(harness: string, plugin: string): string {
-  return join(provisionDir(harness, plugin), 'audit.log');
-}
-
+/**
+ * Append a single audit entry. Drops the prior `capMb` argument — PG
+ * doesn't need the truncation logic. Existing callers that pass it are
+ * silently ignored (no break).
+ */
 export async function appendAudit(
   harness: string,
   plugin: string,
   entry: Omit<AuditEntry, 'ts'> & { ts?: string },
-  capMb = DEFAULT_CAP_MB,
+  _capMb?: number, // ignored — kept for source compatibility
 ): Promise<void> {
-  const dir = provisionDir(harness, plugin);
-  await fs.mkdir(dir, { recursive: true });
-  const full: AuditEntry = { ts: entry.ts ?? new Date().toISOString(), ...entry };
-  const line = JSON.stringify(full) + '\n';
-  const path = auditPath(harness, plugin);
-  await fs.appendFile(path, line);
-  await maybeTruncate(path, capMb);
-}
-
-async function maybeTruncate(path: string, capMb: number): Promise<void> {
-  let stat;
-  try {
-    stat = await fs.stat(path);
-  } catch {
-    return;
-  }
-  const capBytes = capMb * 1024 * 1024;
-  if (stat.size <= capBytes) return;
-
-  // Read all lines, drop oldest 25%, re-write with truncation marker.
-  const raw = await fs.readFile(path, 'utf8');
-  const lines = raw.split('\n').filter(Boolean);
-  const keepFrom = Math.floor(lines.length * 0.25);
-  const dropped = keepFrom;
-  const kept = lines.slice(keepFrom);
-  const trunc: AuditEntry = {
-    ts: new Date().toISOString(),
-    kind: 'log-truncated',
-    data: { droppedEntries: dropped, capMb },
-  };
-  const out = JSON.stringify(trunc) + '\n' + kept.join('\n') + '\n';
-  await fs.writeFile(path, out);
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const ts = entry.ts ?? new Date().toISOString();
+  await sql`
+    INSERT INTO harness_shared.provision_audit_log (workspace_id, harness_slug, plugin_slug, ts, kind, run_id, data)
+    VALUES (${ws}, ${harness}, ${plugin}, ${ts}::timestamptz, ${entry.kind}, ${entry.runId ?? null}, ${entry.data ? sql.json(entry.data as Record<string, never>) : null})
+  `;
+  // Fan out to in-process subscribers (provision/stream SSE) so the UI
+  // updates sub-millisecond after the row commits — no file polling.
+  publishAudit(`${harness}:${plugin}`, { ts, ...entry });
 }
 
 export async function readAudit(
@@ -88,58 +73,55 @@ export async function readAudit(
   plugin: string,
   opts: { limit?: number; sinceTs?: string } = {},
 ): Promise<AuditEntry[]> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(auditPath(harness, plugin), 'utf8');
-  } catch {
-    return [];
-  }
-  const out: AuditEntry[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line) continue;
-    try {
-      const e = JSON.parse(line) as AuditEntry;
-      if (opts.sinceTs && e.ts <= opts.sinceTs) continue;
-      out.push(e);
-    } catch {
-      // skip
-    }
-  }
-  if (opts.limit) return out.slice(-opts.limit);
-  return out;
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const limit = opts.limit ?? 1_000;
+  const since = opts.sinceTs ?? null;
+
+  const rows = await sql<
+    { ts: Date; kind: AuditKind; run_id: string | null; data: Record<string, unknown> | null }[]
+  >`
+    SELECT ts, kind, run_id, data
+    FROM harness_shared.provision_audit_log
+    WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND plugin_slug = ${plugin}
+      ${since ? sql`AND ts > ${since}::timestamptz` : sql``}
+    ORDER BY ts ASC, id ASC
+    LIMIT ${limit}
+  `;
+
+  return rows.map((r) => ({
+    ts: r.ts.toISOString(),
+    kind: r.kind,
+    ...(r.run_id ? { runId: r.run_id } : {}),
+    ...(r.data ? { data: r.data } : {}),
+  }));
 }
 
 /**
  * High-throughput stream-append for in-process script-output capture.
- * Each `write()` is a separate audit entry of kind `script-output`.
- * Caller is responsible for `close()`.
+ * Each `write()` is a separate `script-output` audit row. Inserts happen
+ * one per call; PG's prepared-statement cache + connection-pooled
+ * postgres-js client makes this fast enough for typical script verbosity.
+ * Caller is still responsible for `open()` (no-op) + `close()` (no-op)
+ * for source-compat with the prior streaming implementation.
  */
 export class AuditStream {
-  private stream: ReturnType<typeof createWriteStream> | null = null;
   constructor(
     private harness: string,
     private plugin: string,
     private runId: string,
   ) {}
   async open(): Promise<void> {
-    await fs.mkdir(provisionDir(this.harness, this.plugin), { recursive: true });
-    this.stream = createWriteStream(auditPath(this.harness, this.plugin), { flags: 'a' });
+    /* no-op: PG client is shared and managed elsewhere */
   }
   async write(line: string): Promise<void> {
-    if (!this.stream) await this.open();
-    const entry: AuditEntry = {
-      ts: new Date().toISOString(),
+    await appendAudit(this.harness, this.plugin, {
       kind: 'script-output',
       runId: this.runId,
       data: { line: line.replace(/\n$/, '') },
-    };
-    return new Promise((resolve, reject) => {
-      this.stream!.write(JSON.stringify(entry) + '\n', (e) => (e ? reject(e) : resolve()));
     });
   }
   async close(): Promise<void> {
-    if (!this.stream) return;
-    await new Promise<void>((resolve) => this.stream!.end(resolve));
-    this.stream = null;
+    /* no-op */
   }
 }

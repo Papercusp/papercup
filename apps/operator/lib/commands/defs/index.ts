@@ -21,3 +21,8 @@ import './harness';
 import './chat';
 import './delegation';
 import './operator';
+import './agents';
+import './agent-dispatch';
+import './panel-cards';
+import './scans';
+import './recent-activity';

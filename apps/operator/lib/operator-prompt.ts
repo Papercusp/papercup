@@ -13,26 +13,12 @@
  *      freeform user message.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
-import { dirname, join } from 'node:path';
-import { papercuspPath } from './papercusp-root';
 import { loadPreferences } from './operator-preferences';
 import { OPERATOR_SUBSTRATE_PROMPT } from './operator-prompt-system';
-
-function OPERATOR_DIR() {
-  return papercuspPath('system', 'operator');
-}
-function USER_PROMPT_PATH() {
-  return join(OPERATOR_DIR(), 'prompt-user.md');
-}
-function FIRST_RUN_MARKER_PATH() {
-  return join(OPERATOR_DIR(), 'first-run.json');
-}
+import {
+  readOperatorState,
+  writeOperatorState,
+} from './operator-state-pg';
 
 const FIRST_RUN_INTRO = `\
 Hi, I'm the Operator. I have full write authority across all harnesses
@@ -49,13 +35,9 @@ are editable from my settings page (/settings/operator). My substrate
 prompt (tier rules and schema) is read-only.
 `;
 
-function readOr(path: string, def: string): string {
-  if (!existsSync(path)) return def;
-  try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    return def;
-  }
+async function readUserPromptFromPg(): Promise<string> {
+  const raw = await readOperatorState<{ content?: string }>('operator_prompt_user');
+  return typeof raw?.content === 'string' ? raw.content : '';
 }
 
 export interface BuildPromptArgs {
@@ -72,18 +54,32 @@ export interface BuildPromptResult {
   isFirstRun: boolean;
 }
 
-export function buildOperatorPrompt(args: BuildPromptArgs): BuildPromptResult {
-  const isFirstRun = args.showFirstRun ?? !hasShownFirstRunFor(args.userId);
+export async function buildOperatorPrompt(args: BuildPromptArgs): Promise<BuildPromptResult> {
+  const isFirstRun = args.showFirstRun ?? !(await hasShownFirstRunFor(args.userId));
 
   const systemPrompt = OPERATOR_SUBSTRATE_PROMPT;
-  const userPrompt = readOr(USER_PROMPT_PATH(), '').trim();
-  const prefs = loadPreferences().raw.trim();
+  const userPrompt = (await readUserPromptFromPg()).trim();
+  const prefs = (await loadPreferences()).raw.trim();
 
   const sections: string[] = [];
   if (isFirstRun) sections.push(FIRST_RUN_INTRO);
   sections.push(systemPrompt);
   if (userPrompt) sections.push(`## User-editable prompt\n\n${userPrompt}`);
   if (prefs) sections.push(`## Preferences (workspace-scoped, learned)\n\n${prefs}`);
+  try {
+    // Lazy-import so missing fs/path in any future client-side bundling
+    // doesn't crash. Keeps the prompt compact when no markdown content exists.
+    const { loadHarnessMarkdownIndex, renderHarnessMarkdownIndexForPrompt } =
+      require('./harness-markdown-index') as typeof import('./harness-markdown-index');
+    const indexText = renderHarnessMarkdownIndexForPrompt(loadHarnessMarkdownIndex());
+    if (indexText) sections.push(indexText);
+  } catch { /* index optional */ }
+  try {
+    const { loadHarnessPlanReviews, renderHarnessPlanReviewsForPrompt } =
+      require('./harness-plan-reviews') as typeof import('./harness-plan-reviews');
+    const planReviewText = renderHarnessPlanReviewsForPrompt(await loadHarnessPlanReviews());
+    if (planReviewText) sections.push(planReviewText);
+  } catch { /* plan-reviews optional */ }
   sections.push(`## Request\n\n${args.request}`);
 
   return { promptText: sections.join('\n\n---\n\n'), isFirstRun };
@@ -94,31 +90,23 @@ interface FirstRunMarker {
   shownToUserIds: string[];
 }
 
-function readFirstRunMarker(): FirstRunMarker | null {
-  const path = FIRST_RUN_MARKER_PATH();
-  if (!existsSync(path)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<FirstRunMarker>;
-    if (!raw || typeof raw !== 'object') return null;
-    return {
-      shownAt: typeof raw.shownAt === 'string' ? raw.shownAt : new Date().toISOString(),
-      shownToUserIds: Array.isArray(raw.shownToUserIds) ? raw.shownToUserIds.filter((u) => typeof u === 'string') : [],
-    };
-  } catch {
-    return null;
-  }
+async function readFirstRunMarker(): Promise<FirstRunMarker | null> {
+  const raw = await readOperatorState<Partial<FirstRunMarker>>('operator_first_run');
+  if (!raw) return null;
+  return {
+    shownAt: typeof raw.shownAt === 'string' ? raw.shownAt : new Date().toISOString(),
+    shownToUserIds: Array.isArray(raw.shownToUserIds) ? raw.shownToUserIds.filter((u) => typeof u === 'string') : [],
+  };
 }
 
-export function hasShownFirstRunFor(userId: string): boolean {
-  const marker = readFirstRunMarker();
+export async function hasShownFirstRunFor(userId: string): Promise<boolean> {
+  const marker = await readFirstRunMarker();
   return !!marker && marker.shownToUserIds.includes(userId);
 }
 
 /** Mark first-run as shown for the given user. Idempotent. */
-export function markFirstRunShown(userId: string): void {
-  const path = FIRST_RUN_MARKER_PATH();
-  mkdirSync(dirname(path), { recursive: true });
-  const existing = readFirstRunMarker();
+export async function markFirstRunShown(userId: string): Promise<void> {
+  const existing = await readFirstRunMarker();
   const next: FirstRunMarker = existing
     ? {
         shownAt: existing.shownAt,
@@ -127,5 +115,5 @@ export function markFirstRunShown(userId: string): void {
           : [...existing.shownToUserIds, userId],
       }
     : { shownAt: new Date().toISOString(), shownToUserIds: [userId] };
-  writeFileSync(path, JSON.stringify(next, null, 2));
+  await writeOperatorState('operator_first_run', next);
 }

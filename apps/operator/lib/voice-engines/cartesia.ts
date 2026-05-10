@@ -79,7 +79,7 @@ export function createCartesiaTts(cfg: CartesiaConfig): TtsEngine {
         });
         if (!r.ok || !r.body) return;
         const { recordSpend } = await import('../tts-spend');
-        recordSpend(text.length);
+        await recordSpend(text.length);
         charsTotal += text.length;
 
         player = playStream({

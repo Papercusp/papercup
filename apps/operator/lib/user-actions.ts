@@ -19,6 +19,8 @@
 
 import { getOrgPg } from '@restart/db-org';
 import { ensureUserActionsTable } from './ensure-schema';
+import { activeWorkspaceId } from './workspace-registry';
+import { notifySyncInvalidate } from './sync-sse';
 
 export type ActionKind =
   | 'replan'
@@ -66,8 +68,8 @@ export async function recordUserAction<T>(
   const now = Date.now();
   const inserted = (await sql`
     INSERT INTO harness_shared.user_actions
-      (harness_slug, kind, status, started_at, actor)
-    VALUES (${slug}, ${kind}, 'running', ${now}, ${opts.actor ?? null})
+      (harness_slug, kind, status, started_at, actor, workspace_id)
+    VALUES (${slug}, ${kind}, 'running', ${now}, ${opts.actor ?? null}, ${activeWorkspaceId()})
     RETURNING id
   `) as Array<{ id: string }>;
   const id = Number(inserted[0].id);
@@ -95,6 +97,7 @@ export async function recordUserAction<T>(
         WHERE id = ${id}
       `;
     }
+    void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
     return out.result;
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
@@ -105,6 +108,7 @@ export async function recordUserAction<T>(
           finished_at = ${Date.now()}
       WHERE id = ${id}
     `;
+    void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
     throw err;
   }
 }
@@ -123,7 +127,7 @@ export async function updateUserAction(args: {
 }): Promise<void> {
   await ensureUserActionsTable();
   const { sql } = getOrgPg();
-  await sql`
+  const rows = await sql<Array<{ harness_slug: string }>>`
     UPDATE harness_shared.user_actions
     SET status      = ${args.status},
         summary     = COALESCE(${args.summary ?? null}, summary),
@@ -131,5 +135,8 @@ export async function updateUserAction(args: {
         error_text  = ${args.errorText ?? null},
         finished_at = ${Date.now()}
     WHERE id = ${args.id}
+    RETURNING harness_slug
   `;
+  const slug = rows[0]?.harness_slug;
+  if (slug) void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
 }

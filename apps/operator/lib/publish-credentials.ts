@@ -1,9 +1,14 @@
-import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
-
-import { papercuspRoot } from '@/lib/papercusp-root';
-
-function CREDS_PATH() { return join(papercuspRoot(), 'publish-credentials.json'); }
+/**
+ * Marketplace-publish credentials (tenantId + tenantSecret + host).
+ *
+ * Persisted in `harness_shared.operator_publish_credentials` (PG, migration
+ * 022). Was previously `<papercuspRoot>/publish-credentials.json` mode 0600.
+ * NOT in the zero_harness publication — credentials must not be broadcast
+ * over WS. Read via authenticated REST only.
+ */
+import { getOrgPg } from '@restart/db-org';
+import { activeWorkspaceId } from './workspace-registry';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 export interface PublishCredentials {
   tenantId: string;
@@ -12,29 +17,25 @@ export interface PublishCredentials {
   publishHost: string;
 }
 
-export function PUBLISH_CREDENTIALS_PATH() { return CREDS_PATH(); }
+const TABLE_PATH = 'harness_shared.operator_publish_credentials';
+/** @deprecated returns table identifier now. */
+export function PUBLISH_CREDENTIALS_PATH() { return TABLE_PATH; }
 
 export async function readPublishCredentials(): Promise<PublishCredentials | null> {
-  try {
-    return JSON.parse(await fs.readFile(CREDS_PATH(), 'utf8')) as PublishCredentials;
-  } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw e;
-  }
+  return await readOperatorState<PublishCredentials>('operator_publish_credentials');
 }
 
 export async function writePublishCredentials(c: PublishCredentials): Promise<void> {
-  await fs.mkdir(papercuspRoot(), { recursive: true, mode: 0o700 });
-  await fs.writeFile(CREDS_PATH(), JSON.stringify(c, null, 2) + '\n', { mode: 0o600 });
-  await fs.chmod(CREDS_PATH(), 0o600);
+  await writeOperatorState('operator_publish_credentials', c);
 }
 
 export async function deletePublishCredentials(): Promise<void> {
-  try {
-    await fs.unlink(CREDS_PATH());
-  } catch (e: unknown) {
-    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-  }
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  await sql`
+    DELETE FROM harness_shared.operator_publish_credentials
+     WHERE workspace_id = ${ws}
+  `;
 }
 
 export interface MaskedPublishCredentials {
@@ -52,7 +53,7 @@ export function maskPublishCredentials(c: PublishCredentials | null): MaskedPubl
       tenantSecretMasked: null,
       registeredAt: null,
       publishHost: null,
-      path: CREDS_PATH(),
+      path: TABLE_PATH,
     };
   }
   return {
@@ -63,6 +64,6 @@ export function maskPublishCredentials(c: PublishCredentials | null): MaskedPubl
         : c.tenantSecret.slice(0, 6) + '...' + c.tenantSecret.slice(-4),
     registeredAt: new Date(c.registeredAt).toISOString(),
     publishHost: c.publishHost,
-    path: CREDS_PATH(),
+    path: TABLE_PATH,
   };
 }

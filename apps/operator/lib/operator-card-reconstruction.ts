@@ -48,10 +48,10 @@ interface AuditRow {
 const RECONSTRUCT_WINDOW_MS = 60 * 60 * 1000; // 1h per plan §1b
 
 export async function reconstructCards(): Promise<ReconstructedCard[]> {
-  const last = readLastScan();
+  const last = await readLastScan();
   if (!last) return [];
 
-  const dismissedIds = new Set(listDismissed().map((e) => e.id));
+  const dismissedIds = new Set((await listDismissed()).map((e) => e.id));
 
   let auditRows: AuditRow[] = [];
   try {

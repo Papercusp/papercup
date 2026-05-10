@@ -6,6 +6,12 @@
  * so the file is authoritative. This mirror exists for cross-harness reads
  * and Zero subscriptions ("which harnesses have plugin X configured how?").
  *
+ * Encryption-at-rest (Migration 039): the JSONB payload is pgcrypto-encrypted
+ * via pgp_sym_encrypt into the `config_ct BYTEA` column; the legacy plaintext
+ * `config` column is always written NULL by this helper. The on-disk file is
+ * a separate exposure — the substrate plugin loader cannot decrypt — and is
+ * mode 0600 (see oauth/storage-fs.ts).
+ *
  * Contract:
  *   - Every API route that mutates a plugin-config file MUST call
  *     `mirrorPluginConfig(harness, plugin)` immediately after.
@@ -18,6 +24,7 @@ import { withWorkspace } from '@restart/db-org';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { getDbEncryptionKey } from '@/lib/db-encryption';
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
 async function readJsonFile<T>(p: string): Promise<T | null> {
@@ -37,14 +44,49 @@ export async function mirrorPluginConfig(
     cfg = (await readJsonFile<Record<string, unknown>>(path)) ?? {};
   }
   const cfgValue = cfg;
+  const text = JSON.stringify(cfgValue);
+  const key = getDbEncryptionKey();
   await withWorkspace(activeWorkspaceId(), async (tx) => {
     await tx`
-      INSERT INTO harness_shared.plugin_configs (harness_slug, plugin_slug, config, updated_at, workspace_id)
-      VALUES (${harness}, ${plugin}, ${tx.json(cfgValue)}, now(), ${activeWorkspaceId()})
+      INSERT INTO harness_shared.plugin_configs
+        (harness_slug, plugin_slug, config, config_ct, updated_at, workspace_id)
+      VALUES (
+        ${harness}, ${plugin},
+        NULL, pgp_sym_encrypt(${text}, ${key}),
+        now(), ${activeWorkspaceId()}
+      )
       ON CONFLICT (harness_slug, plugin_slug) DO UPDATE
-        SET config = EXCLUDED.config, updated_at = now(), workspace_id = EXCLUDED.workspace_id
+        SET config = NULL,
+            config_ct = pgp_sym_encrypt(${text}, ${key}),
+            updated_at = now(),
+            workspace_id = EXCLUDED.workspace_id
     `;
   });
+}
+
+/** Decrypt and return the PG-mirrored config (server-side only — needs the
+ *  encryption key). Returns null if no row exists. */
+export async function loadPluginConfig(
+  harness: string,
+  plugin: string,
+): Promise<Record<string, unknown> | null> {
+  const key = getDbEncryptionKey();
+  let result: Record<string, unknown> | null = null;
+  await withWorkspace(activeWorkspaceId(), async (tx) => {
+    const rows = await tx<{ payload: Record<string, unknown> | null }[]>`
+      SELECT
+        CASE
+          WHEN config_ct IS NOT NULL
+            THEN pgp_sym_decrypt(config_ct, ${key})::jsonb
+          ELSE config
+        END AS payload
+      FROM harness_shared.plugin_configs
+      WHERE harness_slug = ${harness} AND plugin_slug = ${plugin}
+      LIMIT 1
+    `;
+    result = rows[0]?.payload ?? null;
+  });
+  return result;
 }
 
 /** Drop a plugin-config row (used when a plugin is disabled/uninstalled). */

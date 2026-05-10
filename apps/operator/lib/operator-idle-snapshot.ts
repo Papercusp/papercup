@@ -1,14 +1,10 @@
 /**
  * Operator idle short-circuit snapshot (Phase 3c of the v5 operator plan).
  *
- * Stored at `<papercuspRoot>/system/operator/idle-snapshot.json`.
- *
- *   {
- *     "fingerprint": "<sha-of-trigger-state>",
- *     "computedAt": "<iso>",
- *     "ttlMs": 1800000,                          // 30 min ceiling
- *     "cards": [...]                             // last scan output
- *   }
+ * Persisted in `harness_shared.operator_idle_snapshot` (PG, migration 020).
+ * Was previously `<papercuspRoot>/system/operator/idle-snapshot.json`. PG
+ * fixes the multi-tab race the file approach had (two tabs both writing
+ * idle snapshots could lose the more recent one).
  *
  * Background scanner consults this BEFORE spawning the LLM. If the
  * fingerprint matches the current trigger-state digest AND we're inside
@@ -17,9 +13,7 @@
  * scan on stable workspaces every 30 min.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { papercuspPath } from './papercusp-root';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 const TTL_MS = 30 * 60 * 1000;
 
@@ -30,37 +24,25 @@ export interface IdleSnapshot {
   cards: Record<string, unknown>[];
 }
 
-function PATH() {
-  return papercuspPath('system', 'operator', 'idle-snapshot.json');
+export async function readSnapshot(): Promise<IdleSnapshot | null> {
+  const raw = await readOperatorState<Partial<IdleSnapshot>>('operator_idle_snapshot');
+  if (!raw || typeof raw.fingerprint !== 'string') return null;
+  return {
+    fingerprint: raw.fingerprint,
+    computedAt: typeof raw.computedAt === 'string' ? raw.computedAt : new Date(0).toISOString(),
+    ttlMs: typeof raw.ttlMs === 'number' ? raw.ttlMs : TTL_MS,
+    cards: Array.isArray(raw.cards) ? raw.cards.filter((c): c is Record<string, unknown> => !!c && typeof c === 'object') : [],
+  };
 }
 
-export function readSnapshot(): IdleSnapshot | null {
-  const p = PATH();
-  if (!existsSync(p)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(p, 'utf8')) as Partial<IdleSnapshot>;
-    if (!raw || typeof raw !== 'object' || typeof raw.fingerprint !== 'string') return null;
-    return {
-      fingerprint: raw.fingerprint,
-      computedAt: typeof raw.computedAt === 'string' ? raw.computedAt : new Date(0).toISOString(),
-      ttlMs: typeof raw.ttlMs === 'number' ? raw.ttlMs : TTL_MS,
-      cards: Array.isArray(raw.cards) ? raw.cards.filter((c): c is Record<string, unknown> => !!c && typeof c === 'object') : [],
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function writeSnapshot(fingerprint: string, cards: Record<string, unknown>[]): void {
-  const p = PATH();
-  mkdirSync(dirname(p), { recursive: true });
+export async function writeSnapshot(fingerprint: string, cards: Record<string, unknown>[]): Promise<void> {
   const snap: IdleSnapshot = {
     fingerprint,
     computedAt: new Date().toISOString(),
     ttlMs: TTL_MS,
     cards,
   };
-  writeFileSync(p, JSON.stringify(snap, null, 2));
+  await writeOperatorState('operator_idle_snapshot', snap);
 }
 
 /**
@@ -69,8 +51,8 @@ export function writeSnapshot(fingerprint: string, cards: Record<string, unknown
  * unconsumed pending_events, set of (project_slug, status), inbox row
  * count for system:operator, etc).
  */
-export function canShortCircuit(currentFingerprint: string): IdleSnapshot | null {
-  const snap = readSnapshot();
+export async function canShortCircuit(currentFingerprint: string): Promise<IdleSnapshot | null> {
+  const snap = await readSnapshot();
   if (!snap) return null;
   if (snap.fingerprint !== currentFingerprint) return null;
   const ageMs = Date.now() - new Date(snap.computedAt).getTime();

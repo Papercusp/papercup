@@ -1,42 +1,41 @@
 // Browser-side wrappers for the desktop app's version + auto-update
 // commands. Web mode (papercuspai.com) returns nulls / no-ops so the
 // caller can render conditionally without an @tauri-apps/api dep.
+//
+// Implementations call into the typed Tauri-Specta bindings, but the
+// public API of this file is unchanged — callers don't need to touch
+// the envelope shape returned by Specta-wrapped commands.
 
-export interface UpdateInfo {
-  available: boolean;
-  current_version: string;
-  new_version: string | null;
-  notes: string | null;
-}
+import type { UpdateInfo as BindingsUpdateInfo } from './tauri-bindings';
 
-interface TauriInternals {
-  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
-}
+export type UpdateInfo = BindingsUpdateInfo;
 
-function tauri(): TauriInternals | null {
-  if (typeof window === 'undefined') return null;
-  const w = window as unknown as { __TAURI_INTERNALS__?: TauriInternals };
-  return w.__TAURI_INTERNALS__ ?? null;
+function isDesktopRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 }
 
 export function isDesktop(): boolean {
-  return tauri() !== null;
+  return isDesktopRuntime();
 }
 
 export async function appVersion(): Promise<string | null> {
-  const t = tauri();
-  if (!t) return null;
-  return t.invoke<string>('app_version');
+  if (!isDesktopRuntime()) return null;
+  const { commands } = await import('./tauri-bindings');
+  return commands.appVersion();
 }
 
 export async function checkForUpdate(): Promise<UpdateInfo | null> {
-  const t = tauri();
-  if (!t) return null;
-  return t.invoke<UpdateInfo>('check_for_update');
+  if (!isDesktopRuntime()) return null;
+  const { commands } = await import('./tauri-bindings');
+  const r = await commands.checkForUpdate();
+  if (r.status === 'error') throw new Error(r.error);
+  return r.data;
 }
 
 export async function installUpdate(): Promise<void> {
-  const t = tauri();
-  if (!t) throw new Error('not in desktop mode');
-  return t.invoke<void>('install_update');
+  if (!isDesktopRuntime()) throw new Error('not in desktop mode');
+  const { commands } = await import('./tauri-bindings');
+  const r = await commands.installUpdate();
+  if (r.status === 'error') throw new Error(r.error);
 }

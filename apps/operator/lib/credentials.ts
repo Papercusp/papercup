@@ -1,9 +1,13 @@
-import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
-
-import { papercuspRoot } from '@/lib/papercusp-root';
-
-function CREDS_PATH() { return join(papercuspRoot(), 'credentials.json'); }
+/**
+ * Operator credentials storage — PG-backed (migration 020).
+ *
+ * Persisted in `harness_shared.operator_credentials` (NOT in zero_harness
+ * publication — credentials must not be broadcast over WS). Was previously
+ * `<papercuspRoot>/credentials.json` with 0600 chmod. PG gives us atomic
+ * upsert and central backup; encryption-at-rest can layer on later via
+ * pgcrypto if desired.
+ */
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 export interface Credentials {
   anthropic_api_key?: string;
@@ -13,22 +17,13 @@ export interface Credentials {
 }
 
 export async function readCredentials(): Promise<Credentials> {
-  try {
-    const raw = await fs.readFile(CREDS_PATH(), 'utf8');
-    const parsed = JSON.parse(raw);
-    return typeof parsed === 'object' && parsed ? parsed : {};
-  } catch (e: any) {
-    if (e?.code === 'ENOENT') return {};
-    throw e;
-  }
+  const raw = await readOperatorState<Credentials>('operator_credentials');
+  return raw ?? {};
 }
 
 export async function writeCredentials(creds: Credentials): Promise<Credentials> {
-  await fs.mkdir(papercuspRoot(), { recursive: true, mode: 0o700 });
   const next: Credentials = { ...creds, updated_at: new Date().toISOString() };
-  const body = JSON.stringify(next, null, 2);
-  await fs.writeFile(CREDS_PATH(), body, { encoding: 'utf8', mode: 0o600 });
-  await fs.chmod(CREDS_PATH(), 0o600);
+  await writeOperatorState('operator_credentials', next);
   return next;
 }
 
@@ -47,8 +42,9 @@ export function maskCredentials(creds: Credentials) {
     openai_api_key: maskSecret(creds.openai_api_key),
     github_pat: maskSecret(creds.github_pat),
     updated_at: creds.updated_at ?? null,
-    path: CREDS_PATH(),
+    path: 'harness_shared.operator_credentials',
   };
 }
 
-export function CREDENTIALS_PATH() { return CREDS_PATH(); }
+/** @deprecated returns table name now — kept for legacy callers that want a display path */
+export function CREDENTIALS_PATH() { return 'harness_shared.operator_credentials'; }

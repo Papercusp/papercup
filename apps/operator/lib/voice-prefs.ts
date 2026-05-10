@@ -1,22 +1,20 @@
 /**
  * Voice preferences storage (Phase 1c of voice-mode plan v4).
  *
- * Source of truth: `<papercuspRoot>/system/operator/voice-prefs.json`.
+ * Source of truth: `harness_shared.operator_voice_prefs` (PG, migration 020).
+ * Was previously `<papercuspRoot>/system/operator/voice-prefs.json`. The
+ * file approach worked but moving to PG unifies multi-tab + multi-machine
+ * state with the rest of the operator-state migration.
  *
- * Schema covers:
+ * Schema (the JSONB payload) covers:
  *   - 7 feature toggles (suggestion announcements, toasts, flips, etc.)
  *   - 3 engine selectors (sttEngine, ttsEngine, elevenlabsVoiceId)
  *   - 1 leak-warning consent record (webSpeechLeakAcked)
  *   - 1 hardware-suggestion ack (kokoroSlowSuggestionDismissed)
  *   - Internal state: nudge dedup last-spoken-at per kind
- *
- * voice-prefs.json is on the snapshot private list (per v4 §10) — does
- * not travel when forking a workspace.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { papercuspPath } from './papercusp-root';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 export type SttEngineKind = 'voicemode' | 'webspeech' | 'deepgram' | 'off';
 export type TtsEngineKind = 'kokoro' | 'browser' | 'elevenlabs' | 'openai' | 'cartesia';
@@ -89,6 +87,59 @@ export interface VoicePrefs {
    * Default 120 words ≈ 60s of speech at standard rates.
    */
   voiceMaxSpokenWords: number;
+  /**
+   * Long-op narration: announce when replan / supervisor / cleanup /
+   * provision start, occasionally during, and at completion. Side-channel
+   * TTS — bypasses the EL Conv AI agent. Default ON. See
+   * /docs/agents/operator-persona §6.
+   */
+  narrateLongOps: boolean;
+  /**
+   * Operator may reference short anecdotes from prior work when the
+   * trigger matches. Limited to a few times per session. Default ON.
+   * See /docs/agents/operator-persona §7.
+   */
+  operatorBackstoryEnabled: boolean;
+  /**
+   * On every fresh app load, seed the operator's interaction mode to
+   * 'active' (continuous turn-taking, silence prompts, the operator
+   * brings ideas out of the user). Default ON. The user can toggle
+   * mid-session via the navbar; the mode-flip is sessionStorage so a
+   * refresh re-seeds from this setting. See OperatorConversationProvider
+   * for the state machine, OperatorActiveToggle for the navbar control.
+   */
+  operatorActiveOnStartup: boolean;
+  /**
+   * Auto-disconnect EL Conv AI / Realtime full-agent sessions after
+   * this many minutes of inactivity. Mic streams continuously while
+   * the session is connected — silence still costs minutes. 0 = never
+   * auto-disconnect. Default 5 minutes.
+   */
+  fullAgentIdleTimeoutMin: number;
+  /**
+   * Hard monthly cap on ElevenLabs Conv AI minutes. Once the current
+   * month's usage reaches this number, voice-mode refuses to start a
+   * new session and surfaces a toast. 0 = uncapped. Default 600 min
+   * (10 hours; sized for a moderate Pro-plan user with overage room).
+   */
+  fullAgentMonthlyMinuteCap: number;
+  /**
+   * Privacy mode for the EL Conv AI / Realtime full-agent path.
+   *   - 'always-on' (default): mic streams continuously to the provider
+   *     while the session is connected. Lowest latency, highest cost,
+   *     audio leaves the box at rest.
+   *   - 'wake-word-gated': local wake-word engine listens on-device;
+   *     mic only streams to the provider after the wake word fires
+   *     and until the gated-idle timer ends the session. Privacy +
+   *     cost win, ~1.5s extra latency on the first turn after wake.
+   */
+  voicePrivacyMode: 'always-on' | 'wake-word-gated';
+  /**
+   * Idle timeout (seconds) used when voicePrivacyMode='wake-word-gated'.
+   * Tighter than fullAgentIdleTimeoutMin since session restart is
+   * cheap (just say the wake word again). Default 20s.
+   */
+  wakeGatedIdleTimeoutSec: number;
 
   // One-time consents
   webSpeechLeakAcked: boolean;
@@ -125,6 +176,13 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   elevenLabsAgentId: '',
   voicePanelAutoOpen: true,
   voiceMaxSpokenWords: 120,
+  narrateLongOps: true,
+  operatorBackstoryEnabled: true,
+  operatorActiveOnStartup: true,
+  fullAgentIdleTimeoutMin: 5,
+  fullAgentMonthlyMinuteCap: 600,
+  voicePrivacyMode: 'always-on',
+  wakeGatedIdleTimeoutSec: 20,
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {
@@ -134,28 +192,17 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   },
 };
 
-function PATH() {
-  return papercuspPath('system', 'operator', 'voice-prefs.json');
+export async function loadVoicePrefs(): Promise<VoicePrefs> {
+  const raw = await readOperatorState<Partial<VoicePrefs>>('operator_voice_prefs');
+  if (!raw) return { ...DEFAULT_VOICE_PREFS };
+  // Merge with defaults so newly-added fields don't break old rows.
+  return mergePrefs(DEFAULT_VOICE_PREFS, raw);
 }
 
-export function loadVoicePrefs(): VoicePrefs {
-  const path = PATH();
-  if (!existsSync(path)) return { ...DEFAULT_VOICE_PREFS };
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<VoicePrefs>;
-    // Merge with defaults so newly-added fields don't break old files.
-    return mergePrefs(DEFAULT_VOICE_PREFS, raw);
-  } catch {
-    return { ...DEFAULT_VOICE_PREFS };
-  }
-}
-
-export function saveVoicePrefs(patch: Partial<VoicePrefs>): VoicePrefs {
-  const current = loadVoicePrefs();
+export async function saveVoicePrefs(patch: Partial<VoicePrefs>): Promise<VoicePrefs> {
+  const current = await loadVoicePrefs();
   const next = mergePrefs(current, patch);
-  const path = PATH();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(next, null, 2));
+  await writeOperatorState('operator_voice_prefs', next);
   return next;
 }
 

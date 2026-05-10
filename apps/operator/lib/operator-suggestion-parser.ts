@@ -29,10 +29,10 @@ export interface ParseResult {
  *
  * Malformed blocks are surfaced as `parseErrors`; the rest stream through.
  */
-export function parseSuggestions(
+export async function parseSuggestions(
   text: string,
   preferences: OperatorPreferences,
-): ParseResult {
+): Promise<ParseResult> {
   const result: ParseResult = { blocks: [], parseErrors: [] };
   const seenIds = new Set<string>();
   for (const match of text.matchAll(SUGGESTION_RE)) {
@@ -58,7 +58,7 @@ export function parseSuggestions(
     }
     const enriched = enrich(validated.data, preferences);
     if (seenIds.has(enriched.raw.id)) continue; // de-dup within one scan
-    if (isOnCooldown(enriched.raw.id)) continue; // dismissed-cooldown
+    if (await isOnCooldown(enriched.raw.id)) continue; // dismissed-cooldown
     seenIds.add(enriched.raw.id);
     result.blocks.push({ suggestion: enriched });
   }

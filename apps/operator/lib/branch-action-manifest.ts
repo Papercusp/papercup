@@ -139,7 +139,9 @@ function harnessConfigDir(harnessSlug: string): string {
       // env or by calling resolveEnv with explicit `harnessConfigsDir`.
     }
   } catch { /* ignore */ }
-  return join(homedir(), '.papercusp-workspaces', 'default', '.papercusp', 'harnesses', harnessSlug);
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { DEFAULT_WORKSPACE_ID } = require('./workspace-registry') as typeof import('./workspace-registry');
+  return join(homedir(), '.papercusp-workspaces', DEFAULT_WORKSPACE_ID, '.papercusp', 'harnesses', harnessSlug);
 }
 
 async function readJson<T>(path: string): Promise<T | null> {

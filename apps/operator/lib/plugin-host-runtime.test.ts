@@ -47,7 +47,11 @@ describe('buildPapercuspContext', () => {
       projectDir: '/p',
       stateDir: '/p/.harness',
     });
-    expect(ctx.pluginDataDir).toBe('/p/.harness/plugins/foo');
+    // Path moved from .harness/plugins/<n> to .harness/plugin-data/<n>
+    // when the plugin install dir + plugin runtime data dir were
+    // separated (the install lives at plugins/<n>; runtime data /
+    // config / oauth tokens live at plugin-data/<n>).
+    expect(ctx.pluginDataDir).toBe('/p/.harness/plugin-data/foo');
     expect(typeof ctx.log).toBe('function');
   });
 });

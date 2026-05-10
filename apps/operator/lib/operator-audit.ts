@@ -17,11 +17,19 @@
 
 import { withWorkspace } from '@restart/db-org';
 import { activeWorkspaceId } from './workspace-registry';
+import { notifySyncInvalidate } from './sync-sse';
 
 export type OperatorAuditKind =
+  // New (post-card-lifecycle-collapse, e46ba9c):
+  | 'accepted'
+  | 'ignored'
+  | 'accept_failed'
+  | 'undo_cancel'
+  // Legacy — still accepted by the writer for back-compat (callers that haven't
+  // migrated yet, replayed audit history, etc.). Operator panel itself only
+  // emits the four above. Remove once all writers have moved.
   | 'dispatched'
   | 'acked'
-  | 'undo_cancel'
   | 'consumed'
   | 'escalated'
   | 'rejected'
@@ -82,6 +90,8 @@ export async function writeOperatorAudit(ev: OperatorAuditEvent): Promise<void> 
         )
       `;
     });
+    // Mobile sync: phone refetches /api/mobile/actions/recent.
+    void notifySyncInvalidate('auditLog.recent').catch(() => {});
   } catch (err) {
     // Best-effort; never block the panel on a missing audit row.
     console.warn(`[operator-audit] failed to write ${ev.kind} for ${ev.cardId}:`, err);

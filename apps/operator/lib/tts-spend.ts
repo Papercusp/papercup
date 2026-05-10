@@ -1,8 +1,12 @@
 /**
  * ElevenLabs cost tracking + soft/hard cap state (v4 §1.2.3 + §2n).
  *
- * Per-call spend is recorded in `<papercuspRoot>/system/operator/tts-spend.json`.
- * Schema:
+ * Per-call spend is persisted in `harness_shared.operator_tts_spend` (PG)
+ * — migration 020. Was previously `<papercuspRoot>/system/operator/tts-spend.json`;
+ * the JSON file approach raced under multi-tab usage, the PG transactional
+ * update fixes it.
+ *
+ * Schema (the JSONB payload):
  *   {
  *     perKCharRate: 0.18,           // user-configurable, default Creator tier
  *     softCapUsd:   5,
@@ -14,12 +18,14 @@
  *
  * Recording is split into pure logic (`computeNextState`) + side-effect
  * IO so the tricky bits (rollover, dedup, cap-trip detection) are
- * unit-testable without a filesystem.
+ * unit-testable without a filesystem or a database.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { papercuspPath } from './papercusp-root';
+import {
+  readOperatorState,
+  writeOperatorState,
+  updateOperatorState,
+} from './operator-state-pg';
 
 export interface TtsSpendDay {
   date: string;
@@ -54,10 +60,6 @@ export const DEFAULT_SPEND_STATE: TtsSpendState = {
   softCapAcknowledgedDate: null,
   spend: [],
 };
-
-function PATH(): string {
-  return papercuspPath('system', 'operator', 'tts-spend.json');
-}
 
 export function utcDateString(now = Date.now()): string {
   return new Date(now).toISOString().slice(0, 10);
@@ -115,31 +117,40 @@ export function computeNextState(
   return { next, fireSoftCap, hardCapTripped, todayUsd };
 }
 
-export function loadSpend(): TtsSpendState {
-  const path = PATH();
-  if (!existsSync(path)) return { ...DEFAULT_SPEND_STATE };
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<TtsSpendState>;
-    return {
-      ...DEFAULT_SPEND_STATE,
-      ...raw,
-      spend: Array.isArray(raw.spend) ? raw.spend.slice(0, 7) : [],
-    };
-  } catch {
-    return { ...DEFAULT_SPEND_STATE };
-  }
+export async function loadSpend(): Promise<TtsSpendState> {
+  const raw = await readOperatorState<Partial<TtsSpendState>>('operator_tts_spend');
+  if (!raw) return { ...DEFAULT_SPEND_STATE };
+  return {
+    ...DEFAULT_SPEND_STATE,
+    ...raw,
+    spend: Array.isArray(raw.spend) ? raw.spend.slice(0, 7) : [],
+  };
 }
 
-export function saveSpend(state: TtsSpendState): void {
-  const path = PATH();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(state, null, 2));
+export async function saveSpend(state: TtsSpendState): Promise<void> {
+  await writeOperatorState('operator_tts_spend', state);
 }
 
-/** High-level recorder: load + compute + save. Returns the side-effect signals. */
-export function recordSpend(chars: number, now: number = Date.now()): SpendUpdate {
-  const cur = loadSpend();
-  const update = computeNextState(cur, chars, now);
-  saveSpend(update.next);
-  return update;
+/**
+ * High-level recorder: atomic load+compute+save inside a single PG
+ * transaction so multi-tab races no longer clobber each other's spend.
+ * Returns the same side-effect signals as before.
+ */
+export async function recordSpend(chars: number, now: number = Date.now()): Promise<SpendUpdate> {
+  let captured!: SpendUpdate;
+  await updateOperatorState<TtsSpendState>(
+    'operator_tts_spend',
+    DEFAULT_SPEND_STATE,
+    (cur) => {
+      // Defensively normalize legacy/partial shapes the same way loadSpend does.
+      const normalized: TtsSpendState = {
+        ...DEFAULT_SPEND_STATE,
+        ...cur,
+        spend: Array.isArray(cur.spend) ? cur.spend.slice(0, 7) : [],
+      };
+      captured = computeNextState(normalized, chars, now);
+      return captured.next;
+    },
+  );
+  return captured;
 }

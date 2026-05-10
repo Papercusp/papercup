@@ -41,9 +41,18 @@ export function writeRegistry(reg: WorkspaceRegistry): void {
   writeFileSync(registryPath(), JSON.stringify(reg, null, 2));
 }
 
+/**
+ * The literal 'default' workspace id — fallback when no registry exists
+ * or no workspace is selected. Re-exported from the client-safe module
+ * so legacy importers from this path keep working; new client code
+ * should import from './workspace-id-constant' directly to avoid
+ * pulling node:fs into client chunks.
+ */
+export { DEFAULT_WORKSPACE_ID } from './workspace-id-constant';
+
 export function activeWorkspaceId(): string {
   const reg = readRegistry();
-  return reg.current ?? reg.workspaces[0]?.id ?? 'default';
+  return reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
 }
 
 export function workspaceById(id: string): WorkspaceEntry | undefined {

@@ -47,12 +47,12 @@ export function shouldFireNudge(
  * Side-effecting helper for server contexts: load prefs, decide, save
  * the updated nudgeDedup if firing. Returns { fire: boolean }.
  */
-export function maybeFireNudge(kind: NudgeKind, now: number = Date.now()): boolean {
-  const prefs = loadVoicePrefs();
+export async function maybeFireNudge(kind: NudgeKind, now: number = Date.now()): Promise<boolean> {
+  const prefs = await loadVoicePrefs();
   const cur = prefs.nudgeDedup[kind].lastSpokenAt;
   const decision = shouldFireNudge(kind, cur, now);
   if (decision.fire) {
-    saveVoicePrefs({
+    await saveVoicePrefs({
       nudgeDedup: {
         ...prefs.nudgeDedup,
         [kind]: { lastSpokenAt: decision.nextLastSpokenAtIso },

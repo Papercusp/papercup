@@ -73,7 +73,9 @@ function resolve(): string {
     } catch { /* fall through */ }
   }
 
-  const def = join(homedir(), '.papercusp-workspaces', 'default', '.papercusp');
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { DEFAULT_WORKSPACE_ID } = require('./workspace-registry') as typeof import('./workspace-registry');
+  const def = join(homedir(), '.papercusp-workspaces', DEFAULT_WORKSPACE_ID, '.papercusp');
   if (existsSync(def)) return def;
 
   return join(homedir(), '.papercusp');

@@ -79,7 +79,10 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: 'shortcuts.show',
     description: 'Show keyboard-shortcut cheat-sheet',
     defaultCombo: 'shift+slash',
-    category: 'palette',
+    // 'global' (not 'palette') — the dispatcher preventDefaults palette
+    // combos even when the form-tag guard skips the handler, which would
+    // swallow a literal '?' typed into any text input.
+    category: 'global',
   },
   {
     id: 'operator.toggle',

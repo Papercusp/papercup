@@ -1,23 +1,22 @@
 /**
  * Multi-workspace Operator aggregation (final v5 polish item).
  *
- * Reads `last-scan.json` + `dismissed.json` from every workspace in the
- * registry without switching the active workspace, returning a unified
- * read-only view. The panel surfaces this as an "Other workspaces"
- * section so users see what's pending across all their workspaces
- * without round-tripping through the workspace switcher.
+ * Queries `harness_shared.operator_last_scan` + `operator_dismissed_cards`
+ * across every workspace in the registry — the active workspace is
+ * omitted; it lives in the main panel view.
+ *
+ * Both tables are PG-canonical since migrations 015 + 020. The previous
+ * FS-reading implementation (last-scan.json / dismissed.json) was
+ * silently broken: nobody writes those files anymore, so the panel was
+ * always returning empty `cards` arrays.
  *
  * Dispatch is NOT enabled cross-workspace — clicking a foreign-workspace
  * card switches to that workspace and reopens the panel there. This
  * keeps RLS + audit + budget scoping coherent.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { getOrgPg } from '@restart/db-org';
 import { readRegistry } from './workspace-registry';
-
-const REGISTRY_ROOT = join(homedir(), '.papercusp-workspaces');
 
 export interface ForeignCard {
   workspaceId: string;
@@ -27,37 +26,6 @@ export interface ForeignCard {
   dismissed: boolean;
 }
 
-interface LastScanFile {
-  scanCompletedAt?: string;
-  cards?: Array<Record<string, unknown> | null | undefined>;
-}
-
-interface DismissedFile {
-  id: string;
-  dismissedAt: string;
-}
-
-function workspaceLastScan(workspaceId: string): LastScanFile | null {
-  const p = join(REGISTRY_ROOT, workspaceId, '.papercusp', 'system', 'operator', 'last-scan.json');
-  if (!existsSync(p)) return null;
-  try {
-    return JSON.parse(readFileSync(p, 'utf8')) as LastScanFile;
-  } catch {
-    return null;
-  }
-}
-
-function workspaceDismissed(workspaceId: string): Set<string> {
-  const p = join(REGISTRY_ROOT, workspaceId, '.papercusp', 'system', 'operator', 'dismissed.json');
-  if (!existsSync(p)) return new Set();
-  try {
-    const arr = JSON.parse(readFileSync(p, 'utf8')) as DismissedFile[];
-    return new Set(arr.filter((e) => e && typeof e.id === 'string').map((e) => e.id));
-  } catch {
-    return new Set();
-  }
-}
-
 export interface MultiWorkspaceSnapshot {
   /** Sorted by workspace name; cards within a workspace preserve scan order. */
   cards: ForeignCard[];
@@ -65,21 +33,50 @@ export interface MultiWorkspaceSnapshot {
   workspaces: { id: string; name: string; cardCount: number; scanCompletedAt: string | null }[];
 }
 
-export function readMultiWorkspaceSnapshot(currentWorkspaceId: string): MultiWorkspaceSnapshot {
+interface LastScanPayload {
+  scanCompletedAt?: string;
+  cards?: Array<Record<string, unknown> | null | undefined>;
+}
+
+export async function readMultiWorkspaceSnapshot(currentWorkspaceId: string): Promise<MultiWorkspaceSnapshot> {
   const reg = readRegistry();
   const out: MultiWorkspaceSnapshot = { cards: [], workspaces: [] };
+  const otherIds = reg.workspaces.map((w) => w.id).filter((id) => id !== currentWorkspaceId);
+  if (otherIds.length === 0) return out;
+
+  const { sql } = getOrgPg();
+
+  // One round-trip for each table; group results by workspace_id.
+  const scans = await sql<{ workspace_id: string; payload: LastScanPayload }[]>`
+    SELECT workspace_id, payload
+      FROM harness_shared.operator_last_scan
+     WHERE workspace_id = ANY(${otherIds}::text[])
+  `;
+  const dismissed = await sql<{ workspace_id: string; card_id: string }[]>`
+    SELECT workspace_id, card_id
+      FROM harness_shared.operator_dismissed_cards
+     WHERE workspace_id = ANY(${otherIds}::text[])
+  `;
+
+  const scanByWs = new Map<string, LastScanPayload>(scans.map((r) => [r.workspace_id, r.payload]));
+  const dismissedByWs = new Map<string, Set<string>>();
+  for (const d of dismissed) {
+    if (!dismissedByWs.has(d.workspace_id)) dismissedByWs.set(d.workspace_id, new Set());
+    dismissedByWs.get(d.workspace_id)!.add(d.card_id);
+  }
+
   for (const ws of reg.workspaces) {
-    if (ws.id === currentWorkspaceId) continue; // current workspace lives in the main view
-    const last = workspaceLastScan(ws.id);
-    const dismissed = workspaceDismissed(ws.id);
-    const cards = (last?.cards ?? []).filter(
+    if (ws.id === currentWorkspaceId) continue;
+    const scan = scanByWs.get(ws.id);
+    const dismissedIds = dismissedByWs.get(ws.id) ?? new Set();
+    const cards = (scan?.cards ?? []).filter(
       (c): c is Record<string, unknown> => !!c && typeof c === 'object',
     );
     out.workspaces.push({
       id: ws.id,
       name: ws.name,
       cardCount: cards.length,
-      scanCompletedAt: last?.scanCompletedAt ?? null,
+      scanCompletedAt: scan?.scanCompletedAt ?? null,
     });
     for (const card of cards) {
       const id = typeof card.id === 'string' ? card.id : '';
@@ -87,7 +84,7 @@ export function readMultiWorkspaceSnapshot(currentWorkspaceId: string): MultiWor
         workspaceId: ws.id,
         workspaceName: ws.name,
         card,
-        dismissed: id ? dismissed.has(id) : false,
+        dismissed: id ? dismissedIds.has(id) : false,
       });
     }
   }

@@ -114,7 +114,7 @@ export async function readOperatorStats(): Promise<OperatorStats> {
   }
   const unconsumedFraction = evaluable > 0 ? stuckCount / evaluable : null;
 
-  const budget = loadBudget();
+  const budget = await loadBudget();
   const spend = budget?.spend ?? [];
   const totalSpendUsd = spend.reduce((a, s) => a + s.usd, 0);
 

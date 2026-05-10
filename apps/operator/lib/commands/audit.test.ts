@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   audit,
   auditQuery,
@@ -85,11 +85,14 @@ describe('flush callback', () => {
   });
 
   it('flush errors do not throw to caller', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     registerAuditFlush(async () => { throw new Error('boom'); });
     audit(actionRow());
     await new Promise((r) => setTimeout(r, 1100));
     // If flush rejection propagated, the next audit would still queue.
     audit(actionRow());
     expect(__drainAuditForTests().actions.length).toBeGreaterThanOrEqual(1);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
