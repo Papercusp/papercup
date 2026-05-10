@@ -13,18 +13,50 @@ import './tools/harness/get';
 import './tools/harness/status';
 import './tools/tasks/list';
 import './tools/tasks/get';
+import './tools/features/get';
+import './tools/features/history';
+import './tools/features/search';
+import './tools/features/list_related';
+import './tools/features/tag_vocabulary';
 import './tools/goals/list';
 import './tools/goals/get';
 import './tools/issues/list';
 import './tools/messages/inbox';
 import './tools/messages/outbox';
+import './tools/messages/feature_inbox';
 import './tools/audit/list';
+import './tools/intel/spawn_tree';
+import './tools/intel/artifacts';
 import './tools/pending_events/list';
 import './tools/hindsight/recall';
 import './tools/search/query';
 
+// Artifacts — PG-canonical text store, role-gated (D1a)
+import './tools/artifacts/load';
+import './tools/artifacts/save';
+import './tools/artifacts/append';
+import './tools/artifacts/delete';
+
 // Write tools — Operator-only by capability
 import './tools/messages/send';
+import './tools/messages/feature_send';
+import './tools/messages/feature_dismiss';
 import './tools/tasks/create';
 import './tools/tasks/update';
 import './tools/tasks/close';
+
+// mcp-ui fixture (Phase E) — proves the UI tool path; replace with a
+// real use case when one lands. See tools/dev/hello-card.ts.
+import './tools/dev/hello-card';
+
+// Resources — read-only browsable URIs (Phase A: agent-mcp resources)
+import './resources/harness/list';
+import './resources/harness/issues';
+import './resources/goals/list';
+import './resources/audit/recent';
+import './resources/hindsight/banks';
+
+// Prompts — discoverable templates (Phase B: agent-mcp prompts)
+import './prompts/agent/role';
+import './prompts/operator/scanner';
+import './prompts/dispatch/framing';
