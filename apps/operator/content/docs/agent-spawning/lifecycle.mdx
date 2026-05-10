@@ -1,0 +1,148 @@
+---
+title: Lifecycle
+description: The four-tool flow — spawn → poll → cancel — including status transitions, cross-restart durability, and what happens when things fail.
+---
+
+## The four tools
+
+Every spawn flows through up to four tool calls.
+
+```
+                       ┌──────────────────────────┐
+                       │  orchestrator.spawn      │
+                       │  → returns spawnId       │
+                       │  → status='running'      │
+                       └──────────┬───────────────┘
+                                  │
+                                  │ background invoke()
+                                  ↓
+                       ┌──────────────────────────┐     ┌──────────────────────────┐
+parent  ─── poll ───→  │  status: running         │ ←── │  child agent runs        │
+        ─── poll ───→  │  status: running         │     │  (orchestrator.invoke)   │
+        ─── poll ───→  │  status: done|failed     │ ←── │  child exits             │
+                       └──────────────────────────┘     └──────────────────────────┘
+                                  │
+        ─── cancel ──→  abortController.abort()
+                       SIGTERM (then SIGKILL after 2s grace)
+                       status flips to 'cancelled'
+```
+
+## `orchestrator.spawn(role, featureId?, chunkId?, extras?)`
+
+What happens server-side:
+
+1. **Framework gates fire first** (role allowlist + per-window quota — these are the same gates every projected tool goes through). A worker calling spawn returns 403 `role_not_allowed` because worker isn't in the manifest's `roles[]`.
+2. **Plugin gates** check the more specific allowlist (architect can spawn worker/validator/scoper/reviewer/debugger; worker/validator can't spawn anything). Plus the four typed caps: depth, children-per-parent, concurrent, plus worker-needs-chunkId.
+3. **PG row written** to `harness_shared.spawned_agents` with `status='running'`. Indexed for fast lookups + the reaper sweep.
+4. **In-memory `SpawnRecord`** allocated, AbortController attached, stored in module-level `Map<spawnId, SpawnRecord>`.
+5. **`invoke()` fires in the background** as a Promise — *not awaited*. The caller gets the spawn envelope back immediately.
+6. **The promise's `.then`/`.catch`** updates both the in-memory record and the PG row when the child exits.
+
+Return envelope:
+
+```json
+{
+  "spawnId": "s-1778408605532-16080170",
+  "childRole": "reviewer",
+  "parentSpawnId": "PHASE9-PARENT-4",
+  "status": "running",
+  "startedAtMs": 1778408605532,
+  "depth": 1
+}
+```
+
+`depth` is the lineage depth in the in-process Map — `1` means the caller is the root, `2` means caller is itself a child of another spawn, etc. PG-only spawn records (post-restart) report `depth=null` since the chain isn't reachable through memory alone.
+
+## `orchestrator.poll(spawnId)`
+
+Tries memory first (live abort handle, freshest `lastInvocation` if you ever wire that up), falls back to PG. PG-sourced views set `fromPg: true` so consumers can distinguish.
+
+Status field is the single source of truth:
+
+| Status | Meaning |
+|---|---|
+| `running` | Promise hasn't resolved yet. AbortController is live. |
+| `done` | Promise resolved, child process exited with code 0. |
+| `failed` | Promise resolved with non-zero exit code, OR loadOrchestrator threw. |
+| `cancelled` | AbortController was triggered (via `cancel()` or another path). |
+| `reaped` | Row was 'running' at operator startup; the owning process is gone, so we marked it dead. |
+
+Other useful fields when finished: `finishedAtMs`, `durationMs`, `exitCode`, last 2 KB of `output` as `outputTail`, `error`.
+
+## `orchestrator.list_active(scope?)`
+
+`scope='mine'` (default) returns running spawns whose `parentSpawnId === ctx.spawnId` — your immediate children. `scope='all'` returns every running spawn the operator knows about, in this workspace.
+
+Implementation: union of in-memory Map + PG rows where `status='running'`, deduped by `spawn_id`, sorted most-recent-first. Triggers a one-time reaper sweep at first call per workspace (so any stale 'running' rows from a prior operator process get flipped to 'reaped' before they appear in the result).
+
+## `orchestrator.cancel(spawnId)`
+
+Two paths:
+
+**In-memory match.** The spawn was launched by *this* operator process; `AbortController` is held in the Map. Real kill:
+
+1. `abortController.abort()` — fires the orchestrator's signal listener
+2. Orchestrator sends SIGTERM to the child agent process
+3. After 2-second grace window, SIGKILL if the child hasn't exited
+4. Status flips to `cancelled`, PG row finalized
+
+**PG-only match.** The spawn was launched by a *previous* operator process and survived in PG; the AbortController is gone. Best-effort cancel:
+
+1. Set `cancel_requested=true` in PG
+2. Flip `status='cancelled'` and `finished_at=now()` so the UI reflects intent
+3. Return the row plus a `note` field explaining the OS process can't actually be killed cross-restart
+
+The `cancel_requested` flag is a v2 hook: a future watcher process could poll the table and SIGTERM by stored PID. Not built today; nobody's complained yet.
+
+## Status transitions
+
+```
+   ┌─────────────┐
+   │   running   │
+   └──┬───┬───┬──┘
+      │   │   │
+   .then  .catch  abort()
+      │   │   │
+   ┌──↓─┐ │   ┌─↓─────┐
+   │done│ │   │failed │
+   └────┘ │   └───────┘
+          │
+       ┌──↓──────┐
+       │cancelled│
+       └─────────┘
+
+   ┌─────────────┐
+   │   reaped    │  ← startup sweep on rows still 'running' from prior process
+   └─────────────┘
+```
+
+Once a row is in any terminal state (`done | failed | cancelled | reaped`), it stays there. No re-runs.
+
+## Cross-restart durability
+
+| Action | Pre-restart spawn | Post-restart spawn |
+|---|---|---|
+| `poll()` | ✅ returns the PG row | ✅ returns the in-memory record |
+| `list_active()` | ✅ if still running, else filtered out (or reaped) | ✅ |
+| `cancel()` | ⚠️ marks intent only — can't actually kill the OS process | ✅ real SIGTERM |
+
+A `running` row from a prior operator process is **always** zombied at restart (the operator that held its pid is gone; the agent process probably died with it but we don't have a way to confirm). The reaper sweep in `list_active` and `spawn` flips those rows to `status='reaped'` with an explanatory `error_message`.
+
+## What runs in the child
+
+`invoke()` from `@papercusp/orchestrator/invoke` is the same code path the main loop uses. The plugin builds an `InvokeContext` from the caller's `ctx`:
+
+| InvokeContext field | Source |
+|---|---|
+| `harnessDir` | `PAPERCUSP_HARNESS_DIR` env var, falls back to `~/autonomous-harness` |
+| `projectDir` | From the caller's tool ctx (resolved via `loadHarnessRegistry()`) |
+| `stateDir` | `<projectDir>/.harness` |
+| `phase` | Read from `<stateDir>/config.json` — defaults to `'staging'` |
+| `claudeCmd` | `AGENT_CMD` env, then `CLAUDE` env, then `'omp -p'` default |
+| `agentBackend` | `'omp'` |
+| `workspaceId` | From the caller's tool ctx |
+| `extraSpawnEnv` | Inherited from process env |
+
+`extras[]` from the tool input gets prepended with `FEATURE_ID=<id>` and `CHUNK_ID=<id>` if those are set on the spawn input. The child agent sees them as standard extras.
+
+The orchestrator's `spawn-mcp.ts` writes a per-child `.mcp.json` with the seven URL params, including `parent_spawn` set to the parent's spawnId — so any tool calls the child makes carry parent_spawn_id automatically.

@@ -1,0 +1,46 @@
+---
+title: Overview
+description: One function, three transports — what the endpoint system is and why we built it this way.
+---
+
+## The one-line version
+
+You write **one typed function**. The framework projects it onto:
+
+- An **HTTP route** at `/api/plugins/<plugin>/<tool>` (or `/api/agent-tools/<tool>` for built-ins)
+- An **MCP `tools/call` entry** under `<plugin>.<tool>` (or `<scope>:<verb>` for built-ins)
+- An **in-process call** any TypeScript caller can `await` directly
+
+You declare exposure, role allowlist, capabilities, and quotas in a manifest. The framework handles auth gating, role enforcement, quota windows, telemetry persistence, streaming progress, and per-spawn URL context — none of which you write per tool.
+
+## Why "endpoint system" not "MCP migration"
+
+The first instinct was to call this an MCP migration. That framing is wrong.
+
+**The function is the source of truth.** HTTP and MCP are projections of it. Once a function is decoupled from any specific transport, all three callers — your dashboard, an AI agent over MCP, another module in the same Node process — get it for free, with the same auth/role/quota/telemetry behavior.
+
+The hard part isn't writing the MCP wrapper. The hard part is pulling a function out of its current transport-coupled form so that the wrapper *can be* generated. The "MCP-callable" part is the smallest-and-easiest consequence of that decoupling.
+
+## What this gets you
+
+- **No duplicated route+handler code.** A new feature is one typed function plus six lines of manifest. Both the dashboard and the agent get it.
+- **Single test surface.** You test the function. Both transports inherit correct behavior because they both go through the same dispatcher.
+- **Uniform observability.** Every invocation lands in `harness_shared.tool_invocations` with role, window key, status, duration, output size — regardless of transport. You can answer "which agents called which tools when" without per-route instrumentation.
+- **Uniform gating.** Role allowlist, capability check, and per-window quota all enforce in the same dispatcher. Adding a new sensitive tool means setting `roles: ["operator"]` + `rolesQuota: { operator: { perRun: 5 } }` and you're done.
+- **Stream-or-not, no rewrite.** A function that calls `ctx.progress(pct, msg)` automatically gets MCP `notifications/progress` events on the MCP transport and SSE events on the HTTP transport. No transport-specific wiring.
+
+## What this is not
+
+- Not a replacement for SSE chat, WebSocket voice, or anything else that holds a long-lived bidirectional connection. Those stay on dedicated routes; the endpoint system is for request → response (with optional streamed progress).
+- Not a way to expose your dashboard to the public internet. The trust model is **loopback bind + URL-baked spawn context**, suitable for local dev + Tauri desktop. Off-loopback exposure needs HMAC-signed URL params or a real principal/auth layer first.
+- Not a generic RPC framework. The contract is narrow on purpose: `(input, ctx) => ToolResult`. Trying to make it accommodate exotic shapes (callbacks, multi-response, file uploads >5MB) defeats the point of having one function as truth.
+
+## Where to read next
+
+- [Function-as-truth](/docs/endpoint-system/function-as-truth) — the architectural spine: why the function comes first
+- [Writing a tool](/docs/endpoint-system/writing-a-tool) — the recipe for built-ins and plugins, end to end
+- [Transports](/docs/endpoint-system/transports) — how MCP, HTTP, and in-process callers all reach the same function
+- [Gating](/docs/endpoint-system/gating) — auth, capabilities, roles, quotas — what blocks what when
+- [Telemetry](/docs/endpoint-system/telemetry) — `tool_invocations` schema and how to read it
+- [Operations](/docs/endpoint-system/operations) — host refresh, hot reload, common failure modes
+- [Reference](/docs/endpoint-system/reference) — manifest schema, error codes, file map
