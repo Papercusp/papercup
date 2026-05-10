@@ -10,6 +10,11 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./manifest-validate": {
+      "types": "./src/manifest-validate.ts",
+      "import": "./src/manifest-validate.ts",
+      "default": "./src/manifest-validate.ts"
     }
   },
   "scripts": {

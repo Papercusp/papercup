@@ -65,6 +65,18 @@
     "forkedFrom": { "type": "object" },
     "publishedAt": { "type": "string" },
     "publishedBy": { "type": "string" },
-    "tierMap": { "type": "object" }
+    "tierMap": { "type": "object" },
+    "icon": { "type": "string", "description": "Lucide icon name or emoji shown next to the plugin in catalog UI." },
+    "hidden": { "type": "boolean", "description": "Hide from catalog surfaces; complements harness_shared.hidden_plugins." },
+    "hiddenReason": { "type": "string" },
+    "publisher": { "type": "string", "description": "Publisher slug (often === author or scope)." },
+    "pluginVersionPinned": {
+      "description": "Pinned downstream version when republishing. Boolean true = pin to declared version; string = pin to a specific version.",
+      "anyOf": [{ "type": "string" }, { "type": "boolean" }]
+    },
+    "provision": { "type": "object", "description": "Cloudflare/infra provisioning hints." },
+    "oauth": { "type": "array", "items": { "type": "object" }, "description": "OAuth provider declarations consumed by ctx.oauth." },
+    "main": { "type": "string", "description": "Node-style entry-point hint; CLI also probes index.{cjs,js,mjs,ts}." },
+    "config": { "type": "object", "description": "Default config values. configSchema describes the shape; this provides defaults." }
   }
 }

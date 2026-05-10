@@ -3,25 +3,30 @@
  * semver shape, surfaces a precise field path on failure. The same
  * validator is used by the loader (load-time) and the `papercusp plugin
  * lint` CLI (build-time) so authors see errors before deploy.
+ *
+ * Edge-runtime safety: Next.js bundles instrumentation.ts (and its
+ * transitive imports) for both the nodejs and edge runtimes. Edge
+ * forbids static `node:fs` / `node:path` / `node:url` imports even in
+ * unreachable branches, so we defer those to first call via createRequire
+ * (createRequire itself is `node:module`, which Next's edge runtime
+ * tolerates as a partial polyfill). The validator is only ever invoked
+ * from nodejs code.
  */
 
 import Ajv, { type ErrorObject } from 'ajv';
-import { readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-// The schema lives in plugin-sdk so editor LSP integrations can resolve it
-// via `$schema` or a `papercusp-plugin.schema.json` symlink. We read it
-// once at module init.
 let _schema: unknown | null = null;
 function getSchema(): object {
   if (_schema) return _schema as object;
-  // packages/plugin-loader/src → packages/plugin-sdk/papercusp-plugin.schema.json
+  const req = createRequire(import.meta.url);
+  const { readFileSync } = req('node:fs') as typeof import('node:fs');
+  const { join, dirname } = req('node:path') as typeof import('node:path');
+  const { fileURLToPath } = req('node:url') as typeof import('node:url');
+  const here = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    join(__dirname, '..', '..', 'plugin-sdk', 'papercusp-plugin.schema.json'),
-    join(__dirname, '..', '..', '..', 'plugin-sdk', 'papercusp-plugin.schema.json'),
+    join(here, '..', '..', 'plugin-sdk', 'papercusp-plugin.schema.json'),
+    join(here, '..', '..', '..', 'plugin-sdk', 'papercusp-plugin.schema.json'),
   ];
   for (const p of candidates) {
     try {
