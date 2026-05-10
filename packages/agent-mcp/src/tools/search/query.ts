@@ -23,6 +23,7 @@ interface SearchHit {
 }
 
 export default defineTool({
+  name: 'search:query',
   capability: 'search:read',
   args: z.object({
     query: z.string().min(1),

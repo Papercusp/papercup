@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'harness:get',
   capability: 'harness:read',
   args: z.object({
     slug: z.string().min(1),

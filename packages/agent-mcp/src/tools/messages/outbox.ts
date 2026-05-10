@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'messages:outbox',
   capability: 'messages:read',
   args: z.object({
     slug: z.string().min(1),

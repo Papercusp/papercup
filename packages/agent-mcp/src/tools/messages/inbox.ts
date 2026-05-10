@@ -9,6 +9,7 @@ import { defineTool } from '../../define-tool';
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 
 export default defineTool({
+  name: 'messages:inbox',
   capability: 'messages:read',
   args: z.object({
     slug: z.string().min(1),

@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'tasks:get',
   capability: 'tasks:read',
   args: z.object({
     harnessSlug: z.string().min(1),

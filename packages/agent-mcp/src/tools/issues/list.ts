@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'issues:list',
   capability: 'issues:read',
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),

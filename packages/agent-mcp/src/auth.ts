@@ -32,11 +32,13 @@ function bearerHash(bearer: string): string {
 export async function resolveBearer(bearer: string): Promise<Principal | null> {
   if (!bearer) return null;
   // token_index lookup is admin-context — needs to read across workspaces
-  // to find which workspace this bearer belongs to. RLS does not apply
-  // to this query because the search itself is what derives workspace.
-  // The caller (resolveBearer) is the only place that escapes RLS for
-  // token resolution. We use the admin connection here intentionally;
-  // the lint rule allows it because we're not inside a tx callback.
+  // to find which workspace this bearer belongs to. RLS bypass is handled
+  // at the role level: harness_admin has BYPASSRLS (per
+  // sql/010-workspace-scoping-rls.sql's documented intent and the
+  // matching `ALTER ROLE harness_admin BYPASSRLS` granted at provisioning
+  // time). Without that grant the policy `workspace_id =
+  // current_setting('app.workspace_id', true)` would filter out every
+  // row because the GUC is unset outside withWorkspace.
   const { sql } = getOrgPg();
   // token_index column is named `harness_slug` per the original 008 migration.
   // It holds slugs for harnesses; for system: and pi: principals (added in

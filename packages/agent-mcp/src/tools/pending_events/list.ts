@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'pending_events:list',
   capability: 'pending_events:read',
   args: z.object({
     detail: z.enum(['summary']).default('summary'),
