@@ -15,6 +15,16 @@ export interface InstallResult {
   projectSlug?: string;
   projectPath?: string;
   attachedToExisting?: boolean;
+  /** Stable error code from the API — used by the UI to special-case
+   * recovery affordances. Currently 'project_name_taken' surfaces a
+   * one-click "use suggestedName" button; other codes fall through to
+   * the generic error toast.
+   */
+  code?: string;
+  /** When ok=false + code='project_name_taken', the API includes the
+   * first free <name>-N suggestion the UI can offer.
+   */
+  suggestedName?: string | null;
 }
 
 interface Props {
@@ -64,6 +74,33 @@ export function InstallButton({
     try {
       const d = await onInstall(slug, opts);
       if (!d.ok) {
+        // Slug-collision recovery: if the API tells us the name is
+        // taken AND offers a free suggestion, prompt the user once. On
+        // confirm, retry with the suggestion. Saves the user the trip
+        // back to the form.
+        if (d.code === 'project_name_taken' && d.suggestedName) {
+          const useSuggested = confirm(
+            `${opts.projectName} already exists.\n\nUse "${d.suggestedName}" instead?`,
+          );
+          if (useSuggested) {
+            setName(d.suggestedName);
+            // Retry inline — no recursive call to keep the busy spinner consistent.
+            const retry = await onInstall(slug, { ...opts, projectName: d.suggestedName });
+            if (!retry.ok) {
+              notify?.('error', retry.error ?? 'install failed', retry.log?.slice(-500));
+              return;
+            }
+            notify?.(
+              'success',
+              `✓ ${retry.projectSlug} installed`,
+              retry.attachedToExisting ? `attached to ${retry.projectPath}` : `at ${retry.projectPath}`,
+            );
+            onSuccess?.(retry);
+            setMode('idle');
+            setPath('');
+            return;
+          }
+        }
         notify?.('error', d.error ?? 'install failed', d.log?.slice(-500));
         return;
       }

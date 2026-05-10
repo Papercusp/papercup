@@ -313,7 +313,11 @@ export async function POST(req: Request) {
     }
     if (existsSync(join(projectPath, '.harness'))) {
       return json(
-        { ok: false, error: `target "${projectPath}" already has a .harness/ — already initialized?` },
+        {
+          ok: false,
+          code: 'target_already_initialized',
+          error: `target "${projectPath}" already has a .harness/ — already initialized?`,
+        },
         { status: 409 },
       );
     }
@@ -321,8 +325,21 @@ export async function POST(req: Request) {
     const projectsRoot = process.env.PAPERCUSP_PROJECTS_ROOT ?? papercuspPath('projects');
     projectPath = join(projectsRoot, projectName);
     if (existsSync(projectPath)) {
+      // Suggest the first free slug in the family <name>-2, <name>-3, … so
+      // the UI can offer "use this name instead". Capped at 99 to avoid
+      // pathological loops if someone has a thousand collisions.
+      let suggested: string | null = null;
+      for (let n = 2; n <= 99; n++) {
+        const candidate = `${projectName}-${n}`;
+        if (!existsSync(join(projectsRoot, candidate))) { suggested = candidate; break; }
+      }
       return json(
-        { ok: false, error: `project "${projectName}" already exists at ${projectPath}` },
+        {
+          ok: false,
+          code: 'project_name_taken',
+          error: `project "${projectName}" already exists at ${projectPath}`,
+          suggestedName: suggested,
+        },
         { status: 409 },
       );
     }
@@ -349,9 +366,30 @@ export async function POST(req: Request) {
   if (targetPath) initArgs.push('--target', projectPath);
   const initResult = await run(resolvePapercuspCli(), initArgs, env);
   if (initResult.code !== 0) {
+    // Partial-install cleanup: if init created the project dir but
+    // crashed mid-scaffold, leaving it behind means the next retry hits
+    // the slug-collision 409 even though the directory has nothing in
+    // it. Only remove dirs we ourselves created (not user-supplied
+    // targetPath, which the user owns).
+    if (!targetPath) {
+      try {
+        if (existsSync(projectPath) && existsSync(join(projectPath, '.harness'))) {
+          // Half-init left .harness/ — wipe the whole dir so retry can
+          // proceed with the same name.
+          await fs.rm(projectPath, { recursive: true, force: true });
+        } else if (existsSync(projectPath)) {
+          // Empty dir or partial scaffold. Same reasoning.
+          await fs.rm(projectPath, { recursive: true, force: true });
+        }
+      } catch (e) {
+        // Cleanup is best-effort; log and continue surfacing the original error.
+        console.warn('[install] partial-install cleanup failed:', (e as Error).message);
+      }
+    }
     return json(
       {
         ok: false,
+        code: 'init_failed',
         error: 'papercusp init failed',
         log: [installResult.stdout, installResult.stderr, initResult.stdout, initResult.stderr]
           .filter(Boolean)
