@@ -1,0 +1,44 @@
+/**
+ * plugins:invoke_action — invoke a plugin action via the in-process
+ * registry. Diagnostic-shaped: same code path as the in-process
+ * dispatcher used by hooks, NOT the marketplace-CLI shell-out.
+ *
+ * Mirrors POST /api/plugins/runtime/invoke-action. Architect+operator
+ * only — invoking arbitrary plugin actions is a real side effect.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { invokePluginAction } from '@/lib/plugin-host-runtime';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
+
+export default defineTool({
+  name: 'plugins:invoke_action',
+  description: 'Invoke a plugin action via the in-process registry. Diagnostic — architect/operator only.',
+  capability: 'plugins:write',
+  requirePrincipal: false,
+  roles: ['architect', 'operator'],
+  rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 50 } },
+  args: z.object({
+    plugin: z.string().min(1),
+    action: z.string().min(1),
+    slug: z.string().min(1),
+    params: z.record(z.string(), z.unknown()).optional(),
+  }),
+  async handler(args) {
+    const project = (await loadHarnessRegistry()).projects.find((p) => p.slug === args.slug) ?? null;
+    const projectDir = project?.path ?? '/tmp';
+    const stateDir = project ? `${project.path}/.harness` : '/tmp';
+    const result = await invokePluginAction({
+      pluginName: args.plugin,
+      actionName: args.action,
+      installSlug: args.slug,
+      projectDir,
+      stateDir,
+      params: args.params,
+      triggerSource: 'api',
+      triggerId: `mcp-${Date.now()}`,
+    });
+    return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+  },
+});

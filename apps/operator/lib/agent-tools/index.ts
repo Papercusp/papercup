@@ -1,0 +1,77 @@
+/**
+ * Operator-side first-party agent tools.
+ *
+ * Tools that live operator-side (rather than in @papercusp/agent-mcp's
+ * `src/tools/`) because they depend on operator-app-only helpers
+ * (workspace registry, audit_log readers, scan-history libs, voice
+ * preferences, etc.) that the standalone agent-mcp package cannot
+ * import.
+ *
+ * Each tool calls `defineTool({ requirePrincipal: false, roles, ... })`
+ * (the D1a flag) and self-registers into the unified projection
+ * registry — same dispatch path as package-side tools and plugin tools.
+ *
+ * Importing this file once at app startup is enough to register the
+ * full set; the catch-all route at app/api/agent-tools/[...path]/route.ts
+ * does that side-effect import.
+ *
+ * Add a tool by dropping a file under this directory and adding a
+ * side-effect import below.
+ */
+
+import './operator/stats';
+import './operator/last_scan';
+import './operator/scans_list';
+import './operator/audit';
+import './operator/nudge';
+import './operator/dismissed';
+import './operator/standing_approvals_list';
+import './operator/standing_approvals_decide';
+import './operator/standing_approval_mark_shown';
+import './operator/scanner_reset';
+import './operator/voice_utterance_log';
+import './operator/voice_debug';
+import './operator/voice_prefs';
+import './operator/conv_voice';
+import './operator/voice_spend_summary';
+import './roles/list';
+import './roles/get';
+import './roles/firing_on';
+import './roles/known';
+import './hooks/known';
+import './autoloop/status';
+import './autoloop/control';
+import './operator/dedup_check';
+import './operator/parse_suggestions';
+import './wiki/backlinks';
+import './experts/trigger_for';
+import './harness/plan_reviews';
+import './harness/phase_path';
+import './harness/markdown_index';
+import './snapshots/list';
+import './snapshots/get';
+import './operator/preview_prompt';
+import './operator/scanner_bootstrap';
+import './operator/decisions';
+import './delegates/list';
+import './delegates/inbox';
+import './agents/list';
+import './operator/budget';
+import './operator/paused';
+import './operator/trigger_state';
+import './operator/preferences';
+import './omp/config';
+import './operator/multi_workspace';
+import './operator/credentials_status';
+import './projects/list';
+import './projects/get';
+import './projects/spec_revisions';
+import './projects/spec_revision';
+import './operator/notes';
+import './cross_harness/inbox';
+import './cross_harness/outbox';
+import './cross_harness/supervisor_notes';
+import './cross_harness/recent_activity';
+import './plugins/runtime_status';
+import './plugins/invoke_action';
+import './plugins/fire_event';

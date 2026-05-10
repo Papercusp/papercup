@@ -1,0 +1,34 @@
+/**
+ * operator:voice_prefs — read or partially update operator voice prefs.
+ *
+ * Mirrors GET / PUT /api/agent-mcp/operator-voice-prefs. The full schema
+ * lives in `apps/operator/lib/voice-prefs.ts` (VoicePrefs interface).
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { loadVoicePrefs, saveVoicePrefs, type VoicePrefs } from '@/lib/voice-prefs';
+
+export default defineTool({
+  name: 'operator:voice_prefs',
+  description: 'Read or partial-update operator voice prefs (engine selectors, feature toggles, agent ids).',
+  capability: 'operator:write',
+  requirePrincipal: false,
+  roles: ['operator', 'architect'],
+  rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },
+  args: z.discriminatedUnion('op', [
+    z.object({ op: z.literal('get') }),
+    z.object({
+      op: z.literal('set'),
+      patch: z.record(z.string(), z.unknown()),
+    }),
+  ]),
+  async handler(args) {
+    if (args.op === 'get') {
+      const prefs = await loadVoicePrefs();
+      return { content: [{ type: 'text', text: JSON.stringify(prefs ?? null) }] };
+    }
+    const next = await saveVoicePrefs(args.patch as Partial<VoicePrefs>);
+    return { content: [{ type: 'text', text: JSON.stringify(next) }] };
+  },
+});

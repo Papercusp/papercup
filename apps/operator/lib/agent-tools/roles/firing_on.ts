@@ -1,0 +1,38 @@
+/**
+ * roles:firing_on — list role manifests that subscribe to a hook event.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { rolesFiringOn } from '@/lib/role-registry';
+
+const ALL_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const;
+
+export default defineTool({
+  name: 'roles:firing_on',
+  description: 'Return role manifests whose `firesOn` array includes the given hook event.',
+  capability: 'roles:read',
+  requirePrincipal: false,
+  roles: [...ALL_ROLES],
+  args: z.object({
+    event: z.string().min(1),
+    harnessSlug: z.string().optional(),
+  }),
+  async handler(args, ctx) {
+    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    const roles = rolesFiringOn(args.event, slug);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ event: args.event, harnessSlug: slug || null, roles }) }],
+    };
+  },
+});

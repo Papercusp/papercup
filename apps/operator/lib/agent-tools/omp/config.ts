@@ -1,0 +1,56 @@
+/**
+ * omp:config — read or update the local `omp` CLI's config tree.
+ *
+ *   - { op: 'get' }                              → full settings tree
+ *   - { op: 'set', key, value }                  → set one knob
+ *   - { op: 'unset', key }                       → unset one knob
+ *
+ * Writes invoke the `omp` CLI subprocess via the underlying lib.
+ * Operator-only for writes; reads are any role (config introspection
+ * is useful for any agent debugging behavior).
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { readOmpConfig, setOmpConfig, unsetOmpConfig } from '@/lib/omp-config';
+
+const ALL_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const;
+
+export default defineTool({
+  name: 'omp:config',
+  description: 'Read or update the local omp CLI config tree (get / set { key, value } / unset { key }).',
+  capability: 'omp:write',
+  requirePrincipal: false,
+  roles: [...ALL_ROLES],
+  rolesQuota: { operator: { perRun: 50 } },
+  args: z.discriminatedUnion('op', [
+    z.object({ op: z.literal('get') }),
+    z.object({ op: z.literal('set'), key: z.string().min(1), value: z.unknown() }),
+    z.object({ op: z.literal('unset'), key: z.string().min(1) }),
+  ]),
+  async handler(args, ctx) {
+    if (args.op === 'get') {
+      const sections = await readOmpConfig();
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, sections }) }] };
+    }
+    if (ctx.role !== 'operator') {
+      throw new Error(`omp:config ${args.op} requires operator role`);
+    }
+    if (args.op === 'set') {
+      const result = await setOmpConfig(args.key, args.value);
+      return { content: [{ type: 'text', text: JSON.stringify({ ok: true, raw: result.raw }) }] };
+    }
+    await unsetOmpConfig(args.key);
+    return { content: [{ type: 'text', text: JSON.stringify({ ok: true, unset: true, key: args.key }) }] };
+  },
+});

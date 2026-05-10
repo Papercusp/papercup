@@ -1,0 +1,44 @@
+/**
+ * operator:dedup_check — fuzzy-similarity check for a candidate title
+ * against a recent-cards list. Returns the best match (matchedId,
+ * similarity) above the project's similarity threshold, or null when
+ * the candidate is sufficiently distinct.
+ *
+ * Useful for agents about to emit a suggestion / card — call this
+ * with the candidate title + currently-visible card titles, skip the
+ * emit when a fuzzy duplicate exists.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { findFuzzyDuplicate, FUZZY_THRESHOLD } from '@/lib/operator-fuzzy-dedup';
+
+const ALL_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const;
+
+export default defineTool({
+  name: 'operator:dedup_check',
+  description: 'Check if a candidate title fuzzy-matches any card in `existing` above the threshold. Returns { match, threshold }.',
+  capability: 'operator:read',
+  requirePrincipal: false,
+  roles: [...ALL_ROLES],
+  args: z.object({
+    candidate: z.string().min(1),
+    existing: z.array(z.object({ id: z.string().min(1), title: z.string().min(1) })),
+  }),
+  async handler(args) {
+    const match = findFuzzyDuplicate(args.candidate, args.existing);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ match, threshold: FUZZY_THRESHOLD }) }],
+    };
+  },
+});
