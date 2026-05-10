@@ -81,3 +81,7 @@ import './cross_harness/recent_activity';
 import './plugins/runtime_status';
 import './plugins/invoke_action';
 import './plugins/fire_event';
+import './tasks/create';
+import './messages/send';
+import './messages/feature_send';
+import './messages/feature_dismiss';

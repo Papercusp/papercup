@@ -38,13 +38,12 @@ import './tools/artifacts/save';
 import './tools/artifacts/append';
 import './tools/artifacts/delete';
 
-// Write tools — Operator-only by capability
-import './tools/messages/send';
-import './tools/messages/feature_send';
-import './tools/messages/feature_dismiss';
-import './tools/tasks/create';
-import './tools/tasks/update';
-import './tools/tasks/close';
+// Write tools formerly here (tasks:create, messages:send, messages:feature_send,
+// messages:feature_dismiss) moved to apps/operator/lib/agent-tools/{tasks,messages}/
+// after the function-as-truth audit: they call executeAction() in-process now
+// instead of HTTP-roundtripping /api/admin/execute-action, which required an
+// operator-side import the package can't make. tasks:update + tasks:close were
+// removed — they referenced a non-existent 'update_feature' op and never worked.
 
 // mcp-ui fixture (Phase E) — proves the UI tool path; replace with a
 // real use case when one lands. See tools/dev/hello-card.ts.
