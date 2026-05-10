@@ -17,7 +17,11 @@ export interface CatalogEntry {
   icon?: string | null;
   topology?: 'single' | 'multi';
   subprojects?: Array<{ suffix: string; kind: string; department_slug?: string }>;
+  publishedAt?: string | null;
+  publishedBy?: string | null;
 }
+
+export type CatalogSortKey = 'newest' | 'name' | 'author';
 
 export interface InstalledHarness {
   slug: string;
@@ -88,6 +92,7 @@ export function MarketplaceList({
   const [qLocal, setQLocal] = useState('');
   const q = qProp ?? qLocal;
   const setQ = onQueryChange ?? setQLocal;
+  const [sort, setSort] = useState<CatalogSortKey>('newest');
   const [busySlug, setBusySlug] = useState<string | null>(null);
   const [enablePicker, setEnablePicker] = useState<string | null>(null);
 
@@ -100,12 +105,30 @@ export function MarketplaceList({
   const harnesses = installedTemplates;
 
   const visibleCatalog = useMemo(() => {
-    if (!q.trim()) return filtered;
-    const needle = q.toLowerCase();
-    return filtered.filter((p) =>
-      [p.name, p.slug, p.description, p.author, p.license].some((v) => v?.toLowerCase().includes(needle)),
-    );
-  }, [filtered, q]);
+    const queried = q.trim()
+      ? filtered.filter((p) => {
+          const needle = q.toLowerCase();
+          return [p.name, p.slug, p.description, p.author, p.license].some((v) => v?.toLowerCase().includes(needle));
+        })
+      : filtered;
+    // Client-side sort. Catalog is small (<200 entries) and the
+    // marketplace returns publishedAt-DESC by default, so 'newest' is
+    // typically a no-op, but the explicit case keeps the UX self-evident.
+    if (sort === 'name') {
+      return [...queried].sort((a, b) => (a.name ?? a.slug).localeCompare(b.name ?? b.slug));
+    }
+    if (sort === 'author') {
+      return [...queried].sort((a, b) => {
+        const cmp = (a.author ?? '').localeCompare(b.author ?? '');
+        return cmp !== 0 ? cmp : (a.name ?? a.slug).localeCompare(b.name ?? b.slug);
+      });
+    }
+    return [...queried].sort((a, b) => {
+      const aTs = a.publishedAt ? Date.parse(a.publishedAt) : 0;
+      const bTs = b.publishedAt ? Date.parse(b.publishedAt) : 0;
+      return bTs - aTs;
+    });
+  }, [filtered, q, sort]);
 
   const installedCount = visibleCatalog.filter((entry) => installedSlugs.has(entry.slug)).length;
 
@@ -171,15 +194,36 @@ export function MarketplaceList({
           <strong>{visibleCatalog.length} of {filtered.length} {label}</strong>
           {installedCount > 0 && <em>{installedCount} installed locally</em>}
         </div>
-        <label className="pc-marketplace-search">
-          <Lucide.Search size={16} />
-          <input
-            type="search"
-            placeholder={`Search ${label} by name, slug, description, or author…`}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-          />
-        </label>
+        <div className="pc-marketplace-search-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <label className="pc-marketplace-search" style={{ flex: 1 }}>
+            <Lucide.Search size={16} />
+            <input
+              type="search"
+              placeholder={`Search ${label} by name, slug, description, or author…`}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+            />
+          </label>
+          <select
+            aria-label="Sort catalog"
+            className="pc-marketplace-sort"
+            value={sort}
+            onChange={(e) => setSort(e.target.value as CatalogSortKey)}
+            style={{
+              padding: '6px 10px',
+              background: 'var(--bg-1)',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              color: 'var(--fg)',
+              fontSize: 13,
+              minWidth: 140,
+            }}
+          >
+            <option value="newest">Newest published</option>
+            <option value="name">Name (A→Z)</option>
+            <option value="author">Author (A→Z)</option>
+          </select>
+        </div>
       </div>
 
       <div className="pc-marketplace-grid">
