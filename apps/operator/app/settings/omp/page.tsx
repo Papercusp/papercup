@@ -1,0 +1,434 @@
+'use client';
+
+/**
+ * /settings/omp — full configuration surface for the omp (oh-my-pi)
+ * agent backend. Mirrors `omp config list` / `omp config set`.
+ *
+ * Layout:
+ * - Search bar at the top (filters across all sections).
+ * - Each section ([providers], [tools], [memory], …) is a collapsible
+ *   group. Web-search section starts open (the user's stated entry
+ *   point) plus any section that has search matches.
+ * - Each setting renders as the right input type (boolean toggle,
+ *   enum select, number, text, or JSON for array/record).
+ * - Edits debounce to a single POST; success/failure surfaces inline.
+ */
+
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+interface OmpSetting {
+  key: string;
+  raw: string;
+  parsed: unknown;
+  type: 'string' | 'boolean' | 'number' | 'array' | 'record' | { kind: 'enum'; choices: string[] };
+  isUnset: boolean;
+}
+
+interface OmpSection { name: string; settings: OmpSetting[]; }
+
+type RowState = 'idle' | 'saving' | 'saved' | 'error';
+
+const SECTIONS_OPEN_BY_DEFAULT = new Set(['providers']);
+
+export default function OmpSettingsPage(): JSX.Element {
+  const [sections, setSections] = useState<OmpSection[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [openSections, setOpenSections] = useState<Set<string>>(new Set(SECTIONS_OPEN_BY_DEFAULT));
+  const [rowStates, setRowStates] = useState<Record<string, { state: RowState; error?: string }>>({});
+
+  const refresh = async () => {
+    setLoadError(null);
+    try {
+      const r = await fetch('/api/agent-mcp/omp-config');
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error ?? 'failed to load');
+      setSections(d.sections as OmpSection[]);
+    } catch (err) {
+      setLoadError((err as Error).message ?? String(err));
+    }
+  };
+
+  useEffect(() => { void refresh(); }, []);
+
+  const filtered = useMemo(() => {
+    if (!sections) return null;
+    const q = query.trim().toLowerCase();
+    if (!q) return sections;
+    return sections
+      .map((sec) => ({
+        ...sec,
+        settings: sec.settings.filter((s) =>
+          s.key.toLowerCase().includes(q) || sec.name.toLowerCase().includes(q),
+        ),
+      }))
+      .filter((sec) => sec.settings.length > 0);
+  }, [sections, query]);
+
+  // Auto-expand sections that have search matches.
+  useEffect(() => {
+    if (!query || !filtered) return;
+    setOpenSections((prev) => {
+      const next = new Set(prev);
+      for (const sec of filtered) next.add(sec.name);
+      return next;
+    });
+  }, [query, filtered]);
+
+  const setRow = (key: string, s: { state: RowState; error?: string }) => {
+    setRowStates((prev) => ({ ...prev, [key]: s }));
+  };
+
+  const saveValue = async (key: string, value: unknown) => {
+    setRow(key, { state: 'saving' });
+    try {
+      const r = await fetch('/api/agent-mcp/omp-config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, value }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
+      setRow(key, { state: 'saved' });
+      // Refresh just this row's parsed value so the UI matches what omp stored.
+      void refresh();
+      setTimeout(() => setRow(key, { state: 'idle' }), 1500);
+    } catch (err) {
+      setRow(key, { state: 'error', error: (err as Error).message ?? String(err) });
+    }
+  };
+
+  const unsetValue = async (key: string) => {
+    setRow(key, { state: 'saving' });
+    try {
+      const r = await fetch('/api/agent-mcp/omp-config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ key, unset: true }),
+      });
+      const d = await r.json();
+      if (!d.ok) throw new Error(d.error ?? `HTTP ${r.status}`);
+      setRow(key, { state: 'saved' });
+      void refresh();
+      setTimeout(() => setRow(key, { state: 'idle' }), 1500);
+    } catch (err) {
+      setRow(key, { state: 'error', error: (err as Error).message ?? String(err) });
+    }
+  };
+
+  if (loadError) {
+    return (
+      <div style={S.page}>
+        <h1 style={S.h1}>Oh-My-Pi (omp) settings</h1>
+        <div style={S.error}>
+          <strong>Failed to load omp config.</strong>
+          <div>{loadError}</div>
+          <p style={{ marginTop: 8, color: '#94a3b8', fontSize: 13 }}>
+            Check that <code>omp</code> is on the operator's PATH and that <code>omp config list</code> works at the shell.
+          </p>
+          <button style={S.btnPrimary} onClick={() => void refresh()}>Retry</button>
+        </div>
+      </div>
+    );
+  }
+
+  if (!sections) {
+    return (
+      <div style={S.page}>
+        <h1 style={S.h1}>Oh-My-Pi (omp) settings</h1>
+        <div style={S.muted}>Loading omp config…</div>
+      </div>
+    );
+  }
+
+  const totalSettings = sections.reduce((n, s) => n + s.settings.length, 0);
+  const totalShown = filtered?.reduce((n, s) => n + s.settings.length, 0) ?? totalSettings;
+
+  return (
+    <div style={S.page}>
+      <header style={S.header}>
+        <h1 style={S.h1}>Oh-My-Pi (omp) settings</h1>
+        <p style={S.intro}>
+          Read and edit the {totalSettings} settings exposed by{' '}
+          <code style={S.code}>omp config list</code>. Changes persist immediately
+          via <code style={S.code}>omp config set</code> and apply to all new omp invocations
+          (existing sessions keep their startup config).
+        </p>
+      </header>
+
+      <div style={S.searchRow}>
+        <input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter settings (e.g. web_search, hindsight, theme)…"
+          style={S.searchInput}
+          aria-label="Filter omp settings"
+        />
+        {query && (
+          <span style={S.muted}>{totalShown} / {totalSettings} matching</span>
+        )}
+      </div>
+
+      <div style={S.sections}>
+        {filtered?.map((sec) => {
+          const isOpen = openSections.has(sec.name);
+          return (
+            <section key={sec.name} style={S.section}>
+              <button
+                style={S.sectionHeader}
+                onClick={() => {
+                  setOpenSections((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(sec.name)) next.delete(sec.name); else next.add(sec.name);
+                    return next;
+                  });
+                }}
+                aria-expanded={isOpen}
+              >
+                <span style={S.sectionChevron}>{isOpen ? '▾' : '▸'}</span>
+                <span style={S.sectionName}>[{sec.name}]</span>
+                <span style={S.sectionCount}>{sec.settings.length}</span>
+              </button>
+              {isOpen && (
+                <div style={S.sectionBody}>
+                  {sec.settings.map((setting) => (
+                    <SettingRow
+                      key={setting.key}
+                      setting={setting}
+                      rowState={rowStates[setting.key]}
+                      onSave={(v) => void saveValue(setting.key, v)}
+                      onUnset={() => void unsetValue(setting.key)}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SettingRow({
+  setting,
+  rowState,
+  onSave,
+  onUnset,
+}: {
+  setting: OmpSetting;
+  rowState?: { state: RowState; error?: string };
+  onSave: (v: unknown) => void;
+  onUnset: () => void;
+}): JSX.Element {
+  const stateLabel = rowState?.state === 'saving' ? 'Saving…'
+    : rowState?.state === 'saved' ? 'Saved'
+    : rowState?.state === 'error' ? `Error: ${rowState.error?.slice(0, 80) ?? 'unknown'}`
+    : null;
+
+  return (
+    <div style={S.row}>
+      <div style={S.rowKey}>
+        <code style={S.code}>{setting.key}</code>
+        {stateLabel && (
+          <span style={rowState?.state === 'error' ? S.stateError : S.stateInfo}>{stateLabel}</span>
+        )}
+      </div>
+      <div style={S.rowControl}>
+        <ValueControl setting={setting} onSave={onSave} />
+      </div>
+      <div style={S.rowMeta}>
+        {!setting.isUnset && (
+          <button
+            type="button"
+            style={S.btnGhost}
+            onClick={onUnset}
+            title="Reset to default (unset)"
+          >
+            ↻ default
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ValueControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+  if (setting.type === 'boolean') {
+    return (
+      <label style={S.toggle}>
+        <input
+          type="checkbox"
+          checked={setting.parsed === true}
+          onChange={(e) => onSave(e.target.checked)}
+        />
+        <span>{setting.parsed === true ? 'on' : 'off'}</span>
+      </label>
+    );
+  }
+  if (typeof setting.type === 'object' && setting.type.kind === 'enum') {
+    return (
+      <select
+        value={setting.isUnset ? '' : String(setting.parsed)}
+        onChange={(e) => onSave(e.target.value)}
+        style={S.select}
+      >
+        {setting.isUnset && <option value="">(not set)</option>}
+        {setting.type.choices.map((c) => (
+          <option key={c} value={c}>{c}</option>
+        ))}
+      </select>
+    );
+  }
+  if (setting.type === 'number') {
+    return <NumberControl setting={setting} onSave={onSave} />;
+  }
+  if (setting.type === 'array' || setting.type === 'record') {
+    return <JsonControl setting={setting} onSave={onSave} />;
+  }
+  return <StringControl setting={setting} onSave={onSave} />;
+}
+
+function StringControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+  const [v, setV] = useState<string>(setting.isUnset ? '' : String(setting.parsed ?? ''));
+  const dirtyRef = useRef(false);
+  useEffect(() => { if (!dirtyRef.current) setV(setting.isUnset ? '' : String(setting.parsed ?? '')); }, [setting.parsed, setting.isUnset]);
+  const commit = () => {
+    if (!dirtyRef.current) return;
+    dirtyRef.current = false;
+    onSave(v);
+  };
+  return (
+    <input
+      type="text"
+      value={v}
+      onChange={(e) => { dirtyRef.current = true; setV(e.target.value); }}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+      placeholder={setting.isUnset ? '(not set)' : ''}
+      style={S.input}
+    />
+  );
+}
+
+function NumberControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+  const initial = setting.isUnset ? '' : String(setting.parsed ?? '');
+  const [v, setV] = useState<string>(initial);
+  const dirtyRef = useRef(false);
+  useEffect(() => { if (!dirtyRef.current) setV(setting.isUnset ? '' : String(setting.parsed ?? '')); }, [setting.parsed, setting.isUnset]);
+  const commit = () => {
+    if (!dirtyRef.current) return;
+    dirtyRef.current = false;
+    const n = Number(v);
+    if (Number.isFinite(n)) onSave(n);
+    else onSave(v);
+  };
+  return (
+    <input
+      type="number"
+      value={v}
+      onChange={(e) => { dirtyRef.current = true; setV(e.target.value); }}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur(); } }}
+      style={S.input}
+    />
+  );
+}
+
+function JsonControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: unknown) => void }): JSX.Element {
+  const initial = setting.isUnset ? '' : JSON.stringify(setting.parsed ?? null, null, 2);
+  const [v, setV] = useState<string>(initial);
+  const [err, setErr] = useState<string | null>(null);
+  const dirtyRef = useRef(false);
+  useEffect(() => {
+    if (!dirtyRef.current) setV(setting.isUnset ? '' : JSON.stringify(setting.parsed ?? null, null, 2));
+  }, [setting.parsed, setting.isUnset]);
+  const commit = () => {
+    if (!dirtyRef.current) return;
+    dirtyRef.current = false;
+    if (!v.trim()) {
+      setErr(null);
+      onSave(setting.type === 'array' ? [] : {});
+      return;
+    }
+    try {
+      const parsed = JSON.parse(v);
+      setErr(null);
+      onSave(parsed);
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <textarea
+        value={v}
+        onChange={(e) => { dirtyRef.current = true; setV(e.target.value); }}
+        onBlur={commit}
+        rows={Math.min(10, Math.max(2, v.split('\n').length))}
+        placeholder={setting.type === 'array' ? '[]' : '{}'}
+        style={{ ...S.input, fontFamily: 'ui-monospace, monospace', fontSize: 12, minWidth: 320 }}
+      />
+      {err && <span style={S.stateError}>JSON: {err}</span>}
+    </div>
+  );
+}
+
+const S: Record<string, React.CSSProperties> = {
+  page: { padding: 24, maxWidth: 1080, margin: '0 auto', fontFamily: 'inherit', color: 'var(--fg, #e2e8f0)' },
+  header: { marginBottom: 16 },
+  h1: { fontSize: 22, fontWeight: 600, margin: '0 0 8px' },
+  intro: { fontSize: 13, color: 'rgba(231, 247, 255, 0.65)', lineHeight: 1.55, margin: 0 },
+  code: { fontFamily: 'ui-monospace, monospace', fontSize: 12, background: 'rgba(255,255,255,0.06)', padding: '1px 6px', borderRadius: 4 },
+  searchRow: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 },
+  searchInput: {
+    flex: 1, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 6, padding: '8px 12px', color: 'var(--fg, #e2e8f0)', fontSize: 14, outline: 'none',
+  },
+  muted: { fontSize: 12, color: 'rgba(231, 247, 255, 0.5)' },
+  sections: { display: 'flex', flexDirection: 'column', gap: 8 },
+  section: { background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: 8 },
+  sectionHeader: {
+    width: '100%', display: 'flex', alignItems: 'center', gap: 8,
+    background: 'transparent', border: 'none', color: 'inherit',
+    padding: '10px 14px', fontSize: 14, cursor: 'pointer', textAlign: 'left',
+  },
+  sectionChevron: { fontSize: 11, color: 'rgba(231, 247, 255, 0.5)', minWidth: 12 },
+  sectionName: { fontFamily: 'ui-monospace, monospace', fontWeight: 600, fontSize: 13, color: '#7dd3fc' },
+  sectionCount: { fontSize: 11, color: 'rgba(231, 247, 255, 0.4)', marginLeft: 'auto' },
+  sectionBody: { padding: '4px 0 12px', borderTop: '1px solid rgba(255,255,255,0.04)' },
+  row: {
+    display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) minmax(0, 2fr) auto',
+    gap: 12, padding: '8px 14px', alignItems: 'center',
+    borderBottom: '1px solid rgba(255,255,255,0.025)',
+  },
+  rowKey: { display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 },
+  rowControl: { minWidth: 0 },
+  rowMeta: { display: 'flex', justifyContent: 'flex-end' },
+  input: {
+    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 6, padding: '5px 9px', color: 'var(--fg, #e2e8f0)', fontSize: 13,
+    fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box',
+  },
+  select: {
+    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 6, padding: '5px 9px', color: 'var(--fg, #e2e8f0)', fontSize: 13, outline: 'none',
+  },
+  toggle: { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, cursor: 'pointer' },
+  btnPrimary: {
+    background: '#38bdf8', color: '#051827', border: 'none', padding: '6px 12px',
+    borderRadius: 6, fontSize: 13, fontWeight: 600, cursor: 'pointer',
+  },
+  btnGhost: {
+    background: 'transparent', color: 'rgba(231, 247, 255, 0.6)',
+    border: '1px solid rgba(255,255,255,0.1)', padding: '4px 10px',
+    borderRadius: 4, fontSize: 11, cursor: 'pointer',
+  },
+  stateInfo: { fontSize: 11, color: '#10b981', fontStyle: 'italic' },
+  stateError: { fontSize: 11, color: '#ef4444', fontStyle: 'italic', maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  error: {
+    background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.3)',
+    borderRadius: 8, padding: 16, color: '#fca5a5', fontSize: 14, marginTop: 16,
+  },
+};
