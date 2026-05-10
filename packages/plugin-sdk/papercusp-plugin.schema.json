@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://papercuspai.com/schema/papercusp-plugin.schema.json",
+  "title": "papercusp.json plugin manifest",
+  "description": "Manifest for a Papercusp plugin. See packages/plugin-sdk for the runtime types.",
+  "type": "object",
+  "required": ["name", "version"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "description": "Plugin id. Used as a directory name, Postgres schema prefix, event-bus topic prefix, and capability namespace.",
+      "pattern": "^(@[a-z][a-z0-9_.-]{0,62}/)?[a-z][a-z0-9_.-]{2,62}$"
+    },
+    "version": {
+      "type": "string",
+      "description": "Semver version string.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"
+    },
+    "description": { "type": "string" },
+    "author": { "type": "string" },
+    "license": { "type": "string" },
+    "homepage": { "type": "string" },
+    "kind": {
+      "type": "string",
+      "enum": ["plugin", "template", "snapshot", "subagent-pack"],
+      "description": "Distribution kind. Defaults to 'plugin'."
+    },
+    "papercusp": {
+      "type": "string",
+      "description": "Semver range against the runtime version (PAPERCUSP_RUNTIME_VERSION)."
+    },
+    "protocol": {
+      "type": "string",
+      "description": "Semver range against the plugin wire protocol version. Independent of the runtime release cycle so hooks can evolve without bumping the whole runtime."
+    },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Declarative permissions. Format: namespace:action[:resource]. The host AND-checks declared capabilities against the user-granted set."
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "MCP tool declarations."
+    },
+    "actions": {
+      "type": "array",
+      "items": { "type": "object" },
+      "description": "Action declarations bound at init() time."
+    },
+    "roles": { "type": "array", "items": { "type": "object" } },
+    "dashboardTabs": { "type": "array", "items": { "type": "object" } },
+    "sidebarItems": { "type": "array", "items": { "type": "object" } },
+    "ui": { "type": "object" },
+    "apiRoutes": {},
+    "routines": { "type": "array", "items": { "type": "object" } },
+    "models": { "type": "object" },
+    "configSchema": { "type": "object" },
+    "uiSchema": { "type": "object" },
+    "schema": { "type": "object" },
+    "plugins": { "type": "array", "items": { "type": "object" } },
+    "configFiles": { "type": "array", "items": { "type": "object" } },
+    "requiresTemplateKinds": { "type": "array", "items": { "type": "string" } },
+    "forkedFrom": { "type": "object" },
+    "publishedAt": { "type": "string" },
+    "publishedBy": { "type": "string" },
+    "tierMap": { "type": "object" }
+  }
+}

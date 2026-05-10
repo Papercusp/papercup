@@ -115,6 +115,8 @@ export interface LoadedPlugin {
   plugin: Plugin;
   path: string;             // absolute dir of the plugin
   source: 'project' | 'harness' | 'global';
+  /** Tool declarations parsed from the plugin's papercusp.json manifest. */
+  toolDefinitions?: import('@papercusp/plugin-sdk').ToolDefinition[];
 }
 
 export interface LoaderOptions {
@@ -132,13 +134,25 @@ interface ManifestShape {
   version: string;
   description?: string;
   papercusp?: string;
+  /** MCP tool declarations. Handlers live on the plugin's `tools` export. */
+  tools?: import('@papercusp/plugin-sdk').ToolDefinition[];
 }
 
-async function readManifest(dir: string): Promise<ManifestShape | null> {
+async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
   try {
     const raw = await fs.readFile(join(dir, 'papercusp.json'), 'utf8');
     const parsed = JSON.parse(raw) as ManifestShape;
     if (!parsed?.name || !parsed?.version) return null;
+    // Strict-validate against the JSON schema (Batch A1/A2 — manifest
+    // hardening). Refusal here is a hard load failure: a typo'd field
+    // name silently doing nothing is the bug we're fixing. Lazy-import
+    // so the validator (and ajv) only loads on first manifest read.
+    const { validateManifest } = await import('./manifest-validate');
+    const r = validateManifest(parsed);
+    if (!r.ok) {
+      const summary = r.issues.map((i) => `${i.path} — ${i.message}`).join('; ');
+      return { __error: `manifest invalid: ${summary}` };
+    }
     return parsed;
   } catch {
     return null;
@@ -194,6 +208,15 @@ async function importPluginEntry(entryPath: string): Promise<Plugin | { error: s
   }
 }
 
+/**
+ * Wire-protocol version. Separate from the runtime release version so
+ * lifecycle hooks + cap shapes can evolve without forcing every plugin
+ * to bump its `papercusp` range. Plugins declare `protocol: '^1.0'` in
+ * their manifest; the loader refuses loads outside the declared range.
+ * Bump on backwards-incompatible changes to the wire protocol only.
+ */
+export const PROTOCOL_VERSION = '1.0.0';
+
 async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string | null> {
   if (plugin.name !== manifest.name) return `manifest.name "${manifest.name}" doesn't match plugin.name "${plugin.name}"`;
   if (plugin.version !== manifest.version) return `manifest.version "${manifest.version}" doesn't match plugin.version "${plugin.version}"`;
@@ -206,6 +229,16 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
     const runtimeVersion = await getRuntimeVersion();
     if (!satisfies(runtimeVersion, range)) {
       return `plugin "${plugin.name}" requires papercusp runtime "${range}" but host is "${runtimeVersion}"`;
+    }
+  }
+  // Wire-protocol version (Batch E1, Rust-port-feedback item 7). Separate
+  // from the runtime version so hooks can evolve independently of release
+  // cycles. Pinned to "1.0" today; future bumps will refuse loads from
+  // plugins that don't declare a compatible range.
+  const protocolRange = (plugin as unknown as { protocol?: string }).protocol ?? (manifest as { protocol?: string }).protocol;
+  if (protocolRange) {
+    if (!satisfies(PROTOCOL_VERSION, protocolRange)) {
+      return `plugin "${plugin.name}" requires plugin-protocol "${protocolRange}" but host implements "${PROTOCOL_VERSION}"`;
     }
   }
   if (!Array.isArray(plugin.capabilities)) {
@@ -228,6 +261,58 @@ async function validate(plugin: Plugin, manifest: ManifestShape): Promise<string
   if ((plugin.sidebarItems?.length ?? 0) > 0 && !plugin.capabilities.includes('ui:sidebar-item' as any)) {
     return `plugin "${plugin.name}" declares sidebarItems but lacks capability "ui:sidebar-item"`;
   }
+  // Tool validation:
+  //   1. Every manifest tool must have a matching handler key on plugin.tools.
+  //   2. No orphan handlers — every key in plugin.tools must be in manifest.tools[].
+  //   3. Each tool's `capabilities` must subset the plugin's `capabilities`.
+  //   4. Each tool's name must be unique within this plugin.
+  //   5. Tool names must be dotted (e.g. "repomix.pack") to support
+  //      MCP namespacing and prevent collision with built-in tools.
+  //
+  // MCP-proxy plugins skip 1+2: their tool list is only known at runtime
+  // (e.g. GitNexus's tools/list, which depends on the upstream server's
+  // version). They implement `getDynamicTools` instead. Capability
+  // gating still applies — declare every potentially-required cap in
+  // `plugin.capabilities` so dispatch-time cap checks have something to
+  // match against.
+  const hasDynamicTools = typeof (plugin as { getDynamicTools?: unknown }).getDynamicTools === 'function';
+  const manifestTools = manifest.tools ?? [];
+  const handlerMap = (plugin as { tools?: Record<string, unknown> }).tools ?? {};
+  const handlerKeys = Object.keys(handlerMap);
+  const manifestToolNames = new Set<string>();
+  for (const t of manifestTools) {
+    if (!t || typeof t.name !== 'string' || t.name.length === 0) {
+      return `plugin "${plugin.name}" has an invalid tool entry (missing name)`;
+    }
+    if (manifestToolNames.has(t.name)) {
+      return `plugin "${plugin.name}" declares duplicate tool name "${t.name}"`;
+    }
+    manifestToolNames.add(t.name);
+    // Tool name is the function key — bare names like 'pack' are fine.
+    // The plugin-loader → projected-tool wiring derives the dotted MCP
+    // name (e.g. 'repomix.pack') and HTTP path from the plugin name +
+    // tool name unless the manifest entry's `expose` overrides them.
+    // Handler can be missing IF the plugin declares dynamic tools — the
+    // host fetches handlers from getDynamicTools() at register time.
+    if (typeof handlerMap[t.name] !== 'function' && !hasDynamicTools) {
+      return `plugin "${plugin.name}" declares tool "${t.name}" in manifest but provides no handler in tools export`;
+    }
+    const caps = Array.isArray(t.capabilities) ? t.capabilities : [];
+    for (const c of caps) {
+      if (!plugin.capabilities.includes(c as any)) {
+        return `plugin "${plugin.name}" tool "${t.name}" requires capability "${c}" but plugin manifest doesn't declare it`;
+      }
+    }
+  }
+  // Skip orphan-handler check for dynamic-tools plugins; they may export
+  // a stub `tools` map (or none) and rely entirely on getDynamicTools.
+  if (!hasDynamicTools) {
+    for (const k of handlerKeys) {
+      if (!manifestToolNames.has(k)) {
+        return `plugin "${plugin.name}" exports handler for "${k}" but manifest has no matching tools[] entry`;
+      }
+    }
+  }
   return null;
 }
 
@@ -244,6 +329,9 @@ export async function loadPluginFromDir(dir: string, source: LoadedPlugin['sourc
     if (!entry) return { skipped: 'not-a-plugin', path };
     return { error: 'missing or invalid papercusp.json', path };
   }
+  if ('__error' in manifest) {
+    return { error: manifest.__error, path };
+  }
   const entry = await locateEntry(path);
   if (!entry) return { error: 'no entry point found (looked for index.cjs, dist/index.cjs, index.js, index.mjs, dist/index.js, index.ts, src/index.ts)', path };
   const importResult = await importPluginEntry(entry);
@@ -252,7 +340,7 @@ export async function loadPluginFromDir(dir: string, source: LoadedPlugin['sourc
   const plugin = importResult;
   const validationError = await validate(plugin, manifest);
   if (validationError) return { error: validationError, path };
-  return { plugin, path, source };
+  return { plugin, path, source, toolDefinitions: manifest.tools ?? [] };
 }
 
 async function listSubdirs(parent: string): Promise<string[]> {
@@ -369,6 +457,117 @@ export function collectRoutines(loaded: LoadedPlugin[]): Array<{
     }
   }
   return out;
+}
+
+/**
+ * Wire a loaded plugin's manifest tools into agent-mcp's projected-tool
+ * registry. For each `manifest.tools[]` entry:
+ *
+ *   1. Look up the matching handler function in `plugin.tools[name]`.
+ *   2. Compute defaults for absent `expose.mcp.name` / `expose.http.path`
+ *      so plugins can omit the field for the common case.
+ *   3. Call `registerProjectedTool` so the function appears on both
+ *      transports.
+ *
+ * Default exposure shapes (when manifest entry omits expose.*):
+ *   - mcp.name  →  `<short-pluginName>.<tool.name>`  (drops scope prefix)
+ *   - http.path →  `/api/plugins/<short-pluginName>/<tool.name>`
+ *
+ * Throws on the same validation conditions as registerProjectedTool
+ * (duplicate names/paths, missing handlers).
+ */
+export async function registerPluginTools(
+  loaded: LoadedPlugin[],
+): Promise<{ registered: number; errors: Array<{ plugin: string; tool: string; error: string }> }> {
+  const { registerProjectedTool, unregisterProjectedToolsForPlugin } = await import('@papercusp/agent-mcp');
+  let registered = 0;
+  const errors: Array<{ plugin: string; tool: string; error: string }> = [];
+  for (const lp of loaded) {
+    const staticDefs = lp.toolDefinitions ?? [];
+    const dynFn = (lp.plugin as { getDynamicTools?: () => Promise<{ definitions: import('@papercusp/plugin-sdk').ToolDefinition[]; handlers: import('@papercusp/plugin-sdk').PluginToolMap }> }).getDynamicTools;
+    let dynDefs: import('@papercusp/plugin-sdk').ToolDefinition[] = [];
+    let dynHandlers: import('@papercusp/plugin-sdk').PluginToolMap = {};
+    if (typeof dynFn === 'function') {
+      try {
+        // Bound discovery time. MCP-proxy plugins (gitnexus, ast-grep) spawn
+        // an external child process; if the child hangs (cold npx fetch,
+        // index loading, etc.), we don't want to wedge host startup. The
+        // plugin can still be invoked later — the failure here means
+        // getDynamicTools didn't surface tools, not that the plugin is
+        // broken. 10s is generous for cached binaries; cold-start failures
+        // are visible in errors[] for the user to act on.
+        const DISCOVERY_TIMEOUT_MS = 10_000;
+        const r = await Promise.race([
+          dynFn(),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`getDynamicTools timed out after ${DISCOVERY_TIMEOUT_MS}ms`)),
+              DISCOVERY_TIMEOUT_MS,
+            ).unref(),
+          ),
+        ]);
+        dynDefs = r?.definitions ?? [];
+        dynHandlers = r?.handlers ?? {};
+      } catch (err) {
+        errors.push({
+          plugin: lp.plugin.name,
+          tool: '<getDynamicTools>',
+          error: `getDynamicTools failed: ${err instanceof Error ? err.message : String(err)}`,
+        });
+        // Don't skip the plugin — it may still have static tools to register.
+      }
+    }
+    const defs = [...staticDefs, ...dynDefs];
+    if (defs.length === 0) continue;
+    // Idempotent: drop any prior entries for this plugin so a re-registration
+    // (e.g. dev-mode host refresh after a manifest edit) doesn't trip the
+    // cross-plugin name-collision guard against its own previous entries.
+    unregisterProjectedToolsForPlugin(lp.plugin.name);
+    const staticHandlers = (lp.plugin as { tools?: Record<string, import('@papercusp/plugin-sdk').ToolHandler> }).tools ?? {};
+    const handlers: Record<string, import('@papercusp/plugin-sdk').ToolHandler> = { ...staticHandlers, ...dynHandlers };
+    const shortName = lp.plugin.name.replace(/^@[^/]+\//, ''); // '@papercupai/repomix' → 'repomix'
+    for (const def of defs) {
+      try {
+        const handler = handlers[def.name];
+        if (typeof handler !== 'function') {
+          errors.push({
+            plugin: lp.plugin.name,
+            tool: def.name,
+            error: `manifest declares tool "${def.name}" but plugin export has no matching handler`,
+          });
+          continue;
+        }
+        const expose = def.expose ?? {};
+        const mcpName = expose.mcp?.name ?? `${shortName}.${def.name}`;
+        const httpPath = expose.http?.path ?? `/api/plugins/${shortName}/${def.name}`;
+        registerProjectedTool({
+          pluginName: lp.plugin.name,
+          description: def.description,
+          inputSchema: def.inputSchema,
+          capabilities: def.capabilities,
+          roles: def.roles,
+          rolesQuota: def.rolesQuota,
+          timeoutSec: def.timeoutSec,
+          expose: {
+            mcp: expose.mcp === undefined && expose.http === undefined
+              ? { name: mcpName, streaming: undefined, largeOutput: undefined }
+              : expose.mcp ?? { name: mcpName },
+            http: expose.http ?? { path: httpPath },
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          fn: handler as any,
+        });
+        registered += 1;
+      } catch (err) {
+        errors.push({
+          plugin: lp.plugin.name,
+          tool: def.name,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+  return { registered, errors };
 }
 
 /**

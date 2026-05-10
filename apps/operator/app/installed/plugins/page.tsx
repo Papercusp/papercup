@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import * as Lucide from 'lucide-react';
 import { toast } from 'sonner';
 import RouteLink from '../../_components/RouteLink';
+import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 interface InstalledPluginRecord {
   name: string;
@@ -21,21 +23,41 @@ export default function InstalledPluginsPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
 
+  // pluginEnables is in Zero already (pluginEnables.byWorkspace). The
+  // /plugins/global side is still REST — it's a cross-workspace listing
+  // of installed plugins, not workspace-keyed. Two-phase load: render
+  // the enabled-map from the cached subscription synchronously, then
+  // pull plugin metadata from REST (typically <100ms cold).
+  const pluginsWorkspaceId = useWorkspaceId();
+  const { data: pluginEnableRows } = useSyncQuery<{
+    harnessSlug: string;
+    pluginSlug: string;
+    enabled: boolean;
+  }>({
+    queryName: 'pluginEnables.byWorkspace',
+    args: { workspaceId: pluginsWorkspaceId },
+    enabled: !!pluginsWorkspaceId,
+  });
+  useEffect(() => {
+    if (!Array.isArray(pluginEnableRows)) return;
+    const m: Record<string, string[]> = {};
+    for (const r of pluginEnableRows) {
+      if (!r.enabled) continue;
+      (m[r.harnessSlug] ??= []).push(r.pluginSlug);
+    }
+    setEnabledMap(m);
+  }, [pluginEnableRows]);
+
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
       try {
-        const [pluginsRes, enabledRes] = await Promise.all([
-          fetch('/api/plugins/global', { cache: 'no-store' }),
-          fetch('/api/plugins/enabled', { cache: 'no-store' }),
-        ]);
+        const pluginsRes = await fetch('/api/plugins/global', { cache: 'no-store' });
         const pluginsJson = pluginsRes.ok ? await pluginsRes.json() : { plugins: [] };
-        const enabledJson = enabledRes.ok ? await enabledRes.json() : { enabled: {} };
         if (cancelled) return;
         const list = Array.isArray(pluginsJson?.plugins) ? pluginsJson.plugins : [];
         setPlugins(list.filter((p: InstalledPluginRecord) => !p.hidden));
-        setEnabledMap(enabledJson?.enabled ?? {});
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -85,11 +107,11 @@ export default function InstalledPluginsPage() {
           <span>Browse the <RouteLink href="/marketplace/plugins">plugin catalog</RouteLink> to install one.</span>
         </div>
       ) : (
-        <div className="pc-marketplace-grid">
+        <div className="pc-marketplace-grid pc-installed-plugin-grid">
           {plugins.map((p) => {
             const enabledHere = Object.entries(enabledMap).filter(([, slugs]) => slugs.includes(p.name)).map(([h]) => h);
             return (
-              <article key={p.name} className="pc-card pc-marketplace-card installed">
+              <article key={p.name} className="pc-card pc-marketplace-card installed pc-installed-plugin-card">
                 <div className="pc-marketplace-card-head">
                   <span className="pc-marketplace-card-icon plugin"><Lucide.Puzzle size={18} /></span>
                   <div>
@@ -104,14 +126,20 @@ export default function InstalledPluginsPage() {
                   <span>{p.path}</span>
                 </div>
                 {enabledHere.length > 0 && (
-                  <div className="pc-marketplace-enabled">
+                  <div className="pc-marketplace-enabled pc-installed-plugin-enabled">
                     <strong>Enabled in</strong>
                     {enabledHere.map((h) => <code key={h}>{h}</code>)}
                   </div>
                 )}
-                <div className="pc-marketplace-card-actions">
+                <div className="pc-marketplace-card-actions pc-installed-plugin-actions">
+                  <RouteLink
+                    href={`/installed/plugins/${encodeURIComponent(p.name)}/permissions`}
+                    className="pc-button"
+                  >
+                    Permissions
+                  </RouteLink>
                   <button
-                    className="pc-button danger"
+                    className="pc-button danger pc-installed-plugin-uninstall"
                     onClick={() => uninstall(p.name)}
                     disabled={busy === p.name}
                   >

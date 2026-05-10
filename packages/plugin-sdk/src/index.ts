@@ -62,7 +62,19 @@ export type Capability =
   // Subprocess execution — manifest declares each binary the plugin's
   // `ctx.spawn(bin, args)` may invoke. e.g. 'compute:exec:ffmpeg'.
   // Wildcards (`compute:exec:py-*`) match the binary basename.
-  | `compute:exec:${string}`;
+  | `compute:exec:${string}`
+
+  // MCP tools contributed to agents. Manifest declares each tool by name;
+  // the agent-mcp host gates per-call invocations against the plugin's
+  // declared `tools:<name>` capability. Tool names use dotted prefixes
+  // (e.g. 'tools:repomix:pack', 'tools:gitnexus:impact').
+  | `tools:${string}`
+
+  // Orchestrator agent-spawn capability — per-role gating. e.g.
+  // 'tools:orchestrator:spawn:worker' allows spawning a worker child.
+  // Distinct from the generic `tools:<name>` because spawn is meta-tool
+  // requiring its own risk-tier review at install time.
+  | `tools:orchestrator:spawn:${string}`;
 
 
 /* ─────────────────────────────────────────────────────────────────────
@@ -358,6 +370,15 @@ export interface HarnessUIProps {
   readOnly: boolean;
 }
 
+/**
+ * Structural subset of Hono's API used by the plugin host. Plugins ship
+ * `app: Hono` and assert `apiRoutes: app satisfies PluginApiRoutes`. The
+ * host pins Hono ^4.12; major bumps break this contract.
+ */
+export interface PluginApiRoutes {
+  fetch(request: Request, env?: unknown, executionCtx?: unknown): Response | Promise<Response>;
+}
+
 export interface DashboardTab {
   id: string;
   label: string;
@@ -589,6 +610,48 @@ export interface Plugin {
   /** Action declarations. Each must be registered from `init()` to be invocable. */
   actions?: ActionDefinition[];
 
+  /**
+   * MCP tool handlers contributed by this plugin. Keys must match
+   * `tools[].name` entries in the plugin's `papercusp.json` manifest.
+   *
+   * Loader cross-validates manifest ↔ handlers at load time:
+   * - every manifest tool must have a handler key
+   * - no orphan handlers (handler with no manifest entry)
+   * - each manifest tool's `capabilities` must subset `plugin.capabilities`
+   *
+   * For plugins whose tool catalog is only known at runtime (e.g. an
+   * MCP-proxy plugin that introspects an external server's `tools/list`),
+   * leave `tools` empty and implement `getDynamicTools` instead — the
+   * loader skips static cross-validation in that case.
+   *
+   * Spec: apps/operator/docs/plugin-mcp-host-design.md.
+   */
+  tools?: PluginToolMap;
+
+  /**
+   * Dynamic tool registration — for MCP-proxy plugins (GitNexus, ast-grep,
+   * etc.) whose tool list comes from an external runtime catalog. Called
+   * once during plugin-host startup. Returns the live `ToolDefinition[]`
+   * + matching handler map; the host wires them through
+   * `registerProjectedTool` exactly like static tools.
+   *
+   * When this is present, `tools` and `manifest.tools[]` are not required
+   * (the loader skips static cross-validation). Either provide both
+   * static + dynamic, or neither — the host calls `getDynamicTools` and
+   * merges with anything in static `tools`.
+   *
+   * The handler map keys returned must match the `definitions[].name`.
+   * Capabilities still need to be declared in `plugin.capabilities` —
+   * dynamic registration doesn't bypass capability gating.
+   *
+   * Spec: apps/operator/docs/plugin-mcp-host-design.md (D2 dynamic-tools
+   * extension).
+   */
+  getDynamicTools?: () => Promise<{
+    definitions: ToolDefinition[];
+    handlers: PluginToolMap;
+  }>;
+
   /** Declarative permission manifest. Loader enforces these at every API call. */
   capabilities: Capability[];
 
@@ -630,13 +693,17 @@ export interface Plugin {
   sidebarItems?: SidebarItem[];
 
   /**
-   * API routes contributed by the plugin. The runtime mounts this Hono app
-   * (or compatible) at `/api/plugins/<plugin-name>/`.
+   * API routes contributed by the plugin. The runtime mounts this Hono
+   * sub-app at `/api/plugins/<plugin-name>/`.
    *
-   * Typed as `unknown` here to keep the SDK Hono-version-agnostic; loader
-   * casts to the framework's Hono instance at registration time.
+   * The type is intentionally a structural subset of `Hono` — `.fetch` is
+   * the only method the host calls. We avoid a hard `import type { Hono
+   * } from 'hono'` so plugins that don't ship API routes don't pay the
+   * Hono peer-dep cost. Plugins that DO ship routes should import their
+   * own `Hono` and assert `apiRoutes: app satisfies PluginApiRoutes`.
+   * The host pins Hono ^4.12 — major bumps will breaking-change here.
    */
-  apiRoutes?: unknown;
+  apiRoutes?: PluginApiRoutes;
 
   /** Postgres schema this plugin owns. */
   schema?: PluginSchemaField;
@@ -715,6 +782,226 @@ export interface PluginOAuthRequirement {
   refreshFieldName?: string;
   expiresAtFieldName?: string;
 }
+
+
+/* ─────────────────────────────────────────────────────────────────────
+ * MCP tools — agent-callable functions contributed by plugins.
+ *
+ * A plugin may contribute zero or more tools via its manifest's
+ * `tools[]` array + a typed `tools` export. The agent-mcp host merges
+ * built-in tools with plugin-contributed tools per request, filtered
+ * by the calling role's allowlist and per-window quota.
+ *
+ * Spec: apps/operator/docs/plugin-mcp-host-design.md.
+ * ───────────────────────────────────────────────────────────────────── */
+
+/**
+ * The seven core agent roles in Papercusp. Tool manifests use these
+ * literals in `roles` allowlists and `rolesQuota` keys. Plugins may
+ * contribute custom roles via `roles:register:<name>` capability;
+ * those names appear here as `string` rather than the literal union.
+ */
+export type AgentRole =
+  | 'scoper'
+  | 'architect'
+  | 'worker'
+  | 'validator'
+  | 'reviewer'
+  | 'debugger'
+  | 'operator'
+  | (string & {}); // custom plugin-registered roles
+
+/**
+ * Per-role quota windows. Workers run in chunks (small unit of work
+ * within a feature), so their quota is keyed `perChunk`. Other roles
+ * run per-orchestrator-run, so their quota is keyed `perRun`. Both
+ * roles can additionally have `perDay` global caps.
+ */
+export interface RolesQuota {
+  /** Worker quota window — calls allowed within one chunk. */
+  perChunk?: number;
+  /** Non-worker quota window — calls allowed within one orchestrator run. */
+  perRun?: number;
+  /** Global cap, regardless of role/window. */
+  perDay?: number;
+}
+
+/**
+ * MCP-style tool result. Mirrors the MCP spec's `content[]` shape so
+ * handlers can return text, images, or resource references.
+ */
+export interface ToolResult {
+  content: Array<
+    | { type: 'text'; text: string }
+    | { type: 'image'; data: string; mimeType: string }
+    | { type: 'resource'; resource: { uri: string; mimeType?: string; text?: string } }
+  >;
+  /** Marks this tool call as failed for protocol purposes (handler may still throw). */
+  isError?: boolean;
+  /** Structured metadata returned alongside content (not shown to the model). */
+  _meta?: Record<string, unknown>;
+  /**
+   * Path to a scratch-dir artifact this tool produced. Recorded into
+   * `harness_shared.tool_invocations.output_ref` by the dispatcher; feeds
+   * the Intel panel's Pack/Diff sub-tabs and the artifacts query view.
+   *
+   * Tools that return large outputs (repomix.pack, code2prompt.diff,
+   * gitnexus.query when streaming a big result) should set this so the UI
+   * can deep-link to the file rather than re-rendering megabytes inline.
+   */
+  outputRef?: string;
+  /**
+   * Size in bytes of the artifact pointed to by `outputRef`. Falls back
+   * to `JSON.stringify(content).length` if `outputRef` is unset.
+   */
+  outputSize?: number;
+}
+
+/**
+ * Progress callback passed to every tool handler. Calling this emits
+ * an MCP `notifications/progress` event back through the agent's
+ * MCP session and (in parallel) to the operator UI's Intel tab.
+ *
+ * `pct` is 0–100; pass `undefined` for indeterminate progress
+ * (spinner-style). `msg` is a one-line human-readable status.
+ *
+ * Streaming is built-in to v1; tools that don't care simply never
+ * call `progress()`. No manifest opt-in required.
+ */
+export type ProgressCallback = (pct: number | undefined, msg?: string) => void;
+
+/**
+ * Per-invocation context passed to every tool handler. Different from
+ * `PapercuspContext` (lifecycle context) because tool calls have a
+ * specific calling agent (role/feature/chunk/spawn) attached.
+ */
+export interface ToolContext {
+  /** Workspace ID this invocation belongs to. */
+  workspaceId: string;
+  /** Harness slug. */
+  harnessSlug: string;
+  /** Absolute path to the harness's project root. */
+  projectDir: string;
+  /** Absolute path to `<projectDir>/.harness/`. */
+  stateDir: string;
+  /** Calling agent role. */
+  role: AgentRole;
+  /** Feature ID the calling spawn is working on (null for some non-worker roles). */
+  featureId: string | null;
+  /** Chunk ID, set for worker spawns. */
+  chunkId: string | null;
+  /** Orchestrator run ID. */
+  runId: string;
+  /** Unique per-spawn ID. Use this for log correlation and audit. */
+  spawnId: string;
+  /** Parent spawn ID, set when this spawn was created by another agent's `orchestrator.spawn` call. */
+  parentSpawnId: string | null;
+  /** Stream progress events. See ProgressCallback. */
+  progress: ProgressCallback;
+  /** Plugin-scoped logger; output goes to the harness run log. */
+  log: (msg: string) => void;
+  /** Capability-gated subprocess spawn. Same shape as PapercuspContext.spawn. */
+  spawn: PluginSpawn;
+  /** Capability-gated secret access. Returns null if not configured. */
+  secret: (name: string) => Promise<string | null>;
+  /** Abort signal — fires on per-tool timeout, parent cancellation, or shutdown. */
+  signal: AbortSignal;
+}
+
+/**
+ * Tool handler signature. Plugins export a `tools` map keyed by tool
+ * name; each handler receives validated input + a per-invocation
+ * ToolContext, and returns a ToolResult.
+ *
+ * The host validates `input` against the manifest-declared
+ * `inputSchema` before invoking. Handlers should throw on
+ * unrecoverable errors; the host wraps and returns a structured
+ * MCP error to the agent.
+ */
+export type ToolHandler<TInput = unknown> = (
+  input: TInput,
+  ctx: ToolContext,
+) => Promise<ToolResult>;
+
+/**
+ * HTTP exposure declaration. Path is mounted under operator's
+ * /api/plugins/[...path] catch-all. Default methods is ['POST'].
+ */
+export interface ToolExposureHttp {
+  path: string;
+  methods?: ReadonlyArray<'POST' | 'GET' | 'PUT' | 'PATCH' | 'DELETE'>;
+}
+
+/**
+ * MCP exposure declaration. The agent sees the tool by `name`. Optional
+ * flags (`streaming`, `largeOutput`) tune transport-side behavior.
+ */
+export interface ToolExposureMcp {
+  name: string;
+  streaming?: boolean;
+  largeOutput?: boolean;
+}
+
+/** At least one of `http`/`mcp` must be set. */
+export interface ToolExposure {
+  http?: ToolExposureHttp;
+  mcp?: ToolExposureMcp;
+}
+
+/**
+ * Manifest-declared tool definition. The manifest is the source of
+ * truth for the tool's contract; plugin code provides only the
+ * handler function via the plugin's `tools` export.
+ *
+ * Example manifest entry:
+ * ```json
+ * "tools": [
+ *   {
+ *     "name": "pack",
+ *     "description": "...",
+ *     "inputSchema": {...},
+ *     "capabilities": ["tools:repomix:pack"],
+ *     "roles": ["scoper", "architect", "worker"],
+ *     "rolesQuota": { "worker": { "perChunk": 1 } },
+ *     "expose": {
+ *       "http": { "path": "/api/plugins/repomix/pack" },
+ *       "mcp":  { "name": "repomix.pack" }
+ *     }
+ *   }
+ * ]
+ * ```
+ */
+export interface ToolDefinition {
+  /** Function key — matches `plugin.tools[<name>]` in the entry point. */
+  name: string;
+  /** One-line description shown to MCP clients. */
+  description: string;
+  /** JSON Schema for tool input. Validated before dispatch. */
+  inputSchema: Record<string, unknown>;
+  /** Capabilities required to invoke. Must subset plugin.capabilities. */
+  capabilities: Capability[];
+  /** Optional role allowlist (MCP transport only; HTTP gates via principal). */
+  roles?: AgentRole[];
+  /** Per-role quota windows. */
+  rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
+  /** Per-call wall-clock timeout. Default 60s. */
+  timeoutSec?: number;
+  /**
+   * Where to project this tool. At least one of `http`/`mcp` must be set.
+   * Loader fills sensible defaults when absent — see plugin-mcp-host-design.md.
+   */
+  expose?: ToolExposure;
+}
+
+/**
+ * The `tools` export shape every plugin contributing tools must provide.
+ * Map keys must match `ToolDefinition.name` values from the manifest.
+ *
+ *   export const tools: PluginToolMap = {
+ *     'repomix.pack': async (input, ctx) => { ... },
+ *   };
+ */
+export type PluginToolMap = Record<string, ToolHandler>;
 
 
 /* ─────────────────────────────────────────────────────────────────────
