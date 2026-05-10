@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Run the operator dev server (Turbopack/HMR) as a systemd --user transient unit
+# so it survives shell exits / sandboxed agent turns. Tails the log.
+#
+# Usage: bin/dev                         (defaults: PORT=3055 PTY=3056)
+#        PORT=3155 PTY=3156 bin/dev      (override ports)
+# Status:        systemctl --user status papercup-dev
+# Stop server:   systemctl --user stop papercup-dev
+# Tail log:      tail -f /tmp/dev.log
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG="${LOG:-/tmp/dev.log}"
+PORT="${PORT:-3055}"
+PTY="${PTY:-3056}"
+UNIT="${UNIT:-papercup-dev}"
+
+echo "==> stopping prior $UNIT (if any)"
+systemctl --user stop "$UNIT" 2>/dev/null
+fuser -k "$PORT/tcp" 2>/dev/null
+fuser -k "$PTY/tcp"  2>/dev/null
+sleep 2
+
+echo "==> clearing Turbopack persistent cache"
+rm -rf "$REPO/apps/operator/.next/cache" "$REPO/apps/operator/.next/dev"
+
+echo "==> starting $UNIT on :$PORT (pty-ws :$PTY)"
+: > "$LOG"
+systemd-run --user \
+  --unit="$UNIT" \
+  --setenv=PATH="$PATH" \
+  --setenv=PAPERCUSP_PTY_WS_PORT="$PTY" \
+  --working-directory="$REPO" \
+  --property=StandardOutput=append:"$LOG" \
+  --property=StandardError=append:"$LOG" \
+  --property=Restart=always \
+  --property=RestartSec=5 \
+  -- bash -c 'npm run dev:operator'
+
+echo "==> $UNIT started — surviving shell exit"
+echo "==> status:  systemctl --user status $UNIT"
+echo "==> stop:    systemctl --user stop $UNIT"
+echo "==> tailing $LOG (Ctrl-C stops the tail; server keeps running)"
+tail -F "$LOG"
