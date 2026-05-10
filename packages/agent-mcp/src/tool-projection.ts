@@ -157,9 +157,32 @@ export interface ProjectedTool {
 
 /* ─── Registry ───────────────────────────────────────────────────────── */
 
-const REGISTRY = new Map<string, ProjectedTool>();
-const BY_MCP_NAME = new Map<string, ProjectedTool>();
-const BY_HTTP_PATH = new Map<string, ProjectedTool>();
+// Anchor on globalThis so multiple module instances (Next standalone +
+// Turbopack chunking sometimes resolves @papercusp/agent-mcp into more
+// than one CJS instance — e.g. one for app routes, one for plugin-loader's
+// dynamic import) share a single registry. Without this, plugin-loader's
+// `registerProjectedTool(...)` writes to instance A's Map while
+// `/api/plugins/tools` reads instance B's Map, and plugin tools appear to
+// register but are never reachable. Bug regressed twice before this
+// comment landed; please don't switch back without solving the
+// module-instance-singleton story first.
+interface RegistryStore {
+  REGISTRY: Map<string, ProjectedTool>;
+  BY_MCP_NAME: Map<string, ProjectedTool>;
+  BY_HTTP_PATH: Map<string, ProjectedTool>;
+}
+const __PAPERCUSP_PROJECTED_TOOL_REGISTRY = '__papercuspProjectedToolRegistry';
+const __g = globalThis as unknown as Record<string, RegistryStore>;
+if (!__g[__PAPERCUSP_PROJECTED_TOOL_REGISTRY]) {
+  __g[__PAPERCUSP_PROJECTED_TOOL_REGISTRY] = {
+    REGISTRY: new Map<string, ProjectedTool>(),
+    BY_MCP_NAME: new Map<string, ProjectedTool>(),
+    BY_HTTP_PATH: new Map<string, ProjectedTool>(),
+  };
+}
+const REGISTRY = __g[__PAPERCUSP_PROJECTED_TOOL_REGISTRY].REGISTRY;
+const BY_MCP_NAME = __g[__PAPERCUSP_PROJECTED_TOOL_REGISTRY].BY_MCP_NAME;
+const BY_HTTP_PATH = __g[__PAPERCUSP_PROJECTED_TOOL_REGISTRY].BY_HTTP_PATH;
 
 /** Stable unique key for a tool entry. */
 function entryKey(tool: ProjectedTool): string {

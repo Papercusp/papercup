@@ -4,39 +4,24 @@
  * validator is used by the loader (load-time) and the `papercusp plugin
  * lint` CLI (build-time) so authors see errors before deploy.
  *
- * Edge-runtime safety: Next.js bundles instrumentation.ts (and its
- * transitive imports) for both the nodejs and edge runtimes. Edge
- * forbids static `node:fs` / `node:path` / `node:url` imports even in
- * unreachable branches, so we defer those to first call via createRequire
- * (createRequire itself is `node:module`, which Next's edge runtime
- * tolerates as a partial polyfill). The validator is only ever invoked
- * from nodejs code.
+ * Schema is statically imported so it becomes part of the dependency
+ * graph and is bundled by Next/Turbopack into the standalone build.
+ * Previously this used a deferred `readFileSync` against `__dirname`-
+ * relative paths, which silently failed in standalone (the JSON file
+ * wasn't traced as a dependency). Every plugin then load-failed with a
+ * misleading "missing or invalid papercusp.json" — bug regressed twice
+ * before this comment landed; please don't switch back without solving
+ * the standalone-bundling story first.
+ *
+ * Edge-runtime safe: ESM JSON imports are inlined as JS literals at
+ * build time and don't pull `node:*` modules at runtime.
  */
 
 import Ajv, { type ErrorObject } from 'ajv';
-import { createRequire } from 'node:module';
+import schemaJson from '../../plugin-sdk/papercusp-plugin.schema.json' with { type: 'json' };
 
-let _schema: unknown | null = null;
 function getSchema(): object {
-  if (_schema) return _schema as object;
-  const req = createRequire(import.meta.url);
-  const { readFileSync } = req('node:fs') as typeof import('node:fs');
-  const { join, dirname } = req('node:path') as typeof import('node:path');
-  const { fileURLToPath } = req('node:url') as typeof import('node:url');
-  const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    join(here, '..', '..', 'plugin-sdk', 'papercusp-plugin.schema.json'),
-    join(here, '..', '..', '..', 'plugin-sdk', 'papercusp-plugin.schema.json'),
-  ];
-  for (const p of candidates) {
-    try {
-      _schema = JSON.parse(readFileSync(p, 'utf8'));
-      return _schema as object;
-    } catch {
-      // try next
-    }
-  }
-  throw new Error('plugin-loader: papercusp-plugin.schema.json not found');
+  return schemaJson as object;
 }
 
 let _validator: ReturnType<Ajv['compile']> | null = null;
