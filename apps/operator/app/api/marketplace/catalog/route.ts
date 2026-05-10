@@ -75,6 +75,8 @@ export async function GET() {
           retracted: m.retracted,
           install: `papercusp install ${m.slug ?? m.name}`,
           source: 'live',
+          publishedAt: m.publishedAt ?? null,
+          publishedBy: m.publishedBy ?? null,
         }));
       return NextResponse.json({ catalog: items, source: path === '/v1/catalog' ? 'marketplace-db' : 'marketplace-fs' });
     } catch {
