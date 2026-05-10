@@ -170,20 +170,20 @@ export default function SnapshotsPage() {
   };
 
   return (
-    <div className="pc-shell">
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+    <div className="pc-shell pc-snapshot-forge-shell">
+      <div className="pc-snapshot-forge-topbar" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
         <h1 style={{ margin: 0 }}>Snapshots</h1>
-        <button type="button" className="h-btn ghost" onClick={() => void load()} disabled={loading}>
+        <button type="button" className="h-btn ghost pc-snapshot-refresh" onClick={() => void load()} disabled={loading}>
           {loading ? 'Loading…' : 'Refresh'}
         </button>
       </div>
-      <p style={{ color: 'var(--fg-mute)', marginTop: 0, marginBottom: 24 }}>
+      <p className="pc-snapshot-forge-intro" style={{ color: 'var(--fg-mute)', marginTop: 0, marginBottom: 24 }}>
         Frozen tarballs of harness state — DB rows, project files, plugin enablement.
         Created from a harness via <strong>Save snapshot</strong>; instantiate to fork into a new harness, or publish to the marketplace.
       </p>
 
       {!loading && rows.length === 0 && (
-        <div className="pc-callout">
+        <div className="pc-callout pc-snapshot-empty">
           <strong>No snapshots yet.</strong> Open a harness from the{' '}
           <RouteLink href="/harness">Harnesses</RouteLink> tab and click <code>Save snapshot</code>.
         </div>
@@ -219,20 +219,21 @@ function SnapshotsGrid({
       header: 'Snapshot',
       width: 3,
       render: ({ row }) => (
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 500 }}>{row.name}</div>
+        <div className="pc-snapshot-cell-main" style={{ minWidth: 0 }}>
+          <div className="pc-snapshot-title" style={{ fontWeight: 500 }}>{row.name}</div>
           {row.description && (
-            <div style={{ color: 'var(--fg)', fontSize: 12, marginTop: 2 }}>{row.description}</div>
+            <div className="pc-snapshot-description" style={{ color: 'var(--fg)', fontSize: 12, marginTop: 2 }}>{row.description}</div>
           )}
-          <div style={{ color: 'var(--fg-mute)', fontSize: 12, fontFamily: "'SF Mono', monospace" }}>{row.id}</div>
-          {row.partial && <div style={{ color: '#f59e0b', fontSize: 11 }}>partial</div>}
+          <div className="pc-snapshot-id" style={{ color: 'var(--fg-mute)', fontSize: 12, fontFamily: "'SF Mono', monospace" }}>{row.id}</div>
+          {row.partial && <div className="pc-snapshot-partial" style={{ color: '#f59e0b', fontSize: 11 }}>partial</div>}
           {row.publishes.length > 0 && (
-            <div style={{ marginTop: 4, fontSize: 11 }}>
+            <div className="pc-snapshot-published-wrap" style={{ marginTop: 4, fontSize: 11 }}>
               <a
                 href={row.publishes[row.publishes.length - 1]!.browseUrl}
                 target="_blank"
                 rel="noreferrer"
                 title={row.publishes.map((p) => `${p.slug}@${p.version}`).join('\n')}
+                className="pc-snapshot-published-link"
                 style={{
                   display: 'inline-block',
                   padding: '1px 8px',
@@ -250,13 +251,13 @@ function SnapshotsGrid({
         </div>
       ),
     },
-    { key: 'harness', header: 'Harness', width: 1.2, render: ({ row }) => <code>{row.harnessSlug}</code> },
+    { key: 'harness', header: 'Harness', width: 1.2, render: ({ row }) => <code className="pc-snapshot-harness">{row.harnessSlug}</code> },
     {
       key: 'created',
       header: 'Created',
       width: 1.4,
       render: ({ row }) => (
-        <span style={{ color: 'var(--fg-mute)', fontSize: 12 }}>{formatDate(row.createdAtMs)}</span>
+        <span className="pc-snapshot-created" style={{ color: 'var(--fg-mute)', fontSize: 12 }}>{formatDate(row.createdAtMs)}</span>
       ),
     },
     { key: 'size', header: 'Size', width: 0.7, align: 'right', render: ({ row }) => <>{formatBytes(row.bytes)}</> },
@@ -267,15 +268,15 @@ function SnapshotsGrid({
       header: 'Redactions',
       width: 1.1,
       render: ({ row }) => (
-        <span style={{ fontSize: 12 }}>
+        <span className="pc-snapshot-redactions" style={{ fontSize: 12 }}>
           {row.redactions.verifiedHits > 0 && (
-            <span style={{ color: '#ef4444' }}>{row.redactions.verifiedHits} verified </span>
+            <span className="pc-snapshot-redaction verified" style={{ color: '#ef4444' }}>{row.redactions.verifiedHits} verified </span>
           )}
           {row.redactions.highRecallHits > 0 && (
-            <span style={{ color: '#f59e0b' }}>{row.redactions.highRecallHits} warns</span>
+            <span className="pc-snapshot-redaction warning" style={{ color: '#f59e0b' }}>{row.redactions.highRecallHits} warns</span>
           )}
           {row.redactions.verifiedHits === 0 && row.redactions.highRecallHits === 0 && (
-            <span style={{ color: 'var(--fg-mute)' }}>clean</span>
+            <span className="pc-snapshot-redaction clean" style={{ color: 'var(--fg-mute)' }}>clean</span>
           )}
         </span>
       ),
@@ -288,17 +289,17 @@ function SnapshotsGrid({
       render: ({ row }) => {
         const busy = busyId === row.id;
         return (
-          <span style={{ whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
-            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onInstantiate(row)} style={{ marginRight: 6 }}>
+          <span className="pc-snapshot-actions" style={{ whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+            <button type="button" className="h-btn ghost pc-snapshot-action pc-snapshot-action--instantiate" disabled={busy} onClick={() => onInstantiate(row)} style={{ marginRight: 6 }}>
               {busy ? '…' : 'Instantiate'}
             </button>
-            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onPublish(row)} style={{ marginRight: 6 }}>
+            <button type="button" className="h-btn ghost pc-snapshot-action pc-snapshot-action--publish" disabled={busy} onClick={() => onPublish(row)} style={{ marginRight: 6 }}>
               Publish
             </button>
-            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onRetract(row)} style={{ marginRight: 6 }} title="Retract a previously-published copy from the marketplace">
+            <button type="button" className="h-btn ghost pc-snapshot-action pc-snapshot-action--retract" disabled={busy} onClick={() => onRetract(row)} style={{ marginRight: 6 }} title="Retract a previously-published copy from the marketplace">
               Retract
             </button>
-            <button type="button" className="h-btn ghost" disabled={busy} onClick={() => onDelete(row)}>
+            <button type="button" className="h-btn ghost pc-snapshot-action pc-snapshot-action--delete" disabled={busy} onClick={() => onDelete(row)}>
               Delete
             </button>
           </span>
@@ -307,5 +308,9 @@ function SnapshotsGrid({
     },
   ], [busyId, onInstantiate, onPublish, onRetract, onDelete]);
 
-  return <RichGrid<SnapshotRow> columns={columns} rows={rows} getRowId={(r) => r.id} inline />;
+  return (
+    <div className="pc-snapshot-grid">
+      <RichGrid<SnapshotRow> columns={columns} rows={rows} getRowId={(r) => r.id} inline />
+    </div>
+  );
 }

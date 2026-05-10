@@ -187,7 +187,7 @@ export default function InstalledTemplatesPage() {
           <span>Click &ldquo;Save template&rdquo; on any running harness to fork its recipe into one.</span>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div className="pc-installed-template-list" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {rows.map((row) => {
             const key = `${row.slug}@${row.version}`;
             const isPublishing = publishing === key;
@@ -195,9 +195,9 @@ export default function InstalledTemplatesPage() {
             const modelRoles = Object.keys(row.manifest.models ?? {}).length;
             const configFilesCount = row.manifest.configFiles?.length ?? 0;
             return (
-              <div key={key} className="pc-card" style={{ padding: 16 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-                  <Layers size={16} style={{ color: 'var(--fg-dim)' }} />
+              <div key={key} className="pc-card pc-installed-template-card" style={{ padding: 16 }}>
+                <div className="pc-installed-template-head" style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+                  <Layers size={16} className="pc-installed-template-head-icon" style={{ color: 'var(--fg-dim)' }} />
                   <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>{row.slug}</h3>
                   <code style={{ fontSize: 12, color: 'var(--fg-dim)' }}>v{row.version}</code>
                   {row.manifest.forkedFrom?.harness ? (
@@ -216,12 +216,12 @@ export default function InstalledTemplatesPage() {
                 </div>
 
                 {row.manifest.description ? (
-                  <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--fg-muted)' }}>
+                  <p className="pc-installed-template-description" style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--fg-muted)' }}>
                     {row.manifest.description}
                   </p>
                 ) : null}
 
-                <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: 'var(--fg-dim)' }}>
+                <div className="pc-installed-template-meta" style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: 'var(--fg-dim)' }}>
                   <span>{pluginsCount} plugin{pluginsCount === 1 ? '' : 's'}</span>
                   <span>{modelRoles} role{modelRoles === 1 ? '' : 's'}</span>
                   <span>{configFilesCount} config file{configFilesCount === 1 ? '' : 's'}</span>
@@ -229,9 +229,10 @@ export default function InstalledTemplatesPage() {
                   {row.manifest.license ? <span>{row.manifest.license}</span> : null}
                 </div>
 
-                <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                <div className="pc-installed-template-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <RouteLink
                     href={`/installed/templates/${encodeURIComponent(row.slug)}/edit?version=${encodeURIComponent(row.version)}`}
+                    className="pc-installed-template-link"
                     style={{
                       padding: '6px 12px',
                       background: 'var(--bg-elevated, rgba(255,255,255,0.04))',
@@ -251,6 +252,7 @@ export default function InstalledTemplatesPage() {
                   <button
                     onClick={() => onInstall(row)}
                     disabled={installing === key}
+                    className="pc-installed-template-button pc-installed-template-button--install"
                     style={{
                       padding: '6px 12px',
                       background: 'transparent',
@@ -272,6 +274,7 @@ export default function InstalledTemplatesPage() {
                   <button
                     onClick={() => onPublish(row)}
                     disabled={isPublishing}
+                    className="pc-installed-template-button pc-installed-template-button--publish"
                     style={{
                       padding: '6px 12px',
                       background: 'var(--accent, #3b82f6)',
@@ -293,6 +296,7 @@ export default function InstalledTemplatesPage() {
                   <button
                     onClick={() => onDelete(row)}
                     disabled={deleting === key}
+                    className="pc-installed-template-button pc-installed-template-button--delete"
                     style={{
                       padding: '6px 10px',
                       background: 'transparent',
@@ -311,13 +315,14 @@ export default function InstalledTemplatesPage() {
                   </button>
 
                   {row.publishedSlugs.length > 0 ? (
-                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <div className="pc-installed-template-publishes" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                       {row.publishedSlugs.slice(-3).reverse().map((p) => (
                         <a
                           key={`${p.slug}@${p.version}`}
                           href={p.browseUrl}
                           target="_blank"
                           rel="noopener"
+                          className="pc-installed-template-publish-link"
                           style={{
                             fontSize: 11,
                             color: 'var(--fg-dim)',
@@ -337,7 +342,7 @@ export default function InstalledTemplatesPage() {
                     </div>
                   ) : null}
 
-                  <code style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-dim)' }}>
+                  <code className="pc-installed-template-path" style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--fg-dim)' }}>
                     {row.path}
                   </code>
                 </div>

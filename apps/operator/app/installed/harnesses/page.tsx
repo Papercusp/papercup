@@ -40,7 +40,7 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
       header: 'Slug',
       width: 1.4,
       render: ({ row }) => (
-        <span style={{ fontWeight: 600, opacity: row.exists ? 1 : 0.5 }}>{row.slug}</span>
+        <span className="pc-installed-harness-slug" style={{ fontWeight: 600, opacity: row.exists ? 1 : 0.5 }}>{row.slug}</span>
       ),
     },
     {
@@ -48,7 +48,7 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
       header: 'Kind',
       width: 1.2,
       render: ({ row }) => (
-        <span style={{ color: 'var(--fg-dim)', opacity: row.exists ? 1 : 0.5 }}>
+        <span className="pc-installed-harness-kind" style={{ color: 'var(--fg-dim)', opacity: row.exists ? 1 : 0.5 }}>
           {row.harness_kind ?? (row.department_slug ? `department:${row.department_slug}` : '—')}
         </span>
       ),
@@ -58,7 +58,7 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
       header: 'Path',
       width: 2.4,
       render: ({ row }) => (
-        <span style={{ color: 'var(--fg-dim)', fontFamily: 'monospace', fontSize: 12, opacity: row.exists ? 1 : 0.5 }}>{row.path}</span>
+        <span className="pc-installed-harness-path" style={{ color: 'var(--fg-dim)', fontFamily: 'monospace', fontSize: 12, opacity: row.exists ? 1 : 0.5 }}>{row.path}</span>
       ),
     },
     {
@@ -67,9 +67,9 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
       width: 0.7,
       render: ({ row }) => (
         row.exists ? (
-          <span style={{ color: 'var(--accent, #7fc99a)' }}>● live</span>
+          <span className="pc-installed-harness-state live" style={{ color: 'var(--accent, #7fc99a)' }}>● live</span>
         ) : (
-          <span style={{ color: 'var(--fg-mute)' }} title="Project directory missing on disk">○ stale</span>
+          <span className="pc-installed-harness-state stale" style={{ color: 'var(--fg-mute)' }} title="Project directory missing on disk">○ stale</span>
         )
       ),
     },
@@ -88,7 +88,7 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
       align: 'right',
       render: ({ row }) => (
         row.exists ? (
-          <RouteLink href={`/harness?project=${encodeURIComponent(row.slug)}`} className="pc-button" style={{ padding: '4px 10px' }} onClick={(e) => e.stopPropagation()}>
+          <RouteLink href={`/harness?project=${encodeURIComponent(row.slug)}`} className="pc-button pc-installed-harness-open" style={{ padding: '4px 10px' }} onClick={(e) => e.stopPropagation()}>
             Open
           </RouteLink>
         ) : null
@@ -96,7 +96,11 @@ function ProjectsGrid({ projects }: { projects: ProjectRow[] }) {
     },
   ], []);
 
-  return <RichGrid<ProjectRow> columns={columns} rows={projects} getRowId={(p) => p.slug} inline />;
+  return (
+    <div className="pc-installed-harness-grid">
+      <RichGrid<ProjectRow> columns={columns} rows={projects} getRowId={(p) => p.slug} inline />
+    </div>
+  );
 }
 
 function fmtDate(s?: string): string {
@@ -132,8 +136,8 @@ export default function InstalledHarnessesPage() {
   }, []);
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
-      <header style={{ marginBottom: 24 }}>
+    <div className="pc-installed-ops-shell pc-installed-harnesses-shell" style={{ maxWidth: 1100, margin: '0 auto', padding: '32px 24px' }}>
+      <header className="pc-installed-ops-header pc-installed-harnesses-header" style={{ marginBottom: 24 }}>
         <h1 style={{ margin: 0 }}>Harnesses</h1>
         <p style={{ color: 'var(--fg-mute)', marginTop: 8 }}>
           Locally-installed harnesses. Each is a project scaffolded into this workspace.
@@ -141,11 +145,11 @@ export default function InstalledHarnessesPage() {
         </p>
       </header>
 
-      {loading && <p style={{ color: 'var(--fg-mute)' }}>Loading…</p>}
-      {error && <p style={{ color: 'var(--accent-warn, #f97583)' }}>Error: {error}</p>}
+      {loading && <p className="pc-installed-ops-loading" style={{ color: 'var(--fg-mute)' }}>Loading…</p>}
+      {error && <p className="pc-installed-ops-error" style={{ color: 'var(--accent-warn, #f97583)' }}>Error: {error}</p>}
 
       {data && data.projects.length === 0 && !loading && (
-        <div style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
+        <div className="pc-installed-ops-empty pc-installed-harnesses-empty" style={{ padding: 32, border: '1px dashed var(--border)', borderRadius: 8, textAlign: 'center' }}>
           <p style={{ color: 'var(--fg-mute)' }}>No harnesses installed yet.</p>
           <p>
             <RouteLink href="/marketplace/templates" className="pc-button">Browse the marketplace</RouteLink>
@@ -156,7 +160,7 @@ export default function InstalledHarnessesPage() {
       {data && data.projects.length > 0 && <ProjectsGrid projects={data.projects} />}
 
       {data && data.staleCount > 0 && (
-        <p style={{ marginTop: 16, color: 'var(--fg-mute)', fontSize: 13 }}>
+        <p className="pc-installed-harnesses-stale" style={{ marginTop: 16, color: 'var(--fg-mute)', fontSize: 13 }}>
           {data.staleCount} stale entr{data.staleCount === 1 ? 'y' : 'ies'} — project directory missing on disk.
         </p>
       )}

@@ -187,6 +187,7 @@ export default function PluginSettingsPage() {
       <p style={{ color: 'var(--fg-mute, #999)', marginTop: 0 }}>
         Per-harness configuration for installed plugins. Reads/writes
         <code style={{ margin: '0 4px' }}>~/.papercusp/harnesses/&lt;slug&gt;/plugin-configs/</code>.
+        See <a href="/settings/plugins/tools" style={{ color: 'var(--fg)' }}>tools contributed by plugins →</a>
       </p>
 
       {harnesses.length === 0 ? (

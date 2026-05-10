@@ -86,6 +86,7 @@ export default function NotFound() {
                 alt="Papercusp cup mascot looking for the missing page"
                 width={156}
                 height={156}
+                loading="lazy"
                 style={{
                   position: 'relative',
                   zIndex: 1,

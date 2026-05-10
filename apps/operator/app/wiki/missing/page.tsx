@@ -38,7 +38,7 @@ export default async function WikiMissingPage({
   searchParams: Promise<{ target?: string; harness?: string }>;
 }) {
   const { target = '', harness = null } = await searchParams;
-  const reg = loadHarnessRegistry();
+  const reg = await loadHarnessRegistry();
   const projects = reg.projects ?? [];
 
   const candidates: Array<{ slug: string; filename: string; score: number }> = [];
@@ -52,23 +52,24 @@ export default async function WikiMissingPage({
   const top = candidates.slice(0, 12);
 
   return (
-    <div style={{ maxWidth: 720, margin: '40px auto', padding: 24, color: '#e6e6e6', fontFamily: 'system-ui' }}>
-      <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 8 }}>Wiki link not found</h1>
-      <p style={{ color: '#aaa', marginBottom: 16 }}>
-        No file matched <code style={{ background: '#1a1d22', padding: '2px 6px', borderRadius: 3 }}>[[{target}]]</code>
+    <div className="pc-wiki-missing-shell" style={{ maxWidth: 720, margin: '40px auto', padding: 24, color: '#e6e6e6', fontFamily: 'system-ui' }}>
+      <h1 className="pc-wiki-missing-title" style={{ fontSize: 22, fontWeight: 600, marginBottom: 8 }}>Wiki link not found</h1>
+      <p className="pc-wiki-missing-copy" style={{ color: '#aaa', marginBottom: 16 }}>
+        No file matched <code className="pc-wiki-missing-target" style={{ background: '#1a1d22', padding: '2px 6px', borderRadius: 3 }}>[[{target}]]</code>
         {harness ? <> in harness <strong>{harness}</strong></> : null}.
       </p>
 
       {top.length > 0 ? (
         <>
-          <h2 style={{ fontSize: 14, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+          <h2 className="pc-wiki-missing-subtitle" style={{ fontSize: 14, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
             Did you mean
           </h2>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          <ul className="pc-wiki-missing-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {top.map((c) => (
-              <li key={`${c.slug}/${c.filename}`} style={{ padding: '6px 0', borderBottom: '1px solid #2a2a2a' }}>
+              <li className="pc-wiki-missing-item" key={`${c.slug}/${c.filename}`} style={{ padding: '6px 0', borderBottom: '1px solid #2a2a2a' }}>
                 <RouteLink
                   href={`/wiki?target=${encodeURIComponent(c.filename)}&harness=${encodeURIComponent(c.slug)}`}
+                  className="pc-wiki-missing-link"
                   style={{ color: '#6ab0ff', textDecoration: 'none' }}
                 >
                   {c.slug}/{c.filename}
@@ -78,11 +79,11 @@ export default async function WikiMissingPage({
           </ul>
         </>
       ) : (
-        <p style={{ color: '#aaa' }}>No similar markdown files were found across {projects.length} registered project(s).</p>
+        <p className="pc-wiki-missing-none" style={{ color: '#aaa' }}>No similar markdown files were found across {projects.length} registered project(s).</p>
       )}
 
-      <div style={{ marginTop: 32 }}>
-        <RouteLink href="/harness" style={{ color: '#6ab0ff' }}>← Back to harness dashboard</RouteLink>
+      <div className="pc-wiki-missing-back" style={{ marginTop: 32 }}>
+        <RouteLink href="/harness" className="pc-wiki-missing-link pc-wiki-missing-link--back" style={{ color: '#6ab0ff' }}>← Back to harness dashboard</RouteLink>
       </div>
     </div>
   );

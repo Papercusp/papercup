@@ -18,6 +18,37 @@
   is human-driven via verdict; only the home-page subset is automated
   in `e2e/`.
 
+## Known issues
+
+- **`lib/operator-card-reconstruction.test.ts`** fails with two
+  tests under "PG-unavailable fallback". The file header (and test
+  setup) implies `readLastScan` reads `<papercuspRoot>/system/operator/last-scan.json`
+  when PG is unavailable, but the implementation in
+  `lib/operator-last-scan.ts` was migrated to read from
+  `harness_shared.operator_last_scan` exclusively (see the
+  "Was previously file-based" comment at the top of that file).
+  When the PG layer throws, the read propagates the throw rather
+  than falling back to the file the test sets up. Either:
+  - **Restore file fallback** in `operator-last-scan.ts` /
+    `operator-state-pg.ts` — wrap the `getOrgPg()` call in
+    try/catch and read from `<papercuspRoot>/system/operator/last-scan.json`
+    on throw. The on-disk format the test expects is already
+    canonical (matches `writeLastScan` output).
+  - **OR rewrite the test** to mock `readLastScan` directly,
+    bypassing the PG/file question — but that loses the original
+    intent (verifying the fallback exists).
+  Recommend the first fix; preserves the spec the test encodes.
+
+## Resolved (2026-05-06)
+
+- `lib/pty-ws.test.ts` round-trips binary input + `lib/pty-bridge.test.ts`
+  geometry-correct-after-resize — both fixed by making
+  `getScreenSerialization()` async and flushing the xterm-headless
+  write queue (`headless.write('', cb)`) before calling
+  `serializer.serialize()`. The xterm-headless `Terminal.write()` is
+  queued asynchronously; the test's fast reconnect was racing the
+  mirror-write. Single caller updated (`lib/pty-ws.ts:attachWsToPty`).
+
 ## Run after editing
 
 | Edit touches                                | Run                                                       |

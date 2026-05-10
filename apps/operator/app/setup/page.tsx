@@ -6,7 +6,7 @@ export const metadata = {
 
 export default function SetupPage() {
   return (
-    <div className="pc-shell" style={{ maxWidth: 760, margin: '0 auto', padding: '32px 28px' }}>
+    <div className="pc-shell pc-setup-shell" style={{ maxWidth: 760, margin: '0 auto', padding: '32px 28px' }}>
       <p style={{ marginBottom: 8 }}>
         <RouteLink href="/" style={{ color: 'var(--fg-mute)', fontSize: 12 }}>← back to home</RouteLink>
       </p>
@@ -20,24 +20,35 @@ export default function SetupPage() {
         .
       </p>
 
-      <Step n={1} title="Install the Claude CLI">
+      <Step n={1} title="Install an agent CLI">
         <p>
-          Papercusp drives Anthropic&rsquo;s <code>claude</code> CLI for the AI roles. Install it
-          once globally:
+          Papercusp drives an agent CLI for the AI roles. Two backends are
+          supported: Anthropic&rsquo;s <code>claude</code> (default), or
+          {' '}<code>omp</code> (<a
+            href="https://github.com/can1357/oh-my-pi"
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: 'var(--accent)' }}
+          >oh-my-pi</a>) — the multi-provider option that can mix
+          Anthropic, OpenAI, and others.
         </p>
-        <pre className="pc-code">npm install -g @anthropic-ai/claude-cli</pre>
+        <pre className="pc-code">{`# claude (default backend)
+npm install -g @anthropic-ai/claude-cli
+
+# or omp (set AGENT_BACKEND=omp to use it)
+bun add -g @oh-my-pi/pi-coding-agent`}</pre>
         <p style={{ fontSize: 13, color: 'var(--fg-mute)' }}>
           Requires Node.js 20+ on PATH. The <RouteLink href="/" style={{ color: 'var(--accent)' }}>home page</RouteLink> shows
-          a red dot if Papercusp can&rsquo;t find <code>claude</code>; green when it can.
+          a red dot if Papercusp can&rsquo;t find an agent CLI; green when it can.
         </p>
       </Step>
 
-      <Step n={2} title="Authenticate the claude CLI">
+      <Step n={2} title="Authenticate the agent CLI">
         <p>
-          Run <code>claude</code> in a terminal and follow the sign-in
-          prompt. The operator invokes <code>claude -p</code> for every
-          agent run; there&rsquo;s no separate API-key step inside the
-          UI. See{' '}
+          Run <code>claude</code> (or <code>omp</code>) in a terminal and
+          follow the sign-in prompt. The operator invokes the configured
+          agent for every run; there&rsquo;s no separate API-key step
+          inside the UI. See{' '}
           <a
             href="https://docs.anthropic.com/claude/docs/claude-code"
             target="_blank"
@@ -46,8 +57,9 @@ export default function SetupPage() {
           >
             Claude Code documentation
           </a>{' '}
-          for sign-in options. Whatever credentials <code>claude</code> picks
-          up, the operator inherits.
+          for claude sign-in options. omp reads <code>ANTHROPIC_API_KEY</code> /
+          <code>OPENAI_API_KEY</code> directly. Whatever credentials the
+          binary picks up, the operator inherits.
         </p>
       </Step>
 
@@ -87,6 +99,7 @@ export default function SetupPage() {
       </Step>
 
       <div
+        className="pc-setup-stuck"
         style={{
           marginTop: 32,
           padding: 20,
@@ -97,7 +110,7 @@ export default function SetupPage() {
       >
         <strong>Stuck?</strong> Open an{' '}
         <a
-          href="https://github.com/aviynw/Restart/issues/new"
+          href="https://github.com/papercupai/papercup/issues/new"
           target="_blank"
           rel="noreferrer"
           style={{ color: 'var(--accent)' }}
@@ -121,8 +134,9 @@ export default function SetupPage() {
 
 function Step({ n, title, children }: { n: number; title: string; children: React.ReactNode }) {
   return (
-    <div style={{ display: 'flex', gap: 16, marginBottom: 28 }}>
+    <div className="pc-setup-step" style={{ display: 'flex', gap: 16, marginBottom: 28 }}>
       <div
+        className="pc-setup-step-orb"
         style={{
           flex: '0 0 36px',
           width: 36,
@@ -139,7 +153,7 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
       >
         {n}
       </div>
-      <div style={{ flex: 1 }}>
+      <div className="pc-setup-step-copy" style={{ flex: 1 }}>
         <h3 style={{ fontSize: 18, fontWeight: 700, marginTop: 4, marginBottom: 8 }}>{title}</h3>
         <div style={{ color: 'var(--fg-mute)', lineHeight: 1.6 }}>{children}</div>
       </div>

@@ -27,7 +27,7 @@ export default function ForkPage({ params }: Props) {
 
   if (!forked) {
     return (
-      <div style={{ padding: '32px 16px' }}>
+      <div className="pc-snapshot-fork-page pc-snapshot-fork-page--form" style={{ padding: '32px 16px' }}>
         <ForkCompletionForm
           snapshotId={id}
           onSuccess={(payload) => {
@@ -46,7 +46,7 @@ export default function ForkPage({ params }: Props) {
   }
 
   return (
-    <div style={{ padding: '32px 16px' }}>
+    <div className="pc-snapshot-fork-page pc-snapshot-fork-page--provisioning" style={{ padding: '32px 16px' }}>
       <ForkProvisioningProgress
         harnessSlug={forked.newSlug}
         queue={forked.pendingProvisioning ?? []}

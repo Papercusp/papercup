@@ -88,27 +88,27 @@ export default function ApiKeysPage() {
     <div>
       <h1>API keys</h1>
 
-      <div className="pc-warn" role="status">
-        ⚠ <strong>These keys stay on your computer.</strong> They&rsquo;re written to{' '}
-        <code>~/.papercusp/credentials.json</code> with permissions <code>0600</code>{' '}
-        (your user only). They are <strong>never</strong> sent to or stored on
-        Papercusp&rsquo;s servers. If you lose this file, you&rsquo;ll need to re-enter
-        the keys here.
+      <div className="pc-warn pc-settings-inline-callout" role="status">
+        <strong>Keys stay on this computer.</strong>
+        <span>Stored at <code>~/.papercusp/credentials.json</code> with user-only permissions; Papercusp never stores them on its servers.</span>
       </div>
 
       <h2 style={{ marginTop: 24, fontSize: 18 }}>Core</h2>
       <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
-        Anthropic powers the harness roles via <code>claude -p</code>. OpenAI is
-        a fallback for some plugins. GitHub PAT is needed only when publishing
-        harnesses to the marketplace.
+        Default backend is <code>omp</code> via Meridian — uses your Claude Max
+        subscription (no API key needed). Set an Anthropic key only if you switch
+        to <code>AGENT_BACKEND=claude-code</code> and don&rsquo;t already have a
+        Claude Code OAuth session. OpenAI is a fallback for some plugins. GitHub
+        PAT is needed only when publishing harnesses to the marketplace.
       </p>
 
       <form onSubmit={submit(onSubmit)} className="pc-card" style={{ maxWidth: 640 }}>
         <SecretField
           label="Anthropic API key"
-          help="Required. Used by every harness role for `claude -p` invocations."
+          help="Optional. Only needed when AGENT_BACKEND=claude-code and you don&apos;t have a Claude Code OAuth session. omp + Meridian (default) uses your Claude Max subscription instead."
           placeholder={masked?.anthropic_api_key ?? 'sk-ant-…'}
           masked={masked?.anthropic_api_key}
+          uses={['Claude Code backend']}
           loading={loading}
           register={register('anthropic')}
           error={errors.anthropic?.message}
@@ -118,6 +118,7 @@ export default function ApiKeysPage() {
           help="Optional fallback for some plugins. NOTE: this is a separate slot from the OpenAI voice key below."
           placeholder={masked?.openai_api_key ?? 'sk-…'}
           masked={masked?.openai_api_key}
+          uses={['LLM fallback', 'plugins']}
           loading={loading}
           register={register('openai')}
           error={errors.openai?.message}
@@ -127,6 +128,7 @@ export default function ApiKeysPage() {
           help="Optional. Needed only if you want to publish harnesses to the marketplace."
           placeholder={masked?.github_pat ?? 'ghp_…'}
           masked={masked?.github_pat}
+          uses={['Marketplace publishing']}
           loading={loading}
           register={register('github')}
           error={errors.github?.message}
@@ -141,6 +143,8 @@ export default function ApiKeysPage() {
           )}
         </div>
       </form>
+
+      <SearchProvidersSection />
 
       <h2 style={{ marginTop: 32, fontSize: 18 }}>Voice & cloud engines</h2>
       <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
@@ -259,14 +263,19 @@ function VoiceKeyRow({
 
   return (
     <div style={{ marginBottom: 12, padding: 12, border: '1px solid var(--border)', borderRadius: 4 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <strong style={{ fontSize: 13 }}>{label}</strong>
-        <a href={helpUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, opacity: 0.7 }}>get key →</a>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <strong style={{ fontSize: 13 }}>{label}</strong>
+          <span className={`pc-settings-status-pill ${state.configured ? 'is-set' : 'is-empty'}`}>
+            {state.configured ? 'Set' : 'Not set'}
+          </span>
+        </div>
+        <a href={helpUrl} target="_blank" rel="noreferrer" style={{ fontSize: 11, opacity: 0.7, flex: '0 0 auto' }}>get key →</a>
       </div>
       <p style={{ fontSize: 12, color: 'var(--fg-mute)', marginBottom: 8 }}>{note}</p>
       {state.configured ? (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <code style={{ padding: '4px 8px', background: 'var(--bg-1)', borderRadius: 4, fontSize: 12, fontFamily: 'monospace' }}>
+          <code className="pc-settings-secret-value">
             {state.apiKey ?? '(masked)'}
           </code>
           <button type="button" onClick={clear} disabled={busy}
@@ -296,6 +305,7 @@ function VoiceKeyRow({
 function SecretField({
   label,
   help,
+  uses,
   placeholder,
   masked,
   loading,
@@ -304,6 +314,7 @@ function SecretField({
 }: {
   label: string;
   help: string;
+  uses?: string[];
   placeholder: string;
   masked: string | null | undefined;
   loading: boolean;
@@ -314,7 +325,7 @@ function SecretField({
     <FormField
       label={label}
       error={error}
-      description={`${help}${!loading && masked ? ` Currently set; leave empty to keep, type to overwrite.` : !loading ? ' Currently not set.' : ''}`}
+      description={help}
     >
       <input
         type="password"
@@ -324,6 +335,152 @@ function SecretField({
         spellCheck={false}
         {...register}
       />
+      <div className="pc-settings-field-status">
+        <span className={`pc-settings-status-pill ${masked ? 'is-set' : 'is-empty'}`}>
+          {loading ? 'Checking…' : masked ? 'Set' : 'Not set'}
+        </span>
+        {masked && <span className="pc-settings-status-copy">Leave blank to keep; type to overwrite.</span>}
+      </div>
+      {uses && uses.length > 0 && (
+        <div className="pc-settings-usage-badges" aria-label={`${label} usage`}>
+          {uses.map((use) => <span key={use}>{use}</span>)}
+        </div>
+      )}
     </FormField>
+  );
+}
+
+/* ─── Search-provider keys section ──────────────────────────────────── */
+
+interface ProviderField {
+  envVar: string;
+  masked: string | null;
+  isPrimary: boolean;
+}
+interface ProviderRow {
+  id: string;
+  label: string;
+  fields: ProviderField[];
+}
+interface ProvidersResponse {
+  providers: ProviderRow[];
+  updatedAt: number | null;
+}
+
+function SearchProvidersSection() {
+  const [data, setData] = useState<ProvidersResponse | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/api/credentials/search-providers', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((d) => setData(d as ProvidersResponse))
+      .catch((e) => setError(e?.message ?? String(e)));
+  }, []);
+
+  const onSave = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const values: Record<string, string | null> = {};
+      for (const [k, v] of Object.entries(drafts)) {
+        // Empty string after trim → null (clear); else use the value.
+        const trimmed = v.trim();
+        values[k] = trimmed.length > 0 ? trimmed : null;
+      }
+      const res = await fetch('/api/credentials/search-providers', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ values }),
+      });
+      const next = await res.json();
+      if (!res.ok) throw new Error((next && next.error) || `HTTP ${res.status}`);
+      setData(next as ProvidersResponse);
+      setDrafts({});
+      toast.success('Search-provider keys updated');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <h2 style={{ marginTop: 32, fontSize: 18 }}>Search providers</h2>
+      <p style={{ color: 'var(--fg-mute)', fontSize: 13, marginBottom: 12 }}>
+        API keys for OMP&rsquo;s 14 web-search providers. Set the ones you actually use; the
+        orchestrator injects them into OMP&rsquo;s spawn env. OMP&rsquo;s search chain
+        falls through to whichever provider is configured.
+        See <a href="/settings/omp" style={{ color: 'var(--fg)' }}>OMP settings → providers.webSearch</a>{' '}
+        to set the preferred provider.
+      </p>
+      {error && (
+        <div className="pc-warn" role="alert" style={{ marginBottom: 12 }}>
+          {error}
+        </div>
+      )}
+      {!data && !error && <div style={{ color: 'var(--fg-mute)' }}>Loading…</div>}
+      {data && (
+        <div style={{ maxWidth: 640, display: 'grid', gap: 8 }}>
+          {data.providers.map((p) => (
+            <details key={p.id} style={{
+              border: '1px solid var(--border)', borderRadius: 4, padding: '8px 12px',
+            }}>
+              <summary style={{ cursor: 'pointer', display: 'flex', justifyContent: 'space-between' }}>
+                <span style={{ fontWeight: 600, fontSize: 13 }}>{p.label}</span>
+                <span style={{ fontSize: 11, color: 'var(--fg-mute)' }}>
+                  {p.fields.some((f) => f.masked) ? 'Configured' : 'Not configured'}
+                </span>
+              </summary>
+              <div style={{ marginTop: 8, display: 'grid', gap: 8 }}>
+                {p.fields.map((f) => (
+                  <div key={f.envVar} style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 2 }}>
+                    <label style={{ fontSize: 11, color: 'var(--fg-mute)', fontFamily: 'monospace' }}>
+                      {f.envVar}
+                      {f.isPrimary && <span style={{ marginLeft: 6, color: 'var(--fg-dim)' }}>(primary)</span>}
+                    </label>
+                    <input
+                      type="password"
+                      placeholder={f.masked ?? '—'}
+                      value={drafts[f.envVar] ?? ''}
+                      onChange={(e) => setDrafts((prev) => ({ ...prev, [f.envVar]: e.target.value }))}
+                      autoComplete="off"
+                      spellCheck={false}
+                      style={{
+                        padding: '6px 8px', fontSize: 12, fontFamily: 'monospace',
+                        background: 'var(--bg-1)', border: '1px solid var(--border)',
+                        borderRadius: 3, color: 'var(--fg)',
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            </details>
+          ))}
+          <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+            <button
+              onClick={onSave}
+              disabled={saving || Object.keys(drafts).length === 0}
+              className="pc-button primary"
+              style={{ padding: '6px 14px', fontSize: 13 }}
+            >
+              {saving ? 'Saving…' : `Save ${Object.keys(drafts).length} change${Object.keys(drafts).length === 1 ? '' : 's'}`}
+            </button>
+            {Object.keys(drafts).length > 0 && (
+              <button
+                onClick={() => setDrafts({})}
+                className="pc-button ghost"
+                style={{ padding: '6px 14px', fontSize: 13 }}
+              >
+                Discard
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

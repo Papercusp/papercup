@@ -46,7 +46,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'missing target' }, { status: 400 });
   }
 
-  const reg = loadHarnessRegistry();
+  const reg = await loadHarnessRegistry();
   const projects = reg.projects ?? [];
 
   const ordered = harnessHint
