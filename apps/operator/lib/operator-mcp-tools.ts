@@ -48,8 +48,12 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   //      type:'http' mcpServers) so the subprocess proxies into the
   //      operator's already-loaded plugin catalog
   // B is the right answer; tracked for follow-up.
-  'mcp__agentmcp__orchestrator.spawn',
-  'mcp__agentmcp__orchestrator.poll',
-  'mcp__agentmcp__orchestrator.list_active',
-  'mcp__agentmcp__orchestrator.cancel',
+  // claude-code converts `.` to `_` in MCP tool names — server-side
+  // these are exposed as orchestrator.spawn / poll / list_active / cancel
+  // but Claude sees them as orchestrator_spawn etc. Allowlist must match
+  // what Claude sees, not what the server exports.
+  'mcp__agentmcp__orchestrator_spawn',
+  'mcp__agentmcp__orchestrator_poll',
+  'mcp__agentmcp__orchestrator_list_active',
+  'mcp__agentmcp__orchestrator_cancel',
 ];

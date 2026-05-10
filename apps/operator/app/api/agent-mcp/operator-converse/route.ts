@@ -156,10 +156,21 @@ export async function POST(req: NextRequest) {
         const mcpConfig = principalOk
           ? {
               mcpServers: {
+                // omp silently drops type:'http' MCP servers — bridge
+                // through mcp-remote (stdio→HTTP) which is the same
+                // pattern voice-mode and hindsight already use in
+                // ~/.omp/agent/mcp.json. claude-code can also speak
+                // this format, so it works for both backends.
                 agentmcp: {
-                  type: 'http',
-                  url: mcpUrl,
-                  headers: { Authorization: `Bearer ${principal!.bearer}` },
+                  type: 'stdio',
+                  command: 'npx',
+                  args: [
+                    '-y',
+                    'mcp-remote@latest',
+                    mcpUrl,
+                    '--header',
+                    `Authorization:Bearer ${principal!.bearer}`,
+                  ],
                 },
               },
             }

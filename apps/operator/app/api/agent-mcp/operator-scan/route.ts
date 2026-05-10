@@ -227,9 +227,17 @@ export async function GET(req: NextRequest) {
           mcpConfig: {
             mcpServers: {
               agentmcp: {
-                type: 'http',
-                url: `http://127.0.0.1:3055/api/mcp?harness=system&workspace=${encodeURIComponent(workspaceId)}&role=operator&run=op-scan-${Date.now()}&spawn=op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-                headers: { Authorization: `Bearer ${principal.bearer}` },
+                // omp silently drops type:'http' MCP servers — bridge
+                // through mcp-remote (stdio→HTTP).
+                type: 'stdio',
+                command: 'npx',
+                args: [
+                  '-y',
+                  'mcp-remote@latest',
+                  `http://127.0.0.1:3055/api/mcp?harness=system&workspace=${encodeURIComponent(workspaceId)}&role=operator&run=op-scan-${Date.now()}&spawn=op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+                  '--header',
+                  `Authorization:Bearer ${principal.bearer}`,
+                ],
               },
             },
           },
