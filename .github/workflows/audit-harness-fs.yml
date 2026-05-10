@@ -1,0 +1,68 @@
+name: Audit harness FS state
+
+# Runs the orchestrator's audit-harness-fs.mjs script against any
+# harness directories present in the repo's test fixtures or working
+# checkout. The script flags any FS state files that should now be
+# in PG per the orchestrator → PG migration arc (Phases 1-7). A clean
+# run = the codebase isn't accidentally regressing back to writing
+# state files outside the PG-canonical paths.
+#
+# This is intentionally a fast no-PG-needed check — the audit script
+# walks .harness directories looking at filenames only.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: audit-harness-fs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit FS state files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Walk for any committed .harness directory in the repo (e.g.
+      # test fixtures) and audit each one. The script exits 0 on clean,
+      # 1 on stale state files found. We aggregate; one stale finding
+      # in one harness fails the whole job.
+      - name: Run audit
+        shell: bash
+        run: |
+          set -e
+          AUDIT="libs/papercusp/packages/orchestrator/scripts/audit-harness-fs.mjs"
+          if [ ! -f "$AUDIT" ]; then
+            echo "::error::audit script missing at $AUDIT"
+            exit 1
+          fi
+          mapfile -t harnesses < <(find . -type d -name '.harness' -not -path '*/node_modules/*' -not -path '*/.next/*')
+          if [ ${#harnesses[@]} -eq 0 ]; then
+            echo "no .harness directories found in checkout — audit clean by vacuity"
+            exit 0
+          fi
+          fails=0
+          for h in "${harnesses[@]}"; do
+            echo "::group::auditing $h"
+            if ! node "$AUDIT" "$h"; then
+              fails=$((fails + 1))
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fails" -gt 0 ]; then
+            echo "::error::$fails harness director$([ $fails -eq 1 ] && echo 'y' || echo 'ies') contain stale FS state — see annotations above"
+            exit 1
+          fi
+          echo "all ${#harnesses[@]} .harness directories clean"
