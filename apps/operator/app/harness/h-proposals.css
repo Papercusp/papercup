@@ -1,0 +1,2928 @@
+
+.h-root:has(.h-proposals-panel) {
+  /* Match the dashboard floor (1260px) so non-dashboard tabs fill the
+   * same vertical space dashboard does. Without this, proposals/summary/
+   * config/etc. were stopping at 1040px while dashboard reached 1260px,
+   * leaving a visible gap at the bottom of every non-dashboard tab on
+   * any viewport between 1089px and 1309px tall. */
+  height: auto;
+  min-height: max(calc(100vh - var(--app-nav-height, 49px)), 1260px);
+}
+.h-main-shell.embed:has(.h-proposals-panel) {
+  /* Floor at 760px so smaller viewports stay usable; remove the max
+   * cap so the shell fills the available height like dashboard +
+   * brainstorm. */
+  min-height: 760px;
+}
+.h-proposals-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--fg);
+  background:
+    radial-gradient(circle at 12% -8%, color-mix(in oklab, var(--info), transparent 88%), transparent 34%),
+    radial-gradient(circle at 94% 0%, color-mix(in oklab, var(--accent), transparent 88%), transparent 32%),
+    linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 1.5%), var(--bg));
+}
+.h-proposal-detail-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.h-proposal-btn,
+.h-proposal-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid color-mix(in oklab, var(--border), white 7%);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--bg-3), transparent 12%);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 720;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.h-proposal-btn {
+  width: 100%;
+  min-height: 28px;
+  padding: 0 10px;
+}
+.h-proposal-mini {
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: 10.5px;
+}
+.h-proposal-btn:hover:not(:disabled),
+.h-proposal-mini:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--bg-3), white 6%);
+  border-color: color-mix(in oklab, var(--border), white 16%);
+}
+.h-proposal-btn:active:not(:disabled),
+.h-proposal-mini:active:not(:disabled) { transform: translateY(1px); }
+.h-proposal-btn:disabled,
+.h-proposal-mini:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.h-proposal-btn.primary {
+  color: #eef4ff;
+  border-color: color-mix(in oklab, var(--accent), transparent 45%);
+  background: linear-gradient(180deg, color-mix(in oklab, var(--accent), white 10%), color-mix(in oklab, var(--accent), black 18%));
+}
+.h-proposal-btn.good,
+.h-proposal-mini.good {
+  color: color-mix(in oklab, var(--good), white 24%);
+  border-color: color-mix(in oklab, var(--good), transparent 58%);
+  background: color-mix(in oklab, var(--good), transparent 88%);
+}
+.h-proposal-btn.danger,
+.h-proposal-mini.bad {
+  color: color-mix(in oklab, var(--bad), white 28%);
+  border-color: color-mix(in oklab, var(--bad), transparent 56%);
+  background: color-mix(in oklab, var(--bad), transparent 90%);
+}
+.h-proposal-btn.ghost,
+.h-proposal-mini.ghost {
+  color: var(--fg-dim);
+  background: transparent;
+}
+.h-proposals-goal {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 22%);
+  background: color-mix(in oklab, var(--bg), transparent 25%);
+}
+.h-proposals-goal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.h-proposals-goal-head span:last-child {
+  color: var(--fg-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.h-proposals-goal-preview {
+  max-height: 58px;
+  overflow: auto;
+  padding: 8px 10px;
+  color: var(--fg);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 18%);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-3), transparent 18%);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  scrollbar-width: thin;
+}
+.h-proposals-goal-preview.empty {
+  color: var(--fg-faint);
+  font-family: inherit;
+  font-style: italic;
+}
+.h-proposals-goal-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+.h-proposals-goal-editor textarea {
+  width: 100%;
+  min-height: 74px;
+  box-sizing: border-box;
+  resize: vertical;
+  color: var(--fg);
+  border: 1px solid color-mix(in oklab, var(--border), white 8%);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--bg-3), transparent 8%);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  outline: none;
+  padding: 9px 10px;
+}
+.h-proposals-goal-editor textarea:focus {
+  border-color: color-mix(in oklab, var(--accent), white 6%);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 65%);
+}
+.h-proposals-goal-actions {
+  flex-direction: column;
+  min-width: 104px;
+}
+.h-proposal-toast,
+.h-proposal-replan {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 18%);
+  font-size: 12px;
+  line-height: 1.25;
+}
+.h-proposal-toast span {
+  display: inline-flex;
+  width: 17px;
+  height: 17px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 820;
+}
+.h-proposal-toast.good {
+  color: color-mix(in oklab, var(--good), white 20%);
+  background: color-mix(in oklab, var(--good), transparent 92%);
+}
+.h-proposal-toast.good span { background: color-mix(in oklab, var(--good), transparent 82%); }
+.h-proposal-toast.bad {
+  color: color-mix(in oklab, var(--bad), white 22%);
+  background: color-mix(in oklab, var(--bad), transparent 92%);
+}
+.h-proposal-toast.bad span { background: color-mix(in oklab, var(--bad), transparent 82%); }
+.h-proposal-replan {
+  color: color-mix(in oklab, var(--info), white 20%);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--info), transparent 88%), color-mix(in oklab, var(--accent), transparent 93%));
+}
+.h-proposal-replan span {
+  min-width: 0;
+  flex: 1;
+}
+.h-proposal-replan code {
+  padding: 1px 4px;
+  border: 1px solid color-mix(in oklab, var(--info), transparent 60%);
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--bg), transparent 15%);
+}
+.h-proposal-replan .h-proposal-btn { width: auto; }
+.h-proposals-workbench {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.h-proposals-sidebar {
+  flex: 0 0 34%;
+  min-width: 284px;
+  max-width: 438px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid color-mix(in oklab, var(--border), transparent 16%);
+  background: color-mix(in oklab, var(--bg-2), transparent 10%);
+}
+.h-proposal-toolbar {
+  flex: 0 0 auto;
+  display: grid;
+  gap: 7px;
+  padding: 9px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 24%);
+  background: color-mix(in oklab, var(--bg-2), white 1.5%);
+}
+.h-proposal-toolbar > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.h-proposal-toolbar-count {
+  color: var(--fg-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10.5px;
+}
+.h-proposal-search {
+  width: 100%;
+  height: 30px;
+  box-sizing: border-box;
+  color: var(--fg);
+  border: 1px solid color-mix(in oklab, var(--border), white 8%);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--bg), transparent 15%);
+  font-size: 12px;
+  outline: none;
+  padding: 0 9px;
+}
+.h-proposal-search:focus {
+  border-color: color-mix(in oklab, var(--accent), white 6%);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent), transparent 66%);
+}
+.h-proposal-filter-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+.h-proposal-filter {
+  min-width: 0;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 0 7px;
+  color: var(--fg-dim);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 14%);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--bg-3), transparent 38%);
+  cursor: pointer;
+  font-size: 10.5px;
+  line-height: 1;
+}
+.h-proposal-filter span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.h-proposal-filter b {
+  color: var(--fg);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+.h-proposal-filter.on {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--accent), transparent 45%);
+  background: color-mix(in oklab, var(--accent), transparent 90%);
+}
+.h-proposal-filter.status-pending.on {
+  border-color: color-mix(in oklab, var(--warn), transparent 50%);
+  background: color-mix(in oklab, var(--warn), transparent 91%);
+}
+.h-proposal-filter.status-applied.on {
+  border-color: color-mix(in oklab, var(--good), transparent 54%);
+  background: color-mix(in oklab, var(--good), transparent 92%);
+}
+.h-proposal-filter.status-rejected.on {
+  border-color: color-mix(in oklab, var(--bad), transparent 56%);
+  background: color-mix(in oklab, var(--bad), transparent 93%);
+}
+.h-proposal-select-all,
+.h-proposal-bulkbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 24%);
+  font-size: 11.5px;
+}
+.h-proposal-select-all {
+  color: var(--fg-dim);
+  cursor: pointer;
+  background: color-mix(in oklab, var(--bg), transparent 48%);
+}
+.h-proposal-select-all input,
+.h-proposal-item input { accent-color: var(--accent); }
+.h-proposal-bulkbar {
+  color: var(--fg);
+  background: color-mix(in oklab, var(--warn), transparent 92%);
+}
+.h-proposal-bulkbar span {
+  flex: 1;
+  min-width: 0;
+}
+.h-proposal-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px;
+  scrollbar-color: color-mix(in oklab, var(--fg-dim), transparent 55%) transparent;
+  scrollbar-width: thin;
+}
+.h-proposal-empty {
+  min-height: 154px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  padding: 20px;
+  text-align: center;
+  color: var(--fg-dim);
+  border: 1px dashed color-mix(in oklab, var(--border), white 8%);
+  border-radius: 12px;
+  background: color-mix(in oklab, var(--bg-3), transparent 60%);
+}
+.h-proposal-empty b {
+  color: var(--fg);
+  font-size: 13px;
+}
+.h-proposal-empty span {
+  max-width: 280px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.h-proposal-empty em {
+  color: var(--accent);
+  font-style: normal;
+  font-weight: 740;
+}
+.h-proposal-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  margin-bottom: 5px;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.h-proposal-item::before {
+  content: "";
+  position: absolute;
+  inset: 7px auto 7px 0;
+  width: 3px;
+  border-radius: 999px;
+  opacity: 0.72;
+  background: var(--fg-faint);
+}
+.h-proposal-item.status-pending::before { background: var(--warn); }
+.h-proposal-item.status-applied::before { background: var(--good); }
+.h-proposal-item.status-rejected::before { background: var(--bad); }
+.h-proposal-item:hover,
+.h-proposal-item.is-active {
+  border-color: color-mix(in oklab, var(--border), white 10%);
+  background: color-mix(in oklab, var(--bg-3), transparent 18%);
+}
+.h-proposal-item.is-active { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent), transparent 70%); }
+.h-proposal-item input {
+  z-index: 1;
+  justify-self: center;
+  margin: 0;
+}
+.h-proposal-item-spacer {
+  width: 14px;
+  height: 14px;
+}
+.h-proposal-row-button {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 8px 9px 8px 0;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+.h-proposal-row-top,
+.h-proposal-row-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.h-proposal-row-top { justify-content: space-between; }
+.h-proposal-row-top time,
+.h-proposal-row-meta {
+  color: var(--fg-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+.h-proposal-row-title {
+  min-width: 0;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1.22;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+.h-proposal-row-meta {
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, #000 0%, #000 88%, transparent 100%);
+}
+.h-proposal-row-meta span { flex: 0 0 auto; }
+.h-proposal-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in oklab, var(--border), white 8%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg-3), transparent 20%);
+  color: var(--fg-dim);
+  font-size: 9.5px;
+  font-weight: 780;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.h-proposal-badge.status-pending {
+  color: color-mix(in oklab, var(--warn), white 18%);
+  border-color: color-mix(in oklab, var(--warn), transparent 58%);
+  background: color-mix(in oklab, var(--warn), transparent 90%);
+}
+.h-proposal-badge.status-applied {
+  color: color-mix(in oklab, var(--good), white 18%);
+  border-color: color-mix(in oklab, var(--good), transparent 60%);
+  background: color-mix(in oklab, var(--good), transparent 91%);
+}
+.h-proposal-badge.status-rejected {
+  color: color-mix(in oklab, var(--bad), white 22%);
+  border-color: color-mix(in oklab, var(--bad), transparent 58%);
+  background: color-mix(in oklab, var(--bad), transparent 92%);
+}
+.h-proposal-badge.review-accept {
+  color: color-mix(in oklab, var(--accent, var(--good)), white 22%);
+  border-color: color-mix(in oklab, var(--accent, var(--good)), transparent 55%);
+  background: color-mix(in oklab, var(--accent, var(--good)), transparent 88%);
+}
+.h-proposal-badge.review-reject {
+  color: color-mix(in oklab, var(--bad), white 22%);
+  border-color: color-mix(in oklab, var(--bad), transparent 58%);
+  background: color-mix(in oklab, var(--bad), transparent 92%);
+}
+.h-proposal-badge.review-defer {
+  color: color-mix(in oklab, var(--fg-dim), white 8%);
+  border-color: color-mix(in oklab, var(--border), white 6%);
+  background: color-mix(in oklab, var(--bg-3), transparent 25%);
+}
+.h-proposal-review-summary {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-style: normal;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-proposal-review-summary em {
+  font-style: normal;
+  font-weight: 700;
+  color: color-mix(in oklab, var(--fg), var(--fg-dim) 20%);
+  margin-right: 4px;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.h-proposal-detail {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--bg), transparent 8%);
+}
+.h-proposal-detail-head {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "title metrics"
+    "title actions";
+  gap: 7px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 18%);
+  background: linear-gradient(90deg, color-mix(in oklab, var(--bg-2), white 2%), transparent), color-mix(in oklab, var(--bg), transparent 18%);
+}
+.h-proposal-detail-head.status-pending { box-shadow: inset 3px 0 0 color-mix(in oklab, var(--warn), transparent 15%); }
+.h-proposal-detail-head.status-applied { box-shadow: inset 3px 0 0 color-mix(in oklab, var(--good), transparent 15%); }
+.h-proposal-detail-head.status-rejected { box-shadow: inset 3px 0 0 color-mix(in oklab, var(--bad), transparent 15%); }
+.h-proposal-detail-title {
+  grid-area: title;
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+.h-proposal-detail-title h3 {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg);
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.18;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-transform: capitalize;
+}
+.h-proposal-detail-title p {
+  min-width: 0;
+  margin: 0;
+  color: var(--fg-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-proposal-detail-title .h-proposal-badge { justify-self: start; }
+.h-proposal-detail-metrics {
+  grid-area: metrics;
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  max-width: 440px;
+  overflow: hidden;
+}
+.h-proposal-detail-metrics span {
+  min-height: 23px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 7px;
+  color: var(--fg-dim);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 16%);
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--bg-3), transparent 25%);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.h-proposal-detail-metrics b { color: var(--fg); }
+.h-proposal-detail-actions { grid-area: actions; }
+.h-proposal-detail-actions .h-proposal-btn { width: auto; }
+.h-proposal-doc-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: auto;
+  padding: 12px;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--bg), transparent 10%), transparent 90px), color-mix(in oklab, var(--bg), black 4%);
+  scrollbar-color: color-mix(in oklab, var(--fg-dim), transparent 55%) transparent;
+  scrollbar-width: thin;
+}
+.h-proposal-doc {
+  width: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 14px 16px;
+  color: color-mix(in oklab, var(--fg), white 2%);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 18%);
+  border-radius: 12px;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--bg-2), white 2%), color-mix(in oklab, var(--bg), transparent 5%));
+  box-shadow: 0 10px 24px color-mix(in oklab, black, transparent 84%);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.h-proposal-loading,
+.h-proposal-detail-empty {
+  flex: 1;
+  min-height: 260px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 7px;
+  color: var(--fg-dim);
+  text-align: center;
+}
+.h-proposal-detail-empty b {
+  color: var(--fg);
+  font-size: 15px;
+}
+.h-proposal-detail-empty span {
+  max-width: 340px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+@media (max-width: 760px) {
+  .h-proposals-panel { overflow: auto; }
+  .h-proposals-goal { padding: 7px 8px; }
+  .h-proposals-goal-editor { grid-template-columns: minmax(0, 1fr); }
+  .h-proposals-goal-actions { flex-direction: row; }
+  .h-proposals-workbench { min-height: 720px; flex-direction: column; overflow: visible; }
+  .h-proposals-sidebar {
+    flex: 0 0 auto;
+    min-width: 0;
+    max-width: none;
+    max-height: 360px;
+    border-right: 0;
+    border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 16%);
+  }
+  .h-proposal-list { max-height: 230px; }
+  .h-proposal-detail { flex: 1 1 420px; min-height: 420px; }
+  .h-proposal-detail-head {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "title"
+      "metrics"
+      "actions";
+  }
+  .h-proposal-detail-metrics {
+    justify-content: flex-start;
+    overflow-x: auto;
+    mask-image: linear-gradient(90deg, #000 0%, #000 90%, transparent 100%);
+  }
+  .h-proposal-detail-actions { justify-content: stretch; }
+  .h-proposal-detail-actions .h-proposal-btn { flex: 1; }
+}
+.h-proposal-ops-row {
+  display: grid;
+  grid-template-columns: minmax(104px, 1fr) auto auto;
+  gap: 5px;
+  align-items: center;
+  min-width: 0;
+}
+.h-proposal-sort {
+  min-width: 0;
+  height: 28px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
+  padding: 0 6px;
+  color: var(--fg-dim);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 14%);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--bg-3), transparent 38%);
+}
+.h-proposal-sort span {
+  color: var(--fg-faint);
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.h-proposal-sort select {
+  min-width: 0;
+  width: 100%;
+  color: var(--fg);
+  border: 0;
+  background: transparent;
+  font-size: 10.5px;
+  font-weight: 700;
+  outline: none;
+}
+.h-proposal-ops-row .h-proposal-mini {
+  min-height: 28px;
+  white-space: nowrap;
+}
+.h-proposal-ops-row .h-proposal-mini:disabled {
+  opacity: 0.42;
+}
+.h-proposal-detail-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.h-proposal-detail-actions .h-proposal-btn.ghost {
+  border-style: dashed;
+}
+.h-proposal-detail-actions .h-proposal-btn.ghost:disabled {
+  opacity: 0.42;
+}
+@media (max-width: 760px) {
+  .h-proposal-ops-row {
+    grid-template-columns: minmax(0, 1fr) 1fr;
+  }
+  .h-proposal-ops-row .h-proposal-mini:last-child {
+    grid-column: 1 / -1;
+  }
+}
+.h-proposal-short-count {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  color: color-mix(in oklab, var(--warn), white 14%);
+  border: 1px solid color-mix(in oklab, var(--warn), transparent 64%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--warn), transparent 91%);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  font-weight: 800;
+}
+.h-proposal-ops-row {
+  grid-template-columns: minmax(96px, 1fr) auto auto auto;
+}
+.h-proposal-mini.on {
+  color: color-mix(in oklab, var(--warn), white 16%);
+  border-color: color-mix(in oklab, var(--warn), transparent 56%);
+  background: color-mix(in oklab, var(--warn), transparent 91%);
+}
+.h-proposal-item {
+  grid-template-columns: 18px 22px minmax(0, 1fr);
+}
+.h-proposal-item.is-shortlisted {
+  border-color: color-mix(in oklab, var(--warn), transparent 58%);
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in oklab, var(--warn), transparent 89%), transparent 44%),
+    color-mix(in oklab, var(--bg-3), transparent 24%);
+}
+.h-proposal-pin {
+  z-index: 1;
+  width: 21px;
+  height: 21px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center;
+  color: var(--fg-faint);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.5;
+  transition: opacity var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.h-proposal-item:hover .h-proposal-pin,
+.h-proposal-item:focus-within .h-proposal-pin,
+.h-proposal-pin.on {
+  opacity: 1;
+}
+.h-proposal-pin:hover,
+.h-proposal-pin:focus-visible,
+.h-proposal-pin.on {
+  color: color-mix(in oklab, var(--warn), white 14%);
+  border-color: color-mix(in oklab, var(--warn), transparent 58%);
+  background: color-mix(in oklab, var(--warn), transparent 91%);
+  outline: none;
+}
+.h-proposal-shortlist-detail.on {
+  color: color-mix(in oklab, var(--warn), white 16%);
+  border-color: color-mix(in oklab, var(--warn), transparent 58%);
+  background: color-mix(in oklab, var(--warn), transparent 92%);
+}
+.h-proposal-outline {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 7px 12px;
+  border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 22%);
+  background: color-mix(in oklab, var(--bg-2), transparent 18%);
+  scrollbar-width: none;
+  mask-image: linear-gradient(90deg, black calc(100% - 22px), transparent 100%);
+}
+.h-proposal-outline::-webkit-scrollbar {
+  display: none;
+}
+.h-proposal-outline span {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.h-proposal-outline b,
+.h-proposal-outline em {
+  flex: 0 0 auto;
+  max-width: 180px;
+  overflow: hidden;
+  padding: 3px 7px;
+  color: var(--fg-dim);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 14%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg-3), transparent 24%);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.h-proposal-outline em {
+  color: color-mix(in oklab, var(--info), white 12%);
+  border-color: color-mix(in oklab, var(--info), transparent 60%);
+  background: color-mix(in oklab, var(--info), transparent 92%);
+}
+@media (max-width: 760px) {
+  .h-proposal-ops-row {
+    grid-template-columns: minmax(0, 1fr) 1fr;
+  }
+  .h-proposal-item {
+    grid-template-columns: 18px 21px minmax(0, 1fr);
+  }
+  .h-proposal-pin {
+    width: 20px;
+    height: 20px;
+  }
+  .h-proposal-outline {
+    padding-inline: 10px;
+  }
+}
+.h-proposal-ops-row {
+  grid-template-columns: minmax(92px, 1fr) repeat(4, auto);
+}
+.h-proposal-review-rail {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 7px;
+  color: var(--fg-faint);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 22%);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--bg), transparent 35%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.018);
+}
+.h-proposal-review-rail > span {
+  flex: 0 0 auto;
+  color: var(--fg-dim);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.h-proposal-review-rail > span b {
+  color: var(--fg);
+}
+.h-proposal-hotkeys {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(90deg, transparent 0, black 10px, black calc(100% - 14px), transparent 100%);
+}
+.h-proposal-hotkeys::-webkit-scrollbar {
+  display: none;
+}
+.h-proposal-hotkeys kbd {
+  flex: 0 0 auto;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  color: color-mix(in oklab, var(--accent), white 18%);
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 64%);
+  border-radius: 5px;
+  background: color-mix(in oklab, var(--accent), transparent 91%);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 820;
+  line-height: 1;
+}
+.h-proposal-hotkeys span {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-size: 9px;
+  font-weight: 720;
+  line-height: 1;
+  margin-right: 3px;
+}
+.h-proposal-row-button:focus-visible {
+  outline: 1px solid color-mix(in oklab, var(--accent), transparent 45%);
+  outline-offset: -2px;
+  border-radius: 9px;
+}
+.h-proposal-item.is-active .h-proposal-pin {
+  opacity: 1;
+}
+.h-proposal-detail-metrics {
+  mask-image: linear-gradient(90deg, black calc(100% - 18px), transparent 100%);
+}
+.h-proposal-detail-metrics::-webkit-scrollbar {
+  display: none;
+}
+@media (max-width: 760px) {
+  .h-proposal-ops-row {
+    grid-template-columns: minmax(0, 1fr) 1fr;
+  }
+  .h-proposal-sort {
+    grid-column: 1 / -1;
+  }
+  .h-proposal-review-rail {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .h-proposal-hotkeys {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .h-proposal-hotkeys span {
+    display: none;
+  }
+}
+.h-proposal-list {
+  padding: 4px;
+}
+.h-proposal-item {
+  grid-template-columns: 16px 19px minmax(0, 1fr);
+  gap: 4px;
+  min-height: 30px;
+  margin-bottom: 2px;
+  border-radius: 8px;
+}
+.h-proposal-item::before {
+  inset: 4px auto 4px 0;
+  width: 2px;
+  opacity: 0.86;
+}
+.h-proposal-item input {
+  width: 13px;
+  height: 13px;
+}
+.h-proposal-item-spacer {
+  width: 13px;
+  height: 13px;
+}
+.h-proposal-pin {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  font-size: 10px;
+  opacity: 0.42;
+}
+.h-proposal-row-button {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 2px 6px 2px 0;
+}
+.h-proposal-row-title {
+  font-size: 11.5px;
+  line-height: 1.1;
+  text-transform: none;
+}
+.h-proposal-row-button .h-proposal-badge {
+  min-height: 16px;
+  padding-inline: 5px;
+  font-size: 8.5px;
+  letter-spacing: 0.035em;
+}
+.h-proposal-row-age,
+.h-proposal-row-size {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.h-proposal-item.is-active .h-proposal-row-title {
+  color: color-mix(in oklab, var(--fg), var(--accent) 18%);
+}
+.h-proposal-item.is-shortlisted .h-proposal-row-title::after {
+  content: " ★";
+  color: color-mix(in oklab, var(--warn), white 10%);
+  font-size: 9px;
+}
+.h-proposal-row-top,
+.h-proposal-row-meta {
+  display: none;
+}
+.h-proposal-item.is-active {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent), transparent 72%);
+}
+@media (max-width: 760px) {
+  .h-proposals-sidebar {
+    min-height: 560px;
+  }
+  .h-proposal-list {
+    flex: 0 0 min(320px, 42vh);
+    min-height: 220px;
+  }
+}
+@media (max-width: 760px) {
+  .h-proposal-list {
+    max-height: 320px;
+    padding: 3px;
+  }
+  .h-proposal-item {
+    grid-template-columns: 15px 18px minmax(0, 1fr);
+    min-height: 29px;
+  }
+  .h-proposal-row-button {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 4px;
+    min-height: 27px;
+  }
+  .h-proposal-row-size {
+    display: none;
+  }
+}
+.h-proposals-goal {
+  padding: 5px 8px;
+  gap: 4px;
+  border-bottom-color: color-mix(in oklab, var(--border), transparent 34%);
+  background: color-mix(in oklab, var(--bg), transparent 38%);
+}
+.h-proposals-goal-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.h-proposals-goal-head > span:first-child {
+  color: var(--fg-dim);
+  font-size: 9.5px;
+  font-weight: 820;
+  letter-spacing: 0.12em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.h-proposals-goal-preview {
+  min-width: 0;
+  max-height: none;
+  overflow: hidden;
+  padding: 0;
+  color: var(--fg-dim);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+.h-proposals-goal-preview.empty {
+  color: var(--fg-faint);
+  font-style: normal;
+}
+.h-proposals-goal-meta {
+  color: var(--fg-faint);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+.h-proposals-goal-actions {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+}
+.h-proposals-goal-actions .h-proposal-btn {
+  width: auto;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 10.5px;
+}
+.h-proposals-goal-editor {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+}
+.h-proposals-goal-editor textarea {
+  min-height: 50px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.3;
+}
+.h-proposal-toolbar {
+  gap: 5px;
+  padding: 5px;
+  border-bottom-color: color-mix(in oklab, var(--border), transparent 34%);
+}
+.h-proposal-toolbar-main {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.h-proposal-toolbar-titleline {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.h-proposal-toolbar-index {
+  padding: 2px 6px;
+  color: var(--fg-faint);
+  border: 1px solid color-mix(in oklab, var(--border), transparent 24%);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--bg), transparent 42%);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 9.5px;
+  line-height: 1;
+}
+.h-proposal-toolbar-index b {
+  color: var(--fg);
+}
+.h-proposal-search {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 11.5px;
+}
+.h-proposal-toolbar-controls {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  mask-image: linear-gradient(90deg, black calc(100% - 18px), transparent 100%);
+}
+.h-proposal-toolbar-controls::-webkit-scrollbar {
+  display: none;
+}
+.h-proposal-toolbar-controls .h-proposal-filter-row {
+  flex: 1 1 230px;
+  display: flex;
+  gap: 4px;
+  min-width: 220px;
+}
+.h-proposal-toolbar-controls .h-proposal-filter {
+  flex: 1 1 0;
+  min-height: 24px;
+  padding: 0 6px;
+  border-radius: 7px;
+  font-size: 10px;
+}
+.h-proposal-toolbar-controls .h-proposal-sort {
+  flex: 0 0 96px;
+  height: 24px;
+  padding: 0 5px;
+  border-radius: 7px;
+}
+.h-proposal-toolbar-controls .h-proposal-mini {
+  flex: 0 0 auto;
+  min-height: 24px;
+  padding: 0 7px;
+  border-radius: 7px;
+  font-size: 10px;
+}
+.h-proposal-toolbar-controls .h-proposal-hotkeys {
+  flex: 0 0 auto;
+  gap: 3px;
+  justify-content: flex-start;
+  mask-image: none;
+}
+.h-proposal-toolbar-controls .h-proposal-hotkeys span {
+  display: none;
+}
+.h-proposal-toolbar-controls .h-proposal-hotkeys kbd {
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  font-size: 8.5px;
+}
+@media (max-width: 760px) {
+  .h-proposals-goal {
+    padding: 5px 6px;
+  }
+  .h-proposals-goal-head {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px;
+  }
+  .h-proposals-goal-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+  .h-proposals-goal:not(.is-editing) .h-proposals-goal-actions {
+    grid-column: auto;
+    justify-content: flex-end;
+  }
+  .h-proposals-goal:not(.is-editing) .h-proposals-goal-actions .h-proposal-btn.ghost {
+    display: none;
+  }
+  .h-proposals-goal-meta {
+    display: none;
+  }
+  .h-proposal-toolbar-main {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .h-proposal-toolbar-titleline {
+    justify-content: space-between;
+  }
+  .h-proposal-toolbar-controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+    overflow: visible;
+    mask-image: none;
+  }
+  .h-proposal-toolbar-controls .h-proposal-filter-row {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+  .h-proposal-toolbar-controls .h-proposal-sort {
+    flex: 1 1 112px;
+  }
+  .h-proposal-toolbar-controls .h-proposal-hotkeys {
+    display: none;
+  }
+}
+.h-proposal-filter[data-state="active"] {
+  color: var(--fg);
+  border-color: color-mix(in oklab, var(--accent), transparent 45%);
+  background: color-mix(in oklab, var(--accent), transparent 90%);
+}
+.h-proposal-filter.status-pending[data-state="active"] {
+  border-color: color-mix(in oklab, var(--warn), transparent 50%);
+  background: color-mix(in oklab, var(--warn), transparent 91%);
+}
+.h-proposal-filter.status-applied[data-state="active"] {
+  border-color: color-mix(in oklab, var(--good), transparent 54%);
+  background: color-mix(in oklab, var(--good), transparent 92%);
+}
+.h-proposal-filter.status-rejected[data-state="active"] {
+  border-color: color-mix(in oklab, var(--bad), transparent 56%);
+  background: color-mix(in oklab, var(--bad), transparent 93%);
+}
+.h-proposals-panel .h-proposals-workbench {
+  border-top: 1px solid rgba(125, 211, 252, 0.10);
+}
+.h-proposals-panel .h-proposals-sidebar {
+  flex-basis: clamp(360px, 35vw, 456px);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.008)), color-mix(in oklab, var(--bg-2), transparent 8%);
+}
+.h-proposals-panel .h-proposal-toolbar {
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.050), rgba(255, 255, 255, 0.010)), color-mix(in oklab, var(--bg-2), white 1.5%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+.h-proposals-panel .h-proposal-search,
+.h-proposals-panel .h-proposal-sort,
+.h-proposals-panel .h-proposal-filter,
+.h-proposals-panel .h-proposal-mini {
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.h-proposals-panel .h-proposal-search:hover,
+.h-proposals-panel .h-proposal-sort:hover,
+.h-proposals-panel .h-proposal-filter:hover,
+.h-proposals-panel .h-proposal-mini:hover:not(:disabled) {
+  border-color: rgba(125, 211, 252, 0.30);
+  background: rgba(125, 211, 252, 0.055);
+}
+.h-proposals-panel .h-proposal-search:focus,
+.h-proposals-panel .h-proposal-sort:focus-within {
+  border-color: rgba(125, 211, 252, 0.52);
+  background: rgba(125, 211, 252, 0.075);
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.14);
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] {
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  color: var(--fg) !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 10.5px !important;
+  font-weight: 760 !important;
+}
+.h-proposals-panel .h-proposal-list {
+  padding: 7px 8px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0));
+}
+.h-proposals-panel .h-proposal-item {
+  margin-bottom: 6px;
+  border-color: rgba(125, 211, 252, 0.055);
+  background: rgba(255, 255, 255, 0.014);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.020);
+}
+.h-proposals-panel .h-proposal-item:hover {
+  transform: translateY(-1px);
+}
+.h-proposals-panel .h-proposal-item.is-active {
+  border-color: rgba(125, 211, 252, 0.42);
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.115), rgba(125, 211, 252, 0.035) 42%, rgba(255, 255, 255, 0.016));
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 8px 18px rgba(0, 0, 0, 0.16);
+}
+.h-proposals-panel .h-proposal-item.is-active::before {
+  width: 4px;
+  opacity: 1;
+  box-shadow: 0 0 12px rgba(125, 211, 252, 0.46);
+}
+.h-proposals-panel .h-proposal-row-button {
+  padding-block: 9px;
+}
+.h-proposals-panel .h-proposal-detail-head {
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.060), rgba(255, 255, 255, 0.014) 52%, transparent), color-mix(in oklab, var(--bg), transparent 16%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.040);
+}
+.h-proposals-panel .h-proposal-detail-metrics span {
+  border-color: rgba(125, 211, 252, 0.18);
+  background: rgba(255, 255, 255, 0.026);
+}
+.h-proposals-panel .h-proposal-outline {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.006)), color-mix(in oklab, var(--bg-2), transparent 16%);
+}
+.h-proposals-panel .h-proposal-doc-shell {
+  padding: 14px;
+}
+.h-proposals-panel .h-proposal-doc {
+  border-color: rgba(125, 211, 252, 0.16);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.040), rgba(255, 255, 255, 0.010)), color-mix(in oklab, var(--bg), black 3%);
+  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.040);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+@media (max-width: 760px) {
+  .h-proposals-panel .h-proposals-sidebar {
+    flex-basis: auto;
+  }
+}
+.h-proposals-panel .h-proposals-goal {
+  border-bottom-color: rgba(125, 211, 252, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+.h-proposals-panel .h-proposals-goal-head > span:first-child,
+.h-proposals-panel .h-proposal-toolbar-title {
+  color: color-mix(in oklab, var(--fg), white 8%);
+  text-shadow: 0 0 12px rgba(125, 211, 252, 0.12);
+}
+.h-proposals-panel .h-proposals-goal-preview {
+  color: color-mix(in oklab, var(--fg-dim), white 12%);
+}
+.h-proposals-panel .h-proposal-toolbar-count,
+.h-proposals-panel .h-proposal-toolbar-index,
+.h-proposals-panel .h-proposal-short-count {
+  border-color: rgba(125, 211, 252, 0.18);
+  background: rgba(255, 255, 255, 0.024);
+}
+.h-proposals-panel .h-proposal-filter[data-state="active"],
+.h-proposals-panel .h-proposal-filter[aria-selected="true"] {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 0 0 1px rgba(125, 211, 252, 0.07);
+}
+.h-proposals-panel .h-proposal-filter b {
+  color: color-mix(in oklab, var(--fg), white 6%);
+}
+.h-proposals-panel .h-proposal-select-all {
+  border-top: 1px solid rgba(125, 211, 252, 0.06);
+  border-bottom-color: rgba(125, 211, 252, 0.12);
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.040), rgba(255, 255, 255, 0.010));
+}
+.h-proposals-panel .h-proposal-bulkbar {
+  border-bottom-color: rgba(250, 204, 21, 0.20);
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.105), rgba(125, 211, 252, 0.025));
+}
+.h-proposals-panel .h-proposal-badge {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+.h-proposals-panel .h-proposal-row-title {
+  color: color-mix(in oklab, var(--fg), white 4%);
+}
+.h-proposals-panel .h-proposal-item:not(.is-active) .h-proposal-row-age,
+.h-proposals-panel .h-proposal-item:not(.is-active) .h-proposal-row-size {
+  color: color-mix(in oklab, var(--fg-faint), white 10%);
+}
+.h-proposals-panel .h-proposal-item.is-active .h-proposal-row-title {
+  color: #f8fcff;
+}
+.h-proposals-panel .h-proposal-item.is-active .h-proposal-badge {
+  filter: saturate(1.08);
+}
+.h-proposals-panel .h-proposal-pin {
+  border-color: rgba(125, 211, 252, 0.08);
+}
+.h-proposals-panel .h-proposal-pin:hover,
+.h-proposals-panel .h-proposal-pin:focus-visible {
+  transform: translateY(-1px);
+}
+.h-proposals-panel .h-proposal-detail-title h3 {
+  color: #f8fcff;
+  text-shadow: 0 0 18px rgba(125, 211, 252, 0.11);
+}
+.h-proposals-panel .h-proposal-detail-title p,
+.h-proposals-panel .h-proposal-review-summary {
+  color: color-mix(in oklab, var(--fg-dim), white 10%);
+}
+.h-proposals-panel .h-proposal-detail-actions .h-proposal-btn:hover:not(:disabled),
+.h-proposals-panel .h-proposal-detail-actions .h-proposal-btn:focus-visible {
+  border-color: rgba(125, 211, 252, 0.36);
+  background: rgba(125, 211, 252, 0.060);
+  outline: none;
+}
+.h-proposals-panel .h-proposal-outline b,
+.h-proposals-panel .h-proposal-outline em {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+.h-proposals-panel .h-proposal-doc {
+  color: color-mix(in oklab, var(--fg), white 5%);
+  letter-spacing: 0.002em;
+  tab-size: 2;
+}
+.h-proposals-panel .h-proposal-doc::selection {
+  color: #03101a;
+  background: rgba(125, 211, 252, 0.78);
+}
+.h-proposals-panel .h-proposal-search:focus-visible,
+.h-proposals-panel .h-proposal-filter:focus-visible,
+.h-proposals-panel .h-proposal-mini:focus-visible,
+.h-proposals-panel .h-proposal-btn:focus-visible,
+.h-proposals-panel .h-proposal-pin:focus-visible {
+  outline: 1px solid rgba(125, 211, 252, 0.62);
+  outline-offset: 1px;
+}
+.h-proposals-panel .h-proposal-toolbar-controls {
+  scroll-padding-inline: 8px;
+}
+.h-proposals-panel .h-proposal-list,
+.h-proposals-panel .h-proposal-doc-shell,
+.h-proposals-panel .h-proposal-outline {
+  scrollbar-color: rgba(125, 211, 252, 0.32) transparent;
+}
+.h-proposals-panel .h-proposal-list > [role="row"] {
+  margin: 0 0 6px;
+  border: 1px solid rgba(125, 211, 252, 0.12) !important;
+  border-radius: 10px 10px 7px 7px;
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.055), rgba(255, 255, 255, 0.010)), rgba(7, 14, 25, 0.96) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 8px 18px rgba(0, 0, 0, 0.10);
+  overflow: hidden;
+}
+.h-proposals-panel .h-proposal-list > [role="row"] > div {
+  color: color-mix(in oklab, var(--fg-dim), white 13%) !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.08em !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item {
+  overflow: hidden;
+  border: 1px solid rgba(125, 211, 252, 0.075) !important;
+  border-radius: 11px !important;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.020), rgba(255, 255, 255, 0.006)), rgba(12, 18, 31, 0.90) !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div {
+  min-height: 44px !important;
+  background: transparent !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div {
+  padding-inline: 6px !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item:not(.is-active):hover {
+  border-color: rgba(125, 211, 252, 0.24) !important;
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.055), rgba(255, 255, 255, 0.010)), rgba(13, 21, 36, 0.94) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.040), 0 8px 18px rgba(0, 0, 0, 0.12);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.is-active {
+  border-color: rgba(125, 211, 252, 0.52) !important;
+  background: linear-gradient(90deg, rgba(45, 212, 191, 0.15), rgba(125, 211, 252, 0.075) 44%, rgba(255, 255, 255, 0.012)), rgba(10, 17, 30, 0.98) !important;
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.060), 0 10px 22px rgba(0, 0, 0, 0.20);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.is-active > div {
+  background: transparent !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.status-pending:not(.is-active) {
+  border-color: rgba(250, 204, 21, 0.14) !important;
+}
+.h-proposals-panel .h-proposal-row-button {
+  padding-right: 8px;
+}
+.h-proposals-panel .h-proposal-row-button .h-proposal-badge {
+  backdrop-filter: saturate(130%);
+}
+.h-proposals-panel .h-proposal-row-age {
+  justify-self: end;
+}
+.h-proposals-panel .h-proposal-row-size {
+  min-width: 34px;
+  text-align: right;
+}
+.h-proposals-panel .h-proposal-detail-head.status-applied {
+  background: linear-gradient(90deg, rgba(45, 212, 191, 0.085), rgba(125, 211, 252, 0.030) 58%, transparent), color-mix(in oklab, var(--bg), transparent 14%);
+}
+.h-proposals-panel .h-proposal-detail-head.status-pending {
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.092), rgba(125, 211, 252, 0.026) 58%, transparent), color-mix(in oklab, var(--bg), transparent 14%);
+}
+.h-proposals-panel .h-proposal-outline {
+  border-bottom-color: rgba(125, 211, 252, 0.14);
+}
+.h-proposals-panel .h-proposal-doc-shell {
+  background: radial-gradient(circle at 12% 0%, rgba(125, 211, 252, 0.040), transparent 26rem), color-mix(in oklab, var(--bg), black 3%);
+}
+.h-proposals-panel .h-proposal-doc {
+  border-radius: 14px;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.24);
+}
+.h-proposals-panel .h-proposals-workbench {
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.030), transparent 18%, transparent 82%, rgba(125, 211, 252, 0.018));
+}
+.h-proposals-panel .h-proposals-sidebar {
+  box-shadow: inset -1px 0 0 rgba(125, 211, 252, 0.13);
+}
+.h-proposals-panel .h-proposal-toolbar {
+  position: relative;
+}
+.h-proposals-panel .h-proposal-toolbar::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: -1px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.34), transparent);
+  opacity: 0.68;
+}
+.h-proposals-panel .h-proposal-search {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), inset 0 -1px 0 rgba(0,0,0,0.18);
+}
+.h-proposals-panel .h-proposal-search::placeholder {
+  color: color-mix(in oklab, var(--fg-faint), white 7%);
+}
+.h-proposals-panel .h-proposal-filter-row {
+  filter: drop-shadow(0 5px 12px rgba(0,0,0,0.12));
+}
+.h-proposals-panel .h-proposal-filter {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.032);
+}
+.h-proposals-panel .h-proposal-filter.status-pending[data-state="active"],
+.h-proposals-panel .h-proposal-filter.status-pending[aria-selected="true"] {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 0 1px rgba(250, 204, 21, 0.08);
+}
+.h-proposals-panel .h-proposal-filter.status-applied[data-state="active"],
+.h-proposals-panel .h-proposal-filter.status-applied[aria-selected="true"] {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 0 1px rgba(45, 212, 191, 0.08);
+}
+.h-proposals-panel .h-proposal-filter.status-rejected[data-state="active"],
+.h-proposals-panel .h-proposal-filter.status-rejected[aria-selected="true"] {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 0 1px rgba(248, 113, 113, 0.08);
+}
+.h-proposals-panel .h-proposal-select-all span {
+  color: color-mix(in oklab, var(--fg-dim), white 10%);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.status-applied::before {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--good), white 14%), color-mix(in oklab, var(--accent-cool, var(--good)), transparent 8%));
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.status-pending::before {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--warn), white 12%), color-mix(in oklab, var(--warn), transparent 24%));
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.is-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(circle at 0% 50%, rgba(45, 212, 191, 0.13), transparent 58%);
+  opacity: 0.78;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > * {
+  position: relative;
+  z-index: 1;
+}
+.h-proposals-panel .h-proposal-row-button {
+  border-radius: 8px;
+}
+.h-proposals-panel .h-proposal-row-button:hover .h-proposal-row-title,
+.h-proposals-panel .h-proposal-row-button:focus-visible .h-proposal-row-title {
+  color: #ffffff;
+}
+.h-proposals-panel .h-proposal-row-button .h-proposal-badge.status-applied {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 12px rgba(45, 212, 191, 0.08);
+}
+.h-proposals-panel .h-proposal-row-button .h-proposal-badge.status-pending {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 12px rgba(250, 204, 21, 0.08);
+}
+.h-proposals-panel .h-proposal-row-button .h-proposal-badge.review-accept {
+  border-color: rgba(125, 211, 252, 0.30);
+}
+.h-proposals-panel .h-proposal-detail {
+  background: radial-gradient(circle at 6% 0%, rgba(125, 211, 252, 0.032), transparent 24rem), color-mix(in oklab, var(--bg), transparent 7%);
+}
+.h-proposals-panel .h-proposal-detail-metrics span:hover {
+  border-color: rgba(125, 211, 252, 0.34);
+  background: rgba(125, 211, 252, 0.055);
+}
+.h-proposals-panel .h-proposal-outline b:hover,
+.h-proposals-panel .h-proposal-outline em:hover {
+  color: color-mix(in oklab, var(--fg), white 4%);
+  border-color: rgba(125, 211, 252, 0.28);
+  background: rgba(125, 211, 252, 0.055);
+}
+.h-proposals-panel .h-proposal-doc {
+  padding: 16px 18px;
+  box-shadow: 0 14px 30px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.050), inset 0 0 0 1px rgba(255,255,255,0.010);
+}
+.h-proposals-panel {
+  --proposal-cyan-soft: rgba(125, 211, 252, 0.115);
+  --proposal-teal-soft: rgba(45, 212, 191, 0.105);
+  --proposal-ink-glass: rgba(7, 14, 25, 0.68);
+}
+.h-proposals-panel .h-proposals-goal-head {
+  border-radius: 9px;
+}
+.h-proposals-panel .h-proposals-goal-meta {
+  padding: 2px 6px;
+  border: 1px solid rgba(125, 211, 252, 0.13);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.018);
+}
+.h-proposals-panel .h-proposal-toolbar-main {
+  padding: 1px;
+  border-radius: 10px;
+}
+.h-proposals-panel .h-proposal-toolbar-titleline {
+  padding-left: 2px;
+}
+.h-proposals-panel .h-proposal-toolbar-title {
+  letter-spacing: 0.01em;
+}
+.h-proposals-panel .h-proposal-toolbar-index b,
+.h-proposals-panel .h-proposal-toolbar-count,
+.h-proposals-panel .h-proposal-short-count {
+  text-shadow: 0 0 10px rgba(125, 211, 252, 0.13);
+}
+.h-proposals-panel .h-proposal-mini.ghost:not(:disabled),
+.h-proposals-panel .h-proposal-btn.ghost:not(:disabled) {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.026);
+}
+.h-proposals-panel .h-proposal-mini.ghost:not(:disabled):hover,
+.h-proposals-panel .h-proposal-btn.ghost:not(:disabled):hover {
+  color: color-mix(in oklab, var(--fg), white 4%);
+}
+.h-proposals-panel .h-proposal-btn.primary:not(:disabled) {
+  box-shadow: 0 6px 14px rgba(56, 189, 248, 0.14), inset 0 1px 0 rgba(255,255,255,0.16);
+}
+.h-proposals-panel .h-proposal-btn.primary:not(:disabled):hover {
+  filter: saturate(1.04) brightness(1.03);
+}
+.h-proposals-panel .h-proposal-hotkeys {
+  padding: 2px 4px;
+  border: 1px solid rgba(125, 211, 252, 0.10);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.018);
+}
+.h-proposals-panel .h-proposal-hotkeys kbd {
+  border-color: rgba(125, 211, 252, 0.28);
+  background: rgba(125, 211, 252, 0.085);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055);
+}
+.h-proposals-panel .h-proposal-list {
+  background: radial-gradient(circle at 0% 12%, rgba(45, 212, 191, 0.026), transparent 17rem), linear-gradient(180deg, rgba(255, 255, 255, 0.012), rgba(255, 255, 255, 0));
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item {
+  backdrop-filter: saturate(122%);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item:not(.is-active) .h-proposal-row-button:hover {
+  background: rgba(125, 211, 252, 0.028);
+}
+.h-proposals-panel .h-proposal-pin.on {
+  box-shadow: 0 0 14px rgba(250, 204, 21, 0.13), inset 0 1px 0 rgba(255,255,255,0.065);
+}
+.h-proposals-panel .h-proposal-detail-head {
+  position: relative;
+  overflow: hidden;
+}
+.h-proposals-panel .h-proposal-detail-head::after {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.22), transparent);
+}
+.h-proposals-panel .h-proposal-detail-head > * {
+  position: relative;
+  z-index: 1;
+}
+.h-proposals-panel .h-proposal-detail-actions .h-proposal-btn {
+  min-height: 29px;
+}
+.h-proposals-panel .h-proposal-detail-actions .h-proposal-btn.good:not(:disabled):hover {
+  border-color: rgba(45, 212, 191, 0.48);
+  background: rgba(45, 212, 191, 0.095);
+}
+.h-proposals-panel .h-proposal-detail-actions .h-proposal-btn.danger:not(:disabled):hover {
+  border-color: rgba(248, 113, 113, 0.48);
+  background: rgba(248, 113, 113, 0.085);
+}
+.h-proposals-panel .h-proposal-outline span {
+  color: color-mix(in oklab, var(--fg-dim), white 12%);
+}
+.h-proposals-panel .h-proposal-outline b,
+.h-proposals-panel .h-proposal-outline em {
+  backdrop-filter: blur(6px) saturate(120%);
+}
+.h-proposals-panel .h-proposal-doc-shell {
+  position: relative;
+}
+.h-proposals-panel .h-proposal-doc-shell::before {
+  content: "";
+  position: sticky;
+  top: 0;
+  flex: 0 0 0;
+  width: 0;
+  height: 0;
+  z-index: 1;
+  pointer-events: none;
+  box-shadow: 0 12px 24px 24px rgba(7, 14, 25, 0.36);
+}
+.h-proposals-panel .h-proposal-doc {
+  background:
+    linear-gradient(90deg, rgba(125, 211, 252, 0.018) 1px, transparent 1px) 0 0 / 32px 32px,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.042), rgba(255, 255, 255, 0.010)),
+    color-mix(in oklab, var(--bg), black 3%);
+}
+.h-proposals-panel .h-proposal-loading {
+  border: 1px dashed rgba(125, 211, 252, 0.18);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.016);
+}
+.h-proposals-panel .h-proposals-goal {
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.030), rgba(255,255,255,0.006)), color-mix(in oklab, var(--bg), transparent 38%);
+}
+.h-proposals-panel .h-proposals-goal-preview {
+  text-shadow: 0 1px 0 rgba(0,0,0,0.22);
+}
+.h-proposals-panel .h-proposal-toolbar-controls {
+  padding-bottom: 1px;
+}
+.h-proposals-panel .h-proposal-sort {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), 0 5px 12px rgba(0,0,0,0.10);
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] svg {
+  color: color-mix(in oklab, var(--accent-cool, var(--accent)), white 12%);
+  filter: drop-shadow(0 0 7px rgba(125, 211, 252, 0.18));
+}
+.h-proposals-panel .h-proposal-filter {
+  position: relative;
+  overflow: hidden;
+}
+.h-proposals-panel .h-proposal-filter::after {
+  content: "";
+  position: absolute;
+  inset: auto 7px 3px;
+  height: 1px;
+  border-radius: 999px;
+  pointer-events: none;
+  background: transparent;
+}
+.h-proposals-panel .h-proposal-filter[data-state="active"]::after,
+.h-proposals-panel .h-proposal-filter[aria-selected="true"]::after {
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.54), transparent);
+}
+.h-proposals-panel .h-proposal-filter.status-applied[data-state="active"]::after,
+.h-proposals-panel .h-proposal-filter.status-applied[aria-selected="true"]::after {
+  background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.56), transparent);
+}
+.h-proposals-panel .h-proposal-filter.status-pending[data-state="active"]::after,
+.h-proposals-panel .h-proposal-filter.status-pending[aria-selected="true"]::after {
+  background: linear-gradient(90deg, transparent, rgba(250, 204, 21, 0.56), transparent);
+}
+.h-proposals-panel .h-proposal-select-all {
+  min-height: 30px;
+}
+.h-proposals-panel .h-proposal-list > [role="row"] {
+  backdrop-filter: blur(8px) saturate(130%);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item {
+  isolation: isolate;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item::before {
+  transition: width var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item:not(.is-active):hover::before {
+  width: 3px;
+  opacity: 0.95;
+  box-shadow: 0 0 10px rgba(125, 211, 252, 0.22);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.status-pending:not(.is-active):hover::before {
+  box-shadow: 0 0 10px rgba(250, 204, 21, 0.22);
+}
+.h-proposals-panel .h-proposal-row-title {
+  letter-spacing: 0.002em;
+}
+.h-proposals-panel .h-proposal-row-age,
+.h-proposals-panel .h-proposal-row-size {
+  text-shadow: 0 1px 0 rgba(0,0,0,0.28);
+}
+.h-proposals-panel .h-proposal-item.is-active .h-proposal-row-age,
+.h-proposals-panel .h-proposal-item.is-active .h-proposal-row-size {
+  color: color-mix(in oklab, var(--fg-dim), white 18%);
+}
+.h-proposals-panel .h-proposal-detail-title {
+  gap: 5px;
+}
+.h-proposals-panel .h-proposal-detail-title .h-proposal-badge {
+  margin-bottom: 1px;
+}
+.h-proposals-panel .h-proposal-detail-metrics span {
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.h-proposals-panel .h-proposal-detail-metrics span:hover b {
+  color: #fff;
+}
+.h-proposals-panel .h-proposal-outline {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.030);
+}
+.h-proposals-panel .h-proposal-outline b,
+.h-proposals-panel .h-proposal-outline em {
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+}
+.h-proposals-panel .h-proposal-outline b:hover,
+.h-proposals-panel .h-proposal-outline em:hover {
+  transform: translateY(-1px);
+}
+.h-proposals-panel .h-proposal-doc-shell {
+  scroll-padding: 18px;
+}
+.h-proposals-panel .h-proposal-doc {
+  border-color: rgba(125, 211, 252, 0.20);
+  background-position: 0 0, 0 0, 0 0;
+}
+.h-proposals-panel .h-proposal-detail-empty {
+  border: 1px dashed rgba(125, 211, 252, 0.16);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.014);
+}
+.h-proposals-panel .h-proposal-empty {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035);
+}
+.h-proposals-panel .h-proposal-toolbar-main {
+  grid-template-columns: minmax(106px, 132px) minmax(190px, 1fr);
+  column-gap: 8px;
+}
+.h-proposals-panel .h-proposal-toolbar-titleline {
+  overflow: hidden;
+  padding-right: 2px;
+  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 12px), transparent 100%);
+}
+.h-proposals-panel .h-proposal-toolbar-title,
+.h-proposals-panel .h-proposal-toolbar-count,
+.h-proposals-panel .h-proposal-short-count,
+.h-proposals-panel .h-proposal-toolbar-index {
+  flex: 0 0 auto;
+}
+.h-proposals-panel .h-proposal-search {
+  min-width: 0;
+  justify-self: stretch;
+}
+.h-proposals-panel .h-proposal-toolbar-controls {
+  gap: 5px;
+  mask-image: linear-gradient(90deg, black calc(100% - 10px), transparent 100%);
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-sort {
+  flex: 0 0 124px;
+  min-width: 124px;
+  padding: 0 8px;
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 6px !important;
+  overflow: visible !important;
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] svg {
+  flex: 0 0 auto;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-filter-row {
+  min-width: 238px;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-mini {
+  min-width: max-content;
+}
+@media (max-width: 760px) {
+  .h-proposals-panel .h-proposal-toolbar-main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .h-proposals-panel .h-proposal-toolbar-titleline {
+    mask-image: none;
+  }
+
+  .h-proposals-panel .h-proposal-toolbar-controls .h-proposal-sort {
+    flex: 1 1 132px;
+    min-width: 132px;
+  }
+}
+.h-proposals-panel .h-proposal-toolbar-main {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: 5px;
+}
+.h-proposals-panel .h-proposal-toolbar-titleline {
+  width: 100%;
+  max-width: 100%;
+  mask-image: none;
+}
+.h-proposals-panel .h-proposal-search {
+  grid-column: 1 / -1;
+  width: 100%;
+  max-width: 100%;
+}
+.h-proposals-panel .h-proposal-toolbar-controls {
+  flex-wrap: wrap;
+  align-items: stretch;
+  overflow: visible;
+  mask-image: none;
+  row-gap: 5px;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-filter-row {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-sort {
+  flex: 0 0 138px;
+  min-width: 138px;
+  height: 26px;
+  box-sizing: border-box;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-mini {
+  min-height: 26px;
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] {
+  box-sizing: border-box !important;
+  min-width: 100% !important;
+  padding-inline: 0 !important;
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] [data-radix-select-value] {
+  overflow: visible;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-hotkeys {
+  flex: 1 1 auto;
+  min-width: 88px;
+  justify-content: flex-end;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-hotkeys kbd {
+  min-width: 16px;
+}
+@media (min-width: 1180px) {
+  .h-proposals-panel .h-proposals-sidebar {
+    flex-basis: clamp(390px, 36vw, 476px);
+    max-width: 476px;
+  }
+}
+.h-proposals-panel .h-proposal-toolbar {
+  gap: 6px;
+}
+.h-proposals-panel .h-proposal-toolbar-main {
+  padding: 2px;
+  border: 1px solid rgba(125, 211, 252, 0.075);
+  background: rgba(255, 255, 255, 0.010);
+}
+.h-proposals-panel .h-proposal-toolbar-titleline {
+  min-height: 20px;
+  align-items: center;
+}
+.h-proposals-panel .h-proposal-toolbar-title {
+  color: color-mix(in oklab, var(--fg), white 10%);
+}
+.h-proposals-panel .h-proposal-search {
+  height: 28px;
+  border-color: rgba(125, 211, 252, 0.20);
+  background: rgba(2, 8, 16, 0.46);
+}
+.h-proposals-panel .h-proposal-search:hover,
+.h-proposals-panel .h-proposal-search:focus {
+  background: rgba(6, 18, 31, 0.74);
+}
+.h-proposals-panel .h-proposal-toolbar-controls {
+  padding: 1px 2px 0;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-filter-row {
+  gap: 5px;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-filter {
+  min-height: 26px;
+  padding-inline: 8px;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-filter span {
+  min-width: 0;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-filter b {
+  margin-left: auto;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-sort {
+  flex-basis: 146px;
+  min-width: 146px;
+  border-color: rgba(125, 211, 252, 0.20);
+  background: rgba(255, 255, 255, 0.020);
+}
+.h-proposals-panel .h-proposal-sort > span {
+  flex: 0 0 auto;
+}
+.h-proposals-panel .h-proposal-sort [aria-label="Sort proposals"] {
+  flex: 1 1 auto !important;
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-mini {
+  padding-inline: 9px;
+  border-color: rgba(125, 211, 252, 0.14);
+}
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-hotkeys {
+  order: 20;
+  flex-basis: 100%;
+  justify-content: flex-end;
+  padding-right: 0;
+  background: transparent;
+  border-color: transparent;
+}
+.h-proposals-panel .h-proposal-hotkeys kbd {
+  opacity: 0.86;
+}
+.h-proposals-panel .h-proposal-select-all {
+  padding-inline: 10px;
+}
+.h-proposals-panel .h-proposal-detail-title h3 {
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.h-proposals-panel .h-proposal-detail-title p {
+  max-width: 100%;
+}
+.h-proposals-panel .h-proposal-detail-metrics {
+  flex-wrap: wrap;
+  max-width: 480px;
+}
+.h-proposals-panel .h-proposal-outline {
+  padding-block: 8px;
+}
+.h-proposals-panel .h-proposal-doc {
+  max-width: none;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div {
+  grid-template-columns: 28px 28px minmax(0, 1fr) !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(1),
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(2) {
+  min-width: 28px !important;
+  padding-inline: 4px !important;
+  overflow: visible !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(1) > span {
+  width: 18px;
+  min-width: 18px;
+  display: inline-flex;
+  justify-content: center;
+  overflow: visible;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"] {
+  position: relative;
+  z-index: 2;
+  box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.12), inset 0 1px 0 rgba(255,255,255,0.045);
+}
+.h-proposals-panel .h-proposal-item-spacer {
+  width: 14px !important;
+  min-width: 14px;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div {
+  grid-template-columns: 34px 30px minmax(0, 1fr) !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(1) {
+  min-width: 34px !important;
+  padding-left: 8px !important;
+  padding-right: 6px !important;
+  justify-content: center !important;
+  overflow: visible !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(2) {
+  min-width: 30px !important;
+  padding-inline: 5px !important;
+  justify-content: center !important;
+  overflow: visible !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(3) {
+  min-width: 0 !important;
+  padding-left: 8px !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"] {
+  flex: 0 0 14px;
+  transform: translateX(1px);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"]:hover,
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"]:focus-visible {
+  border-color: rgba(125, 211, 252, 0.58) !important;
+  box-shadow: 0 0 0 2px rgba(125, 211, 252, 0.14), inset 0 1px 0 rgba(255,255,255,0.060);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item::before {
+  left: 2px;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.is-active::before {
+  left: 2px;
+}
+.h-proposals-panel .h-proposal-pin {
+  transform: translateX(1px);
+}
+.h-proposals-panel .h-proposal-pin:hover,
+.h-proposals-panel .h-proposal-pin:focus-visible {
+  transform: translate(1px, -1px);
+}
+.h-proposals-panel .h-proposal-item-spacer {
+  transform: translateX(1px);
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div {
+  grid-template-columns: 36px 32px minmax(0, 1fr) !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(1) {
+  min-width: 36px !important;
+  padding-left: 10px !important;
+  padding-right: 6px !important;
+  justify-content: center !important;
+  overflow: visible !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(2) {
+  min-width: 32px !important;
+  padding-inline: 6px !important;
+  justify-content: center !important;
+  overflow: visible !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item > div > div:nth-child(3) {
+  min-width: 0 !important;
+  padding-left: 9px !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"] {
+  flex: 0 0 14px;
+  margin: 0 auto;
+  transform: none;
+  background: color-mix(in oklab, var(--bg-2), white 3%) !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"][data-state="checked"],
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"][data-state="indeterminate"] {
+  border-color: rgba(125, 211, 252, 0.62) !important;
+  background: rgba(125, 211, 252, 0.16) !important;
+}
+.h-proposals-panel .h-proposal-pin {
+  width: 20px;
+  height: 20px;
+  margin: 0 auto;
+  transform: none;
+}
+.h-proposals-panel .h-proposal-pin:hover,
+.h-proposals-panel .h-proposal-pin:focus-visible {
+  transform: translateY(-1px);
+}
+.h-proposals-panel .h-proposal-item-spacer {
+  width: 14px !important;
+  min-width: 14px;
+  margin: 0 auto;
+  transform: none;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item::before {
+  left: 3px;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item.is-active::before {
+  left: 3px;
+  width: 4px;
+}
+.h-proposals-panel .h-proposal-select-all {
+  padding-left: 11px;
+}
+.h-proposals-panel .h-proposal-select-all [role="checkbox"] {
+  flex: 0 0 14px;
+  margin-left: 1px;
+}
+.h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item {
+  border-color: rgba(125, 211, 252, 0.105) !important;
+  background: linear-gradient(180deg, rgba(6, 17, 30, 0.70), rgba(3, 10, 20, 0.82)) !important;
+}
+.h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.is-active {
+  border-color: rgba(56, 189, 248, 0.58) !important;
+  background: linear-gradient(90deg, rgba(14, 116, 144, 0.22), rgba(5, 20, 35, 0.88)) !important;
+  box-shadow: inset 3px 0 0 rgba(56, 189, 248, 0.78), 0 0 24px rgba(56, 189, 248, 0.08) !important;
+}
+.h-proposals-panel .h-proposal-list {
+  padding: 4px !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item {
+  margin-bottom: 3px !important;
+  border-radius: 9px !important;
+}
+.h-proposals-panel .h-proposal-row-button {
+  gap: 3px !important;
+  padding: 5px 8px 5px 0 !important;
+}
+.h-proposals-panel .h-proposal-row-title {
+  font-size: 11.5px !important;
+  line-height: 1.16 !important;
+}
+.h-proposals-panel .h-proposal-row-age {
+  font-size: 9px !important;
+  color: color-mix(in oklab, var(--fg-faint), white 16%) !important;
+}
+.h-proposals-panel .h-proposal-badge {
+  min-height: 16px !important;
+  padding-inline: 6px !important;
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.15), transparent 32%),
+    linear-gradient(180deg, rgba(18, 38, 56, 0.88), rgba(4, 12, 22, 0.94)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.10),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.36),
+    0 4px 12px rgba(0, 0, 0, 0.14) !important;
+}
+.h-proposals-panel .h-proposal-badge.status-pending,
+.h-proposals-panel .h-proposal-filter.status-pending {
+  color: color-mix(in oklab, var(--warn), white 24%) !important;
+  border-color: rgba(250, 204, 21, 0.44) !important;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.18), transparent 32%),
+    linear-gradient(180deg, rgba(96, 72, 18, 0.54), rgba(22, 16, 6, 0.90)) !important;
+}
+.h-proposals-panel .h-proposal-badge.status-applied,
+.h-proposals-panel .h-proposal-filter.status-applied,
+.h-proposals-panel .h-proposal-badge.review-accept {
+  color: color-mix(in oklab, var(--good), white 24%) !important;
+  border-color: rgba(34, 197, 94, 0.44) !important;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.16), transparent 32%),
+    linear-gradient(180deg, rgba(18, 82, 52, 0.55), rgba(4, 24, 17, 0.92)) !important;
+}
+.h-proposals-panel .h-proposal-badge.status-rejected,
+.h-proposals-panel .h-proposal-filter.status-rejected,
+.h-proposals-panel .h-proposal-badge.review-reject {
+  color: color-mix(in oklab, var(--bad), white 26%) !important;
+  border-color: rgba(248, 113, 113, 0.45) !important;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.15), transparent 32%),
+    linear-gradient(180deg, rgba(88, 26, 38, 0.56), rgba(26, 8, 14, 0.92)) !important;
+}
+.h-proposals-panel .h-proposal-badge.review-defer {
+  border-color: rgba(148, 163, 184, 0.34) !important;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(255, 255, 255, 0.12), transparent 32%),
+    linear-gradient(180deg, rgba(36, 48, 64, 0.58), rgba(8, 14, 24, 0.92)) !important;
+}
+.h-proposals-panel .h-proposal-filter,
+.h-proposals-panel .h-proposal-mini,
+.h-proposals-panel .h-proposal-btn {
+  border-color: rgba(125, 211, 252, 0.24) !important;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.13), transparent 32%),
+    linear-gradient(180deg, rgba(12, 30, 48, 0.90), rgba(3, 10, 20, 0.96)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
+    0 6px 16px rgba(0, 0, 0, 0.16) !important;
+}
+.h-proposals-panel .h-proposal-filter:hover,
+.h-proposals-panel .h-proposal-mini:hover:not(:disabled),
+.h-proposals-panel .h-proposal-btn:hover:not(:disabled) {
+  border-color: rgba(125, 211, 252, 0.40) !important;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
+    linear-gradient(180deg, rgba(18, 43, 65, 0.96), rgba(5, 15, 28, 0.98)) !important;
+}
+.h-proposals-panel .h-proposal-filter[data-state="active"],
+.h-proposals-panel .h-proposal-filter[aria-selected="true"],
+.h-proposals-panel .h-proposal-mini.on,
+.h-proposals-panel .h-proposal-shortlist-detail.on {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
+    0 0 18px rgba(56, 189, 248, 0.12) !important;
+}
+.h-proposals-panel .h-proposal-btn.good,
+.h-proposals-panel .h-proposal-mini.good {
+  color: color-mix(in oklab, var(--good), white 28%) !important;
+  border-color: rgba(34, 197, 94, 0.48) !important;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.18), transparent 34%),
+    linear-gradient(180deg, rgba(19, 91, 57, 0.62), rgba(4, 27, 18, 0.96)) !important;
+}
+.h-proposals-panel .h-proposal-btn.danger,
+.h-proposals-panel .h-proposal-mini.bad {
+  color: color-mix(in oklab, var(--bad), white 30%) !important;
+  border-color: rgba(248, 113, 113, 0.50) !important;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(96, 28, 42, 0.62), rgba(28, 7, 13, 0.96)) !important;
+}
+.h-proposals-panel .h-proposal-pin {
+  width: 23px !important;
+  height: 23px !important;
+  opacity: 0.92 !important;
+  color: color-mix(in oklab, var(--warn), white 14%) !important;
+  border-color: rgba(250, 204, 21, 0.34) !important;
+  background:
+    radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.22), transparent 34%),
+    linear-gradient(180deg, rgba(92, 69, 20, 0.58), rgba(18, 13, 5, 0.94)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    0 0 12px rgba(250, 204, 21, 0.12) !important;
+}
+.h-proposals-panel .h-proposal-pin:hover,
+.h-proposals-panel .h-proposal-pin:focus-visible,
+.h-proposals-panel .h-proposal-pin.on {
+  opacity: 1 !important;
+  color: #fff7cc !important;
+  border-color: rgba(250, 204, 21, 0.66) !important;
+  background:
+    radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.30), transparent 36%),
+    linear-gradient(180deg, rgba(130, 98, 22, 0.72), rgba(32, 22, 6, 0.96)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 20px rgba(250, 204, 21, 0.22) !important;
+}
+.h-proposals-panel .h-proposal-check,
+.h-proposals-panel .h-proposal-list .h-proposal-item [role="checkbox"],
+.h-proposals-panel .h-proposal-list .h-proposal-item input[type="checkbox"] {
+  width: 16px !important;
+  height: 16px !important;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 16px !important;
+  margin: 0 auto !important;
+  padding: 0 !important;
+  border: 1px solid rgba(125, 211, 252, 0.46) !important;
+  border-radius: 5px !important;
+  color: #e0f7ff !important;
+  background:
+    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.20), transparent 34%),
+    linear-gradient(180deg, rgba(22, 54, 76, 0.82), rgba(3, 12, 24, 0.96)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    0 0 14px rgba(56, 189, 248, 0.14) !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item input.h-proposal-check[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.h-proposals-panel .h-proposal-check[data-state="checked"],
+.h-proposals-panel .h-proposal-check[data-state="indeterminate"],
+.h-proposals-panel .h-proposal-list .h-proposal-item input.h-proposal-check[type="checkbox"]:checked {
+  border-color: rgba(56, 189, 248, 0.76) !important;
+  background:
+    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
+    linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 20px rgba(56, 189, 248, 0.24) !important;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item input.h-proposal-check[type="checkbox"]:checked {
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%23e0f7ff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' d='M2.2 6.4 4.8 9l5-6'/%3E%3C/svg%3E"),
+    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
+    linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
+  background-position: center, center, center;
+  background-repeat: no-repeat;
+  background-size: 11px 11px, auto, auto;
+}
+.h-proposals-panel .h-proposal-list .h-proposal-item .h-proposal-check[role="checkbox"][data-state="checked"],
+.h-proposals-panel .h-proposal-list .h-proposal-item .h-proposal-check[role="checkbox"][data-state="indeterminate"] {
+  border-color: rgba(56, 189, 248, 0.76) !important;
+  background:
+    radial-gradient(circle at 30% 18%, rgba(255, 255, 255, 0.28), transparent 34%),
+    linear-gradient(180deg, rgba(25, 98, 132, 0.82), rgba(5, 28, 44, 0.98)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 20px rgba(56, 189, 248, 0.24) !important;
+}
+.h-proposals-panel .h-proposals-blurb {
+  max-width: 720px;
+}
+.h-proposals-panel .h-proposals-view-tabs {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 8px 18px rgba(0,0,0,0.18);
+}
+.h-proposals-panel .h-proposals-view-tab[data-state="active"],
+.h-proposals-panel .h-proposals-view-tab[aria-selected="true"] {
+  color: color-mix(in oklab, var(--fg), #7dd3fc 12%) !important;
+  background: linear-gradient(180deg, rgba(18, 53, 73, 0.90), rgba(5, 18, 31, 0.98)) !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.085), 0 0 14px rgba(56,189,248,0.10);
+}
+.h-proposals-panel .h-proposal-filter {
+  min-height: 38px !important;
+  align-items: center !important;
+  padding: 4px 7px !important;
+}
+.h-proposals-panel .h-proposal-filter > span {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  line-height: 1.05;
+}
+.h-proposals-panel .h-proposal-filter small {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in oklab, var(--fg-faint), white 16%);
+  font-size: 8.5px;
+  font-weight: 760;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.h-proposals-panel .h-proposal-filter b {
+  min-width: 20px;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+}
+.h-proposals-panel .h-proposal-toolbar-titleline::after {
+  content: "Pending needs review · Applied is in SPEC.md · Rejected stays out";
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: color-mix(in oklab, var(--fg-faint), white 10%);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+.h-proposals-panel .h-proposal-mini {
+  min-height: 27px !important;
+  padding-inline: 10px !important;
+}
+.h-proposals-panel .h-proposal-sort > span {
+  color: color-mix(in oklab, var(--fg-dim), white 10%);
+  font-weight: 900;
+  letter-spacing: 0.10em;
+}
+.h-proposals-panel .h-proposal-select-all {
+  color: color-mix(in oklab, var(--fg), #7dd3fc 8%) !important;
+}
+.h-proposals-panel .h-proposal-bulkbar {
+  gap: 7px;
+}
+.h-proposals-panel .h-proposal-bulkbar span {
+  color: color-mix(in oklab, var(--fg), white 4%);
+}
+.h-proposals-panel .h-proposal-detail-head {
+  grid-template-areas:
+    "title metrics"
+    "title actions"
+    "title hint" !important;
+  align-items: start !important;
+}
+.h-proposals-panel .h-proposal-action-hint {
+  grid-area: hint;
+  justify-self: end;
+  max-width: min(100%, 520px);
+  margin-top: 1px;
+  padding: 6px 9px;
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  border-radius: 9px;
+  color: color-mix(in oklab, var(--fg-dim), white 12%);
+  background: linear-gradient(90deg, rgba(125, 211, 252, 0.046), rgba(255,255,255,0.012));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  font-size: 11px;
+  font-weight: 620;
+  line-height: 1.25;
+  text-align: right;
+}
+.h-proposals-panel .h-proposal-action-hint.status-pending {
+  border-color: rgba(250, 204, 21, 0.24);
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.060), rgba(125, 211, 252, 0.020));
+}
+.h-proposals-panel .h-proposal-action-hint.status-applied {
+  border-color: rgba(34, 197, 94, 0.24);
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.060), rgba(125, 211, 252, 0.018));
+}
+.h-proposals-panel .h-proposal-action-hint.status-rejected {
+  border-color: rgba(248, 113, 113, 0.24);
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.055), rgba(125, 211, 252, 0.016));
+}
+.h-proposals-panel .h-proposal-detail-actions .h-proposal-btn {
+  min-height: 30px;
+  padding-inline: 12px;
+}
+.h-proposals-panel .h-proposal-detail-empty span {
+  max-width: 420px;
+}
+
+@media (max-width: 980px) {
+  .h-proposals-panel .h-proposal-detail-head {
+    grid-template-columns: 1fr !important;
+    grid-template-areas:
+      "title"
+      "metrics"
+      "actions"
+      "hint" !important;
+  }
+
+  .h-proposals-panel .h-proposal-detail-metrics,
+  .h-proposals-panel .h-proposal-detail-actions,
+  .h-proposals-panel .h-proposal-action-hint {
+    justify-self: stretch;
+    justify-content: flex-start;
+    text-align: left;
+  }
+}
+
+/* Proposals feedback pass: make triage controls clearer and keep the
+   proposal body contained inside the detail pane. */
+.h-proposals-with-inbox {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.h-proposals-panel .h-proposals-workbench,
+.h-proposals-panel .h-proposal-detail {
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.h-proposals-panel .h-proposal-doc-shell {
+  min-height: 0;
+  overflow-y: auto !important;
+  overscroll-behavior: contain;
+}
+
+.h-proposals-panel .h-proposal-doc {
+  min-height: auto;
+}
+
+
+.h-proposals-panel .h-proposal-toolbar-titleline {
+  gap: 8px;
+}
+
+.h-proposals-panel .h-proposal-toolbar-titleline::after {
+  content: none;
+  display: none;
+}
+
+.h-proposals-panel .h-proposal-toolbar-count,
+.h-proposals-panel .h-proposal-toolbar-index,
+.h-proposals-panel .h-proposal-short-count {
+  font-size: 10px;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+.h-proposals-panel .h-proposal-toolbar-index {
+  min-width: max-content;
+}
+
+.h-proposals-panel .h-proposal-filter {
+  min-height: 30px !important;
+  padding-block: 3px !important;
+}
+
+.h-proposals-panel .h-proposal-filter > span {
+  flex-direction: row !important;
+  align-items: center !important;
+  gap: 0 !important;
+  font-size: 11.5px;
+  line-height: 1.1;
+}
+
+.h-proposals-panel .h-proposal-filter small {
+  display: none !important;
+}
+
+
+.h-proposals-panel .h-proposal-hotkeys {
+  flex: 1 1 100%;
+  justify-content: flex-end;
+  opacity: 0.88;
+}
+
+.h-proposals-panel .h-proposal-row-button {
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+}
+
+.h-proposals-panel .h-proposal-row-title {
+  white-space: normal !important;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.h-proposals-panel .h-proposal-pin:not(.on) {
+  color: color-mix(in oklab, var(--fg-faint), white 12%) !important;
+  border-color: rgba(125, 211, 252, 0.18) !important;
+  background:
+    radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(22, 38, 56, 0.50), rgba(5, 12, 22, 0.92)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 4px 10px rgba(0, 0, 0, 0.10) !important;
+}
+
+.h-proposals-panel .h-proposal-pin:not(.on):hover,
+.h-proposals-panel .h-proposal-pin:not(.on):focus-visible {
+  color: color-mix(in oklab, var(--warn), white 8%) !important;
+  border-color: rgba(250, 204, 21, 0.42) !important;
+}
+
+.h-proposals-panel .h-proposal-pin.on {
+  color: #fff7cc !important;
+}
+
+.h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.status-pending:not(.is-active) {
+  border-color: rgba(250, 204, 21, 0.30) !important;
+  background: linear-gradient(90deg, rgba(250, 204, 21, 0.105), rgba(6, 17, 30, 0.78) 34%, rgba(3, 10, 20, 0.84)) !important;
+}
+
+.h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.status-applied:not(.is-active) {
+  border-color: rgba(34, 197, 94, 0.18) !important;
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.050), rgba(6, 17, 30, 0.72) 28%, rgba(3, 10, 20, 0.82)) !important;
+}
+
+.h-root .h-main-shell.embed > .h-proposals-panel .h-proposal-item.status-rejected:not(.is-active) {
+  border-color: rgba(248, 113, 113, 0.22) !important;
+  background: linear-gradient(90deg, rgba(248, 113, 113, 0.070), rgba(6, 17, 30, 0.70) 30%, rgba(3, 10, 20, 0.82)) !important;
+}
+
+.h-proposals-panel .h-proposal-list .h-proposal-item.status-pending::before {
+  width: 4px;
+  background: linear-gradient(180deg, #facc15, rgba(250, 204, 21, 0.34));
+  box-shadow: 0 0 14px rgba(250, 204, 21, 0.28);
+}
+
+.h-proposals-panel .h-proposal-list .h-proposal-item.status-applied::before {
+  inset: calc(50% - 3px) auto auto 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #22c55e;
+  box-shadow: 0 0 10px rgba(34, 197, 94, 0.32);
+}
+
+.h-proposals-panel .h-proposal-list .h-proposal-item.status-rejected .h-proposal-row-title {
+  color: color-mix(in oklab, var(--fg-dim), white 4%) !important;
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 113, 113, 0.62);
+}
+
+
+@media (max-width: 760px) {
+  .h-proposals-panel {
+    overflow: auto;
+  }
+
+  .h-proposals-with-inbox {
+    overflow: visible;
+  }
+
+  .h-proposals-panel .h-proposal-row-button {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .h-proposals-panel .h-proposal-row-button .h-proposal-badge.review-accept,
+  .h-proposals-panel .h-proposal-row-button .h-proposal-badge.review-reject,
+  .h-proposals-panel .h-proposal-row-button .h-proposal-badge.review-defer {
+    display: none;
+  }
+}
+
+
+.h-proposals-panel .h-proposal-row-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.h-proposals-panel .h-proposal-row-subtitle {
+  min-width: 0;
+  overflow: hidden;
+  color: color-mix(in oklab, var(--fg-dim), white 8%);
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  font-size: 10px;
+  font-weight: 560;
+  line-height: 1.2;
+}
+
+.h-proposals-panel .h-proposal-item.is-active .h-proposal-row-subtitle {
+  color: color-mix(in oklab, var(--fg-dim), white 20%);
+}
+
+.h-proposals-panel .h-proposal-detail-head {
+  grid-template-areas:
+    "title metrics"
+    "title actions" !important;
+}
+
+
+.h-proposals-panel .h-proposal-outline span {
+  align-self: center;
+}
+
+
+.h-proposals-panel .h-proposal-detail-nav-group {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid rgba(125, 211, 252, 0.12);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.h-proposals-panel .h-proposal-detail-actions .h-proposal-btn.h-proposal-detail-nav {
+  min-height: 26px;
+  padding-inline: 9px;
+  border-radius: 8px;
+  font-size: 10px;
+}
+
+@media (max-width: 980px) {
+  .h-proposals-panel .h-proposal-detail-head {
+    grid-template-areas:
+      "title"
+      "metrics"
+      "actions" !important;
+  }
+}
+
+@media (max-width: 760px) {
+  .h-proposals-panel .h-proposal-row-subtitle {
+    display: none;
+  }
+}
+
+/* Detail-header simplification: keep only title + primary actions. */
+.h-proposals-panel .h-proposal-detail-head {
+  grid-template-areas: "title actions" !important;
+}
+
+@media (max-width: 980px) {
+  .h-proposals-panel .h-proposal-detail-head {
+    grid-template-areas:
+      "title"
+      "actions" !important;
+  }
+}
+
+/* Remaining containment pass: cap the proposals workbench to the
+   viewport so the detail pane scrolls internally instead of extending
+   the document. */
+.h-proposals-panel {
+  --proposal-viewport-cap: calc(100dvh - var(--app-nav-height, 49px) - 190px);
+}
+
+.h-proposals-with-inbox,
+.h-proposals-panel .h-proposals-workbench {
+  block-size: var(--proposal-viewport-cap);
+  max-block-size: 100%;
+}
+
+.h-proposals-panel .h-proposals-sidebar,
+.h-proposals-panel .h-proposal-detail {
+  min-block-size: 0;
+  block-size: 100%;
+  max-block-size: 100%;
+}
+
+.h-proposals-panel .h-proposal-list,
+.h-proposals-panel .h-proposal-doc-shell {
+  min-block-size: 0;
+}
+
+@media (max-width: 760px) {
+  .h-proposals-with-inbox,
+  .h-proposals-panel .h-proposals-workbench,
+  .h-proposals-panel .h-proposals-sidebar,
+  .h-proposals-panel .h-proposal-detail {
+    block-size: auto;
+    max-block-size: none;
+  }
+}
+
+/* Remove the duplicate horizontal outline; MarkdownPreview already renders the
+   vertical outline for proposal navigation. */
+.h-proposals-panel .h-proposal-outline {
+  display: none !important;
+}
+
+/* Shortcuts now live inline where the old "? shortcuts" toggle sat. */
+.h-proposals-panel .h-proposal-toolbar-controls .h-proposal-hotkeys {
+  display: flex !important;
+  order: 0;
+  flex: 0 1 auto;
+  flex-basis: auto;
+  width: auto;
+  min-width: max-content;
+  margin-left: auto;
+  justify-content: flex-end;
+}
+
+/* Proposal toolbar compaction: search now occupies the removed queue-title row,
+   with sort immediately to its right. */
+.h-proposals-panel .h-proposal-toolbar-main {
+  grid-template-columns: minmax(0, 1fr) minmax(132px, 146px) !important;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.h-proposals-panel .h-proposal-toolbar-main .h-proposal-search {
+  grid-column: auto !important;
+  width: 100%;
+  max-width: none;
+}
+
+.h-proposals-panel .h-proposal-toolbar-main .h-proposal-sort {
+  min-width: 132px;
+  height: 28px;
+  box-sizing: border-box;
+  border-color: rgba(125, 211, 252, 0.20);
+  background: rgba(255, 255, 255, 0.020);
+}
+
+@media (max-width: 640px) {
+  .h-proposals-panel .h-proposal-toolbar-main {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .h-proposals-panel .h-proposal-toolbar-main .h-proposal-sort {
+    min-width: 0;
+  }
+}
+
+/* Obvious proposal/SPEC view tabs. */
+.h-proposals-panel .h-proposals-view-tabs {
+  display: inline-flex;
+  width: max-content;
+  gap: 4px;
+  margin: 4px 0 12px;
+  padding: 3px;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 12px;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(125, 211, 252, 0.12), transparent 42%),
+    linear-gradient(180deg, rgba(8, 24, 40, 0.86), rgba(3, 10, 20, 0.96));
+}
+
+.h-proposals-panel .h-proposals-view-tab {
+  min-height: 32px;
+  padding: 0 15px;
+  color: color-mix(in oklab, var(--fg-dim), white 8%);
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 820;
+  letter-spacing: 0.01em;
+}
+
+.h-proposals-panel .h-proposals-view-tab:hover,
+.h-proposals-panel .h-proposals-view-tab:focus-visible {
+  color: color-mix(in oklab, var(--fg), #7dd3fc 8%);
+  border-color: rgba(125, 211, 252, 0.24);
+  outline: none;
+}
+
+.h-proposals-panel .h-proposals-view-tab[data-state="active"],
+.h-proposals-panel .h-proposals-view-tab[aria-selected="true"] {
+  color: color-mix(in oklab, var(--fg), #7dd3fc 16%) !important;
+  border-color: rgba(125, 211, 252, 0.44);
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255, 255, 255, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(23, 71, 96, 0.92), rgba(5, 20, 34, 0.98)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.13),
+    0 0 18px rgba(56, 189, 248, 0.16) !important;
+}
