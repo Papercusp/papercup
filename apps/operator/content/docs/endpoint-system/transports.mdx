@@ -1,0 +1,134 @@
+---
+title: Transports
+description: How HTTP, MCP, and in-process callers all reach the same function. The dispatcher is one; only the framing differs.
+---
+
+## The three transports
+
+| Transport | Used by | Path |
+|---|---|---|
+| **HTTP** (plugin) | Dashboard fetches, agent HTTP fallback | `POST /api/plugins/<plugin>/<tool>` |
+| **HTTP** (built-in) | Dashboard fetches with bearer | `POST /api/agent-tools/<scope>/<verb>` |
+| **MCP** | Spawned agents over `mcp-handler` SSE/streamable-http | `POST /api/mcp` and `POST /api/sse` |
+| **In-process** | Direct TS imports, server actions | `import { lookupByMcpName }` then call `tool.fn(input, ctx)` |
+
+All four go through the same `dispatchProjectedTool` in `packages/agent-mcp/src/dispatch-projected.ts`. The same role/capability/quota/timeout/telemetry behavior applies.
+
+## How HTTP requests reach a function
+
+The catch-all routes are stupidly simple:
+
+1. `apps/operator/app/api/plugins/[...path]/route.ts` receives the request
+2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404
+3. Validates the HTTP method against the manifest's `expose.http.methods` (default `['POST']`) — if not allowed, 405
+4. Builds a `UnifiedToolContext` from URL spawn params + headers + the host's resolver impls (spawn, secret, projectDir resolver)
+5. If `Authorization: Bearer ...` present, resolves it to a principal and tx (no-op for plugins; required for built-ins)
+6. Hands off to `dispatchProjectedTool`
+7. Maps the resulting `DispatchProjectedResult` to status code + JSON body
+
+The streaming path is the same except step 7 — when `Accept: text/event-stream` is on the request, the response is a `ReadableStream` of SSE events. Each `ctx.progress(pct, msg)` call from the function emits one event.
+
+## How MCP requests reach a function
+
+Slightly more involved because we use `mcp-handler` as a transport library.
+
+1. `apps/operator/app/api/[transport]/route.ts` is a `createMcpHandler` server with `tools/list`, `tools/call`, `resources/list`, `prompts/list` etc.
+2. `tools/list` iterates `listMcpProjections(role)` — projection registry filtered by the calling role from URL params. Returns `{ name, description, inputSchema }` for every visible tool.
+3. `tools/call` looks up by `lookupByMcpName(name)`, builds a `UnifiedToolContext` (similar to HTTP, but the spawn context comes from the URL on the SSE connection), and calls `dispatchProjectedTool`.
+4. The dispatcher returns; the MCP SDK serializes the result into the JSON-RPC envelope.
+
+Streaming on MCP works via `notifications/progress` — when the client sent a `progressToken` in `_meta`, every `ctx.progress(pct, msg)` becomes one notification. mcp-handler routes those over the open SSE connection.
+
+## How in-process callers reach a function
+
+The projection registry is exported. Any TypeScript module on the server can do:
+
+```ts
+import { lookupByMcpName } from '@papercusp/agent-mcp';
+
+const tool = lookupByMcpName('repomix.pack');
+if (!tool) throw new Error('not registered');
+const result = await tool.fn(
+  { target_dir: '/some/path' },
+  {
+    workspaceId: 'default',
+    harnessSlug: 'sheets',
+    role: 'architect',
+    runId: 'R',
+    spawnId: 'inproc',
+    log: console.log,
+    progress: () => {},
+    signal: new AbortController().signal,
+    spawn: pluginSpawnImpl,
+    secret: secretImpl,
+    projectDir: '/some/project',
+    stateDir: '/some/project/.harness',
+  },
+);
+```
+
+This bypasses the dispatcher — no role check, no quota, no telemetry. Use when you genuinely want to call the function as a function, not as a tool. For consistency, prefer routing through `/api/plugins/...` even from server-side code so gating + telemetry stay uniform.
+
+## The seven URL params
+
+When a request hits an HTTP plugin route or the MCP transport, the framework reads these query params (or equivalent `X-Papercusp-*` headers):
+
+| Param | Required for | Purpose |
+|---|---|---|
+| `workspace` | Always | RLS scoping; `app.workspace_id` GUC |
+| `harness` | Path-resolving tools | Looks up `projectDir` / `stateDir` via `loadHarnessRegistry()` |
+| `role` | Plugin-tool role gate | One of: `worker, validator, scoper, architect, reviewer, debugger, operator, documenter, curator` |
+| `run` | All non-worker quotas | `window_key = 'run:<id>'` |
+| `chunk` | Worker quotas | `window_key = 'chunk:<id>'` |
+| `spawn` | Telemetry attribution | Unique per orchestrator spawn |
+| `feature` | Optional context | Passed to `tool_invocations.feature_id` for Intel UI |
+| `parent_spawn` | Optional Phase 9 lineage | Captured for spawn-of-spawn telemetry |
+
+The orchestrator bakes all seven into the per-spawn `.mcp.json` it writes before launching an agent process. The agent's MCP client then carries them on every request without the agent ever having to know about them. See `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts`.
+
+## Default exposure
+
+If a manifest entry omits `expose.*`, the framework picks defaults:
+
+- `expose.mcp.name` → `<short-pluginName>.<tool.name>` (drops `@scope/` prefix)
+- `expose.http.path` → `/api/plugins/<short-pluginName>/<tool.name>`
+
+So `@papercupai/repomix` plugin's `pack` tool gets `repomix.pack` over MCP and `/api/plugins/repomix/pack` over HTTP. You only declare `expose.*` to override these — for instance, to host the same tool at a non-default URL for backwards compat.
+
+If you only set `expose.mcp` and not `expose.http`, the tool is MCP-only. If only `expose.http`, HTTP-only. The framework requires at least one.
+
+## Streaming progress
+
+Both transports thread `ctx.progress(pct, msg?)` through:
+
+```ts
+// Tool function
+ctx.progress(0,   'starting');
+ctx.progress(25,  'fetched manifest');
+ctx.progress(75,  'transformed');
+ctx.progress(100, 'done');
+```
+
+On MCP (when client passed `_meta.progressToken`):
+```
+notifications/progress { progressToken, progress: 25, total: 100, message: 'fetched manifest' }
+```
+
+On HTTP (when client sent `Accept: text/event-stream`):
+```
+event: progress
+data: {"progress":25,"total":100,"message":"fetched manifest"}
+```
+
+The function code is identical for both. Tools that don't call `ctx.progress` work fine — the receiver just gets the final result.
+
+## Trust model
+
+**There is no auth on plugin-tool URL spawn params.** The dispatcher enforces capability/role/quota but does not verify that `?role=worker&run=R&spawn=S` was actually issued by the orchestrator.
+
+This is currently safe because:
+- The operator binds to `127.0.0.1` (`PAPERCUSP_BIND_HOST` defaults to loopback). Only local processes can hit `/api/plugins/*` or `/api/[transport]`.
+- Built-in tools still require a bearer principal. They throw `UnauthorizedToolError` (HTTP 401) when none is present.
+- Plugin tools rely on the orchestrator's spawn-time guarantee that the URL is sealed (`spawn-mcp.ts` writes the per-spawn `.mcp.json`; the agent only sees what the orchestrator put there).
+
+If we ever bind off-loopback, **the URL spawn params will need to be HMAC-signed** (over `workspace|harness|role|run|spawn` with a per-process key) and verified at the HTTP boundary before the dispatcher runs. This is tracked as a deferred design item.

@@ -1,0 +1,5 @@
+{
+  "title": "Agent Spawning",
+  "description": "How agents launch other agents as a tool call. Phase 9 spawn primitive — orchestrator.spawn / poll / list_active / cancel — with allowlist gating, PG-backed durability, and parent-child telemetry that surfaces in the Intel panel.",
+  "pages": ["overview", "lifecycle", "allowlist-and-caps", "schema", "observability", "limits"]
+}
