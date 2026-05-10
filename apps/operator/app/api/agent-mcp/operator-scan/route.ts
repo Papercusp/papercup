@@ -221,27 +221,42 @@ export async function GET(req: NextRequest) {
         send('first_run', {});
       }
 
+      // Read the superuser token (commit 0ccac7cf) for ?superuser=1
+      // bypass — operator-scan runs at chrome scope, not inside a
+      // spawn, so there's no harness/run/spawn URL params to pass.
+      let scanSuperuserToken: string | null = null;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        scanSuperuserToken = require('node:fs').readFileSync(
+          require('node:path').join(require('node:os').homedir(), '.papercusp', 'superuser-token'),
+          'utf8',
+        ).trim();
+        if (!scanSuperuserToken || scanSuperuserToken.length < 16) scanSuperuserToken = null;
+      } catch { scanSuperuserToken = null; }
+
       try {
         const events = runClaudeChat({
           promptText,
-          mcpConfig: {
-            mcpServers: {
-              agentmcp: {
-                // omp silently drops type:'http' MCP servers — bridge
-                // through mcp-remote (stdio→HTTP).
-                type: 'stdio',
-                command: 'npx',
-                args: [
-                  '-y',
-                  'mcp-remote@latest',
-                  `http://127.0.0.1:3055/api/mcp?harness=system&workspace=${encodeURIComponent(workspaceId)}&role=operator&run=op-scan-${Date.now()}&spawn=op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-                  '--header',
-                  `Authorization:Bearer ${principal.bearer}`,
-                ],
-              },
-            },
-          },
-          allowedTools: [...ALL_AGENT_MCP_TOOLS],
+          mcpConfig: scanSuperuserToken
+            ? {
+                mcpServers: {
+                  agentmcp: {
+                    // omp silently drops type:'http' MCP servers —
+                    // bridge through mcp-remote (stdio→HTTP).
+                    type: 'stdio',
+                    command: 'npx',
+                    args: [
+                      '-y',
+                      'mcp-remote@latest',
+                      'http://127.0.0.1:3055/api/mcp?superuser=1',
+                      '--header',
+                      `Authorization:Bearer ${scanSuperuserToken}`,
+                    ],
+                  },
+                },
+              }
+            : undefined,
+          allowedTools: scanSuperuserToken ? [...ALL_AGENT_MCP_TOOLS] : [],
           toolEventFilter: (raw) =>
             raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
           permissionMode: 'bypassPermissions',
