@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'messages:send',
   capability: 'messages:write',
   args: z.object({
     to: z.array(z.string().min(1)).min(1),

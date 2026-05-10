@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Tooltip } from './Tooltip';
 import { Play, RefreshCw, Check, X, Minus } from 'lucide-react';
 import { toast } from 'sonner';
@@ -40,22 +41,42 @@ function fmtAgo(ts: number): string {
   return `${Math.floor(diff / 86_400_000)}d`;
 }
 
-export default function TestsTab({ slug, phase }: Props) {
-  const [tests, setTests] = useState<TestItem[]>([]);
+function TestsTabInner({ slug, phase }: Props) {
   const [running, setRunning] = useState<Set<string>>(new Set());
 
-  const load = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/tests?phase=${phase}`).then((r) => r.json());
-      setTests(d.tests ?? []);
-    } catch {}
-  }, [slug, phase]);
+  // Tests stream live from harness_tests (Zero) — chokidar watcher mirrors
+  // .harness/tests/*.json into PG. The 30s REST poll is gone.
+  const { data: testRows } = useSyncQuery<{
+    testId: string;
+    name: string;
+    status: string;
+    durationMs: number;
+    lastRunTs: number | null;
+    payload: Record<string, unknown>;
+  }>({
+    queryName: 'harnessTests.byHarness',
+    args: { harnessSlug: slug, phase },
+    enabled: !!slug,
+  });
 
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  const tests: TestItem[] = useMemo(() => {
+    if (!Array.isArray(testRows)) return [];
+    return testRows.map((r) => {
+      const p = r.payload as Record<string, unknown>;
+      return {
+        id: r.testId,
+        summary: r.name || r.testId,
+        file: typeof p.file === 'string' ? p.file : '',
+        framework: (typeof p.framework === 'string' ? p.framework : 'vitest') as TestItem['framework'],
+        coversVALs: Array.isArray(p.coversVALs) ? p.coversVALs as string[] : [],
+        status: (r.status || 'not_run') as TestItem['status'],
+        lastRunTs: r.lastRunTs ?? 0,
+        durationMs: r.durationMs ?? 0,
+        phase,
+        kind: typeof p.kind === 'string' ? p.kind as TestItem['kind'] : undefined,
+      };
+    });
+  }, [testRows, phase]);
 
   const runOne = async (id: string) => {
     setRunning((s) => new Set(s).add(id));
@@ -64,7 +85,7 @@ export default function TestsTab({ slug, phase }: Props) {
       const body = await res.json();
       if (body.ok) toast.success(`${id} passed`);
       else toast.error(`${id} failed — click for output`);
-      load();
+      // Watcher will push the new row through Zero — no manual reload needed.
     } catch (e: any) {
       toast.error(`Run failed: ${e.message ?? e}`);
     } finally {
@@ -214,3 +235,6 @@ function TestsGrid({
     />
   );
 }
+
+const TestsTab = memo(TestsTabInner);
+export default TestsTab;

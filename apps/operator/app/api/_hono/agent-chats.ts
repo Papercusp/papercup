@@ -5,8 +5,9 @@
  * Phase B "Pair" primitive. Each chat is a transcript stored in the
  * per-harness `agent_chats` table; on each user message the server
  * assembles the role's full prompt (same as autonomous dispatches via
- * `assembleRolePrompt`) plus the prior transcript, spawns `claude -p`,
- * and streams the response back via SSE.
+ * `assembleRolePrompt`) plus the prior transcript, spawns the agent CLI
+ * via `runClaudeChat` (backend-aware: omp -p by default, claude -p when
+ * AGENT_BACKEND=claude-code), and streams the response back via SSE.
  *
  * Side-channel design: chat agents read state and may write supervisor
  * notes, but do NOT mutate the worktree or feature rows directly. The
@@ -23,7 +24,7 @@ import type { Hono } from 'hono';
 import { stream, streamSSE } from 'hono/streaming';
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
@@ -93,21 +94,30 @@ function dbForSlug(slug: string) {
  * missing file (no-op).
  */
 async function flipExpertEngaged(slug: string, expertId: string, engaged: boolean): Promise<void> {
-  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
-  const projectDir = loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path;
-  if (!projectDir) return;
-  const identityPath = join(projectDir, '.harness', 'experts', expertId, 'identity.json');
-  if (!existsSync(identityPath)) return;
-  const identity = JSON.parse(readFileSync(identityPath, 'utf8'));
-  const terminal = new Set(['final', 'max_rounds', 'cancelled', 'superseded', 'error']);
-  identity.userEngaged = engaged;
-  if (engaged) {
-    if (!terminal.has(identity.status)) identity.status = 'awaiting_user';
-  } else {
-    if (identity.status === 'awaiting_user') identity.status = 'gathering_feedback';
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { activeWorkspaceId } = await import('@/lib/workspace-registry');
+  const ws = activeWorkspaceId();
+  // Atomic UPDATE: only flip status when current state allows. Terminal
+  // statuses (final/max_rounds/cancelled/superseded/error) are preserved
+  // regardless of engaged. The previous file-based version did this same
+  // check after reading identity.json; we now do it in SQL CASE.
+  const rows = await sql<{ updated: boolean }[]>`
+    UPDATE harness_shared.harness_experts
+       SET user_engaged = ${engaged},
+           status       = CASE
+             WHEN status IN ('final','max_rounds','cancelled','superseded','error') THEN status
+             WHEN ${engaged} = true THEN 'awaiting_user'
+             WHEN status = 'awaiting_user' THEN 'gathering_feedback'
+             ELSE status
+           END,
+           updated_at   = ${Date.now()}
+     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+       AND expert_id    = ${expertId}
+    RETURNING TRUE AS updated
+  `;
+  if (rows.length > 0) {
+    void notifySyncInvalidate('harnessIdentity').catch(() => {});
   }
-  identity.updatedAt = new Date().toISOString();
-  await writeFile(identityPath, JSON.stringify(identity, null, 2), 'utf8');
 }
 
 /**
@@ -140,10 +150,10 @@ async function readFeatureLockState(slug: string, featureId: string): Promise<Fe
  * supported: `maxChatCostUsd` (per-chat) and `maxAggregateChatCostUsd`
  * (across all chats in the harness). Both default to undefined = uncapped.
  */
-function readChatCostCap(slug: string): { perChatUsd?: number; aggregateUsd?: number } {
+async function readChatCostCap(slug: string): Promise<{ perChatUsd?: number; aggregateUsd?: number }> {
   try {
     const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
-    const projectDir = loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+    const projectDir = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
     if (!projectDir) return {};
     const cfgPath = join(projectDir, '.harness', 'config.json');
     if (!existsSync(cfgPath)) return {};
@@ -163,10 +173,10 @@ function readChatCostCap(slug: string): { perChatUsd?: number; aggregateUsd?: nu
  * make chat refuse messages when the targeted feature is currently locked
  * by the autonomous worker.
  */
-function readChatLockPolicy(slug: string): boolean {
+async function readChatLockPolicy(slug: string): Promise<boolean> {
   try {
     const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
-    const projectDir = loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+    const projectDir = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
     if (!projectDir) return false;
     const cfgPath = join(projectDir, '.harness', 'config.json');
     if (!existsSync(cfgPath)) return false;
@@ -343,7 +353,7 @@ export function registerAgentChats(harness: Hono): void {
     // accumulated cents; aggregate cap sums all non-archived chats in
     // this harness. Either being exceeded refuses the spawn — operator
     // must archive a chat or raise the cap before continuing.
-    const cap = readChatCostCap(slug);
+    const cap = await readChatCostCap(slug);
     if (cap.perChatUsd !== undefined && chat.total_cost_usd_cents >= cap.perChatUsd * 100) {
       return c.json({
         error: 'per-chat cost cap reached',
@@ -379,7 +389,7 @@ export function registerAgentChats(harness: Hono): void {
     // operators who want hard substrate-level guarantees that no two
     // claude -p processes can fire against the same feature concurrently.
     if (featureLock?.active) {
-      const respectLocks = readChatLockPolicy(slug);
+      const respectLocks = await readChatLockPolicy(slug);
       if (respectLocks) {
         return c.json({
           error: 'feature_locked',
@@ -440,7 +450,7 @@ export function registerAgentChats(harness: Hono): void {
       // session-scoped path restriction allows reading harness state and
       // feature docs. Without this, claude is locked to the dev-server's
       // cwd and cannot read any of the inputs the role prompt references.
-      const projectDir = projectDirForSlug(slug);
+      const projectDir = await projectDirForSlug(slug);
 
       let assistantText = '';
       let tokensIn = 0;

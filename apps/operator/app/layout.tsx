@@ -3,11 +3,72 @@ import { Suspense } from 'react';
 import { Toaster } from 'sonner';
 import { NuqsAdapter } from 'nuqs/adapters/next/app';
 import * as Tooltip from '@radix-ui/react-tooltip';
+import { RootSyncProvider } from './_components/RootSyncProvider';
 import ChromeShell from './_components/ChromeShell';
+import { OperatorConversationProvider } from './_components/OperatorConversationProvider';
+import WslOnboardingGate from './_components/WslOnboardingGate';
 import GlobalShortcutDispatcher from './_components/GlobalShortcutDispatcher';
 import RouteProgressProvider from './_components/RouteProgressProvider';
 import RouteTransitionProvider from './_components/RouteTransitionProvider';
+import { ToasterSelectionFix } from './_components/ToasterSelectionFix';
+import { ToastHistoryRecorder } from './_components/ToastHistoryRecorder';
 import './globals.css';
+
+const visualEffectsBootstrapScript = `
+(() => {
+  const key = 'papercusp.visualEffectsMode';
+  const reducedMotionQuery = '(prefers-reduced-motion: reduce)';
+  try {
+    let mode = window.localStorage.getItem(key);
+    if (mode !== 'system' && mode !== 'full' && mode !== 'minimal') mode = 'system';
+    const reduced = mode === 'system'
+      && typeof window.matchMedia === 'function'
+      && window.matchMedia(reducedMotionQuery).matches;
+    const effective = mode === 'minimal' || reduced ? 'minimal' : 'full';
+    document.documentElement.dataset.visualEffects = effective;
+    document.documentElement.dataset.visualEffectsMode = mode;
+  } catch {
+    document.documentElement.dataset.visualEffects = 'full';
+    document.documentElement.dataset.visualEffectsMode = 'system';
+  }
+})();
+`;
+
+// Bootstrap the operator-chat sidebar width pre-hydration so the body
+// padding (and the .pc-header left/width override) is set before the
+// first paint. Without this, every page first paints under the sidebar,
+// then jumps right when OperatorChatSidebar's useEffect runs.
+//
+// Reads the same localStorage key the sidebar component writes
+// (papercusp.operatorChat.width); falls back to 360px. Adds the
+// has-op-chat body class so CSS that gates on it applies immediately.
+//
+// Iframe routes (CHROMELESS_PATH_PREFIXES in ChromeShell) are also
+// covered: ChromeShell returns null for them, so the sidebar never
+// renders and the body class is added but the sidebar element is
+// absent — leaving 360px of empty padding. Strip it on those routes
+// via the same path check, inline:
+const operatorChatBootstrapScript = `
+(() => {
+  try {
+    var path = location.pathname || '';
+    var chromeless = ['/pi', '/project-docs', '/el-min'];
+    var skip = chromeless.some(function (p) { return path === p || path.indexOf(p + '/') === 0; });
+    if (skip) return;
+    var stored = window.localStorage.getItem('papercusp.operatorChat.width');
+    var w = 360;
+    if (stored) {
+      var n = Number(stored);
+      if (Number.isFinite(n) && n >= 360) {
+        var ceiling = Math.max(360, Math.floor(window.innerWidth * 0.75));
+        w = Math.min(n, ceiling);
+      }
+    }
+    document.documentElement.style.setProperty('--op-chat-w', w + 'px');
+    document.body && document.body.classList.add('has-op-chat');
+  } catch (_) {}
+})();
+`;
 
 export const metadata: Metadata = {
   title: 'Papercusp',
@@ -17,7 +78,17 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body>
+      {/* suppressHydrationWarning on <body>: the operator-chat
+          bootstrap script (below) adds the `has-op-chat` class
+          + sets the --op-chat-w CSS var BEFORE React hydrates so
+          the first paint isn't under the sidebar. Server output
+          can't include that class (no localStorage server-side),
+          so React would log a hydration mismatch. The class is
+          purely visual scaffolding — no React state depends on
+          it — so suppression is safe. */}
+      <body suppressHydrationWarning>
+        <script dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
+        <script dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
           {/* Tooltip.Provider hoisted to the root so ChromeShell-rendered
               children (OperatorPanel, OracleDock) can use the harness/Tooltip
               wrapper without each route layout having to install its own
@@ -25,23 +96,52 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               historically — those are now redundant but harmless (Radix allows
               nested providers). */}
           <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
+            {/* HarnessZeroProvider hoisted to root via RootSyncProvider
+                so every component (root-mounted or under /harness/*) can
+                use useSyncQuery uniformly. Was previously blocked by a
+                Turbopack chunking bug; resolved by Paperclip's commit
+                8eeb334 (PhaseTabs node:fs leak fix). */}
+            <RootSyncProvider>
             <RouteProgressProvider>
               <GlobalShortcutDispatcher />
               <Suspense fallback={null}>
                 <NuqsAdapter>
                   <RouteTransitionProvider>
-                    <ChromeShell />
-                    <main data-route-transition-page="true">{children}</main>
+                    <WslOnboardingGate>
+                      {/* OperatorConversationProvider owns the
+                          continuous-conversation state machine that
+                          drives the always-on left chat sidebar. Mounted
+                          above ChromeShell so both ChromeShell-rendered
+                          sidebar and any future consumers (voice path,
+                          set_mode tag dispatcher) see the same context. */}
+                      <OperatorConversationProvider>
+                        <ChromeShell />
+                        <main data-route-transition-page="true">{children}</main>
+                      </OperatorConversationProvider>
+                    </WslOnboardingGate>
                   </RouteTransitionProvider>
                 {/* Single app-wide Toaster, outside <main> so toasts can stack
                     above pc-header (z:1300) and OracleDock (z:80). Sub-pages
                     must not mount their own — those are trapped inside
                     <main z:70> and can't visually escape regardless of
                     inline z-index. */}
-                  <Toaster theme="dark" position="top-right" richColors style={{ zIndex: 2147483646 }} />
+                  {/* `closeButton` adds an explicit ✕ since we suppress the
+                      drag-to-dismiss gesture below. The actual selection fix
+                      lives in <ToasterSelectionFix /> — see the comment on
+                      that component for why it's necessary. */}
+                  <Toaster
+                    theme="dark"
+                    position="top-right"
+                    richColors
+                    closeButton
+                    style={{ zIndex: 2147483646 }}
+                  />
+                  <ToasterSelectionFix />
+                  <ToastHistoryRecorder />
                 </NuqsAdapter>
               </Suspense>
             </RouteProgressProvider>
+            </RootSyncProvider>
           </Tooltip.Provider>
       </body>
       </html>

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'goals:list',
   capability: 'goals:read',
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),

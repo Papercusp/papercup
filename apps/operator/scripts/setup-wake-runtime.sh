@@ -12,17 +12,23 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SRC=$(node -e "console.log(require.resolve('onnxruntime-web/package.json'))" 2>/dev/null \
-      | xargs dirname 2>/dev/null \
-      | sed 's|$|/dist|')
+# require.resolve('pkg/package.json') fails for packages without ./package.json
+# in their exports map (onnxruntime-web is one), and an empty pipeline trips
+# xargs into running dirname with no args -> exit 123 under pipefail. Skip
+# require.resolve and probe known node_modules paths directly.
+SRC=""
+for cand in \
+  "$(pwd)/node_modules/onnxruntime-web/dist" \
+  "$(pwd)/../../node_modules/onnxruntime-web/dist" \
+  "$(pwd)/node_modules/openwakeword-js/node_modules/onnxruntime-web/dist" \
+  "$(pwd)/../../node_modules/openwakeword-js/node_modules/onnxruntime-web/dist"; do
+  if [ -d "$cand" ]; then
+    SRC="$cand"
+    break
+  fi
+done
 
-# Fallback to the openwakeword-js nested copy if root onnxruntime-web isn't
-# hoisted (npm doesn't always hoist when versions diverge).
-if [ ! -d "$SRC" ]; then
-  SRC="$(pwd)/../../node_modules/openwakeword-js/node_modules/onnxruntime-web/dist"
-fi
-
-if [ ! -d "$SRC" ]; then
+if [ -z "$SRC" ]; then
   echo "ERR: can't find onnxruntime-web/dist; install openwakeword-js first" >&2
   exit 1
 fi

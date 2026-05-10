@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 
 interface ScreenshotItem {
@@ -8,6 +9,17 @@ interface ScreenshotItem {
   sizeBytes: number;
   ts: number;
 }
+
+// Row shape from harness_shared.harness_screenshots (mirrored metadata
+// only; image bytes still served by /screenshots/<id> REST).
+type HarnessScreenshotRow = {
+  harnessSlug: string;
+  phase: string;
+  id: string;
+  sizeBytes: number;
+  ts: number;
+  workspaceId: string;
+};
 
 interface Props {
   slug: string;
@@ -26,26 +38,22 @@ function fmtSize(n: number): string {
 }
 
 export default function ScreenshotsPanel({ slug, onClose }: Props) {
-  const [items, setItems] = useState<ScreenshotItem[]>([]);
   const [selected, setSelected] = useState<ScreenshotItem | null>(null);
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/screenshots`).then((r) => r.json());
-      setItems(d.screenshots ?? []);
-    } catch (e) {
-      setToast(`load: ${e}`);
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  // Live-pushed via Zero (harness_shared.harness_screenshots, mirrored from
+  // .harness/screenshots/* by harness-fs-watcher.ts). Replaces
+  // useSseOrPoll(/screenshots/sse, load, 5000).
+  const { data: screenshotRows } = useSyncQuery<HarnessScreenshotRow>({
+    queryName: 'harnessScreenshots.byHarness',
+    args: { harnessSlug: slug, phase: 'staging' },
+  });
+  const items = useMemo<ScreenshotItem[]>(
+    () => (screenshotRows ?? []).map((r) => ({ id: r.id, sizeBytes: r.sizeBytes, ts: r.ts })),
+    [screenshotRows],
+  );
 
   const upload = useCallback(async (file: File) => {
     setUploading(true);
@@ -56,14 +64,14 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
       const r = await fetch(`/api/harness/${slug}/screenshots`, { method: 'POST', body: fd });
       if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
       setToast(`uploaded ${file.name}`);
-      await load();
+      // Zero pushes the new row once chokidar mirrors the file.
     } catch (e) {
       setToast(`upload failed: ${e}`);
     } finally {
       setUploading(false);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [slug, load]);
+  }, [slug]);
 
   const remove = useCallback(async (id: string) => {
     if (!confirm(`Delete ${id}?`)) return;
@@ -71,12 +79,12 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
       const r = await fetch(`/api/harness/${slug}/screenshots/${id}`, { method: 'DELETE' });
       if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
       if (selected?.id === id) setSelected(null);
-      await load();
+      // Zero pushes the deletion once chokidar fires the unlink event.
     } catch (e) {
       setToast(`delete failed: ${e}`);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [slug, selected, load]);
+  }, [slug, selected]);
 
   return (
     <Modal

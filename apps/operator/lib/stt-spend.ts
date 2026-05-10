@@ -5,24 +5,16 @@
  * (local Whisper) and Web Speech (browser's built-in) are free and do
  * not record. Deepgram Nova-2 ~ $0.0043/min is the first paid engine.
  *
- * Per-call spend is recorded in `<papercuspRoot>/system/operator/stt-spend.json`.
- * Schema mirrors tts-spend.json but in minutes:
- *   {
- *     perMinuteRate: 0.0043,         // user-configurable, default Deepgram Nova-2
- *     softCapUsd:   1,
- *     hardCapUsd:   5,
- *     lastSpendDate: 'YYYY-MM-DD',
- *     softCapAcknowledgedDate: null | 'YYYY-MM-DD',
- *     spend: [{ date, minutes, estimatedUsd }, ...]
- *   }
- *
- * Recording is split into pure logic (`computeNextSttState`) + IO
- * so cap-trip + rollover are unit-testable without a filesystem.
+ * Persisted in `harness_shared.operator_stt_spend` (PG, migration 020) —
+ * was previously `<papercuspRoot>/system/operator/stt-spend.json`. PG
+ * fixes the multi-tab race the JSON file approach had.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { papercuspPath } from './papercusp-root';
+import {
+  readOperatorState,
+  writeOperatorState,
+  updateOperatorState,
+} from './operator-state-pg';
 
 export interface SttSpendDay {
   date: string;
@@ -54,10 +46,6 @@ export const DEFAULT_STT_SPEND_STATE: SttSpendState = {
   softCapAcknowledgedDate: null,
   spend: [],
 };
-
-function PATH(): string {
-  return papercuspPath('system', 'operator', 'stt-spend.json');
-}
 
 function utcDateString(now: number): string {
   return new Date(now).toISOString().slice(0, 10);
@@ -96,30 +84,34 @@ export function computeNextSttState(
   return { next, fireSoftCap, hardCapTripped, todayUsd };
 }
 
-export function loadSttSpend(): SttSpendState {
-  const path = PATH();
-  if (!existsSync(path)) return { ...DEFAULT_STT_SPEND_STATE };
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<SttSpendState>;
-    return {
-      ...DEFAULT_STT_SPEND_STATE,
-      ...raw,
-      spend: Array.isArray(raw.spend) ? raw.spend.slice(0, 7) : [],
-    };
-  } catch {
-    return { ...DEFAULT_STT_SPEND_STATE };
-  }
+export async function loadSttSpend(): Promise<SttSpendState> {
+  const raw = await readOperatorState<Partial<SttSpendState>>('operator_stt_spend');
+  if (!raw) return { ...DEFAULT_STT_SPEND_STATE };
+  return {
+    ...DEFAULT_STT_SPEND_STATE,
+    ...raw,
+    spend: Array.isArray(raw.spend) ? raw.spend.slice(0, 7) : [],
+  };
 }
 
-export function saveSttSpend(state: SttSpendState): void {
-  const path = PATH();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(state, null, 2));
+export async function saveSttSpend(state: SttSpendState): Promise<void> {
+  await writeOperatorState('operator_stt_spend', state);
 }
 
-export function recordSttSpend(minutes: number, now: number = Date.now()): SttSpendUpdate {
-  const cur = loadSttSpend();
-  const update = computeNextSttState(cur, minutes, now);
-  saveSttSpend(update.next);
-  return update;
+export async function recordSttSpend(minutes: number, now: number = Date.now()): Promise<SttSpendUpdate> {
+  let captured!: SttSpendUpdate;
+  await updateOperatorState<SttSpendState>(
+    'operator_stt_spend',
+    DEFAULT_STT_SPEND_STATE,
+    (cur) => {
+      const normalized: SttSpendState = {
+        ...DEFAULT_STT_SPEND_STATE,
+        ...cur,
+        spend: Array.isArray(cur.spend) ? cur.spend.slice(0, 7) : [],
+      };
+      captured = computeNextSttState(normalized, minutes, now);
+      return captured.next;
+    },
+  );
+  return captured;
 }

@@ -20,8 +20,11 @@
  * table lands, swap useUserActions() for the Zero query — same row shape.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
+import { Clock, DollarSign } from 'lucide-react';
+import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 export interface UserAction {
   id: number;
@@ -38,72 +41,91 @@ export interface UserAction {
 
 type Listener = (a: UserAction) => void;
 
+/**
+ * Globally-pinned cache of the last fetched action list per slug.
+ * Survives Next.js dev module re-evaluation, OperatorActionLog mount/
+ * unmount cycles, and popover open/close. Lets the popover paint
+ * instantly with the previous fetch's rows while the next poll loads
+ * fresh data in the background.
+ */
+type RecentActionsCache = Map<string, { ts: number; actions: UserAction[] }>;
+const _g = globalThis as unknown as { __recentActionsCache?: RecentActionsCache };
+const recentActionsCache: RecentActionsCache =
+  _g.__recentActionsCache ?? (_g.__recentActionsCache = new Map());
+
+/** Force-prime the cache outside the component (called from chrome on
+ *  app boot, see RecentActionsCenter / ChromeShell). Safe to call
+ *  repeatedly; the most-recent response wins. */
+export async function prefetchRecentActions(slug: string): Promise<void> {
+  if (!slug) return;
+  try {
+    const r = await fetch(`/api/user-actions/${encodeURIComponent(slug)}?limit=100`);
+    if (!r.ok) return;
+    const j = (await r.json()) as { actions: UserAction[] };
+    recentActionsCache.set(slug, { ts: Date.now(), actions: j.actions ?? [] });
+  } catch {
+    /* best-effort prefetch; failure is silent */
+  }
+}
+
 function useUserActions(slug: string | null, opts?: { onTransition?: Listener }): {
   actions: UserAction[];
   loading: boolean;
   error: string | null;
 } {
-  const [actions, setActions] = useState<UserAction[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  // Smooth FLIP when a new action prepends — operators perceive the
-  // log as live; without animation the new row pops in jarringly.
-  const [listRef] = useAutoAnimate<HTMLUListElement>();
-  const lastRef = useRef<Map<number, UserAction>>(new Map());
+  const workspaceId = useWorkspaceId();
   const onTransitionRef = useRef(opts?.onTransition);
   onTransitionRef.current = opts?.onTransition;
+  const lastRef = useRef<Map<number, UserAction>>(new Map());
 
+  // Seed from the global prefetch cache so a popover open paints
+  // instantly while Zero's first-load completes.
+  const seed = slug ? (recentActionsCache.get(slug)?.actions ?? null) : null;
+
+  // HarnessZeroProvider is hoisted to root layout — useSyncQuery works
+  // on every route now (was blocked by a Turbopack chunking bug;
+  // resolved by Paperclip's harness-phases-const fix). Server emits
+  // notifySyncInvalidate('userActions.byHarness', {harnessSlug}) on
+  // every recordUserAction / updateUserAction → push refetch.
+  const sync = useSyncQuery<UserAction>({
+    queryName: 'userActions.byHarness',
+    args: { harnessSlug: slug ?? '', workspaceId, limit: 100 },
+    enabled: !!slug,
+  });
+  const liveRows = (sync.data as UserAction[] | undefined) ?? [];
+  const liveLoading = sync.loading;
+  const liveError = sync.error ? sync.error.message : null;
+
+  const actions: UserAction[] = useMemo(() => {
+    if (Array.isArray(liveRows) && liveRows.length > 0) return liveRows;
+    return seed ?? [];
+  }, [liveRows, seed]);
+
+  // Persist the current rows into the prefetch cache so other mounts
+  // can paint instantly. Also fire onTransition callbacks on status flips.
   useEffect(() => {
-    if (!slug) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    const fetchOnce = async () => {
-      try {
-        const r = await fetch(`/api/user-actions/${encodeURIComponent(slug)}?limit=100`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = (await r.json()) as { actions: UserAction[] };
-        if (cancelled) return;
-
-        // Detect status transitions on rows we've seen before. Fires
-        // onTransition for any row whose status changed since the last
-        // poll — used by the toast bridge to nudge the user.
-        const next = new Map<number, UserAction>();
-        for (const a of j.actions) next.set(a.id, a);
-        const cb = onTransitionRef.current;
-        if (cb) {
-          for (const [id, a] of next) {
-            const prev = lastRef.current.get(id);
-            if (prev && prev.status !== a.status) cb(a);
-          }
-        }
-        lastRef.current = next;
-        setActions(j.actions);
-        setError(null);
-      } catch (e) {
-        if (!cancelled) setError((e as Error).message);
-      } finally {
-        if (!cancelled) setLoading(false);
+    if (!slug || !Array.isArray(liveRows)) return;
+    recentActionsCache.set(slug, { ts: Date.now(), actions: liveRows });
+    const next = new Map<number, UserAction>();
+    for (const a of liveRows) next.set(a.id, a);
+    const cb = onTransitionRef.current;
+    if (cb) {
+      for (const [id, a] of next) {
+        const prev = lastRef.current.get(id);
+        if (prev && prev.status !== a.status) cb(a);
       }
+    }
+    lastRef.current = next;
+  }, [slug, liveRows]);
 
-      if (cancelled) return;
-      // Faster cadence while anything is running; otherwise relax.
-      const anyRunning = lastRef.current.size > 0
-        ? Array.from(lastRef.current.values()).some((a) => a.status === 'running')
-        : false;
-      const delay = anyRunning ? 4000 : 30000;
-      timer = setTimeout(fetchOnce, delay);
-    };
-
-    fetchOnce();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [slug]);
-
-  return { actions, loading, error };
+  return {
+    actions,
+    loading: !!slug && liveLoading && actions.length === 0,
+    error: liveError,
+  };
 }
+
+
 
 function formatRelative(ms: number, now: number): string {
   const d = Math.max(0, now - ms);
@@ -131,18 +153,50 @@ export function OperatorActionLog({
   className?: string;
 }) {
   const { actions, loading, error } = useUserActions(slug, { onTransition });
+  const [listRef] = useAutoAnimate<HTMLUListElement>();
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  if (!slug) return null;
+  if (!slug) {
+    return (
+      <div className={className} style={{ opacity: 0.5, fontSize: 13 }}>
+        Pick a harness to see its action log.
+      </div>
+    );
+  }
   if (loading && actions.length === 0) {
-    return <div className={className}>Loading actions…</div>;
+    return (
+      <div className={className} style={{ opacity: 0.6, fontSize: 13 }}>
+        Loading actions…
+      </div>
+    );
   }
   if (error && actions.length === 0) {
-    return <div className={className}>Could not load action log: {error}</div>;
+    return (
+      <div className={className} style={{ fontSize: 13 }}>
+        <div style={{ color: 'var(--bad, #f87171)', marginBottom: 6 }}>
+          Could not load action log: {error}
+        </div>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          style={{
+            fontSize: 12,
+            padding: '3px 8px',
+            background: 'transparent',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            cursor: 'pointer',
+            color: 'var(--fg)',
+          }}
+        >
+          retry
+        </button>
+      </div>
+    );
   }
   if (actions.length === 0) {
     return (
@@ -155,7 +209,7 @@ export function OperatorActionLog({
   }
 
   return (
-    <ul ref={listRef} className={className} style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+    <ul ref={listRef} className={`notif-list${className ? ` ${className}` : ''}`}>
       {actions.map((a) => (
         <ActionRow key={a.id} action={a} now={now} />
       ))}
@@ -163,52 +217,131 @@ export function OperatorActionLog({
   );
 }
 
+/** True iff the given href is something the browser can navigate to
+ *  meaningfully — a same-origin route (`/...`), an `http(s)://` URL,
+ *  or a hash. Filesystem paths like `/home/<user>/...` look like
+ *  same-origin paths to the browser (they start with `/`) but every
+ *  request 404s. Some older `user_actions` rows have these baked in;
+ *  hiding the open link for them keeps the UI honest. */
+function isOpenableHref(href: string | null | undefined): href is string {
+  if (!href) return false;
+  if (/^https?:\/\//i.test(href)) return true;
+  if (href.startsWith('#')) return true;
+  if (href.startsWith('/')) {
+    // Reject typical filesystem-path prefixes that we know aren't routes.
+    if (/^\/(home|Users|root|tmp|var|opt|etc|usr)\//.test(href)) return false;
+    return true;
+  }
+  return false;
+}
+
+/** Pull the duration token (e.g. "(9s)" or "(2m 4s)") and cost token
+ *  (e.g. "cost=0.044") out of a free-form summary string so we can
+ *  render them as standalone info-pills next to the summary. */
+function parseSummaryMeta(summary: string | null): {
+  cleaned: string | null;
+  duration: string | null;
+  cost: string | null;
+} {
+  if (!summary) return { cleaned: null, duration: null, cost: null };
+  let s = summary;
+  let duration: string | null = null;
+  let cost: string | null = null;
+  // `completed (9s)` / `completed (2m 4s)` / `completed (123ms)` etc.
+  const durRe = /\s*\((\d+(?:m\s*\d+)?(?:\.\d+)?\s*(?:m?s|s|m)(?:\s*\d+(?:\.\d+)?\s*(?:m?s|s))*)\)/i;
+  const dm = s.match(durRe);
+  if (dm) {
+    duration = dm[1].trim();
+    s = s.replace(dm[0], '').trim();
+  }
+  // `cost=0.044` (with optional `· cost=...` separator before).
+  const costRe = /(?:\s*·)?\s*cost\s*=\s*([\d.]+)\s*/i;
+  const cm = s.match(costRe);
+  if (cm) {
+    cost = cm[1];
+    s = s.replace(cm[0], '').trim();
+  }
+  // Trim any dangling separators left over.
+  s = s.replace(/[·\s]+$/g, '').trim();
+  return { cleaned: s || null, duration, cost };
+}
+
 function ActionRow({ action: a, now }: { action: UserAction; now: number }) {
-  const elapsed = formatElapsed(a.startedAt, a.finishedAt, now);
+  const elapsedFallback = formatElapsed(a.startedAt, a.finishedAt, now);
   const started = formatRelative(a.startedAt, now);
-  const dotColor =
-    a.status === 'running' ? '#3b82f6' :
-    a.status === 'succeeded' ? '#16a34a' :
-    a.status === 'failed' ? '#dc2626' :
-    '#737373';
+  const meta = parseSummaryMeta(a.summary);
+  // Filter out detail URLs we can't actually open in the browser.
+  // Some legacy rows (e.g. older expert.dispatch entries) wrote a
+  // filesystem path like `/home/.../.harness/experts/runs/foo.log` —
+  // the browser treats that as a same-origin URL and 404s.
+  const detailHref = isOpenableHref(a.detailUrl) ? a.detailUrl : null;
+  // If parsing didn't find a duration but the row has timing info,
+  // fall back to the live elapsed counter so a `running` row still
+  // shows duration.
+  const durationLabel = meta.duration ?? (a.status === 'running' || !a.finishedAt ? elapsedFallback : null);
+  const showCost = meta.cost != null;
 
   return (
     <li
+      className={`notif-item notif-item--${a.status}`}
       title={a.errorText ?? undefined}
-      style={{
-        display: 'flex',
-        gap: 10,
-        alignItems: 'baseline',
-        padding: '6px 0',
-        borderBottom: '1px solid rgba(255,255,255,0.06)',
-        fontSize: 13,
-      }}
     >
-      <span
-        aria-label={a.status}
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: '50%',
-          background: dotColor,
-          display: 'inline-block',
-          flexShrink: 0,
-          animation: a.status === 'running' ? 'pulse 1.4s ease-in-out infinite' : undefined,
-        }}
-      />
-      <span style={{ minWidth: 110, fontFamily: 'monospace', opacity: 0.8 }}>{a.kind}</span>
-      <span style={{ flex: 1, opacity: a.status === 'failed' ? 0.85 : 0.95 }}>
+      <div className="notif-item-head">
+        <span className={`notif-level notif-level--${a.status}`}>
+          {a.status === 'running' && (
+            <span
+              aria-hidden="true"
+              style={{
+                display: 'inline-block',
+                width: 6,
+                height: 6,
+                marginRight: 5,
+                borderRadius: '50%',
+                background: 'currentColor',
+                animation: 'pc-spin 800ms linear infinite, pulse 1.4s ease-in-out infinite',
+                verticalAlign: 'middle',
+              }}
+            />
+          )}
+          {a.kind}
+        </span>
+        <span className="notif-time">{started}</span>
+        {detailHref ? (
+          <a
+            href={detailHref}
+            target={detailHref.startsWith('http') ? '_blank' : undefined}
+            rel={detailHref.startsWith('http') ? 'noopener noreferrer' : undefined}
+            className="notif-action"
+            style={{ marginTop: 0, padding: '2px 6px', fontSize: 10.5 }}
+            title="Open detail link"
+          >
+            open ↗
+          </a>
+        ) : null}
+      </div>
+      <div className="notif-message" style={{ fontWeight: 500 }}>
         {a.errorText ? (
-          <span style={{ color: '#fca5a5' }}>{a.errorText.slice(0, 200)}</span>
+          <span style={{ color: 'var(--bad, #f87171)' }}>{a.errorText.slice(0, 280)}</span>
         ) : (
-          a.summary ?? <em style={{ opacity: 0.5 }}>(no summary)</em>
+          meta.cleaned ?? <em style={{ opacity: 0.5, fontWeight: 400 }}>(no summary)</em>
         )}
-      </span>
-      <span style={{ minWidth: 60, textAlign: 'right', opacity: 0.6 }}>{elapsed}</span>
-      <span style={{ minWidth: 80, textAlign: 'right', opacity: 0.5 }}>{started}</span>
-      {a.detailUrl ? (
-        <a href={a.detailUrl} style={{ marginLeft: 6, opacity: 0.8 }}>↗</a>
-      ) : null}
+      </div>
+      {(durationLabel || showCost) && (
+        <div className="notif-meta-row" style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+          {durationLabel && (
+            <span className="notif-meta-pill" title="Run duration">
+              <Clock size={11} aria-hidden="true" style={{ marginRight: 4, verticalAlign: '-1px' }} />
+              {durationLabel}
+            </span>
+          )}
+          {showCost && (
+            <span className="notif-meta-pill notif-meta-pill--cost" title="Run cost (USD)">
+              <DollarSign size={11} aria-hidden="true" style={{ marginRight: 2, verticalAlign: '-1px' }} />
+              {meta.cost}
+            </span>
+          )}
+        </div>
+      )}
     </li>
   );
 }

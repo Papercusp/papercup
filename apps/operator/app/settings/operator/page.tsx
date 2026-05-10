@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { Controller } from 'react-hook-form';
@@ -32,6 +33,8 @@ interface PreferenceEntry {
 
 type FilterMode = 'all' | 'user-typed' | 'operator-proposed';
 
+
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export default function OperatorSettingsPage() {
@@ -40,6 +43,7 @@ export default function OperatorSettingsPage() {
   const [filter, setFilter] = useState<FilterMode>('all');
   const [loading, setLoading] = useState(true);
 
+  const [statsOpen, setStatsOpen] = useState(false);
   const { control, submit, reset, isSubmitting } = useFormWith(ConfigSchema, {
     defaultValues: { prompt_user: '', preferences: '' },
   });
@@ -60,21 +64,31 @@ export default function OperatorSettingsPage() {
     byActorMethod?: { voice: number; click: number; api: number; unspecified: number };
   } | null>(null);
 
-  const loadAll = useCallback(async () => {
-    const [cfgR, prefsR, budgetR, candR, statsR] = await Promise.all([
+  const loadOperatorExtras = useCallback(async () => {
+    const [candR, statsR] = await Promise.all([
+      fetch('/api/agent-mcp/operator-standing-approvals').then((r) => r.json()).catch(() => ({ candidates: [] })),
+      fetch('/api/agent-mcp/operator-stats').then((r) => r.json()).catch(() => null),
+    ]);
+    setCandidates(candR.candidates ?? []);
+    setStats(statsR);
+  }, []);
+
+  const loadAll = useCallback(async (options?: { blockOnExtras?: boolean }) => {
+    const [cfgR, prefsR, budgetR] = await Promise.all([
       fetch('/api/agent-mcp/operator-config').then((r) => r.json()),
       fetch('/api/agent-mcp/operator-preferences').then((r) => r.json()),
       fetch('/api/agent-mcp/operator-budget').then((r) => r.json()),
-      fetch('/api/agent-mcp/operator-standing-approvals').then((r) => r.json()).catch(() => ({ candidates: [] })),
-      fetch('/api/agent-mcp/operator-stats').then((r) => r.json()).catch(() => null),
     ]);
     setCfg(cfgR);
     reset({ prompt_user: cfgR.prompt_user ?? '', preferences: cfgR.preferences ?? '' });
     setEntries(prefsR.entries ?? []);
     setBudget(budgetR);
-    setCandidates(candR.candidates ?? []);
-    setStats(statsR);
-  }, [reset]);
+
+    const extrasPromise = loadOperatorExtras();
+    if (options?.blockOnExtras ?? true) {
+      await extrasPromise;
+    }
+  }, [loadOperatorExtras, reset]);
 
   const decideCandidate = useCallback(async (capability: string, targetHarness: string, decision: 'approve' | 'dismiss') => {
     await fetch('/api/agent-mcp/operator-standing-approvals', {
@@ -87,7 +101,7 @@ export default function OperatorSettingsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    loadAll()
+    loadAll({ blockOnExtras: false })
       .catch((e) => {
         if (!cancelled) toast.error(`load failed: ${e?.message ?? e}`);
       })
@@ -99,7 +113,12 @@ export default function OperatorSettingsPage() {
     };
   }, [loadAll]);
 
+
   const onSave = async (data: ConfigFormData) => {
+    if (!cfg) {
+      toast.error('Operator config is still loading');
+      return;
+    }
     try {
       const r = await fetch('/api/agent-mcp/operator-config', {
         method: 'PUT',
@@ -130,6 +149,7 @@ export default function OperatorSettingsPage() {
     await loadAll();
   }, [loadAll]);
 
+
   const filteredEntries = useMemo(() => {
     if (filter === 'all') return entries;
     if (filter === 'user-typed') return entries.filter((e) => e.tags.includes('USER-TYPED'));
@@ -141,15 +161,25 @@ export default function OperatorSettingsPage() {
     return entries.filter((e) => new Date(e.addedAt).getTime() > cutoff);
   }, [entries]);
 
-  if (loading) return <div style={{ padding: 24 }}>Loading…</div>;
+
 
   return (
     <div style={{ padding: '8px 4px', maxWidth: 880 }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Operator</h1>
-      <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
+      <p style={{ color: 'var(--fg-mute)', marginBottom: loading ? 8 : 24, fontSize: 14 }}>
         The Operator is the proactive concierge accessed from the top-bar Operator button.
-        Files live at <code>{cfg?.prompt_user_path}</code> and <code>{cfg?.prefs_path}</code>.
+        {cfg ? (
+          <> Stored in <code>{cfg.prompt_user_path}</code> and <code>{cfg.prefs_path}</code>.</>
+        ) : (
+          <> Loading workspace prompt store…</>
+        )}
       </p>
+      {loading && (
+        <p role="status" style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 13 }}>
+          Loading Operator config…
+        </p>
+      )}
+
 
       {candidates.length > 0 && (
         <section style={{ background: 'rgba(255,200,0,0.08)', border: '1px solid rgba(255,170,0,0.4)', borderRadius: 6, padding: 12, marginBottom: 24 }}>
@@ -187,9 +217,32 @@ export default function OperatorSettingsPage() {
       )}
 
       {stats && (
-        <section style={{ marginBottom: 32 }}>
-          <h2 style={{ fontSize: 16, marginBottom: 8 }}>Last 7 days</h2>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, fontSize: 13 }}>
+        <Collapsible.Root open={statsOpen} onOpenChange={setStatsOpen}>
+          <section className="pc-settings-diagnostics">
+            <div className="pc-settings-diagnostics-head">
+              <div>
+                <h2 style={{ fontSize: 16, margin: 0 }}>Operator diagnostics</h2>
+                <p style={{ fontSize: 12, color: 'var(--fg-mute)', margin: '4px 0 0' }}>
+                  Last 7 days. Useful when tuning Operator behavior; collapsed by default because it is a report, not a setting.
+                </p>
+              </div>
+              <div className="pc-settings-diagnostics-summary">
+                <span className="pc-settings-status-pill is-set">{stats.dispatched} dispatched</span>
+                <span className="pc-settings-status-pill">${stats.totalSpendUsd.toFixed(2)} spent</span>
+                {stats.unconsumedFraction !== null && (
+                  <span className={`pc-settings-status-pill ${stats.unconsumedFraction > 0.25 ? 'is-warn' : 'is-set'}`}>
+                    {(stats.unconsumedFraction * 100).toFixed(0)}% unconsumed
+                  </span>
+                )}
+                <Collapsible.Trigger asChild>
+                  <button type="button" className="pc-settings-diagnostics-toggle">
+                    {statsOpen ? 'Hide details' : 'Show details'}
+                  </button>
+                </Collapsible.Trigger>
+              </div>
+            </div>
+            <Collapsible.Content>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, fontSize: 13, marginTop: 14 }}>
             <div>
               <div style={{ opacity: 0.6, fontSize: 11, textTransform: 'uppercase' }}>Cards seen</div>
               <strong style={{ fontSize: 22 }}>{stats.cardsTotal}</strong>
@@ -253,7 +306,9 @@ export default function OperatorSettingsPage() {
               </div>
             </div>
           )}
+          </Collapsible.Content>
         </section>
+      </Collapsible.Root>
       )}
 
       <section style={{ marginBottom: 32 }}>
@@ -296,7 +351,7 @@ export default function OperatorSettingsPage() {
           />
         </div>
 
-        <SubmitButton pending={isSubmitting} style={{ marginBottom: 24 }}>
+        <SubmitButton pending={isSubmitting || loading} style={{ marginBottom: 24 }}>
           Save prompt + preferences
         </SubmitButton>
       </form>

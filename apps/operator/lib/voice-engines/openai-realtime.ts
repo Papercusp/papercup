@@ -16,6 +16,9 @@
  */
 
 import { RealtimeAgent, RealtimeSession, tool } from '@openai/agents-realtime';
+import { OPERATOR_PERSONA_PROMPT, OPERATOR_FEW_SHOTS } from '../operator-persona';
+import { OPERATOR_CONVERSE_PROMPT } from '../operator-converse-prompt';
+import { readOperatorModeFromSession } from '../operator-converse-tags';
 
 export interface RealtimeEngineCallbacks {
   onTranscript?: (text: string) => void;
@@ -30,11 +33,43 @@ export interface RealtimeEngineHandle {
   sendSystem(text: string): void;
 }
 
-const INSTRUCTIONS = `You are the Operator voice assistant for Papercusp — a coding-harness control plane.
-The user is busy and direct. Keep responses short (one or two sentences).
-When the user asks you to take an action that maps to one of your tools, call the tool. Don't narrate.
-When the user asks a question that doesn't map to a tool, answer concisely.
-The user may say a wake word ("hey operator") followed by a command — strip the wake word and act on the command.`;
+// Tool-routing instructions are static; persona + converse prompts are
+// built per-session via buildInstructions() so we can read the current
+// operator mode from sessionStorage at session-start time.
+const TOOL_ROUTING = [
+  '## Tool routing',
+  '',
+  'You have two kinds of tools:',
+  '',
+  '  REFLEXIVE — UI actions you can execute instantly. Panel toggles, navigation, scan, approve, across-workspaces summary. Call these directly when the user\'s intent maps cleanly. Don\'t narrate.',
+  '',
+  '  IMPORTANT: ALWAYS call the tool when the user asks for an action — even if you think you already did it. The user can change UI state manually (close the panel by clicking the X, navigate away with the back button, etc.) without you knowing. Your conversation memory is NOT the source of truth for UI state. Tool calls are idempotent — calling panel_open when already open is harmless. Calling panel_state first to check is also fine. NEVER respond "it\'s already open" or "you\'re already there" from memory; call the tool and act on the result.',
+  '',
+  '  DELEGATE — for anything beyond reflexive UI: research, multi-step work, asking another agent, "what\'s happening with X", any request that needs Claude-grade reasoning or your own tools can\'t satisfy. Call delegate_to_claude with the user\'s request as the \'task\' arg. The delegate will use its own MCP tools (cross-harness agent dispatch, search, audit, hindsight, etc.) and surface results in the operator panel. After delegating, briefly tell the user "looking into that, details in the panel" and stop — the panel auto-opens when the delegate is done.',
+  '',
+  'When in doubt, prefer delegate_to_claude over guessing. You are the low-latency voice front-end; the delegate is the local Claude brain.',
+  '',
+  'The user may say a wake word ("hey operator") followed by a command — strip the wake word and act on the command.',
+].join('\n');
+
+/** Build the realtime agent's instructions for the current session.
+ *  When the operator is in active mode, the converse prompt is layered
+ *  in so the voice agent runs the continuous turn-taking loop with the
+ *  same <say>/<set_mode>/<sleep> tag contract the text path uses.
+ *  Passive mode keeps persona + tool routing only — operator only
+ *  responds when spoken to. */
+function buildInstructions(): string {
+  const operatorMode = readOperatorModeFromSession() ?? 'active';
+  const conversePrompt = operatorMode === 'active' ? OPERATOR_CONVERSE_PROMPT : '';
+  return [
+    OPERATOR_PERSONA_PROMPT,
+    conversePrompt,
+    TOOL_ROUTING,
+    OPERATOR_FEW_SHOTS,
+  ]
+    .filter((s) => s && s.trim().length)
+    .join('\n\n---\n\n');
+}
 
 export async function startRealtimeSession(
   apiKey: string,
@@ -43,7 +78,7 @@ export async function startRealtimeSession(
   const registryTools = await buildRegistryTools();
   const agent = new RealtimeAgent({
     name: 'Operator',
-    instructions: INSTRUCTIONS,
+    instructions: buildInstructions(),
     tools: registryTools,
   });
 

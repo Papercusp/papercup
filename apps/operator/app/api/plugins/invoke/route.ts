@@ -20,7 +20,7 @@ const ACTION_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
  */
 async function resolveProjectPath(slug: string): Promise<string | null> {
   const { loadHarnessRegistry } = await import('@/lib/harness-registry');
-  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 export async function POST(req: Request) {

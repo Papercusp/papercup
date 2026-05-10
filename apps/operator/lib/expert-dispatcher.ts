@@ -201,6 +201,7 @@ export async function dispatchExpert(
         // role id, then invoke that. Built-in roles (no `:` in the id)
         // use the harness package's prompts directly via invoke().
         let invokeRole = role;
+        let promptShadowDir: string | null = null;
         if (role.includes(':')) {
           const roleManifest = getRole(role, project.slug);
           if (!roleManifest || roleManifest.source.kind !== 'plugin') {
@@ -228,7 +229,17 @@ export async function dispatchExpert(
           // pointing at our materialised prompt. This way invoke() finds
           // the prompt without us needing to teach run.sh about plugin
           // paths or modify config.json.
-          const promptShadowDir = join(stateDir, 'expert-prompts', `${safeName}-${expertId}`);
+          // Materialise under ramTmpRoot (Linux: /dev/shm tmpfs;
+          // macOS+Windows: os.tmpdir() page-cache-backed) so the
+          // harness directory stays pure-code. Bash subprocess sources
+          // prompts from $HARNESS_DIR pointing here; cleanup happens
+          // inline in the wrapper after invoke completes.
+          const ramRoot = (process.platform === 'linux' && existsSync('/dev/shm'))
+            ? '/dev/shm'
+            : require('node:os').tmpdir();
+          promptShadowDir = require('node:fs').mkdtempSync(
+            join(ramRoot, `papercusp-expert-${safeName}-${expertId}-`),
+          ) as string;
           mkdirSync(join(promptShadowDir, 'prompts'), { recursive: true });
           // Symlink to harness prompts so other roles still resolve
           // (the "shared" identity dir, base prompts, etc.). Then
@@ -268,12 +279,12 @@ export async function dispatchExpert(
           // We pass it via env so the cleanup at the end can rm it.
         }
 
-        const promptShadowEnvAssign = (invokeRole !== role)
-          ? `export HARNESS_DIR='${join(stateDir, 'expert-prompts', `${safeName}-${expertId}`)}'`
+        const promptShadowEnvAssign = (invokeRole !== role && promptShadowDir)
+          ? `export HARNESS_DIR='${promptShadowDir.replace(/'/g, "'\\''")}'`
           : `export HARNESS_DIR='${harnessDirPkg}'`;
 
-        const cleanupPromptShadow = (invokeRole !== role)
-          ? `rm -rf '${join(stateDir, 'expert-prompts', `${safeName}-${expertId}`)}'`
+        const cleanupPromptShadow = (invokeRole !== role && promptShadowDir)
+          ? `rm -rf '${promptShadowDir.replace(/'/g, "'\\''")}'`
           : ':';
 
         const wrapper = `
@@ -293,9 +304,21 @@ export async function dispatchExpert(
           ${cleanupPromptShadow}
           echo "__EXPERT_DONE__" >> '${resultPath}'
         `;
+        // Decrypt search-provider keys from PG (Migration 047) and pass them
+        // through as env vars so OMP's web_search providers see them.
+        // Best-effort: PG unavailable / no keys → child runs without them.
+        let searchProviderEnv: Record<string, string> = {};
+        try {
+          const { buildSpawnEnv } = await import('./search-provider-credentials');
+          searchProviderEnv = await buildSpawnEnv();
+        } catch { /* ignore */ }
         const child = spawn('bash', ['-c', wrapper], {
           cwd: project.path,
-          env: { ...process.env, CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions' },
+          env: {
+            ...process.env,
+            ...searchProviderEnv,
+            CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+          },
           detached: true,
           stdio: ['ignore', 'ignore', 'ignore'],
         });

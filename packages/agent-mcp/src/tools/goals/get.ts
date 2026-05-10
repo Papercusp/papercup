@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'goals:get',
   capability: 'goals:read',
   args: z.object({
     id: z.string().min(1),

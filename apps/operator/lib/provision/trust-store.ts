@@ -1,23 +1,25 @@
 /**
- * Trust store — per-(publisher, plugin) consent + key-rotation handling.
+ * Trust store — PG-backed (migration 026).
  *
- * The store records which (publisher, plugin) pairs the user has trusted
- * to run setup scripts on their host, plus which scriptHashes are
- * approved. Per spec, trust is granular per-(publisher, plugin); a user
- * trusting `@papercupai/aws-lambda` does NOT auto-trust `@papercupai/x`.
+ * Records which (publisher, plugin) pairs the user has trusted to run
+ * setup scripts on their host, plus which scriptHashes are approved.
+ * Per spec, trust is granular per-(publisher, plugin); a user trusting
+ * `@papercupai/aws-lambda` does NOT auto-trust `@papercupai/x`.
  *
  * Key rotation: when a publisher rotates their signing key, the old
  * fingerprint is recorded with `rotated_at`. Trusts pinned to the old
  * fingerprint do NOT auto-migrate — the user re-confirms once.
  *
- * Storage: `~/.papercusp/trust.json` (JSON, mode 0600).
+ * Storage: single row per workspace in `harness_shared.operator_trust_store`,
+ * payload mirrors the prior file shape ({entries, rotations, blocklist}).
+ * NOT in zero_harness publication — security state stays server-side.
+ *
+ * Was previously `<workspace>/trust.json` mode 0600.
  *
  * Spec: /docs/snapshots/build-scripts#trust-lifecycle.
  */
 
-import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
-import { papercuspPath } from '@/lib/papercusp-root';
+import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 
 export interface TrustEntry {
   publisher: string;
@@ -48,23 +50,16 @@ export interface TrustStore {
   blocklist: string[];
 }
 
-function TRUST_PATH() { return papercuspPath('trust.json'); }
-
 const EMPTY: TrustStore = { entries: [], rotations: [], blocklist: [] };
 
 export async function readTrustStore(): Promise<TrustStore> {
-  try {
-    const raw = await fs.readFile(TRUST_PATH(), 'utf8');
-    const j = JSON.parse(raw) as Partial<TrustStore>;
-    return { ...EMPTY, ...j };
-  } catch {
-    return { ...EMPTY };
-  }
+  const raw = await readOperatorState<Partial<TrustStore>>('operator_trust_store');
+  if (!raw) return { ...EMPTY };
+  return { ...EMPTY, ...raw };
 }
 
 async function writeTrustStore(store: TrustStore): Promise<void> {
-  await fs.mkdir(join(TRUST_PATH(), '..'), { recursive: true });
-  await fs.writeFile(TRUST_PATH(), JSON.stringify(store, null, 2), { mode: 0o600 });
+  await writeOperatorState('operator_trust_store', store);
 }
 
 /**
@@ -107,7 +102,11 @@ export async function recordTrust(args: {
 
 export type TrustCheck =
   | { trusted: true; entry: TrustEntry }
-  | { trusted: false; reason: 'no-trust' | 'key-rotated' | 'blocklisted' | 'script-not-approved'; entry?: TrustEntry };
+  | {
+      trusted: false;
+      reason: 'no-trust' | 'key-rotated' | 'blocklisted' | 'script-not-approved';
+      entry?: TrustEntry;
+    };
 
 /**
  * Check whether `(publisher, plugin)` is trusted to run a script with

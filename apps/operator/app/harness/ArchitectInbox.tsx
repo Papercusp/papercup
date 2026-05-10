@@ -1,7 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import * as Tabs from '@radix-ui/react-tabs';
 import ArchitectChat from './ArchitectChat';
 import PromotionCard from './PromotionCard';
@@ -95,8 +98,40 @@ const IDEA_TEMPLATES = [
   'Ask for a validation plan before the next worker starts',
 ];
 
-export default function ArchitectInbox({ slug, onFeatureFocus }: Props) {
-  const [reviews, setReviews] = useState<PendingReview[]>([]);
+function ArchitectInboxInner({ slug, onFeatureFocus }: Props) {
+  const queryClient = useQueryClient();
+  const workspaceId = useWorkspaceId();
+  // Reviews via Zero (push). The harness FS watcher mirrors
+  // .harness/pending-reviews/*.json → harness_shared.pending_reviews;
+  // CollapsedInboxRail subscribes to the same query name, so Zero's
+  // client-side cache dedupes naturally.
+  const { data: reviewRows, loading: reviewsLoading } = useSyncQuery<{
+    harnessSlug: string;
+    reviewId: string;
+    payload: PendingReview;
+    resolved: boolean;
+    ts: number;
+  }>({
+    queryName: 'pendingReviews.byHarness',
+    args: { harnessSlug: slug, workspaceId, includeResolved: false },
+    enabled: !!slug,
+  });
+  const reviews: PendingReview[] = useMemo(() => {
+    if (!Array.isArray(reviewRows)) return [];
+    return reviewRows.map((r) => ({ ...(r.payload as PendingReview), id: r.reviewId, resolved: r.resolved, ts: r.ts }));
+  }, [reviewRows]);
+  const loading = reviewsLoading;
+  // Zero handles freshness internally; preserve the lastSync prop's
+  // shape (Date.now() at last data update) so dependent UI keeps working.
+  const lastSync = useMemo(() => (Array.isArray(reviewRows) ? Date.now() : null), [reviewRows]);
+  const loadReviews = useCallback(() => {
+    // No-op invalidation kept for callsite compat. Zero pushes deltas;
+    // a server-side resolve still triggers a row delete via the watcher.
+    // For instant feedback after a local resolve action, we still nuke
+    // any stray TanStack cache entry under the legacy key.
+    queryClient.invalidateQueries({ queryKey: ['harness', slug, 'reviews'] });
+  }, [queryClient, slug]);
+
   const [threads, setThreads] = useState<Thread[]>([]);
   const [active, setActive] = useState<
     | { kind: 'review'; review: PendingReview }
@@ -111,28 +146,7 @@ export default function ArchitectInbox({ slug, onFeatureFocus }: Props) {
   );
   const [composing, setComposing] = useState(false);
   const [ideaDraft, setIdeaDraft] = useState('');
-  const [lastSync, setLastSync] = useState<number | null>(null);
-  const [loading, setLoading] = useState(false);
   const [kindFilter, setKindFilter] = useQueryState('inboxKind', parseAsString.withDefault('all'));
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const loadReviews = useCallback(async () => {
-    setLoading(true);
-    try {
-      const d = await fetch(`/api/harness/${slug}/reviews`).then((r) => r.json());
-      setReviews(d.reviews ?? []);
-    } catch {
-    } finally {
-      setLastSync(Date.now());
-      setLoading(false);
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    loadReviews();
-    pollRef.current = setInterval(loadReviews, 5000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [loadReviews]);
 
   useEffect(() => {
     try {
@@ -655,3 +669,6 @@ function ChatPane({
     </div>
   );
 }
+
+const ArchitectInbox = memo(ArchitectInboxInner);
+export default ArchitectInbox;

@@ -1,7 +1,7 @@
 'use client';
 
 import { CSSProperties, ReactNode } from 'react';
-import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus, ROLE, RoleKey } from './theme';
+import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus, getRoleStyle } from './theme';
 import { Tooltip } from './Tooltip';
 
 /** Dot + label — Linear's status badge pattern. */
@@ -61,8 +61,7 @@ export function IdPill({ id, onClick }: { id: string; onClick?: () => void }) {
 }
 
 export function RolePill({ role }: { role: string }) {
-  const key = (role in ROLE ? role : 'unknown') as RoleKey;
-  const r = ROLE[key];
+  const r = getRoleStyle(role);
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,

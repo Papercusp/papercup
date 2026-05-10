@@ -5,24 +5,30 @@
  * Inspired by Factory.ai's Mission Control, but driven by the shell-based
  * autonomous harness at `~/autonomous-harness/`.
  *
- * Projects are registered via ~/.restart-harness-projects.json:
- *   { "projects": [{"slug":"sheets", "path":"/home/x/sheets-clone"}] }
- * Falls back to auto-discovering any HOME/{sheets-clone,restart} with .harness/.
+ * Projects are registered in harness_shared.harness_registry (PG, see
+ * lib/harness-registry.ts), one row per workspace. Adding a project goes
+ * through POST /api/harness/projects, which provisions the per-harness
+ * PG schema in-process via lib/scaffold-harness-schema.ts.
  */
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
 import { getKnownHooks } from '@/lib/known-hooks';
+import {
+  PROJECT_FILES_TO_COPY, STATE_FILES_FOR_RESET, STATE_FILES_FOR_BACKUP,
+  TEMPLATE_DETECT_FILES, SOURCE_FILES_FOR_FORK, SNAPSHOT_FILES,
+} from '@/lib/harness-state-files';
 import { recordUserAction } from '@/lib/user-actions';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { DECISION_VERBS } from '@papercusp/orchestrator/decision-parse';
 import { readFile, writeFile, appendFile, unlink, mkdir, chmod, rename, access, copyFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { harnessPackageDir, harnessPath } from './harness-paths';
+import { harnessPackageDir, harnessPath, orchestratorRunBin } from './harness-paths';
 import { firePluginLifecycle, firePluginEvent } from '../../../lib/plugin-host-runtime';
 import { spawn, execFile } from 'node:child_process';
+import { runClaudeChat } from '@/lib/claude-chat-stream';
 import { promisify } from 'node:util';
 import {
   getLegacyClient,
@@ -35,8 +41,14 @@ import {
   formatLineageForPrompt,
   withWorkspaceLegacy,
 } from '@restart/db-org';
-import { ensureSnapshotFeaturesTable } from '@/lib/ensure-schema';
+import {
+  ensureSnapshotFeaturesTable,
+  ensureHarnessStatusTable,
+  ensureHarnessLanesTable,
+  ensureAdaptiveTelemetryTable,
+} from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { type Phase, phasePath, phasePhaseLabel, ALL_PHASES } from '@/lib/harness-phases';
 const getOrgDbClient = () => getLegacyClient();
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
@@ -95,6 +107,70 @@ function tailLastResultLine(filePath: string, lookbackBytes = 8 * 1024): { obj: 
   } finally {
     if (fd >= 0) try { closeSync(fd); } catch {}
   }
+}
+
+// Pulse counter — total `── iteration N ──` lines across the entire run.log.
+// `── iteration N ──` resets to 1 on every bin/run.sh invocation, so the
+// last-match-in-tail pattern undercounts lifetime pulses. We count
+// incrementally: cache (mtimeMs, size, count) and only re-scan the bytes
+// appended since the last cache hit. Eviction happens implicitly when
+// mtime moves backwards (log rotation / harness rescaffold) by re-counting
+// from byte 0.
+type PulseCacheEntry = { mtimeMs: number; size: number; count: number };
+const __pulseCacheKey = '__papercuspPulseCache';
+type PulseGlobals = { [__pulseCacheKey]?: Map<string, PulseCacheEntry> };
+const __pulseCache: Map<string, PulseCacheEntry> = (() => {
+  const g = globalThis as PulseGlobals;
+  if (!g[__pulseCacheKey]) g[__pulseCacheKey] = new Map();
+  return g[__pulseCacheKey]!;
+})();
+const PULSE_RE = /── iteration \d+ ──/g;
+
+function countPulsesFromRunLog(path: string): number {
+  if (!existsSync(path)) return 0;
+  let st: { mtimeMs: number; size: number };
+  try { st = statSync(path); } catch { return 0; }
+  if (st.size === 0) return 0;
+
+  const cached = __pulseCache.get(path);
+  // Reuse: file is unchanged, or grew without truncation.
+  if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
+    return cached.count;
+  }
+
+  // Truncation / rewrite: rescan from the start.
+  const startOffset =
+    cached && cached.mtimeMs <= st.mtimeMs && cached.size <= st.size
+      ? cached.size
+      : 0;
+
+  let fd = -1;
+  let count = startOffset === 0 ? 0 : cached!.count;
+  try {
+    fd = openSync(path, 'r');
+    const CHUNK = 64 * 1024;
+    const buf = Buffer.alloc(CHUNK);
+    let leftover = '';
+    let pos = startOffset;
+    while (pos < st.size) {
+      const len = Math.min(CHUNK, st.size - pos);
+      readSync(fd, buf, 0, len, pos);
+      const text = leftover + buf.subarray(0, len).toString('utf8');
+      const nl = text.lastIndexOf('\n');
+      const scan = nl >= 0 ? text.slice(0, nl) : '';
+      leftover = nl >= 0 ? text.slice(nl + 1) : text;
+      const m = scan.match(PULSE_RE);
+      if (m) count += m.length;
+      pos += len;
+    }
+    const tail = leftover.match(PULSE_RE);
+    if (tail) count += tail.length;
+  } catch { /* ignore */ } finally {
+    if (fd >= 0) try { closeSync(fd); } catch {}
+  }
+
+  __pulseCache.set(path, { mtimeMs: st.mtimeMs, size: st.size, count });
+  return count;
 }
 
 interface CostAggregate { cost: number; inputTokens: number; outputTokens: number }
@@ -239,15 +315,13 @@ async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): P
   return commits;
 }
 
-// Single source of truth: the per-workspace registry at
-// papercuspPath('registry.json'). NEVER read or write the legacy
-// ~/.restart-harness-projects.json from operator code — see
-// content/docs/spec/operator-architecture-decisions.mdx for the rule.
+// Single source of truth: harness_shared.harness_registry (PG).
+// Per-workspace scoping via the workspace_id PK column.
 const loadRegistry = loadHarnessRegistry;
 const saveRegistry = saveHarnessRegistry;
 
-function resolveProject(slug: string): ProjectEntry | null {
-  const reg = loadRegistry();
+async function resolveProject(slug: string): Promise<ProjectEntry | null> {
+  const reg = await loadRegistry();
   return reg.projects.find((p) => p.slug === slug) ?? null;
 }
 
@@ -257,6 +331,57 @@ function harnessDir(project: ProjectEntry): string {
 
 function safeRead(path: string): string | null {
   try { return readFileSync(path, 'utf8'); } catch { return null; }
+}
+
+/**
+ * Check whether any run.sh process is alive for the given project path.
+ *
+ * Walks /proc to find a process whose cwd starts with `projectPath` and
+ * whose cmdline references run.sh. /proc/<pid>/cwd is a symlink — must
+ * use readlinkSync, not readFileSync (which throws EISDIR and gets
+ * silently swallowed).
+ *
+ * Cached for 2 s with a single shared map keyed on project path. The
+ * dashboard polls /status every 3 s and frequently fans out across
+ * multiple panels at once; under c=10 contention the un-cached version
+ * went from 75 ms p50 (c=1) to 581 ms p50 (c=10) because each request
+ * walked /proc independently. With the cache, concurrent requests share
+ * one walk and per-request cost drops to ~0 ms on a hit.
+ */
+const __aliveCacheKey = Symbol.for('papercusp.harnessAliveCache');
+type AliveCacheGlobals = typeof globalThis & {
+  [__aliveCacheKey]?: Map<string, { value: boolean; expires: number; pending: Promise<boolean> | null }>;
+};
+const __aliveCache: Map<string, { value: boolean; expires: number; pending: Promise<boolean> | null }> = (() => {
+  const g = globalThis as AliveCacheGlobals;
+  if (!g[__aliveCacheKey]) g[__aliveCacheKey] = new Map();
+  return g[__aliveCacheKey]!;
+})();
+
+function scanForRunShCwd(projectPath: string): boolean {
+  try {
+    const procs = readdirSync('/proc');
+    for (const pid of procs) {
+      if (!/^\d+$/.test(pid)) continue;
+      try {
+        const cwd = readlinkSync(`/proc/${pid}/cwd`);
+        if (!cwd.startsWith(projectPath)) continue;
+        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        if (cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh')) return true;
+      } catch { /* perm-denied PID — skip */ }
+    }
+  } catch { /* /proc unreadable — fall through */ }
+  return false;
+}
+
+function isProjectAlive(projectPath: string, ttlMs = 2000): boolean {
+  const now = Date.now();
+  const cached = __aliveCache.get(projectPath);
+  if (cached && cached.expires > now) return cached.value;
+  // Cache miss — synchronous scan, then memoize.
+  const value = scanForRunShCwd(projectPath);
+  __aliveCache.set(projectPath, { value, expires: now + ttlMs, pending: null });
+  return value;
 }
 
 /**
@@ -299,9 +424,46 @@ function rowToFeature(r: any): any {
   };
 }
 
-/** Append an audit row for a feature mutation. Fire-and-forget. */
+/** Append an audit row for a feature mutation. Fire-and-forget.
+ *  Writes directly to harness_shared.feature_audit_consolidated
+ *  (un-hardcode plan item #6: drop per-harness feature_audit). */
 function auditFeatureChange(harnessSlug: string, featureId: string, field: string, oldValue: any, newValue: any, actor: string): void {
   (async () => {
+    try {
+      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const { activeWorkspaceId } = await import('@/lib/workspace-registry');
+      const ws = activeWorkspaceId();
+      await sql`
+        INSERT INTO harness_shared.feature_audit_consolidated
+          (workspace_id, harness_slug, feature_id, ts, field, old_value, new_value, actor)
+        VALUES (
+          ${ws}, ${harnessSlug}, ${featureId}, ${Date.now()}, ${field},
+          ${oldValue === undefined ? null : JSON.stringify(oldValue)},
+          ${newValue === undefined ? null : JSON.stringify(newValue)},
+          ${actor}
+        )
+      `;
+      const { notifySyncInvalidate } = await import('@/lib/sync-sse');
+      await notifySyncInvalidate('featureAudit.byHarness', { harnessSlug });
+      // Keep the legacy per-harness table happy for any read paths we
+      // haven't migrated yet; mirror lazily so a transient write failure
+      // doesn't block the canonical write.
+      try {
+        const c = dbcFor(harnessSlug);
+        await c.prepare(`INSERT INTO feature_audit (ts, harness_slug, feature_id, field, old_value, new_value, actor) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
+          Date.now(),
+          harnessSlug,
+          featureId,
+          field,
+          oldValue === undefined ? null : JSON.stringify(oldValue),
+          newValue === undefined ? null : JSON.stringify(newValue),
+          actor,
+        );
+      } catch { /* per-harness mirror best-effort, not load-bearing */ }
+      return;
+    } catch {
+      // Fall through to the legacy-only path below
+    }
     try {
       const c = dbcFor(harnessSlug);
       await c.prepare(`INSERT INTO feature_audit (ts, harness_slug, feature_id, field, old_value, new_value, actor) VALUES (?, ?, ?, ?, ?, ?, ?)`).run(
@@ -347,7 +509,8 @@ function tailFile(path: string, maxBytes = 64 * 1024): string {
 /**
  * Background-invoke a single scoper mode (proposal | replan) without
  * going through run.sh's full pre-loop. Used by /product-review (manual
- * "Propose now") and the accept handler's replanOnAccept path.
+ * "Propose now" — runs scoper MODE=proposal; legacy URL kept for
+ * external compat) and the accept handler's replanOnAccept path.
  *
  * Sources only the helper functions from run.sh — does NOT enter the
  * orchestrator loop or run plan-review. So it can't accidentally exit 7
@@ -356,7 +519,7 @@ function tailFile(path: string, maxBytes = 64 * 1024): string {
  */
 function invokeScoperBackground(
   project: ProjectEntry,
-  mode: 'proposal' | 'replan' | 'cleanup' | 'consolidate',
+  mode: 'proposal' | 'replan' | 'cleanup',
 ): { invocationId: string } {
   const { spawn } = require('node:child_process');
   const invocationId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -369,14 +532,14 @@ function invokeScoperBackground(
     export HARNESS_DIR="${harnessPackageDir()}"
     export LOG_DIR="$STATE_DIR/logs"
     export SCOPER_INVOCATION_ID="${invocationId}"
-    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR" "${resultsDir}" "$STATE_DIR/consolidate-results"
+    mkdir -p "$STATE_DIR/proposals" "$LOG_DIR" "${resultsDir}"
     source <(awk '/^(log|config_get|invoke|run_hook|snapshot_state|notify_event|harness_slug|fire_plugin_hook|auto_screenshot_post_worker|check_cost_cap|prune_logs)\\(\\)/,/^}/' "$HARNESS_DIR/run.sh")
     invoke scoper "MODE=${mode}" 2>&1 | tee "${resultPath}"
     echo "__INVOCATION_DONE__" >> "${resultPath}"
   `;
   const child = spawn('bash', ['-c', wrapper], {
     cwd: project.path,
-    env: { ...process.env, CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions' },
+    env: { ...process.env, CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p' },
     detached: true,
     stdio: ['ignore', 'ignore', 'ignore'],
   });
@@ -384,15 +547,41 @@ function invokeScoperBackground(
   return { invocationId };
 }
 
-function launchRun(project: ProjectEntry, extra?: string): { ok: true; logPath: string } | { ok: false; error: string } {
-  const runScript = harnessPath('run.sh');
-  if (!existsSync(runScript)) return { ok: false, error: 'run.sh missing' };
+async function launchRun(project: ProjectEntry, extra?: string): Promise<{ ok: true; logPath: string } | { ok: false; error: string }> {
+  // Canonical path: spawn the TS orchestrator entry. The bash run.sh
+  // remains on disk as a function library for legacy sourcing call
+  // sites (invokeScoperBackground etc.) but is no longer the iteration
+  // driver. The previous `bash run.sh` invocation is preserved under
+  // `PAPERCUSP_USE_TS_ORCHESTRATOR=0` for emergency rollback only.
+  const orchBin = orchestratorRunBin();
+  if (!existsSync(orchBin)) return { ok: false, error: 'orchestrator bin missing' };
   const logPath = `/tmp/harness-${project.slug}.log`;
-  const child = spawn('bash', ['-c', `nohup ${runScript} >> ${logPath} 2>&1 &`], {
+  const cmd = `nohup npx --no-install tsx ${orchBin} >> ${logPath} 2>&1 &`;
+
+  // Decrypt search-provider keys from PG (Migration 047) and pass them
+  // through as env vars so OMP's web_search providers can see them.
+  // Each spawned worker/validator/etc. inherits these from the
+  // orchestrator's env. Best-effort: if PG is down or no keys are
+  // configured, the orchestrator simply runs without them.
+  let searchProviderEnv: Record<string, string> = {};
+  try {
+    const { buildSpawnEnv } = await import('@/lib/search-provider-credentials');
+    searchProviderEnv = await buildSpawnEnv();
+  } catch {
+    // PG unavailable / encryption key missing — proceed with no keys.
+  }
+
+  const child = spawn('bash', ['-c', cmd], {
     cwd: project.path,
     env: {
       ...process.env,
-      CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions',
+      AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+      // Legacy CLAUDE alias kept for any hooks that read it.
+      CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+      HARNESS_DIR: harnessPackageDir(),
+      PROJECT_DIR: project.path,
+      HARNESS_SLUG: project.slug,
+      ...searchProviderEnv,
       ...(extra ? Object.fromEntries(extra.split(/\s+/).filter(Boolean).map((kv: string) => kv.split('='))) : {}),
     },
     detached: true,
@@ -412,8 +601,29 @@ export const harness = new Hono();
 // harness_features for each one. Sufficient for surfaces that just need
 // to render a picker / dashboard (slug, path, hasSpec, hasState
 // approximated from disk).
+//
+// Cached with a 1-second TTL pinned to globalThis. /projects/lite is the
+// SSR self-fetch site for /harness/<slug>/page.tsx — every page render
+// fans through here. On dev, Turbopack's per-request route re-eval flaps
+// it 14ms-2.3s; under page-load contention the cold path lands at the
+// 2s end and dominates TTFB. Diagnostic 2026-05-06 finding G:
+// `/api/harness/projects/lite` 1.1s/14ms/2.3s/30ms/1.1s. Cached now.
+interface LiteCacheEntry {
+  ts: number;
+  payload: unknown;
+}
+const __liteKey = Symbol.for('papercusp.harnessProjectsLiteCache');
+type LiteGlobals = typeof globalThis & { [__liteKey]?: LiteCacheEntry };
+const LITE_TTL_MS = 1000;
+
 harness.get('/projects/lite', async (c) => {
-  const reg = loadRegistry();
+  const g = globalThis as LiteGlobals;
+  const now = Date.now();
+  const hit = g[__liteKey];
+  if (hit && now - hit.ts < LITE_TTL_MS) {
+    return c.json(hit.payload as object);
+  }
+  const reg = await loadRegistry();
   const projects = reg.projects.map((p) => {
     const hDir = harnessDir(p);
     return {
@@ -425,49 +635,104 @@ harness.get('/projects/lite', async (c) => {
       harnessDir: hDir,
     };
   });
-  return c.json({ projects });
+  const payload = { projects };
+  g[__liteKey] = { ts: Date.now(), payload };
+  return c.json(payload);
 });
 
+// Cache the /projects payload — the underlying data (registry contents,
+// SPEC.md presence, parent_slug, hasState) only changes when a harness is
+// spawned/forked/deleted, which is rare relative to dashboard polling.
+// Without this, /projects opens N per-slug PG connections per call (one
+// `SELECT 1 FROM harness_features` each); under c=10 that's 10×70 ≈ 700
+// connections in flight, dragging p50 to ~500 ms even on prod. With a 5 s
+// TTL keyed on the registry mtime, concurrent callers share one walk; the
+// cache busts when the registry file is rewritten (spawn/delete).
+interface ProjectsCacheEntry {
+  sig: string;
+  expires: number;
+  inflight: Promise<unknown[]> | null;
+  value: unknown[] | null;
+}
+const __projectsCacheKey = Symbol.for('papercusp.harnessProjectsCache');
+type ProjectsCacheGlobals = typeof globalThis & {
+  [__projectsCacheKey]?: ProjectsCacheEntry;
+};
+const __projectsCache: ProjectsCacheEntry = (() => {
+  const g = globalThis as ProjectsCacheGlobals;
+  if (!g[__projectsCacheKey]) {
+    g[__projectsCacheKey] = { sig: '', expires: 0, inflight: null, value: null };
+  }
+  return g[__projectsCacheKey]!;
+})();
+
 harness.get('/projects', async (c) => {
-  const reg = loadRegistry();
+  const reg = await loadRegistry();
   const filterParentSlug = c.req.query('parent_slug');
-  // Best-effort: pull parent_slug for each registered slug from the
-  // project's own .harness/config.json. The file registry doesn't carry
-  // this field, so for newly-spawned children we read it back from disk.
-  // Reads are parallelized — Next.js dev mode adds ~150ms per fs.readFile
-  // call (HMR file-tracking instrumentation), so a serial loop over ~70
-  // projects was the dominant cost in the /projects handler.
-  const enriched = await Promise.all(reg.projects.map(async (p) => {
-    const hDir = harnessDir(p);
-    const cfgPath = join(p.path, '.harness', 'config.json');
-    const specPath = join(p.path, 'SPEC.md');
-    // Parallelize the three independent reads + the per-harness PG probe.
-    const [parentSlug, hasState, hasSpec] = await Promise.all([
-      (async (): Promise<string | null> => {
-        try {
-          if (!existsSync(cfgPath)) return null;
-          const txt = await readFile(cfgPath, 'utf8');
-          const j = JSON.parse(txt);
-          return typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
-        } catch {
-          return null;
-        }
-      })(),
-      (async (): Promise<boolean> => {
-        try {
-          const c2 = dbcFor(p.slug);
-          const row = await c2.prepare('SELECT 1 AS x FROM harness_features WHERE harness_slug = ? LIMIT 1').get(p.slug);
-          return !!row;
-        } catch {
-          return false;
-        }
-      })(),
-      (async (): Promise<boolean> => existsSync(specPath))(),
-    ]);
-    return { ...p, hasState, hasSpec, harnessDir: hDir, parent_slug: parentSlug };
-  }));
+
+  // Build a signature from (registry path mtime + project count + slug list)
+  // so changes to the registry file invalidate the cache instantly.
+  let sig = `n=${reg.projects.length}|slugs=${reg.projects.map((p) => p.slug).join(',')}`;
+  try {
+    // Workspace registry is the primary source; legacy
+    // ~/.restart-harness-projects.json is honored as a fallback so
+    // pre-workspace harnesses still bust the cache when edited.
+    const wsPath = join(homedir(), '.papercusp-workspaces', 'registry.json');
+    const legacyPath = join(homedir(), '.restart-harness-projects.json');
+    if (existsSync(wsPath)) sig += `|m=${statSync(wsPath).mtimeMs}`;
+    if (existsSync(legacyPath)) sig += `|lm=${statSync(legacyPath).mtimeMs}`;
+  } catch {}
+
+  const now = Date.now();
+  const TTL_MS = 5_000;
+
+  let enriched = __projectsCache.value;
+  if (!(enriched && __projectsCache.sig === sig && __projectsCache.expires > now)) {
+    // Cache miss or stale: do the walk, but de-dup concurrent callers via
+    // a shared in-flight promise so 10 simultaneous requests don't all
+    // open 70 PG connections each.
+    if (!__projectsCache.inflight || __projectsCache.sig !== sig) {
+      __projectsCache.sig = sig;
+      __projectsCache.inflight = (async () => {
+        const list = await Promise.all(reg.projects.map(async (p) => {
+          const hDir = harnessDir(p);
+          const cfgPath = join(p.path, '.harness', 'config.json');
+          const specPath = join(p.path, 'SPEC.md');
+          const [parentSlug, hasState, hasSpec] = await Promise.all([
+            (async (): Promise<string | null> => {
+              try {
+                if (!existsSync(cfgPath)) return null;
+                const txt = await readFile(cfgPath, 'utf8');
+                const j = JSON.parse(txt);
+                return typeof j?.parent_slug === 'string' && j.parent_slug ? j.parent_slug : null;
+              } catch {
+                return null;
+              }
+            })(),
+            (async (): Promise<boolean> => {
+              try {
+                const c2 = dbcFor(p.slug);
+                const row = await c2.prepare('SELECT 1 AS x FROM harness_features WHERE harness_slug = ? LIMIT 1').get(p.slug);
+                return !!row;
+              } catch {
+                return false;
+              }
+            })(),
+            (async (): Promise<boolean> => existsSync(specPath))(),
+          ]);
+          return { ...p, hasState, hasSpec, harnessDir: hDir, parent_slug: parentSlug };
+        }));
+        __projectsCache.value = list;
+        __projectsCache.expires = Date.now() + TTL_MS;
+        __projectsCache.inflight = null;
+        return list;
+      })();
+    }
+    enriched = await __projectsCache.inflight;
+  }
+
   const filtered = filterParentSlug
-    ? enriched.filter((p) => p.parent_slug === filterParentSlug)
+    ? (enriched as Array<{ parent_slug: string | null }>).filter((p) => p.parent_slug === filterParentSlug)
     : enriched;
   return c.json({ projects: filtered });
 });
@@ -475,49 +740,34 @@ harness.get('/projects', async (c) => {
 harness.post('/projects', async (c) => {
   const body = await c.req.json();
   const slug = String(body.slug ?? '').trim();
-  const path = resolve(String(body.path ?? '').trim());
-  if (!slug || !path) return c.json({ error: 'slug and path required' }, 400);
+  const rawPath = String(body.path ?? '').trim();
+  if (!slug || !rawPath) return c.json({ error: 'slug and path required' }, 400);
+  const path = resolve(rawPath);
   if (!existsSync(path)) return c.json({ error: 'path does not exist' }, 400);
-  const reg = loadRegistry();
+  const reg = await loadRegistry();
   if (reg.projects.some((p) => p.slug === slug)) {
     return c.json({ error: 'slug already exists' }, 409);
   }
   reg.projects.push({ slug, path });
   await saveRegistry(reg);
 
-  // Provision the per-harness PG schema (tables, trigger for the consolidated
-  // mirror, publication entries, harness_zero grants) and refresh the
-  // cross-harness view so the new harness shows up everywhere immediately.
-  const scaffoldOutputs: { stage: string; status: 'ok' | 'failed'; detail?: string }[] = [];
+  // Provision per-harness PG schema (config_token + 7 misc tables + 4 views
+  // over the consolidated tables). See lib/scaffold-harness-schema.ts.
+  let provisioning: { ok: true } | { ok: false; error: string };
   try {
-    const r = await execFileP('bin/scaffold-harness-schema.sh', [slug], {
-      cwd: '/home/marsh-office/Restart',
-      env: { ...process.env, PGUSER: 'postgres_app', PGPASSWORD: 'postgres', PGHOST: 'localhost', PGDATABASE: 'papercusp' },
-      timeout: 30_000,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    scaffoldOutputs.push({ stage: 'scaffold', status: 'ok', detail: r.stdout.split('\n').slice(-2).join(' ') });
-  } catch (e) {
-    scaffoldOutputs.push({ stage: 'scaffold', status: 'failed', detail: String((e as Error).message).slice(0, 300) });
-  }
-  try {
-    const r = await execFileP('scripts/regenerate-harness-features-view.sh', [], {
-      cwd: '/home/marsh-office/Restart',
-      env: { ...process.env, PGUSER: 'harness_admin', PGPASSWORD: 'harness_admin_pwd', PGHOST: 'localhost' },
-      timeout: 15_000,
-      maxBuffer: 1 * 1024 * 1024,
-    });
-    scaffoldOutputs.push({ stage: 'view', status: 'ok', detail: r.stdout.split('\n').slice(-2).join(' ') });
-  } catch (e) {
-    scaffoldOutputs.push({ stage: 'view', status: 'failed', detail: String((e as Error).message).slice(0, 300) });
+    const { scaffoldHarnessSchema } = await import('@/lib/scaffold-harness-schema');
+    await scaffoldHarnessSchema(slug);
+    provisioning = { ok: true };
+  } catch (e: any) {
+    provisioning = { ok: false, error: String(e?.message ?? e).slice(0, 300) };
   }
 
-  return c.json({ ok: true, project: { slug, path }, provisioning: scaffoldOutputs });
+  return c.json({ ok: true, project: { slug, path }, provisioning });
 });
 
 harness.delete('/projects/:slug', async (c) => {
   const slug = c.req.param('slug');
-  const reg = loadRegistry();
+  const reg = await loadRegistry();
   const before = reg.projects.length;
   reg.projects = reg.projects.filter((p) => p.slug !== slug);
   if (reg.projects.length === before) return c.json({ error: 'not found' }, 404);
@@ -528,7 +778,7 @@ harness.delete('/projects/:slug', async (c) => {
 // ─── per-project status ──────────────────────────────────────────────
 
 harness.get('/:slug/status', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
 
   const features = await parseFeatures(project);
@@ -538,11 +788,14 @@ harness.get('/:slug/status', async (c) => {
   }, {} as Record<string, number>);
 
   // Last-decision heuristic: read tail of run.log
-  const runLog = tailFile(join(harnessDir(project), 'logs', 'run.log'), 16 * 1024);
+  const runLogPath = join(harnessDir(project), 'logs', 'run.log');
+  const runLog = tailFile(runLogPath, 16 * 1024);
   const decisionMatch = [...runLog.matchAll(/ORCH decision: (\S[^\n]*)/g)];
   const lastDecision = decisionMatch.length ? decisionMatch[decisionMatch.length - 1][1] : null;
-  const iterationMatch = [...runLog.matchAll(/── iteration (\d+) ──/g)];
-  const iteration = iterationMatch.length ? Number(iterationMatch[iterationMatch.length - 1][1]) : 0;
+  // `iteration` is total pulses across all bin/run.sh invocations — the
+  // counter resets per-run, so we count `── iteration N ──` markers
+  // incrementally rather than reading the highest visible number.
+  const iteration = countPulsesFromRunLog(runLogPath);
 
   // Escalation
   const escalation = safeRead(join(harnessDir(project), 'escalation.md'));
@@ -560,22 +813,14 @@ harness.get('/:slug/status', async (c) => {
   // Process liveness: look for a run.sh process whose cwd is the project.
   // /proc/<pid>/cwd is a symlink to a directory — must use readlinkSync,
   // not readFileSync (which throws EISDIR and gets silently swallowed).
-  let alive = false;
-  try {
-    const procs = readdirSync('/proc').filter((d) => /^\d+$/.test(d));
-    for (const pid of procs) {
-      try {
-        const cwd = readlinkSync(`/proc/${pid}/cwd`);
-        if (cwd.startsWith(project.path)) {
-          const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-          if ((cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh'))) {
-            alive = true;
-            break;
-          }
-        }
-      } catch {}
-    }
-  } catch {}
+  //
+  // Walking /proc on every /status hit is expensive on a busy system
+  // (~hundreds of PIDs × 2 syscalls per pid). The dashboard polls
+  // /status every 3s and frequently fans out across multiple panels at
+  // once — under c=10 contention this endpoint went from 75ms p50 (c=1)
+  // to 581ms p50 (c=10). A 2s TTL cache hides the redundant proc walks
+  // without making liveness stale; concurrent requests reuse one walk.
+  const alive = isProjectAlive(project.path);
 
   // Count pending (ungranted) checkpoints — for dashboard badge.
   let pendingCheckpoints = 0;
@@ -615,26 +860,69 @@ harness.get('/:slug/status', async (c) => {
 
 // ─── read-only content views ──────────────────────────────────────────
 
-harness.get('/:slug/spec', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+// Migration 034: SPEC.md / AGENTS.md / validation-contract.md / config.json
+// are PG-canonical via harness_shared.harness_project_files. The disk copies
+// are best-effort mirrors written on each PUT for editor convenience.
+async function loadProjectFiles(slug: string): Promise<{ spec: string | null; agents: string | null; contract: string | null; config: string | null }> {
+  const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
+  await ensureProjectFilesTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const rows = await sql<{ spec: string | null; agents: string | null; contract: string | null; config: string | null }[]>`
+    SELECT spec, agents, contract, config FROM harness_shared.harness_project_files
+     WHERE harness_slug = ${slug} LIMIT 1
+  `;
+  return rows[0] ?? { spec: null, agents: null, contract: null, config: null };
+}
+
+async function saveProjectFiles(slug: string, patch: { spec?: string; agents?: string; contract?: string; config?: string }): Promise<void> {
+  const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
+  await ensureProjectFilesTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const now = Date.now();
+  await sql`
+    INSERT INTO harness_shared.harness_project_files (harness_slug, spec, agents, contract, config, updated_at)
+    VALUES (
+      ${slug},
+      ${patch.spec ?? null}, ${patch.agents ?? null}, ${patch.contract ?? null}, ${patch.config ?? null},
+      ${now}
+    )
+    ON CONFLICT (harness_slug) DO UPDATE SET
+      spec     = COALESCE(${patch.spec ?? null}, harness_project_files.spec),
+      agents   = COALESCE(${patch.agents ?? null}, harness_project_files.agents),
+      contract = COALESCE(${patch.contract ?? null}, harness_project_files.contract),
+      config   = COALESCE(${patch.config ?? null}, harness_project_files.config),
+      updated_at = ${now}
+  `;
+  const { notifySyncInvalidate } = await import('@/lib/sync-sse');
+  await notifySyncInvalidate('harnessProjectFiles.byHarness', { harnessSlug: slug });
+}
+
+harness.get('/:slug/spec', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
+  // PG canonical with FS fallback for harnesses pre-Migration-034.
+  const pg = await loadProjectFiles(slug);
   return c.json({
-    spec: safeRead(join(project.path, 'SPEC.md')),
-    agents: safeRead(join(project.path, 'AGENTS.md')),
-    contract: safeRead(join(harnessDir(project), 'validation-contract.md')),
-    config: safeRead(join(harnessDir(project), 'config.json')),
+    spec: pg.spec ?? safeRead(join(project.path, 'SPEC.md')),
+    agents: pg.agents ?? safeRead(join(project.path, 'AGENTS.md')),
+    contract: pg.contract ?? safeRead(join(harnessDir(project), 'validation-contract.md')),
+    config: pg.config ?? safeRead(join(harnessDir(project), 'config.json')),
   });
 });
 
 /**
  * Write SPEC.md, AGENTS.md, validation-contract.md, or config.json. Accepts
- * any subset of { spec, agents, contract, config }. Writes via temp-file +
- * rename so partial writes don't corrupt state.
+ * any subset of { spec, agents, contract, config }. PG is canonical; disk
+ * is mirrored via temp-file + rename so partial writes don't corrupt state.
  */
 harness.put('/:slug/spec', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json() as { spec?: string; agents?: string; contract?: string; config?: string };
+
+  await saveProjectFiles(slug, body);
 
   const targets: Array<{ path: string; content: string | undefined; label: string }> = [
     { path: join(project.path, 'SPEC.md'), content: body.spec, label: 'spec' },
@@ -644,31 +932,41 @@ harness.put('/:slug/spec', async (c) => {
   ];
 
   const written: string[] = [];
+  const { rename } = await import('node:fs/promises');
   for (const t of targets) {
     if (typeof t.content !== 'string') continue;
     const tmp = `${t.path}.tmp.${Date.now()}`;
-    await writeFile(tmp, t.content, 'utf8');
-    const { rename } = await import('node:fs/promises');
-    await rename(tmp, t.path);
-    written.push(t.label);
+    try {
+      await writeFile(tmp, t.content, 'utf8');
+      await rename(tmp, t.path);
+      written.push(t.label);
+    } catch { /* mirror is best-effort; PG already has it */ }
   }
   return c.json({ ok: true, written });
 });
 
-harness.get('/:slug/issues', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/issues', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  return c.json({ issues: safeRead(join(harnessDir(project), 'issues.md')) });
+  // PG canonical (Migration 035) with FS fallback for harnesses pre-035.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
+  const pg = await loadTextArtifact(slug, 'issues.md');
+  return c.json({ issues: pg ?? safeRead(join(harnessDir(project), 'issues.md')) });
 });
 
-harness.get('/:slug/summary', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/summary', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  return c.json({ summary: safeRead(join(harnessDir(project), 'summary.md')) });
+  // PG canonical (Migration 035) with FS fallback for harnesses pre-035.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
+  const pg = await loadTextArtifact(slug, 'summary.md');
+  return c.json({ summary: pg ?? safeRead(join(harnessDir(project), 'summary.md')) });
 });
 
-harness.get('/:slug/logs/run', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/logs/run', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const tail = tailFile(join(harnessDir(project), 'logs', 'run.log'), 128 * 1024);
   return c.json({ log: tail });
@@ -795,6 +1093,47 @@ function scanAgentRuns(project: ProjectEntry): AgentRunFull[] {
 }
 
 /**
+ * Cached version of scanAgentRuns. Same shape, but memoizes the result
+ * for ~2 s keyed on logDir + dir-mtime + dir-size. The dashboard polls
+ * /agents every 5 s and frequently fans out across panels concurrently;
+ * raw scanAgentRuns walks 200+ jsonl files per call (4 KB tail-read
+ * each) which dominates the response time under c=10. With this cache,
+ * the first concurrent caller pays the file-walk cost; the rest reuse
+ * the result.
+ *
+ * Invalidation: dir mtime/size signature. Adding/removing a jsonl in the
+ * logs dir bumps mtime; appending to an existing jsonl does NOT (which
+ * is fine — we tolerate a 2 s lag on liveness/cost numbers in exchange
+ * for the throughput win).
+ */
+const __agentScanCacheKey = Symbol.for('papercusp.harnessAgentScanCache');
+type AgentScanCacheGlobals = typeof globalThis & {
+  [__agentScanCacheKey]?: Map<string, { sig: string; expires: number; value: AgentRunFull[] }>;
+};
+const __agentScanCache: Map<string, { sig: string; expires: number; value: AgentRunFull[] }> = (() => {
+  const g = globalThis as AgentScanCacheGlobals;
+  if (!g[__agentScanCacheKey]) g[__agentScanCacheKey] = new Map();
+  return g[__agentScanCacheKey]!;
+})();
+
+function scanAgentRunsCached(project: ProjectEntry, ttlMs = 2000): AgentRunFull[] {
+  const logDir = join(harnessDir(project), 'logs');
+  let sig = 'no-dir';
+  try {
+    if (existsSync(logDir)) {
+      const st = statSync(logDir);
+      sig = `${st.mtimeMs}:${st.size}`;
+    }
+  } catch {}
+  const now = Date.now();
+  const cached = __agentScanCache.get(logDir);
+  if (cached && cached.sig === sig && cached.expires > now) return cached.value;
+  const value = scanAgentRuns(project);
+  __agentScanCache.set(logDir, { sig, expires: now + ttlMs, value });
+  return value;
+}
+
+/**
  * Mirror agent-run metadata into `harness_<slug>.agent_runs`. Cheap because
  * the row count is bounded by .jsonl file count (~200). Fire-and-forget.
  */
@@ -848,10 +1187,10 @@ async function syncAgentRunsToPg(project: ProjectEntry, runs: AgentRunFull[]): P
   }
 }
 
-harness.get('/:slug/agents', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/agents', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const all = scanAgentRuns(project);
+  const all = scanAgentRunsCached(project);
   // Fire-and-forget PG mirror — Zero subscribers see updates within one poll.
   syncAgentRunsToPg(project, all).catch((err) => {
     console.warn(`[agents] PG sync failed for ${project.slug}:`, err?.message ?? err);
@@ -868,13 +1207,31 @@ harness.get('/:slug/agents', (c) => {
   return c.json({ runs });
 });
 
-harness.get('/:slug/agents/:runId', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/agents/:runId', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const runId = c.req.param('runId').replace(/[^A-Za-z0-9_.-]/g, ''); // sanitize
   const logDir = join(harnessDir(project), 'logs');
   const jsonlPath = join(logDir, `${runId}.jsonl`);
-  const jsonlRaw = safeRead(jsonlPath);
+
+  // Prefer PG-canonical body from harness_run_output (Phase 4); fall
+  // back to disk for runs that completed before activation or in
+  // CLI-only mode where no PG row exists.
+  let jsonlRaw: string | null = null;
+  try {
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const rows = await sql<{ jsonl_body: string }[]>`
+      SELECT jsonl_body FROM harness_shared.harness_run_output
+       WHERE harness_slug = ${project.slug} AND run_id = ${runId}
+       LIMIT 1
+    `;
+    if (rows.length > 0 && rows[0].jsonl_body) {
+      jsonlRaw = rows[0].jsonl_body;
+    }
+  } catch { /* fall through to disk */ }
+  if (jsonlRaw === null) {
+    jsonlRaw = safeRead(jsonlPath);
+  }
 
   // Parse stream-json events into a compact timeline the UI can render.
   const timeline: Array<{
@@ -966,6 +1323,289 @@ harness.get('/:slug/agents/:runId', (c) => {
   });
 });
 
+/**
+ * SSE: live stream of one agent run's "thinking" — text deltas, tool
+ * uses, tool results, and the terminal `result` event.
+ *
+ * Powers the hover popover on Now-running agent pills. Uses fs.watch
+ * (no polling) on `<runId>.jsonl`; on connect, replays the parsed
+ * timeline so the popover paints immediately, then appends new events
+ * as the file grows. Closes when the agent emits its `result` event
+ * or the client disconnects.
+ *
+ * Reuses the global activeStreams cap + per-IP eviction pattern from
+ * /:slug/log/stream so a fast hover-back-and-forth doesn't accumulate
+ * connections.
+ */
+harness.get('/:slug/agents/:runId/stream', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const runId = c.req.param('runId').replace(/[^A-Za-z0-9_.-]/g, '');
+  const logDir = join(harnessDir(project), 'logs');
+  const jsonlPath = join(logDir, `${runId}.jsonl`);
+
+  const remoteIP = (c.req.header('x-forwarded-for')?.split(',')[0].trim())
+    ?? c.req.header('x-real-ip')
+    ?? c.req.header('cf-connecting-ip')
+    ?? 'unknown';
+  const streamKey = `agent|${remoteIP}|${project.slug}|${runId}`;
+  if (!activeStreams.has(streamKey) && activeStreams.size >= HARNESS_STREAM_TOTAL_CAP) {
+    return c.json({ error: 'too many active streams', cap: HARNESS_STREAM_TOTAL_CAP }, 503);
+  }
+  const previous = activeStreams.get(streamKey);
+  if (previous) previous.abort();
+
+  // Inline parser — emits zero or more compact timeline entries per
+  // raw stream-json line. Mirrors the shape used by /:slug/agents/:runId
+  // so the UI can reuse the same renderer.
+  const fs = require('node:fs') as typeof import('node:fs');
+  type TimelineEntry = {
+    kind: 'text' | 'tool_use' | 'tool_result' | 'status' | 'result';
+    text?: string;
+    toolName?: string;
+    toolInput?: unknown;
+    toolId?: string;
+    costUsd?: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    durationMs?: number;
+  };
+  // Two formats supported:
+  //   - claude-code stream-json: type=stream_event/assistant/user/result
+  //   - omp:                     type=message_update (assistantMessageEvent
+  //                              with text/thinking deltas) + turn_end +
+  //                              tool_execution_start/end
+  // The popover doesn't care which backend wrote the file — it just
+  // wants the user-visible "what's the agent doing right now" stream.
+  let pendingText = '';
+  let pendingThinking = '';
+  const flushText = (out: TimelineEntry[]) => {
+    if (pendingText) { out.push({ kind: 'text', text: pendingText }); pendingText = ''; }
+  };
+  const flushThinking = (out: TimelineEntry[]) => {
+    if (pendingThinking) {
+      out.push({ kind: 'status', text: `[thinking] ${pendingThinking}` });
+      pendingThinking = '';
+    }
+  };
+  const parseLine = (raw: string): TimelineEntry[] => {
+    const out: TimelineEntry[] = [];
+    let obj: any;
+    try { obj = JSON.parse(raw); } catch { return out; }
+    const type = obj.type;
+
+    // ── claude-code stream-json ──────────────────────────────
+    if (type === 'stream_event' && obj.event?.type === 'content_block_delta') {
+      const delta = obj.event?.delta;
+      if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
+        pendingText += delta.text;
+      }
+    } else if (type === 'assistant' && obj.message?.content) {
+      flushText(out);
+      for (const block of obj.message.content) {
+        if (block.type === 'text') out.push({ kind: 'text', text: block.text });
+        else if (block.type === 'tool_use') out.push({ kind: 'tool_use', toolName: block.name, toolInput: block.input, toolId: block.id });
+      }
+    } else if (type === 'user' && obj.message?.content) {
+      for (const block of obj.message.content) {
+        if (block.type === 'tool_result') {
+          const contentStr = typeof block.content === 'string'
+            ? block.content
+            : Array.isArray(block.content)
+              ? block.content.map((p: any) => p.text ?? '').join('')
+              : '';
+          out.push({ kind: 'tool_result', toolId: block.tool_use_id, text: contentStr });
+        }
+      }
+    } else if (type === 'result') {
+      flushText(out);
+      out.push({
+        kind: 'result',
+        text: obj.result ?? '',
+        costUsd: obj.total_cost_usd,
+        inputTokens: obj.usage?.input_tokens,
+        outputTokens: obj.usage?.output_tokens,
+        durationMs: obj.duration_ms,
+      });
+    } else if (type === 'system' && obj.subtype === 'status') {
+      out.push({ kind: 'status', text: obj.status });
+    }
+
+    // ── omp (oh-my-pi) format ────────────────────────────────
+    else if (type === 'message_update' && obj.assistantMessageEvent) {
+      const ev = obj.assistantMessageEvent;
+      // Text delta → accumulate
+      if (ev.type === 'text_delta' && typeof ev.delta === 'string') {
+        flushThinking(out);
+        pendingText += ev.delta;
+      } else if (ev.type === 'thinking_delta' && typeof ev.delta === 'string') {
+        pendingThinking += ev.delta;
+      } else if (ev.type === 'thinking_end') {
+        flushThinking(out);
+      }
+      // Other event subtypes (tool_use_start etc.) are surfaced via the
+      // separate tool_execution_start lines, so we don't double-count.
+    } else if (type === 'tool_execution_start') {
+      flushText(out);
+      flushThinking(out);
+      out.push({
+        kind: 'tool_use',
+        toolName: obj.toolName ?? 'tool',
+        toolInput: obj.args,
+        toolId: obj.toolCallId,
+      });
+    } else if (type === 'tool_execution_end') {
+      const result = obj.result;
+      const text = typeof result === 'string'
+        ? result
+        : Array.isArray(result)
+          ? result.map((p: any) => (typeof p === 'string' ? p : (p?.text ?? JSON.stringify(p)))).join('')
+          : result != null
+            ? JSON.stringify(result)
+            : '';
+      out.push({
+        kind: 'tool_result',
+        toolId: obj.toolCallId,
+        text,
+      });
+    } else if (type === 'turn_end' && obj.message?.content) {
+      flushText(out);
+      flushThinking(out);
+      // turn_end carries the full assistant content; emit any text or
+      // thinking we haven't already streamed via deltas.
+      const lastText: string[] = [];
+      for (const block of obj.message.content) {
+        if (block.type === 'text' && typeof block.text === 'string') {
+          lastText.push(block.text);
+        }
+      }
+      if (lastText.length > 0) {
+        out.push({ kind: 'result', text: lastText.join('\n').slice(0, 500) });
+      }
+    } else if (type === 'message_end') {
+      // Terminal end-of-message marker (often a user-side echo). Surface
+      // as a status separator rather than spam the timeline.
+      flushText(out);
+      flushThinking(out);
+    }
+    return out;
+  };
+
+  return streamSSE(c, async (stream) => {
+    let ownAborted = false;
+    const token: StreamToken = {
+      abort: () => { ownAborted = true; },
+      createdAt: Date.now(),
+      remoteIP,
+      slug: project.slug,
+    };
+    activeStreams.set(streamKey, token);
+
+    let lineBuf = '';
+    let done = false;
+
+    const emitChunk = async (chunk: string) => {
+      lineBuf += chunk;
+      let nl: number;
+      while ((nl = lineBuf.indexOf('\n')) !== -1) {
+        const line = lineBuf.slice(0, nl).trim();
+        lineBuf = lineBuf.slice(nl + 1);
+        if (!line) continue;
+        const entries = parseLine(line);
+        for (const e of entries) {
+          await stream.writeSSE({ event: 'event', data: JSON.stringify(e) });
+          if (e.kind === 'result') {
+            done = true;
+            await stream.writeSSE({ event: 'done', data: '{}' });
+          }
+        }
+      }
+    };
+
+    try {
+      // Backfill: prefer PG-canonical jsonl_body from harness_run_output
+      // (Phase 4); fall back to disk for runs that completed before
+      // activation or in CLI-only mode. parseLine mutates
+      // pendingText/pendingThinking; that's intended — across many
+      // lines, deltas accumulate and flush on assistant/turn_end/result
+      // events the same as in tail mode.
+      let backfillRaw: string | null = null;
+      try {
+        const { sql } = (await import('@restart/db-org')).getOrgPg();
+        const rows = await sql<{ jsonl_body: string }[]>`
+          SELECT jsonl_body FROM harness_shared.harness_run_output
+           WHERE harness_slug = ${project.slug} AND run_id = ${runId}
+           LIMIT 1
+        `;
+        if (rows.length > 0 && rows[0].jsonl_body) {
+          backfillRaw = rows[0].jsonl_body;
+        }
+      } catch { /* fall through to disk */ }
+      if (backfillRaw === null) {
+        try {
+          const stat = fs.statSync(jsonlPath);
+          if (stat.size > 0) {
+            backfillRaw = fs.readFileSync(jsonlPath, 'utf8');
+          }
+        } catch { /* no file yet either */ }
+      }
+
+      if (backfillRaw && backfillRaw.length > 0) {
+        const backfill: TimelineEntry[] = [];
+        for (const rawLine of backfillRaw.split('\n')) {
+          const line = rawLine.trim();
+          if (!line) continue;
+          for (const e of parseLine(line)) {
+            backfill.push(e);
+            if (e.kind === 'result') done = true;
+          }
+        }
+        if (pendingText) { backfill.push({ kind: 'text', text: pendingText }); pendingText = ''; }
+        if (pendingThinking) { backfill.push({ kind: 'status', text: `[thinking] ${pendingThinking}` }); pendingThinking = ''; }
+        const capped = backfill.length > 200 ? backfill.slice(-200) : backfill;
+        await stream.writeSSE({ event: 'backfill', data: JSON.stringify(capped) });
+        if (done) await stream.writeSSE({ event: 'done', data: '{}' });
+      } else {
+        await stream.writeSSE({ event: 'backfill', data: '[]' });
+      }
+
+      // Live mode: in-process bus only. Orchestrator's invoke.ts POSTs
+      // each subprocess stdout chunk to /api/internal/run-chunk, which
+      // publishes to the per-run channel; this subscriber emits one
+      // SSE event per parsed line. The on-disk JSONL is no longer the
+      // streaming path — invoke.ts writes it once at exit (or skips
+      // entirely in PG-canonical mode), so fs.watch had nothing to
+      // watch and was retired in this commit.
+      const { subscribe: busSubscribe } = await import('@/lib/run-chunk-bus');
+      const channelKey = `${project.slug}:${runId}`;
+      const busSub = busSubscribe(channelKey, (env) => {
+        void emitChunk(env.data);
+      });
+      // Replay anything in the recent ring buffer (subscriber joined
+      // after publishing started).
+      for (const env of busSub.recent) {
+        await emitChunk(env.data);
+      }
+      // When the bus signals done, propagate to the SSE client.
+      void busSub.whenDone.then(async () => {
+        if (!done) {
+          done = true;
+          try { await stream.writeSSE({ event: 'done', data: '{}' }); } catch {}
+        }
+      });
+
+      // Keepalive + abort check.
+      while (!ownAborted && !stream.aborted && !done) {
+        await stream.sleep(2000);
+        await stream.writeSSE({ event: 'ping', data: '{}' });
+      }
+      busSub.unsubscribe();
+    } finally {
+      if (activeStreams.get(streamKey) === token) activeStreams.delete(streamKey);
+    }
+  });
+});
+
 // ─── feature-level controls (resets, skips) ──────────────────────────
 
 /**
@@ -979,7 +1619,7 @@ harness.get('/:slug/agents/:runId', (c) => {
  * `?format=json` returns the raw lineage row array.
  */
 harness.get('/:slug/feature/:id/lineage', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
   const format = c.req.query('format') ?? 'md';
@@ -1000,7 +1640,7 @@ harness.get('/:slug/feature/:id/lineage', async (c) => {
 });
 
 harness.post('/:slug/features/:id/reset', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
   const dbc = dbcFor(project.slug);
@@ -1039,7 +1679,7 @@ harness.post('/:slug/features/:id/reset', async (c) => {
 const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;  // F-001, PROJ-sheets, DIR-D-001
 
 harness.patch('/:slug/features/:id', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
   const body = await c.req.json() as { title?: string; summary?: string; claims?: string[]; status?: string; attempts?: number; project_id?: string; expected_cost_cents?: number; tags?: string[]; needs_human_review?: boolean; metadata?: any; notes?: string; deprecation_reason?: string };
@@ -1161,7 +1801,7 @@ harness.patch('/:slug/features/:id', async (c) => {
  * updated yet.
  */
 harness.post('/:slug/features/import', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => null) as null | {
     features?: Array<{
@@ -1249,7 +1889,7 @@ harness.post('/:slug/features/import', async (c) => {
 });
 
 harness.post('/:slug/features', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json() as { id?: string; title?: string; claims?: string[]; status?: string; summary?: string; kind?: string; project_id?: string; expected_cost_cents?: number; tags?: string[]; needs_human_review?: boolean; metadata?: any };
   const actor = c.req.header('x-actor') ?? 'api';
@@ -1335,7 +1975,7 @@ harness.post('/:slug/features', async (c) => {
 });
 
 harness.delete('/:slug/features/:id', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
   const actor = c.req.header('x-actor') ?? 'api';
@@ -1376,8 +2016,8 @@ harness.get('/streams/active', (c) => {
   return c.json({ count: activeStreams.size, cap: HARNESS_STREAM_TOTAL_CAP, streams: out });
 });
 
-harness.get('/:slug/stream', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/stream', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const runLogPath = join(harnessDir(project), 'logs', 'run.log');
 
@@ -1408,22 +2048,28 @@ harness.get('/:slug/stream', (c) => {
     activeStreams.set(streamKey, token);
 
     try {
-      let lastSize = 0;
       let lastFeatureState = '';
 
-      const pushLog = async () => {
-        try {
-          const stat = statSync(runLogPath);
-          if (stat.size > lastSize) {
-            const fd = readFileSync(runLogPath, 'utf8');
-            const chunk = fd.slice(lastSize);
-            lastSize = stat.size;
-            if (chunk) {
-              await stream.writeSSE({ event: 'log', data: chunk });
-            }
-          }
-        } catch {}
-      };
+      // Backfill from disk once on connect — replays the tail so the
+      // client has scrollback context. After this, live updates come
+      // from the bus.
+      try {
+        const stat = statSync(runLogPath);
+        const tailBytes = 256 * 1024;
+        const start = Math.max(0, stat.size - tailBytes);
+        const fd = readFileSync(runLogPath, 'utf8');
+        const chunk = fd.slice(start);
+        if (chunk) await stream.writeSSE({ event: 'log', data: chunk });
+      } catch {}
+
+      const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
+      const sub = logSubscribe(`${project.slug}:raw`, (env) => {
+        void stream.writeSSE({ event: 'log', data: env.line + '\n' }).catch(() => {});
+      });
+      // Replay recent ring (small; pre-backfill covers history).
+      for (const env of sub.recent) {
+        void stream.writeSSE({ event: 'log', data: env.line + '\n' }).catch(() => {});
+      }
 
       const pushFeatures = async () => {
         const feats = await parseFeatures(project);
@@ -1434,11 +2080,17 @@ harness.get('/:slug/stream', (c) => {
         }
       };
 
-      while (true) {
-        if (stream.aborted || ownAborted) break;
-        await pushLog();
-        await pushFeatures();
-        await stream.sleep(1500);
+      try {
+        while (true) {
+          if (stream.aborted || ownAborted) break;
+          // Features come from PG (parseFeatures) — still polled because
+          // they're not in the bus today. Lower frequency now that log
+          // tailing is event-driven.
+          await pushFeatures();
+          await stream.sleep(3000);
+        }
+      } finally {
+        sub.unsubscribe();
       }
     } finally {
       // Only remove if we're still the registered token (eviction may have replaced us).
@@ -1471,7 +2123,7 @@ harness.get('/:slug/stream', (c) => {
  * Query: ?before=<ISO ts>&limit=N (default 500, capped at 5000).
  */
 harness.get('/:slug/log/history', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const before = c.req.query('before') || null;
   const limit = Math.min(Math.max(parseInt(c.req.query('limit') ?? '500', 10) || 500, 1), 5000);
@@ -1531,8 +2183,8 @@ harness.get('/:slug/log/history', async (c) => {
   });
 });
 
-harness.get('/:slug/log/stream', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/log/stream', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const jsonlPath = join(harnessDir(project), 'logs', 'run.log.jsonl');
   const tailSize = Math.min(Math.max(parseInt(c.req.query('tail') ?? '500', 10) || 500, 1), 5000);
@@ -1641,56 +2293,37 @@ harness.get('/:slug/log/stream', (c) => {
 
     await backfill();
 
-    // fs.watch fires per filesystem event. We re-stat + re-read the
-    // delta on each event. Note: fs.watch doesn't guarantee one event per
-    // append; back-to-back writes may coalesce or fire duplicates. The
-    // size-tracking loop tolerates both.
-    let watcher: import('node:fs').FSWatcher | null = null;
-    const tickSinceLastEvent = setInterval(() => {
-      // Belt-and-suspenders fallback: some filesystems (e.g. some
-      // overlayfs setups, network mounts) drop fs.watch events. A 5s
-      // poll guarantees we never go silent for longer than that.
-      void readDelta();
-    }, 5_000);
-    tickSinceLastEvent.unref();
-
-    const readDelta = async () => {
-      try {
-        const stat = statSync(jsonlPath);
-        if (stat.size > lastSize) {
-          const fd = readFileSync(jsonlPath, 'utf8');
-          const chunk = fd.slice(lastSize);
-          lastSize = stat.size;
-          await emitLines(chunk);
-        } else if (stat.size < lastSize) {
-          // File rotated — restart from the beginning. Send a synthetic
-          // event so the UI knows to clear its buffer of "old run" data.
-          lastSize = 0;
-          await stream.writeSSE({ event: 'rotated', data: 'true' });
-          await readDelta();
-        }
-      } catch {
-        // File disappeared mid-watch (rotation in progress); next tick
-        // will pick it up.
-      }
-    };
+    // Live updates come from the in-process log bus. run.sh's log()
+    // function POSTs each line to /api/internal/log-event; that handler
+    // calls publish() on the harness-log-bus channel; this subscriber
+    // emits one SSE event per line. Sub-ms latency, no fs.watch, no
+    // periodic re-stat. The on-disk JSONL is still authoritative for
+    // backfill-on-connect (above) and historical /log/history queries.
+    const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
+    const sub = logSubscribe(`${project.slug}:log`, (env) => {
+      // Validate JSON before forwarding — keeps the client surface
+      // identical to the prior fs.watch path.
+      try { JSON.parse(env.line); }
+      catch { return; }
+      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
+    });
+    // Replay any recent ring-buffer entries the subscriber missed
+    // between connect and subscribe — small in practice (≤256 lines)
+    // because we already backfilled from disk above.
+    for (const env of sub.recent) {
+      try { JSON.parse(env.line); }
+      catch { continue; }
+      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
+    }
 
     try {
-      const fs = require('node:fs') as typeof import('node:fs');
-      try {
-        watcher = fs.watch(jsonlPath, () => { void readDelta(); });
-      } catch {
-        // File may not exist yet — fall through to polling.
-      }
       while (true) {
         if (stream.aborted || ownAborted) break;
-        // Lower-frequency tick than the legacy stream; fs.watch carries
-        // most of the load. The 1.5s sleep is just a back-pressure pause.
-        await stream.sleep(1500);
+        await stream.sleep(15_000);
+        await stream.writeSSE({ event: 'ping', data: '{}' });
       }
     } finally {
-      clearInterval(tickSinceLastEvent);
-      try { watcher?.close(); } catch { /* ignore */ }
+      sub.unsubscribe();
       if (activeStreams.get(streamKey) === token) {
         activeStreams.delete(streamKey);
       }
@@ -1701,7 +2334,7 @@ harness.get('/:slug/log/stream', (c) => {
 // ─── launch / stop (optional, safer to run manually for now) ─────────
 
 harness.post('/:slug/launch', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   // Pre-flight: SPEC.md is required for the scoper to produce features.
   // Without it, run.sh exits 2 with no useful explanation. Catching it
@@ -1716,7 +2349,7 @@ harness.post('/:slug/launch', async (c) => {
   }
   const body = await c.req.json().catch(() => ({}));
   const extra = typeof body.extra === 'string' ? body.extra : '';
-  const result = launchRun(project, extra);
+  const result = await launchRun(project, extra);
   if (!result.ok) return c.json({ error: result.error }, 500);
   // Phase 6b — plugin lifecycle: fire `beforeMissionStart` (typed hook) +
   // `mission.start` (free-form event bus). Best-effort; never blocks the
@@ -1740,7 +2373,7 @@ harness.post('/:slug/launch', async (c) => {
  * the dispatcher POSTs here, the child's role runs once and returns.
  */
 harness.post('/:slug/invoke', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const role = c.req.query('role') ?? 'orchestrator';
   if (!/^[A-Za-z0-9_-]+$/.test(role)) {
@@ -1819,7 +2452,7 @@ except Exception:
       cwd: project.path,
       env: {
         ...process.env,
-        CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions',
+        CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
         MAX_ITERATIONS: '1',
       },
     });
@@ -1970,8 +2603,8 @@ async function dispatchActionsBlockFromOutput(
  * Replaces the old `director-runs/` reader for the new substrate. Returns
  * each run's filename + decision_line + ts + role parsed from the file.
  */
-harness.get('/:slug/runs', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/runs', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const runsDir = join(harnessDir(project), 'runs');
   if (!existsSync(runsDir)) return c.json({ runs: [] });
@@ -2007,8 +2640,8 @@ harness.get('/:slug/runs', (c) => {
 /**
  * Layer 3 polish: read one specific runs/*.md file.
  */
-harness.get('/:slug/runs/:name', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/runs/:name', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = c.req.param('name').replace(/[^A-Za-z0-9_.:-]/g, '');
   if (!name || !name.endsWith('.md')) return c.json({ error: 'invalid name' }, 400);
@@ -2017,24 +2650,31 @@ harness.get('/:slug/runs/:name', (c) => {
   return c.json({ name, content: safeRead(path) });
 });
 
-harness.get('/:slug/escalation', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/escalation', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const escalationPath = join(harnessDir(project), 'escalation.md');
   const supervisorNotesPath = join(harnessDir(project), 'supervisor-notes.md');
   let mtimeMs: number | null = null;
   try { mtimeMs = statSync(escalationPath).mtimeMs; } catch {}
+  // PG canonical (Migration 035) with FS fallback.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
+  const [pgEscalation, pgNotes] = await Promise.all([
+    loadTextArtifact(slug, 'escalation.md'),
+    loadTextArtifact(slug, 'supervisor-notes.md'),
+  ]);
   return c.json({
-    escalation: safeRead(escalationPath),
-    supervisorNotes: safeRead(supervisorNotesPath),
+    escalation: pgEscalation ?? safeRead(escalationPath),
+    supervisorNotes: pgNotes ?? safeRead(supervisorNotesPath),
     mtimeMs,
   });
 });
 
 // ─── competitions (Conductor-inspired same-feature races) ───────────
 
-harness.get('/:slug/competitions', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/competitions', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const hd = harnessDir(project);
   if (!existsSync(hd)) return c.json({ competitions: [] });
@@ -2072,37 +2712,8 @@ harness.get('/:slug/competitions', (c) => {
 
 // ─── smoke test (claudecode-orchestrator-inspired service gate) ─────
 
-harness.get('/:slug/smoke-test', (c) => {
-  const project = resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const hd = harnessDir(project);
-  const passPath = join(hd, 'smoke-pass.md');
-  const failPath = join(hd, 'smoke-failure.md');
-  const resultsPath = join(hd, 'smoke-results.json');
-  const startupLogPath = join(hd, 'smoke-startup.log');
-  let results: any = null;
-  try { results = JSON.parse(readFileSync(resultsPath, 'utf8')); } catch {}
-  let status: 'pass' | 'fail' | 'unknown' = 'unknown';
-  let mtimeMs: number | null = null;
-  if (existsSync(failPath)) {
-    status = 'fail';
-    try { mtimeMs = statSync(failPath).mtimeMs; } catch {}
-  } else if (existsSync(passPath)) {
-    status = 'pass';
-    try { mtimeMs = statSync(passPath).mtimeMs; } catch {}
-  }
-  return c.json({
-    status,
-    mtimeMs,
-    pass: safeRead(passPath),
-    failure: safeRead(failPath),
-    results,
-    startupLog: safeRead(startupLogPath),
-  });
-});
-
 harness.post('/:slug/smoke-test/run', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const { spawn } = await import('node:child_process');
   const scriptPath = harnessPath('bin', 'service-smoke-test.sh');
@@ -2120,50 +2731,303 @@ harness.post('/:slug/smoke-test/run', async (c) => {
   });
 });
 
+// SSE pilot: emit a 'change' event whenever any of the smoke-test files
+// change. Client subscribes and refetches /smoke-test on each event,
+// replacing the 5s polling loop. Heartbeat every 30s so proxies don't
+// timeout the connection.
+
+// ─── orchestrator-writes-status (Phase 3) ─────────────────────────────
+//
+// These endpoints accept writes from `run.sh` (via the pg-status.sh helper).
+// Together with the harness-status-sweep, they replace the /proc-walk +
+// 5s-poll path that drove the dashboard's status/lanes tiles.
+//
+// Authentication: `run.sh` runs in the same process tree as the operator
+// (spawned by the Node sidecar), so we trust loopback callers — same trust
+// model the existing /lanes and /agents read endpoints use.
+
+harness.post('/:slug/orchestrator/status', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  let body: {
+    phase?: string;
+    status?: string;
+    iteration?: number;
+    totalFeatures?: number;
+    passedCount?: number;
+    todoCount?: number;
+    blockedCount?: number;
+    lastActiveTs?: number;
+    costUsd?: number;
+  };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ error: 'invalid JSON' }, 400);
+  }
+  const phase = body.phase === 'testing' || body.phase === 'production'
+    ? body.phase : 'staging';
+  const allowed = new Set(['idle', 'running', 'stalled', 'paused', 'error']);
+  if (!body.status || !allowed.has(body.status)) {
+    return c.json({ error: 'status must be one of idle/running/stalled/paused/error' }, 400);
+  }
+  await ensureHarnessStatusTable();
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  // Server-computed lease: writer doesn't pass expiresAt — we know what
+  // "stale" means here, and clock skew is the writer's, not ours.
+  // expirable-registry flips status='running' rows to 'stalled' when this
+  // passes. Writers refresh on every iteration.
+  const STATUS_LEASE_MS = 5 * 60_000;
+  const now = Date.now();
+  const expiresAt = now + STATUS_LEASE_MS;
+  await sql`
+    INSERT INTO harness_shared.harness_status
+      (harness_slug, phase, status, iteration, total_features, passed_count,
+       todo_count, blocked_count, last_active_ts, cost_usd, workspace_id, updated_at, expires_at)
+    VALUES (
+      ${project.slug}, ${phase}, ${body.status},
+      ${Number(body.iteration) || 0},
+      ${Number(body.totalFeatures) || 0},
+      ${Number(body.passedCount) || 0},
+      ${Number(body.todoCount) || 0},
+      ${Number(body.blockedCount) || 0},
+      ${body.lastActiveTs ?? null},
+      ${body.costUsd ?? null},
+      ${ws},
+      ${now},
+      ${expiresAt}
+    )
+    ON CONFLICT (harness_slug, phase) DO UPDATE
+      SET status = EXCLUDED.status,
+          iteration = EXCLUDED.iteration,
+          total_features = EXCLUDED.total_features,
+          passed_count = EXCLUDED.passed_count,
+          todo_count = EXCLUDED.todo_count,
+          blocked_count = EXCLUDED.blocked_count,
+          last_active_ts = EXCLUDED.last_active_ts,
+          cost_usd = EXCLUDED.cost_usd,
+          workspace_id = EXCLUDED.workspace_id,
+          updated_at = EXCLUDED.updated_at,
+          expires_at = EXCLUDED.expires_at
+  `;
+  const { notifySyncInvalidate } = await import('@/lib/sync-sse');
+  await notifySyncInvalidate('harnessStatus.byHarness', { harnessSlug: project.slug });
+  return c.json({ ok: true });
+});
+
+harness.post('/:slug/orchestrator/lane', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  let body: { phase?: string; role?: string; featureId?: string | null; pid?: number | null };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ error: 'invalid JSON' }, 400);
+  }
+  const phase = body.phase === 'testing' || body.phase === 'production'
+    ? body.phase : 'staging';
+  if (!body.role || typeof body.role !== 'string') {
+    return c.json({ error: 'role required' }, 400);
+  }
+  await ensureHarnessLanesTable();
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  await sql`
+    INSERT INTO harness_shared.harness_lanes
+      (harness_slug, phase, role, feature_id, pid, started_at, workspace_id)
+    VALUES (
+      ${project.slug}, ${phase}, ${body.role},
+      ${body.featureId ?? null}, ${body.pid ?? null}, ${Date.now()}, ${ws}
+    )
+    ON CONFLICT (harness_slug, phase, role) DO UPDATE
+      SET feature_id = EXCLUDED.feature_id,
+          pid = EXCLUDED.pid,
+          started_at = EXCLUDED.started_at,
+          workspace_id = EXCLUDED.workspace_id
+  `;
+  return c.json({ ok: true });
+});
+
+harness.delete('/:slug/orchestrator/lanes', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const phase = c.req.query('phase') === 'testing' || c.req.query('phase') === 'production'
+    ? c.req.query('phase') : 'staging';
+  await ensureHarnessLanesTable();
+  const { sql } = getOrgPg();
+  await sql`
+    DELETE FROM harness_shared.harness_lanes
+     WHERE harness_slug = ${project.slug} AND phase = ${phase}
+  `;
+  return c.json({ ok: true });
+});
+
+/**
+ * Adaptive-mode telemetry endpoints.
+ *
+ * Two operations:
+ *   POST   /:slug/orchestrator/adaptive-telemetry        — record a NEXT_WORKER
+ *          decision in adaptive mode. Returns { id } so the caller can
+ *          later attach an outcome.
+ *   PATCH  /:slug/orchestrator/adaptive-telemetry/:id    — attach an outcome
+ *          ('pass' | 'fail' | 'cancelled') and duration to a previously
+ *          recorded decision.
+ *
+ * The orchestrator main-loop calls these from within handleNextWorker
+ * (decision insert) and from the validator post-hook (outcome patch).
+ * Failures are best-effort — telemetry must never block agent dispatch.
+ */
+harness.get('/:slug/orchestrator/adaptive-telemetry', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const limitRaw = Number(c.req.query('limit') ?? 200);
+  const limit = Math.max(1, Math.min(1000, Number.isFinite(limitRaw) ? limitRaw : 200));
+  await ensureAdaptiveTelemetryTable();
+  const { sql } = getOrgPg();
+  const rows = await sql`
+    SELECT id, ts, feature_id, requested_n, actual_n,
+           tier_label, available_at_decision, max_slots,
+           outcome, outcome_ts, duration_ms
+      FROM harness_shared.adaptive_telemetry
+     WHERE harness_slug = ${project.slug}
+     ORDER BY ts DESC
+     LIMIT ${limit}
+  `;
+  return c.json({ rows });
+});
+
+harness.post('/:slug/orchestrator/adaptive-telemetry', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  let body: {
+    featureId?: string;
+    requestedN?: number;
+    actualN?: number;
+    tierLabel?: string | null;
+    availableAtDecision?: number | null;
+    maxSlots?: number | null;
+  };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ error: 'invalid JSON' }, 400);
+  }
+  if (!body.featureId || typeof body.featureId !== 'string') {
+    return c.json({ error: 'featureId required' }, 400);
+  }
+  const requestedN = Number(body.requestedN);
+  const actualN = Number(body.actualN);
+  if (!Number.isInteger(requestedN) || !Number.isInteger(actualN) || actualN < 1) {
+    return c.json({ error: 'requestedN/actualN must be positive integers' }, 400);
+  }
+  await ensureAdaptiveTelemetryTable();
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const rows = await sql<{ id: number }[]>`
+    INSERT INTO harness_shared.adaptive_telemetry
+      (harness_slug, ts, feature_id, requested_n, actual_n,
+       tier_label, available_at_decision, max_slots, workspace_id)
+    VALUES (
+      ${project.slug}, ${Date.now()}, ${body.featureId},
+      ${requestedN}, ${actualN},
+      ${body.tierLabel ?? null}, ${body.availableAtDecision ?? null},
+      ${body.maxSlots ?? null}, ${ws}
+    )
+    RETURNING id
+  `;
+  return c.json({ ok: true, id: rows[0]?.id ?? null });
+});
+
+harness.patch('/:slug/orchestrator/adaptive-telemetry/:id', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const id = Number(c.req.param('id'));
+  if (!Number.isInteger(id) || id < 1) return c.json({ error: 'invalid id' }, 400);
+  let body: { outcome?: string; durationMs?: number | null };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return c.json({ error: 'invalid JSON' }, 400);
+  }
+  if (!body.outcome || !['pass', 'fail', 'cancelled'].includes(body.outcome)) {
+    return c.json({ error: "outcome must be one of 'pass'|'fail'|'cancelled'" }, 400);
+  }
+  await ensureAdaptiveTelemetryTable();
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.adaptive_telemetry
+       SET outcome = ${body.outcome},
+           outcome_ts = ${Date.now()},
+           duration_ms = ${body.durationMs ?? null}
+     WHERE id = ${id} AND harness_slug = ${project.slug}
+  `;
+  return c.json({ ok: true });
+});
+
+harness.post('/:slug/orchestrator/clear-running', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  // agent_runs lives in the per-harness schema, not harness_shared.
+  const { sql } = getHarnessPg(project.slug);
+  await sql`UPDATE agent_runs SET running = false WHERE running = true`;
+  return c.json({ ok: true });
+});
+
 // ─── identity files (Agent-Swarm-inspired cross-mission memory) ─────
 
-harness.get('/identity', (c) => {
-  const dir = harnessPath('identity');
-  if (!existsSync(dir)) return c.json({ identities: [] });
-  const out: Array<{ role: string; content: string; bytes: number; mtimeMs: number }> = [];
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith('.md')) continue;
-    const p = join(dir, f);
-    const role = f.replace(/\.md$/, '');
-    try {
-      const s = statSync(p);
-      out.push({ role, content: readFileSync(p, 'utf8'), bytes: s.size, mtimeMs: s.mtimeMs });
-    } catch {}
+harness.get('/identity', async (c) => {
+  // PG-canonical-for-reads (Migration 041). Files at ~/autonomous-harness/
+  // identity/<role>.md remain the source of truth for the orchestrator
+  // subprocess (prompt-build.ts:87 reads them on every role invocation);
+  // the operator-side watcher mirrors them in so the UI doesn't readdir
+  // per request and Zero subscribers wake up on changes.
+  const { ensureIdentityFilesTable } = await import('@/lib/ensure-schema');
+  await ensureIdentityFilesTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const rows = await sql<{ role: string; content: string; bytes: number; mtime_ms: string | number }[]>`
+    SELECT role, content, bytes, mtime_ms
+      FROM harness_shared.identity_files
+     ORDER BY role ASC
+  `;
+  // FS fallback for the brief window before the watcher's initialSync
+  // populates PG on a fresh install.
+  if (rows.length === 0) {
+    const dir = harnessPath('identity');
+    if (existsSync(dir)) {
+      const out: Array<{ role: string; content: string; bytes: number; mtimeMs: number }> = [];
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith('.md')) continue;
+        const p = join(dir, f);
+        const role = f.replace(/\.md$/, '');
+        try {
+          const s = statSync(p);
+          out.push({ role, content: readFileSync(p, 'utf8'), bytes: s.size, mtimeMs: s.mtimeMs });
+        } catch {}
+      }
+      out.sort((a, b) => a.role.localeCompare(b.role));
+      return c.json({ identities: out });
+    }
   }
-  out.sort((a, b) => a.role.localeCompare(b.role));
-  return c.json({ identities: out });
+  return c.json({
+    identities: rows.map((r) => ({
+      role: r.role,
+      content: r.content,
+      bytes: r.bytes,
+      mtimeMs: Number(r.mtime_ms) || 0,
+    })),
+  });
 });
 
 // ─── checkpoints (Hermes-inspired named human-gated pauses) ──────────
 
-harness.get('/:slug/checkpoints', (c) => {
-  const project = resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const hd = harnessDir(project);
-  if (!existsSync(hd)) return c.json({ checkpoints: [] });
-  const out: Array<{ name: string; content: string; waitingSinceMs: number; granted: boolean }> = [];
-  for (const f of readdirSync(hd)) {
-    const m = f.match(/^checkpoint-([A-Za-z0-9_.-]+)\.md$/);
-    if (!m) continue;
-    const name = m[1];
-    const content = safeRead(join(hd, f)) ?? '';
-    let waitingSinceMs = 0;
-    try { waitingSinceMs = statSync(join(hd, f)).mtimeMs; } catch {}
-    const granted = existsSync(join(hd, `${f}.granted`));
-    out.push({ name, content, waitingSinceMs, granted });
-  }
-  out.sort((a, b) => a.waitingSinceMs - b.waitingSinceMs);
-  return c.json({ checkpoints: out });
-});
+// SSE: emit 'change' when any checkpoint file's mtime/size changes,
+// or when a *.granted sibling appears/disappears. Same pattern as
+// smoke-test SSE.
 
 harness.post('/:slug/checkpoint/:name/request', async (c) => {
   // Manually create a pending checkpoint (human asks the harness to pause).
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = c.req.param('name').replace(/[^A-Za-z0-9_.-]/g, '');
   if (!name) return c.json({ error: 'invalid name' }, 400);
@@ -2187,21 +3051,70 @@ ${body.message ?? ''}
 });
 
 harness.post('/:slug/checkpoint/:name/grant', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = c.req.param('name').replace(/[^A-Za-z0-9_.-]/g, '');
   if (!name) return c.json({ error: 'invalid name' }, 400);
   const hd = harnessDir(project);
   const cpPath = join(hd, `checkpoint-${name}.md`);
-  if (!existsSync(cpPath)) return c.json({ error: 'no such checkpoint' }, 404);
-  const grantPath = `${cpPath}.granted`;
-  const { writeFileSync } = await import('node:fs');
-  writeFileSync(grantPath, `granted at ${new Date().toISOString()}\n`);
-  return c.json({ ok: true, granted: name, next: 'Re-run the harness to consume the grant.' });
+
+  // Phase 3 PG path: flip granted=true directly + emit sync_invalidate
+  // so the UI's harnessCheckpoints query refetches in real time. The
+  // bash run.sh on the orchestrator side reads .granted files at
+  // pre-loop time, so we keep the file write for back-compat — bash
+  // sees the file, TS orchestrator's checkpoints-pg sees the row.
+  let pgGranted = false;
+  try {
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const rows = await sql<{ updated: boolean }[]>`
+      UPDATE harness_shared.harness_checkpoints
+         SET granted = true
+       WHERE harness_slug = ${project.slug}
+         AND workspace_id = ${ws}
+         AND name         = ${name}
+         AND granted      = false
+         AND consumed     = false
+      RETURNING TRUE AS updated
+    `;
+    if (rows.length > 0) {
+      pgGranted = true;
+      await sql`
+        SELECT pg_notify('sync_invalidate',
+          ${JSON.stringify({
+            name: 'harnessCheckpoints.byHarness',
+            args: { harnessSlug: project.slug },
+          })})
+      `;
+    }
+  } catch {
+    /* fall through; file write below still works */
+  }
+
+  // File path is the source of truth for bash run.sh. Orchestrator-TS
+  // mode reads PG directly via the row above. Skip the file when the
+  // checkpoint .md file isn't on disk (the orchestrator-TS path doesn't
+  // create files; only PG rows).
+  if (existsSync(cpPath)) {
+    const grantPath = `${cpPath}.granted`;
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(grantPath, `granted at ${new Date().toISOString()}\n`);
+  } else if (!pgGranted) {
+    return c.json({ error: 'no such checkpoint' }, 404);
+  }
+
+  return c.json({
+    ok: true,
+    granted: name,
+    via: pgGranted ? 'pg' : 'file',
+    next: pgGranted
+      ? 'Orchestrator will pick up the grant on next pre-loop pass.'
+      : 'Re-run the harness to consume the grant.',
+  });
 });
 
 harness.get('/:slug/health', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
 
   // Features
@@ -2215,18 +3128,9 @@ harness.get('/:slug/health', async (c) => {
   // Escalation
   const escalated = existsSync(join(harnessDir(project), 'escalation.md'));
 
-  // Alive check: scan /proc for run.sh with matching cwd
-  let alive = false;
-  try {
-    for (const pid of readdirSync('/proc').filter((d) => /^\d+$/.test(d))) {
-      try {
-        const cwd = readlinkSync(`/proc/${pid}/cwd`);
-        if (!cwd.startsWith(project.path)) continue;
-        const cmdline = readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-        if ((cmdline.includes('autonomous-harness/run.sh') || cmdline.includes('/harness/run.sh'))) { alive = true; break; }
-      } catch {}
-    }
-  } catch {}
+  // Alive check: same as /status — uses the 2 s TTL cache so concurrent
+  // /health + /status calls share one /proc walk instead of duplicating it.
+  const alive = isProjectAlive(project.path);
 
   // Recent activity: most recent agent run mtime
   let lastRunMs = 0;
@@ -2267,7 +3171,7 @@ harness.get('/:slug/health', async (c) => {
   // Verdict
   const checks: Array<{ name: string; ok: boolean; detail?: string }> = [
     { name: 'spec_present',        ok: existsSync(join(project.path, 'SPEC.md')) },
-    { name: 'features_present',    ok: existsSync(join(harnessDir(project), 'features.json')) },
+    { name: 'features_present',    ok: (await parseFeatures(project)).length > 0 },
     { name: 'contract_present',    ok: existsSync(join(harnessDir(project), 'validation-contract.md')) },
     { name: 'not_escalated',       ok: !escalated, detail: escalated ? 'see escalation.md' : undefined },
     { name: 'no_pending_checkpoints', ok: pendingCheckpoints === 0, detail: pendingCheckpoints > 0 ? `${pendingCheckpoints} awaiting grant` : undefined },
@@ -2325,7 +3229,7 @@ harness.get('/needs-human-review', async (c) => {
  * spinning up the project happens here too.
  */
 harness.post('/:slug/features/:id/approve-human', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => ({})) as { adjust_budget_cents?: number; create_project?: boolean; project_id?: string };
@@ -2466,9 +3370,33 @@ harness.get('/projects/:id/stats', async (c) => {
  * mutations to a feature.
  */
 harness.get('/:slug/features/:id/audit', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
+  // PG-canonical via harness_shared.feature_audit_consolidated
+  // (un-hardcode plan item #6). Falls back to per-harness table for
+  // any rows that pre-date the consolidation cutover.
+  try {
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const rows = await sql<{ ts: number; field: string; old_value: string | null; new_value: string | null; actor: string }[]>`
+      SELECT ts, field, old_value, new_value, actor
+        FROM harness_shared.feature_audit_consolidated
+       WHERE harness_slug = ${project.slug} AND feature_id = ${id}
+       ORDER BY ts DESC LIMIT 200
+    `;
+    if (rows.length > 0) {
+      return c.json({
+        slug: project.slug, feature_id: id, count: rows.length,
+        audit: rows.map((r) => ({
+          ts: typeof r.ts === 'bigint' ? Number(r.ts) : r.ts,
+          field: r.field,
+          old: r.old_value ? JSON.parse(r.old_value) : null,
+          new: r.new_value ? JSON.parse(r.new_value) : null,
+          actor: r.actor,
+        })),
+      });
+    }
+  } catch { /* fall through to per-harness */ }
   try {
     const dbc = dbcFor(project.slug);
     const rows = await dbc.prepare(`
@@ -2491,8 +3419,8 @@ harness.get('/:slug/features/:id/audit', async (c) => {
   }
 });
 
-harness.get('/:slug/features/:id/timeline', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/features/:id/timeline', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const fid = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
   if (!fid) return c.json({ error: 'invalid feature id' }, 400);
@@ -2582,57 +3510,11 @@ harness.get('/:slug/features/:id/timeline', (c) => {
   return c.json({ featureId: fid, events });
 });
 
-harness.get('/:slug/decisions', (c) => {
-  const project = resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const runLog = tailFile(join(harnessDir(project), 'logs', 'run.log'), 256 * 1024);
-  // Parse "[<iso>] ORCH decision: <verb> [args]"
-  type Decision = { ts: number; iso: string; verb: string; args: string; iteration: number | null; isGhost: boolean };
-  const decisions: Decision[] = [];
-  let currentIter: number | null = null;
-  const iterRe = /^\[([^\]]+)\] ── iteration (\d+) ──/;
-  // Verb shape: starts with uppercase, ≥3 letters/underscores. This filters
-  // out parser noise that used to flag ` ``` ` (markdown fences) and `(empty)`
-  // as ghost verbs.
-  const decRe = /^\[([^\]]+)\] ORCH decision:\s*([A-Z][A-Z_]{2,})\s*(.*)$/;
-  const KNOWN_VERBS = new Set<string>(DECISION_VERBS);
-  for (const line of runLog.split('\n')) {
-    const im = line.match(iterRe);
-    if (im) { currentIter = Number(im[2]); continue; }
-    const dm = line.match(decRe);
-    if (dm) {
-      const iso = dm[1];
-      const ts = Date.parse(iso);
-      const verb = dm[2] || '(empty)';
-      decisions.push({
-        ts: Number.isNaN(ts) ? 0 : ts,
-        iso,
-        verb,
-        args: dm[3].trim(),
-        iteration: currentIter,
-        isGhost: !KNOWN_VERBS.has(verb),
-      });
-    }
-  }
-  // Aggregate counts (recognized only, by verb)
-  const byVerb: Record<string, number> = {};
-  let ghosts = 0;
-  for (const d of decisions) {
-    if (d.isGhost) ghosts += 1;
-    else byVerb[d.verb] = (byVerb[d.verb] ?? 0) + 1;
-  }
-  return c.json({
-    decisions: decisions.slice(-200),
-    total: decisions.length,
-    recognized: decisions.length - ghosts,
-    ghosts,
-    ghostRate: decisions.length > 0 ? ghosts / decisions.length : 0,
-    byVerb,
-  });
-});
+// SSE: emit 'change' on logs/run.log mtime/size shifts (decisions are
+// derived from the tail of run.log).
 
-harness.get('/:slug/lanes', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/lanes', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const p = join(harnessDir(project), 'lanes.json');
   if (!existsSync(p)) return c.json({ lanes: [], max: 1 });
@@ -2657,7 +3539,7 @@ harness.get('/:slug/lanes', (c) => {
 });
 
 harness.get('/:slug/features/:id/diff', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
   if (!id) return c.json({ error: 'invalid feature id' }, 400);
@@ -2750,72 +3632,19 @@ function scanProposalsDir(project: ProjectEntry): ProposalListEntry[] {
     .sort((a, b) => b.ts - a.ts);
 }
 
-/**
- * Mirror the filesystem-derived proposal metadata to
- * `harness_<slug>.harness_proposals` so Zero subscribers (ProposalsPanel)
- * see live updates instead of polling. Filesystem stays authoritative for
- * the body; PG only holds queryable metadata. Fire-and-forget; failures
- * don't break the GET response.
- */
-async function syncProposalsToPg(project: ProjectEntry, items: ProposalListEntry[]): Promise<void> {
-  const { sql } = getHarnessPg(project.slug);
-  const now = Date.now();
-  const ids = items.map((p) => p.id);
-  if (items.length > 0) {
-    const rows = items.map((p) => ({
-      harness_slug: project.slug,
-      proposal_id: p.id,
-      size_bytes: p.sizeBytes,
-      status: p.status,
-      review_verdict: p.reviewVerdict ?? null,
-      review_summary: p.reviewSummary ?? null,
-      reviewed_at: p.reviewedAt ?? null,
-      applied_at: p.appliedAt ?? null,
-      rejected_at: p.rejectedAt ?? null,
-      ts: p.ts,
-      created_ts: now,
-      updated_ts: now,
-    }));
-    await sql`
-      INSERT INTO harness_proposals ${sql(rows, 'harness_slug', 'proposal_id', 'size_bytes', 'status', 'review_verdict', 'review_summary', 'reviewed_at', 'applied_at', 'rejected_at', 'ts', 'created_ts', 'updated_ts')}
-      ON CONFLICT (harness_slug, proposal_id) DO UPDATE SET
-        size_bytes      = EXCLUDED.size_bytes,
-        status          = EXCLUDED.status,
-        review_verdict  = EXCLUDED.review_verdict,
-        review_summary  = EXCLUDED.review_summary,
-        reviewed_at     = EXCLUDED.reviewed_at,
-        applied_at      = EXCLUDED.applied_at,
-        rejected_at     = EXCLUDED.rejected_at,
-        ts              = EXCLUDED.ts,
-        updated_ts      = EXCLUDED.updated_ts
-    `;
-    await sql`
-      DELETE FROM harness_proposals
-      WHERE harness_slug = ${project.slug}
-        AND proposal_id <> ALL(${ids})
-    `;
-  } else {
-    await sql`
-      DELETE FROM harness_proposals
-      WHERE harness_slug = ${project.slug}
-    `;
-  }
-}
-
-harness.get('/:slug/proposals', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/proposals', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const dir = join(harnessDir(project), 'proposals');
   if (!existsSync(dir)) return c.json({ proposals: [], replanOnAccept: true });
-  const items = scanProposalsDir(project);
-  // Fire-and-forget — don't block the GET response on PG.
-  syncProposalsToPg(project, items).catch((err) => {
-    console.warn(`[proposals] PG sync failed for ${project.slug}:`, err?.message ?? err);
-  });
 
-  // Tell the UI whether the harness is configured to auto-replan on
-  // accept. Default true: accept means accept. Set explicitly to false
-  // to opt out.
+  // ProposalsPanel reads via Zero (harness_proposals_shared) since Phase
+  // 2.5; this endpoint exists for back-compat + the replanOnAccept flag
+  // ProposalsPanel reads once at mount. The PG dual-write to per-schema
+  // harness_proposals (syncProposalsToPg) was removed in Item 1 — the
+  // FS watcher is the only PG writer for proposals now.
+  const items = scanProposalsDir(project);
+
   let replanOnAccept = true;
   try {
     const cfgRaw = safeRead(join(harnessDir(project), 'config.json'));
@@ -2828,8 +3657,8 @@ harness.get('/:slug/proposals', (c) => {
   return c.json({ proposals: items, replanOnAccept });
 });
 
-harness.get('/:slug/proposals/:id', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/proposals/:id', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
   if (!id || !id.endsWith('.md')) return c.json({ error: 'invalid id' }, 400);
@@ -2839,13 +3668,12 @@ harness.get('/:slug/proposals/:id', (c) => {
 });
 
 harness.post('/:slug/proposals/:id/accept', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
   if (!id || !id.endsWith('.md')) return c.json({ error: 'invalid id' }, 400);
   const proposalPath = join(harnessDir(project), 'proposals', id);
   if (!existsSync(proposalPath)) return c.json({ error: 'not found' }, 404);
-  // Ensure applied_at column exists before syncProposalsToPg fires.
 
   const body = safeRead(proposalPath) ?? '';
   // Extract acceptance bullets (same heuristic as run.sh product_auto_apply_latest)
@@ -2865,12 +3693,11 @@ harness.post('/:slug/proposals/:id/accept', async (c) => {
 
   const append = `\n<!-- accepted from proposals/${id} at ${new Date().toISOString()} -->\n${bullets.join('\n')}\n`;
   await appendFile(specPath, append, 'utf8');
-  // Stamp the proposal
+  // Stamp the proposal — file is the source-of-truth invariant. The
+  // harness FS watcher mirrors this change into harness_proposals_shared
+  // (which ProposalsPanel reads) automatically; no explicit PG write
+  // needed. Per-schema harness_proposals dual-write removed in Item 1.
   await appendFile(proposalPath, `\n---\napplied: true\nappliedAt: ${new Date().toISOString()}\n`, 'utf8');
-  // Refresh PG so Zero subscribers see the new status without waiting for a list poll.
-  syncProposalsToPg(project, scanProposalsDir(project)).catch((err) => {
-    console.warn(`[proposals] PG sync after accept failed for ${project.slug}:`, err?.message ?? err);
-  });
 
   // Phase 6b — plugin lifecycle: fire `onProposalAccepted` (typed) +
   // `proposal.accepted` (free-form). Best-effort.
@@ -2907,21 +3734,19 @@ harness.post('/:slug/proposals/:id/accept', async (c) => {
 });
 
 harness.post('/:slug/proposals/:id/reject', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
   if (!id || !id.endsWith('.md')) return c.json({ error: 'invalid id' }, 400);
   const proposalPath = join(harnessDir(project), 'proposals', id);
   if (!existsSync(proposalPath)) return c.json({ error: 'not found' }, 404);
+  // File is the source-of-truth invariant — watcher mirrors to PG.
   await appendFile(proposalPath, `\n---\nrejected: true\nrejectedAt: ${new Date().toISOString()}\n`, 'utf8');
-  syncProposalsToPg(project, scanProposalsDir(project)).catch((err) => {
-    console.warn(`[proposals] PG sync after reject failed for ${project.slug}:`, err?.message ?? err);
-  });
   return c.json({ ok: true });
 });
 
 harness.post('/:slug/product-review', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const specPath = join(project.path, 'SPEC.md');
   if (!existsSync(specPath)) {
@@ -2941,7 +3766,7 @@ harness.post('/:slug/product-review', async (c) => {
  */
 harness.post('/:slug/replan', async (c) => {
   const slug = c.req.param('slug');
-  const project = resolveProject(slug);
+  const project = await resolveProject(slug);
   if (!project) return c.json({ error: 'unknown project' }, 404);
   // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
   // and the OperatorActionLog component. The action represents the *kickoff*;
@@ -2968,9 +3793,59 @@ harness.post('/:slug/replan', async (c) => {
  * Never adds features (that's /replan's job). Code is not auto-removed;
  * deprecation is metadata-only.
  */
+/**
+ * GET /:slug/scoper-result/:invocationId
+ *
+ * Polled by the operator panel to detect when a replan / cleanup /
+ * proposal scoper run has finished. The wrapper script
+ * tees stdout to scoper-results/<mode>-<id>.log and appends the
+ * sentinel "__INVOCATION_DONE__" on the last line.
+ *
+ * Returns:
+ *   - 404 if the file doesn't exist yet (caller keeps polling)
+ *   - { done: false } if the sentinel hasn't appeared
+ *   - { done: true, summary, counts? } once the sentinel is present.
+ *     summary is the last few lines of the log (the scoper's own
+ *     verdict). counts is best-effort parse of "added: N deprecated: M"
+ *     style markers if the scoper emits them.
+ */
+harness.get('/:slug/scoper-result/:invocationId', async (c) => {
+  const slug = c.req.param('slug');
+  const invocationId = c.req.param('invocationId');
+  const project = await resolveProject(slug);
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const dir = join(harnessDir(project), 'scoper-results');
+  // The mode prefix isn't passed in the path; scan for the matching file.
+  // Files are <mode>-<id>.log and ids are unique per millisecond+rand.
+  const fs = await import('node:fs/promises');
+  let logPath: string | null = null;
+  try {
+    const entries = await fs.readdir(dir);
+    const match = entries.find((e) => e.endsWith(`-${invocationId}.log`));
+    if (match) logPath = join(dir, match);
+  } catch { /* dir missing → 404 below */ }
+  if (!logPath) return c.json({ done: false }, 404);
+  const text = await fs.readFile(logPath, 'utf8').catch(() => '');
+  const done = text.includes('__INVOCATION_DONE__');
+  if (!done) return c.json({ done: false });
+  // Trim the sentinel + take last ~20 lines as the summary.
+  const lines = text.replace(/__INVOCATION_DONE__\s*$/m, '').trim().split(/\r?\n/);
+  const tail = lines.slice(-20).join('\n');
+  // Best-effort counts parse — the scoper sometimes emits "Added: 3" style.
+  const counts: Record<string, number> = {};
+  for (const m of tail.matchAll(/\b(added|deprecated|modified|consolidated|skipped)\s*:\s*(\d+)/gi)) {
+    counts[m[1].toLowerCase()] = parseInt(m[2], 10);
+  }
+  return c.json({
+    done: true,
+    summary: tail.slice(0, 1200),
+    counts: Object.keys(counts).length ? counts : undefined,
+  });
+});
+
 harness.post('/:slug/cleanup', async (c) => {
   const slug = c.req.param('slug');
-  const project = resolveProject(slug);
+  const project = await resolveProject(slug);
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const invocationId = await recordUserAction(slug, 'cleanup', async () => {
     const r = invokeScoperBackground(project, 'cleanup');
@@ -2983,39 +3858,15 @@ harness.post('/:slug/cleanup', async (c) => {
   return c.json({ ok: true, invocationId, mode: 'cleanup' });
 });
 
-/**
- * Consolidate pass — runs scoper MODE=consolidate to dedup, surface
- * conflicts, reorder by dependency tier, and budget-defer features
- * across the post-parallel-expert queue. PATCH-only; no INSERTs or
- * deletes. See prompts/scoper.md "MODE=consolidate" for the four-pass
- * algorithm. Logged in user_actions.
- */
-harness.post('/:slug/consolidate', async (c) => {
-  const slug = c.req.param('slug');
-  const project = resolveProject(slug);
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const invocationId = await recordUserAction(slug, 'consolidate', async () => {
-    const r = invokeScoperBackground(project, 'consolidate');
-    return {
-      summary: `Consolidate kicked off (invocation ${r.invocationId})`,
-      invocationId: r.invocationId,
-      result: r.invocationId,
-    };
-  });
-  return c.json({ ok: true, invocationId, mode: 'consolidate' });
-});
+// (Removed POST /:slug/consolidate — scoper has no MODE=consolidate prompt
+// section, so the route invoked the agent with no mode-specific instructions.
+// `cleanup` covers the same intent (PATCH-only queue tidying) with an actual
+// prompt section behind it. Use POST /:slug/cleanup instead.)
 
-harness.get('/:slug/plan-review', (c) => {
-  const project = resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const p = join(harnessDir(project), 'plan-review.md');
-  let mtimeMs: number | null = null;
-  try { mtimeMs = statSync(p).mtimeMs; } catch {}
-  return c.json({ content: safeRead(p), mtimeMs });
-});
+// SSE: emit 'change' on plan-review.md mtime/size shifts.
 
-harness.get('/:slug/debug-notes/:id', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/debug-notes/:id', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
   if (!id) return c.json({ error: 'invalid feature id' }, 400);
@@ -3025,8 +3876,8 @@ harness.get('/:slug/debug-notes/:id', (c) => {
   return c.json({ content: safeRead(p), mtimeMs });
 });
 
-harness.get('/:slug/debug-notes', (c) => {
-  const project = resolveProject(c.req.param('slug'));
+harness.get('/:slug/debug-notes', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const dir = join(harnessDir(project), 'debug');
   if (!existsSync(dir)) return c.json({ notes: [] });
@@ -3042,30 +3893,33 @@ harness.get('/:slug/debug-notes', (c) => {
   return c.json({ notes });
 });
 
-harness.get('/:slug/knowledge', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/knowledge', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
+  // PG-canonical (Phase 0d). Disk fallback for harnesses pre-migration.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
   const p = join(harnessDir(project), 'knowledge.md');
+  const fromPg = await loadTextArtifact(slug, 'knowledge.md');
   let mtimeMs: number | null = null;
   try { mtimeMs = statSync(p).mtimeMs; } catch {}
-  return c.json({ content: safeRead(p), mtimeMs });
+  return c.json({ content: fromPg ?? safeRead(p), mtimeMs });
 });
 
 harness.put('/:slug/knowledge', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({})) as { content?: string };
   if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  await mkdir(harnessDir(project), { recursive: true });
-  const dest = join(harnessDir(project), 'knowledge.md');
-  const tmp = `${dest}.tmp.${Date.now()}`;
-  await writeFile(tmp, body.content, 'utf8');
-  await rename(tmp, dest);
+  // PG-canonical via text-artifacts; helper handles disk mirror.
+  const { saveTextArtifact } = await import('@/lib/text-artifacts');
+  await saveTextArtifact(slug, 'knowledge.md', body.content);
   return c.json({ ok: true });
 });
 
 harness.get('/:slug/diff/working', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   return new Promise((resolve) => {
     const { execFile } = require('node:child_process');
@@ -3087,25 +3941,10 @@ harness.get('/:slug/diff/working', async (c) => {
   }) as Promise<Response>;
 });
 
-harness.get('/:slug/archives', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const dir = join(harnessDir(project), 'archives');
-  if (!existsSync(dir)) return c.json({ archives: [] });
-  const items = readdirSync(dir)
-    .filter((f) => f.endsWith('.tar.gz'))
-    .map((f) => {
-      const full = join(dir, f);
-      let size = 0, ts = 0;
-      try { const s = statSync(full); size = s.size; ts = s.mtimeMs; } catch {}
-      return { id: f, sizeBytes: size, ts };
-    })
-    .sort((a, b) => b.ts - a.ts);
-  return c.json({ archives: items });
-});
+// SSE: emit 'change' on archives/*.tar.gz add/remove/grow.
 
 harness.post('/:slug/archives/:id/restore', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.\-]/g, '');
   if (!id || !id.endsWith('.tar.gz') || !/^\d+\.tar\.gz$/.test(id)) {
@@ -3154,7 +3993,7 @@ harness.post('/:slug/archives/:id/restore', async (c) => {
 });
 
 harness.post('/:slug/archive', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({})) as { reset?: boolean };
 
@@ -3178,11 +4017,7 @@ harness.post('/:slug/archive', async (c) => {
         // Remove features.json, validation-contract.md, issues.md, worker-log.md,
         // escalation.md, supervisor-notes.md, lanes.json, prs.json, logs/*, snapshots/*,
         // screenshots/*. Keep config.json, hooks/, knowledge.md, archives/.
-        const toRemove = [
-          'features.json', 'validation-contract.md', 'issues.md', 'worker-log.md',
-          'escalation.md', 'supervisor-notes.md', 'lanes.json', 'prs.json',
-        ];
-        for (const f of toRemove) {
+        for (const f of STATE_FILES_FOR_RESET) {
           try { await unlink(join(dir, f)); resetRemoved.push(f); } catch {}
         }
         const { rm } = await import('node:fs/promises');
@@ -3198,7 +4033,7 @@ harness.post('/:slug/archive', async (c) => {
 });
 
 harness.post('/:slug/replan', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const specPath = join(project.path, 'SPEC.md');
   if (!existsSync(specPath)) return c.json({ error: 'SPEC.md not found' }, 400);
@@ -3218,7 +4053,7 @@ harness.post('/:slug/replan', async (c) => {
   const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
   if (body.overwrite) {
     await mkdir(backupDir, { recursive: true });
-    for (const f of ['features.json', 'validation-contract.md']) {
+    for (const f of STATE_FILES_FOR_BACKUP) {
       const p = join(harnessDir(project), f);
       if (existsSync(p)) {
         const { rename } = await import('node:fs/promises');
@@ -3227,18 +4062,24 @@ harness.post('/:slug/replan', async (c) => {
     }
   }
 
-  const harnessScript = harnessPath('run.sh');
+  const orchBin = orchestratorRunBin();
   const logPath = `/tmp/harness-replan-${project.slug}.log`;
-  // We don't want to run the full orchestration loop — just the scoper.
-  // run.sh has a gate: "if missing features.json + contract, invoke scoper MODE=initial".
-  // It continues to the main loop after; setting MAX_ITERATIONS=0 prevents the loop body from running.
+  // We don't want to run the full orchestration loop — just the
+  // pre-loop / initial scoper. The TS orchestrator's pre-loop gate
+  // ("if missing features.json + contract, invoke scoper MODE=initial")
+  // runs before the main iteration loop; MAX_ITERATIONS=0 prevents the
+  // loop body from entering.
   return new Promise((resolve) => {
     const { execFile } = require('node:child_process');
-    execFile('bash', ['-c', `MAX_ITERATIONS=0 ${harnessScript} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
+    execFile('bash', ['-c', `MAX_ITERATIONS=0 npx --no-install tsx ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
       cwd: project.path,
       env: {
         ...process.env,
-        CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions',
+        AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+        CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+        HARNESS_DIR: harnessPackageDir(),
+        PROJECT_DIR: project.path,
+        HARNESS_SLUG: project.slug,
       },
       maxBuffer: 1024 * 1024,
       timeout: 5 * 60_000,
@@ -3254,13 +4095,13 @@ harness.post('/:slug/replan', async (c) => {
 });
 
 harness.post('/:slug/supervisor', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const script = harnessPath('bin', 'supervisor.sh');
   if (!existsSync(script)) return c.json({ error: 'supervisor.sh not found' }, 500);
   return new Promise((resolve) => {
     const { execFile } = require('node:child_process');
-    execFile('bash', [script], { cwd: project.path, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, CLAUDE: process.env.CLAUDE ?? 'claude -p --dangerously-skip-permissions' } }, (err: any, stdout: string, stderr: string) => {
+    execFile('bash', [script], { cwd: project.path, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p' } }, (err: any, stdout: string, stderr: string) => {
       if (err) {
         resolve(c.json({ ok: false, error: String(err.message || err), stderr: stderr ?? '', stdout: stdout ?? '' }, 500));
         return;
@@ -3272,8 +4113,8 @@ harness.post('/:slug/supervisor', async (c) => {
   }) as Promise<Response>;
 });
 
-harness.get('/:slug/prs', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/prs', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const p = join(harnessDir(project), 'prs.json');
   if (!existsSync(p)) return c.json({ prs: {} });
@@ -3285,19 +4126,12 @@ harness.get('/:slug/prs', (c) => {
   }
 });
 
-harness.get('/:slug/notes', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const path = join(harnessDir(project), 'supervisor-notes.md');
-  let mtimeMs: number | null = null;
-  try { mtimeMs = statSync(path).mtimeMs; } catch {}
-  return c.json({ content: safeRead(path), mtimeMs });
-});
+// SSE: emit 'change' on supervisor-notes.md mtime/size shifts.
 
 // ─── usage / cost aggregation ─────────────────────────────────────────
 
-harness.get('/:slug/usage', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/usage', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const all = scanAgentRuns(project);
   // Force-sync to PG so usage and agents endpoints stay coherent.
@@ -3394,7 +4228,7 @@ harness.get('/templates', (c) => {
       if (raw) meta = { ...meta, ...JSON.parse(raw) };
     } catch {}
     const files: string[] = [];
-    for (const f of ['SPEC.md', 'AGENTS.md', 'config.json']) {
+    for (const f of TEMPLATE_DETECT_FILES) {
       if (existsSync(join(dir, f))) files.push(f);
     }
     return {
@@ -3421,7 +4255,7 @@ harness.get('/templates/:id/file', (c) => {
 });
 
 harness.post('/:slug/bootstrap-from-template', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({})) as { templateId?: string; overwrite?: boolean };
   const tid = (body.templateId ?? '').replace(/[^A-Za-z0-9_-]/g, '');
@@ -3432,7 +4266,7 @@ harness.post('/:slug/bootstrap-from-template', async (c) => {
   const overwrite = body.overwrite === true;
   const copied: string[] = [];
   const skipped: string[] = [];
-  for (const f of ['SPEC.md', 'AGENTS.md']) {
+  for (const f of PROJECT_FILES_TO_COPY) {
     const src = join(tdir, f);
     if (!existsSync(src)) continue;
     const dest = join(project.path, f);
@@ -3464,28 +4298,11 @@ harness.post('/:slug/bootstrap-from-template', async (c) => {
 
 const SCREENSHOT_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp'] as const;
 
-harness.get('/:slug/screenshots', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const dir = join(harnessDir(project), 'screenshots');
-  if (!existsSync(dir)) return c.json({ screenshots: [] });
-
-  const items = readdirSync(dir)
-    .filter((f) => SCREENSHOT_EXTS.some((ext) => f.toLowerCase().endsWith(ext)))
-    .map((f) => {
-      const full = join(dir, f);
-      let size = 0, ts = 0;
-      try { const s = statSync(full); size = s.size; ts = s.mtimeMs; } catch {}
-      return { id: f, sizeBytes: size, ts };
-    })
-    .sort((a, b) => b.ts - a.ts)
-    .slice(0, 200);
-
-  return c.json({ screenshots: items });
-});
+// SSE: emit 'change' when files in .harness/screenshots/ are
+// added/removed/grow.
 
 harness.get('/:slug/screenshots/:id', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.\-]/g, '');
   if (!id || !SCREENSHOT_EXTS.some((ext) => id.toLowerCase().endsWith(ext))) {
@@ -3504,7 +4321,8 @@ harness.get('/:slug/screenshots/:id', async (c) => {
 });
 
 harness.post('/:slug/screenshots', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const phase = phasePhaseLabel(c.req.query('phase'));
+  const project = await resolvePhasedProject(c.req.param('slug'), phase);
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const form = await c.req.formData();
   const file = form.get('file');
@@ -3524,28 +4342,60 @@ harness.post('/:slug/screenshots', async (c) => {
   const ab = await file.arrayBuffer();
   await writeFile(tmp, Buffer.from(ab));
   await rename(tmp, dest);
+  // Producer-time PG write — replaces the chokidar replace-all mirror
+  // that re-scanned the dir on every fs event.
+  {
+    const { sql } = getOrgPg();
+    const ws = activeWorkspaceId();
+    await sql`
+      INSERT INTO harness_shared.harness_screenshots
+        (harness_slug, phase, id, size_bytes, ts, workspace_id)
+      VALUES (${project.slug}, ${phase}, ${safeName}, ${ab.byteLength}, ${Date.now()}, ${ws})
+      ON CONFLICT (harness_slug, phase, id) DO UPDATE
+        SET size_bytes = EXCLUDED.size_bytes,
+            ts = EXCLUDED.ts,
+            workspace_id = EXCLUDED.workspace_id
+    `;
+    const { notifySyncInvalidate } = await import('@/lib/sync-sse');
+    void notifySyncInvalidate('harnessScreenshots.byHarness', { harnessSlug: project.slug, phase }).catch(() => {});
+  }
   return c.json({ ok: true, id: safeName, sizeBytes: ab.byteLength });
 });
 
 harness.delete('/:slug/screenshots/:id', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const phase = phasePhaseLabel(c.req.query('phase'));
+  const project = await resolvePhasedProject(c.req.param('slug'), phase);
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.\-]/g, '');
   if (!id || !SCREENSHOT_EXTS.some((ext) => id.toLowerCase().endsWith(ext))) {
     return c.json({ error: 'invalid screenshot id' }, 400);
   }
+  let deleted = false;
   try {
     await unlink(join(harnessDir(project), 'screenshots', id));
-    return c.json({ ok: true, deleted: true });
+    deleted = true;
   } catch (err: any) {
-    if (err?.code === 'ENOENT') return c.json({ ok: true, deleted: false });
-    return c.json({ error: String(err) }, 500);
+    if (err?.code !== 'ENOENT') return c.json({ error: String(err) }, 500);
   }
+  // Drop the PG row regardless; if the file was already gone, the row
+  // may still be lingering from a previous fs.watch race.
+  {
+    const { sql } = getOrgPg();
+    await sql`
+      DELETE FROM harness_shared.harness_screenshots
+       WHERE harness_slug = ${project.slug}
+         AND phase        = ${phase}
+         AND id           = ${id}
+    `;
+    const { notifySyncInvalidate } = await import('@/lib/sync-sse');
+    void notifySyncInvalidate('harnessScreenshots.byHarness', { harnessSlug: project.slug, phase }).catch(() => {});
+  }
+  return c.json({ ok: true, deleted });
 });
 
 // ─── snapshots (.harness/snapshots/<id>/) ─────────────────────────────
 
-const SNAPSHOT_FILES = ['features.json', 'validation-contract.md', 'supervisor-notes.md', 'config.json'] as const;
+// SNAPSHOT_FILES imported from @/lib/harness-state-files at top.
 
 interface SnapshotMeta {
   id: string;
@@ -3637,7 +4487,7 @@ async function syncSnapshotsToPg(project: ProjectEntry, snaps: SnapshotMeta[]): 
 }
 
 harness.get('/:slug/snapshots', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const snapshots = await scanSnapshots(project);
   syncSnapshotsToPg(project, snapshots).catch((err) => {
@@ -3654,7 +4504,7 @@ harness.get('/:slug/snapshots', async (c) => {
  * deletes prior rows and re-inserts.
  */
 harness.post('/:slug/snapshots/:id/record-pg-state', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
   if (!id || !/^\d+-iter-\d+$/.test(id)) {
@@ -3720,7 +4570,7 @@ harness.post('/:slug/snapshots/:id/record-pg-state', async (c) => {
  * or run `papercusp publish` from the dir).
  */
 harness.post('/:slug/save-as-template', async (c) => {
-  const project = resolveProject(c.req.param('slug'));
+  const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
 
   const body = (await c.req.json().catch(() => ({}))) as {
@@ -3748,8 +4598,8 @@ harness.post('/:slug/save-as-template', async (c) => {
   }
   await mkdir(templateDir, { recursive: true });
 
-  // Source files to copy verbatim
-  const sourceFiles = ['SPEC.md', 'AGENTS.md', '.harness/config.json', '.harness/validation-contract.md'];
+  // Source files to copy verbatim (canonical list — see lib/harness-state-files.ts)
+  const sourceFiles = SOURCE_FILES_FOR_FORK;
   const copied: string[] = [];
   const skipped: string[] = [];
   for (const rel of sourceFiles) {
@@ -3849,7 +4699,7 @@ harness.post('/:slug/save-as-template', async (c) => {
 });
 
 harness.post('/:slug/snapshots/:id/restore', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
   if (!id || !/^\d+-iter-\d+$/.test(id)) {
@@ -3926,7 +4776,7 @@ harness.post('/:slug/snapshots/:id/restore', async (c) => {
 });
 
 harness.delete('/:slug/snapshots/:id', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
   if (!id || !/^\d+-iter-\d+$/.test(id)) {
@@ -3949,34 +4799,39 @@ harness.delete('/:slug/snapshots/:id', async (c) => {
 });
 
 harness.post('/:slug/escalation/resolve', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   const response = typeof body.response === 'string' ? body.response.trim() : '';
   const action = body.action === 'clear' ? 'clear' : 'keep';
 
+  const slug = c.req.param('slug');
   const supervisorNotesPath = join(harnessDir(project), 'supervisor-notes.md');
+  const { appendTextArtifact, loadTextArtifact, deleteTextArtifact } = await import('@/lib/text-artifacts');
   if (response) {
     const block = `\n## Human response ${new Date().toISOString()}\n\n${response}\n`;
-    await appendFile(supervisorNotesPath, block, 'utf8');
+    await appendTextArtifact(slug, 'supervisor-notes.md', block);
+    try { await appendFile(supervisorNotesPath, block, 'utf8'); } catch {}
   }
 
   if (action === 'clear') {
+    await deleteTextArtifact(slug, 'escalation.md');
     try { await unlink(join(harnessDir(project), 'escalation.md')); } catch {}
   }
 
+  const pgNotes = await loadTextArtifact(slug, 'supervisor-notes.md');
   return c.json({
     ok: true,
-    supervisorNotes: safeRead(supervisorNotesPath),
+    supervisorNotes: pgNotes ?? safeRead(supervisorNotesPath),
     cleared: action === 'clear',
   });
 });
 
 harness.post('/:slug/resume', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   try { await unlink(join(harnessDir(project), 'escalation.md')); } catch {}
-  const result = launchRun(project);
+  const result = await launchRun(project);
   if (!result.ok) return c.json({ error: result.error }, 500);
   return c.json({ ok: true, logPath: result.logPath });
 });
@@ -3992,8 +4847,8 @@ function hookPath(project: ProjectEntry, name: string): string {
   return join(harnessDir(project), 'hooks', `${name}.sh`);
 }
 
-harness.get('/:slug/hooks', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/hooks', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const hooks = getKnownHooks().map((name) => {
     const path = hookPath(project, name);
@@ -4012,7 +4867,7 @@ harness.get('/:slug/hooks', (c) => {
 });
 
 harness.put('/:slug/hooks/:name', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = c.req.param('name');
   if (!getKnownHooks().includes(name)) {
@@ -4033,7 +4888,7 @@ harness.put('/:slug/hooks/:name', async (c) => {
 });
 
 harness.delete('/:slug/hooks/:name', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = c.req.param('name');
   if (!getKnownHooks().includes(name)) {
@@ -4048,34 +4903,10 @@ harness.delete('/:slug/hooks/:name', async (c) => {
   }
 });
 
-harness.get('/:slug/hook-logs', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const logDir = join(harnessDir(project), 'logs', 'hooks');
-  if (!existsSync(logDir)) return c.json({ runs: [] });
-  const runs = readdirSync(logDir)
-    .filter((f) => f.endsWith('.log'))
-    .map((f) => {
-      const full = join(logDir, f);
-      let size = 0;
-      try { size = statSync(full).size; } catch {}
-      const stem = f.replace(/\.log$/, '');
-      const match = stem.match(/^(\d+)-(.+)$/);
-      return {
-        logId: stem,
-        name: match ? match[2] : stem,
-        ts: match ? Number(match[1]) * 1000 : 0,
-        sizeBytes: size,
-      };
-    })
-    .filter((r) => r.ts > 0)
-    .sort((a, b) => b.ts - a.ts)
-    .slice(0, 50);
-  return c.json({ runs });
-});
+// SSE: emit 'change' when *.log files in logs/hooks/ are added/removed/grow.
 
-harness.get('/:slug/hook-logs/:logId', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/hook-logs/:logId', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const logId = c.req.param('logId').replace(/[^A-Za-z0-9_.-]/g, '');
   if (!logId) return c.json({ error: 'invalid logId' }, 400);
@@ -4086,7 +4917,7 @@ harness.get('/:slug/hook-logs/:logId', (c) => {
 });
 
 harness.get('/:slug/git/show/:sha', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const sha = c.req.param('sha');
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return c.json({ error: 'bad sha' }, 400);
@@ -4120,7 +4951,7 @@ harness.get('/:slug/git/show/:sha', async (c) => {
 });
 
 harness.get('/:slug/git/log', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
 
   // Org-kind harnesses (and any harness whose root isn't a git checkout)
@@ -4157,7 +4988,7 @@ function findHarnessPids(projectPath: string): number[] {
 }
 
 harness.post('/:slug/pause', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const pids = findHarnessPids(project.path);
   const paused: number[] = [];
@@ -4168,7 +4999,7 @@ harness.post('/:slug/pause', async (c) => {
 });
 
 harness.post('/:slug/unpause', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const pids = findHarnessPids(project.path);
   const resumed: number[] = [];
@@ -4179,7 +5010,7 @@ harness.post('/:slug/unpause', async (c) => {
 });
 
 harness.post('/:slug/stop', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   try {
     const procs = readdirSync('/proc').filter((d) => /^\d+$/.test(d));
@@ -4205,28 +5036,12 @@ harness.post('/:slug/stop', async (c) => {
 // `.harness/issues.json` is the structured companion to issues.md.
 // If missing, we synthesize it on read by parsing issues.md (read-only
 // migration — the file isn't persisted until a mutation happens).
-
-type IssueSeverity = 'critical' | 'major' | 'minor' | 'nit';
-type IssueSource = 'validator' | 'worker' | 'human';
-type IssueStatus = 'open' | 'acknowledged' | 'fixing' | 'closed' | 'wontfix';
-
-interface IssueNote { ts: string; by: string; text: string }
-interface Issue {
-  id: string;
-  title: string;
-  severity: IssueSeverity;
-  source: IssueSource;
-  foundAt: string;
-  foundDuring?: string;
-  status: IssueStatus;
-  repro?: string;
-  evidence?: string;
-  suggestedFix?: string;
-  codePointer?: string;
-  linkedFeatureId?: string;
-  attempts: number;
-  notes: IssueNote[];
-}
+// Types imported from the shared issues/types module so the API and the
+// dashboard panel stay in sync — adding a new severity/status here used
+// to require editing both files.
+import type {
+  Issue, IssueNote, IssueSeverity, IssueSource, IssueStatus,
+} from '@/app/harness/issues/types';
 interface IssuesFile { issues: Issue[]; nextId: number }
 
 function issuesJsonPath(project: ProjectEntry): string {
@@ -4405,53 +5220,55 @@ function loadIssuesOrSeed(project: ProjectEntry): IssuesFile {
   return { issues: parsed, nextId: parsed.length + 1 };
 }
 
-// Read the validator's un-merged structured findings. Each line of
-// pending-issues.jsonl is a raw finding lacking id/status; we synthesize
-// placeholder fields so the UI can show them immediately (before the
-// curator runs and assigns real ids). These entries are read-only from
-// the UI's perspective — promotion/mutation goes through the curator.
-function readPendingIssues(project: ProjectEntry): Issue[] {
-  const path = join(harnessDir(project), 'pending-issues.jsonl');
-  const raw = safeRead(path);
-  if (!raw) return [];
+// Read the validator's un-merged structured findings from PG (mirror of
+// .harness/pending-issues.jsonl, populated by harness-fs-watcher). Lines
+// lacking an explicit `id` get the same `PENDING-<n>` synthesis the
+// fs-watcher applies, so the row set matches what the disk reader used
+// to produce. These entries are read-only from the UI's perspective —
+// promotion/mutation goes through the curator.
+async function readPendingIssues(project: ProjectEntry): Promise<Issue[]> {
+  const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
+  await ensureHarnessPendingIssuesTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const rows = await sql<{ issue_id: string; payload: Record<string, unknown>; ts: string | number }[]>`
+    SELECT issue_id, payload, ts
+      FROM harness_shared.harness_pending_issues
+     WHERE harness_slug = ${project.slug}
+     ORDER BY ts ASC
+  `;
   const out: Issue[] = [];
-  const lines = raw.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    try {
-      const p = JSON.parse(line);
-      if (!p.title || !p.severity) continue;
-      out.push({
-        id: `PENDING-${i + 1}`,
-        title: String(p.title),
-        severity: p.severity,
-        source: 'validator',
-        foundAt: p.foundAt ?? new Date().toISOString(),
-        foundDuring: p.foundDuring,
-        status: 'open',
-        repro: p.repro,
-        evidence: p.evidence,
-        suggestedFix: p.suggestedFix,
-        codePointer: p.codePointer,
-        attempts: 0,
-        notes: [],
-      });
-    } catch {}
+  for (const r of rows) {
+    const p = r.payload ?? {};
+    if (!p.title || !p.severity) continue;
+    out.push({
+      id: r.issue_id,
+      title: String(p.title),
+      severity: p.severity as Issue['severity'],
+      source: 'validator',
+      foundAt: (p.foundAt as string) ?? new Date(Number(r.ts) || 0).toISOString(),
+      foundDuring: p.foundDuring as string | undefined,
+      status: 'open',
+      repro: p.repro as string | undefined,
+      evidence: p.evidence as string | undefined,
+      suggestedFix: p.suggestedFix as string | undefined,
+      codePointer: p.codePointer as string | undefined,
+      attempts: 0,
+      notes: [],
+    });
   }
   return out;
 }
 
-harness.get('/:slug/issues-list', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/issues-list', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const file = loadIssuesOrSeed(project);
-  const pending = readPendingIssues(project);
+  const pending = await readPendingIssues(project);
   return c.json({ ...file, pending });
 });
 
 harness.post('/:slug/issues', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (!body.title || typeof body.title !== 'string') {
@@ -4497,7 +5314,7 @@ harness.post('/:slug/issues', async (c) => {
  * graduates to a direct INSERT into harness_issues with status='pending'.
  */
 harness.post('/:slug/issues/append-pending', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => null) as null | {
     title?: string;
@@ -4512,7 +5329,7 @@ harness.post('/:slug/issues/append-pending', async (c) => {
   if (!body || typeof body.title !== 'string' || !body.title.trim()) {
     return c.json({ error: 'title required' }, 400);
   }
-  const line = JSON.stringify({
+  const payload = {
     title: body.title.trim(),
     severity: body.severity ?? 'minor',
     source: 'validator',
@@ -4526,14 +5343,33 @@ harness.post('/:slug/issues/append-pending', async (c) => {
     status: 'open',
     attempts: 1,
     notes: [],
-  }) + '\n';
-  const path = join(harnessDir(project), 'pending-issues.jsonl');
-  await appendFile(path, line, 'utf8');
+  };
+  // PG-canonical: INSERT directly into harness_pending_issues (the same
+  // table the harness-fs-watcher mirrors disk writes to). The watcher's
+  // upsert pattern is preserved; this just bypasses the file.
+  const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
+  await ensureHarnessPendingIssuesTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const issueId = `PENDING-${Date.now()}`;
+  const ts = Date.now();
+  await sql`
+    INSERT INTO harness_shared.harness_pending_issues
+      (harness_slug, phase, issue_id, feature_id, title, severity, source,
+       payload, ts, mtime_ms, workspace_id)
+    VALUES (
+      ${project.slug}, ${project.phase ?? 'staging'}, ${issueId},
+      ${body.linkedFeatureId ?? null}, ${payload.title}, ${payload.severity},
+      'validator', ${JSON.stringify(payload)},
+      ${ts}, ${ts}, ${activeWorkspaceId()}
+    )
+    ON CONFLICT (harness_slug, phase, issue_id) DO NOTHING
+  `;
+  void notifySyncInvalidate('harnessPendingIssues.byHarness', { harnessSlug: project.slug });
   return c.json({ ok: true });
 });
 
 harness.post('/:slug/issues/:id/update', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
   const body = await c.req.json().catch(() => ({}));
@@ -4558,10 +5394,10 @@ harness.post('/:slug/issues/:id/update', async (c) => {
 // algorithm the curator runs, then truncate the jsonl. Useful when a human
 // wants to surface fresh findings without waiting for the next DONE/ESCALATE.
 harness.post('/:slug/triage', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
 
-  const pending = readPendingIssues(project);
+  const pending = await readPendingIssues(project);
   if (pending.length === 0) return c.json({ ok: true, merged: 0, deduped: 0 });
 
   const file = loadIssuesOrSeed(project);
@@ -4607,10 +5443,21 @@ harness.post('/:slug/triage', async (c) => {
   }
 
   await saveIssues(project, file);
-  // Truncate the validator's pending feed only when it actually exists. The
-  // bootstrap-empty write was a remnant of the pre-DB flow; the file is
-  // append-only by the validator and shouldn't be created here. If it never
-  // existed, the post-merge state is "empty queue" by absence — same effect.
+  // Clear the pending queue: DELETE rows from harness_pending_issues +
+  // truncate the on-disk feed for any bash run.sh that might still
+  // append to it. The watcher will mirror the empty file → DELETE
+  // (idempotent with our explicit DELETE here).
+  {
+    const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
+    await ensureHarnessPendingIssuesTable();
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    await sql`
+      DELETE FROM harness_shared.harness_pending_issues
+       WHERE harness_slug = ${project.slug}
+         AND phase        = ${project.phase ?? 'staging'}
+    `;
+    void notifySyncInvalidate('harnessPendingIssues.byHarness', { harnessSlug: project.slug });
+  }
   const pendingPath = join(harnessDir(project), 'pending-issues.jsonl');
   if (existsSync(pendingPath)) await writeFile(pendingPath, '', 'utf8');
 
@@ -4618,7 +5465,7 @@ harness.post('/:slug/triage', async (c) => {
 });
 
 harness.post('/:slug/issues/:id/promote', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id');
   const file = loadIssuesOrSeed(project);
@@ -4626,33 +5473,48 @@ harness.post('/:slug/issues/:id/promote', async (c) => {
   if (!issue) return c.json({ error: 'issue not found' }, 404);
   if (issue.linkedFeatureId) return c.json({ error: 'already linked to ' + issue.linkedFeatureId }, 400);
 
-  // Append a F-FIX-### entry to features.json
-  const featuresPath = join(harnessDir(project), 'features.json');
-  let featuresDoc: { features: any[] };
-  try {
-    featuresDoc = JSON.parse(readFileSync(featuresPath, 'utf8'));
-  } catch {
-    featuresDoc = { features: [] };
-  }
-  const existingFixIds = featuresDoc.features
-    .map((f: any) => (typeof f.id === 'string' && f.id.startsWith('F-FIX-') ? Number(f.id.slice(6)) : 0))
+  // Append a F-FIX-### entry to harness_features (PG). Other feature
+  // endpoints (POST /:slug/features, bulk upsert, etc) already use the
+  // table; this promotion path was the last operator endpoint still
+  // doing a direct features.json read-modify-write.
+  const dbc = dbcFor(project.slug);
+  const fixRows = await dbc.prepare(`
+    SELECT feature_id FROM harness_features
+     WHERE harness_slug = ? AND feature_id LIKE 'F-FIX-%'
+  `).all(project.slug) as Array<{ feature_id: string }>;
+  const existingFixIds = fixRows
+    .map((r) => Number(r.feature_id.slice(6)))
     .filter((n) => Number.isFinite(n));
   const nextFixId = (existingFixIds.length ? Math.max(...existingFixIds) : 0) + 1;
   const featureId = `F-FIX-${String(nextFixId).padStart(3, '0')}`;
-
+  const claims = issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [];
+  const featureNotes = [issue.evidence ?? '', issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '']
+    .filter(Boolean)
+    .join('\n\n');
+  const featureTs = Date.now();
+  await dbc.prepare(`
+    INSERT INTO harness_features
+      (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
+       kind, project_id, expected_cost_cents, tags, needs_human_review,
+       ts, created_ts, updated_ts)
+    VALUES (?, ?, ?, NULL, 'todo', 0, ?, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?)
+  `).run(
+    project.slug, featureId, issue.title,
+    claims.length ? JSON.stringify(claims) : null,
+    featureNotes || null,
+    JSON.stringify({ sourceIssueId: issue.id }),
+    featureTs, featureTs, featureTs,
+  );
+  auditFeatureChange(project.slug, featureId, '__created', null, { id: featureId, title: issue.title, sourceIssueId: issue.id }, c.req.header('x-actor') ?? 'issue-promote');
   const newFeature = {
     id: featureId,
     title: issue.title,
-    claims: issue.codePointer ? [`VAL-FIX-${nextFixId} @ ${issue.codePointer}`] : [],
+    claims,
     status: 'todo',
     attempts: 0,
     sourceIssueId: issue.id,
-    notes: [issue.evidence ?? '', issue.suggestedFix ? `Suggested fix: ${issue.suggestedFix}` : '']
-      .filter(Boolean)
-      .join('\n\n'),
+    notes: featureNotes,
   };
-  featuresDoc.features.push(newFeature);
-  await writeFile(featuresPath, JSON.stringify(featuresDoc, null, 2), 'utf8');
 
   issue.linkedFeatureId = featureId;
   issue.status = 'fixing';
@@ -4686,56 +5548,87 @@ function reviewsDir(project: ProjectEntry): string {
   return join(harnessDir(project), 'pending-reviews');
 }
 
-harness.get('/:slug/reviews', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const dir = reviewsDir(project);
-  if (!existsSync(dir)) return c.json({ reviews: [] });
-  const reviews: PendingReview[] = [];
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith('.json')) continue;
-    try {
-      const raw = readFileSync(join(dir, f), 'utf8');
-      const obj = JSON.parse(raw) as PendingReview;
-      reviews.push(obj);
-    } catch {}
-  }
-  reviews.sort((a, b) => b.ts - a.ts);
+harness.get('/:slug/reviews', async (c) => {
+  const slug = c.req.param('slug');
+  const phase = phasePhaseLabel(c.req.query('phase'));
+  // PG canonical (mirrored from .harness/pending-reviews/*.json by
+  // harness-fs-watcher.ts). Filtering out resolved=true matches the
+  // legacy FS behavior where resolved reviews moved to a subdir.
+  const { sql } = getOrgPg();
+  const rows = await sql<{ payload: PendingReview; review_id: string; resolved: boolean; ts: number }[]>`
+    SELECT payload, review_id, resolved, ts
+      FROM harness_shared.pending_reviews
+     WHERE harness_slug = ${slug}
+       AND phase = ${phase}
+       AND resolved = false
+     ORDER BY ts DESC
+  `;
+  const reviews = rows.map((r) => ({ ...r.payload, id: r.review_id, resolved: r.resolved, ts: r.ts }));
   return c.json({ reviews });
 });
 
-harness.get('/:slug/reviews/:id', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
+harness.get('/:slug/reviews/:id', async (c) => {
+  const slug = c.req.param('slug');
+  const phase = phasePhaseLabel(c.req.query('phase'));
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
-  const path = join(reviewsDir(project), `${id}.json`);
-  const raw = safeRead(path);
-  if (!raw) return c.json({ error: 'not found' }, 404);
-  return c.json(JSON.parse(raw));
+  const { sql } = getOrgPg();
+  const rows = await sql<{ payload: PendingReview; review_id: string; resolved: boolean; ts: number }[]>`
+    SELECT payload, review_id, resolved, ts
+      FROM harness_shared.pending_reviews
+     WHERE harness_slug = ${slug}
+       AND phase = ${phase}
+       AND review_id = ${id}
+     LIMIT 1
+  `;
+  if (!rows.length) return c.json({ error: 'not found' }, 404);
+  return c.json({ ...rows[0].payload, id: rows[0].review_id, resolved: rows[0].resolved, ts: rows[0].ts });
 });
 
 harness.post('/:slug/reviews/:id/resolve', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const slug = c.req.param('slug');
+  const phase = phasePhaseLabel(c.req.query('phase'));
+  const project = await resolvePhasedProject(slug, phase);
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
   const body = await c.req.json() as { response?: string; accept?: boolean };
-  const path = join(reviewsDir(project), `${id}.json`);
-  const raw = safeRead(path);
-  if (!raw) return c.json({ error: 'not found' }, 404);
-  const review = JSON.parse(raw) as PendingReview;
+
+  // PG canonical: read from the mirrored row.
+  const { sql } = getOrgPg();
+  const rows = await sql<{ payload: PendingReview }[]>`
+    SELECT payload
+      FROM harness_shared.pending_reviews
+     WHERE harness_slug = ${slug} AND phase = ${phase} AND review_id = ${id}
+     LIMIT 1
+  `;
+  if (!rows.length) return c.json({ error: 'not found' }, 404);
+  const review: PendingReview = { ...rows[0].payload };
   review.resolved = true;
   review.userResponse = body.response ?? (body.accept ? review.recommendedAnswer : '');
 
-  // Append the response to supervisor-notes.md so the harness picks it up.
+  // Update PG immediately so GET /reviews and Zero subscriptions reflect
+  // the resolution before the watcher catches the FS move.
+  await sql`
+    UPDATE harness_shared.pending_reviews
+       SET resolved = true, payload = ${JSON.stringify(review)}::jsonb
+     WHERE harness_slug = ${slug} AND phase = ${phase} AND review_id = ${id}
+  `;
+
+  // Append the response to supervisor-notes.md (PG canonical, FS mirror).
   const notesPath = join(harnessDir(project), 'supervisor-notes.md');
   const block = `\n## human ${new Date().toISOString()}\n\nReview ${review.id} resolved for ${review.featureId} (${review.kind}):\n\n> ${review.question}\n\nAnswer: ${review.userResponse || '(no text)'}\n`;
-  await appendFile(notesPath, block, 'utf8');
+  const { appendTextArtifact } = await import('@/lib/text-artifacts');
+  await appendTextArtifact(slug, 'supervisor-notes.md', block);
+  try { await appendFile(notesPath, block, 'utf8'); } catch {}
 
-  // Move the review to pending-reviews/resolved/ so GET /reviews stops listing it.
-  const resolvedDir = join(reviewsDir(project), 'resolved');
-  await mkdir(resolvedDir, { recursive: true });
-  await writeFile(join(resolvedDir, `${id}.json`), JSON.stringify(review, null, 2), 'utf8');
-  try { await unlink(path); } catch {}
+  // Mirror to FS for backward-compat: orchestrator/architect may still
+  // read .harness/pending-reviews/. Overwrite the file in place with
+  // resolved:true rather than move+delete — the watcher's deleteReview
+  // is unconditional and would clear our just-updated PG row. The
+  // watcher's upsertReview will re-mirror the resolved=true state.
+  const path = join(reviewsDir(project), `${id}.json`);
+  if (existsSync(path)) {
+    await writeFile(path, JSON.stringify(review, null, 2), 'utf8');
+  }
 
   // Unblock the feature in features.json so the orchestrator can pick it up again.
   if (review.featureId) {
@@ -4757,12 +5650,13 @@ harness.post('/:slug/reviews/:id/resolve', async (c) => {
   return c.json({ ok: true, review });
 });
 
-// Architect chat — streams a single turn via `claude -p`.
+// Architect chat — streams a single turn via runClaudeChat (backend-aware:
+// `omp -p` by default, `claude -p` when AGENT_BACKEND=claude-code).
 // Body: { history: [{role:'user'|'assistant',content:string}], message: string, reviewId?: string }
 // Response: text/event-stream; events are `delta` with a text chunk, then `done`.
 
 harness.post('/:slug/architect/chat', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json() as {
     history?: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -4778,7 +5672,15 @@ harness.post('/:slug/architect/chat', async (c) => {
   // stream text and, when ready, emit a diff block with a special marker.
   const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
   const contract = safeRead(join(harnessDir(project), 'validation-contract.md')) ?? '';
-  const features = safeRead(join(harnessDir(project), 'features.json')) ?? '';
+  // Features live in Postgres (harness_features) post-2026-04-27 migration.
+  // Render a compact summary for the prompt — same shape the agents used to
+  // read out of features.json, just sourced from the DB now.
+  const featuresList = await parseFeatures(project);
+  const features = JSON.stringify(
+    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status, attempts: f.attempts })) },
+    null,
+    2,
+  );
   const issues = safeRead(join(harnessDir(project), 'issues.md')) ?? '';
   let reviewContext = '';
   if (body.reviewId) {
@@ -4799,7 +5701,7 @@ ${spec.slice(0, 8000)}
 ## validation-contract.md
 ${contract.slice(0, 6000)}
 
-## features.json (summary)
+## features (harness_features in Postgres — summary)
 ${features.slice(0, 3000)}
 
 ## issues.md tail
@@ -4836,77 +5738,37 @@ Rules for proposals:
     'Architect:',
   ].join('\n\n');
 
-  // Stream the response via spawn('claude', ['-p', '--stream-json']).
-  return new Response(new ReadableStream({
-    async start(controller) {
-      const enc = new TextEncoder();
-      const send = (event: string, data: string) => {
-        controller.enqueue(enc.encode(`event: ${event}\ndata: ${data.replace(/\n/g, '\\n')}\n\n`));
-      };
+  // Stream the response via runClaudeChat (backend-aware: claude-code
+  // or omp). Uses Hono's streamSSE for write-time flushing — the prior
+  // raw-ReadableStream approach buffered the whole response under
+  // Next/Turbopack, blocking client receipt until omp finished (60s+
+  // for an architect-sized prompt). Matches the oracle/chat shape.
+  return streamSSE(c, async (stream) => {
+    const send = (event: string, data: string) =>
+      stream.writeSSE({ event, data: data.replace(/\n/g, '\\n') });
 
-      const claudeBin = process.env.CLAUDE_BIN ?? 'claude';
-      const args = ['-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose'];
-      const child = spawn(claudeBin, args, {
+    try {
+      for await (const ev of runClaudeChat({
+        promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
         cwd: project.path,
-        env: { ...process.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-
-      // Send the prompt on stdin. Claude -p takes the prompt on stdin when
-      // piped, so we combine system + user into a single message.
-      child.stdin.write(`${systemPrompt}\n\n---\n\n${fullPrompt}\n`);
-      child.stdin.end();
-
-      let buf = '';
-      let errBuf = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf8');
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          try {
-            const obj = JSON.parse(line);
-            // stream-json from claude emits various event shapes. We surface
-            // incremental assistant text_deltas to the browser.
-            if (obj.type === 'stream_event' && obj.event?.type === 'content_block_delta') {
-              const t = obj.event?.delta?.text;
-              if (typeof t === 'string') send('delta', t);
-            } else if (obj.type === 'assistant' && obj.message?.content) {
-              for (const block of obj.message.content) {
-                if (block.type === 'text') send('delta', block.text);
-              }
-            } else if (obj.type === 'result') {
-              send('done', JSON.stringify({ cost: obj.total_cost_usd, input: obj.usage?.input_tokens, output: obj.usage?.output_tokens }));
-            }
-          } catch {}
+      })) {
+        if (ev.type === 'delta') await send('delta', ev.text);
+        else if (ev.type === 'result') {
+          await send('done', JSON.stringify({ cost: ev.costUsd, input: ev.tokensIn, output: ev.tokensOut }));
+        } else if (ev.type === 'error') {
+          await send('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
         }
-      });
-      child.stderr.on('data', (chunk: Buffer) => { errBuf += chunk.toString('utf8'); });
-      child.on('error', (err) => {
-        send('error', `spawn: ${err.message}`);
-        controller.close();
-      });
-      child.on('close', (code) => {
-        if (code !== 0 && errBuf) send('error', errBuf.slice(0, 500));
-        send('done', '{}');
-        controller.close();
-      });
-    },
-  }), {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      'connection': 'keep-alive',
-    },
+      }
+    } catch (err) {
+      await send('error', `architect chat failed: ${(err as Error).message}`);
+    }
   });
 });
 
 // Accept an Architect-proposed patch — write it to the target file.
 // Body: { target: 'SPEC.md' | 'contract' | 'supervisor-notes', content: string }
 harness.post('/:slug/architect/apply', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json() as { target: string; content: string };
   if (!body.content) return c.json({ error: 'content required' }, 400);
@@ -4918,7 +5780,9 @@ harness.post('/:slug/architect/apply', async (c) => {
     case 'supervisor-notes': {
       const notesPath = join(harnessDir(project), 'supervisor-notes.md');
       const block = `\n## architect ${new Date().toISOString()}\n\n${body.content}\n`;
-      await appendFile(notesPath, block, 'utf8');
+      const { appendTextArtifact } = await import('@/lib/text-artifacts');
+      await appendTextArtifact(c.req.param('slug'), 'supervisor-notes.md', block);
+      try { await appendFile(notesPath, block, 'utf8'); } catch {}
       return c.json({ ok: true, appended: 'supervisor-notes.md' });
     }
     default: return c.json({ error: 'unknown target' }, 400);
@@ -4938,26 +5802,88 @@ function brainstormPath(project: ProjectEntry): string {
 function brainstormCanvasPath(project: ProjectEntry): string {
   return join(harnessDir(project), 'brainstorm.canvas.json');
 }
+function brainstormMindmapPath(project: ProjectEntry): string {
+  return join(harnessDir(project), 'brainstorm.mindmap.json');
+}
 
-harness.get('/:slug/brainstorm', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+// Phase 2 (Migration 033): brainstorm.{md,canvas.json,mindmap.json} are now
+// PG-canonical via harness_shared.harness_brainstorm. Filesystem is a
+// best-effort mirror written on each PUT for editor convenience. If the
+// PG row exists it's authoritative; otherwise we fall back to the FS file
+// (legacy harnesses pre-Migration-033 may still have FS-only data).
+async function loadBrainstorm(slug: string): Promise<{ content: string; canvas: unknown; mindmap: unknown }> {
+  const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
+  await ensureBrainstormTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const rows = await sql<{ content: string; canvas: unknown; mindmap: unknown }[]>`
+    SELECT content, canvas, mindmap FROM harness_shared.harness_brainstorm
+     WHERE harness_slug = ${slug} AND phase = 'staging' LIMIT 1
+  `;
+  return rows[0] ?? { content: '', canvas: null, mindmap: null };
+}
+
+async function saveBrainstorm(slug: string, patch: { content?: string; canvas?: unknown; mindmap?: unknown }): Promise<void> {
+  const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
+  await ensureBrainstormTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const now = Date.now();
+  // Use JSON.stringify + ::jsonb cast instead of sql.json(): the latter
+  // throws 'Received an instance of Object' inside postgres-js 3.4.9 when
+  // the value contains nested objects (the React Flow tree has nodes
+  // with `measured`/`position`/`data` sub-objects). Explicit serialize +
+  // cast is unambiguous.
+  const canvasJson = patch.canvas !== undefined ? JSON.stringify(patch.canvas) : null;
+  const mindmapJson = patch.mindmap !== undefined ? JSON.stringify(patch.mindmap) : null;
+  await sql`
+    INSERT INTO harness_shared.harness_brainstorm (harness_slug, phase, content, canvas, mindmap, updated_at)
+    VALUES (
+      ${slug}, 'staging',
+      ${patch.content ?? ''},
+      ${canvasJson}::jsonb,
+      ${mindmapJson}::jsonb,
+      ${now}
+    )
+    ON CONFLICT (harness_slug, phase) DO UPDATE SET
+      content    = COALESCE(${patch.content ?? null}, harness_brainstorm.content),
+      canvas     = COALESCE(${canvasJson}::jsonb, harness_brainstorm.canvas),
+      mindmap    = COALESCE(${mindmapJson}::jsonb, harness_brainstorm.mindmap),
+      updated_at = ${now}
+  `;
+  const { notifySyncInvalidate } = await import('@/lib/sync-sse');
+  await notifySyncInvalidate('harnessBrainstorm.byHarness', { harnessSlug: slug });
+}
+
+harness.get('/:slug/brainstorm', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const content = safeRead(brainstormPath(project)) ?? '';
+  const row = await loadBrainstorm(slug);
+  // Fallback to FS for harnesses that pre-date Migration 033 and have not
+  // yet had a PUT to seed PG.
+  const content = row.content || (safeRead(brainstormPath(project)) ?? '');
   return c.json({ content });
 });
 
 harness.put('/:slug/brainstorm', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  await writeFile(brainstormPath(project), body.content, 'utf8');
+  await saveBrainstorm(slug, { content: body.content });
+  // FS mirror — best-effort. If the project directory has been moved
+  // (the very thing PG-canonical was designed to survive), this throws
+  // and we just skip; PG already has the data.
+  await writeFile(brainstormPath(project), body.content, 'utf8').catch(() => {});
   return c.json({ ok: true, bytes: body.content.length });
 });
 
-harness.get('/:slug/brainstorm-canvas', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/brainstorm-canvas', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
+  const row = await loadBrainstorm(slug);
+  if (row.canvas) return c.json({ scene: row.canvas });
   const raw = safeRead(brainstormCanvasPath(project));
   if (!raw) return c.json({ scene: null });
   try { return c.json({ scene: JSON.parse(raw) }); }
@@ -4965,18 +5891,43 @@ harness.get('/:slug/brainstorm-canvas', (c) => {
 });
 
 harness.put('/:slug/brainstorm-canvas', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (!body.scene) return c.json({ error: 'scene required' }, 400);
-  await writeFile(brainstormCanvasPath(project), JSON.stringify(body.scene, null, 2), 'utf8');
+  await saveBrainstorm(slug, { canvas: body.scene });
+  await writeFile(brainstormCanvasPath(project), JSON.stringify(body.scene, null, 2), 'utf8').catch(() => {});
+  return c.json({ ok: true });
+});
+
+harness.get('/:slug/brainstorm-mindmap', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const row = await loadBrainstorm(slug);
+  if (row.mindmap) return c.json({ tree: row.mindmap });
+  const raw = safeRead(brainstormMindmapPath(project));
+  if (!raw) return c.json({ tree: null });
+  try { return c.json({ tree: JSON.parse(raw) }); }
+  catch { return c.json({ tree: null }); }
+});
+
+harness.put('/:slug/brainstorm-mindmap', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  if (!body.tree) return c.json({ error: 'tree required' }, 400);
+  await saveBrainstorm(slug, { mindmap: body.tree });
+  await writeFile(brainstormMindmapPath(project), JSON.stringify(body.tree, null, 2), 'utf8').catch(() => {});
   return c.json({ ok: true });
 });
 
 // Brainstorm chat — reuses the same Claude CLI pipe as architect/chat
 // but with a different system prompt focused on expansive ideation.
 harness.post('/:slug/brainstorm/chat', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json() as {
     history?: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -4988,7 +5939,13 @@ harness.post('/:slug/brainstorm/chat', async (c) => {
 
   const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
   const brainstorm = safeRead(brainstormPath(project)) ?? '';
-  const features = safeRead(join(harnessDir(project), 'features.json')) ?? '';
+  // Same as the Architect chat: features live in harness_features (PG).
+  const featuresList = await parseFeatures(project);
+  const features = JSON.stringify(
+    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status })) },
+    null,
+    2,
+  );
 
   const systemPrompt = `You are a BRAINSTORM PARTNER for a software project. You're chatting with the human supervisor of a coding harness to help them explore ideas before they become features.
 
@@ -4999,7 +5956,7 @@ Current state:
 ## SPEC.md
 ${spec.slice(0, 6000)}
 
-## Existing features.json (summary)
+## Existing features (harness_features in Postgres — summary)
 ${features.slice(0, 2000)}
 
 ## Brainstorm scratchpad (what the user is working on)
@@ -5008,7 +5965,7 @@ ${brainstorm.slice(0, 8000)}
 Rules:
 - Lead with ideas, tradeoffs, analogues from other domains. Be concrete.
 - When an idea matures enough to be acted on, emit a fenced action block:
-  - \`\`\`promote:feature — append to features.json as a new todo feature. Put a short title on the first line, then markdown body explaining intent + optional claims.
+  - \`\`\`promote:feature — create a new todo feature in harness_features. Put a short title on the first line, then markdown body explaining intent + optional claims.
   - \`\`\`promote:spec — insert into SPEC.md under a "## Brainstormed" section.
   - \`\`\`promote:issue — file as an issue in issues.json. First line is title; rest is evidence/context.
 - Don't promote too eagerly. Wait until the user signals the idea is ready, or ask them first.
@@ -5021,70 +5978,34 @@ Rules:
     'Partner:',
   ].join('\n\n');
 
-  return new Response(new ReadableStream({
-    async start(controller) {
-      const enc = new TextEncoder();
-      const send = (event: string, data: string) => {
-        controller.enqueue(enc.encode(`event: ${event}\ndata: ${data.replace(/\n/g, '\\n')}\n\n`));
-      };
-      const claudeBin = process.env.CLAUDE_BIN ?? 'claude';
-      const args = ['-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose'];
-      const child = spawn(claudeBin, args, {
-        cwd: project.path,
-        env: { ...process.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      child.stdin.write(`${systemPrompt}\n\n---\n\n${fullPrompt}\n`);
-      child.stdin.end();
+  // Same fix as architect chat above: streamSSE flushes per-write,
+  // raw ReadableStream buffers under Next/Turbopack.
+  return streamSSE(c, async (stream) => {
+    const send = (event: string, data: string) =>
+      stream.writeSSE({ event, data: data.replace(/\n/g, '\\n') });
 
-      let buf = '';
-      let errBuf = '';
-      child.stdout.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf8');
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          try {
-            const obj = JSON.parse(line);
-            if (obj.type === 'stream_event' && obj.event?.type === 'content_block_delta') {
-              const t = obj.event?.delta?.text;
-              if (typeof t === 'string') send('delta', t);
-            } else if (obj.type === 'assistant' && obj.message?.content) {
-              for (const block of obj.message.content) {
-                if (block.type === 'text') send('delta', block.text);
-              }
-            } else if (obj.type === 'result') {
-              send('done', JSON.stringify({ cost: obj.total_cost_usd }));
-            }
-          } catch {}
+    try {
+      for await (const ev of runClaudeChat({
+        promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
+        cwd: project.path,
+      })) {
+        if (ev.type === 'delta') await send('delta', ev.text);
+        else if (ev.type === 'result') {
+          await send('done', JSON.stringify({ cost: ev.costUsd }));
+        } else if (ev.type === 'error') {
+          await send('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
         }
-      });
-      child.stderr.on('data', (chunk: Buffer) => { errBuf += chunk.toString('utf8'); });
-      child.on('error', (err) => {
-        send('error', `spawn: ${err.message}`);
-        controller.close();
-      });
-      child.on('close', (code) => {
-        if (code !== 0 && errBuf) send('error', errBuf.slice(0, 500));
-        send('done', '{}');
-        controller.close();
-      });
-    },
-  }), {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache',
-      'connection': 'keep-alive',
-    },
+      }
+    } catch (err) {
+      await send('error', `brainstorm chat failed: ${(err as Error).message}`);
+    }
   });
 });
 
 // Brainstorm promote — takes content from chat or a selection and
 // routes it into features.json, SPEC.md, or issues.json.
 harness.post('/:slug/brainstorm/promote', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   const target = body.target as 'feature' | 'spec' | 'issue';
@@ -5092,26 +6013,37 @@ harness.post('/:slug/brainstorm/promote', async (c) => {
   if (!target || !content.trim()) return c.json({ error: 'target + content required' }, 400);
 
   if (target === 'feature') {
-    const featuresPath = join(harnessDir(project), 'features.json');
-    let doc: { features: any[] };
-    try { doc = JSON.parse(readFileSync(featuresPath, 'utf8')); }
-    catch { doc = { features: [] }; }
-    const existingIdeaIds = doc.features
-      .map((f: any) => (typeof f.id === 'string' && f.id.startsWith('F-IDEA-') ? Number(f.id.slice(7)) : 0))
+    // PG-canonical: query existing F-IDEA-* ids from harness_features
+    // and INSERT a new row. Same shape as the issue-promote path
+    // (commit fcffc94) — every other feature endpoint goes through
+    // harness_features.
+    const dbc = dbcFor(project.slug);
+    const ideaRows = await dbc.prepare(`
+      SELECT feature_id FROM harness_features
+       WHERE harness_slug = ? AND feature_id LIKE 'F-IDEA-%'
+    `).all(project.slug) as Array<{ feature_id: string }>;
+    const existingIdeaIds = ideaRows
+      .map((r) => Number(r.feature_id.slice(7)))
       .filter((n) => Number.isFinite(n));
     const n = (existingIdeaIds.length ? Math.max(...existingIdeaIds) : 0) + 1;
     const id = `F-IDEA-${String(n).padStart(3, '0')}`;
     const [firstLine, ...rest] = content.trim().split('\n');
-    doc.features.push({
-      id,
-      title: firstLine.trim().slice(0, 200),
-      claims: [],
-      status: 'todo',
-      attempts: 0,
-      source: 'brainstorm',
-      notes: rest.join('\n').trim(),
-    });
-    await writeFile(featuresPath, JSON.stringify(doc, null, 2), 'utf8');
+    const title = firstLine.trim().slice(0, 200);
+    const notes = rest.join('\n').trim() || null;
+    const ts = Date.now();
+    await dbc.prepare(`
+      INSERT INTO harness_features
+        (harness_slug, feature_id, title, summary, status, attempts, claims, notes, metadata,
+         kind, project_id, expected_cost_cents, tags, needs_human_review,
+         ts, created_ts, updated_ts)
+      VALUES (?, ?, ?, NULL, 'todo', 0, NULL, ?, ?, NULL, NULL, NULL, NULL, false, ?, ?, ?)
+    `).run(
+      project.slug, id, title,
+      notes,
+      JSON.stringify({ source: 'brainstorm' }),
+      ts, ts, ts,
+    );
+    auditFeatureChange(project.slug, id, '__created', null, { id, title, source: 'brainstorm' }, c.req.header('x-actor') ?? 'brainstorm-promote');
     return c.json({ ok: true, id, target });
   }
 
@@ -5253,8 +6185,8 @@ function isHarnessAlive(project: ProjectEntry): boolean {
   return false;
 }
 
-harness.get('/:slug/memory', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/memory', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
 
   // Extras from config.json.memory.files[] (optional); merge non-duplicate paths
@@ -5310,23 +6242,31 @@ harness.get('/:slug/memory', (c) => {
   return c.json({ alive, files });
 });
 
-harness.get('/:slug/memory-file', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/memory-file', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const path = c.req.query('path');
   if (!path) return c.json({ error: 'path required' }, 400);
   const r = resolveMemoryPath(project, path);
   if (!r) return c.json({ error: 'invalid path' }, 400);
   const { tier, meta } = detectTier(path);
-  let content: string | null = null;
+
+  // PG canonical (Migration 035) with FS fallback for harnesses pre-035.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
+  let content: string | null = await loadTextArtifact(slug, path);
   let mtimeMs: number | null = null;
   let size = 0;
-  try {
-    content = readFileSync(r.abs, 'utf8');
-    const s = statSync(r.abs);
-    mtimeMs = s.mtimeMs;
-    size = s.size;
-  } catch {}
+  if (content === null) {
+    try {
+      content = readFileSync(r.abs, 'utf8');
+      const s = statSync(r.abs);
+      mtimeMs = s.mtimeMs;
+      size = s.size;
+    } catch {}
+  } else {
+    size = Buffer.byteLength(content, 'utf8');
+  }
   return c.json({
     path,
     content,
@@ -5339,7 +6279,7 @@ harness.get('/:slug/memory-file', (c) => {
 });
 
 harness.put('/:slug/memory-file', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({})) as { path?: string; content?: string };
   if (typeof body.path !== 'string') return c.json({ error: 'path required' }, 400);
@@ -5362,14 +6302,19 @@ harness.put('/:slug/memory-file', async (c) => {
     catch (e: any) { return c.json({ error: `invalid JSON: ${e.message}` }, 400); }
   }
 
-  // Ensure parent dir exists
-  const dir = r.abs.split('/').slice(0, -1).join('/');
-  await mkdir(dir, { recursive: true });
+  // PG canonical (Migration 035).
+  const slug = c.req.param('slug');
+  const { saveTextArtifact } = await import('@/lib/text-artifacts');
+  await saveTextArtifact(slug, body.path, body.content);
 
-  // Atomic write
-  const tmp = `${r.abs}.tmp.${Date.now()}`;
-  await writeFile(tmp, body.content, 'utf8');
-  await rename(tmp, r.abs);
+  // FS mirror — best-effort.
+  try {
+    const dir = r.abs.split('/').slice(0, -1).join('/');
+    await mkdir(dir, { recursive: true });
+    const tmp = `${r.abs}.tmp.${Date.now()}`;
+    await writeFile(tmp, body.content, 'utf8');
+    await rename(tmp, r.abs);
+  } catch { /* mirror is best-effort */ }
 
   return c.json({ ok: true, path: body.path, tier, wroteBytes: body.content.length });
 });
@@ -5380,15 +6325,19 @@ function mcpPath(project: ProjectEntry): string {
   return join(project.path, '.mcp.json');
 }
 
-harness.get('/:slug/mcp', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/mcp', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const content = safeRead(mcpPath(project)) ?? '';
-  return c.json({ content });
+  // PG-canonical (Phase 0d). Disk fallback for harnesses pre-migration.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
+  const fromPg = await loadTextArtifact(slug, 'mcp.json');
+  return c.json({ content: fromPg ?? safeRead(mcpPath(project)) ?? '' });
 });
 
 harness.put('/:slug/mcp', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
@@ -5400,9 +6349,15 @@ harness.put('/:slug/mcp', async (c) => {
   const path = mcpPath(project);
   if (!body.content.trim()) {
     try { await unlink(path); } catch {}
+    // Also clear PG row to keep the two in sync.
+    const { saveTextArtifact } = await import('@/lib/text-artifacts');
+    await saveTextArtifact(slug, 'mcp.json', '', { customDiskPath: path });
     return c.json({ ok: true, deleted: true });
   }
-  await writeFile(path, body.content, 'utf8');
+  // PG-canonical with custom mirror — .mcp.json lives at project root,
+  // not under .harness/ (the default text-artifacts mirror location).
+  const { saveTextArtifact } = await import('@/lib/text-artifacts');
+  await saveTextArtifact(slug, 'mcp.json', body.content, { customDiskPath: path });
   return c.json({ ok: true });
 });
 
@@ -5417,8 +6372,8 @@ function safeName(name: string): string | null {
   return name.replace(/\.md$/i, '') + '.md';
 }
 
-harness.get('/:slug/skills', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/skills', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const dir = skillsDir(project);
   let files: string[] = [];
@@ -5430,8 +6385,8 @@ harness.get('/:slug/skills', (c) => {
   return c.json({ skills: files });
 });
 
-harness.get('/:slug/skills/:name', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/skills/:name', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = safeName(c.req.param('name'));
   if (!name) return c.json({ error: 'bad name' }, 400);
@@ -5440,7 +6395,7 @@ harness.get('/:slug/skills/:name', (c) => {
 });
 
 harness.put('/:slug/skills/:name', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = safeName(c.req.param('name'));
   if (!name) return c.json({ error: 'bad name' }, 400);
@@ -5456,7 +6411,7 @@ harness.put('/:slug/skills/:name', async (c) => {
 });
 
 harness.delete('/:slug/skills/:name', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const name = safeName(c.req.param('name'));
   if (!name) return c.json({ error: 'bad name' }, 400);
@@ -5470,30 +6425,40 @@ function supervisorPath(project: ProjectEntry): string {
   return join(harnessDir(project), 'supervisor-notes.md');
 }
 
-harness.get('/:slug/supervisor-notes', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/supervisor-notes', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  return c.json({ content: safeRead(supervisorPath(project)) ?? '' });
+  // PUT/POST/append already route through saveTextArtifact (round 18 fix).
+  // GET prefers PG; falls back to disk for harnesses pre-migration.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
+  const fromPg = await loadTextArtifact(slug, 'supervisor-notes.md');
+  return c.json({ content: fromPg ?? safeRead(supervisorPath(project)) ?? '' });
 });
 
 harness.put('/:slug/supervisor-notes', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-  await writeFile(supervisorPath(project), body.content, 'utf8');
+  // Route via text-artifacts so PG and disk stay in sync (the older
+  // direct writeFile path bypassed PG; round 18 fix).
+  const { saveTextArtifact } = await import('@/lib/text-artifacts');
+  await saveTextArtifact(c.req.param('slug'), 'supervisor-notes.md', body.content);
   return c.json({ ok: true });
 });
 
 harness.post('/:slug/supervisor-notes/append', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   const text = typeof body.text === 'string' ? body.text.trim() : '';
   if (!text) return c.json({ error: 'text required' }, 400);
   const speaker = typeof body.by === 'string' && body.by.trim() ? body.by.trim() : 'human';
   const block = `\n## ${speaker} ${new Date().toISOString()}\n\n${text}\n`;
-  await appendFile(supervisorPath(project), block, 'utf8');
+  // Route via text-artifacts (PG canonical, disk mirror).
+  const { appendTextArtifact } = await import('@/lib/text-artifacts');
+  await appendTextArtifact(c.req.param('slug'), 'supervisor-notes.md', block);
   return c.json({ ok: true });
 });
 
@@ -5541,8 +6506,8 @@ function safeRole(role: string): string | null {
   return role;
 }
 
-harness.get('/:slug/prompts', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/prompts', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const dir = promptsDir(project);
   let overrides: string[] = [];
@@ -5558,8 +6523,8 @@ harness.get('/:slug/prompts', (c) => {
   return c.json({ roles: getKnownRoles(), overrides });
 });
 
-harness.get('/:slug/prompts/:role', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/prompts/:role', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const role = safeRole(c.req.param('role'));
   if (!role) return c.json({ error: 'unknown role' }, 400);
@@ -5574,7 +6539,7 @@ harness.get('/:slug/prompts/:role', (c) => {
 });
 
 harness.put('/:slug/prompts/:role', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const role = safeRole(c.req.param('role'));
   if (!role) return c.json({ error: 'unknown role' }, 400);
@@ -5602,7 +6567,7 @@ harness.put('/:slug/prompts/:role', async (c) => {
 });
 
 harness.delete('/:slug/prompts/:role', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const role = safeRole(c.req.param('role'));
   if (!role) return c.json({ error: 'unknown role' }, 400);
@@ -5626,14 +6591,19 @@ function claudeSettingsPath(project: ProjectEntry): string {
   return join(project.path, '.claude', 'settings.json');
 }
 
-harness.get('/:slug/claude-settings', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/claude-settings', async (c) => {
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  return c.json({ content: safeRead(claudeSettingsPath(project)) ?? '' });
+  // PG-canonical (Phase 0d). Disk fallback for harnesses pre-migration.
+  const { loadTextArtifact } = await import('@/lib/text-artifacts');
+  const fromPg = await loadTextArtifact(slug, 'claude-settings.json');
+  return c.json({ content: fromPg ?? safeRead(claudeSettingsPath(project)) ?? '' });
 });
 
 harness.put('/:slug/claude-settings', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const slug = c.req.param('slug');
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json().catch(() => ({}));
   if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
@@ -5642,16 +6612,15 @@ harness.put('/:slug/claude-settings', async (c) => {
     catch (e: any) { return c.json({ error: `invalid JSON: ${e.message}` }, 400); }
   }
   const path = claudeSettingsPath(project);
-  const dir = join(project.path, '.claude');
-  if (!existsSync(dir)) {
-    const { mkdir } = await import('node:fs/promises');
-    await mkdir(dir, { recursive: true });
-  }
+  const { saveTextArtifact } = await import('@/lib/text-artifacts');
   if (!body.content.trim()) {
     try { await unlink(path); } catch {}
+    await saveTextArtifact(slug, 'claude-settings.json', '', { customDiskPath: path });
     return c.json({ ok: true, deleted: true });
   }
-  await writeFile(path, body.content, 'utf8');
+  // PG-canonical with custom mirror — .claude/settings.json lives at the
+  // project root, not under .harness/.
+  await saveTextArtifact(slug, 'claude-settings.json', body.content, { customDiskPath: path });
   return c.json({ ok: true });
 });
 
@@ -5664,14 +6633,14 @@ function envPath(project: ProjectEntry): string {
   return join(project.path, '.env');
 }
 
-harness.get('/:slug/env', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/env', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   return c.json({ content: safeRead(envPath(project)) ?? '' });
 });
 
 harness.put('/:slug/env', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const confirm = c.req.header('x-confirm-secrets');
   if (confirm !== 'yes') return c.json({ error: 'missing X-Confirm-Secrets: yes header' }, 400);
@@ -5685,8 +6654,8 @@ harness.put('/:slug/env', async (c) => {
 
 import { execFileSync } from 'node:child_process';
 
-type Phase = 'staging' | 'testing' | 'production';
-const PHASE_ORDER: Phase[] = ['staging', 'testing', 'production'];
+// Phase type imported from @/lib/harness-phases (above).
+const PHASE_ORDER: Phase[] = [...ALL_PHASES];
 
 interface PhaseInfo {
   phase: Phase;
@@ -5703,32 +6672,14 @@ interface PhaseInfo {
   promotionInFlight: string | null;
 }
 
-// Find the path for a given phase: staging = project.path, testing/prod =
-// sibling convention `<path>--<phase>` OR explicit override from config.json.
-function phasePath(project: ProjectEntry, phase: Phase): string {
-  if (phase === 'staging') return project.path;
-  // Honor config override if present
-  try {
-    const raw = safeRead(join(project.path, '.harness', 'config.json'));
-    if (raw) {
-      const cfg = JSON.parse(raw);
-      const override = cfg?.phases?.[phase]?.path;
-      if (typeof override === 'string' && override.length > 0) return override;
-    }
-  } catch {}
-  return `${project.path}--${phase}`;
-}
-
-function phasePhaseLabel(rawPhase: string | undefined): Phase {
-  if (rawPhase === 'testing' || rawPhase === 'production' || rawPhase === 'staging') return rawPhase;
-  return 'staging';
-}
+// phasePath, phasePhaseLabel, Phase moved to @/lib/harness-phases so the
+// FS watcher can share the resolution logic. See import at top of file.
 
 // Override existing resolveProject fetches so ?phase= can route to a sibling
 // worktree. The cleanest backwards-compatible path is a helper that returns
 // a "virtual project" pointing at the right worktree.
-function resolvePhasedProject(slug: string, phase: Phase | undefined): ProjectEntry | null {
-  const base = resolveProject(slug);
+async function resolvePhasedProject(slug: string, phase: Phase | undefined): Promise<ProjectEntry | null> {
+  const base = await resolveProject(slug);
   if (!base) return null;
   if (!phase || phase === 'staging') return base;
   const p = phasePath(base, phase);
@@ -5816,13 +6767,8 @@ async function computePhaseInfo(
   // cost via the shared cached helper (same as /status uses).
   const cost = aggregateCostFromLogDir(join(path, '.harness', 'logs')).cost;
 
-  // iteration from run.log
-  let iteration = 0;
-  try {
-    const runLog = tailFile(join(path, '.harness', 'logs', 'run.log'), 16 * 1024);
-    const m = [...runLog.matchAll(/── iteration (\d+) ──/g)];
-    if (m.length) iteration = Number(m[m.length - 1][1]);
-  } catch {}
+  // iteration = total pulses across all run.sh invocations.
+  const iteration = countPulsesFromRunLog(join(path, '.harness', 'logs', 'run.log'));
 
   // alive: any pre-scanned run.sh proc whose cwd lies under this phase's path.
   const procs = runShProcs ?? scanRunShProcesses();
@@ -5850,7 +6796,7 @@ async function computePhaseInfo(
 }
 
 harness.get('/:slug/phases', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   // Pre-fetch features ONCE (the slug is the same across all 3 phases —
   // querying 3× was costing 3× the per-harness PG pool's serialization
@@ -5863,7 +6809,7 @@ harness.get('/:slug/phases', async (c) => {
 });
 
 harness.post('/:slug/phases/setup', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const script = harnessPath('bin', 'setup-phases.sh');
   if (!existsSync(script)) return c.json({ error: 'setup-phases.sh missing' }, 500);
@@ -5877,7 +6823,7 @@ harness.post('/:slug/phases/setup', async (c) => {
 
 // Promotion — create a pending review in the `from` worktree.
 harness.post('/:slug/promote', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json() as { from?: string; to?: string };
   const from = phasePhaseLabel(body.from);
@@ -5922,6 +6868,27 @@ harness.post('/:slug/promote', async (c) => {
     ts,
     resolved: false,
   };
+  // PG-canonical INSERT into harness_shared.pending_reviews. Watcher
+  // would mirror disk → PG anyway; going direct skips the intermediate
+  // file + watcher debounce. The file is also written below for back-
+  // compat with bash run.sh's pre-loop scanner that reads pending-reviews/.
+  {
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const tsMs = ts * 1000;
+    await sql`
+      INSERT INTO harness_shared.pending_reviews
+        (harness_slug, phase, review_id, feature_id, kind, payload, ts, mtime_ms, workspace_id, resolved)
+      VALUES (
+        ${project.slug}, ${from}, ${id}, NULL, 'promotion',
+        ${JSON.stringify(item)}, ${tsMs}, ${tsMs}, ${activeWorkspaceId()}, false
+      )
+      ON CONFLICT (harness_slug, phase, review_id) DO UPDATE
+        SET payload  = EXCLUDED.payload,
+            mtime_ms = EXCLUDED.mtime_ms,
+            resolved = false
+    `;
+    void notifySyncInvalidate('pendingReviews.byHarness', { harnessSlug: project.slug });
+  }
   await writeFile(join(reviewsDir, `${id}.json`), JSON.stringify(item, null, 2), 'utf8');
 
   // Signal the orchestrator via supervisor-notes.md
@@ -5933,7 +6900,7 @@ harness.post('/:slug/promote', async (c) => {
 });
 
 harness.post('/:slug/promote/:id/confirm', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
 
@@ -6060,15 +7027,23 @@ harness.post('/:slug/promote/:id/confirm', async (c) => {
     }
   }
 
-  // Record in promotion-log.json (in the dest worktree)
-  const logPath = join(toPath, '.harness', 'promotion-log.json');
-  let log: any = { promotions: [] };
-  try { const raw = safeRead(logPath); if (raw) log = JSON.parse(raw); } catch {}
+  // Record promotion in PG (replaces per-worktree promotion-log.json).
   let newSha = '';
   try { newSha = execFileSync('git', ['-C', toPath, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(); } catch {}
-  log.promotions = log.promotions ?? [];
-  log.promotions.push({ id: obj.id, from, to, ts: Math.floor(Date.now() / 1000), sha: newSha });
-  await writeFile(logPath, JSON.stringify(log, null, 2), 'utf8');
+  {
+    const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
+    await ensureHarnessPromotionsTable();
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.harness_promotions
+        (workspace_id, harness_slug, promotion_id, from_phase, to_phase, sha, ts)
+      VALUES (
+        ${activeWorkspaceId()}, ${project.slug}, ${obj.id}, ${from}, ${to},
+        ${newSha || null}, ${Math.floor(Date.now() / 1000)}
+      )
+      ON CONFLICT (workspace_id, harness_slug, promotion_id) DO NOTHING
+    `;
+  }
 
   // Seed promotion-handoff.md in the dest from the source's validation-contract.md + features.
   try {
@@ -6100,20 +7075,31 @@ harness.post('/:slug/promote/:id/confirm', async (c) => {
 });
 
 harness.post('/:slug/rollback', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const body = await c.req.json() as { phase?: string };
   const phase = phasePhaseLabel(body.phase);
   const path = phasePath(project, phase);
   if (!existsSync(path)) return c.json({ error: `no worktree for ${phase}` }, 400);
 
-  const logPath = join(path, '.harness', 'promotion-log.json');
-  const raw = safeRead(logPath);
-  if (!raw) return c.json({ error: 'no promotion-log.json' }, 400);
-  const log = JSON.parse(raw) as { promotions: Array<{ id: string; sha: string; ts: number }> };
-  const promotions = log.promotions ?? [];
+  // Read promotion history from PG, ordered most-recent first; need at
+  // least two records so we can roll back to the second-most-recent SHA.
+  // (Records are scoped to the destination phase: a rollback in 'production'
+  // rewinds 'production' to the previous production SHA.)
+  const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
+  await ensureHarnessPromotionsTable();
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const promotions = await sql<Array<{ promotion_id: string; sha: string | null; ts: number | bigint }>>`
+    SELECT promotion_id, sha, ts FROM harness_shared.harness_promotions
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND harness_slug = ${project.slug}
+       AND to_phase     = ${phase}
+     ORDER BY ts DESC
+     LIMIT 10
+  `;
   if (promotions.length < 2) return c.json({ error: 'no previous promotion to roll back to' }, 400);
-  const prior = promotions[promotions.length - 2];
+  const prior = promotions[1]; // [0] is the current promotion; [1] is the one we want
+  if (!prior.sha) return c.json({ error: 'previous promotion has no sha' }, 400);
 
   try {
     execFileSync('git', ['-C', path, 'reset', '--hard', prior.sha], { encoding: 'utf8' });
@@ -6121,8 +7107,17 @@ harness.post('/:slug/rollback', async (c) => {
     return c.json({ error: `rollback failed: ${String(e?.stderr ?? e?.message ?? e)}` }, 500);
   }
 
-  log.promotions.push({ id: `rollback-${Date.now()}`, from: phase, to: phase, ts: Math.floor(Date.now() / 1000), sha: prior.sha } as any);
-  await writeFile(logPath, JSON.stringify(log, null, 2), 'utf8');
+  // Record the rollback as its own promotion row (sha = the SHA we
+  // rolled back TO; from_phase == to_phase == phase). Future rollbacks
+  // will see this in the history.
+  await sql`
+    INSERT INTO harness_shared.harness_promotions
+      (workspace_id, harness_slug, promotion_id, from_phase, to_phase, sha, ts)
+    VALUES (
+      ${activeWorkspaceId()}, ${project.slug}, ${`rollback-${Date.now()}`},
+      ${phase}, ${phase}, ${prior.sha}, ${Math.floor(Date.now() / 1000)}
+    )
+  `;
 
   return c.json({ ok: true, rolledBackTo: prior.sha });
 });
@@ -6163,15 +7158,15 @@ async function writeTests(project: ProjectEntry, phase: Phase, tests: TestItem[]
   await rename(tmp, f);
 }
 
-harness.get('/:slug/tests', (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+harness.get('/:slug/tests', async (c) => {
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const phase = phasePhaseLabel(c.req.query('phase'));
   return c.json({ tests: readTests(project, phase), phase });
 });
 
 harness.post('/:slug/tests/:id/run', async (c) => {
-  const project = resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const phase = phasePhaseLabel(c.req.query('phase'));
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');

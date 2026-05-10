@@ -31,13 +31,13 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-function snapshot() {
-  const e = readElevenLabsKey();
-  const o = readOpenAiKey();
-  const c = readCartesiaKey();
-  const d = readDeepgramKey();
-  const p = readPicovoiceKey();
-  const g = readGoogleKey();
+async function snapshot() {
+  const e = await readElevenLabsKey();
+  const o = await readOpenAiKey();
+  const c = await readCartesiaKey();
+  const d = await readDeepgramKey();
+  const p = await readPicovoiceKey();
+  const g = await readGoogleKey();
   return {
     elevenlabs: { apiKey: maskKey(e), configured: !!e },
     openai:     { apiKey: maskKey(o), configured: !!o },
@@ -49,7 +49,7 @@ function snapshot() {
 }
 
 export async function GET() {
-  return Response.json(snapshot());
+  return Response.json(await snapshot());
 }
 
 export async function PUT(req: NextRequest) {
@@ -60,14 +60,14 @@ export async function PUT(req: NextRequest) {
     return new Response('invalid JSON', { status: 400 });
   }
   // Preserve-missing semantics: only act on fields that are present.
-  const setKey = (
+  const setKey = async (
     field: keyof typeof body,
-    write: (v: string | null) => void,
-  ): Response | null => {
+    write: (v: string | null) => Promise<void>,
+  ): Promise<Response | null> => {
     if (!(field in body)) return null;
     const v = body[field];
-    if (v === null) { write(null); return null; }
-    if (typeof v === 'string' && v.length > 0) { write(v); return null; }
+    if (v === null) { await write(null); return null; }
+    if (typeof v === 'string' && v.length > 0) { await write(v); return null; }
     return new Response(`${field} must be string or null`, { status: 400 });
   };
   for (const [field, writer] of [
@@ -78,8 +78,8 @@ export async function PUT(req: NextRequest) {
     ['picovoiceApiKey',  writePicovoiceKey],
     ['googleApiKey',     writeGoogleKey],
   ] as const) {
-    const err = setKey(field, writer);
+    const err = await setKey(field, writer);
     if (err) return err;
   }
-  return Response.json(snapshot());
+  return Response.json(await snapshot());
 }

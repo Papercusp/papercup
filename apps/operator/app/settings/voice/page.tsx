@@ -285,7 +285,7 @@ export default function VoiceSettingsPage() {
   // layout's outer dimensions so there's no shift when prefs arrives.
   if (!prefs) {
     return (
-      <div style={{ padding: '8px 4px', maxWidth: 880 }} aria-busy="true">
+      <div className="pc-settings-page pc-settings-page--voice" style={{ padding: '8px 4px', maxWidth: 880 }} aria-busy="true">
         <h1 style={{ fontSize: 22, marginBottom: 4 }}>Voice mode</h1>
         <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
           Loading your voice settings…
@@ -295,7 +295,7 @@ export default function VoiceSettingsPage() {
   }
 
   return (
-    <div style={{ padding: '8px 4px', maxWidth: 880 }}>
+    <div className="pc-settings-page pc-settings-page--voice" style={{ padding: '8px 4px', maxWidth: 880 }}>
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Voice mode</h1>
       <p style={{ color: 'var(--fg-mute)', marginBottom: 24, fontSize: 14 }}>
         Voice runs in the browser. Local Voicemode (Whisper STT + Kokoro TTS) is the default;
@@ -344,22 +344,25 @@ export default function VoiceSettingsPage() {
 
               {(prefs?.fullAgentEngine === 'elevenlabs-conv' ||
                 prefs?.fullAgentEngine === 'elevenlabs-conversational') && (
-                <div style={{ marginBottom: 16 }}>
-                  <label style={lbl}>ElevenLabs Agent ID</label>
-                  <input
-                    type="text"
-                    value={prefs?.elevenLabsAgentId ?? ''}
-                    onChange={(e) => savePrefsPatch({ elevenLabsAgentId: e.target.value.trim() })}
-                    placeholder="agent_…"
-                    style={{ ...sel, fontFamily: "'SF Mono', monospace", fontSize: 12 }}
-                    disabled={savingPrefs}
-                  />
-                  <p style={hint}>
-                    Find this in your ElevenLabs Conv AI agent's settings page —
-                    starts with <code>agent_</code>. Paired with your ElevenLabs API key
-                    (set in /settings/api-keys), this is what voice connects to.
-                  </p>
-                </div>
+                <>
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={lbl}>ElevenLabs Agent ID</label>
+                    <input
+                      type="text"
+                      value={prefs?.elevenLabsAgentId ?? ''}
+                      onChange={(e) => savePrefsPatch({ elevenLabsAgentId: e.target.value.trim() })}
+                      placeholder="agent_…"
+                      style={{ ...sel, fontFamily: "'SF Mono', monospace", fontSize: 12 }}
+                      disabled={savingPrefs}
+                    />
+                    <p style={hint}>
+                      Find this in your ElevenLabs Conv AI agent's settings page —
+                      starts with <code>agent_</code>. Paired with your ElevenLabs API key
+                      (set in /settings/api-keys), this is what voice connects to.
+                    </p>
+                  </div>
+                  <ConvAgentVoice />
+                </>
               )}
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, ...sttTtsDimStyle }}
@@ -557,6 +560,45 @@ export default function VoiceSettingsPage() {
               />
               <span>Auto-open the Operator panel when voice delegates a complex task to Claude</span>
             </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={prefs.narrateLongOps ?? true}
+                onChange={(e) => savePrefsPatch({ narrateLongOps: e.target.checked })}
+                disabled={savingPrefs}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                <strong>Operator narrates long operations</strong>
+                <span style={hint}> — replan, supervisor, cleanup, provisioning. Side-channel TTS, doesn&apos;t use ElevenLabs Conv AI minutes.</span>
+              </span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={prefs.operatorBackstoryEnabled ?? true}
+                onChange={(e) => savePrefsPatch({ operatorBackstoryEnabled: e.target.checked })}
+                disabled={savingPrefs}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                <strong>Operator references past experience</strong>
+                <span style={hint}> — when relevant, may share short anecdotes from prior work. Limited to a few times per session.</span>
+              </span>
+            </label>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <input
+                type="checkbox"
+                checked={prefs.operatorActiveOnStartup ?? true}
+                onChange={(e) => savePrefsPatch({ operatorActiveOnStartup: e.target.checked })}
+                disabled={savingPrefs}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                <strong>Active mode on startup</strong>
+                <span style={hint}> — every fresh app load starts the Operator in active mode (continuous turn-taking, draws ideas out of you). Off → starts passive (Operator only responds when spoken to). Mid-session toggling via the navbar still works either way; the toggle resets on refresh per this setting.</span>
+              </span>
+            </label>
             <div>
               <label style={lbl}>
                 Max spoken words for cached / readout content (longer → speak gist + show in panel)
@@ -576,6 +618,93 @@ export default function VoiceSettingsPage() {
               <p style={hint}>
                 Default 120 words ≈ 60 seconds of speech. Above this threshold,
                 voice speaks a one-sentence gist and the panel shows the full content.
+              </p>
+            </div>
+            <div>
+              <label style={lbl}>
+                Auto-disconnect ElevenLabs / Realtime session after this many minutes of silence
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={60}
+                value={prefs.fullAgentIdleTimeoutMin ?? 5}
+                onChange={(e) => {
+                  const v = Math.max(0, Math.min(60, parseInt(e.target.value, 10) || 0));
+                  savePrefsPatch({ fullAgentIdleTimeoutMin: v });
+                }}
+                style={{ ...sel, width: 120 }}
+                disabled={savingPrefs}
+              />
+              <p style={hint}>
+                Default 5 minutes. The mic streams continuously while the session is connected — silence
+                still costs minutes (~$0.08–0.30/min on EL). 0 disables auto-disconnect (not recommended
+                for paid plans). Resume by tapping the voice button.
+              </p>
+            </div>
+            <div>
+              <label style={lbl}>Privacy mode for ElevenLabs / Realtime sessions</label>
+              <select
+                value={prefs.voicePrivacyMode ?? 'always-on'}
+                onChange={(e) => savePrefsPatch({ voicePrivacyMode: e.target.value as 'always-on' | 'wake-word-gated' })}
+                style={sel}
+                disabled={savingPrefs}
+              >
+                <option value="always-on">Always-on — mic streams continuously to the provider</option>
+                <option value="wake-word-gated">Wake-word-gated — local wake word starts the session on demand</option>
+              </select>
+              <p style={hint}>
+                <strong>always-on</strong>: lowest latency, audio leaves the box at all times the session is
+                connected. <strong>wake-word-gated</strong>: Porcupine / openWakeWord listens on-device;
+                ElevenLabs only sees audio between &quot;{prefs.porcupineKeyword ?? prefs.openwakewordKeyword ?? 'wake word'}&quot;
+                and the gated-idle timer. Adds ~1.5s on first turn after wake. Requires a wake-word engine
+                set above (Porcupine or openWakeWord).
+              </p>
+            </div>
+            {prefs.voicePrivacyMode === 'wake-word-gated' && (
+              <div>
+                <label style={lbl}>Gated-mode idle timeout (seconds)</label>
+                <input
+                  type="number"
+                  min={5}
+                  max={300}
+                  value={prefs.wakeGatedIdleTimeoutSec ?? 20}
+                  onChange={(e) => {
+                    const v = Math.max(5, Math.min(300, parseInt(e.target.value, 10) || 20));
+                    savePrefsPatch({ wakeGatedIdleTimeoutSec: v });
+                  }}
+                  style={{ ...sel, width: 120 }}
+                  disabled={savingPrefs}
+                />
+                <p style={hint}>
+                  Default 20s. After this much silence within a wake-triggered session, mic returns to
+                  on-device wake-word listening. Tighter than the always-on idle since restart is just
+                  the wake word again.
+                </p>
+              </div>
+            )}
+            <div>
+              <label style={lbl}>
+                Hard monthly minute cap on ElevenLabs Conv AI
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={50000}
+                step={50}
+                value={prefs.fullAgentMonthlyMinuteCap ?? 600}
+                onChange={(e) => {
+                  const v = Math.max(0, Math.min(50000, parseInt(e.target.value, 10) || 0));
+                  savePrefsPatch({ fullAgentMonthlyMinuteCap: v });
+                }}
+                style={{ ...sel, width: 120 }}
+                disabled={savingPrefs}
+              />
+              <ElSpendStatus />
+              <p style={hint}>
+                Default 600 min (~10 hours). When the current month&apos;s usage hits this cap, new EL
+                sessions refuse to start and you get a toast. 0 disables the cap. Updated by EL&apos;s
+                post-call webhook (must be configured on the EL dashboard pointing at <code>/api/elevenlabs/post-call</code>).
               </p>
             </div>
           </div>
@@ -1092,6 +1221,37 @@ function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
   );
 }
 
+function ElSpendStatus() {
+  const [data, setData] = useState<{ minutes_used: number; minutes_cap: number | null; ym: string; over_cap: boolean; pct_used: number | null } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await fetch('/api/agent-mcp/operator-el-spend');
+        if (!r.ok || cancelled) return;
+        setData(await r.json());
+      } catch { /* leave null */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  if (!data) return null;
+  const cap = data.minutes_cap;
+  const used = data.minutes_used;
+  const pct = data.pct_used != null ? Math.round(data.pct_used * 100) : null;
+  return (
+    <div style={{ marginTop: 4, fontSize: 12, color: data.over_cap ? '#ef4444' : 'inherit' }}>
+      This month ({data.ym}): <strong>{used} min</strong>
+      {cap != null && (
+        <>
+          {' '}/ {cap} min ({pct}%)
+          {data.over_cap && ' — cap reached, new sessions refused'}
+        </>
+      )}
+      {cap == null && ' (uncapped)'}
+    </div>
+  );
+}
+
 function EnginePreview({ engine }: { engine: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1170,6 +1330,130 @@ function NumField({ label, value, step, onCommit, hint }: { label: string; value
         style={{ padding: '6px 10px', width: '100%', fontSize: 13 }}
       />
       {hint && <p style={{ marginTop: 4, fontSize: 11, color: 'var(--fg-mute)' }}>{hint}</p>}
+    </div>
+  );
+}
+
+/**
+ * Conv-AI agent voice control. Reads/writes the agent's tts.voice_id
+ * (and optionally model_id) via /api/agent-mcp/operator-conv-voice,
+ * which handles "voice not yet in your library" by adding the public
+ * voice on demand. Persisting to el-agent-sync.mjs is a separate step
+ * (run the script after you settle on a voice you like).
+ */
+function ConvAgentVoice(): JSX.Element {
+  const [current, setCurrent] = useState<{ voiceId: string | null; voiceName: string | null; modelId: string | null } | null>(null);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch('/api/agent-mcp/operator-conv-voice');
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        setMsg({ kind: 'err', text: body?.error ?? `read failed: ${r.status}` });
+        return;
+      }
+      const j = await r.json();
+      setCurrent({ voiceId: j.voiceId ?? null, voiceName: j.voiceName ?? null, modelId: j.modelId ?? null });
+    } catch (e) {
+      setMsg({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+    }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const onSave = async () => {
+    const voiceId = draft.trim();
+    if (!voiceId) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await fetch('/api/agent-mcp/operator-conv-voice', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ voiceId }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setMsg({ kind: 'err', text: j?.error ?? `save failed: ${r.status}` });
+      } else {
+        setMsg({ kind: 'ok', text: `set to ${j.voiceName ?? voiceId}. End the active EL session and start a new one to hear it.` });
+        setDraft('');
+        await refresh();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onPreview = async () => {
+    const voiceId = (draft.trim() || current?.voiceId || '').trim();
+    if (!voiceId) return;
+    setPreviewing(true); setMsg(null);
+    try {
+      const r = await fetch('/api/agent-mcp/operator-tts-preview', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ engine: 'elevenlabs', voiceId }),
+      });
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        setMsg({ kind: 'err', text: j?.error ?? `preview failed: ${r.status}` });
+        setPreviewing(false);
+        return;
+      }
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      if (audioRef.current) {
+        try { audioRef.current.pause(); } catch {}
+        URL.revokeObjectURL(audioRef.current.src);
+      }
+      const a = new Audio(url);
+      audioRef.current = a;
+      a.onended = () => { URL.revokeObjectURL(url); setPreviewing(false); };
+      a.onerror = () => { setPreviewing(false); };
+      await a.play();
+    } catch (e) {
+      setMsg({ kind: 'err', text: e instanceof Error ? e.message : String(e) });
+      setPreviewing(false);
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <label style={lbl}>Conv AI agent voice</label>
+      <div className="pc-settings-conv-voice-row" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value.trim())}
+          placeholder={current?.voiceId ?? 'paste voice id'}
+          style={{ ...sel, fontFamily: "'SF Mono', monospace", fontSize: 12, flex: 1 }}
+          disabled={busy}
+          onKeyDown={(e) => { if (e.key === 'Enter') void onSave(); }}
+        />
+        <button type="button" onClick={onPreview} disabled={previewing || (!draft.trim() && !current?.voiceId)} style={btn}>
+          {previewing ? 'Playing…' : 'Preview'}
+        </button>
+        <button type="button" onClick={onSave} disabled={busy || !draft.trim()} style={btnPrimary}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+      <p style={hint}>
+        Currently: <code>{current?.voiceId ?? '(unknown)'}</code>
+        {current?.voiceName ? ` — ${current.voiceName}` : ''}
+        {current?.modelId ? ` · ${current.modelId}` : ''}.
+        Browse voices at <a href="https://elevenlabs.io/app/voice-library" target="_blank" rel="noopener noreferrer">elevenlabs.io/app/voice-library</a>;
+        paste any voice id and Save. Public voices are added to your library automatically.
+        Preview synthesises a sample with the entered (or current) voice id without changing the agent.
+      </p>
+      {msg && (
+        <p style={{ ...hint, color: msg.kind === 'err' ? 'var(--accent-error, #dc2626)' : 'var(--accent-success, #16a34a)' }}>
+          {msg.text}
+        </p>
+      )}
     </div>
   );
 }

@@ -34,7 +34,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const MARKETPLACE_URL = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
-function SECRETS_PATH() { return papercuspPath('marketplace-secrets.env'); }
+import { readFirstServiceToken } from '@/lib/marketplace-token';
 
 const VALID_ACTIONS = ['deprecate', 'undeprecate', 'withdraw', 'unwithdraw', 'yank'] as const;
 type RetractAction = (typeof VALID_ACTIONS)[number];
@@ -83,7 +83,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
   }
 
-  const token = await readServiceToken();
+  const token = await readFirstServiceToken();
   // Token is allowed to be missing for actions that don't require operator
   // auth (deprecate / withdraw / yank). The marketplace decides; we just pass
   // whatever we have.
@@ -130,16 +130,4 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   });
 }
 
-async function readServiceToken(): Promise<string | null> {
-  try {
-    const raw = await fs.readFile(SECRETS_PATH(), 'utf8');
-    for (const line of raw.split('\n')) {
-      const m = /^PAPERCUSP_MARKETPLACE_SERVICE_TOKENS\s*=\s*'(.+?)'\s*$/.exec(line.trim());
-      if (m) {
-        const arr = JSON.parse(m[1]!) as { token: string }[];
-        return arr[0]?.token ?? null;
-      }
-    }
-  } catch { /* file missing */ }
-  return null;
-}
+// Service token now PG-backed via @/lib/marketplace-token (migration 024).

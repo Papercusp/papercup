@@ -71,7 +71,7 @@ function resolveSafe(projectPath: string, rel: string): string | null {
 
 async function authorize(slug: string, rel: string): Promise<{ ok: true; abs: string } | { ok: false; error: string; status: number }> {
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slug)) return { ok: false, error: 'invalid slug', status: 400 };
-  const project = loadRegistry().projects.find((p) => p.slug === slug);
+  const project = (await loadRegistry()).projects.find((p) => p.slug === slug);
   if (!project) return { ok: false, error: 'unknown project', status: 404 };
   const allowlist = await loadAllowlist(project.path);
   if (!allowlist.includes(rel)) return { ok: false, error: `path "${rel}" not in manifest configFiles`, status: 403 };

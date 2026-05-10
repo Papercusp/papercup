@@ -195,18 +195,18 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
     }
   }
 
-  if (plugins === null) return <div style={{ padding: 16 }}>Loading snapshot shape…</div>;
+  if (plugins === null) return <div className="pc-fork-form-loading" style={{ padding: 16 }}>Loading snapshot shape…</div>;
 
   const pluginsWithFields = plugins.filter((p) => p.shape && Object.keys(p.shape.fields ?? {}).length > 0);
   const flaggedAdvisories = Object.entries(advisories).filter(([, v]) => v.state === 'flagged');
   const blockingAdvisories = flaggedAdvisories.length > 0 && !acknowledgeAdvisories;
 
   return (
-    <form onSubmit={submit(onSubmit)} style={{ padding: 16, maxWidth: 640 }}>
+    <form className="pc-fork-form" onSubmit={submit(onSubmit)} style={{ padding: 16, maxWidth: 640 }}>
       <h3 style={{ marginTop: 0 }}>Fork this snapshot</h3>
 
       {flaggedAdvisories.length > 0 && (
-        <div style={advisoryBanner}>
+        <div className="pc-fork-advisory-banner" style={advisoryBanner}>
           <strong>⚠ Security advisories on pinned versions</strong>
           <ul style={{ margin: '6px 0 0 0', paddingLeft: 18, fontSize: 13 }}>
             {flaggedAdvisories.map(([plugin, ck]) => (
@@ -248,7 +248,7 @@ export function ForkCompletionForm({ snapshotId, onSuccess }: Props) {
         </p>
       ) : (
         <>
-          <p style={{ fontSize: 13, color: 'var(--fg-mute, #ccc)' }}>
+          <p className="pc-fork-copy" style={{ fontSize: 13, color: 'var(--fg-mute, #ccc)' }}>
             Some plugin config was stripped from the snapshot. Fill in your own values
             (or click <em>Connect with X</em> for OAuth-backed credentials).
           </p>
@@ -288,8 +288,8 @@ function PluginFields({ plugin, register, errors }: PluginFieldsProps) {
   const fields = Object.entries(plugin.shape!.fields);
   const slug = pluginSlug(plugin.name);
   return (
-    <div style={pluginCard}>
-      <header style={{ marginBottom: 8 }}>
+    <div className="pc-fork-plugin-card" style={pluginCard}>
+      <header className="pc-fork-plugin-card-head" style={{ marginBottom: 8 }}>
         <strong>{plugin.name}</strong>{' '}
         <span style={{ fontSize: 12, color: 'var(--fg-mute, #888)' }}>
           v{plugin.version}{plugin.pluginVersionPinned && ' · pinned'}
@@ -323,15 +323,15 @@ function PluginFields({ plugin, register, errors }: PluginFieldsProps) {
             error={fieldError}
           >
             <div style={{ marginBottom: 4 }}>
-              <span style={badge}>{reasonLabel}</span>
+              <span className={`pc-fork-badge pc-fork-badge--${shape.reason}`} style={badge}>{reasonLabel}</span>
             </div>
             {shape.description && (
-              <div style={{ fontSize: 12, color: 'var(--fg-mute, #888)', marginBottom: 4 }}>
+              <div className="pc-fork-field-description" style={{ fontSize: 12, color: 'var(--fg-mute, #888)', marginBottom: 4 }}>
                 {shape.description}
               </div>
             )}
             {shape.oauth ? (
-              <div style={{ fontSize: 13 }}>
+              <div className="pc-fork-oauth-note" style={{ fontSize: 13 }}>
                 <em style={{ color: 'var(--fg-mute, #aaa)' }}>
                   After fork, click "Connect with {shape.oauth.provider}" on the new harness's plugin settings.
                 </em>
@@ -346,7 +346,7 @@ function PluginFields({ plugin, register, errors }: PluginFieldsProps) {
               />
             )}
             {shape.pattern && (
-              <div style={{ fontSize: 11, color: 'var(--fg-mute, #888)', marginTop: 2 }}>
+              <div className="pc-fork-pattern" style={{ fontSize: 11, color: 'var(--fg-mute, #888)', marginTop: 2 }}>
                 must match <code>{shape.pattern}</code>
               </div>
             )}

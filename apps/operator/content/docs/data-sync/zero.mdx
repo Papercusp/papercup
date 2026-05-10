@@ -28,13 +28,15 @@ goes to Postgres and the panel updates because of step 3.
 ```tsx
 'use client';
 
-import { useQuery } from '@rocicorp/zero/react';
-import { queries, slugToSnapshotsKey, type SnapshotRow } from '@restart/zero-harness';
+import { useSyncQuery } from '@restart/sync';
+import type { SnapshotConsolidatedRow } from '@restart/zero-harness';
 
 export default function SnapshotsPanel({ slug }: { slug: string }) {
-  const [rows] = useQuery(queries.snapshots(slugToSnapshotsKey(slug)));
-  // rows is SnapshotRow[]; map to your domain shape if needed
-  // …
+  const { data: rows } = useSyncQuery<SnapshotConsolidatedRow>({
+    queryName: 'snapshotsConsolidated.bySlug',
+    args: [slug],
+  });
+  // rows is SnapshotConsolidatedRow[]; map to your domain shape if needed
 }
 ```
 
@@ -72,31 +74,26 @@ update on the API error path.
 
 ## Schema-qualified vs unqualified table names
 
-Zero pulls tables out of a Postgres `PUBLICATION` (`zero_harness`). Tables
-in our setup live in two kinds of schemas:
+Zero pulls tables out of a Postgres `PUBLICATION` (`zero_harness`).
+As of Migration 032, all per-harness data (`harness_features`,
+`harness_issues`, `agent_runs`, `harness_snapshots`) lives in
+`harness_shared.*_consolidated` tables keyed on `harness_slug`. The
+per-harness schemas (`harness_<slug>`) now contain auto-updatable
+VIEWs for back-compat with writers that pre-date the consolidation.
 
-- **Per-harness schemas** like `harness_restart`, `harness_sheets`,
-  `harness_org_business`, etc. Each contains the same set of tables:
-  `harness_features`, `harness_issues`, `harness_proposals`,
-  `harness_agent_runs`, `harness_snapshots`, etc.
-- **Cross-harness shared schemas**: `harness_shared` (cross-harness
-  views), `papercup_shared` (papercup app data: `directives`, `messages`,
-  `comments`, `directive_summaries`).
+Zero exposes the consolidated tables as four slug-agnostic queries:
 
-Each per-harness table is published as a separate Zero "table" keyed by
-the schema-qualified name. The `slugToXxxKey` helpers
-(`slugToSnapshotsKey`, `slugToIssuesKey`, etc.) build that key from a
-harness slug.
+- `featuresConsolidated.bySlug(slug)`
+- `issuesConsolidated.bySlug(slug)`
+- `agentRunsConsolidated.bySlug(slug)` (or `.recent(slug)`)
+- `snapshotsConsolidated.bySlug(slug)`
 
-```ts
-// harness_restart.harness_snapshots
-const snapshotsKey = slugToSnapshotsKey('restart');
-// → "harness_restart.harness_snapshots"
-```
+Adding a new harness no longer requires adding anything to the Zero
+schema. The slug becomes a regular row value at install time.
 
-A small number of tables (e.g. `harness_features_consolidated`) are in
-`harness_shared` and don't need a slug — see [Schema
-conventions](/docs/data-sync/schema).
+Other tables in `harness_shared` (e.g. `harness_phases`,
+`harness_decisions`) carry `harness_slug` as a column — see
+[Schema conventions](/docs/data-sync/schema).
 
 ## TIMESTAMPTZ arrives as `number`, not `string`
 

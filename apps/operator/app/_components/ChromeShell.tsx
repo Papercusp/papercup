@@ -5,19 +5,24 @@ import { usePathname } from 'next/navigation';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
-import { OperatorButton } from './OperatorPanel';
+import { useFancyEffectsEnabled } from '@/lib/visual-effects';
+import { OperatorButton, OperatorAutoScanToggle } from './OperatorPanel';
 import { VoiceButton } from './voice/VoiceButton';
+import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
 import UpdateChip from './UpdateChip';
+import { NotificationCenter } from './NotificationCenter';
+import { RecentActionsCenter } from './RecentActionsCenter';
 import TutorialButton from './TutorialButton';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
 // idle so the page becomes interactive faster.
 const OperatorPanel = lazy(() => import('./OperatorPanel').then(m => ({ default: m.OperatorPanel })));
+const OperatorChatSidebar = lazy(() => import('./OperatorChatSidebar').then(m => ({ default: m.OperatorChatSidebar })));
 const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
 const OperatorBackgroundScanner = lazy(() => import('./OperatorBackgroundScanner').then(m => ({ default: m.OperatorBackgroundScanner })));
 const VoiceAppBridge = lazy(() => import('./voice/VoiceAppBridge').then(m => ({ default: m.VoiceAppBridge })));
@@ -48,14 +53,26 @@ const ChatwootWidget = lazy(() => import('./ChatwootWidget').then(m => ({ defaul
 const CHROMELESS_PATH_PREFIXES: readonly string[] = [
   '/pi',
   '/project-docs',
+  '/el-min',
 ];
 
 gsap.registerPlugin(useGSAP);
+// Several useGSAP blocks (HarnessDashboard HUD, OperatorPanel reactor,
+// OracleDock dots) target selectors that exist only when their parent
+// state is in a particular branch — e.g. `.h-running-lane.live` only
+// renders when `status?.alive`. When the dependency list re-runs the
+// hook in the off-state, those `q('.foo')` calls return [] and GSAP
+// logs "GSAP target not found." We use that as a no-op signal, not a
+// bug, so silence the warning. Real selector typos would be caught by
+// the visible animation simply not playing.
+gsap.config({ nullTargetWarn: false });
 
 export default function ChromeShell() {
   const headerRef = useRef<HTMLElement | null>(null);
   const pathname = usePathname() ?? '';
   const reducedMotion = useReducedMotion() ?? false;
+  const visualEffectsEnabled = useFancyEffectsEnabled();
+  const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const chromeless = CHROMELESS_PATH_PREFIXES.some(
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
@@ -64,16 +81,17 @@ export default function ChromeShell() {
   // no-op. Render a non-link span with `is-current` styling so it's
   // visibly distinct from the active CTA elsewhere in the app.
   const onHarness = pathname === '/harness' || pathname.startsWith('/harness/');
+  const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
     const active = pathname === href || pathname.startsWith(`${href}/`);
     return active
-      ? { className: 'pc-header-nav-link active', 'aria-current': 'page' as const }
-      : { className: 'pc-header-nav-link' };
+      ? { ...mainNavJumpGateProps, className: 'pc-header-nav-link active', 'aria-current': 'page' as const }
+      : { ...mainNavJumpGateProps, className: 'pc-header-nav-link' };
   };
 
   useGSAP(
     () => {
-      if (!headerRef.current || reducedMotion) return;
+      if (!headerRef.current || !fancyEffectsEnabled) return;
       const q = gsap.utils.selector(headerRef.current);
       const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
 
@@ -91,26 +109,17 @@ export default function ChromeShell() {
           0.06,
         );
 
-      const loops = [
-        gsap.fromTo(
-          q('.pc-header-hud-line--primary'),
-          { xPercent: -16 },
-          { xPercent: 16, duration: 3.2, ease: 'sine.inOut', repeat: -1, yoyo: true },
-        ),
-        gsap.fromTo(
-          q('.pc-header-hud-line--secondary'),
-          { xPercent: 12 },
-          { xPercent: -12, duration: 4.1, ease: 'sine.inOut', repeat: -1, yoyo: true },
-        ),
-        gsap.to(q('.pc-header-quote'), { textShadow: '0 0 18px rgba(87, 215, 255, 0.28)', duration: 1.8, ease: 'sine.inOut', repeat: -1, yoyo: true }),
-      ];
+      // Idle/ambient header HUD line sweeps are now driven by CSS @keyframes
+      // (pc-header-hud-line-primary-sweep / pc-header-hud-line-secondary-sweep
+      // in ChromeShell.css). Removing the GSAP rAF loops takes ~282
+      // DOM-attribute mutations per 5s off the main thread on every page
+      // ChromeShell renders.
 
       return () => {
         intro.kill();
-        loops.forEach((loop) => loop.kill());
       };
     },
-    { scope: headerRef, dependencies: [pathname, reducedMotion] },
+    { scope: headerRef, dependencies: [pathname, fancyEffectsEnabled] },
   );
 
   return (
@@ -126,10 +135,10 @@ export default function ChromeShell() {
           and the nav on the right grow.
         */}
         <div className="pc-header-left">
-          <a href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" style={{ display: 'flex', alignItems: 'center' }}>
+          <a href="/" className="brand pc-header-brand-wrap" aria-label="papercusp" style={{ display: 'flex', alignItems: 'center' }} {...mainNavJumpGateProps}>
             <img src="/wordmark.svg" alt="papercusp" height={22} style={{ display: 'block' }} />
           </a>
-          <span className="pc-header-quote pc-header-quote--hud">Nothing is so painful to the human mind as a great and sudden change</span>
+          <span className="pc-header-quote pc-header-quote--hud" data-quote="Nothing Is So Painful To The Human Mind As A Great And Sudden Change">Nothing Is So Painful To The Human Mind As A Great And Sudden Change</span>
         </div>
         <div className="pc-header-center">
           {onHarness ? (
@@ -142,12 +151,14 @@ export default function ChromeShell() {
               <span className="pc-header-cta-label">Mission Control</span>
             </span>
           ) : (
-            <a href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Mission Control">
+            <a href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Mission Control" {...mainNavJumpGateProps}>
               <span className="pc-header-cta-orb" aria-hidden="true" />
               <span className="pc-header-cta-label">Mission Control</span>
             </a>
           )}
           <OperatorButton />
+          <OperatorAutoScanToggle />
+          <OperatorActiveToggle />
           <VoiceButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
@@ -155,11 +166,14 @@ export default function ChromeShell() {
           <a href="/installed/harnesses" {...navLinkProps('/installed/harnesses')}>Harnesses</a>
           <a href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</a>
           <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
+          <a href="/design" {...navLinkProps('/design')}>Design</a>
           <a href="/support" {...navLinkProps('/support')}>Support</a>
           <a href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</a>
-          <a href="https://github.com/papercupai/papercusp" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
+          <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           <TutorialButton />
           <UpdateChip />
+          <NotificationCenter />
+          <RecentActionsCenter />
           <WorkspaceSwitcher />
         </nav>
       </header>
@@ -175,6 +189,18 @@ export default function ChromeShell() {
           ARE still skipped on /settings/* since the user isn't operating
           on a settings page — that perf win still applies. */}
       <DeferredOperatorPanel />
+      {/* Operator chat sidebar — fixed left, full-height, on every
+          non-chromeless page. The sidebar shifts the rest of the app
+          right via body.has-op-chat padding-left (set inside the
+          component). Mounted under <Suspense> with no fallback so the
+          page paints before the lazy chunk lands; the layout-shift on
+          mount is acceptable for now. Iframe-target routes (CHROMELESS
+          prefixes) skip ChromeShell entirely so the sidebar is absent
+          there too — desired, those routes are embedded inside other
+          pages that already host the sidebar. */}
+      <Suspense fallback={null}>
+        <OperatorChatSidebar />
+      </Suspense>
       {!pathname.startsWith('/settings') && <DeferredDocks />}
     </>
   );
@@ -187,17 +213,32 @@ export default function ChromeShell() {
 function DeferredDocks() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    const idle = (window as any).requestIdleCallback as undefined | ((cb: () => void) => number);
-    let id: number | ReturnType<typeof setTimeout>;
+    const idle = (window as any).requestIdleCallback as undefined | ((cb: () => void, opts?: { timeout: number }) => number);
+    let idleId: number | undefined;
+    // Race requestIdleCallback against a 1500ms backstop. Without the
+    // backstop, a busy page (HMR storms in dev, large-app cold paint)
+    // can starve idle entirely — the dock never mounts. The backstop
+    // also covers Safari/older browsers where requestIdleCallback is
+    // missing. The first to fire wins; the loser is canceled.
+    const backstop = setTimeout(() => {
+      setReady(true);
+      if (idleId !== undefined) {
+        const cancel = (window as any).cancelIdleCallback as undefined | ((id: number) => void);
+        cancel?.(idleId);
+      }
+    }, 1500);
     if (idle) {
-      id = idle(() => setReady(true));
-    } else {
-      id = setTimeout(() => setReady(true), 200);
+      idleId = idle(() => {
+        setReady(true);
+        clearTimeout(backstop);
+      }, { timeout: 1500 });
     }
     return () => {
-      const cancel = (window as any).cancelIdleCallback as undefined | ((id: number) => void);
-      if (cancel && typeof id === 'number') cancel(id);
-      else clearTimeout(id as ReturnType<typeof setTimeout>);
+      clearTimeout(backstop);
+      if (idleId !== undefined) {
+        const cancel = (window as any).cancelIdleCallback as undefined | ((id: number) => void);
+        cancel?.(idleId);
+      }
     };
   }, []);
   if (!ready) return null;
@@ -215,25 +256,14 @@ function DeferredDocks() {
 }
 
 // OperatorPanel is split out of DeferredDocks so it can mount on every
-// page including /settings/*. Same idle-deferral pattern, just a smaller
-// payload. The panel itself returns null while closed, so the only cost
-// of mounting it everywhere is its useEffect/subscribe wiring, which is
-// negligible compared to the bigger docks above.
+// page including /settings/*. Use a short guaranteed timer instead of a
+// pure requestIdleCallback: editor-heavy settings pages can starve idle
+// work long enough that the chrome Operator button appears dead.
 function DeferredOperatorPanel() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
-    const idle = (window as any).requestIdleCallback as undefined | ((cb: () => void) => number);
-    let id: number | ReturnType<typeof setTimeout>;
-    if (idle) {
-      id = idle(() => setReady(true));
-    } else {
-      id = setTimeout(() => setReady(true), 200);
-    }
-    return () => {
-      const cancel = (window as any).cancelIdleCallback as undefined | ((id: number) => void);
-      if (cancel && typeof id === 'number') cancel(id);
-      else clearTimeout(id as ReturnType<typeof setTimeout>);
-    };
+    const id = window.setTimeout(() => setReady(true), 200);
+    return () => window.clearTimeout(id);
   }, []);
   if (!ready) return null;
   return (

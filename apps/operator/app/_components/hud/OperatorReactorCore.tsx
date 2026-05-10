@@ -7,17 +7,17 @@ type OperatorReactorCoreProps = {
   reducedMotion?: boolean;
 };
 
-const STATE_COPY: Record<OperatorReactorState, { label: string; code: string }> = {
-  idle: { label: 'standby', code: 'O-00' },
-  scanning: { label: 'scan lock', code: 'O-14' },
-  thinking: { label: 'synthesis', code: 'O-27' },
-  acting: { label: 'dispatch', code: 'O-39' },
-  paused: { label: 'suspend', code: 'O-41' },
-  'awaiting-input': { label: 'awaiting user', code: 'O-52' },
+const STATE_COPY: Record<OperatorReactorState, string> = {
+  idle: 'standby',
+  scanning: 'scan lock',
+  thinking: 'synthesis',
+  acting: 'dispatch',
+  paused: 'suspend',
+  'awaiting-input': 'awaiting user',
 };
 
 export function OperatorReactorCore({ state, reducedMotion = false }: OperatorReactorCoreProps) {
-  const copy = STATE_COPY[state];
+  const label = STATE_COPY[state];
 
   return (
     <div
@@ -40,8 +40,7 @@ export function OperatorReactorCore({ state, reducedMotion = false }: OperatorRe
       <HudReticleGlyph className="operator-reactor-reticle" size={112} />
       <HudFrameCorners className="operator-reactor-frame" />
       <div className="operator-reactor-readout">
-        <span>{copy.label}</span>
-        <strong>{copy.code}</strong>
+        <span>{label}</span>
       </div>
     </div>
   );

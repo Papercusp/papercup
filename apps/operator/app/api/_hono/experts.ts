@@ -6,31 +6,24 @@
  * each expert iterates with feedback agents, and the scoper resumes in
  * phase 2 once experts finalize.
  *
- * Storage (per harness):
- *   .harness/experts/<expert-id>/
- *     identity.json
- *     SPEC.md
- *     rounds/round-NNN.md      (audit snapshots after each agent ends)
- *     feedback/FB-NNN/
- *       persona.txt
- *       turn-NNN-expert.md
- *       turn-NNN-feedback.md
- *       verdict.json           (set on END)
- *     feedback/decision-log.md
- *     chat/                    (existing chat-transcript shape)
- *
- * Snapshots include `.harness/experts/**` (per-mission state).
- * Templates DO NOT ship `experts/` (template `.gitignore` excludes it).
+ * Storage:
+ *   harness_shared.harness_experts          — identity + SPEC content
+ *   harness_shared.harness_expert_feedback  — feedback conversations + verdict
+ *   harness_shared.harness_expert_turns     — feedback conversation turns
+ *   .harness/experts/<expert-id>/rounds/    — write-only SPEC audit snapshots
+ *   .harness/experts/<expert-id>/chat/      — existing chat-transcript shape
  */
 import type { Hono } from 'hono';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { mkdir, writeFile, readFile, copyFile } from 'node:fs/promises';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getKnownRoles } from '@/lib/known-roles';
+import { notifySyncInvalidate } from '@/lib/sync-sse';
+import { loadHarnessRegistry } from '@/lib/harness-registry';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
-function lookupProjectDir(slug: string): string | null {
-  const { loadHarnessRegistry } = require('@/lib/harness-registry') as typeof import('@/lib/harness-registry');
-  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+async function lookupProjectDir(slug: string): Promise<string | null> {
+  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 function expertsRoot(projectDir: string): string {
@@ -76,24 +69,150 @@ type Identity = {
   updatedAt: string;
 };
 
+/**
+ * Map the project dir back to a harness slug via the registry. Used by
+ * the readIdentity/writeIdentity helpers below to scope PG queries.
+ */
+async function projectDirToSlug(projectDir: string): Promise<string | null> {
+  const { loadHarnessRegistry } = await import('@/lib/harness-registry');
+  const reg = await loadHarnessRegistry();
+  return reg.projects.find((p) => p.path === projectDir)?.slug ?? null;
+}
+
+interface ExpertRow {
+  expert_id: string;
+  title: string;
+  status: string;
+  budget_cents: number | bigint;
+  feature_size: string | null;
+  high_level_spec: string;
+  agent_count: number;
+  round_count: number;
+  personas_used: string[] | null;
+  user_engaged: boolean;
+  created_at: number | bigint;
+  updated_at: number | bigint;
+  termination_reason: string | null;
+}
+
+function rowToIdentity(r: ExpertRow): Identity {
+  return {
+    id: r.expert_id,
+    title: r.title ?? '',
+    slug: r.expert_id, // historic: identity.slug == expert_id
+    status: r.status,
+    terminationReason: r.termination_reason ?? undefined,
+    budgetCents: typeof r.budget_cents === 'bigint' ? Number(r.budget_cents) : r.budget_cents,
+    featureSize: ((r.feature_size as Identity['featureSize']) ?? 'standard'),
+    highLevelSpec: r.high_level_spec ?? '',
+    agentCount: r.agent_count,
+    roundCount: r.round_count,
+    personasUsed: Array.isArray(r.personas_used) ? r.personas_used : [],
+    userEngaged: r.user_engaged === true,
+    createdAt: new Date(typeof r.created_at === 'bigint' ? Number(r.created_at) : r.created_at).toISOString(),
+    updatedAt: new Date(typeof r.updated_at === 'bigint' ? Number(r.updated_at) : r.updated_at).toISOString(),
+    // forkedFrom not persisted in harness_experts — historic tracking only;
+    // matches existing watcher behavior which also drops this field on mirror.
+  };
+}
+
 async function readIdentity(projectDir: string, expertId: string): Promise<Identity | null> {
-  const p = join(expertDir(projectDir, expertId), 'identity.json');
-  try {
-    const raw = await readFile(p, 'utf8');
-    return JSON.parse(raw) as Identity;
-  } catch {
-    return null;
+  const slug = await projectDirToSlug(projectDir);
+  if (slug) {
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const rows = await sql<ExpertRow[]>`
+      SELECT expert_id, title, status, budget_cents, feature_size,
+             high_level_spec, agent_count, round_count, personas_used,
+             user_engaged, created_at, updated_at, termination_reason
+        FROM harness_shared.harness_experts
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id    = ${expertId}
+       LIMIT 1
+    `;
+    if (rows.length > 0) return rowToIdentity(rows[0]);
   }
+  // PG miss → legacy disk entry. Fall back to the on-disk identity.json
+  // (pre-PG-canonical layout). Surfaces these in the UI so legacy experts
+  // remain selectable; the next mutating write will populate PG.
+  const file = join(expertDir(projectDir, expertId), 'identity.json');
+  if (existsSync(file)) {
+    try {
+      const j = JSON.parse(readFileSync(file, 'utf8')) as Partial<Identity>;
+      if (j && typeof j === 'object' && j.id === expertId) {
+        return {
+          id: expertId,
+          title: typeof j.title === 'string' ? j.title : '',
+          slug: typeof j.slug === 'string' ? j.slug : (slug ?? ''),
+          status: (j.status as Identity['status']) ?? 'drafting',
+          budgetCents: typeof j.budgetCents === 'number' ? j.budgetCents : 0,
+          featureSize: (j.featureSize as Identity['featureSize']) ?? 'standard',
+          highLevelSpec: typeof j.highLevelSpec === 'string' ? j.highLevelSpec : '',
+          agentCount: typeof j.agentCount === 'number' ? j.agentCount : 0,
+          roundCount: typeof j.roundCount === 'number' ? j.roundCount : 0,
+          personasUsed: Array.isArray(j.personasUsed) ? j.personasUsed as string[] : [],
+          userEngaged: j.userEngaged === true,
+          forkedFrom: typeof j.forkedFrom === 'string' ? j.forkedFrom : undefined,
+          createdAt: typeof j.createdAt === 'string' ? j.createdAt : new Date().toISOString(),
+          updatedAt: typeof j.updatedAt === 'string' ? j.updatedAt : new Date().toISOString(),
+          terminationReason: typeof j.terminationReason === 'string' ? j.terminationReason : undefined,
+        };
+      }
+    } catch { /* fall through */ }
+  }
+  return null;
 }
 
 async function writeIdentity(projectDir: string, identity: Identity): Promise<void> {
+  const slug = await projectDirToSlug(projectDir);
+  if (!slug) return;
   identity.updatedAt = new Date().toISOString();
-  const dir = expertDir(projectDir, identity.id);
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'identity.json'), JSON.stringify(identity, null, 2), 'utf8');
+  const ws = activeWorkspaceId();
+  const createdAtMs = identity.createdAt ? Date.parse(identity.createdAt) : Date.now();
+  const updatedAtMs = Date.parse(identity.updatedAt);
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.harness_experts
+      (workspace_id, harness_slug, expert_id, title, status, budget_cents,
+       feature_size, high_level_spec, agent_count, round_count,
+       personas_used, user_engaged, created_at, updated_at,
+       termination_reason)
+    VALUES (
+      ${ws}, ${slug}, ${identity.id}, ${identity.title ?? ''}, ${identity.status},
+      ${identity.budgetCents ?? 0}, ${identity.featureSize ?? null},
+      ${identity.highLevelSpec ?? ''},
+      ${identity.agentCount ?? 0}, ${identity.roundCount ?? 0},
+      ${JSON.stringify(identity.personasUsed ?? [])},
+      ${identity.userEngaged === true},
+      ${createdAtMs}, ${updatedAtMs},
+      ${identity.terminationReason ?? null}
+    )
+    ON CONFLICT (workspace_id, harness_slug, expert_id) DO UPDATE SET
+      title              = EXCLUDED.title,
+      status             = EXCLUDED.status,
+      budget_cents       = EXCLUDED.budget_cents,
+      feature_size       = EXCLUDED.feature_size,
+      high_level_spec    = EXCLUDED.high_level_spec,
+      agent_count        = EXCLUDED.agent_count,
+      round_count        = EXCLUDED.round_count,
+      personas_used      = EXCLUDED.personas_used,
+      user_engaged       = EXCLUDED.user_engaged,
+      updated_at         = EXCLUDED.updated_at,
+      termination_reason = EXCLUDED.termination_reason
+  `;
+  // File mirror: keep <expertDir>/identity.json in sync. The legacy on-
+  // disk layout is what listExpertIdsOnDisk + readIdentity-fallback walk;
+  // mirroring here means newly-spawned experts surface in the panel even
+  // if the PG read path is degraded.
+  try {
+    const dir = expertDir(projectDir, identity.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'identity.json'), JSON.stringify(identity, null, 2), 'utf8');
+  } catch { /* best-effort */ }
+  void notifySyncInvalidate('harnessIdentity').catch(() => {});
 }
 
-function listExpertIds(projectDir: string): string[] {
+function listExpertIdsOnDisk(projectDir: string): string[] {
   const root = expertsRoot(projectDir);
   if (!existsSync(root)) return [];
   try {
@@ -106,8 +225,38 @@ function listExpertIds(projectDir: string): string[] {
   }
 }
 
-function nextExpertId(projectDir: string): string {
-  const ids = listExpertIds(projectDir);
+async function listExpertIdsInPg(projectDir: string): Promise<string[]> {
+  const slug = await projectDirToSlug(projectDir);
+  if (!slug) return [];
+  try {
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const rows = await sql<{ expert_id: string }[]>`
+      SELECT expert_id FROM harness_shared.harness_experts
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+    `;
+    return rows.map((r) => r.expert_id).filter((id) => EXPERT_ID_RE.test(id));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Union of disk dirs and PG rows. Disk-only entries are legacy experts
+ * created before the PG-canonical migration; PG-only entries are new
+ * spawns where the disk mirror is being lazily created. Either case
+ * needs to surface so the left panel renders something.
+ */
+async function listExpertIds(projectDir: string): Promise<string[]> {
+  const [diskIds, pgIds] = await Promise.all([
+    Promise.resolve(listExpertIdsOnDisk(projectDir)),
+    listExpertIdsInPg(projectDir),
+  ]);
+  return Array.from(new Set([...diskIds, ...pgIds])).sort();
+}
+
+async function nextExpertId(projectDir: string): Promise<string> {
+  const ids = await listExpertIds(projectDir);
   let max = 0;
   for (const id of ids) {
     const n = parseInt(id.slice(4), 10);
@@ -116,31 +265,36 @@ function nextExpertId(projectDir: string): string {
   return `EXP-${String(max + 1).padStart(3, '0')}`;
 }
 
-function nextFeedbackId(projectDir: string, expertId: string): string {
-  const fbDir = join(expertDir(projectDir, expertId), 'feedback');
-  if (!existsSync(fbDir)) return 'FB-001';
-  try {
-    const ids = readdirSync(fbDir)
-      .filter((name) => FEEDBACK_ID_RE.test(name))
-      .filter((name) => statSync(join(fbDir, name)).isDirectory());
-    let max = 0;
-    for (const id of ids) {
-      const n = parseInt(id.slice(3), 10);
-      if (Number.isFinite(n) && n > max) max = n;
-    }
-    return `FB-${String(max + 1).padStart(3, '0')}`;
-  } catch {
-    return 'FB-001';
+async function nextFeedbackId(projectDir: string, expertId: string): Promise<string> {
+  const slug = await projectDirToSlug(projectDir);
+  if (!slug) return 'FB-001';
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const ws = activeWorkspaceId();
+  const rows = await sql<{ feedback_id: string }[]>`
+    SELECT feedback_id FROM harness_shared.harness_expert_feedback
+     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+       AND expert_id    = ${expertId}
+  `;
+  let max = 0;
+  for (const r of rows) {
+    const n = parseInt(r.feedback_id.slice(3), 10);
+    if (Number.isFinite(n) && n > max) max = n;
   }
+  return `FB-${String(max + 1).padStart(3, '0')}`;
 }
 
 async function readVerdict(projectDir: string, expertId: string, fbId: string): Promise<unknown | null> {
-  const p = join(expertDir(projectDir, expertId), 'feedback', fbId, 'verdict.json');
-  try {
-    return JSON.parse(await readFile(p, 'utf8'));
-  } catch {
-    return null;
-  }
+  const slug = await projectDirToSlug(projectDir);
+  if (!slug) return null;
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const ws = activeWorkspaceId();
+  const rows = await sql<{ verdict: unknown }[]>`
+    SELECT verdict FROM harness_shared.harness_expert_feedback
+     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+       AND expert_id    = ${expertId} AND feedback_id = ${fbId}
+     LIMIT 1
+  `;
+  return rows.length === 0 ? null : (rows[0].verdict ?? null);
 }
 
 /**
@@ -151,23 +305,21 @@ async function readVerdict(projectDir: string, expertId: string, fbId: string): 
  * Returns the proposed terminal status, or null if the loop should continue.
  */
 async function evaluateConvergence(projectDir: string, expertId: string): Promise<'final' | null> {
-  const fbDir = join(expertDir(projectDir, expertId), 'feedback');
-  if (!existsSync(fbDir)) return null;
-  let entries: string[];
-  try {
-    entries = readdirSync(fbDir)
-      .filter((name) => FEEDBACK_ID_RE.test(name))
-      .sort();
-  } catch {
-    return null;
-  }
-  if (entries.length < 2) return null;
-  const lastTwo = entries.slice(-2);
-  for (const fbId of lastTwo) {
-    const v = (await readVerdict(projectDir, expertId, fbId)) as
-      | { newIssues?: Array<{ severity?: string }> }
-      | null;
-    if (!v) return null; // verdict not yet written → not converged
+  const slug = await projectDirToSlug(projectDir);
+  if (!slug) return null;
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const ws = activeWorkspaceId();
+  const rows = await sql<{ verdict: unknown }[]>`
+    SELECT verdict FROM harness_shared.harness_expert_feedback
+     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+       AND expert_id    = ${expertId}
+     ORDER BY feedback_id DESC
+     LIMIT 2
+  `;
+  if (rows.length < 2) return null;
+  for (const r of rows) {
+    const v = r.verdict as { newIssues?: Array<{ severity?: string }> } | null;
+    if (!v) return null;
     const issues = Array.isArray(v.newIssues) ? v.newIssues : [];
     const substantive = issues.some((i) => i?.severity && i.severity !== 'trivial');
     if (substantive) return null;
@@ -188,63 +340,66 @@ async function evaluateConvergence(projectDir: string, expertId: string): Promis
  *   "wait"                      — engaged in chat, do nothing
  *   "done"                      — terminal status; scoper-phase-2 candidate
  */
-function computeNextAction(projectDir: string, expertId: string): string {
-  const ident = (() => {
-    try {
-      return JSON.parse(readFileSync(join(expertDir(projectDir, expertId), 'identity.json'), 'utf8'));
-    } catch { return null; }
-  })();
+async function computeNextAction(projectDir: string, expertId: string, ident: Identity | null): Promise<string> {
   if (!ident) return 'done';
-  // Terminal status takes precedence over userEngaged — a cancelled or
-  // final expert that happens to still have userEngaged=true is `done`,
-  // not `wait`.
   const terminal = ['final', 'max_rounds', 'cancelled', 'superseded', 'error'];
   if (terminal.includes(ident.status)) return 'done';
   if (ident.userEngaged) return 'wait';
   if (ident.status === 'drafting') return 'dispatch_expert';
 
-  // Inspect each in-flight conversation.
-  const fbDir = join(expertDir(projectDir, expertId), 'feedback');
-  if (!existsSync(fbDir)) return 'dispatch_expert';
-  let fbIds: string[] = [];
-  try {
-    fbIds = readdirSync(fbDir).filter((n) => FEEDBACK_ID_RE.test(n)).sort();
-  } catch { return 'dispatch_expert'; }
+  const slug = await projectDirToSlug(projectDir);
+  if (!slug) return 'dispatch_expert';
+  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const ws = activeWorkspaceId();
+  const fbs = await sql<{ feedback_id: string; verdict: unknown | null }[]>`
+    SELECT feedback_id, verdict FROM harness_shared.harness_expert_feedback
+     WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND expert_id = ${expertId}
+     ORDER BY feedback_id ASC
+  `;
+  if (fbs.length === 0) return 'dispatch_expert';
 
   let pendingExpert = false;
-  for (const fbId of fbIds) {
-    const dir = join(fbDir, fbId);
-    let verdictExists = false;
-    try { verdictExists = existsSync(join(dir, 'verdict.json')); } catch {}
-    if (verdictExists) continue; // ended
-    let turns: string[] = [];
-    try {
-      turns = readdirSync(dir).filter((n) => /^turn-\d{3}-(expert|feedback)\.md$/.test(n)).sort();
-    } catch {}
+  for (const fb of fbs) {
+    if (fb.verdict !== null) continue; // ended
+    const turns = await sql<{ speaker: string }[]>`
+      SELECT speaker FROM harness_shared.harness_expert_turns
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id    = ${expertId} AND feedback_id = ${fb.feedback_id}
+       ORDER BY turn_idx DESC
+       LIMIT 1
+    `;
     if (turns.length === 0) continue;
-    const latest = turns[turns.length - 1];
-    if (latest.endsWith('-expert.md')) {
-      // Conversation is waiting for the feedback agent to reply.
-      return `dispatch_feedback:${fbId}`;
-    }
-    if (latest.endsWith('-feedback.md')) {
-      // Conversation is waiting for the expert to respond or end.
-      pendingExpert = true;
-    }
+    if (turns[0].speaker === 'expert') return `dispatch_feedback:${fb.feedback_id}`;
+    if (turns[0].speaker === 'feedback') pendingExpert = true;
   }
   if (pendingExpert) return 'dispatch_expert';
-  // No in-flight conversation needing immediate action → expert spawns next
-  // persona.
   return 'dispatch_expert';
 }
 
-function readMaxAgents(projectDir: string): number {
+interface ExpertCaps { maxAgents: number; maxRounds: number }
+
+/** Default agent + round caps per featureSize. Matches the labels on the
+ *  Spawn-modal Size dropdown. config.json#expert.{maxAgents,maxRounds}
+ *  override these on a per-harness basis. */
+const FEATURE_SIZE_CAPS: Record<Identity['featureSize'], ExpertCaps> = {
+  small:    { maxAgents: 2,  maxRounds: 1 },
+  standard: { maxAgents: 4,  maxRounds: 3 },
+  large:    { maxAgents: 10, maxRounds: 5 },
+};
+
+function readExpertCaps(projectDir: string, identity: Pick<Identity, 'featureSize'>): ExpertCaps {
+  const defaults = FEATURE_SIZE_CAPS[identity.featureSize ?? 'standard'] ?? FEATURE_SIZE_CAPS.standard;
   try {
     const cfg = JSON.parse(readFileSync(join(projectDir, '.harness', 'config.json'), 'utf8'));
-    const v = cfg?.expert?.maxAgents;
-    if (typeof v === 'number' && v > 0) return v;
-  } catch {}
-  return 12;
+    const a = cfg?.expert?.maxAgents;
+    const r = cfg?.expert?.maxRounds;
+    return {
+      maxAgents: typeof a === 'number' && a > 0 ? a : defaults.maxAgents,
+      maxRounds: typeof r === 'number' && r > 0 ? r : defaults.maxRounds,
+    };
+  } catch {
+    return defaults;
+  }
 }
 
 /**
@@ -253,21 +408,25 @@ function readMaxAgents(projectDir: string): number {
  * Returns whole cents. Best-effort — invocation logs that didn't tag the id
  * (e.g. legacy sessions) won't roll up.
  */
-function aggregateExpertSpendCents(projectDir: string, expertId: string): number {
+async function aggregateExpertSpendCents(projectDir: string, expertId: string): Promise<number> {
   const logDir = join(projectDir, '.harness', 'logs');
   if (!existsSync(logDir)) return 0;
   let total = 0;
   let logs: string[];
   try { logs = readdirSync(logDir); } catch { return 0; }
-  // Match run_id suffix: <ts>-<role>-<EXP-NNN> or any FB-NNN whose run is
-  // tagged with the same expert via the parent prompt's runtime extras —
-  // for our regex, the simplest heuristic is "filename includes expertId
-  // or any FB-NNN that lives under this expert's feedback/ dir."
-  const fbDir = join(projectDir, '.harness', 'experts', expertId, 'feedback');
+  // Discover FB-IDs from PG (formerly walked feedback/ dir); fall back to
+  // expertId-only on lookup failure (cost reporting is best-effort).
   let fbIds: string[] = [];
   try {
-    if (existsSync(fbDir)) {
-      fbIds = readdirSync(fbDir).filter((n) => FEEDBACK_ID_RE.test(n));
+    const slug = await projectDirToSlug(projectDir);
+    if (slug) {
+      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const ws = activeWorkspaceId();
+      const rows = await sql<{ feedback_id: string }[]>`
+        SELECT feedback_id FROM harness_shared.harness_expert_feedback
+         WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND expert_id = ${expertId}
+      `;
+      fbIds = rows.map((r) => r.feedback_id);
     }
   } catch {}
   const idTokens = new Set<string>([expertId, ...fbIds]);
@@ -303,9 +462,9 @@ function aggregateExpertSpendCents(projectDir: string, expertId: string): number
 export function registerExperts(harness: Hono): void {
   // ── List experts ─────────────────────────────────────────────────────
   harness.get('/:slug/experts', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
-    const ids = listExpertIds(projectDir);
+    const ids = await listExpertIds(projectDir);
     const out: Array<
       Pick<Identity, 'id' | 'title' | 'status' | 'featureSize' | 'agentCount' | 'roundCount' | 'userEngaged' | 'forkedFrom' | 'createdAt' | 'updatedAt'>
       & { nextAction: string }
@@ -324,7 +483,7 @@ export function registerExperts(harness: Hono): void {
         forkedFrom: ident.forkedFrom,
         createdAt: ident.createdAt,
         updatedAt: ident.updatedAt,
-        nextAction: computeNextAction(projectDir, ident.id),
+        nextAction: await computeNextAction(projectDir, ident.id, ident),
       });
     }
     return c.json({ experts: out });
@@ -333,7 +492,7 @@ export function registerExperts(harness: Hono): void {
   // ── Create expert ────────────────────────────────────────────────────
   harness.post('/:slug/experts', async (c) => {
     const slug = c.req.param('slug');
-    const projectDir = lookupProjectDir(slug);
+    const projectDir = await lookupProjectDir(slug);
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const body = await c.req.json().catch(() => ({})) as {
       title?: string; highLevelSpec?: string; budgetCents?: number;
@@ -353,7 +512,7 @@ export function registerExperts(harness: Hono): void {
       return c.json({ error: `featureSize must be one of: ${[...VALID_FEATURE_SIZES].join(', ')}` }, 400);
     }
 
-    const id = nextExpertId(projectDir);
+    const id = await nextExpertId(projectDir);
     const now = new Date().toISOString();
     const identity: Identity = {
       id,
@@ -373,11 +532,11 @@ export function registerExperts(harness: Hono): void {
     };
 
     const dir = expertDir(projectDir, id);
-    await mkdir(join(dir, 'feedback'), { recursive: true });
-    await mkdir(join(dir, 'rounds'), { recursive: true });
+    // feedback/ + rounds/ subdirs still hold persona.txt + turn-NNN-*.md
+    // Persona/turn/verdict now live in harness_expert_feedback +
+    // harness_expert_turns. The rounds/ dir holds write-only SPEC audit
+    // snapshots (never read back); created lazily on first verdict end.
     await writeIdentity(projectDir, identity);
-    // SPEC.md starts empty; expert writes it.
-    await writeFile(join(dir, 'SPEC.md'), '', 'utf8');
 
     return c.json(identity, 201);
   });
@@ -388,7 +547,7 @@ export function registerExperts(harness: Hono): void {
   // truth: prompts/<role>.role.json sidecar files.
   harness.get('/:slug/expert-roles', async (c) => {
     const slug = c.req.param('slug');
-    const reg = (await import('@/lib/harness-registry')).loadHarnessRegistry();
+    const reg = await (await import('@/lib/harness-registry')).loadHarnessRegistry();
     if (!reg.projects.find((p) => p.slug === slug)) {
       return c.json({ error: 'unknown harness' }, 404);
     }
@@ -410,7 +569,7 @@ export function registerExperts(harness: Hono): void {
   // See lib/expert-dispatcher.ts + /docs/experts/authoring.
   harness.post('/:slug/experts/dispatch', async (c) => {
     const slug = c.req.param('slug');
-    const reg = (await import('@/lib/harness-registry')).loadHarnessRegistry();
+    const reg = await (await import('@/lib/harness-registry')).loadHarnessRegistry();
     const project = reg.projects.find((p) => p.slug === slug);
     if (!project) return c.json({ error: 'unknown harness' }, 404);
     const body = await c.req.json().catch(() => ({})) as {
@@ -420,6 +579,10 @@ export function registerExperts(harness: Hono): void {
     };
     if (!body.role || typeof body.role !== 'string') {
       return c.json({ error: 'role required' }, 400);
+    }
+    const { getRole } = await import('@/lib/role-registry');
+    if (!getRole(body.role, slug)) {
+      return c.json({ error: `unknown role: ${body.role}` }, 404);
     }
     const { dispatchExpert } = await import('@/lib/expert-dispatcher');
     try {
@@ -440,24 +603,39 @@ export function registerExperts(harness: Hono): void {
 
   // ── Get expert ───────────────────────────────────────────────────────
   harness.get('/:slug/experts/:expertId', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
     const ident = await readIdentity(projectDir, expertId);
     if (!ident) return c.json({ error: 'expert not found' }, 404);
     const dir = expertDir(projectDir, expertId);
-    const specPath = join(dir, 'SPEC.md');
+    const specPath = join(dir, 'SPEC.md'); // returned for back-compat with UIs that show a path
+    // SPEC content from PG (harness_experts.spec_content). The disk path
+    // above is only displayed by the UI; the actual content comes from PG.
     let spec = '';
-    try { spec = await readFile(specPath, 'utf8'); } catch {}
-    const spentCents = aggregateExpertSpendCents(projectDir, expertId);
-    const nextAction = computeNextAction(projectDir, expertId);
+    {
+      const slug = await projectDirToSlug(projectDir);
+      if (slug) {
+        const { sql } = (await import('@restart/db-org')).getOrgPg();
+        const ws = activeWorkspaceId();
+        const rows = await sql<{ spec_content: string }[]>`
+          SELECT spec_content FROM harness_shared.harness_experts
+           WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+             AND expert_id    = ${expertId}
+           LIMIT 1
+        `;
+        if (rows.length > 0) spec = rows[0].spec_content ?? '';
+      }
+    }
+    const spentCents = await aggregateExpertSpendCents(projectDir, expertId);
+    const nextAction = await computeNextAction(projectDir, expertId, ident);
     return c.json({ ...ident, specPath, spec, spentCents, nextAction });
   });
 
   // ── Patch expert (status, userEngaged, terminationReason, agentCount, roundCount) ──
   harness.patch('/:slug/experts/:expertId', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
@@ -482,7 +660,7 @@ export function registerExperts(harness: Hono): void {
 
   // ── Open feedback conversation ───────────────────────────────────────
   harness.post('/:slug/experts/:expertId/feedback', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
@@ -494,20 +672,28 @@ export function registerExperts(harness: Hono): void {
       return c.json({ error: 'persona required (alpha + apostrophe/hyphen)' }, 400);
     }
 
-    const fbId = nextFeedbackId(projectDir, expertId);
-    const fbDir = join(expertDir(projectDir, expertId), 'feedback', fbId);
-    await mkdir(fbDir, { recursive: true });
-    await writeFile(join(fbDir, 'persona.txt'), body.persona, 'utf8');
+    const fbId = await nextFeedbackId(projectDir, expertId);
+    {
+      const slug = await projectDirToSlug(projectDir);
+      if (!slug) return c.json({ error: 'unknown harness' }, 404);
+      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const ws = activeWorkspaceId();
+      await sql`
+        INSERT INTO harness_shared.harness_expert_feedback
+          (workspace_id, harness_slug, expert_id, feedback_id, persona, created_at)
+        VALUES (${ws}, ${slug}, ${expertId}, ${fbId}, ${body.persona}, ${Date.now()})
+      `;
+    }
 
     ident.agentCount += 1;
     if (!ident.personasUsed.includes(body.persona)) ident.personasUsed.push(body.persona);
     if (ident.status === 'drafting') ident.status = 'gathering_feedback';
     await writeIdentity(projectDir, ident);
 
-    const max = readMaxAgents(projectDir);
-    if (ident.agentCount >= max) {
+    const caps = readExpertCaps(projectDir, ident);
+    if (ident.agentCount >= caps.maxAgents) {
       ident.status = 'max_rounds';
-      ident.terminationReason = `agentCount >= maxAgents (${max})`;
+      ident.terminationReason = `agentCount >= maxAgents (${caps.maxAgents})`;
       await writeIdentity(projectDir, ident);
     }
 
@@ -516,15 +702,24 @@ export function registerExperts(harness: Hono): void {
 
   // ── Append turn ──────────────────────────────────────────────────────
   harness.post('/:slug/experts/:expertId/feedback/:fbId/turn', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     const fbId = c.req.param('fbId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
     if (!FEEDBACK_ID_RE.test(fbId)) return c.json({ error: 'invalid feedback id' }, 400);
 
-    const fbDir = join(expertDir(projectDir, expertId), 'feedback', fbId);
-    if (!existsSync(fbDir)) return c.json({ error: 'feedback conversation not found' }, 404);
+    const slug = await projectDirToSlug(projectDir);
+    if (!slug) return c.json({ error: 'unknown harness' }, 404);
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const fbExists = await sql<{ ok: number }[]>`
+      SELECT 1 AS ok FROM harness_shared.harness_expert_feedback
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id = ${expertId} AND feedback_id = ${fbId}
+       LIMIT 1
+    `;
+    if (fbExists.length === 0) return c.json({ error: 'feedback conversation not found' }, 404);
 
     const body = await c.req.json().catch(() => ({})) as { from?: string; body?: string };
     if (body.from !== 'expert' && body.from !== 'feedback') {
@@ -534,29 +729,41 @@ export function registerExperts(harness: Hono): void {
       return c.json({ error: 'body required' }, 400);
     }
 
-    // Count existing turn-*.md files for the next index.
-    let nextIdx = 1;
-    try {
-      const turns = readdirSync(fbDir).filter((f) => /^turn-\d{3}-(expert|feedback)\.md$/.test(f));
-      nextIdx = turns.length + 1;
-    } catch {}
+    const countRows = await sql<{ n: number | string }[]>`
+      SELECT COUNT(*)::int AS n FROM harness_shared.harness_expert_turns
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id = ${expertId} AND feedback_id = ${fbId}
+    `;
+    const nextIdx = Number(countRows[0]?.n ?? 0) + 1;
+    await sql`
+      INSERT INTO harness_shared.harness_expert_turns
+        (workspace_id, harness_slug, expert_id, feedback_id, turn_idx, speaker, body, created_at)
+      VALUES (${ws}, ${slug}, ${expertId}, ${fbId}, ${nextIdx}, ${body.from}, ${body.body}, ${Date.now()})
+    `;
     const fname = `turn-${String(nextIdx).padStart(3, '0')}-${body.from}.md`;
-    await writeFile(join(fbDir, fname), body.body, 'utf8');
-
     return c.json({ ok: true, turn: fname });
   });
 
   // ── End feedback conversation (records verdict, evaluates convergence) ──
   harness.post('/:slug/experts/:expertId/feedback/:fbId/end', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     const fbId = c.req.param('fbId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
     if (!FEEDBACK_ID_RE.test(fbId)) return c.json({ error: 'invalid feedback id' }, 400);
 
-    const fbDir = join(expertDir(projectDir, expertId), 'feedback', fbId);
-    if (!existsSync(fbDir)) return c.json({ error: 'feedback conversation not found' }, 404);
+    const slug = await projectDirToSlug(projectDir);
+    if (!slug) return c.json({ error: 'unknown harness' }, 404);
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const fbExists = await sql<{ ok: number }[]>`
+      SELECT 1 AS ok FROM harness_shared.harness_expert_feedback
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id = ${expertId} AND feedback_id = ${fbId}
+       LIMIT 1
+    `;
+    if (fbExists.length === 0) return c.json({ error: 'feedback conversation not found' }, 404);
 
     const body = await c.req.json().catch(() => ({})) as {
       verdict?: { newIssues?: Array<{ summary?: string; severity?: string; specLines?: string }>; coversPriorIssues?: string[] };
@@ -567,16 +774,32 @@ export function registerExperts(harness: Hono): void {
     const newIssues = Array.isArray(body.verdict.newIssues) ? body.verdict.newIssues : [];
     const coversPriorIssues = Array.isArray(body.verdict.coversPriorIssues) ? body.verdict.coversPriorIssues : [];
     const verdict = { newIssues, coversPriorIssues };
-    await writeFile(join(fbDir, 'verdict.json'), JSON.stringify(verdict, null, 2), 'utf8');
+    await sql`
+      UPDATE harness_shared.harness_expert_feedback
+         SET verdict = ${sql.json(verdict)}, ended_at = ${Date.now()}
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id = ${expertId} AND feedback_id = ${fbId}
+    `;
 
-    // Audit snapshot of current SPEC.md after this agent ended.
+    // Audit snapshot of SPEC content after this agent ended (write-only log
+    // of round history; never read back, so kept on disk).
     const ident = await readIdentity(projectDir, expertId);
     if (!ident) return c.json({ error: 'expert not found' }, 404);
-    const specSrc = join(expertDir(projectDir, expertId), 'SPEC.md');
-    if (existsSync(specSrc)) {
-      ident.roundCount += 1;
-      const dst = join(expertDir(projectDir, expertId), 'rounds', `round-${String(ident.roundCount).padStart(3, '0')}.md`);
-      try { await copyFile(specSrc, dst); } catch {}
+    {
+      const specRows = await sql<{ spec_content: string }[]>`
+        SELECT spec_content FROM harness_shared.harness_experts
+         WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND expert_id = ${expertId}
+         LIMIT 1
+      `;
+      const specBody = specRows[0]?.spec_content ?? '';
+      if (specBody) {
+        ident.roundCount += 1;
+        const dst = join(expertDir(projectDir, expertId), 'rounds', `round-${String(ident.roundCount).padStart(3, '0')}.md`);
+        try {
+          await mkdir(join(expertDir(projectDir, expertId), 'rounds'), { recursive: true });
+          await writeFile(dst, specBody, 'utf8');
+        } catch {}
+      }
     }
 
     // Server-side termination checks (in order). Promote only if not already
@@ -585,16 +808,23 @@ export function registerExperts(harness: Hono): void {
     if (!terminal.has(ident.status)) {
       // 1. Budget exhaustion takes precedence over convergence — if we've
       //    blown the envelope, stop even mid-loop.
-      const spentCents = aggregateExpertSpendCents(projectDir, expertId);
+      const spentCents = await aggregateExpertSpendCents(projectDir, expertId);
       if (ident.budgetCents > 0 && spentCents >= ident.budgetCents) {
         ident.status = 'final';
         ident.terminationReason = `budget: ${spentCents}¢ spent of ${ident.budgetCents}¢ envelope`;
       } else {
-        // 2. Convergence: 2 consecutive non-substantive verdicts.
-        const converged = await evaluateConvergence(projectDir, expertId);
-        if (converged === 'final') {
-          ident.status = 'final';
-          ident.terminationReason = 'convergence: 2 consecutive non-substantive verdicts';
+        const caps = readExpertCaps(projectDir, ident);
+        // 2. Round-count cap (per featureSize; see FEATURE_SIZE_CAPS).
+        if (ident.roundCount >= caps.maxRounds) {
+          ident.status = 'max_rounds';
+          ident.terminationReason = `roundCount >= maxRounds (${caps.maxRounds})`;
+        } else {
+          // 3. Convergence: 2 consecutive non-substantive verdicts.
+          const converged = await evaluateConvergence(projectDir, expertId);
+          if (converged === 'final') {
+            ident.status = 'final';
+            ident.terminationReason = 'convergence: 2 consecutive non-substantive verdicts';
+          }
         }
       }
     }
@@ -606,7 +836,7 @@ export function registerExperts(harness: Hono): void {
   // ── Fork expert ──────────────────────────────────────────────────────
   harness.post('/:slug/experts/:expertId/fork', async (c) => {
     const slug = c.req.param('slug');
-    const projectDir = lookupProjectDir(slug);
+    const projectDir = await lookupProjectDir(slug);
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const oldId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(oldId)) return c.json({ error: 'invalid expert id' }, 400);
@@ -615,7 +845,7 @@ export function registerExperts(harness: Hono): void {
 
     const body = await c.req.json().catch(() => ({})) as { title?: string; budgetCents?: number };
 
-    const newId = nextExpertId(projectDir);
+    const newId = await nextExpertId(projectDir);
     const now = new Date().toISOString();
     const fresh: Identity = {
       ...oldIdent,
@@ -632,14 +862,27 @@ export function registerExperts(harness: Hono): void {
       createdAt: now,
       updatedAt: now,
     };
-    const newDir = expertDir(projectDir, newId);
-    await mkdir(join(newDir, 'feedback'), { recursive: true });
-    await mkdir(join(newDir, 'rounds'), { recursive: true });
     await writeIdentity(projectDir, fresh);
-    // Copy SPEC.md as starting point; rounds/ + feedback/ history NOT copied.
-    const oldSpec = join(expertDir(projectDir, oldId), 'SPEC.md');
-    const newSpec = join(newDir, 'SPEC.md');
-    try { await copyFile(oldSpec, newSpec); } catch { await writeFile(newSpec, '', 'utf8'); }
+    // Copy spec_content from old expert to new in PG. rounds/ + feedback/
+    // history NOT copied.
+    {
+      const slug = await projectDirToSlug(projectDir);
+      if (slug) {
+        const { sql } = (await import('@restart/db-org')).getOrgPg();
+        const ws = activeWorkspaceId();
+        await sql`
+          UPDATE harness_shared.harness_experts AS dst
+             SET spec_content = src.spec_content
+            FROM harness_shared.harness_experts AS src
+           WHERE dst.workspace_id = ${ws}
+             AND dst.harness_slug = ${slug}
+             AND dst.expert_id    = ${newId}
+             AND src.workspace_id = ${ws}
+             AND src.harness_slug = ${slug}
+             AND src.expert_id    = ${oldId}
+        `;
+      }
+    }
 
     // Old expert → superseded.
     oldIdent.status = 'superseded';
@@ -651,7 +894,7 @@ export function registerExperts(harness: Hono): void {
 
   // ── Cancel expert ────────────────────────────────────────────────────
   harness.post('/:slug/experts/:expertId/cancel', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
@@ -665,56 +908,67 @@ export function registerExperts(harness: Hono): void {
 
   // ── Read SPEC.md ─────────────────────────────────────────────────────
   harness.get('/:slug/experts/:expertId/spec', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const slug = c.req.param('slug');
+    const projectDir = await lookupProjectDir(slug);
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
-    const p = join(expertDir(projectDir, expertId), 'SPEC.md');
-    try {
-      const content = await readFile(p, 'utf8');
-      return c.json({ content, path: p });
-    } catch {
-      return c.json({ error: 'SPEC.md not found' }, 404);
-    }
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const rows = await sql<{ spec_content: string }[]>`
+      SELECT spec_content FROM harness_shared.harness_experts
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id    = ${expertId}
+       LIMIT 1
+    `;
+    if (rows.length === 0) return c.json({ error: 'expert not found' }, 404);
+    return c.json({ content: rows[0].spec_content ?? '' });
   });
 
   // ── Write SPEC.md (expert-only writer in normal flow; user can override) ──
   harness.put('/:slug/experts/:expertId/spec', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const slug = c.req.param('slug');
+    const projectDir = await lookupProjectDir(slug);
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
     const body = await c.req.json().catch(() => ({})) as { content?: string };
     if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
-    const dir = expertDir(projectDir, expertId);
-    if (!existsSync(dir)) return c.json({ error: 'expert not found' }, 404);
-    await writeFile(join(dir, 'SPEC.md'), body.content, 'utf8');
-    const ident = await readIdentity(projectDir, expertId);
-    if (ident) await writeIdentity(projectDir, ident); // bumps updatedAt
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const updated = await sql<{ updated: boolean }[]>`
+      UPDATE harness_shared.harness_experts
+         SET spec_content = ${body.content},
+             updated_at   = ${Date.now()}
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id    = ${expertId}
+      RETURNING TRUE AS updated
+    `;
+    if (updated.length === 0) return c.json({ error: 'expert not found' }, 404);
+    void notifySyncInvalidate('harnessIdentity').catch(() => {});
     return c.json({ ok: true });
   });
 
   // ── List feedback conversations ──────────────────────────────────────
   harness.get('/:slug/experts/:expertId/feedback', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const slug = c.req.param('slug');
+    const projectDir = await lookupProjectDir(slug);
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
     const expertId = c.req.param('expertId');
     if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
-    const fbRoot = join(expertDir(projectDir, expertId), 'feedback');
-    if (!existsSync(fbRoot)) return c.json({ feedback: [] });
-    let entries: string[];
-    try {
-      entries = readdirSync(fbRoot).filter((n) => FEEDBACK_ID_RE.test(n)).sort();
-    } catch {
-      return c.json({ feedback: [] });
-    }
-    const out: Array<{ id: string; persona: string; ended: boolean; verdict: unknown | null }> = [];
-    for (const id of entries) {
-      let persona = '';
-      try { persona = readFileSync(join(fbRoot, id, 'persona.txt'), 'utf8'); } catch {}
-      const verdict = await readVerdict(projectDir, expertId, id);
-      out.push({ id, persona, ended: verdict !== null, verdict });
-    }
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const rows = await sql<{ feedback_id: string; persona: string; verdict: unknown | null }[]>`
+      SELECT feedback_id, persona, verdict FROM harness_shared.harness_expert_feedback
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND expert_id = ${expertId}
+       ORDER BY feedback_id ASC
+    `;
+    const out = rows.map((r) => ({
+      id: r.feedback_id,
+      persona: r.persona,
+      ended: r.verdict !== null,
+      verdict: r.verdict,
+    }));
     return c.json({ feedback: out });
   });
 
@@ -724,7 +978,7 @@ export function registerExperts(harness: Hono): void {
   // instanced experts). Filters out non-chat roles (e.g. `feedback`).
   // Returns: [{role:"orchestrator"}, ..., {role:"expert", instanceId:"EXP-001", title:"..."}, ...]
   harness.get('/:slug/chat-agents', async (c) => {
-    const projectDir = lookupProjectDir(c.req.param('slug'));
+    const projectDir = await lookupProjectDir(c.req.param('slug'));
     if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
 
     // Roles come from the shared on-disk source via getKnownRoles().
@@ -736,7 +990,7 @@ export function registerExperts(harness: Hono): void {
     for (const role of staticRoles) agents.push({ role });
 
     // Instanced experts — one entry per non-cancelled/superseded expert.
-    for (const id of listExpertIds(projectDir)) {
+    for (const id of await listExpertIds(projectDir)) {
       const ident = await readIdentity(projectDir, id);
       if (!ident) continue;
       if (ident.status === 'cancelled' || ident.status === 'superseded') continue;

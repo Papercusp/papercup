@@ -146,15 +146,16 @@ export default function InstalledSnapshotsPage() {
                 {s.partial && <span className="accent">partial</span>}
               </div>
               {s.publishes.length > 0 && (
-                <div className="pc-marketplace-enabled">
+                <div className="pc-installed-snapshot-publishes">
                   <strong>Published as</strong>
                   {s.publishes.map((p) => (
-                    <span key={`${p.slug}@${p.version}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <span key={`${p.slug}@${p.version}`} className="pc-installed-snapshot-publish-chip" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                       <a href={p.browseUrl} target="_blank" rel="noreferrer"><code>{p.slug}@{p.version}</code></a>
                       <button
                         onClick={() => onRetract(s, p.slug)}
                         disabled={busy === `${s.id}:${p.slug}`}
                         title="Retract this published version from the marketplace"
+                        className="pc-installed-snapshot-retract"
                         style={{
                           padding: '2px 6px', fontSize: 10, background: 'transparent',
                           border: '1px solid var(--border)', color: '#fbbf24', borderRadius: 3,
@@ -167,10 +168,11 @@ export default function InstalledSnapshotsPage() {
                   ))}
                 </div>
               )}
-              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+              <div className="pc-installed-snapshot-actions" style={{ marginTop: 12, display: 'flex', gap: 8 }}>
                 <button
                   onClick={() => onDelete(s)}
                   disabled={busy === s.id}
+                  className="pc-installed-snapshot-delete"
                   style={{
                     padding: '4px 10px', background: 'transparent', color: '#f87171',
                     border: '1px solid var(--border)', borderRadius: 4, fontSize: 11,

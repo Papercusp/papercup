@@ -279,7 +279,7 @@ export default function EditTemplatePage() {
 
   if (loadError) {
     return (
-      <div className="pc-shell" style={{ padding: 24 }}>
+      <div className="pc-shell pc-template-editor-shell pc-template-editor-error" style={{ padding: 24 }}>
         {/* Toaster mounted globally in app/layout.tsx. */}
         <RouteLink href="/installed/templates" style={{ fontSize: 13 }}>← back to templates</RouteLink>
         <div style={{ marginTop: 16, color: '#f87171' }}>Could not load template: {loadError}</div>
@@ -287,14 +287,14 @@ export default function EditTemplatePage() {
     );
   }
   if (!tpl) {
-    return <div className="pc-shell" style={{ padding: 24 }}>Loading…</div>;
+    return <div className="pc-shell pc-template-editor-shell pc-template-editor-loading" style={{ padding: 24 }}>Loading…</div>;
   }
 
   const activeSpec = allFiles.find((f) => f.path === activePath);
   const language = activeSpec ? languageFor(activeSpec) : 'plaintext';
 
   return (
-    <div className="pc-shell" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', height: '100vh' }}>
+    <div className="pc-shell pc-template-editor-shell" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', height: '100vh' }}>
       {/* Toaster mounted globally in app/layout.tsx. */}
       {addFileOpen && (
         <AddFileDialog
@@ -304,13 +304,14 @@ export default function EditTemplatePage() {
           busy={saving}
         />
       )}
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
-        <RouteLink href="/installed/templates" style={{ fontSize: 13, color: 'var(--fg-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+      <div className="pc-template-editor-topbar" style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
+        <RouteLink href="/installed/templates" className="pc-template-editor-back" style={{ fontSize: 13, color: 'var(--fg-dim)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
           <ArrowLeft size={13} /> back
         </RouteLink>
         <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{tpl.slug}</h1>
         {(tpl.versions?.length ?? 0) > 1 ? (
           <select
+            className="pc-template-editor-version"
             value={resolvedVersion ?? ''}
             onChange={(e) => {
               const next = e.target.value;
@@ -336,12 +337,13 @@ export default function EditTemplatePage() {
           <code style={{ fontSize: 12, color: 'var(--fg-dim)' }}>v{resolvedVersion}</code>
         )}
         {tpl.publishedSlugs.length > 0 ? (
-          <span style={{ fontSize: 11, color: '#34d399' }}>
+          <span className="pc-template-editor-published" style={{ fontSize: 11, color: '#34d399' }}>
             published × {tpl.publishedSlugs.length}
           </span>
         ) : null}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
+        <div className="pc-template-editor-actions" style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
           <button
+            className="pc-template-editor-action pc-template-editor-save"
             onClick={onSave}
             disabled={saving || dirty.length === 0}
             style={btnStyle(dirty.length > 0 && !saving ? 'primary' : 'muted')}
@@ -349,19 +351,25 @@ export default function EditTemplatePage() {
             {saving ? <Loader2 size={12} className="pc-spin" /> : <Save size={12} />}
             {dirty.length > 0 ? `Save (${dirty.length})` : 'Saved'}
           </button>
-          <button onClick={onPublish} disabled={publishing || dirty.length > 0} style={btnStyle(dirty.length === 0 && !publishing ? 'accent' : 'muted')}>
+          <button
+            className="pc-template-editor-action pc-template-editor-publish"
+            onClick={onPublish}
+            disabled={publishing || dirty.length > 0}
+            style={btnStyle(dirty.length === 0 && !publishing ? 'accent' : 'muted')}
+          >
             {publishing ? 'publishing…' : tpl.publishedSlugs.length > 0 ? 'Republish' : 'Publish'}
           </button>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
-        <aside style={{ width: 240, borderRight: '1px solid var(--border)', paddingRight: 12, overflow: 'auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+      <div className="pc-template-editor-workspace" style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
+        <aside className="pc-template-editor-sidebar" style={{ width: 240, borderRight: '1px solid var(--border)', paddingRight: 12, overflow: 'auto' }}>
+          <div className="pc-template-editor-sidebar-head" style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
             <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--fg-dim)' }}>
               Files
             </span>
             <button
+              className="pc-template-editor-add-file"
               onClick={() => setAddFileOpen(true)}
               style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 11, background: 'transparent', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}
               title="Add a new config file to this template"
@@ -369,13 +377,14 @@ export default function EditTemplatePage() {
               <Plus size={11} /> new
             </button>
           </div>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+          <ul className="pc-template-editor-file-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {allFiles.map((f) => {
               const isDirty = f.path in draft && draft[f.path] !== original[f.path];
               const isActive = f.path === activePath;
               return (
-                <li key={f.path}>
+                <li key={f.path} className="pc-template-editor-file-row">
                   <button
+                    className={`pc-template-editor-file ${isActive ? 'is-active' : ''} ${isDirty ? 'is-dirty' : ''}`}
                     onClick={() => setActivePath(f.path)}
                     style={{
                       display: 'block',
@@ -390,14 +399,14 @@ export default function EditTemplatePage() {
                       fontSize: 12,
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <code style={{ fontSize: 12, fontWeight: isActive ? 600 : 400 }}>
+                    <div className="pc-template-editor-file-label" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <code className="pc-template-editor-file-code" style={{ fontSize: 12, fontWeight: isActive ? 600 : 400 }}>
                         {f.label ?? f.path}
                       </code>
-                      {isDirty ? <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24' }} /> : null}
+                      {isDirty ? <span className="pc-template-editor-dirty-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: '#fbbf24' }} /> : null}
                     </div>
                     {f.description ? (
-                      <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: 2 }}>
+                      <div className="pc-template-editor-file-desc" style={{ fontSize: 11, color: 'var(--fg-dim)', marginTop: 2 }}>
                         {f.description}
                       </div>
                     ) : null}
@@ -408,19 +417,21 @@ export default function EditTemplatePage() {
           </ul>
         </aside>
 
-        <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: 6 }}>
+        <main className="pc-template-editor-main" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div className="pc-template-editor-path" style={{ fontSize: 11, color: 'var(--fg-dim)', marginBottom: 6 }}>
             <code>{tpl.path}/{activePath}</code>
           </div>
           {activePath === 'papercusp.json' ? (
-            <div style={{ marginBottom: 6, display: 'flex', gap: 6 }}>
+            <div className="pc-template-editor-mode-tabs" style={{ marginBottom: 6, display: 'flex', gap: 6 }}>
               <button
+                className="pc-template-editor-mode-tab"
                 onClick={() => setManifestRawMode(false)}
                 style={tabBtnStyle(!manifestRawMode)}
               >
                 <Sliders size={11} /> structured
               </button>
               <button
+                className="pc-template-editor-mode-tab"
                 onClick={() => setManifestRawMode(true)}
                 style={tabBtnStyle(manifestRawMode)}
               >
@@ -428,9 +439,9 @@ export default function EditTemplatePage() {
               </button>
             </div>
           ) : null}
-          <div style={{ flex: 1, border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
+          <div className="pc-template-editor-frame" style={{ flex: 1, border: '1px solid var(--border)', borderRadius: 4, overflow: 'hidden' }}>
             {loadingFile ? (
-              <div style={{ padding: 24, color: 'var(--fg-dim)' }}>Loading {activePath}…</div>
+              <div className="pc-template-editor-file-loading" style={{ padding: 24, color: 'var(--fg-dim)' }}>Loading {activePath}…</div>
             ) : activePath === 'papercusp.json' && !manifestRawMode ? (
               <ManifestStructuredEditor
                 jsonText={draft[activePath] ?? ''}
@@ -673,8 +684,8 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
   };
 
   return (
-    <div style={{ height: '100%', overflow: 'auto', padding: 16, background: 'var(--bg, #0c0d10)' }}>
-      <section style={{ marginBottom: 24 }}>
+    <div className="pc-template-manifest-structured" style={{ height: '100%', overflow: 'auto', padding: 16, background: 'var(--bg, #0c0d10)' }}>
+      <section className="pc-template-manifest-section pc-template-manifest-identity" style={{ marginBottom: 24 }}>
         <h3 style={sectionHeading}>Identity</h3>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
           <Field label="name" value={String(parsed.name ?? '')} onChange={(v) => updateField('name', v)} mono />
@@ -685,20 +696,21 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
         <Field label="description" value={String(parsed.description ?? '')} onChange={(v) => updateField('description', v)} multiline />
       </section>
 
-      <section style={{ marginBottom: 24 }}>
+      <section className="pc-template-manifest-section pc-template-manifest-models" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
           <h3 style={sectionHeading}>Models</h3>
           <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>per-role preferred model</span>
           <button
+            className="pc-template-manifest-add"
             onClick={() => updateModels({ ...modelsToObj(models), '': { preferred: '' } })}
             style={addBtnStyle}
           >
             <Plus size={10} /> add role
           </button>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="pc-template-manifest-stack pc-template-manifest-model-stack" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {Object.entries(modelsToObj(models)).map(([role, conf], i) => (
-            <div key={`${i}-${role}`} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div key={`${i}-${role}`} className="pc-template-manifest-row pc-template-manifest-model-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 type="text"
                 value={role}
@@ -722,6 +734,7 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
                 style={inputStyle(280)}
               />
               <button
+                className="pc-template-manifest-remove"
                 onClick={() => {
                   const next = { ...modelsToObj(models) };
                   delete next[role];
@@ -737,20 +750,21 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
         </div>
       </section>
 
-      <section style={{ marginBottom: 24 }}>
+      <section className="pc-template-manifest-section pc-template-manifest-plugins" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
           <h3 style={sectionHeading}>Plugins</h3>
           <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>recommended + auto-enable</span>
           <button
+            className="pc-template-manifest-add"
             onClick={() => updatePlugins([...plugins.map(pluginToEntry), { slug: '', autoEnable: true }])}
             style={addBtnStyle}
           >
             <Plus size={10} /> add plugin
           </button>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div className="pc-template-manifest-stack pc-template-manifest-plugin-stack" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {plugins.map(pluginToEntry).map((p, i) => (
-            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div key={i} className="pc-template-manifest-row pc-template-manifest-plugin-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 type="text"
                 value={p.slug}
@@ -774,7 +788,7 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
                 }}
                 style={inputStyle(140)}
               />
-              <label style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+              <label className="pc-template-manifest-check" style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
                 <input
                   type="checkbox"
                   checked={!!p.autoEnable}
@@ -787,6 +801,7 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
                 auto-enable
               </label>
               <button
+                className="pc-template-manifest-remove"
                 onClick={() => {
                   const next = plugins.map(pluginToEntry);
                   next.splice(i, 1);
@@ -802,21 +817,22 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
         </div>
       </section>
 
-      <section style={{ marginBottom: 24 }}>
+      <section className="pc-template-manifest-section pc-template-manifest-config" style={{ marginBottom: 24 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
           <h3 style={sectionHeading}>Config files</h3>
           <span style={{ fontSize: 11, color: 'var(--fg-dim)' }}>files surfaced in the operator&apos;s Config tab post-install</span>
           <button
+            className="pc-template-manifest-add"
             onClick={() => updateConfigFiles([...configFiles, { path: '', language: 'markdown' }])}
             style={addBtnStyle}
           >
             <Plus size={10} /> add file
           </button>
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div className="pc-template-manifest-stack pc-template-manifest-config-stack" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {configFiles.map((cf, i) => (
-            <div key={i} style={{ border: '1px solid var(--border)', borderRadius: 4, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <div key={i} className="pc-template-manifest-config-card" style={{ border: '1px solid var(--border)', borderRadius: 4, padding: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+              <div className="pc-template-manifest-config-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
                   type="text"
                   value={cf.path}
@@ -870,6 +886,7 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
                   <option value="secret">secret</option>
                 </select>
                 <button
+                  className="pc-template-manifest-remove"
                   onClick={() => {
                     const next = [...configFiles];
                     next.splice(i, 1);

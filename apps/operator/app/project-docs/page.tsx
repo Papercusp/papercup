@@ -21,8 +21,8 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export const dynamic = 'force-dynamic';
 
-function resolveProjectPath(slug: string): string | null {
-  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+async function resolveProjectPath(slug: string): Promise<string | null> {
+  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 async function listDocs(docsRoot: string): Promise<string[]> {
@@ -67,7 +67,7 @@ async function ProjectDocs({
   if (!slug) {
     return <Empty title="Missing ?harness=<slug>" body="Open this view via the harness Docs tab — it provides the slug." />;
   }
-  const projectPath = resolveProjectPath(slug);
+  const projectPath = await resolveProjectPath(slug);
   if (!projectPath) return <Empty title={`Unknown harness "${slug}"`} body="No matching entry in the projects registry." />;
 
   const docsRoot = join(projectPath, 'docs');
@@ -158,9 +158,9 @@ function basenameNoExt(p: string): string {
 
 function Empty({ title, body }: { title: string; body: string }) {
   return (
-    <div style={{ padding: '32px 24px', maxWidth: 640, margin: '0 auto', color: 'var(--fg-mute, #999)' }}>
-      <h2 style={{ margin: '0 0 8px', color: 'var(--fg, #ddd)' }}>{title}</h2>
-      <p>{body}</p>
+    <div className="project-docs-empty" style={{ padding: '32px 24px', maxWidth: 640, margin: '0 auto', color: 'var(--fg-mute, #999)' }}>
+      <h2 className="project-docs-empty-title" style={{ margin: '0 0 8px', color: 'var(--fg, #ddd)' }}>{title}</h2>
+      <p className="project-docs-empty-body">{body}</p>
     </div>
   );
 }
@@ -653,7 +653,7 @@ const projectDocsCss = `
 
 export default function Page(props: { searchParams: Promise<{ harness?: string; path?: string }> }) {
   return (
-    <Suspense fallback={<div style={{ padding: 24, color: '#888' }}>Loading project docs…</div>}>
+    <Suspense fallback={<div className="project-docs-loading" style={{ padding: 24, color: '#888' }}>Loading project docs…</div>}>
       <ProjectDocs searchParams={props.searchParams} />
     </Suspense>
   );

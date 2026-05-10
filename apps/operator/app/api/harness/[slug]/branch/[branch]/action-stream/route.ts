@@ -1,26 +1,34 @@
 /**
  * GET /api/harness/<slug>/branch/<branch>/action-stream?runId=&name=
  *
- * Server-Sent Events tail of a single action run's log file. `name` is
- * a query param (not a path segment) so plugin-contributed names with
- * `:` or `/` work.
+ * Server-Sent Events stream of a single action run. `name` is a query
+ * param (not a path segment) so plugin-contributed names with `:` or
+ * `/` work.
  *
- * Emits one event per stdout/stderr line ('output' or 'stderr'),
- * terminal markers (`action-started`, `action-completed`, `action-failed`),
- * a `done` event on terminal, and a periodic `: heartbeat`.
+ * Emits one event per stdout/stderr chunk ('output' or 'stderr'),
+ * terminal markers (`action-started`, `action-completed`,
+ * `action-failed`), a `done` event on terminal, and a periodic
+ * `: heartbeat`.
+ *
+ * Backed by the in-process branch-action-bus: lib/branch-actions.ts
+ * runAction()'s writeLine() publishes each chunk via publish(); this
+ * handler subscribes via subscribe(). Sub-millisecond live channel,
+ * no 250ms polling, no fs.watch.
+ *
+ * Backfill on connect: read the log file once + emit any historical
+ * markers (so reconnects after a server restart still replay the
+ * recent run state). After backfill, live updates come from the bus.
  *
  * Spec: per-branch action registry (substrate piece 3 of 3).
  */
-
 import { promises as fs } from 'node:fs';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
-import { isBranch, runLogPath, runMetaPath } from '@/lib/branch-actions';
+import { isBranch, runLogPath } from '@/lib/branch-actions';
+import { subscribe as subscribeAction } from '@/lib/branch-action-bus';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 1800;
-
-const POLL_INTERVAL_MS = 250;
 
 interface Params { params: Promise<{ slug: string; branch: string }> }
 
@@ -40,18 +48,16 @@ export async function GET(req: Request, { params }: Params) {
     return new Response('invalid runId', { status: 400 });
   }
 
-  const reg = loadHarnessRegistry();
+  const reg = await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === slug);
   if (!project) return new Response('unknown project', { status: 404 });
 
   const logPath = runLogPath(project.path, branch, name, runId);
-  const metaPath = runMetaPath(project.path, branch, name, runId);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const enc = new TextEncoder();
       let closed = false;
-      let offset = 0;
       let pending = '';
 
       const send = (event: string, data: unknown) => {
@@ -65,85 +71,80 @@ export async function GET(req: Request, { params }: Params) {
         try { controller.close(); } catch { /* already */ }
       };
 
-      // Emit a single line, classifying markers.
-      const emitLine = (line: string) => {
+      // Classify a single log-file line into the right SSE event.
+      // Used only for backfill; live events arrive pre-classified
+      // through the bus envelope's `kind` field.
+      const emitLineFromLog = (line: string): boolean => {
         if (line.startsWith('::papercusp::action-started\t')) {
           send('action-started', JSON.parse(line.slice('::papercusp::action-started\t'.length)));
         } else if (line.startsWith('::papercusp::action-completed\t')) {
           send('action-completed', JSON.parse(line.slice('::papercusp::action-completed\t'.length)));
-          send('done', { reason: 'terminal', kind: 'completed' });
+          send('done', { reason: 'terminal-during-backfill', kind: 'completed' });
           close();
+          return true;
         } else if (line.startsWith('::papercusp::action-failed\t')) {
           send('action-failed', JSON.parse(line.slice('::papercusp::action-failed\t'.length)));
-          send('done', { reason: 'terminal', kind: 'failed' });
+          send('done', { reason: 'terminal-during-backfill', kind: 'failed' });
           close();
+          return true;
         } else if (line.startsWith('::papercusp::stderr\t')) {
           send('stderr', { line: line.slice('::papercusp::stderr\t'.length) });
         } else {
           send('output', { line });
         }
-      };
-
-      const consume = (text: string) => {
-        pending += text;
-        let idx;
-        while ((idx = pending.indexOf('\n')) !== -1) {
-          const line = pending.slice(0, idx);
-          pending = pending.slice(idx + 1);
-          emitLine(line);
-          if (closed) return;
-        }
+        return false;
       };
 
       send('attached', { runId, slug, branch, name });
 
-      const poll = async () => {
-        if (closed) return;
-        try {
-          const stat = await fs.stat(logPath);
-          if (stat.size > offset) {
-            const fh = await fs.open(logPath, 'r');
-            try {
-              const buf = Buffer.alloc(stat.size - offset);
-              await fh.read(buf, 0, buf.length, offset);
-              offset = stat.size;
-              consume(buf.toString('utf8'));
-            } finally { await fh.close(); }
-          } else if (stat.size < offset) {
-            offset = 0;
-            pending = '';
-          }
-        } catch { /* file may not exist yet */ }
-
-        // If no terminal marker has fired but the meta says terminal,
-        // emit done to unstick clients (e.g. crashed child).
-        if (!closed) {
-          try {
-            const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
-            if (meta.status === 'completed' || meta.status === 'failed') {
-              // Drain remainder before closing.
-              try {
-                const stat2 = await fs.stat(logPath);
-                if (stat2.size > offset) {
-                  const fh = await fs.open(logPath, 'r');
-                  try {
-                    const buf = Buffer.alloc(stat2.size - offset);
-                    await fh.read(buf, 0, buf.length, offset);
-                    offset = stat2.size;
-                    consume(buf.toString('utf8'));
-                  } finally { await fh.close(); }
-                }
-              } catch { /* ignore */ }
-              if (!closed) {
-                send('done', { reason: 'meta-terminal', kind: meta.status });
-                close();
-              }
-            }
-          } catch { /* meta not flushed yet */ }
+      // 1. Backfill from disk once. The log file is authoritative for
+      //    history; the bus only carries recent events.
+      try {
+        const raw = await fs.readFile(logPath, 'utf8');
+        pending = raw;
+        let idx;
+        while ((idx = pending.indexOf('\n')) !== -1) {
+          const line = pending.slice(0, idx);
+          pending = pending.slice(idx + 1);
+          if (emitLineFromLog(line)) return;
         }
-      };
+      } catch { /* file not present yet — first event will arrive via bus */ }
 
-      const interval = setInterval(poll, POLL_INTERVAL_MS);
+      // 2. Subscribe to the in-process bus for live updates.
+      const channelKey = `${slug}:${runId}`;
+      const sub = subscribeAction(channelKey, (env) => {
+        if (closed) return;
+        if (env.kind === 'started') {
+          send('action-started', env.meta ?? {});
+        } else if (env.kind === 'completed') {
+          send('action-completed', env.meta ?? {});
+          send('done', { reason: 'terminal', kind: 'completed' });
+          close();
+        } else if (env.kind === 'failed') {
+          send('action-failed', env.meta ?? {});
+          send('done', { reason: 'terminal', kind: 'failed' });
+          close();
+        } else if (env.kind === 'stderr') {
+          // Bus payload is the raw text chunk; emit lines individually
+          // so the client mirrors the legacy line-oriented surface.
+          for (const line of env.text.split('\n')) {
+            if (line.length > 0) send('stderr', { line });
+          }
+        } else if (env.kind === 'output') {
+          for (const line of env.text.split('\n')) {
+            if (line.length > 0) send('output', { line });
+          }
+        }
+      });
+
+      // If the run already terminated (we joined late), the bus's
+      // recent ring buffer may carry the terminal event — sub.done
+      // tells us up front.
+      if (sub.done && !closed) {
+        send('done', { reason: 'late-join-terminal', kind: 'unknown' });
+        close();
+      }
+
       const heartbeat = setInterval(() => {
         if (closed) return;
         try { controller.enqueue(enc.encode(': heartbeat\n\n')); }
@@ -151,12 +152,10 @@ export async function GET(req: Request, { params }: Params) {
       }, 15_000);
 
       req.signal.addEventListener('abort', () => {
-        clearInterval(interval);
+        sub.unsubscribe();
         clearInterval(heartbeat);
         close();
       });
-
-      await poll();
     },
   });
 

@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'harness:list',
   capability: 'harness:read',
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),

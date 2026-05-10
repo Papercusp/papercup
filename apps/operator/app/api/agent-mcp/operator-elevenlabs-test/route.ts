@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   }
   const apiKey = typeof body.apiKey === 'string' && body.apiKey.length > 0
     ? body.apiKey
-    : readElevenLabsKey();
+    : await readElevenLabsKey();
   if (!apiKey) {
     return Response.json({ ok: false, error: 'no API key configured' }, { status: 400 });
   }

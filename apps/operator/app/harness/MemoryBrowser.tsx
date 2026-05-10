@@ -5,6 +5,9 @@ import { useQueryState, parseAsString } from 'nuqs';
 import Editor from '@monaco-editor/react';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { useShortcut } from '../../lib/hotkeys';
+import { useSyncQuery } from '@restart/sync';
+
+type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 
 type Tier = 'green' | 'yellow' | 'red';
 
@@ -78,9 +81,40 @@ export default function MemoryBrowser({ slug, alive }: Props) {
 
   const activeFile = useMemo(() => files.find((f) => f.path === active) ?? null, [files, active]);
 
-  // Load content for active file
+  // Eager subscription to all text artifacts for this harness — covers
+  // memory/*.md and other markdown files keyed by rel_path. Replaces the
+  // per-file REST fetch so picking a file in the tree shows content
+  // same-frame instead of after a round trip.
+  const { data: textArtifactRows } = useSyncQuery<TextArtifactRow>({
+    queryName: 'harnessTextArtifact.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+
+  // Map rel_path → content for sync reads. Recomputed only when the row
+  // set changes; consumer reads are O(1).
+  const contentByPath = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!Array.isArray(textArtifactRows)) return m;
+    for (const r of textArtifactRows) m.set(r.relPath, r.content ?? '');
+    return m;
+  }, [textArtifactRows]);
+
+  // Load content for active file — synchronous read from the Map. No
+  // fetch, no loading flash. Falls back to REST for paths not in the
+  // text-artifacts table (knowledge.md/mcp.json/etc. until Phase 0d).
   useEffect(() => {
     if (!active) return;
+    // Strip leading `.harness/` to match text-artifacts key convention.
+    const key = active.replace(/^\.harness\//, '');
+    if (contentByPath.has(key)) {
+      const content = contentByPath.get(key) ?? '';
+      setOriginal(content);
+      setDraft(content);
+      setLoading(false);
+      return;
+    }
+    // Disk-only files (post-Phase-0d these will all migrate). REST fallback.
     setLoading(true);
     fetch(`/api/harness/${slug}/memory-file?path=${encodeURIComponent(active)}`)
       .then((r) => r.json())
@@ -91,7 +125,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
       })
       .catch((e) => setToast(`load failed: ${e}`))
       .finally(() => setLoading(false));
-  }, [slug, active]);
+  }, [slug, active, contentByPath]);
 
   const dirty = original !== null && draft !== original;
 
@@ -120,7 +154,7 @@ export default function MemoryBrowser({ slug, alive }: Props) {
   }, [active, draft, dirty, slug, loadList]);
 
   // Ctrl/Cmd+S to save (works while focus is inside Monaco/vditor too).
-  useShortcut('editor.save', () => save(), {}, [save]);
+  useShortcut('editor.save', () => { void save(); }, {}, [save]);
 
   const grouped = useMemo(() => {
     const g: Record<Tier, MemFile[]> = { green: [], yellow: [], red: [] };

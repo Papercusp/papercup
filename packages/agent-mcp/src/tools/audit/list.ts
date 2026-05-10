@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'audit:list',
   capability: 'audit:read',
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),

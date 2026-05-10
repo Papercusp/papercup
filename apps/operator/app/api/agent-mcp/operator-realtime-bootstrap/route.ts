@@ -30,11 +30,11 @@ export const dynamic = 'force-dynamic';
 const REALTIME_MODEL = 'gpt-realtime-1.5';
 
 export async function GET() {
-  const prefs = loadVoicePrefs();
+  const prefs = await loadVoicePrefs();
   if (prefs.fullAgentEngine !== 'openai-realtime') {
     return Response.json({ error: 'not-enabled' }, { status: 404 });
   }
-  const apiKey = readOpenAiKey();
+  const apiKey = await readOpenAiKey();
   if (!apiKey) return Response.json({ error: 'no-openai-key' }, { status: 404 });
 
   let mintRes: Response;

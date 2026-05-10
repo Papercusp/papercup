@@ -89,7 +89,12 @@ services:
       # claude CLI auth — OAuth credentials portable from the local laptop.
       # File staged at /opt/papercup-data/claude-credentials.json on the host
       # (mode 0600). Mounted read-only into the container's $HOME/.claude.
+      # Used by both AGENT_BACKEND=claude-code (direct) and AGENT_BACKEND=omp
+      # (Meridian reads the same file via the Claude Code SDK).
       - /opt/papercup-data/claude-credentials.json:/root/.claude/.credentials.json:ro
+      # Meridian profiles + SDK state — survives container restarts so
+      # multi-profile sessions persist.
+      - /opt/papercup-data/meridian-config:/root/.config/meridian
       # gh CLI auth — token-based, stored at /opt/papercup-data/gh-token.
       - /opt/papercup-data/gh-token:/root/.config/gh/hosts.yml:ro
     environment:
@@ -105,8 +110,16 @@ services:
       # Harness runtime — set so apps/operator/app/api/_hono/harness-paths.ts
       # finds run.sh + prompts inside the image (not ~/autonomous-harness).
       PAPERCUSP_HARNESS_DIR: /opt/harness
-      # ANTHROPIC_API_KEY is optional when claude OAuth credentials are
-      # mounted; fall back to it if the OAuth file is missing.
+      # AGENT_BACKEND defaults to omp (Meridian + Claude Max OAuth via
+      # mounted credentials.json). Override to 'claude-code' or 'auto' to
+      # change. Most users should leave unset.
+      AGENT_BACKEND: ${AGENT_BACKEND:-omp}
+      # Meridian runs in-container alongside the operator (Dockerfile CMD).
+      # Override only if you're running meridian as a sibling service.
+      MERIDIAN_BASE_URL: ${MERIDIAN_BASE_URL:-http://127.0.0.1:3456}
+      # ANTHROPIC_API_KEY is fully optional with the omp default — Meridian
+      # uses Claude Max OAuth via the mounted credentials.json. Only needed
+      # if you set AGENT_BACKEND=claude-code AND don't have OAuth set up.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     networks:
       - coolify

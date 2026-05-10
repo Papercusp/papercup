@@ -12,13 +12,13 @@ import { loadVoicePrefs } from '@/lib/voice-prefs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const prefs = loadVoicePrefs();
+  const prefs = await loadVoicePrefs();
   const wantsPorcupine = prefs.wakeWordEngine === 'porcupine';
   const wantsKoala = prefs.noiseSuppressionEngine === 'koala';
   if (!wantsPorcupine && !wantsKoala) {
     return new Response('not-enabled', { status: 404 });
   }
-  const apiKey = readPicovoiceKey();
+  const apiKey = await readPicovoiceKey();
   if (!apiKey) return new Response('no-key', { status: 404 });
   return Response.json({ apiKey });
 }

@@ -100,19 +100,14 @@ async function scanCmd(args: string[]) {
 }
 
 async function pauseCmd(paused: boolean) {
-  // The panel publishes pause via in-memory state — there's no server
-  // endpoint. The CLI's pause writes a sentinel file the background
-  // scanner respects on its next poll.
-  const { writeFileSync, mkdirSync, rmSync, existsSync } = await import('node:fs');
-  const { dirname, join } = await import('node:path');
-  const { papercuspPath } = await import('../lib/papercusp-root');
-  const path = join(papercuspPath('system', 'operator'), 'paused.flag');
+  // Pause state is held in harness_shared.operator_paused (PG, migration 029).
+  // The background scanner polls /api/agent-mcp/operator-pause-flag.
+  const { setPaused, setResumed } = await import('../lib/mobile-operator-actions');
   if (paused) {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, new Date().toISOString());
+    await setPaused('cli');
     console.log('paused — background scans will stop on next poll');
   } else {
-    if (existsSync(path)) rmSync(path);
+    await setResumed();
     console.log('resumed');
   }
 }
@@ -173,12 +168,12 @@ function configCmd() {
   console.log(OPERATOR_SUBSTRATE_PROMPT);
 }
 
-function prefsCmd(args: string[]) {
+async function prefsCmd(args: string[]) {
   const sub = args[0];
   if (sub === 'list') {
     const filterIdx = args.indexOf('--filter');
     const filter = filterIdx >= 0 ? args[filterIdx + 1] : 'all';
-    let entries = listPreferenceEntries();
+    let entries = await listPreferenceEntries();
     if (filter === 'user-typed') entries = entries.filter((e) => e.tags.includes('USER-TYPED'));
     if (filter === 'operator-proposed') entries = entries.filter((e) => e.tags.some((t) => t.startsWith('OPERATOR-PROPOSED')));
     if (!entries.length) {

@@ -8,6 +8,7 @@ import { Checkbox } from './Checkbox';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { toast } from 'sonner';
+import { useSyncQuery } from '@restart/sync';
 import { Inbox, Send, FileText, NotebookPen, Workflow, Cpu, Brain } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
@@ -73,45 +74,167 @@ export default function DepartmentHarnessDashboard({ harnessSlug, departmentSlug
     'deptTab',
     parseAsStringEnum<Tab>(['inbox', 'outbox', 'compose', 'charter', 'notes', 'decisions', 'memory', 'director']).withDefault('inbox'),
   );
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [self, setSelf] = useState<Department | null>(null);
-  const [inbox, setInbox] = useState<OrgMessage[]>([]);
-  const [outbox, setOutbox] = useState<OrgMessage[]>([]);
-  const [charter, setCharter] = useState<string>('');
-  const [directorNotes, setDirectorNotes] = useState<string>('');
-  const [decisionLog, setDecisionLog] = useState<string>('');
   const [selectedMsg, setSelectedMsg] = useState<OrgMessage | null>(null);
-  const [projects, setProjects] = useState<ProjectLite[]>([]);
 
-  const refresh = useCallback(async () => {
-    try {
-      const [deptsRes, inboxRes, outboxRes, dirNotesRes, decisionLogRes, charterRes, projectsRes] = await Promise.all([
-        fetch('/api/org/departments').then((r) => r.json()),
-        fetch(`/api/org/${departmentSlug}/inbox`).then((r) => r.json()),
-        fetch(`/api/org/${departmentSlug}/outbox`).then((r) => r.json()),
-        fetch(`/api/org/${departmentSlug}/notes`).then((r) => r.ok ? r.text() : '').catch(() => ''),
-        fetch(`/api/org/${departmentSlug}/decisions`).then((r) => r.ok ? r.text() : '').catch(() => ''),
-        fetch(`/api/org/charter`).then((r) => r.ok ? r.text() : ''),
-        fetch('/api/org/projects').then((r) => r.json()).catch(() => ({ projects: [] })),
-      ]);
-      setDepartments(deptsRes.departments ?? []);
-      setSelf((deptsRes.departments ?? []).find((d: Department) => d.slug === departmentSlug) ?? null);
-      setInbox(inboxRes.messages ?? []);
-      setOutbox(outboxRes.messages ?? []);
-      setDirectorNotes(dirNotesRes);
-      setDecisionLog(decisionLogRes);
-      setCharter(charterRes);
-      setProjects(projectsRes.projects ?? []);
-    } catch (e) {
-      toast.error(`refresh failed: ${e}`);
-    }
-  }, [departmentSlug, harnessSlug]);
+  // All 7 org-dashboard polls migrated to Zero WS push. The chokidar
+  // watcher mirrors:
+  //   <org-root>/charter.md          → org_charter
+  //   <org-root>/departments.json    → org_departments
+  //   <org-root>/projects.json       → org_projects
+  //   <dept>/.harness/inbox-view.jsonl   → org_inbox  (per dept_slug)
+  //   <dept>/.harness/outbox-view.jsonl  → org_outbox (per dept_slug)
+  //   <dept>/.harness/director-notes.md  → org_notes
+  //   <dept>/.harness/decision-log.md    → org_decisions
+  // The 30s setInterval is gone.
+  const { data: charterRows } = useSyncQuery<{ content: string }>({
+    queryName: 'orgCharter.byOrg',
+    args: { orgId: 'default' },
+  });
+  const { data: deptRows } = useSyncQuery<{
+    deptSlug: string;
+    harnessSlug: string;
+    name: string;
+    mandate: string;
+    inboxKinds: readonly string[];
+    outboxKinds: readonly string[];
+  }>({
+    queryName: 'orgDepartments.byOrg',
+    args: { orgId: 'default' },
+  });
+  const { data: projectRows } = useSyncQuery<{
+    projectId: string;
+    slug: string;
+    name: string;
+    vertical: string;
+    status: string;
+  }>({
+    queryName: 'orgProjects.byOrg',
+    args: { orgId: 'default' },
+  });
+  const { data: inboxRows } = useSyncQuery<{
+    messageId: string;
+    ts: number;
+    msgFrom: string;
+    msgTo: readonly string[];
+    kind: string;
+    subject: string;
+    body: string;
+    refId?: string | null;
+    projectId?: string | null;
+    directiveId?: string | null;
+    status: string;
+    payload: Record<string, unknown>;
+  }>({
+    queryName: 'orgInbox.byDept',
+    args: { orgId: 'default', deptSlug: departmentSlug },
+    enabled: !!departmentSlug,
+  });
+  const { data: outboxRows } = useSyncQuery<{
+    messageId: string;
+    ts: number;
+    msgFrom: string;
+    msgTo: readonly string[];
+    kind: string;
+    subject: string;
+    body: string;
+    refId?: string | null;
+    projectId?: string | null;
+    directiveId?: string | null;
+    status: string;
+    payload: Record<string, unknown>;
+  }>({
+    queryName: 'orgOutbox.byDept',
+    args: { orgId: 'default', deptSlug: departmentSlug },
+    enabled: !!departmentSlug,
+  });
+  const { data: notesRows } = useSyncQuery<{ content: string }>({
+    queryName: 'orgNotes.byDept',
+    args: { orgId: 'default', deptSlug: departmentSlug },
+    enabled: !!departmentSlug,
+  });
+  const { data: decisionsRows } = useSyncQuery<{ content: string }>({
+    queryName: 'orgDecisions.byDept',
+    args: { orgId: 'default', deptSlug: departmentSlug },
+    enabled: !!departmentSlug,
+  });
 
-  useEffect(() => {
-    refresh();
-    const interval = setInterval(refresh, 5000);
-    return () => clearInterval(interval);
-  }, [refresh]);
+  // Derive the same shapes the rest of the component already uses.
+  const charter = useMemo(() => {
+    const r = Array.isArray(charterRows) ? charterRows[0] : null;
+    return r?.content ?? '';
+  }, [charterRows]);
+  const directorNotes = useMemo(() => {
+    const r = Array.isArray(notesRows) ? notesRows[0] : null;
+    return r?.content ?? '';
+  }, [notesRows]);
+  const decisionLog = useMemo(() => {
+    const r = Array.isArray(decisionsRows) ? decisionsRows[0] : null;
+    return r?.content ?? '';
+  }, [decisionsRows]);
+  const departments: Department[] = useMemo(() => {
+    if (!Array.isArray(deptRows)) return [];
+    return deptRows.map((r) => ({
+      slug: r.deptSlug,
+      harnessSlug: r.harnessSlug,
+      name: r.name,
+      mandate: r.mandate,
+      inboxKinds: [...(r.inboxKinds ?? [])],
+      outboxKinds: [...(r.outboxKinds ?? [])],
+    }));
+  }, [deptRows]);
+  const self = useMemo(
+    () => departments.find((d) => d.slug === departmentSlug) ?? null,
+    [departments, departmentSlug],
+  );
+  const projects: ProjectLite[] = useMemo(() => {
+    if (!Array.isArray(projectRows)) return [];
+    return projectRows.map((r) => ({
+      id: r.projectId,
+      slug: r.slug,
+      name: r.name,
+      vertical: r.vertical,
+      status: r.status,
+    }));
+  }, [projectRows]);
+  const inbox: OrgMessage[] = useMemo(() => {
+    if (!Array.isArray(inboxRows)) return [];
+    return inboxRows.map((r) => ({
+      id: r.messageId,
+      ts: r.ts,
+      from: r.msgFrom,
+      to: [...(r.msgTo ?? [])],
+      kind: r.kind,
+      subject: r.subject,
+      body: r.body,
+      refId: r.refId ?? undefined,
+      projectId: r.projectId ?? undefined,
+      directiveId: r.directiveId ?? undefined,
+      status: r.status as OrgMessage['status'],
+      metadata: (r.payload?.metadata as Record<string, unknown> | undefined) ?? undefined,
+    }));
+  }, [inboxRows]);
+  const outbox: OrgMessage[] = useMemo(() => {
+    if (!Array.isArray(outboxRows)) return [];
+    return outboxRows.map((r) => ({
+      id: r.messageId,
+      ts: r.ts,
+      from: r.msgFrom,
+      to: [...(r.msgTo ?? [])],
+      kind: r.kind,
+      subject: r.subject,
+      body: r.body,
+      refId: r.refId ?? undefined,
+      projectId: r.projectId ?? undefined,
+      directiveId: r.directiveId ?? undefined,
+      status: r.status as OrgMessage['status'],
+      metadata: (r.payload?.metadata as Record<string, unknown> | undefined) ?? undefined,
+    }));
+  }, [outboxRows]);
+
+  // The remaining mutation paths (PATCH /api/org/messages/*, etc.) trigger
+  // file writes; the watcher pushes the new state through Zero. No manual
+  // refresh needed. Kept as a stub for any callsite still wired to it.
+  const refresh = useCallback(async () => { /* Zero handles updates */ }, []);
 
   const pendingCount = inbox.filter((m) => m.status === 'pending').length;
 

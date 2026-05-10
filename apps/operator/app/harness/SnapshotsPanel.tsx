@@ -1,11 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { Checkbox } from './Checkbox';
-import { slugToSnapshotsKey, type SnapshotRow } from '@restart/zero-harness';
+import type { SnapshotConsolidatedRow } from '@restart/zero-harness';
 
 interface Snapshot {
   id: string;
@@ -19,7 +19,7 @@ type LocalSnapshotRow = {
   snapshotId: string; ts: number | string; iterNum?: number | string;
   files?: unknown; featureCounts?: unknown;
 };
-function rowToSnapshot(rRaw: SnapshotRow): Snapshot {
+function rowToSnapshot(rRaw: SnapshotConsolidatedRow): Snapshot {
   const r = rRaw as unknown as LocalSnapshotRow;
   return {
     id: r.snapshotId,
@@ -50,15 +50,15 @@ function fmtTs(ts: number): string {
   return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
+function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
   // Snapshots stream live from Zero (`harness_<slug>.harness_snapshots`).
   // Polling /api/harness/<slug>/snapshots stays as a sync ping that triggers
   // the FS scan + PG dual-write on the server.
-  // Per-harness named query: snapshotsSheets.all, snapshotsRestart.all, etc.
-  // The snapshot key resolver maps the slug to whichever registry namespace
-  // is right for that harness; the queryName follows.
-  const queryName = `${slugToSnapshotsKey(slug)}.all`;
-  const { data: zeroRows, loading } = useSyncQuery<SnapshotRow>({ queryName });
+  // Slug-agnostic Zero query (Migration 031).
+  const { data: zeroRows, loading } = useSyncQuery<SnapshotConsolidatedRow>({
+    queryName: 'snapshotsConsolidated.bySlug',
+    args: { harnessSlug: slug },
+  });
   const snapshots: Snapshot[] = useMemo(() => {
     if (loading || !Array.isArray(zeroRows)) return [];
     return zeroRows.map(rowToSnapshot);
@@ -82,13 +82,17 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 5000);
+    // 30s, not 5s: snapshots write per-iteration (~minutes apart). Zero
+    // pushes the row the moment dual-write lands, so the only role of
+    // this poll is to trigger the server-side FS scan + dual-write at
+    // a cadence that's not wasteful while the panel is open.
+    const t = setInterval(load, 30000);
     return () => clearInterval(t);
   }, [load]);
 
   const restore = useCallback(async () => {
     if (!selected) return;
-    if (!confirm(`Restore mission state from ${selected.id}? Current features.json, validation-contract.md${includeNotes ? ', supervisor-notes.md' : ''}${includeConfig ? ', config.json' : ''} will be overwritten.`)) return;
+    if (!confirm(`Restore mission state from ${selected.id}? Current features (harness_features in Postgres), validation-contract.md${includeNotes ? ', supervisor-notes.md' : ''}${includeConfig ? ', config.json' : ''} will be overwritten.`)) return;
     setBusy(true);
     try {
       const r = await fetch(`/api/harness/${slug}/snapshots/${selected.id}/restore`, {
@@ -138,7 +142,7 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Snapshots — {slug}</strong>
           <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>.harness/snapshots/</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>auto-refresh 5s</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>live (Zero)</span>
           {toast && (
             <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>
           )}
@@ -208,7 +212,7 @@ export default function SnapshotsPanel({ slug, onClose, onRestored }: Props) {
                     also restore config.json (per-role models)
                   </label>
                   <div style={{ marginTop: '0.25rem', color: '#6b7280', fontSize: '0.7rem' }}>
-                    features.json and validation-contract.md are always restored when present.
+                    features (harness_features rows) and validation-contract.md are always restored when present.
                   </div>
                 </div>
 
@@ -334,3 +338,6 @@ function SnapshotsGrid({
     />
   );
 }
+
+const SnapshotsPanel = memo(SnapshotsPanelInner);
+export default SnapshotsPanel;

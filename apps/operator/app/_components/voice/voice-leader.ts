@@ -90,16 +90,32 @@ export function bootVoiceLeader(): Promise<LeaderState> {
     channel = new BroadcastChannel(CHANNEL);
 
     let candidates: { tabId: string; ts: number }[] = [{ tabId: state.myTabId, ts: Date.now() }];
+    // Set when a heartbeat from an existing leader arrives mid-election.
+    // Without this, a tab booting after an existing leader has finished
+    // its election window would only see its own announce in `candidates`
+    // (the existing leader doesn't re-announce on every new tab) and
+    // would falsely "win" — producing two leaders. The existing leader's
+    // announce handler now replies with a heartbeat (below); we use that
+    // heartbeat to abort our own election and become a follower.
+    let conflictingLeaderTabId: string | null = null;
 
     channel.addEventListener('message', (ev: MessageEvent<Message>) => {
       const msg = ev.data;
       if (!msg) return;
       if (msg.kind === 'announce') {
         candidates.push({ tabId: msg.tabId, ts: msg.ts });
+        // If we're already the elected leader, immediately heartbeat so
+        // the announcer aborts its own election and follows us.
+        if (state.isLeader && msg.tabId !== state.myTabId && channel) {
+          channel.postMessage({ kind: 'heartbeat', tabId: state.myTabId, ts: Date.now() } satisfies Message);
+        }
       } else if (msg.kind === 'heartbeat') {
         if (state.leaderTabId === msg.tabId) {
           lastLeaderHeartbeatAt = msg.ts;
         } else if (!state.isLeader) {
+          // If we're still in our boot election window, record so the
+          // post-await code knows to defer to this leader.
+          if (msg.tabId !== state.myTabId) conflictingLeaderTabId = msg.tabId;
           state = { ...state, leaderTabId: msg.tabId };
           lastLeaderHeartbeatAt = msg.ts;
           notify();
@@ -133,6 +149,16 @@ export function bootVoiceLeader(): Promise<LeaderState> {
     // Wait the announce window for other tabs to chime in.
     await new Promise<void>((res) => setTimeout(res, ANNOUNCE_WINDOW_MS));
 
+    // If we received a heartbeat from an existing leader during the
+    // election window, defer to it unconditionally — its tabId may not
+    // be in our candidates list (existing leaders don't announce, only
+    // heartbeat).
+    if (conflictingLeaderTabId) {
+      state = { ...state, isLeader: false, leaderTabId: conflictingLeaderTabId };
+      startFollowerHeartbeatWatch();
+      notify();
+      return state;
+    }
     // Lowest tabId wins (deterministic, no clock skew).
     candidates.sort((a, b) => a.tabId.localeCompare(b.tabId));
     const winner = candidates[0];

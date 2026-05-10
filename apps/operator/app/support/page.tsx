@@ -14,15 +14,19 @@ interface FaqItem {
 
 const FAQS: FaqItem[] = [
   {
-    q: "First-run says 'claude not found'. What do I install?",
+    q: "First-run says 'agent CLI not found'. What do I install?",
     a: (
       <>
         <p>
-          Install the Anthropic Claude CLI globally:
+          Install one of the supported agent CLIs globally:
         </p>
-        <pre>npm install -g @anthropic-ai/claude-cli</pre>
+        <pre>{`# claude (default)
+npm install -g @anthropic-ai/claude-cli
+
+# or omp (set AGENT_BACKEND=omp to use it)
+bun add -g @oh-my-pi/pi-coding-agent`}</pre>
         <p>
-          You'll need Node.js 20+ on PATH. Verify with <code>claude --version</code>. The first-run banner on the home page turns from red to green once Papercusp can find <code>claude</code>.
+          You&rsquo;ll need Node.js 20+ on PATH. Verify with <code>claude --version</code> or <code>omp --version</code>. The first-run banner on the home page turns green once Papercusp can find one.
         </p>
       </>
     ),
@@ -36,10 +40,11 @@ const FAQS: FaqItem[] = [
         </p>
         <ol>
           <li>
-            Run <code>claude</code> directly in a terminal. The operator
-            shells out to <code>claude -p</code> for every agent, so if the
-            CLI itself can&rsquo;t reach Anthropic, neither can Papercusp.
-            Re-authenticate with <code>claude /login</code> if needed.
+            Run the agent CLI (<code>claude</code> or <code>omp</code>) directly
+            in a terminal. The operator shells out to it for every agent run,
+            so if the CLI itself can&rsquo;t reach the provider, neither can
+            Papercusp. Re-authenticate with <code>claude /login</code> (or
+            export <code>ANTHROPIC_API_KEY</code> for omp) if needed.
           </li>
           <li>
             Check that you&rsquo;re not over your <a href="https://console.anthropic.com/settings/limits" target="_blank" rel="noreferrer">monthly Anthropic quota</a>. The CLI returns a generic &ldquo;can&rsquo;t reach LLM&rdquo; on rate-limit responses.

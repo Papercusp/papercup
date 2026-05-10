@@ -102,12 +102,20 @@ Different-model re-validation after validator passes. Configure `models.crossche
 ### `wipCheckpoint`
 Background WIP commits during long worker runs. Requires `branchIsolation`.
 
-### `product`
-- `enabled`: product role can fire.
-- `mode`: `"propose"` writes proposals; `"auto-apply"` appends accepted bullets to SPEC.md.
-- `triggerOnNearDone`: fires once when `passed/total >= nearDoneThreshold` (default 0.8).
-- `triggerOnDone`: fires before exiting on DONE (lets mission self-extend).
-- `replanOnAccept`: re-plan after a proposal is accepted.
+### `proposals` (formerly `product`)
+
+Controls scoper MODE=proposal — the autonomous scope-expansion pass that reads
+SPEC.md's north-star, compares it to shipped features, and writes
+`.harness/proposals/*.md`. Pre-2026-04-25 this lived in a separate `product` role
+(prompt at `prompts/_archived/product.md`); the role was consolidated into the
+scoper. The legacy `product.*` keys are honored as fallbacks by run.sh, but new
+configs should use `proposals.*`.
+
+- `enabled` (legacy `product.enabled`): scoper proposal pass can fire.
+- `mode` (legacy `product.mode`): `"propose"` writes proposal files; `"auto-apply"` lets the reviewer append accepted bullets directly to SPEC.md.
+- `nearDoneEnabled` (legacy `product.triggerOnNearDone`): fires once when `passed/total >= nearDoneThreshold` (default 0.8).
+- `afterDone` (legacy `product.triggerOnDone`): fires before exiting on DONE (lets a mission self-extend).
+- `replanOnAccept`: re-plan after a proposal is accepted (same key in both namespaces).
 
 ### `checkpoints`
 - `enabled`: orchestrator may emit `CHECKPOINT <name>` and run.sh may auto-fire types with `triggerOn: post-planner`.

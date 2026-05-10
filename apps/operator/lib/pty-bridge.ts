@@ -308,13 +308,19 @@ export function getHistory(id: string): Buffer | null {
  * which is typically tens of KB regardless of session length. Uses
  * VS Code's same approach for remote terminal restore.
  *
+ * Async: xterm-headless `Terminal.write()` is queued — we MUST flush
+ * the queue before serializing or a fast reconnect can race the
+ * mirror-write and produce an empty screen. The flush is a no-op
+ * write whose callback fires after every prior queued write commits.
+ *
  * Returns null if the pty is unknown or the headless terminal has
  * been disposed.
  */
-export function getScreenSerialization(id: string): string | null {
+export async function getScreenSerialization(id: string): Promise<string | null> {
   const handle = handles.get(id);
   if (!handle) return null;
   try {
+    await new Promise<void>((resolve) => handle.headless.write('', resolve));
     return handle.serializer.serialize({ scrollback: HEADLESS_SCROLLBACK });
   } catch {
     return null;

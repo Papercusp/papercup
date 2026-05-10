@@ -62,6 +62,16 @@ interface DashboardTabManifest {
   iframeUrl?: string;          // direct URL — Pattern 1 iframe mode
   iframeUrlConfigKey?: string; // resolves through configSchema + per-harness config
   replaces?: string[];         // built-in tab ids this plugin tab supersedes
+  /**
+   * Append `&folder=<harness's project path>` to the resolved iframe URL.
+   * Use this when the iframe target is a third-party service we don't
+   * control (code-server, jupyter, n8n, …) that scopes by URL parameter
+   * rather than by reading our `?harness=<slug>` query. Operator-served
+   * iframe targets (fumadocs at /project-docs, pi at /pi) don't need
+   * this — they read the slug server-side and look up the project path
+   * themselves.
+   */
+  iframeAppendProjectFolder?: boolean;
 }
 
 interface SidebarItemManifest {
@@ -115,14 +125,17 @@ async function readJson<T>(path: string): Promise<T | null> {
  *   3. Direct: `tab.iframeUrl` (no config key indirection).
  *
  * Always appends `?harness=<slug>` so the iframe knows which install it's
- * scoped to. Returns null if the tab declares no iframe path at all.
+ * scoped to. When `tab.iframeAppendProjectFolder === true`, also appends
+ * `&folder=<projectPath>` for third-party iframe targets that don't
+ * understand our `harness` query (e.g. code-server). Returns null if the
+ * tab declares no iframe path at all.
  */
-function resolveIframeUrl(
+async function resolveIframeUrl(
   manifest: PluginManifest,
   tab: DashboardTabManifest,
   harnessConfig: Record<string, unknown> | null,
   harnessSlug: string,
-): string | null {
+): Promise<string | null> {
   let url: string | null = null;
 
   if (tab.iframeUrlConfigKey) {
@@ -145,8 +158,28 @@ function resolveIframeUrl(
   }
   if (!url) return null;
 
+  // Plugin manifests historically bake in `http://localhost:3055/<path>` for
+  // operator-self-served iframes (fumadocs at /project-docs, pi-coding at /pi).
+  // That breaks when the operator runs on a non-3055 port (prod build on :3070,
+  // any custom port). Rewrite to a same-origin relative path so the iframe
+  // resolves against whatever port the operator is actually serving on. We
+  // only rewrite the operator's known dev URL; external services like
+  // code-server (e.g. localhost:8082) are left alone.
+  url = url.replace(/^https?:\/\/localhost:3055(\/|$)/, '$1');
+
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}harness=${encodeURIComponent(harnessSlug)}`;
+  url = `${url}${sep}harness=${encodeURIComponent(harnessSlug)}`;
+
+  if (tab.iframeAppendProjectFolder) {
+    const projectPath = await resolveProjectPath(harnessSlug);
+    if (projectPath) {
+      url = `${url}&folder=${encodeURIComponent(projectPath)}`;
+    }
+    // Unknown slug → no folder hint; iframe falls back to whatever the
+    // third-party service has cached. Better than a 500.
+  }
+
+  return url;
 }
 
 export async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'global'): Promise<Array<PluginManifest & { source: string; path: string }>> {
@@ -204,7 +237,7 @@ interface RegistryShape {
 
 async function resolveProjectPath(slug: string): Promise<string | null> {
   const { loadHarnessRegistry } = await import('@/lib/harness-registry');
-  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 export const plugins = new Hono();
@@ -243,7 +276,7 @@ plugins.post('/runtime/invoke-action', async (c) => {
     return c.json({ error: 'plugin, action, slug are all required' }, 400);
   }
   const { loadHarnessRegistry } = await import('@/lib/harness-registry');
-  const project = loadHarnessRegistry().projects.find((p) => p.slug === slug) ?? null;
+  const project = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug) ?? null;
   const projectDir = project?.path ?? '/tmp';
   const stateDir = project ? `${project.path}/.harness` : '/tmp';
   const { invokePluginAction } = await import('../../../lib/plugin-host-runtime');
@@ -282,7 +315,7 @@ plugins.post('/runtime/fire-event', async (c) => {
         catch { return []; }
       })();
       const { loadHarnessRegistry } = await import('@/lib/harness-registry');
-      const project = loadHarnessRegistry().projects.find((p) => p.slug === slug) ?? null;
+      const project = (await loadHarnessRegistry()).projects.find((p) => p.slug === slug) ?? null;
       const ctxArgs = {
         installSlug: slug,
         projectDir: project?.path ?? '/tmp',
@@ -437,7 +470,7 @@ plugins.get('/:slug/contributions', async (c) => {
         join(HARNESSES_DIR(), slug, 'plugin-configs', `${p.name}.json`),
       );
       for (const tab of p.dashboardTabs ?? []) {
-        const resolvedIframeUrl = resolveIframeUrl(p, tab, harnessConfig, slug);
+        const resolvedIframeUrl = await resolveIframeUrl(p, tab, harnessConfig, slug);
         dashboardTabs.push({
           componentRoot: tab.componentRoot ?? pluginRoot,
           ...tab,

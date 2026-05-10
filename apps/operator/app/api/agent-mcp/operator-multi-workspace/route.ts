@@ -13,6 +13,6 @@ import { readMultiWorkspaceSnapshot } from '@/lib/operator-multi-workspace';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const snap = readMultiWorkspaceSnapshot(activeWorkspaceId());
+  const snap = await readMultiWorkspaceSnapshot(activeWorkspaceId());
   return Response.json(snap);
 }

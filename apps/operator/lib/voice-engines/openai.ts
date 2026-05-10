@@ -81,7 +81,7 @@ export function createOpenAiTts(cfg: OpenAiConfig): TtsEngine {
         if (!r.ok) return;
 
         const { recordSpend } = await import('../tts-spend');
-        recordSpend(text.length);
+        await recordSpend(text.length);
         charsTotal += text.length;
 
         const blob = await r.blob();

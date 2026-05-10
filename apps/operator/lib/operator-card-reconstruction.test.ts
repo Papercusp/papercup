@@ -1,58 +1,60 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
-const tmpRoot = mkdtempSync(join(tmpdir(), 'op-recon-'));
+// Mock the data-source modules at the boundary so we exercise only the
+// merge logic in `reconstructCards`. Both readLastScan and listDismissed
+// were filesystem-based when this test was first written; they're now
+// PG-backed (post-migration 025). Mocking them directly keeps the merge
+// test hermetic regardless of which storage backend they use.
+const lastScanMock = vi.fn<[], Promise<unknown>>();
+const dismissedMock = vi.fn<[], unknown[]>();
 
-vi.mock('./papercusp-root', () => ({
-  papercuspPath: (...parts: string[]) => join(tmpRoot, ...parts),
+vi.mock('./operator-last-scan', () => ({
+  readLastScan: () => lastScanMock(),
+}));
+vi.mock('./operator-dismissed-cache', () => ({
+  // listDismissed is sync (returns DismissedEntry[]).
+  listDismissed: () => dismissedMock(),
 }));
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'test-ws',
 }));
-// Stub the PG layer — we only exercise the file-merge fallback.
+// Stub the PG layer — every readOperatorState/withWorkspace call path
+// is mocked above. Anything else slipping through should fail loudly.
 vi.mock('@restart/db-org', () => ({
   withWorkspace: async () => {
-    throw new Error('PG unavailable in test');
+    throw new Error('PG unavailable — should be mocked at higher layer');
+  },
+  getOrgPg: () => {
+    throw new Error('PG unavailable — should be mocked at higher layer');
   },
 }));
 
-import { reconstructCards } from './operator-card-reconstruction';
-
-const LAST_SCAN = join(tmpRoot, 'system', 'operator', 'last-scan.json');
-const DISMISSED = join(tmpRoot, 'system', 'operator', 'dismissed.json');
+const { reconstructCards } = await import('./operator-card-reconstruction');
 
 beforeEach(() => {
-  try {
-    rmSync(LAST_SCAN);
-  } catch {}
-  try {
-    rmSync(DISMISSED);
-  } catch {}
+  lastScanMock.mockReset();
+  dismissedMock.mockReset();
 });
 
-describe('reconstructCards (PG-unavailable fallback)', () => {
+describe('reconstructCards (merge logic)', () => {
   it('returns [] when no last-scan exists', async () => {
+    lastScanMock.mockResolvedValue(null);
+    dismissedMock.mockReturnValue([]);
     const out = await reconstructCards();
     expect(out).toEqual([]);
   });
 
-  it('hydrates pending from last-scan + dismissed from dismissed.json', async () => {
-    const { mkdirSync } = await import('node:fs');
-    mkdirSync(join(tmpRoot, 'system', 'operator'), { recursive: true });
-    writeFileSync(
-      LAST_SCAN,
-      JSON.stringify({
-        scanCompletedAt: new Date().toISOString(),
-        scanCostUsd: 0.05,
-        cards: [
-          { id: 'c1', title: 'A', action: 'inform' },
-          { id: 'c2', title: 'B', action: 'inform' },
-        ],
-      }),
-    );
-    writeFileSync(DISMISSED, JSON.stringify([{ id: 'c2', dismissedAt: new Date().toISOString() }]));
+  it('hydrates pending from last-scan + dismissed from dismissed list', async () => {
+    lastScanMock.mockResolvedValue({
+      scanCompletedAt: new Date().toISOString(),
+      scanCostUsd: 0.05,
+      cards: [
+        { id: 'c1', title: 'A', action: 'inform' },
+        { id: 'c2', title: 'B', action: 'inform' },
+      ],
+    });
+    dismissedMock.mockReturnValue([{ id: 'c2', dismissedAt: new Date().toISOString() }]);
+
     const out = await reconstructCards();
     expect(out).toHaveLength(2);
     expect(out.find((c) => c.id === 'c1')?.status).toBe('pending');

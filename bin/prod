@@ -12,10 +12,11 @@ PORT="${PORT:-3070}"
 PTY="${PTY:-3056}"
 
 echo "==> killing prior server + builds on :$PORT"
-pkill -f "next start -p $PORT" 2>/dev/null
-pkill -f "next-server"           2>/dev/null
+# NOTE: do NOT `pkill -f "next-server"` — that would kill the dev server (:3055)
+# and any sibling Next instance. fuser kills only whoever holds our port.
+pkill -f "next start -p $PORT"   2>/dev/null
+pkill -f "node .*standalone/apps/operator/server.js" 2>/dev/null
 pkill -9 -f "next build"         2>/dev/null
-pkill -9 -f "fumadocs-mdx"       2>/dev/null
 fuser -k "$PORT/tcp"             2>/dev/null
 fuser -k "$PTY/tcp"              2>/dev/null
 rm -f "$REPO/apps/operator/.next/.build-lock" \
@@ -37,8 +38,42 @@ if ! npm --workspace @papercusp/web run build >> "$LOG" 2>&1; then
 fi
 
 echo "==> starting prod server on :$PORT (pty-ws :$PTY)"
-cd "$REPO/apps/operator"
-PAPERCUSP_PTY_WS_PORT="$PTY" nohup npx next start -p "$PORT" >> "$LOG" 2>&1 &
+# Next 16 prints "next start does not work with output: standalone" and
+# falls back to a doc-only route map (every app route 404s) when invoked
+# under output:'standalone'. Use the standalone server.js entrypoint
+# Next itself recommends. The cwd MUST be .next/standalone/apps/operator
+# or every CSS/JS chunk silently 404s (see memory note
+# feedback_papercup_standalone_cwd).
+STANDALONE_DIR="$REPO/apps/operator/.next/standalone/apps/operator"
+SERVER_JS="$STANDALONE_DIR/server.js"
+if [ ! -f "$SERVER_JS" ]; then
+  echo "==> standalone server.js missing at $SERVER_JS — build did not produce a standalone bundle"
+  exit 1
+fi
+cd "$STANDALONE_DIR"
+# Source apps/operator/.env.local if present so vars like
+# HARNESS_ZERO_INTERNAL_SERVER (zero-cache pointer for SyncProvider)
+# and NEXT_PUBLIC_CHATWOOT_* reach the standalone server. Next.js
+# `output:'standalone'` deliberately doesn't bundle .env files, and
+# `next start` is unavailable under standalone — so without this
+# sourcing the standalone server has no idea about local-dev config.
+# Symptom of a missing HARNESS_ZERO_INTERNAL_SERVER: prod's
+# /api/runtime-config returns {zeroServer:null} and Zero falls back
+# to POLLING (~113 req/min) even though dev's :4849 is running.
+ENV_LOCAL="$REPO/apps/operator/.env.local"
+if [ -f "$ENV_LOCAL" ]; then
+  echo "==> sourcing $ENV_LOCAL"
+  # `set -a` exports every var assignment. `|| true` survives lines
+  # that look like comments or blank.
+  set -a
+  # shellcheck disable=SC1090
+  . "$ENV_LOCAL" || true
+  set +a
+fi
+
+PORT="$PORT" HOSTNAME="${PAPERCUSP_BIND_HOST:-127.0.0.1}" NODE_ENV=production \
+  PAPERCUSP_PTY_WS_PORT="$PTY" \
+  nohup node server.js >> "$LOG" 2>&1 &
 disown
 echo "==> server pid $! — Ctrl-C stops the tail; server keeps running"
 echo "==> kill server later:  fuser -k $PORT/tcp"

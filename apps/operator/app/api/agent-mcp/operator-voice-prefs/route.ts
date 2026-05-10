@@ -10,7 +10,7 @@ import { loadVoicePrefs, saveVoicePrefs } from '@/lib/voice-prefs';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  return Response.json(loadVoicePrefs());
+  return Response.json(await loadVoicePrefs());
 }
 
 export async function PUT(req: NextRequest) {
@@ -23,6 +23,6 @@ export async function PUT(req: NextRequest) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return new Response('expected JSON object', { status: 400 });
   }
-  const next = saveVoicePrefs(body as any);
+  const next = await saveVoicePrefs(body as any);
   return Response.json(next);
 }

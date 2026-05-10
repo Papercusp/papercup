@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { defineTool } from '../../define-tool';
 
 export default defineTool({
+  name: 'tasks:close',
   capability: 'tasks:write',
   args: z.object({
     harnessSlug: z.string().min(1),

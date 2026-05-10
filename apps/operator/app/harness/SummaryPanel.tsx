@@ -1,8 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useSyncQuery } from '@restart/sync';
+
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { remarkFeatureLinks } from './remarkFeatureLinks';
 import { FeatureLink, type FeatureLite } from './FeatureLink';
 
@@ -11,41 +14,68 @@ interface Props {
   onOpenFeature?: (id: string) => void;
 }
 
-export default function SummaryPanel({ slug, onOpenFeature }: Props) {
-  const [source, setSource] = useState<string | null>(null);
-  const [features, setFeatures] = useState<FeatureLite[]>([]);
-  const [error, setError] = useState<string | null>(null);
+interface ZeroFeatureRow {
+  featureId: string;
+  title: string;
+  summary?: string | null;
+  status: string;
+  attempts: number | string;
+  claims?: string | null;
+  notes?: string | null;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const [sumRes, statusRes] = await Promise.all([
-          fetch(`/api/harness/${encodeURIComponent(slug)}/summary`),
-          fetch(`/api/harness/${encodeURIComponent(slug)}/status`),
-        ]);
-        if (!sumRes.ok) throw new Error(`summary HTTP ${sumRes.status}`);
-        const sum = await sumRes.json();
-        const status = statusRes.ok ? await statusRes.json() : null;
-        if (cancelled) return;
-        setSource(typeof sum.summary === 'string' ? sum.summary : '');
-        setFeatures(status?.features ?? []);
-        setError(null);
-      } catch (e: any) {
-        if (cancelled) return;
-        setError(e?.message ?? 'failed to load');
-      }
-    };
-    load();
-    const id = setInterval(load, 10_000);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [slug]);
+const STATUS_VALUES: ReadonlySet<FeatureLite['status']> = new Set([
+  'todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked',
+]);
+
+function SummaryPanelInner({ slug, onOpenFeature }: Props) {
+  const workspaceId = useWorkspaceId();
+
+  // Summary text comes via Zero (push, no polling). The watcher mirrors
+  // .harness/summary.md → harness_shared.harness_summaries on every edit.
+  const { data: summaryRows } = useSyncQuery<{ harnessSlug: string; content: string }>({
+    queryName: 'summary.byHarness',
+    args: { harnessSlug: slug, workspaceId },
+  });
+  const source: string | null = useMemo(() => {
+    if (!Array.isArray(summaryRows)) return null;
+    return summaryRows[0]?.content ?? '';
+  }, [summaryRows]);
+
+  // Features come from the slug-agnostic Zero query (push, no polling).
+  // Reads harness_shared.harness_features_consolidated by slug — works
+  // for any registered harness without compile-time slug coupling.
+  const { data: zeroFeatureRows } = useSyncQuery<ZeroFeatureRow>({
+    queryName: 'featuresConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
+  });
 
   const featuresById = useMemo(() => {
     const m = new Map<string, FeatureLite>();
-    for (const f of features) m.set(f.id, f);
+    if (!Array.isArray(zeroFeatureRows)) return m;
+    for (const zf of zeroFeatureRows) {
+      const status = (STATUS_VALUES.has(zf.status as FeatureLite['status'])
+        ? zf.status
+        : 'todo') as FeatureLite['status'];
+      let claims: string[] | undefined;
+      if (zf.claims) {
+        try {
+          const parsed = JSON.parse(zf.claims);
+          if (Array.isArray(parsed)) claims = parsed;
+        } catch {}
+      }
+      m.set(zf.featureId, {
+        id: zf.featureId,
+        title: zf.title,
+        status,
+        attempts: typeof zf.attempts === 'number' ? zf.attempts : Number(zf.attempts) || 0,
+        claims,
+        notes: zf.notes ?? undefined,
+      });
+    }
     return m;
-  }, [features]);
+  }, [zeroFeatureRows]);
 
   const components = useMemo(() => ({
     a: (props: any) => {
@@ -72,17 +102,6 @@ export default function SummaryPanel({ slug, onOpenFeature }: Props) {
     borderRadius: 14,
     boxShadow: '0 18px 48px rgba(0,0,0,0.28)',
   };
-
-  if (error) {
-    return (
-      <div style={outerStyle}>
-        <div className="h-empty">
-          <span className="h-empty-icon">!</span>
-          <span>summary unavailable: {error}</span>
-        </div>
-      </div>
-    );
-  }
 
   if (source === null) {
     return (
@@ -111,3 +130,6 @@ export default function SummaryPanel({ slug, onOpenFeature }: Props) {
     </div>
   );
 }
+
+const SummaryPanel = memo(SummaryPanelInner);
+export default SummaryPanel;

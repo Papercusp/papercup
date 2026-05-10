@@ -96,6 +96,27 @@ describe('voice-leader election', () => {
     expect(getVoiceLeaderState().isLeader).toBe(true);
   });
 
+  it('late-joining tab defers to existing heartbeating leader (regression: two-leader bug)', async () => {
+    // Simulate an already-elected leader in another tab by opening a
+    // second FakeBroadcastChannel and replying with a heartbeat as soon
+    // as our boot announces itself. Before the fix, the booting tab
+    // would see only its own announce within the election window and
+    // falsely "win" — producing two leaders. With the fix, the heartbeat
+    // received mid-election aborts our election and makes us a follower.
+    const PEER_TAB_ID = '0-existing-leader-aaaaaa'; // lex-low so it would lose nothing-to
+    const peer = new FakeBroadcastChannel('operator-voice');
+    peer.addEventListener('message', (ev: any) => {
+      if (ev.data?.kind === 'announce' && ev.data.tabId !== PEER_TAB_ID) {
+        peer.postMessage({ kind: 'heartbeat', tabId: PEER_TAB_ID, ts: Date.now() });
+      }
+    });
+
+    const s = await bootVoiceLeader();
+    expect(s.isLeader).toBe(false);
+    expect(s.leaderTabId).toBe(PEER_TAB_ID);
+    peer.close();
+  });
+
   it('requestVoiceLead is a no-op when BroadcastChannel is unavailable', async () => {
     const orig = (globalThis as any).BroadcastChannel;
     (globalThis as any).BroadcastChannel = undefined;

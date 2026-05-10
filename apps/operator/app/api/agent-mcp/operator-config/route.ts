@@ -13,18 +13,20 @@
  * load-bearing tier-table + schema rules and ships with the substrate.
  * The user only edits voice/tone (`prompt_user`) and the workspace's
  * learned preferences (`preferences`).
+ *
+ * Storage: both `prompt_user` and `preferences` live in PG (migration 022,
+ * `harness_shared.operator_prompt_user` and `harness_shared.operator_preferences`).
+ * The runtime operator (`lib/operator-prompt.ts`, `lib/operator-preferences.ts`)
+ * already reads from these tables — keeping this route file-backed left a
+ * silent bifurcation where settings-UI edits never reached the operator.
+ * `prompt_user_path` / `prefs_path` are now informational labels showing
+ * the qualified table name; the settings page displays them in a code
+ * block so the user can still see where the data lives.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { promises as fs } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { papercuspPath } from '@/lib/papercusp-root';
 import { OPERATOR_SUBSTRATE_PROMPT } from '@/lib/operator-prompt-system';
-
-function OPERATOR_DIR() { return papercuspPath('system', 'operator'); }
-const PROMPT_USER_PATH = () => join(OPERATOR_DIR(), 'prompt-user.md');
-const PROMPT_LEGACY_PATH = () => join(OPERATOR_DIR(), 'prompt.md');
-const PREFS_PATH = () => join(OPERATOR_DIR(), 'preferences.md');
+import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 
 const DEFAULT_PROMPT_USER = `# Operator voice + free-form preferences
 
@@ -39,56 +41,38 @@ const DEFAULT_PREFS = `# Operator preferences (workspace-scoped)
 (empty)
 `;
 
-async function readOrInit(path: string, def: string): Promise<string> {
-  try {
-    return await fs.readFile(path, 'utf8');
-  } catch {
-    await fs.mkdir(dirname(path), { recursive: true });
-    await fs.writeFile(path, def, { mode: 0o600 });
-    return def;
-  }
-}
+const PROMPT_USER_LABEL = 'harness_shared.operator_prompt_user';
+const PREFS_LABEL = 'harness_shared.operator_preferences';
 
-/**
- * Migrate a legacy `prompt.md` into `prompt-user.md` once. Best-effort —
- * if the rename fails the user just sees the default scaffold and their
- * old prompt remains on disk untouched.
- */
-async function migrateLegacyPromptOnce(): Promise<void> {
-  try {
-    const userExists = await fs.stat(PROMPT_USER_PATH()).then(() => true, () => false);
-    if (userExists) return;
-    const legacy = await fs.readFile(PROMPT_LEGACY_PATH(), 'utf8');
-    if (!legacy?.trim()) return;
-    await fs.writeFile(PROMPT_USER_PATH(), legacy, { mode: 0o600 });
-  } catch {
-    /* no legacy file — nothing to migrate */
-  }
+async function readContent(
+  table: 'operator_prompt_user' | 'operator_preferences',
+  fallback: string,
+): Promise<string> {
+  const raw = await readOperatorState<{ content?: string }>(table);
+  return typeof raw?.content === 'string' ? raw.content : fallback;
 }
 
 export async function GET() {
-  await migrateLegacyPromptOnce();
   const [prompt_user, preferences] = await Promise.all([
-    readOrInit(PROMPT_USER_PATH(), DEFAULT_PROMPT_USER),
-    readOrInit(PREFS_PATH(), DEFAULT_PREFS),
+    readContent('operator_prompt_user', DEFAULT_PROMPT_USER),
+    readContent('operator_preferences', DEFAULT_PREFS),
   ]);
   return NextResponse.json({
     prompt_user,
     preferences,
     substrate_prompt: OPERATOR_SUBSTRATE_PROMPT,
-    prompt_user_path: PROMPT_USER_PATH(),
-    prefs_path: PREFS_PATH(),
+    prompt_user_path: PROMPT_USER_LABEL,
+    prefs_path: PREFS_LABEL,
   });
 }
 
 export async function PUT(req: NextRequest) {
   const body = (await req.json()) as { prompt_user?: string; preferences?: string };
-  await fs.mkdir(OPERATOR_DIR(), { recursive: true });
   if (typeof body.prompt_user === 'string') {
-    await fs.writeFile(PROMPT_USER_PATH(), body.prompt_user, { mode: 0o600 });
+    await writeOperatorState('operator_prompt_user', { content: body.prompt_user });
   }
   if (typeof body.preferences === 'string') {
-    await fs.writeFile(PREFS_PATH(), body.preferences, { mode: 0o600 });
+    await writeOperatorState('operator_preferences', { content: body.preferences });
   }
   return GET();
 }

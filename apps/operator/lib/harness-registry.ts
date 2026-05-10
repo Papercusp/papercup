@@ -1,49 +1,38 @@
 /**
  * Single source of truth for the operator's harness-project registry.
  *
- * The registry lives at `<workspace-root>/registry.json` (per-workspace,
- * via {@link papercuspPath}). New workspaces start empty; that's the
- * point. Callers must NEVER read or write `~/.restart-harness-projects.json`
- * directly — that legacy global file is the CLI's concern alone (the CLI
- * mirrors writes there for transition compat; the operator ignores it).
+ * Persisted in `harness_shared.harness_registry` (PG, migration 025).
+ * Was previously `<workspace-root>/registry.json`; the new home keeps
+ * the same per-workspace scoping via the workspace_id PK column.
  *
- * Anyone tempted to merge "the legacy file" into the result is creating
- * the workspace-leak bug we just fixed; resist.
+ * Operator never reads any home-directory JSON registry. PG is the
+ * single source of truth; merging in legacy files re-introduces a
+ * workspace-leak bug we've already fixed.
+ *
+ * API converted to async as part of the migration. Callers in async
+ * route handlers / page components add `await`; the few sync wrappers
+ * become async functions of their own.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-
-import { papercuspPath } from '@/lib/papercusp-root';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 export interface ProjectEntry {
   slug: string;
   path: string;
   harness_kind?: string;
+  /** Department slug for harness_kind='department' projects (e.g. "business"). */
+  department_slug?: string;
 }
 
 export interface HarnessRegistry {
   projects: ProjectEntry[];
 }
 
-function registryPath(): string {
-  return papercuspPath('registry.json');
-}
-
-export function loadHarnessRegistry(): HarnessRegistry {
-  const path = registryPath();
-  if (!existsSync(path)) return { projects: [] };
-  try {
-    const parsed = JSON.parse(readFileSync(path, 'utf8')) as HarnessRegistry;
-    return { projects: parsed.projects ?? [] };
-  } catch {
-    return { projects: [] };
-  }
+export async function loadHarnessRegistry(): Promise<HarnessRegistry> {
+  const raw = await readOperatorState<HarnessRegistry>('harness_registry');
+  return { projects: raw?.projects ?? [] };
 }
 
 export async function saveHarnessRegistry(reg: HarnessRegistry): Promise<void> {
-  const path = registryPath();
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(reg, null, 2));
+  await writeOperatorState('harness_registry', { projects: reg.projects ?? [] });
 }

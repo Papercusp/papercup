@@ -29,6 +29,7 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { selfUrl } from './self-url';
 import {
   type ActionManifest,
   type PluginActionManifest,
@@ -387,17 +388,26 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
 
   const child = spawn('bash', [desc.scriptPath], { cwd, env });
 
+  // Bus channel key — same shape /action-stream subscribes against.
+  const { publish: publishAction } = await import('./branch-action-bus');
+  const channelKey = `${harness}:${runId}`;
+  publishAction(channelKey, 'started', '', {
+    runId, harness, branch, name, scriptPath: desc.scriptPath, cwd, startedAt,
+  });
+
   const t0 = Date.now();
   const writeLine = (chunk: Buffer, stream: 'stdout' | 'stderr') => {
-    // Tag stderr lines so xterm can colour them.
     const text = chunk.toString('utf8');
+    // Disk write stays — backfill on connect + post-hoc replay still
+    // read from the log file. Bus is the live channel.
     if (stream === 'stderr') {
-      // Prefix each non-empty line with a marker.
       const lines = text.split('\n');
       const tagged = lines.map((l, i) => (l.length > 0 ? `::papercusp::stderr\t${l}` : (i < lines.length - 1 ? '' : ''))).join('\n');
       logFh.write(tagged).catch(() => undefined);
+      publishAction(channelKey, 'stderr', text);
     } else {
       logFh.write(text).catch(() => undefined);
+      publishAction(channelKey, 'output', text);
     }
   };
   child.stdout.on('data', (b: Buffer) => writeLine(b, 'stdout'));
@@ -421,6 +431,10 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
       } catch { /* ignore */ }
       try { await logFh.close(); } catch { /* ignore */ }
       try { await fs.writeFile(metaPath, JSON.stringify(final, null, 2), 'utf8'); } catch { /* ignore */ }
+      const terminalKind: 'completed' | 'failed' = final.status === 'completed' ? 'completed' : 'failed';
+      publishAction(channelKey, terminalKind, '', {
+        runId, exitCode: code, signal, durationMs: final.durationMs, endedAt,
+      });
       resolve(final);
     });
   });
@@ -478,7 +492,7 @@ async function runButtonAction(args: {
     try {
       // The plugin's URL is operator-relative. Resolve against the operator's
       // self-URL so this works in standalone + dev modes.
-      const base = process.env.PAPERCUSP_SELF_URL ?? 'http://localhost:3055';
+      const base = selfUrl();
       const fullUrl = url.startsWith('http') ? url : `${base}${url.startsWith('/') ? '' : '/'}${url}`;
 
       const res = await fetch(fullUrl, {

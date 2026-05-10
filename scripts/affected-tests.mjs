@@ -30,6 +30,7 @@ const base = arg('--base', process.env.AFFECTED_BASE || 'origin/main');
 const runIntegration = has('--integration');
 const runAll = has('--all');
 const dry = has('--dry');
+const runElSuite = has('--el-suite');
 const excludeArg = arg('--exclude', '');
 const excludes = new Set(excludeArg.split(',').filter(Boolean));
 
@@ -139,6 +140,35 @@ function affectedWorkspaces() {
   return [...affected].map((name) => wsByName.get(name)).filter(Boolean);
 }
 
+/**
+ * Detect "EL-relevant" file changes — persona, sync script, the test
+ * itself, or any registered command def the agent might call. When
+ * these change AND --integration is set, auto-enable --el-suite so the
+ * operator's voice agent doesn't drift unnoticed.
+ */
+function elSuiteAutoTrigger() {
+  if (runAll) return false; // user already opted into everything
+  let changed;
+  try {
+    changed = sh(`git diff --name-only ${base}...HEAD`).split('\n').filter(Boolean);
+    const uncommitted = sh('git diff --name-only HEAD').split('\n').filter(Boolean);
+    const untracked = sh('git ls-files --others --exclude-standard').split('\n').filter(Boolean);
+    changed = [...new Set([...changed, ...uncommitted, ...untracked])];
+  } catch { return false; }
+  return changed.some((f) =>
+    f === 'apps/operator/prompts/operator.persona.md' ||
+    f === 'apps/operator/scripts/el-agent-sync.mjs' ||
+    f === 'apps/operator/scripts/el-suite-test.mjs' ||
+    f.startsWith('apps/operator/lib/commands/defs/')
+  );
+}
+if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
+  console.log('(EL-relevant files changed — auto-enabling --el-suite)');
+  // mutate the flag so the task collector below picks it up
+  // eslint-disable-next-line no-global-assign
+  globalThis.__autoElSuite = true;
+}
+
 const affected = affectedWorkspaces();
 
 if (!affected.length) {
@@ -150,7 +180,20 @@ const tasks = [];
 for (const ws of affected) {
   if (excludes.has(ws.name)) { console.log(`(excluded ${ws.name})`); continue; }
   if (ws.scripts.test) tasks.push({ ws, script: 'test' });
+  // Static drift check between el-agent-sync TOOLS list and the
+  // commands registry. Cheap (no network), catches the runtime crash
+  // class that hit us yesterday ("Client tool not defined on client").
+  // Always runs when present — no integration flag gate.
+  if (ws.scripts['lint:el-tools']) tasks.push({ ws, script: 'lint:el-tools' });
   if (runIntegration && ws.scripts['test:integration']) tasks.push({ ws, script: 'test:integration' });
+  // EL Conv AI behavior suite. Hits the live agent; expensive (a few
+  // EL minutes per run). Gated behind --integration AND --el-suite
+  // because most operator changes don't affect persona/tools — opt-in
+  // when you've touched prompts/operator.persona.md, scripts/el-agent-
+  // sync.mjs, lib/commands/defs/**, or want to verify before a release.
+  // Skips with exit 0 when EL credentials aren't available so CI
+  // without an XI_API_KEY doesn't fail the gate.
+  if (runIntegration && (runElSuite || globalThis.__autoElSuite) && ws.scripts['test:el-suite']) tasks.push({ ws, script: 'test:el-suite' });
 }
 
 if (!tasks.length) {

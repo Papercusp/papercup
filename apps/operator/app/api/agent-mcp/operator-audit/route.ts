@@ -1,7 +1,7 @@
 /**
  * POST /api/agent-mcp/operator-audit — log a single lifecycle event.
  *
- * Body shape: { cardId: string, kind: 'dispatched'|'acked'|'undo_cancel', context?: object }
+ * Body shape: { cardId: string, kind: OperatorAuditKind, context?: object }
  */
 
 import { NextRequest } from 'next/server';
@@ -9,10 +9,15 @@ import { writeOperatorAudit, type OperatorAuditKind, type ActorMethod } from '@/
 
 export const dynamic = 'force-dynamic';
 
-const ALLOWED: ReadonlySet<OperatorAuditKind> = new Set([
+const ALLOWED: ReadonlySet<OperatorAuditKind> = new Set<OperatorAuditKind>([
+  // Current lifecycle (post-collapse).
+  'accepted',
+  'ignored',
+  'accept_failed',
+  'undo_cancel',
+  // Legacy — kept so replayed audits + slow-migrating clients keep working.
   'dispatched',
   'acked',
-  'undo_cancel',
   'consumed',
   'escalated',
   'rejected',

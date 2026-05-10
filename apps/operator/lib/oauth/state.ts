@@ -10,12 +10,16 @@
  * The nonce is server-side single-use: the first callback consumes it
  * and subsequent callbacks with the same nonce are rejected.
  *
- * V1 substrate stores the nonce table in-memory (the operator is a
- * single-process server). V1.1 will move to PG so multi-instance
- * deployments work.
+ * Storage: `harness_shared.oauth_nonces` (PG, migration 030). Was
+ * previously a process-local Map, lost across restarts and incompatible
+ * with multi-instance deploys. Per the prior module doc's V1.1 TODO.
+ *
+ * Both helpers are now async because the nonce read/write is a PG
+ * round-trip; callers in the two oauth routes were updated.
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { getOrgPg } from '@restart/db-org';
 
 const STATE_VERSION = 1 as const;
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 min
@@ -59,11 +63,27 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64');
 }
 
+async function rememberNonce(nonce: string, exp: number): Promise<void> {
+  const { sql } = getOrgPg();
+  const now = Date.now();
+  await sql`
+    INSERT INTO harness_shared.oauth_nonces (nonce, exp_ms, consumed, created_at)
+    VALUES (${nonce}, ${exp}, false, ${now})
+    ON CONFLICT (nonce) DO NOTHING
+  `;
+  // Opportunistic GC: if the table is larger than 1000 rows, sweep expired
+  // entries. Cheap because of the exp_ms index.
+  const cnt = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.oauth_nonces`;
+  if ((cnt[0]?.n ?? 0) > 1000) {
+    await sql`DELETE FROM harness_shared.oauth_nonces WHERE exp_ms < ${now}`;
+  }
+}
+
 /**
  * Sign a state token. The returned string is opaque from a security
  * perspective — caller treats it as a single token, not parseable.
  */
-export function signState(claims: StateClaims, ttlMs = DEFAULT_TTL_MS): string {
+export async function signState(claims: StateClaims, ttlMs = DEFAULT_TTL_MS): Promise<string> {
   const payload: SignedState = {
     ...claims,
     v: STATE_VERSION,
@@ -72,28 +92,8 @@ export function signState(claims: StateClaims, ttlMs = DEFAULT_TTL_MS): string {
   };
   const body = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
   const sig = b64url(createHmac('sha256', getSecret()).update(body).digest());
-  rememberNonce(payload.nonce, payload.exp);
+  await rememberNonce(payload.nonce, payload.exp);
   return `${body}.${sig}`;
-}
-
-interface NonceRecord {
-  exp: number;
-  consumed: boolean;
-}
-
-const nonceTable = new Map<string, NonceRecord>();
-
-function rememberNonce(nonce: string, exp: number): void {
-  nonceTable.set(nonce, { exp, consumed: false });
-  // Opportunistic GC.
-  if (nonceTable.size > 1000) sweepNonces();
-}
-
-function sweepNonces(): void {
-  const now = Date.now();
-  for (const [k, v] of nonceTable) {
-    if (v.exp < now) nonceTable.delete(k);
-  }
 }
 
 export interface VerifyStateResult {
@@ -105,9 +105,11 @@ export interface VerifyStateResult {
 /**
  * Verify a state token AND consume its nonce. A successful verify is
  * destructive — calling it twice with the same token returns
- * `already-consumed`.
+ * `already-consumed`. The consumption is a single transactional
+ * UPDATE … WHERE consumed = false RETURNING — atomic against concurrent
+ * callbacks racing to claim the same nonce.
  */
-export function verifyAndConsumeState(token: string): VerifyStateResult {
+export async function verifyAndConsumeState(token: string): Promise<VerifyStateResult> {
   if (!token || typeof token !== 'string' || !token.includes('.')) {
     return { ok: false, error: 'malformed' };
   }
@@ -130,10 +132,29 @@ export function verifyAndConsumeState(token: string): VerifyStateResult {
   if (payload.v !== STATE_VERSION) return { ok: false, error: 'malformed' };
   if (payload.exp < Date.now()) return { ok: false, error: 'expired' };
 
-  const nonce = nonceTable.get(payload.nonce);
-  if (!nonce) return { ok: false, error: 'unknown-nonce' };
-  if (nonce.consumed) return { ok: false, error: 'already-consumed' };
-  nonce.consumed = true;
+  const { sql } = getOrgPg();
+  // Single round-trip atomic claim. CTE first checks existence; UPDATE
+  // claims if not yet consumed. The two RETURNING paths let us
+  // distinguish unknown-nonce from already-consumed.
+  const claimed = await sql<{ status: 'claimed' | 'already' | 'unknown' }[]>`
+    WITH lookup AS (
+      SELECT consumed FROM harness_shared.oauth_nonces WHERE nonce = ${payload.nonce}
+    ),
+    upd AS (
+      UPDATE harness_shared.oauth_nonces
+         SET consumed = true
+       WHERE nonce = ${payload.nonce} AND consumed = false
+       RETURNING true AS ok
+    )
+    SELECT CASE
+      WHEN NOT EXISTS (SELECT 1 FROM lookup) THEN 'unknown'::text
+      WHEN EXISTS (SELECT 1 FROM upd) THEN 'claimed'::text
+      ELSE 'already'::text
+    END AS status
+  `;
+  const status = claimed[0]?.status ?? 'unknown';
+  if (status === 'unknown') return { ok: false, error: 'unknown-nonce' };
+  if (status === 'already') return { ok: false, error: 'already-consumed' };
 
   return {
     ok: true,
@@ -147,8 +168,13 @@ export function verifyAndConsumeState(token: string): VerifyStateResult {
   };
 }
 
-/** Test-only: clear all in-memory state. */
-export function __resetForTest(): void {
-  nonceTable.clear();
+/**
+ * Test-only: drop the in-process secret-key cache and DELETE all rows
+ * in oauth_nonces. The DELETE is destructive across the whole table,
+ * so don't use this in any non-test path.
+ */
+export async function __resetForTest(): Promise<void> {
   secretKey = null;
+  const { sql } = getOrgPg();
+  await sql`DELETE FROM harness_shared.oauth_nonces`;
 }

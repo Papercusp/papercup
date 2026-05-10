@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { expectNoA11yViolations } from './_axe';
 
 /**
  * Voice mode E2E coverage.
@@ -43,6 +44,12 @@ test.describe('voice settings', () => {
     await page.goto('/settings/voice');
     await expect(page.getByText('STT spend (Deepgram)')).toBeVisible();
     await expect(page.getByText('Voicemode (local Whisper) and Web Speech are free')).toBeVisible();
+  });
+
+  test('settings/voice has no serious or critical a11y violations', async ({ page }) => {
+    await page.goto('/settings/voice');
+    await expect(page.getByText('STT spend (Deepgram)')).toBeVisible();
+    await expectNoA11yViolations(page);
   });
 
   test('cap knobs persist via PUT', async ({ page }) => {

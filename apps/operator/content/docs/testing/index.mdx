@@ -1,10 +1,36 @@
 ---
-title: Testing — strategy, conventions, and OSS stack (v1.0)
+title: Testing — strategy, conventions, and OSS stack (v1.1)
 ---
 
 import { Callout } from 'fumadocs-ui/components/callout';
 
-<Callout type="warn" title="Status: design proposal v1.0">
+<Callout type="info" title="What changed in v1.1 (2026-05-06)">
+- §1.10: dashboard policy clarified — Restart admin `/tests`,
+  `/load-tests`, `/tester` are explicitly in scope (cross-project,
+  separate surface).
+- §1.6: integration tests live in a sibling `test/` directory, not
+  colocated under `src/` — matches what's actually shipped.
+- §1.12: k6 scripts may live colocated *or* at workspace-root
+  `load-tests/scripts/` for cross-project scripts; the dashboard reads
+  from `<projectRoot>/load-tests/scripts/`.
+- §1.16 Q4: Pact marked won't-do (pi/agent-mcp covers contract drift
+  via schema generation).
+- §1.9: integration retry default lowered from `1` to `0`
+  (testcontainers-per-worker is deterministic).
+- §1.4: `vitest-fail-on-console` now wired by default in shared config.
+- §1.4: `@axe-core/playwright` + `vitest-axe` adopted; first coverage
+  in `libs/ui-primitives` (4 components) and `apps/operator` (2 e2e specs).
+- Phase 3: TESTING.md present in 16/16 packages.
+- Phase 4 (Storybook 10 + Lost Pixel): shipped in 4 packages —
+  `libs/ui-primitives` (18 stories), `libs/marketplace-public-ui`
+  (9 stories), `libs/agent-chat` (7 stories), `apps/operator`
+  (10 stories). 47 total baselines (~5 MB). CI workflow runs all four
+  via `run-visual` PR label (auto-applied on story file changes by
+  `.github/labeler.yml`). See [`testing/visual-regression`](./visual-regression)
+  for the operational guide.
+</Callout>
+
+<Callout type="warn" title="Status: design proposal v1.1">
 This page is the active design document for the **Papercusp testing
 framework** — what we build, what we adopt off-the-shelf, how agents
 discover the right tests to run, and how CI gates merges. Once
@@ -266,7 +292,8 @@ apps/<app>/
   src/
     foo.ts
     foo.test.ts                    ← unit, colocated with source
-    foo.integration.test.ts        ← integration, colocated
+  test/
+    foo.integration.test.ts        ← integration, sibling dir
   e2e/
     smoke.spec.ts                  ← Playwright E2E, separate dir
     fixtures/
@@ -277,9 +304,13 @@ apps/<app>/
   playwright.config.ts             ← only if app has E2E
 ```
 
-**Why colocated unit + integration**: they reference the source under
-test directly; moving them to a sibling directory adds import-path
-friction without value.
+**Why unit colocated, integration in `test/`**: unit tests reference the
+source directly so colocation removes import friction. Integration tests
+boot containers, share fixtures, and are run as a group — a sibling
+`test/` dir keeps them out of source listings and makes "run all
+integration" a literal directory glob. This matches what's actually
+shipped in `apps/operator/test/` rather than the originally-proposed
+fully-colocated layout.
 
 **Why separate `e2e/` dir**: Playwright specs reference URLs and
 fixtures, not source files. Different runner, different config,
@@ -484,8 +515,9 @@ full run is ~25 min cold, ~12 min warm.
 
 ### Flaky-test handling
 
-- Vitest `retry: 1` for integration; `retry: 2` for E2E. Locally,
-  retry is off.
+- Vitest `retry: 0` for integration (testcontainers-per-worker is
+  deterministic; relax only if a measured flake forces it); `retry: 2`
+  for E2E. Locally, retry is off.
 - Tests that fail then pass are surfaced in the PR comment via
   `dorny/test-reporter`'s "flaky" status.
 - A test that's been flaky three times in seven days is auto-quarantined
@@ -502,7 +534,12 @@ full run is ~25 min cold, ~12 min warm.
 
 ## 1.10 Test UI
 
-Three free, idiomatic surfaces. **No custom dashboard.**
+Three free, idiomatic surfaces. **No custom dashboard inside the
+operator.** A cross-project status dashboard on the **Restart admin
+web app** (`:3001`) is explicitly in scope and already shipped at
+`/tests`, `/load-tests`, `/tester` — those pages aggregate JUnit
+output, drive k6 runs, and proxy ad-hoc API calls. They complement,
+do not replace, the three surfaces below.
 
 - **Vitest UI** — `nx test <project> --ui`. Opens at `http://localhost:51204`.
   Per-project test browser, watch mode, coverage, in-browser stack
@@ -604,8 +641,14 @@ Two layers, both nightly-only (never per-PR):
 
 - **k6 HTTP baselines** for `apps/shop-api` Typesense search, wholesale
   grid filter aggregation, and `@restart/com` request paths. Scripts
-  live in `apps/<app>/perf/*.js`. Nightly job runs against a dev-mode
-  full stack and asserts p95 within ±20 % of the recorded baseline.
+  live colocated with their owning project (`apps/<app>/perf/*.js`)
+  *or* in a workspace-root `load-tests/scripts/` directory when they
+  cross project boundaries. The Restart-side `/load-tests` dashboard
+  on `:3001` is the runner — it reads from `<projectRoot>/load-tests/scripts/`
+  per the `?project=` switcher (see §1.10) and falls back to the
+  workspace-root location for legacy scripts. Nightly job runs against
+  a dev-mode full stack and asserts p95 within ±20 % of the recorded
+  baseline.
 - **Vitest bench** for `libs/papergrid` render-path micro-benchmarks
   (RichGrid row mount, virtual-scroll resize, cell-renderer churn).
   Pattern: `*.bench.ts` colocated with source. Vitest's built-in
@@ -783,15 +826,14 @@ parallelize Phase 3 across projects further.
    ~80 % of users), or Chromium + Firefox + WebKit (slow, complete)?
    Proposed: Chromium per PR (via `run-e2e` label), all three nightly.
 
-4. **MSW for COM mocking — or Pact contracts?** Some unit tests in
-   non-integration projects want to avoid COM round-trips. Two
-   options: (a) MSW handlers at the fetch boundary (COM is fetch);
-   (b) **Pact** consumer-driven contracts between `apps/*` and
-   `@restart/com` so each side tests against a shared contract file.
-   Pact is the better long-term fit because it catches schema drift
-   the integration tests would only catch when both sides are wired
-   up. Proposed: mandate integration tests for v1 (status quo);
-   revisit Pact in v2 once the COM surface stabilises.
+4. **MSW for COM mocking — or Pact contracts?** *Resolved: MSW only,
+   Pact won't-do.* The pi/agent-mcp toolchain already locks COM
+   contracts at the schema level (Zod + JSON Schema generation), so
+   Pact's consumer-driven contract value is largely already captured.
+   MSW handlers at the fetch boundary cover the remaining "avoid a
+   real COM round-trip" cases in unit tests. Adding Pact would mean
+   another dep, another CLI, another report format — for value the
+   integration tests + schema generation already provide.
 
 5. **Trunk Flaky Tests adoption.** Free tier exists; cost is wiring
    the Trunk CLI into CI plus signing up for an account.

@@ -57,7 +57,7 @@ Every prompt lists curl commands the agent can use:
 These are **operator-local reads** — no auth needed. Writes always go through `/api/admin/execute-action` with a bearer token.
 
 <Callout type="info">
-The curl path works because `claude -p` invocations from `run.sh` and the TS orchestrator don't restrict `--allowed-tools` — `Bash` is available by default.
+The curl path works because agent CLI invocations from `run.sh` and the TS orchestrator (whether `omp -p` or `claude -p`) don't restrict `--allowed-tools` — `Bash` is available by default in both backends.
 </Callout>
 
 ## `send_message` action

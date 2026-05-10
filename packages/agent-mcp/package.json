@@ -17,6 +17,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@mcp-ui/server": "^6.1.0",
     "@modelcontextprotocol/sdk": "*",
     "postgres": "*",
     "zod": "*",

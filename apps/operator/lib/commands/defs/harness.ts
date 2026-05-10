@@ -199,8 +199,140 @@ const harnessRecentSuggestions: QueryDef<z.infer<typeof RecentSuggestionsArgs>> 
   },
 };
 
+// ─── New voice tools (audit unlock 2026-05-07) ─────────────────────
+
+const IssuesListArgs = z.object({
+  slug: z.string().optional()
+    .describe('Optional harness slug. Omit for cross-harness needs-human-review list.'),
+  limit: z.number().int().min(1).max(50).default(20).optional()
+    .describe('Max issues to return (default 20).'),
+});
+
+const issuesList: QueryDef<z.infer<typeof IssuesListArgs>> = {
+  id: 'issues.list',
+  kind: 'query',
+  description: 'List open issues / features needing human review.',
+  promptDescription:
+    'Two modes: pass slug to list pending issues for that harness; omit slug to list ' +
+    'cross-harness features that need human review. Returns ' +
+    '{ count, issues: [{id, title, severity, harness_slug?, status}, ...] }. ' +
+    'Use to answer "any open issues?", "issues on sheets?", or "what needs my approval?".',
+  schema: IssuesListArgs,
+  agents: ['oracle', 'operator'],
+  audit: 'sample',
+  tier: 'fast-query',
+  handler: async ({ slug, limit }) => {
+    if (slug) {
+      const r = await fetch(`${baseUrl()}/api/harness/${encodeURIComponent(slug)}/issues-list`);
+      if (!r.ok) throw new Error(`issues.list failed: HTTP ${r.status}`);
+      const d = await r.json();
+      const issues = (d?.pending ?? []).concat(d?.issues ?? []).slice(0, limit ?? 20);
+      return { count: issues.length, issues };
+    }
+    const r = await fetch(`${baseUrl()}/api/harness/needs-human-review`);
+    if (!r.ok) throw new Error(`issues.list failed: HTTP ${r.status}`);
+    const d = await r.json();
+    const features = (d?.features ?? []).slice(0, limit ?? 20).map((f: any) => ({
+      id: f.id,
+      title: f.title,
+      harness_slug: f.harness_slug,
+      status: f.status ?? 'needs-review',
+    }));
+    return { count: features.length, issues: features };
+  },
+};
+
+const EscalationsArgs = z.object({
+  slug: z.string().min(1).describe('Harness slug.'),
+});
+
+const escalationsGet: QueryDef<z.infer<typeof EscalationsArgs>> = {
+  id: 'escalations.get',
+  kind: 'query',
+  description: 'Get escalation + supervisor notes (if any) for a harness.',
+  promptDescription:
+    'Returns { hasEscalation, escalation, supervisorNotes, mtimeMs }. ' +
+    "If hasEscalation is false, the harness has no active escalation — say so plainly. " +
+    'Otherwise paraphrase the escalation headline; do NOT read the full text aloud — ' +
+    'the panel renders it. Use to answer "any escalations?" or "what\'s wrong with sheets?".',
+  schema: EscalationsArgs,
+  agents: ['oracle', 'operator'],
+  audit: 'sample',
+  tier: 'fast-query',
+  handler: async ({ slug }) => {
+    const r = await fetch(`${baseUrl()}/api/harness/${encodeURIComponent(slug)}/escalation`);
+    if (!r.ok) {
+      if (r.status === 404) return { hasEscalation: false, escalation: null, supervisorNotes: null, mtimeMs: null };
+      throw new Error(`escalations.get failed: HTTP ${r.status}`);
+    }
+    const d = await r.json();
+    const hasEscalation = !!(d?.escalation && String(d.escalation).trim());
+    return {
+      hasEscalation,
+      escalation: hasEscalation ? d.escalation : null,
+      supervisorNotes: d?.supervisorNotes ?? null,
+      mtimeMs: d?.mtimeMs ?? null,
+    };
+  },
+};
+
+const PendingReviewsArgs = z.object({
+  slug: z.string().min(1).describe('Harness slug.'),
+  limit: z.number().int().min(1).max(50).default(20).optional(),
+});
+
+const pendingReviewsList: QueryDef<z.infer<typeof PendingReviewsArgs>> = {
+  id: 'pending-reviews.list',
+  kind: 'query',
+  description: 'List pending reviews (capability approvals, plan reviews, etc.) for a harness.',
+  promptDescription:
+    'Returns { count, reviews: [{id, kind, title, ts, ...}, ...] }. ' +
+    'Use to answer "what\'s pending review?" or "anything waiting on me?". ' +
+    'Pair with operator_approve_pending when the user says "approve it" — ' +
+    'find the id in this list, then call operator_approve_pending with the slug+capability.',
+  schema: PendingReviewsArgs,
+  agents: ['oracle', 'operator'],
+  audit: 'sample',
+  tier: 'fast-query',
+  handler: async ({ slug, limit }) => {
+    const r = await fetch(`${baseUrl()}/api/harness/${encodeURIComponent(slug)}/reviews`);
+    if (!r.ok) throw new Error(`pending-reviews.list failed: HTTP ${r.status}`);
+    const d = await r.json();
+    const reviews = (d?.reviews ?? []).slice(0, limit ?? 20);
+    return { count: reviews.length, reviews };
+  },
+};
+
+const HealthArgs = z.object({
+  slug: z.string().min(1).describe('Harness slug.'),
+});
+
+const harnessHealth: QueryDef<z.infer<typeof HealthArgs>> = {
+  id: 'harness.health',
+  kind: 'query',
+  description: 'Get a fast health snapshot for a harness — alive, escalated, feature-status counts.',
+  promptDescription:
+    'Returns { slug, alive, escalated, feature_counts: {passed, failing, in_progress, blocked}, ' +
+    'lastRunMs }. Use for "is sheets healthy?" / "is the harness running?" — single fast call ' +
+    "instead of harness_status + escalations_get separately. If escalated is true, mention it; " +
+    "if failing > 0, mention the count.",
+  schema: HealthArgs,
+  agents: ['oracle', 'operator'],
+  audit: 'sample',
+  tier: 'fast-query',
+  handler: async ({ slug }) => {
+    const r = await fetch(`${baseUrl()}/api/harness/${encodeURIComponent(slug)}/health`);
+    if (!r.ok) throw new Error(`harness.health failed: HTTP ${r.status}`);
+    return await r.json();
+  },
+};
+
 register(harnessStatus);
 register(harnessList);
 register(harnessListFeatures);
 register(harnessLastScan);
 register(harnessRecentSuggestions);
+register(issuesList);
+register(escalationsGet);
+register(pendingReviewsList);
+register(harnessHealth);

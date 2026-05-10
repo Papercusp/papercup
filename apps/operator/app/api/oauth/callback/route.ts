@@ -44,7 +44,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ ok: false, error: 'code + state required' }, { status: 400 });
   }
 
-  const verified = verifyAndConsumeState(state);
+  const verified = await verifyAndConsumeState(state);
   if (!verified.ok || !verified.claims) {
     return NextResponse.json(
       { ok: false, error: `oauth state ${verified.error}` },

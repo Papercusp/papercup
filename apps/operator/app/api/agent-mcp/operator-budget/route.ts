@@ -9,7 +9,7 @@ import { checkBudget, setBudget } from '@/lib/operator-budget';
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const c = checkBudget();
+  const c = await checkBudget();
   return Response.json({
     configured: !!c.state,
     dailyCapUsd: c.capUsd,
@@ -30,6 +30,6 @@ export async function PUT(req: NextRequest) {
   if (!Number.isFinite(cap) || cap <= 0) {
     return new Response('dailyCapUsd must be a positive number', { status: 400 });
   }
-  const next = setBudget(cap);
+  const next = await setBudget(cap);
   return Response.json({ ok: true, dailyCapUsd: next.dailyCapUsd });
 }

@@ -77,6 +77,7 @@
     "provision": { "type": "object", "description": "Cloudflare/infra provisioning hints." },
     "oauth": { "type": "array", "items": { "type": "object" }, "description": "OAuth provider declarations consumed by ctx.oauth." },
     "main": { "type": "string", "description": "Node-style entry-point hint; CLI also probes index.{cjs,js,mjs,ts}." },
-    "config": { "type": "object", "description": "Default config values. configSchema describes the shape; this provides defaults." }
+    "config": { "type": "object", "description": "Default config values. configSchema describes the shape; this provides defaults." },
+    "_legacyExtras": { "type": "object", "description": "Escape hatch for forward-compatible extras the schema doesn't know yet." }
   }
 }

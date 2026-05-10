@@ -17,7 +17,7 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  const candidates = await refreshCandidates().catch(() => readCandidates());
+  const candidates = await refreshCandidates().catch(async () => await readCandidates());
   return Response.json({ candidates });
 }
 
@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
   if (decision === 'approve') {
     const today = new Date().toISOString().slice(0, 10);
     const entry = `- [OPERATOR-PROPOSED-USER-CONFIRMED-${today}] [STANDING-APPROVE]\n  capability=${capability}, target=${target}\n  pattern: ≥3 silent dispatches in 24h\n  user confirmed: ${new Date().toISOString()}`;
-    appendPreferenceEntry(entry);
+    await appendPreferenceEntry(entry);
   }
   // For both approve + dismiss we refresh candidates so the user-approved
   // pair drops out (loadPreferences will exclude it next pass).

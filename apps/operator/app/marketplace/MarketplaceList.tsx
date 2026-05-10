@@ -6,12 +6,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
+import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { useQueryState, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
 import * as Lucide from 'lucide-react';
 import { Checkbox } from '../harness/Checkbox';
 import InstallButton from './InstallButton';
 import RouteLink from '../_components/RouteLink';
+import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 
 gsap.registerPlugin(useGSAP);
 
@@ -66,6 +69,8 @@ function CardIcon({ name, kind }: { name: string | null | undefined; kind: 'plug
 export default function MarketplaceList({ kind, catalog, installedTemplates, installedPlugins }: Props) {
   const listRef = useRef<HTMLElement | null>(null);
   const reducedMotion = useReducedMotion() ?? false;
+  const visualEffectsEnabled = useFancyEffectsEnabled();
+  const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const isPlugin = kind === 'plugin';
   const label = isPlugin ? 'plugins' : 'templates';
   const catalogForKind = useMemo(() => catalog.filter((c) => (c.kind ?? 'template') === kind), [catalog, kind]);
@@ -120,13 +125,30 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
 
   const harnesses = installedTemplates;
 
+  // Eager via Zero — pluginEnables.byWorkspace returns rows of
+  // {harnessSlug, pluginSlug, enabled} for the current workspace.
+  // Replaces the lazy /api/plugins/enabled fetch so the marketplace list
+  // shows install state same-frame on mount and on busySlug changes.
+  const marketplaceWorkspaceId = useWorkspaceId();
+  const { data: enableRows } = useSyncQuery<{
+    harnessSlug: string;
+    pluginSlug: string;
+    enabled: boolean;
+  }>({
+    queryName: 'pluginEnables.byWorkspace',
+    args: { workspaceId: marketplaceWorkspaceId },
+    enabled: !!marketplaceWorkspaceId && isPlugin,
+  });
   useEffect(() => {
     if (!isPlugin) return;
-    fetch('/api/plugins/enabled', { cache: 'no-store' })
-      .then((r) => r.json())
-      .then((d) => setEnabledMap(d?.enabled ?? {}))
-      .catch(() => {});
-  }, [isPlugin, busySlug]);
+    if (!Array.isArray(enableRows)) return;
+    const m: Record<string, string[]> = {};
+    for (const r of enableRows) {
+      if (!r.enabled) continue;
+      (m[r.harnessSlug] ??= []).push(r.pluginSlug);
+    }
+    setEnabledMap(m);
+  }, [enableRows, isPlugin, busySlug]);
 
   const visibleCatalog = useMemo(() => {
     if (!q.trim()) return filtered;
@@ -187,7 +209,7 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
 
   useGSAP(
     () => {
-      if (!listRef.current || reducedMotion) return;
+      if (!listRef.current || !fancyEffectsEnabled) return;
       const q = gsap.utils.selector(listRef.current);
       const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
 
@@ -219,7 +241,7 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
         sweep.kill();
       };
     },
-    { scope: listRef, dependencies: [kind, visibleCatalog.length, enablePicker, reducedMotion] },
+    { scope: listRef, dependencies: [kind, visibleCatalog.length, enablePicker, fancyEffectsEnabled] },
   );
 
   async function disableIn(slug: string, harnessSlugs: string[]) {

@@ -28,7 +28,7 @@ async function fireFor(
   const matching = rolesFiringOn(event);
   if (matching.length === 0) return [];
 
-  const reg = loadHarnessRegistry();
+  const reg = await loadHarnessRegistry();
   const project = reg.projects.find((p) => p.slug === installSlug);
   if (!project) return [];
 

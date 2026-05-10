@@ -186,7 +186,7 @@ Adopting the [animation strategy](#) (see also `lib/forms` style guide for forms
 | Modal / popover / dropdown / tab open/close | **CSS keyframes on Radix `data-state`** | Native compositor; zero JS cost. The `--ease-out` / `--ease-in` / `--dur-fast` / `--dur-normal` / `--dur-slow` tokens in `globals.css` are the standard. |
 | List item add / remove / reorder | **`@formkit/auto-animate`** | One-line `useAutoAnimate`. WAAPI direct; zero React re-renders. |
 | Counter tweens, choreography, drag, layout | **`motion`** | WAAPI-backed since v10. `<motion.div>`, `AnimatePresence`, `LayoutGroup`. |
-| Cross-route page transitions | **native View Transitions API** (via `next-view-transitions` if needed) | Browser-native compositor. Zero JS animation cost. |
+| Cross-route page transitions | **`next-transition-router`** | The shared `RouteTransitionProvider` centralizes navigation choreography and route lifecycle handling. |
 | **Don't use** | GSAP, Theatre, react-spring, popmotion | Either overkill, abandoned, or duplicates of what we already have. |
 
 **Reduced-motion is mandatory**:

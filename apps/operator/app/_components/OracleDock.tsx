@@ -16,9 +16,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
+import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { Tooltip } from '../harness/Tooltip';
 import RouteLink from './RouteLink';
 import { HudFrameCorners, HudReticleGlyph } from './hud/HudPrimitives';
+import { ChatConversation } from './chat/ChatConversation';
 import {
   Activity,
   Bot,
@@ -314,6 +316,8 @@ export function OracleDock() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const reducedMotion = useReducedMotion() ?? false;
+  const visualEffectsEnabled = useFancyEffectsEnabled();
+  const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const [open, setOpen] = useState(false);
   const [tabs, setTabs] = useState<ChatTab[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -331,7 +335,18 @@ export function OracleDock() {
   const [tutorialActive, setTutorialActiveState] = useState(false);
   const [chatwootFrameSrc, setChatwootFrameSrc] = useState(CHATWOOT_WIDGET_SRC);
   const inFlightRef = useRef<Map<string, AbortController>>(new Map());
-  const endRef = useRef<HTMLDivElement>(null);
+  // Holds the latest `send` so the tutorial-kickoff setTimeout can call
+  // through a fresh closure (see startTutorial). Updated each render.
+  const sendRef = useRef<(tabId: string, override?: string, opts?: { tutorialMode?: boolean; baseMessages?: Message[] }) => Promise<void>>(
+    async () => {},
+  );
+  // Mirror of `tabs` so deferred callers (setTimeout from inside a state
+  // reducer) read the post-commit list rather than the stale closure.
+  const tabsRef = useRef<ChatTab[]>([]);
+  // endRef removed — auto-scroll is now owned by ChatConversation's
+  // internal endRef, triggered on messages.length and busy changes.
+  // Tab-switch scrolling is preserved via `key={active.id}` so the
+  // shared component remounts and auto-scrolls on activation.
   const chatwootFrameRef = useRef<HTMLIFrameElement>(null);
   const dockRef = useRef<HTMLDivElement | null>(null);
   const fabRef = useRef<HTMLButtonElement | null>(null);
@@ -435,6 +450,21 @@ export function OracleDock() {
     return () => document.removeEventListener('keydown', onKey);
   }, [pickerOpen, pickerMenuOpen]);
 
+  useEffect(() => {
+    if (!open || pickerOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
+        const v = (t as HTMLInputElement).value;
+        if (typeof v === 'string' && v.length > 0) return;
+      }
+      setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, pickerOpen]);
+
   const setTutorialActive = (v: boolean) => {
     setTutorialActiveState(v);
     if (typeof window === 'undefined') return;
@@ -506,19 +536,27 @@ export function OracleDock() {
     try { sessionStorage.setItem(ACTIVE_KEY, activeId); } catch { /* quota */ }
   }, [activeId]);
 
-  // External tutorial trigger.
+  // External tutorial trigger. Also drains a one-shot intent flag set by
+  // TutorialButton — covers the case where the user clicked the button
+  // before this component finished its lazy-load + first-render cycle.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const handler = () => startTutorial();
     window.addEventListener('oracle:start-tutorial', handler);
+    try {
+      if (localStorage.getItem('papercusp.tutorial.intent') === '1') {
+        localStorage.removeItem('papercusp.tutorial.intent');
+        setTimeout(() => startTutorial(), 0);
+      }
+    } catch { /* ignore */ }
     return () => window.removeEventListener('oracle:start-tutorial', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-scroll the active tab on new content.
-  useEffect(() => {
-    if (open) endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [tabs, activeId, open]);
+  // Auto-scroll on new content + tab activation is handled inside
+  // <ChatConversation /> via its internal endRef + the `key={active.id}`
+  // prop on the JSX site (forces remount on tab switch, which fires
+  // the scroll-to-bottom effect).
 
   // Clear unread when activating a tab or opening the dock.
   useEffect(() => {
@@ -558,12 +596,25 @@ export function OracleDock() {
         const others = prev.filter((t) => t.id !== oracleTab.id);
         setActiveId(oracleTab.id);
         const next = [cleared, ...others];
-        setTimeout(() => { void send(oracleTab.id, TUTORIAL_KICKOFF, { tutorialMode: true, baseMessages: [] }); }, 0);
+        // Use the latest `send` via the ref — not the closure-captured
+        // version. The setTimeout closure pins `send` from the render
+        // that called startTutorial, but `send` itself reads `tabs` from
+        // ITS render's closure, which lags one cycle behind this state
+        // commit. If the lagged `tabs` doesn't contain `cleared`, the
+        // `tabs.find(t => t.id === ...)` early-return fires and the
+        // tutorial POST never goes out — visible symptom: dock opens,
+        // empty state stays. Reading via the ref guarantees we hit the
+        // post-commit `send` whose closure sees the cleared tab.
+        setTimeout(() => {
+          void sendRef.current(oracleTab.id, TUTORIAL_KICKOFF, { tutorialMode: true, baseMessages: [] });
+        }, 0);
         return next;
       }
       const fresh: ChatTab = { id: newId(), target: ORACLE_TARGET, messages: [] };
       setActiveId(fresh.id);
-      setTimeout(() => { void send(fresh.id, TUTORIAL_KICKOFF, { tutorialMode: true, baseMessages: [] }); }, 0);
+      setTimeout(() => {
+        void sendRef.current(fresh.id, TUTORIAL_KICKOFF, { tutorialMode: true, baseMessages: [] });
+      }, 0);
       return [fresh, ...prev];
     });
   };
@@ -596,6 +647,7 @@ export function OracleDock() {
       if (next.length === 0) {
         const fresh = defaultOracleTab();
         setActiveId(fresh.id);
+        setOpen(false);
         return [fresh];
       }
       if (tabId === activeId) {
@@ -650,7 +702,11 @@ export function OracleDock() {
     override?: string,
     opts?: { tutorialMode?: boolean; baseMessages?: Message[] },
   ) => {
-    const tab = tabs.find((t) => t.id === tabId);
+    // Look up via functional state read so we always see the latest tab
+    // shape (post the most recent setTabs commit) — the closure-captured
+    // `tabs` lags by one render cycle when send is called from inside
+    // a state-update reducer (e.g. startTutorial's setTimeout).
+    const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab) return;
     if (busyMap[tabId]) return;
     const text = (override ?? input).trim();
@@ -825,6 +881,11 @@ export function OracleDock() {
     }
   };
 
+  // Keep refs fresh so deferred callers (setTimeout inside reducers) hit
+  // the most-recently-committed closures.
+  useEffect(() => { sendRef.current = send; });
+  useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+
   const supportActive = activeTab?.target.kind === 'support';
   const supportFrameReady = chatwootFrameSrc.includes('cw_conversation=');
 
@@ -902,7 +963,7 @@ export function OracleDock() {
   const headerSubtitle = active ? targetSubtitle(active.target) : 'general help across Papercusp';
 
   useGSAP(() => {
-    if (reducedMotion) return;
+    if (!fancyEffectsEnabled) return;
 
     if (!open) {
       if (!fabRef.current) return;
@@ -970,7 +1031,7 @@ export function OracleDock() {
       intro.kill();
       loops.forEach((loop) => loop.kill());
     };
-  }, { dependencies: [open, activeId, active?.messages.length ?? 0, showThinking, supportActive, reducedMotion] });
+  }, { dependencies: [open, activeId, active?.messages.length ?? 0, showThinking, supportActive, fancyEffectsEnabled] });
 
   if (!active) {
     // Pre-bootstrap; render only the FAB so we never flash an empty dock.
@@ -981,7 +1042,7 @@ export function OracleDock() {
         aria-label="Open Oracle assistant"
         className="oracle-fab oracle-fab--maximal-hud"
       >
-        <img src="/mascot.svg" alt="" height={34} style={{ display: 'block' }} />
+        <img src="/mascot.svg" alt="" height={34} loading="lazy" style={{ display: 'block' }} />
         <span>Ask Oracle</span>
       </button>
     );
@@ -1149,7 +1210,7 @@ export function OracleDock() {
           aria-label="Open Oracle assistant"
           className={`oracle-fab oracle-fab--maximal-hud${Object.values(unreadMap).some(Boolean) ? ' has-unread' : ''}`}
         >
-          <img src="/mascot.svg" alt="" height={34} style={{ display: 'block' }} />
+          <img src="/mascot.svg" alt="" height={34} loading="lazy" style={{ display: 'block' }} />
           <span>Ask Oracle</span>
           {Object.values(unreadMap).some(Boolean) && <span className="oracle-fab-badge" aria-label="unread" />}
         </button>
@@ -1233,61 +1294,55 @@ export function OracleDock() {
 
           {pickerView ?? (
             <>
-              <div className="oracle-body pc-animate-in pc-animate-in--fade pc-animate-in--delay-2" style={supportActive ? { display: 'none' } : undefined}>
-                {active.messages.length === 0 ? (
-                  <div className="oracle-empty-state">
-                    <span className="oracle-empty-state-icon">
-                      <ActiveTargetIcon aria-hidden="true" className="oracle-empty-state-glyph" />
-                    </span>
-                    <strong className="oracle-empty-state-title">{headerLabel}</strong>
-                    <span className="oracle-empty-state-text">
-                      {active.target.kind === 'oracle'
-                        ? 'Ask me anything about Papercusp.'
-                        : active.target.kind === 'support'
-                          ? 'Connecting you to a human…'
-                          : `Send a message to the ${active.target.role}.`}
-                    </span>
-                  </div>
-                ) : (
-                  active.messages.map((m, i) => {
-                    const MessageIcon = m.role === 'user' ? Users : ActiveTargetIcon;
-                    const messageLabel = m.role === 'user' ? 'You' : headerLabel;
-                    return (
-                      <div key={i} data-message-index={i} className={`oracle-msg oracle-msg-${m.role}`}>
-                        <span className="oracle-msg-avatar" aria-hidden="true">
-                          <MessageIcon className="oracle-msg-icon" />
-                        </span>
-                        <div className="oracle-msg-stack">
-                          <div className="oracle-msg-role">{messageLabel}</div>
-                          {m.tools?.map((t, ti) => {
-                            const summary = summarizeToolInput(t.input);
-                            return (
-                              <div key={ti} className="oracle-tool-chip" title={summary}>
-                                🔧 <strong>{t.name}</strong>
-                                {summary && <span className="oracle-tool-args">({summary})</span>}
-                              </div>
-                            );
-                          })}
-                          {m.content && <div className="oracle-msg-content">{m.content}</div>}
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-                {showThinking && (
-                  <div className="oracle-thinking-row" aria-live="polite">
-                    <span>{headerLabel} is thinking</span>
-                    <span className="oracle-thinking-dots"><span /><span /><span /></span>
-                  </div>
-                )}
-                {activeError && <div className="oracle-error">⚠ {activeError}</div>}
-                <div ref={endRef} />
-              </div>
+              {/* Migrated to shared <ChatConversation>. The chatwoot
+                  iframe path is rendered separately below and toggled
+                  via supportActive — when the support tab is active the
+                  ChatConversation body + form are display:none'd via
+                  bodyStyle / hideInput, and the iframe takes the space. */}
+              <ChatConversation
+                key={active.id}
+                messages={active.messages}
+                busy={!!showThinking}
+                error={activeError}
+                bodyClassName="pc-animate-in pc-animate-in--fade pc-animate-in--delay-2"
+                bodyStyle={supportActive ? { display: 'none' } : undefined}
+                emptyState={{
+                  title: headerLabel,
+                  body:
+                    active.target.kind === 'oracle'
+                      ? 'Ask me anything about Papercusp.'
+                      : active.target.kind === 'support'
+                        ? 'Connecting you to a human…'
+                        : `Send a message to the ${active.target.role}.`,
+                  icon: ActiveTargetIcon,
+                }}
+                iconForRole={(role) => (role === 'user' ? Users : ActiveTargetIcon)}
+                labelForRole={(role) => (role === 'user' ? 'You' : headerLabel)}
+                renderToolChip={(t, ti) => {
+                  const summary = summarizeToolInput(t.input);
+                  return (
+                    <div key={ti} className="oracle-tool-chip" title={summary}>
+                      🔧 <strong>{t.name}</strong>
+                      {summary && <span className="oracle-tool-args">({summary})</span>}
+                    </div>
+                  );
+                }}
+                inputValue={input}
+                onInputChange={setInput}
+                onSubmit={() => void send(active.id)}
+                inputPlaceholder={
+                  active.target.kind === 'agent'
+                    ? `Message ${active.target.role}…`
+                    : 'Ask the Oracle…'
+                }
+                inputIcon={ActiveTargetIcon}
+                hideInput={supportActive}
+              />
 
               {/* Chatwoot widget rendered inline. Mounted lazily on first
                   Support activation, then kept mounted so the conversation
                   survives tab switches. The iframe handles its own input so
-                  we suppress the native dock form for this tab. */}
+                  ChatConversation's form is hideInput-suppressed for this tab. */}
               {supportActive && !supportFrameReady && (
                 <div className="oracle-support-loading">Connecting to support…</div>
               )}
@@ -1301,23 +1356,6 @@ export function OracleDock() {
                   onLoad={sendChatwootFrameTheme}
                   allow="clipboard-read; clipboard-write; microphone; camera"
                 />
-              )}
-              {!supportActive && (
-                <form className="oracle-form" onSubmit={(e) => { e.preventDefault(); void send(active.id); }}>
-                  <div className="oracle-input-shell">
-                    <ActiveTargetIcon aria-hidden="true" className="oracle-input-icon" />
-                    <input
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      placeholder={activeBusy ? 'thinking…' : (active.target.kind === 'agent' ? `Message ${active.target.role}…` : 'Ask the Oracle…')}
-                      disabled={activeBusy}
-                    />
-                  </div>
-                  <button type="submit" disabled={activeBusy || !input.trim()} className="pc-button oracle-send-button">
-                    <span>{activeBusy ? '…' : 'Send'}</span>
-                    {!activeBusy && <SendHorizontal aria-hidden="true" className="oracle-send-icon" />}
-                  </button>
-                </form>
               )}
             </>
           )}

@@ -5,6 +5,7 @@ import { COLORS, FONTS, RADIUS, SIZES, STATUS, STATUS_ORDER, HarnessStatus } fro
 import { IconButton } from './primitives';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { Modal } from './Modal';
+import { PromptBudgetView } from './PromptBudgetView';
 
 interface Feature {
   id: string;
@@ -19,12 +20,14 @@ interface Props {
   totalInputTokens: number;
   totalOutputTokens: number;
   iteration: number;
+  /** Harness slug — required for the prompt-budget telemetry view. */
+  slug?: string;
   onClose: () => void;
   inline?: boolean;
 }
 
 export default function InsightsPanel({
-  features, totalCostUsd, totalInputTokens, totalOutputTokens, iteration, onClose, inline = false,
+  features, totalCostUsd, totalInputTokens, totalOutputTokens, iteration, slug, onClose, inline = false,
 }: Props) {
   const stats = useMemo(() => {
     const byStatus: Record<HarnessStatus, number> = {
@@ -52,9 +55,12 @@ export default function InsightsPanel({
 
   const maxStatusCount = Math.max(1, ...Object.values(stats.byStatus));
   const maxAttemptsBin = Math.max(1, ...stats.attemptsHist);
+  const passPct = Math.round(100 * stats.passed / Math.max(1, features.length));
+  const tokenTotal = totalInputTokens + totalOutputTokens;
 
   const inner = (
     <div
+      className="h-insights-panel"
       onClick={(e) => e.stopPropagation()}
       style={{
         width: inline ? '100%' : 'min(720px, 94vw)',
@@ -68,13 +74,20 @@ export default function InsightsPanel({
         overflow: 'hidden',
       }}
     >
-      <div style={{
+      <div className="h-insights-head" style={{
         padding: '10px 14px',
         borderBottom: `1px solid ${COLORS.border}`,
         display: 'flex', alignItems: 'center', gap: 10,
       }}>
-        <div style={{ fontSize: SIZES.md, color: COLORS.text, fontWeight: 600 }}>Insights</div>
-        <span style={{ fontSize: SIZES.xs, color: COLORS.textDim }}>iteration {iteration} · {features.length} features</span>
+        <div className="h-insights-title-stack">
+          <div className="h-insights-title" style={{ fontSize: SIZES.md, color: COLORS.text, fontWeight: 600 }}>Insights</div>
+          <span className="h-insights-subtitle" style={{ fontSize: SIZES.xs, color: COLORS.textDim }}>iteration {iteration} · {features.length} features</span>
+        </div>
+        <div className="h-insights-head-metrics" aria-label="Insights summary">
+          <span><b>{passPct}%</b> pass rate</span>
+          <span><b>{stats.stuckCount}</b> stuck</span>
+          <span><b>{tokenTotal > 0 ? `${(tokenTotal / 1000).toFixed(0)}k` : '0'}</b> tokens</span>
+        </div>
         {!inline && (
           <span style={{ marginLeft: 'auto' }}>
             <IconButton onClick={onClose}>close</IconButton>
@@ -82,9 +95,9 @@ export default function InsightsPanel({
         )}
       </div>
 
-        <div style={{ padding: 16, overflowY: 'auto', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div className="h-insights-body" style={{ padding: 16, overflowY: 'auto', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           {/* Top KPIs */}
-          <KpiCard label="Passed" value={`${stats.passed}/${features.length}`} sub={`${Math.round(100 * stats.passed / Math.max(1, features.length))}%`} />
+          <KpiCard label="Passed" value={`${stats.passed}/${features.length}`} sub={`${passPct}%`} />
           <KpiCard label="Stuck (≥3 attempts)" value={String(stats.stuckCount)} sub={stats.stuckCount > 0 ? `${Math.round(stats.failRate * 100)}% of work` : 'none'} color={stats.stuckCount > 0 ? STATUS.blocked.text : COLORS.text} />
           <KpiCard label="Mission cost" value={`$${totalCostUsd.toFixed(2)}`} sub={`${(totalInputTokens/1000).toFixed(0)}k in · ${(totalOutputTokens/1000).toFixed(0)}k out`} />
           <KpiCard
@@ -93,24 +106,23 @@ export default function InsightsPanel({
             sub={stats.avgAttemptsPerPassed > 0 ? `avg ${stats.avgAttemptsPerPassed.toFixed(1)} attempts` : ''}
           />
 
-          {/* Status distribution bar chart */}
-          <div style={{ gridColumn: '1 / -1' }}>
+          <div className="h-insights-section h-insights-status-section" style={{ gridColumn: '1 / -1' }}>
             <SectionTitle>Status distribution</SectionTitle>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <div className="h-insights-status-list" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {STATUS_ORDER.map((st) => {
                 const count = stats.byStatus[st];
                 const s = STATUS[st];
                 const pct = (count / maxStatusCount) * 100;
                 return (
-                  <div key={st} style={{ display: 'grid', gridTemplateColumns: '100px 1fr 40px', alignItems: 'center', gap: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: SIZES.xs, color: s.text }}>
-                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.solid }} />
+                  <div key={st} className="h-insights-status-row" style={{ display: 'grid', gridTemplateColumns: '100px 1fr 40px', alignItems: 'center', gap: 8 }}>
+                    <div className="h-insights-status-label" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: SIZES.xs, color: s.text }}>
+                      <span className="h-insights-status-dot" style={{ width: 6, height: 6, borderRadius: '50%', background: s.solid }} />
                       {s.label}
                     </div>
-                    <div style={{ background: COLORS.bg, borderRadius: 2, height: 14, overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${pct}%`, background: s.solid, transition: 'width 300ms' }} />
+                    <div className="h-insights-status-track" style={{ background: COLORS.bg, borderRadius: 2, height: 14, overflow: 'hidden' }}>
+                      <div className="h-insights-status-fill" style={{ height: '100%', width: `${pct}%`, background: s.solid, transition: 'width 300ms' }} />
                     </div>
-                    <div style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.text, textAlign: 'right' }}>
+                    <div className="h-insights-status-count" style={{ fontFamily: FONTS.mono, fontSize: SIZES.xs, color: COLORS.text, textAlign: 'right' }}>
                       {count}
                     </div>
                   </div>
@@ -119,16 +131,15 @@ export default function InsightsPanel({
             </div>
           </div>
 
-          {/* Attempts histogram */}
-          <div style={{ gridColumn: '1 / -1' }}>
+          <div className="h-insights-section h-insights-attempts-section" style={{ gridColumn: '1 / -1' }}>
             <SectionTitle>Attempts histogram</SectionTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
+            <div className="h-insights-attempts-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8 }}>
               {stats.attemptsHist.map((count, i) => {
                 const labels = ['0', '1', '2', '3-4', '5+'];
                 const color = i < 2 ? COLORS.textMuted : i < 3 ? STATUS.in_progress.solid : i < 4 ? STATUS.blocked.solid : STATUS.failing.solid;
                 const pct = (count / maxAttemptsBin) * 100;
                 return (
-                  <div key={i} style={{
+                  <div key={i} className="h-insights-mini-card" style={{
                     display: 'flex', flexDirection: 'column', alignItems: 'center',
                     gap: 4,
                     padding: 8,
@@ -136,10 +147,10 @@ export default function InsightsPanel({
                     borderRadius: RADIUS.sm,
                     border: `1px solid ${COLORS.borderSubtle}`,
                   }}>
-                    <div style={{
+                    <div className="h-insights-attempt-meter" style={{
                       width: '100%', height: 60, display: 'flex', alignItems: 'flex-end',
                     }}>
-                      <div style={{
+                      <div className="h-insights-attempt-bar" style={{
                         width: '100%',
                         height: `${pct}%`,
                         background: color,
@@ -147,10 +158,10 @@ export default function InsightsPanel({
                         transition: 'height 300ms',
                       }} />
                     </div>
-                    <div style={{ fontFamily: FONTS.mono, fontSize: SIZES.base, color: COLORS.text, fontWeight: 600 }}>
+                    <div className="h-insights-attempt-count" style={{ fontFamily: FONTS.mono, fontSize: SIZES.base, color: COLORS.text, fontWeight: 600 }}>
                       {count}
                     </div>
-                    <div style={{ fontSize: SIZES.xs, color: COLORS.textDim }}>
+                    <div className="h-insights-attempt-label" style={{ fontSize: SIZES.xs, color: COLORS.textDim }}>
                       {labels[i]} attempts
                     </div>
                   </div>
@@ -161,13 +172,22 @@ export default function InsightsPanel({
 
           {/* Stuck features list */}
           {stats.stuckCount > 0 && (
-            <div style={{ gridColumn: '1 / -1' }}>
+            <div className="h-insights-section" style={{ gridColumn: '1 / -1' }}>
               <SectionTitle>
                 Stuck features <span style={{ color: STATUS.blocked.text }}>· {stats.stuckCount}</span>
               </SectionTitle>
               <StuckFeaturesGrid
                 features={features.filter((f) => f.attempts >= 3).sort((a, b) => b.attempts - a.attempts)}
               />
+            </div>
+          )}
+
+          {/* Prompt-budget telemetry — harness-wide, sourced from
+              harness_shared.prompt_compositions (migration 045). */}
+          {slug && (
+            <div className="h-insights-section" style={{ gridColumn: '1 / -1' }}>
+              <SectionTitle>Prompt budget</SectionTitle>
+              <PromptBudgetView slug={slug} />
             </div>
           )}
         </div>
@@ -192,19 +212,19 @@ export default function InsightsPanel({
 
 function KpiCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
-    <div style={{
+    <div className="h-insights-kpi" style={{
       background: COLORS.bg,
       border: `1px solid ${COLORS.borderSubtle}`,
       borderRadius: RADIUS.sm,
       padding: '10px 12px',
     }}>
-      <div style={{ fontSize: '0.65rem', color: COLORS.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
+      <div className="h-insights-kpi-label" style={{ fontSize: '0.65rem', color: COLORS.textDim, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
         {label}
       </div>
-      <div style={{ fontSize: '1.3rem', color: color ?? COLORS.text, fontWeight: 600, fontFamily: FONTS.mono, marginTop: 4 }}>
+      <div className="h-insights-kpi-value" style={{ fontSize: '1.3rem', color: color ?? COLORS.text, fontWeight: 600, fontFamily: FONTS.mono, marginTop: 4 }}>
         {value}
       </div>
-      {sub && <div style={{ fontSize: SIZES.xs, color: COLORS.textDim, marginTop: 2 }}>{sub}</div>}
+      {sub && <div className="h-insights-kpi-sub" style={{ fontSize: SIZES.xs, color: COLORS.textDim, marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }

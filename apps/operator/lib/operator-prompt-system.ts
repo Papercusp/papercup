@@ -1,15 +1,54 @@
 /**
- * Substrate-owned Operator system prompt.
+ * Substrate-owned Operator system prompt — the "scanner" role.
  *
- * Exported as a string so it survives Turbopack bundling without
- * filesystem games. Edits here ARE substrate edits — keep tier-table
- * verbatim from `@papercusp/plugin-sdk`'s tier-table.json.
+ * Canonical source is `libs/papercusp/packages/harness/prompts/scanner.md`,
+ * alongside the other built-in role prompts (architect.md, scoper.md,
+ * orchestrator.md, etc.). This file reads that file at module load and
+ * exposes it as a string export so Turbopack bundling and any callers
+ * that don't have FS access (test stubs, bundled clients) keep working.
  *
- * The user CANNOT edit this from /settings/operator. They can edit
- * `prompt-user.md` (workspace-scoped) for tone/voice/free-form prefs.
+ * The inline fallback below stays as a safety net so a misconfigured
+ * checkout (missing scanner.md) still scans — it must be kept in sync
+ * with the canonical file. The drift is caught by lint:scanner-prompt
+ * which compares the two at build time. Future iteration: move the fallback
+ * out of source and pin via test instead.
+ *
+ * Edits should go to scanner.md, not here. The user CANNOT edit either
+ * from /settings/operator; they can edit `prompt-user.md` (workspace-scoped)
+ * for tone/voice/free-form prefs.
  */
 
-export const OPERATOR_SUBSTRATE_PROMPT = `# Operator system prompt (substrate-owned)
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+function loadScannerRolePrompt(): string {
+  if (typeof window !== 'undefined') return INLINE_FALLBACK;
+  // The harness package dir resolution uses the same path-finder as
+  // the role-registry. We don't import that to avoid a cycle; replicate
+  // its key resolution.
+  const candidates = [
+    // monorepo dev tree
+    join(process.cwd(), '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
+    // when cwd IS the operator workspace root
+    join(process.cwd(), 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
+    // standalone build (.next/standalone/apps/operator) — files under
+    // libs/ aren't normally copied by next traceFiles. Fall through.
+    join(process.cwd(), '..', '..', '..', '..', 'libs', 'papercusp', 'packages', 'harness', 'prompts', 'scanner.md'),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try {
+        const raw = readFileSync(p, 'utf8');
+        // Strip the leading HTML comment block (role metadata for humans
+        // browsing the prompts dir; not meant for the model).
+        return raw.replace(/^<!--[\s\S]*?-->\s*\n+/, '');
+      } catch { /* fall through */ }
+    }
+  }
+  return INLINE_FALLBACK;
+}
+
+const INLINE_FALLBACK = `# Operator system prompt (substrate-owned)
 
 You are the Operator. You scan the workspace and surface up to ~5 next-action
 suggestions per scan.
@@ -66,6 +105,26 @@ on \`action\`. \`id\` is a stable hash you choose so re-scans dedup.
 </suggestion>
 \`\`\`
 
+**Valid \`target_resource\` patterns** (do not invent others — the route
+table only knows about these):
+
+- \`/harness/<slug>\` — harness home
+- \`/harness/<slug>?panel=config&specTab=<tab>\` — config files (tabs: spec, agents, knowledge, supervisor, contract, mcp, claudeSettings, env)
+- \`/harness/<slug>?panel=brainstorm\` — brainstorm tab
+- \`/harness/<slug>?panel=proposals\` — proposals
+- \`/harness/<slug>?panel=summary\` — summary
+- \`/harness/<slug>?panel=experts\` — experts
+- \`/harness/<slug>?panel=insights\` — insights
+- \`/harness/<slug>/projects\` and \`/harness/<slug>/projects/<id>\` — projects
+- \`/harness/<slug>/spec\` — friendly alias that redirects to the SPEC.md tab
+- \`/wiki?target=<filename>[&harness=<slug>]\` — wiki-link resolver for cross-harness file references
+- \`/settings/<oracle|operator|api-keys|profile>\` — operator settings
+- \`/marketplace\`, \`/marketplace/<slug>\` — marketplace
+- \`/snapshots\`, \`/snapshots/<id>/fork\` — snapshots
+
+Do NOT generate paths like \`/harness/<slug>/spec/<file>\` or
+\`/harness/<slug>/<panel>\` directly — those routes do not exist.
+
 ### \`inform\`
 
 \`\`\`
@@ -116,3 +175,5 @@ Canonical capability tier table:
 You run as principal \`system:operator\` for the active workspace. Your
 bearer is wired via env; tools handle auth.
 `;
+
+export const OPERATOR_SUBSTRATE_PROMPT: string = loadScannerRolePrompt();

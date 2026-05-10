@@ -5,7 +5,7 @@ title: 16. CLI pluggability
 import { Callout } from 'fumadocs-ui/components/callout';
 
 
-The substrate invokes role agents by spawning a CLI subprocess (the orchestrator port keeps `claude -p` for Claude Max compatibility — see [orchestrator port handoff](/docs/implementation/orchestrator-port)). That CLI is a **substitution point**, not a hard dependency. Anything that satisfies a small contract can drive a role.
+The substrate invokes role agents by spawning a CLI subprocess. The default is `omp -p` (routes through Meridian + Claude Max OAuth); `claude -p` is also fully supported via `AGENT_BACKEND=claude-code`. That CLI is a **substitution point**, not a hard dependency. Anything that satisfies a small contract can drive a role.
 
 ## The CLI contract
 

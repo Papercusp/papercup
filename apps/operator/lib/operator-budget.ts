@@ -1,20 +1,27 @@
 /**
  * Operator daily budget cap (Phase 1c of the v5 operator plan).
  *
- * State shape on disk (`<papercuspRoot>/system/operator/budget.json`):
+ * Persisted in `harness_shared.operator_budget` (PG, migration 020). The
+ * payload shape:
  *   {
  *     "dailyCapUsd": 20,             // Light=5, Active=20, Heavy=50
  *     "spend": [{ "date": "YYYY-MM-DD", "usd": 0.123 }, ...]  // last 7 days
  *   }
+ *
+ * Read-modify-write goes through `updateOperatorState` so the cap-trip
+ * detection runs on a transactionally-consistent read instead of a
+ * potentially-stale file load.
  *
  * The substrate has its own per-token budget machinery; this layer is
  * the operator-app-level UX cap (auto-pause on overrun + sizing prompt).
  * The two are independent — a strict substrate cap will trip first.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { papercuspPath } from './papercusp-root';
+import {
+  readOperatorState,
+  writeOperatorState,
+  updateOperatorState,
+} from './operator-state-pg';
 
 export type BudgetTier = 'light' | 'active' | 'heavy' | 'custom';
 
@@ -29,52 +36,36 @@ export const TIER_CAPS: Record<Exclude<BudgetTier, 'custom'>, number> = {
   heavy: 50,
 };
 
-function BUDGET_PATH() {
-  return papercuspPath('system', 'operator', 'budget.json');
-}
-
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
 /** Returns null when the user has not yet picked a sizing — UI shows the modal. */
-export function loadBudget(): BudgetState | null {
-  const path = BUDGET_PATH();
-  if (!existsSync(path)) return null;
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Partial<BudgetState>;
-    if (!raw || typeof raw !== 'object' || typeof raw.dailyCapUsd !== 'number') return null;
-    return {
-      dailyCapUsd: raw.dailyCapUsd,
-      spend: Array.isArray(raw.spend)
-        ? raw.spend
-            .filter((s): s is { date: string; usd: number } =>
-              !!s && typeof s.date === 'string' && typeof s.usd === 'number')
-            .slice(-7)
-        : [],
-    };
-  } catch {
-    return null;
-  }
+export async function loadBudget(): Promise<BudgetState | null> {
+  const raw = await readOperatorState<Partial<BudgetState>>('operator_budget');
+  if (!raw || typeof raw.dailyCapUsd !== 'number') return null;
+  return {
+    dailyCapUsd: raw.dailyCapUsd,
+    spend: Array.isArray(raw.spend)
+      ? raw.spend
+          .filter((s): s is { date: string; usd: number } =>
+            !!s && typeof s.date === 'string' && typeof s.usd === 'number')
+          .slice(-7)
+      : [],
+  };
 }
 
-export function setBudget(dailyCapUsd: number): BudgetState {
+export async function setBudget(dailyCapUsd: number): Promise<BudgetState> {
   if (!Number.isFinite(dailyCapUsd) || dailyCapUsd <= 0) {
     throw new Error('dailyCapUsd must be a positive number');
   }
-  const existing = loadBudget();
+  const existing = await loadBudget();
   const next: BudgetState = {
     dailyCapUsd,
     spend: existing?.spend ?? [],
   };
-  writeBudget(next);
+  await writeOperatorState('operator_budget', next);
   return next;
-}
-
-function writeBudget(b: BudgetState): void {
-  const path = BUDGET_PATH();
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(b, null, 2));
 }
 
 export interface BudgetCheck {
@@ -90,8 +81,8 @@ export interface BudgetCheck {
  * Read the current spend posture without mutating. Callers gate scan
  * spawn on `!check.exceeded`. Auto-pause is applied by the panel.
  */
-export function checkBudget(): BudgetCheck {
-  const state = loadBudget();
+export async function checkBudget(): Promise<BudgetCheck> {
+  const state = await loadBudget();
   if (!state) return { exceeded: false, todaySpendUsd: 0, capUsd: 0, state: null };
   const today = todayIso();
   const entry = state.spend.find((s) => s.date === today);
@@ -108,17 +99,28 @@ export function checkBudget(): BudgetCheck {
  * Add spend for today. Called from the operator-scan route on `result`.
  * Does nothing when no budget configured (we don't want to silently
  * accumulate before the user has agreed to a cap).
+ *
+ * Atomic: read-modify-write happens inside a single PG transaction so
+ * concurrent scans on multiple tabs each get their full spend recorded.
  */
-export function recordSpend(usd: number): void {
+export async function recordSpend(usd: number): Promise<void> {
   if (!Number.isFinite(usd) || usd <= 0) return;
-  const state = loadBudget();
-  if (!state) return;
-  const today = todayIso();
-  const idx = state.spend.findIndex((s) => s.date === today);
-  if (idx >= 0) {
-    state.spend[idx] = { date: today, usd: state.spend[idx].usd + usd };
-  } else {
-    state.spend = [...state.spend.slice(-6), { date: today, usd }];
-  }
-  writeBudget(state);
+  await updateOperatorState<BudgetState | { dailyCapUsd: undefined; spend: never[] }>(
+    'operator_budget',
+    { dailyCapUsd: undefined as unknown as number, spend: [] },
+    (cur) => {
+      // Skip if no budget is configured — same semantic as the file path.
+      if (!cur || typeof (cur as BudgetState).dailyCapUsd !== 'number') return cur as BudgetState;
+      const state = cur as BudgetState;
+      const today = todayIso();
+      const idx = state.spend.findIndex((s) => s.date === today);
+      const nextSpend = [...state.spend];
+      if (idx >= 0) {
+        nextSpend[idx] = { date: today, usd: nextSpend[idx].usd + usd };
+      } else {
+        nextSpend.push({ date: today, usd });
+      }
+      return { ...state, spend: nextSpend.slice(-7) };
+    },
+  );
 }

@@ -1,15 +1,24 @@
 'use client';
 
-import { useCallback, type ReactNode } from 'react';
+import { useCallback, useEffect, type ReactNode } from 'react';
 import { TransitionRouter, useTransitionState } from 'next-transition-router';
 import { gsap } from 'gsap';
 import { ScrambleTextPlugin } from 'gsap/ScrambleTextPlugin';
+import { useEffectiveVisualEffects } from '@/lib/visual-effects';
 
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 const TRANSITION_LABEL_PLACEHOLDER = 'SYSTEM';
 const SCRAMBLE_CHARS = '01█▓▒░<>/{}[]-_=+*';
 
 gsap.registerPlugin(ScrambleTextPlugin);
+
+const JUMP_GATE_INTENT_ATTR = 'data-route-transition-intent';
+const JUMP_GATE_INTENT_VALUE = 'jump-gate';
+const JUMP_GATE_INTENT_TTL_MS = 2_000;
+
+let pendingJumpGateHref: string | null = null;
+let pendingJumpGateAt = 0;
+let activeTransitionUsesJumpGate = false;
 
 function prefersReducedMotion() {
   return typeof window !== 'undefined' && window.matchMedia(REDUCED_MOTION_QUERY).matches;
@@ -22,6 +31,62 @@ function normalizeRouteLabel(value?: string) {
   return path === '/' ? '/harness' : path.toUpperCase();
 }
 
+function normalizeHrefForMatch(value?: string | null) {
+  if (!value || typeof window === 'undefined') return null;
+  try {
+    const url = new URL(value, window.location.href);
+    const canonicalPath = url.pathname === '/'
+      ? '/harness'
+      : url.pathname.replace(/\/+$/, '') || '/';
+    return canonicalPath;
+  } catch {
+    return value;
+  }
+}
+
+function markPendingJumpGateNavigation(href: string) {
+  pendingJumpGateHref = normalizeHrefForMatch(href);
+  pendingJumpGateAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function consumePendingJumpGateNavigation(to?: string) {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const pendingHref = pendingJumpGateHref;
+  const isFresh = pendingHref !== null && now - pendingJumpGateAt <= JUMP_GATE_INTENT_TTL_MS;
+  const normalizedTo = normalizeHrefForMatch(to);
+
+  pendingJumpGateHref = null;
+  pendingJumpGateAt = 0;
+
+  if (!isFresh) return false;
+  if (!normalizedTo) return true;
+  return pendingHref === normalizedTo;
+}
+
+function resetRouteTransitionVisualState() {
+  if (typeof document === 'undefined') return;
+  const overlay = document.querySelector<HTMLElement>('.pc-route-transition');
+  const page = document.querySelector<HTMLElement>('[data-route-transition-page="true"]');
+
+  gsap.killTweensOf([
+    overlay,
+    page,
+    '.pc-route-transition__blade',
+    '.pc-route-transition__ring',
+    '.pc-route-transition__reticle',
+    '.pc-route-transition__title',
+    '.pc-route-transition__subtitle',
+    '.pc-route-transition__telemetry',
+    '.pc-route-transition__ticks i',
+    '.pc-route-transition__status',
+    '.pc-route-transition__status strong',
+    '.pc-route-transition__checksum',
+    '.pc-route-transition__sweep',
+  ]);
+
+  if (overlay) gsap.set(overlay, { autoAlpha: 0, pointerEvents: 'none' });
+  if (page) gsap.set(page, { clearProps: 'opacity,visibility,scale,filter,transform' });
+}
 function completeOnce(next: () => void) {
   let complete = false;
 
@@ -87,8 +152,46 @@ function RouteTransitionChrome() {
 }
 
 export default function RouteTransitionProvider({ children }: { children: ReactNode }) {
+  const visualEffects = useEffectiveVisualEffects();
+  const minimalVisualEffects = visualEffects === 'minimal';
+
+  useEffect(() => {
+
+    function handleClickCapture(event: MouseEvent) {
+      if (event.defaultPrevented || event.button !== 0) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+
+      const anchor = target.closest<HTMLAnchorElement>(`a[${JUMP_GATE_INTENT_ATTR}="${JUMP_GATE_INTENT_VALUE}"]`);
+      if (!anchor) return;
+      if (anchor.hasAttribute('download') || anchor.target === '_blank') return;
+
+      const targetUrl = new URL(anchor.href);
+      const currentUrl = new URL(window.location.href);
+      if (targetUrl.origin !== currentUrl.origin) return;
+      if (targetUrl.href === currentUrl.href) return;
+
+      markPendingJumpGateNavigation(anchor.href);
+    }
+
+    document.addEventListener('click', handleClickCapture, { capture: true });
+    return () => document.removeEventListener('click', handleClickCapture, { capture: true });
+  }, []);
+
   const leave = useCallback((next: () => void, from?: string, to?: string) => {
-    if (prefersReducedMotion()) {
+    const useJumpGate = consumePendingJumpGateNavigation(to);
+    activeTransitionUsesJumpGate = useJumpGate;
+
+    if (!useJumpGate) {
+      resetRouteTransitionVisualState();
+      next();
+      return undefined;
+    }
+    if (minimalVisualEffects || prefersReducedMotion()) {
+      activeTransitionUsesJumpGate = false;
+      resetRouteTransitionVisualState();
       next();
       return undefined;
     }
@@ -98,6 +201,8 @@ export default function RouteTransitionProvider({ children }: { children: ReactN
     const overlay = document.querySelector<HTMLElement>('.pc-route-transition');
     const page = document.querySelector<HTMLElement>('[data-route-transition-page="true"]');
     if (!overlay) {
+      activeTransitionUsesJumpGate = false;
+      resetRouteTransitionVisualState();
       next();
       return undefined;
     }
@@ -208,10 +313,17 @@ export default function RouteTransitionProvider({ children }: { children: ReactN
       if (fallbackId !== undefined) window.clearTimeout(fallbackId);
       timeline.kill();
     };
-  }, []);
+  }, [minimalVisualEffects]);
 
   const enter = useCallback((next: () => void, from?: string, to?: string) => {
-    if (prefersReducedMotion()) {
+    if (!activeTransitionUsesJumpGate) {
+      resetRouteTransitionVisualState();
+      next();
+      return undefined;
+    }
+    if (minimalVisualEffects || prefersReducedMotion()) {
+      activeTransitionUsesJumpGate = false;
+      resetRouteTransitionVisualState();
       next();
       return undefined;
     }
@@ -221,6 +333,8 @@ export default function RouteTransitionProvider({ children }: { children: ReactN
     const overlay = document.querySelector<HTMLElement>('.pc-route-transition');
     const page = document.querySelector<HTMLElement>('[data-route-transition-page="true"]');
     if (!overlay) {
+      activeTransitionUsesJumpGate = false;
+      resetRouteTransitionVisualState();
       next();
       return undefined;
     }
@@ -228,6 +342,7 @@ export default function RouteTransitionProvider({ children }: { children: ReactN
     const done = completeOnce(next);
     let fallbackId: number | undefined;
     const finish = () => {
+      activeTransitionUsesJumpGate = false;
       if (fallbackId !== undefined) window.clearTimeout(fallbackId);
       done();
     };
@@ -264,9 +379,10 @@ export default function RouteTransitionProvider({ children }: { children: ReactN
 
     return () => {
       if (fallbackId !== undefined) window.clearTimeout(fallbackId);
+      activeTransitionUsesJumpGate = false;
       timeline.kill();
     };
-  }, []);
+  }, [minimalVisualEffects]);
 
   return (
     <TransitionRouter auto leave={leave} enter={enter}>

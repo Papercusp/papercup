@@ -23,6 +23,17 @@ interface DashboardTabManifest {
   componentId?: string; componentRoot?: string;
   iframeUrl?: string; iframeUrlConfigKey?: string;
   replaces?: string[];
+  /** See app/api/_hono/plugins.ts for the canonical doc. */
+  iframeAppendProjectFolder?: boolean;
+  /**
+   * 'iframe' (default) → render inside a sandboxed <iframe>.
+   * 'inline-dock' → host renders the plugin's component directly without
+   *   an intermediate iframe, by name. Requires the host (HarnessDashboard)
+   *   to know how to render this specific dock; today only @papercupai/pi-coding
+   *   uses inline-dock for its 'pi' tab because the iframe path deadlocks in
+   *   Next dev. See InlinePiDock for the host-side hookup.
+   */
+  embedMode?: 'iframe' | 'inline-dock';
 }
 interface SidebarItemManifest {
   id: string; label: string; href: string; icon?: string;
@@ -94,15 +105,15 @@ async function listPluginsIn(parent: string, source: 'project' | 'harness' | 'gl
 
 async function resolveProjectPath(slug: string): Promise<string | null> {
   const { loadHarnessRegistry } = await import('@/lib/harness-registry');
-  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
-function resolveIframeUrl(
+async function resolveIframeUrl(
   manifest: PluginManifest,
   tab: DashboardTabManifest,
   harnessConfig: Record<string, unknown> | null,
   harnessSlug: string,
-): string | null {
+): Promise<string | null> {
   let url: string | null = null;
   if (tab.iframeUrlConfigKey) {
     const k = tab.iframeUrlConfigKey;
@@ -118,8 +129,25 @@ function resolveIframeUrl(
     url = tab.iframeUrl;
   }
   if (!url) return null;
+
+  // Same rewrite as in app/api/_hono/plugins.ts: plugin manifests bake in
+  // 'http://localhost:3055/<path>' for operator-self-served iframes (e.g.
+  // fumadocs at /project-docs). Strip that prefix so the iframe resolves
+  // against whatever origin the operator is actually serving on (works for
+  // prod :3070, custom ports, the desktop sidecar, etc.).
+  url = url.replace(/^https?:\/\/localhost:3055(\/|$)/, '$1');
+
   const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}harness=${encodeURIComponent(harnessSlug)}`;
+  url = `${url}${sep}harness=${encodeURIComponent(harnessSlug)}`;
+
+  if (tab.iframeAppendProjectFolder) {
+    const projectPath = await resolveProjectPath(harnessSlug);
+    if (projectPath) {
+      url = `${url}&folder=${encodeURIComponent(projectPath)}`;
+    }
+  }
+
+  return url;
 }
 
 export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }> }) {
@@ -167,7 +195,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }
         join(HARNESSES_DIR(), slug, 'plugin-configs', `${p.name}.json`),
       );
       for (const tab of p.dashboardTabs ?? []) {
-        const resolvedIframeUrl = resolveIframeUrl(p, tab, harnessConfig, slug);
+        const resolvedIframeUrl = await resolveIframeUrl(p, tab, harnessConfig, slug);
         dashboardTabs.push({
           componentRoot: tab.componentRoot ?? pluginRoot,
           ...tab,

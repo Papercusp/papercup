@@ -3,6 +3,49 @@ title: Data Sync overview
 description: How harness UI panels read from Postgres in real time via Zero + RichGrid.
 ---
 
+import { Callout } from 'fumadocs-ui/components/callout';
+
+<Callout type="warn" title="Default to the data-sync library, not a fresh poll">
+**For any new component that reads server state, default to
+`useSyncQuery({queryName, args})` from `@restart/sync`.** Don't roll a
+new `fetch + setInterval` poll. Don't open a raw `EventSource` for
+query data.
+
+The library is the single audited path: SSE/WS push, payload-on-
+invalidate, REST refetch fallback, observability shim
+(`window.__sync_metrics__`), reconnect resilience. Each parallel poll
+or ad-hoc EventSource forks all of that and accumulates as drift.
+
+**Genuine exceptions** (you may roll your own integration):
+
+- **Streaming-by-nature payloads** — log tails, terminal output,
+  command-runner progress, LLM token streams. These are byte streams,
+  not query data; raw `EventSource` is the right tool. See the existing
+  uses in `OperatorPanel`, `BranchActionRunner`, `ProvisionStream`,
+  `HarnessDashboard`'s log stream, `PiPanel` (pty).
+- **Pure UI timers** — `setNow(Date.now())` for relative-time refresh,
+  `setInterval` for animation steps. No fetch, not data sync.
+- **Mobile (`apps/operator-mobile/`)** — uses its own pure-HTTP +
+  EventSource path with `usePolledList` and `sync-stream.ts` for
+  per-device JWT scoping and battery-aware visibility pause. New mobile
+  consumers stay on that pattern.
+
+If you think you have another reason to bypass the library, **surface
+it as a question first** instead of forking quietly. Drift here costs
+real CPU, battery, and latency that the user only sees as "the app feels
+sluggish."
+
+**The migration template** (3-line summary):
+
+1. Add a Zero query in `libs/zero-harness/src/queries.ts`.
+2. Add `notifySyncInvalidate('queryName.variant', args, optionalRows?)`
+   from `apps/operator/lib/sync-sse.ts` at the write site (REST route or
+   chokidar watcher).
+3. Component: `const { data } = useSyncQuery({queryName, args})`. Done.
+
+Full recipe in the [Cookbook](/docs/data-sync/cookbook).
+</Callout>
+
 ## What this section covers
 
 This is a reference for agents and humans building UI panels in the harness

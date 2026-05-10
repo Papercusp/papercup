@@ -1,4 +1,10 @@
 {
   "title": "Design",
-  "pages": ["index", "libraries", "gotchas"]
+  "pages": [
+    "index",
+    "libraries",
+    "gotchas",
+    "operator-panel-feedback",
+    "delegate-async-plan"
+  ]
 }

@@ -9,6 +9,30 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 beforeEach(() => {
   // Stub Web Speech APIs.
   (globalThis as any).window = globalThis;
+  // initVoiceMode registers pagehide/beforeunload + visibilitychange/
+  // focus/blur listeners. Without these stubs the test environment
+  // throws "window.addEventListener is not a function" at module-eval
+  // time on every test in this file.
+  if (!(globalThis as any).addEventListener) {
+    (globalThis as any).addEventListener = () => {};
+    (globalThis as any).removeEventListener = () => {};
+  }
+  if (!(globalThis as any).document) {
+    (globalThis as any).document = {
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      visibilityState: 'visible',
+    };
+  }
+  if (!(globalThis as any).sessionStorage) {
+    (globalThis as any).sessionStorage = {
+      _s: new Map<string, string>(),
+      getItem(k: string) { return (this._s as any).get(k) ?? null; },
+      setItem(k: string, v: string) { (this._s as any).set(k, v); },
+      removeItem(k: string) { (this._s as any).delete(k); },
+      clear() { (this._s as any).clear(); },
+    };
+  }
   (globalThis as any).SpeechRecognition = class {
     onresult: any = null;
     onend: any = null;

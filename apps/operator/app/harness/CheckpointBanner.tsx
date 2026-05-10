@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { MarkdownPreview } from '../_components/MarkdownEditor';
 
@@ -10,6 +11,17 @@ interface Checkpoint {
   waitingSinceMs: number;
   granted: boolean;
 }
+
+// Row shape from harness_shared.harness_checkpoints (mirrored from
+// .harness/checkpoint-*.md + .granted siblings by harness-fs-watcher.ts).
+type HarnessCheckpointRow = {
+  harnessSlug: string;
+  name: string;
+  content: string;
+  waitingSinceMs: number;
+  granted: boolean;
+  workspaceId: string;
+};
 
 interface Props {
   slug: string;
@@ -24,42 +36,40 @@ function fmtAge(ms: number): string {
 }
 
 export default function CheckpointBanner({ slug, onGranted }: Props) {
-  const [list, setList] = useState<Checkpoint[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await fetch(`/api/harness/${slug}/checkpoints`);
-      if (!r.ok) throw new Error(`${r.status}`);
-      const d = await r.json();
-      setList(d.checkpoints ?? []);
-      setErr(null);
-    } catch (e) {
-      setErr(String(e));
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  // Live-pushed via Zero (harness_shared.harness_checkpoints, mirrored
+  // from .harness/checkpoint-*.md by harness-fs-watcher.ts).
+  const { data: checkpointRows } = useSyncQuery<HarnessCheckpointRow>({
+    queryName: 'harnessCheckpoints.byHarness',
+    args: { harnessSlug: slug },
+  });
+  const list = useMemo<Checkpoint[]>(
+    () =>
+      (checkpointRows ?? []).map((r) => ({
+        name: r.name,
+        content: r.content,
+        waitingSinceMs: r.waitingSinceMs,
+        granted: r.granted,
+      })),
+    [checkpointRows],
+  );
 
   const grant = useCallback(async (name: string) => {
     setBusy(name);
     try {
       const r = await fetch(`/api/harness/${slug}/checkpoint/${encodeURIComponent(name)}/grant`, { method: 'POST' });
       if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
-      await load();
+      // Zero pushes the new granted state once chokidar mirrors the .granted file.
       onGranted?.();
     } catch (e) {
       setErr(String(e));
     } finally {
       setBusy(null);
     }
-  }, [slug, load, onGranted]);
+  }, [slug, onGranted]);
 
   if (list.length === 0) return null;
 

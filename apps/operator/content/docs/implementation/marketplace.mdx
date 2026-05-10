@@ -10,7 +10,7 @@ import { Callout } from 'fumadocs-ui/components/callout';
 This page is the canonical handoff document for marketplace implementation. If a future agent or operator picks up the work, **read this in full first**. Specifically:
 
 1. The OAuth client_secret was leaked in a chat session and **may not have been rotated yet** — check `~/.papercusp/marketplace-secrets.env` and rotate at github.com → Developer Settings → Papercusp Marketplace.
-2. The marketplace was extracted to its own repo `aviynw/papercusp-marketplace` (private) — **NOT in `papercupai/papercusp` anymore**.
+2. The marketplace was extracted to its own repo `papercupai/papercusp-registry` (private) — **NOT in `papercupai/papercusp` anymore**.
 3. Both `localhost:3055` and `papercuspai.com` exist intentionally; see "Two surfaces, often confused" below.
 4. The CF API token at `~/.cloudflare-token` lacks Tunnel:Edit and (likely) R2:Edit scopes. Tunnel + R2 changes need user action in CF dashboard.
 </Callout>
@@ -24,7 +24,7 @@ There are **two distinct user-facing apps** in this project, both legitimate, bo
 | Surface | URL | Source | Audience | Purpose |
 |---|---|---|---|---|
 | **Substrate operator dashboard** | http://localhost:3055 | `libs/papercusp/apps/web/` (in [papercupai/papercusp](https://github.com/papercupai/papercusp) submodule) | Anyone running their own Papercusp install | Manage local API keys, browse the catalog with installed-state, view harness state, sign in for publishing |
-| **Public marketplace** | https://papercuspai.com | `libs/papercusp-marketplace/apps/marketplace-site/` (in [aviynw/papercusp-marketplace](https://github.com/aviynw/papercusp-marketplace) submodule) | Anyone on the internet discovering Papercusp | Browse the catalog read-only, read docs, see featured packages, get install instructions |
+| **Public marketplace** | https://papercuspai.com | `../papercusp-registry/apps/marketplace-site/` (in [papercupai/papercusp-registry](https://github.com/papercupai/papercusp-registry) submodule) | Anyone on the internet discovering Papercusp | Browse the catalog read-only, read docs, see featured packages, get install instructions |
 
 ### Why both exist (not a duplicate, not a stale-link mistake)
 
@@ -61,7 +61,7 @@ api.papercuspai.com  (Cloudflare Tunnel — public ingress)
    │   tunnel UUID c53515b3-edfe-4e99-813b-e3916ae9d02c (papercupai-api)
    ▼
 http://localhost:3057  (marketplace-api — Hono on Node)
-   │   libs/papercusp/apps/marketplace-api/
+   │   ../papercusp-registry/apps/marketplace-api/
    │
    │ filesystem read
    ▼
@@ -75,12 +75,12 @@ http://localhost:3057  (marketplace-api — Hono on Node)
 
 | Component | Path | Notes |
 |---|---|---|
-| Marketplace site | `libs/papercusp/apps/marketplace-site/` | Next.js 16 + React 19 static export. 19 source files (5 React components, 2 client wrappers, 4 page entries, 2 lib modules, CSS, favicon, 4 config files). Routes: `/`, `/marketplace/`, `/marketplace/[slug]/`, `/docs/`. |
-| Marketplace API | `libs/papercusp/apps/marketplace-api/` | Hono on Node, 278-line server.ts. CORS allowlist for `papercuspai.com`, `www.papercuspai.com`, `*.pages.dev`, `localhost:3060`, `localhost:3050`, `192.168.40.216:3060`. |
+| Marketplace site | `../papercusp-registry/apps/marketplace-site/` | Next.js 16 + React 19 static export. Routes: `/`, `/marketplace/`, `/marketplace/[slug]/`, `/docs/`. |
+| Marketplace API | `../papercusp-registry/apps/marketplace-api/` | Hono on Node, 2.3k-line server.ts. CORS allowlist for `papercuspai.com`, `www.papercuspai.com`, `*.pages.dev`, `localhost:3060`, `localhost:3050`, `192.168.40.216:3060`. |
 | CF Pages project | `papercuspai` (account `f896982ea2f6d507e4f29eeecbd26e94`) | Custom domain `papercuspai.com` attached. Deployed via `wrangler pages deploy ./out --project-name papercuspai --branch main`. |
 | CF Tunnel ingress | `api.papercuspai.com` → `localhost:3057` | Routed through existing `papercupai-api` tunnel; managed via Zero Trust dashboard. |
 | Build pattern | Two-base env split | `BUILD_API_BASE=http://localhost:3057` for `generateStaticParams`; `NEXT_PUBLIC_API_BASE=https://api.papercuspai.com` for client bundle runtime fetches. |
-| Procfile entry | `marketplace: npm run dev:marketplace` | Auto-starts via `bin/overmind-all`. |
+| Process supervision | `~/.config/systemd/user/marketplace-api.service` | systemd --user transient unit; auto-restart on failure; logs at `~/.papercusp/logs/marketplace-api.log`. |
 | Sample packages | `papercup-coding@0.1.0`, `papercup-org@0.1.0` (stub) | Filesystem-backed at `~/.papercusp/marketplace-storage/`. |
 
 ### Endpoints implemented in marketplace-api
@@ -501,7 +501,7 @@ CREATE INDEX idx_package_versions_published_at ON package_versions(published_at 
 | No multi-registry resolution | ✅ **Shipped 2026-04-27** | M13 |
 | No SBOM attestation / CVE scanning | ❌ Missing | M14 |
 
-> **2026-04-27** — marketplace extracted into its own private repo at [aviynw/papercusp-marketplace](https://github.com/aviynw/papercusp-marketplace). Substrate ([papercupai/papercusp](https://github.com/papercupai/papercusp)) keeps the open-source self-hostable runtime; marketplace stays operator-only with OAuth secrets, signing keys, sessions DB. Restart now has both as sibling submodules at `libs/papercusp/` and `libs/papercusp-marketplace/`.
+> **2026-04-27** — marketplace extracted into its own private repo at [papercupai/papercusp-registry](https://github.com/papercupai/papercusp-registry). Substrate ([papercupai/papercusp](https://github.com/papercupai/papercusp)) keeps the open-source self-hostable runtime; marketplace stays operator-only with OAuth secrets, signing keys, sessions DB. Restart now has both as sibling submodules at `libs/papercusp/` and `../papercusp-registry/`.
 
 ### What landed this round (M3 + M10 + M13)
 
@@ -649,7 +649,7 @@ The bundled templates `papercup-coding` and `papercup-org` are **first-party** �
 they're owned by `@papercupai`, not by whoever happens to run the seed script.
 
 Their canonical source-of-truth lives in the marketplace repo at
-`libs/papercusp-marketplace/seeds/papercupai/<slug>/`. They're published via the
+`../papercusp-registry/seeds/papercupai/<slug>/`. They're published via the
 **same publish pipeline as any user package** — no SQL backfill, no special
 case in the server.
 
@@ -677,16 +677,26 @@ account/org to exist and you to be able to authenticate as it.
 **Don't** insert seed packages directly via SQL or backfill scripts — that
 bypasses the publish pipeline (signing, indexing, webhook events) and creates
 orphan-attribution problems. The seeds README at
-`libs/papercusp-marketplace/seeds/README.md` documents the policy.
+`../papercusp-registry/seeds/README.md` documents the policy.
 
 ### Local development
 
+The marketplace-api runs as a systemd --user transient unit named
+`marketplace-api`, defined at `~/.config/systemd/user/marketplace-api.service`.
+It's started automatically alongside `bin/dev` and survives shell exits.
+
 ```bash
-# Start marketplace-api (auto-starts in overmind)
-npm run dev:marketplace      # listens on :3057
+# Status / restart / logs
+systemctl --user status marketplace-api
+systemctl --user restart marketplace-api
+journalctl --user -u marketplace-api -f
+# or: tail -f ~/.papercusp/logs/marketplace-api.log
+
+# Manual run (if you need to iterate without the unit):
+cd ../papercusp-registry && npm run dev:api      # listens on :3057
 
 # Build + serve site locally
-cd libs/papercusp/apps/marketplace-site
+cd ../papercusp-registry/apps/marketplace-site
 BUILD_API_BASE=http://localhost:3057 NEXT_PUBLIC_API_BASE=https://api.papercuspai.com npm run build
 npx serve out -l 3060        # http://localhost:3060
 ```
@@ -713,7 +723,7 @@ The marketplace-api process must be running on `localhost:3057` for the build's 
 - New publishes appear instantly in `/marketplace/` grid (live API fetch) but **404 on `[slug]` detail until site is rebuilt + redeployed** (`dynamicParams = false` on the static export). Future option: add an SSR fallback at the edge for unknown slugs.
 - The CF token at `~/.cloudflare-token` has Pages and a few zone scopes but **NOT** `Account · Cloudflare Tunnel · Edit`. Tunnel changes require dashboard clicks today.
 - `cloudflared` runs in token mode → ingress rules managed via Zero Trust dashboard, not `~/.cloudflared/config.yml`.
-- Marketplace dirs were moved on 2026-04-27 from `libs/papercusp/apps/{marketplace-api,marketplace-site}` → `libs/papercusp-marketplace/apps/{marketplace-api,marketplace-site}`. If you see stale paths anywhere, that's why.
+- Marketplace dirs were moved on 2026-04-27 from `libs/papercusp/apps/{marketplace-api,marketplace-site}` → `../papercusp-registry/apps/{marketplace-api,marketplace-site}`. If you see stale paths anywhere, that's why.
 - The `papercusp` CLI (`libs/papercusp/packages/cli/src/papercusp.ts`) lives in the **substrate** repo, not the marketplace repo. It talks to the marketplace via HTTP, so the split makes sense — but if you change the api shape on the server side, update the CLI in lockstep across both repos.
 
 ## Handoff — detailed implementation specs for remaining phases
@@ -742,7 +752,7 @@ This section is the precise roadmap for the **3 remaining phases** if a future a
    R2_BUCKET=papercusp-marketplace-tarballs
    ```
 
-3. Add `@aws-sdk/client-s3` to `libs/papercusp-marketplace/apps/marketplace-api/package.json`:
+3. Add `@aws-sdk/client-s3` to `../papercusp-registry/apps/marketplace-api/package.json`:
    ```json
    "dependencies": {
      "@aws-sdk/client-s3": "^3.700.0",
@@ -750,7 +760,7 @@ This section is the precise roadmap for the **3 remaining phases** if a future a
    }
    ```
 
-4. Create `libs/papercusp-marketplace/apps/marketplace-api/src/r2.ts`:
+4. Create `../papercusp-registry/apps/marketplace-api/src/r2.ts`:
    - `S3Client` configured with `endpoint: https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`, `region: 'auto'`
    - `uploadTarball(slug, version, buf)` → `s3.send(new PutObjectCommand(...))`
    - `getDownloadUrl(slug, version)` → `getSignedUrl(s3, new GetObjectCommand(...), { expiresIn: 300 })`
@@ -765,7 +775,7 @@ This section is the precise roadmap for the **3 remaining phases** if a future a
    - On any error (R2 down or migration not complete), fall back to existing FS stream
    - `papercusp_marketplace.package_versions.tarball_r2_key` column tracks if uploaded — add a migration
 
-7. Migration script: `libs/papercusp-marketplace/apps/marketplace-api/src/migrate-to-r2.ts` — iterates existing FS packages, uploads each to R2, marks `tarball_r2_key` in the DB.
+7. Migration script: `../papercusp-registry/apps/marketplace-api/src/migrate-to-r2.ts` — iterates existing FS packages, uploads each to R2, marks `tarball_r2_key` in the DB.
 
 8. Delete FS storage AFTER verifying R2 + signed URLs serve correctly for a week.
 
@@ -782,7 +792,7 @@ ALTER TABLE papercusp_marketplace.package_versions
 
 ### M8 — Author profiles + reviews (4-5h)
 
-**Schema** (003b-reviews.sql in `libs/papercusp-marketplace/sql/`):
+**Schema** (003b-reviews.sql in `../papercusp-registry/sql/`):
 ```sql
 CREATE TABLE IF NOT EXISTS papercusp_marketplace.reviews (
   id            TEXT PRIMARY KEY,                  -- 'rv_' + 24 hex
@@ -810,7 +820,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON papercusp_marketplace.reviews TO harness
 - `POST /v1/admin/reviews/:id/hide` — operator-only; sets `hidden_at` + `hidden_reason`
 - `GET /v1/authors/:login` — public profile + their packages + their reviews (last 10)
 
-**Site changes** (`libs/papercusp-marketplace/apps/marketplace-site/`):
+**Site changes** (`../papercusp-registry/apps/marketplace-site/`):
 - New page `/authors/[login]/page.tsx` with `generateStaticParams` from `package_versions.published_by DISTINCT`
 - New section on `/marketplace/[slug]/` (PackageClient.tsx) with reviews list + write-review form (auth-gated)
 - Average rating badge on the catalog grid
@@ -843,7 +853,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON papercusp_marketplace.package_attestatio
 **Publish handler change:**
 - `POST /publish/:slug/:version` accepts an additional multipart field `sbom` (JSON file). Validate against the format's JSON schema before storing. If valid, insert into `package_attestations` with `scanned_at = NULL`.
 
-**Scan worker** (`libs/papercusp-marketplace/apps/marketplace-api/src/sbom-scanner.ts`):
+**Scan worker** (`../papercusp-registry/apps/marketplace-api/src/sbom-scanner.ts`):
 - Long-lived loop (1-min tick) drains rows where `scanned_at IS NULL`
 - For each: extract package list (SPDX `packages[]` or CycloneDX `components[]`)
 - For each package: query `https://api.osv.dev/v1/query` with PURL or CPE
@@ -878,7 +888,7 @@ If you're picking this up cold, here's the 5-minute orientation:
 
 1. **Where the code lives**:
    - Substrate: `papercupai/papercusp` repo → submodule at `Restart/libs/papercusp/`
-   - Marketplace: `aviynw/papercusp-marketplace` repo → submodule at `Restart/libs/papercusp-marketplace/`
+   - Marketplace: `papercupai/papercusp-registry` repo → submodule at `Restart/../papercusp-registry/`
    - Spec docs: embedded in `Restart/apps/papercusp/content/docs/` and served at `localhost:3055/docs` (Fumadocs). Legacy Starlight source still in `Restart/apps/papercusp-spec/`.
    - Substrate UI: `libs/papercusp/apps/web/` (lives at `localhost:3055`)
    - CLI: `libs/papercusp/packages/cli/src/papercusp.ts`
@@ -928,7 +938,7 @@ If you're picking this up cold, here's the 5-minute orientation:
 
 6. **Submodule SHAs** to know about (for reference):
    - `papercupai/papercusp` master at `8374a93` (extract marketplace commit)
-   - `aviynw/papercusp-marketplace` master at `756aaa4` (initial extract commit)
+   - `papercupai/papercusp-registry` master at `756aaa4` (initial extract commit)
 
 ## Final estimate (after rounds 1-4)
 

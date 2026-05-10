@@ -55,7 +55,7 @@ function AutoLoopGrid({ fires }: { fires: AutoLoopFire[] }) {
       header: 'Status',
       width: 1,
       render: ({ row }) => (
-        <span style={{ color: row.last_status === 'ok' ? 'lightgreen' : row.last_status?.startsWith('error') ? 'tomato' : 'var(--fg-mute)' }}>
+        <span className={`pc-kpi-autoloop-status ${row.last_status === 'ok' ? 'ok' : row.last_status?.startsWith('error') ? 'error' : 'unknown'}`} style={{ color: row.last_status === 'ok' ? 'lightgreen' : row.last_status?.startsWith('error') ? 'tomato' : 'var(--fg-mute)' }}>
           {row.last_status ?? '—'}
         </span>
       ),
@@ -66,32 +66,34 @@ function AutoLoopGrid({ fires }: { fires: AutoLoopFire[] }) {
       width: 0.8,
       align: 'right',
       render: ({ row }) => (
-        <span style={{ color: row.consecutive_errors > 0 ? 'tomato' : 'inherit' }}>{row.consecutive_errors}</span>
+        <span className={row.consecutive_errors > 0 ? 'pc-kpi-error-count active' : 'pc-kpi-error-count'} style={{ color: row.consecutive_errors > 0 ? 'tomato' : 'inherit' }}>{row.consecutive_errors}</span>
       ),
     },
   ], []);
 
   return (
-    <RichGrid<AutoLoopFire>
-      columns={columns}
-      rows={fires}
-      getRowId={(f) => `${f.harness_slug}:${f.role}`}
-      inline
-    />
+    <div className="pc-kpi-autoloop-grid">
+      <RichGrid<AutoLoopFire>
+        columns={columns}
+        rows={fires}
+        getRowId={(f) => `${f.harness_slug}:${f.role}`}
+        inline
+      />
+    </div>
   );
 }
 
 function StatCard({ label, value, sub }: { label: string; value: string | number; sub?: string }) {
   return (
-    <div style={{
+    <div className="pc-kpi-stat-card" style={{
       padding: 16,
       borderRadius: 8,
       background: 'rgba(255,255,255,0.04)',
       border: '1px solid rgba(255,255,255,0.08)',
     }}>
-      <div style={{ fontSize: 12, color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
-      <div style={{ fontSize: 32, fontWeight: 700, marginTop: 4 }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 4 }}>{sub}</div>}
+      <div className="pc-kpi-stat-label" style={{ fontSize: 12, color: 'var(--fg-mute)', textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</div>
+      <div className="pc-kpi-stat-value" style={{ fontSize: 32, fontWeight: 700, marginTop: 4 }}>{value}</div>
+      {sub && <div className="pc-kpi-stat-sub" style={{ fontSize: 12, color: 'var(--fg-mute)', marginTop: 4 }}>{sub}</div>}
     </div>
   );
 }
@@ -99,17 +101,17 @@ function StatCard({ label, value, sub }: { label: string; value: string | number
 function BarRow({ label, value, max }: { label: string; value: number; max: number }) {
   const pct = max > 0 ? (value / max) * 100 : 0;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0' }}>
-      <div style={{ width: 180, fontSize: 13 }}>{label}</div>
-      <div style={{ flex: 1, height: 12, background: 'rgba(255,255,255,0.06)', borderRadius: 4, position: 'relative' }}>
-        <div style={{
+    <div className="pc-kpi-bar-row" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0' }}>
+      <div className="pc-kpi-bar-label" style={{ width: 180, fontSize: 13 }}>{label}</div>
+      <div className="pc-kpi-bar-track" style={{ flex: 1, height: 12, background: 'rgba(255,255,255,0.06)', borderRadius: 4, position: 'relative' }}>
+        <div className="pc-kpi-bar-fill" style={{
           width: `${pct}%`,
           height: '100%',
           background: 'var(--accent)',
           borderRadius: 4,
         }} />
       </div>
-      <div style={{ width: 60, textAlign: 'right', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      <div className="pc-kpi-bar-value" style={{ width: 60, textAlign: 'right', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
     </div>
   );
 }
@@ -142,10 +144,10 @@ export default function KPIsPage() {
   }, [refresh]);
 
   if (loading && !data) {
-    return <div style={{ padding: 32 }}>Loading KPIs…</div>;
+    return <div className="pc-installed-ops-shell pc-kpi-shell pc-kpi-loading" style={{ padding: 32 }}>Loading KPIs…</div>;
   }
   if (error && !data) {
-    return <div style={{ padding: 32, color: 'tomato' }}>Failed to load: {error}</div>;
+    return <div className="pc-installed-ops-shell pc-kpi-shell pc-kpi-error" style={{ padding: 32, color: 'tomato' }}>Failed to load: {error}</div>;
   }
   if (!data) return null;
 
@@ -153,12 +155,13 @@ export default function KPIsPage() {
   const opMax = opEntries.length > 0 ? opEntries[0][1] : 0;
 
   return (
-    <div style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+    <div className="pc-installed-ops-shell pc-kpi-shell" style={{ padding: 24, maxWidth: 1200, margin: '0 auto' }}>
+      <div className="pc-installed-ops-header pc-kpi-topbar" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <h1 style={{ fontSize: 24, fontWeight: 700, margin: 0 }}>Substrate KPIs</h1>
-        <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
+        <div className="pc-kpi-refresh-row" style={{ fontSize: 12, color: 'var(--fg-mute)' }}>
           {lastFetched && <>Updated {formatRel(new Date(lastFetched).toISOString())}</>}
           <button
+            className="pc-kpi-refresh-button"
             onClick={refresh}
             style={{ marginLeft: 12, padding: '4px 10px', background: 'transparent', border: '1px solid rgba(255,255,255,0.15)', color: 'var(--fg)', cursor: 'pointer', borderRadius: 4 }}
           >
@@ -168,7 +171,7 @@ export default function KPIsPage() {
       </div>
 
       {/* Top stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 24 }}>
+      <div className="pc-kpi-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12, marginBottom: 24 }}>
         <StatCard label="Harnesses" value={data.totals.harnesses} />
         <StatCard label="Projects" value={data.totals.projects} sub={Object.entries(data.totals.projects_by_status).map(([k, v]) => `${k}:${v}`).join(' ')} />
         <StatCard label="Messages 24h" value={data.totals.messages_24h.toLocaleString()} />
@@ -176,11 +179,11 @@ export default function KPIsPage() {
         <StatCard label="AutoLoop active" value={data.autoloop.active} />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+      <div className="pc-kpi-lower-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
         {/* Audit op breakdown */}
-        <section>
+        <section className="pc-kpi-section pc-kpi-audit-section">
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>Action ops in last 24h</h2>
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8 }}>
+          <div className="pc-kpi-panel pc-kpi-audit-panel" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8 }}>
             {opEntries.length === 0 && <div style={{ color: 'var(--fg-mute)' }}>No actions in the last 24h.</div>}
             {opEntries.map(([op, n]) => (
               <BarRow key={op} label={op} value={n} max={opMax} />
@@ -189,15 +192,15 @@ export default function KPIsPage() {
         </section>
 
         {/* Directives + parents */}
-        <section>
+        <section className="pc-kpi-section pc-kpi-directives-section">
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>Directives</h2>
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, marginBottom: 24 }}>
-            <div style={{ display: 'flex', gap: 24 }}>
-              <div>
+          <div className="pc-kpi-panel pc-kpi-directives-panel" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, marginBottom: 24 }}>
+            <div className="pc-kpi-directives-grid" style={{ display: 'flex', gap: 24 }}>
+              <div className="pc-kpi-directive-card">
                 <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>Open</div>
                 <div style={{ fontSize: 24, fontWeight: 700 }}>{data.directives.open}</div>
               </div>
-              <div>
+              <div className="pc-kpi-directive-card">
                 <div style={{ fontSize: 12, color: 'var(--fg-mute)' }}>Acknowledged</div>
                 <div style={{ fontSize: 24, fontWeight: 700 }}>{data.directives.acknowledged}</div>
               </div>
@@ -205,10 +208,10 @@ export default function KPIsPage() {
           </div>
 
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>Parent harnesses</h2>
-          <div style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8 }}>
+          <div className="pc-kpi-panel pc-kpi-parents-panel" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8 }}>
             {data.parents.length === 0 && <div style={{ color: 'var(--fg-mute)' }}>No parent → child relationships yet.</div>}
             {data.parents.map((p) => (
-              <div key={p.slug} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+              <div key={p.slug} className="pc-kpi-parent-row" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
                 <span style={{ fontFamily: 'monospace' }}>{p.slug}</span>
                 <span>{p.children_count} {p.children_count === 1 ? 'child' : 'children'}</span>
               </div>
@@ -218,9 +221,9 @@ export default function KPIsPage() {
       </div>
 
       {/* AutoLoop fire history */}
-      <section style={{ marginTop: 24 }}>
+      <section className="pc-kpi-section pc-kpi-autoloop-section" style={{ marginTop: 24 }}>
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Recent autoLoop fires</h2>
-        <div style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, overflowX: 'auto' }}>
+        <div className="pc-kpi-panel pc-kpi-autoloop-panel" style={{ background: 'rgba(255,255,255,0.02)', padding: 16, borderRadius: 8, overflowX: 'auto' }}>
           {data.autoloop.recent_fires.length === 0 && <div style={{ color: 'var(--fg-mute)' }}>No autoLoop activity recorded yet.</div>}
           {data.autoloop.recent_fires.length > 0 && (
             <AutoLoopGrid fires={data.autoloop.recent_fires} />

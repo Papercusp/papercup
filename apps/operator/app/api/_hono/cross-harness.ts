@@ -20,6 +20,7 @@
 import type { Hono } from 'hono';
 import { getOrgPg, withWorkspace } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { readRecentActivity } from '@/lib/cross-harness-data';
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -173,35 +174,45 @@ export function registerCrossHarness(harness: Hono) {
   });
 
   // ── Global recent activity feed (Tier 3) ──────────────────────────────
+  // Backed by lib/cross-harness-data.ts so the MCP tool
+  // cross_harness:recent_activity sees the same shape. Fixed
+  // 2026-05-10: previous impl SELECTed `harness_slug` (column doesn't
+  // exist in audit_log) and used to_char on a bigint ts (now
+  // to_timestamp(ts/1000)).
   harness.get('/all/recent-activity', async (c) => {
     const limit = clampLimit(c.req.query('limit'), 20, 200);
     try {
-      // Workspace-scoped: only this workspace's audit rows.
-      const rows = await withWorkspace(activeWorkspaceId(), async (tx) => {
-        return await tx<{
-          ts: string; harness_slug: string; action: string; subject: string | null;
-          actor: string | null;
-        }[]>`
-          SELECT to_char(ts, 'YYYY-MM-DD"T"HH24:MI:SSZ') AS ts,
-                 harness_slug,
-                 action,
-                 subject,
-                 actor
-            FROM harness_shared.audit_log
-           ORDER BY ts DESC
-           LIMIT ${limit}
-        `;
-      });
-      return c.json({ events: rows });
-    } catch (e: any) {
-      return c.json({ error: 'failed', detail: String(e?.message).slice(0, 300) }, 500);
+      const events = await readRecentActivity(limit);
+      return c.json({ events });
+    } catch (e: unknown) {
+      return c.json({ error: 'failed', detail: String((e as Error)?.message).slice(0, 300) }, 500);
     }
   });
 }
 
 // Marketplace spawnable catalog — registered separately on the operator's
 // /api/marketplace path (NOT on the harness Hono app).
-export async function getSpawnableTemplates(): Promise<{ spawnable: any[] }> {
+// TTL cache for the spawnable list. The endpoint is read every time
+// the prompt-builder validates a 'scaffold_harness' verb and on every
+// dashboard mount; under c=10 contention it was 96 ms p50 / 644 ms p99
+// because each call did a cross-port self-fetch (operator -> operator
+// -> marketplace) plus a per-harness fs walk. Snapshots/templates change
+// rarely; a 10 s TTL keeps the data fresh enough for UX while collapsing
+// concurrent callers via the in-flight promise pattern used elsewhere.
+interface SpawnableCacheEntry {
+  expires: number;
+  inflight: Promise<{ spawnable: any[] }> | null;
+  value: { spawnable: any[] } | null;
+}
+const __spawnableCacheKey = Symbol.for('papercusp.spawnableCache');
+type SpawnableCacheGlobals = typeof globalThis & { [__spawnableCacheKey]?: SpawnableCacheEntry };
+const __spawnableCache: SpawnableCacheEntry = (() => {
+  const g = globalThis as SpawnableCacheGlobals;
+  if (!g[__spawnableCacheKey]) g[__spawnableCacheKey] = { expires: 0, inflight: null, value: null };
+  return g[__spawnableCacheKey]!;
+})();
+
+async function computeSpawnableTemplates(): Promise<{ spawnable: any[] }> {
   // Read from the existing catalog endpoint, filter by spawnable field.
   const operatorBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055';
   let catalog: any[] = [];
@@ -259,4 +270,20 @@ export async function getSpawnableTemplates(): Promise<{ spawnable: any[] }> {
     merged.push(t);
   }
   return { spawnable: merged };
+}
+
+export async function getSpawnableTemplates(): Promise<{ spawnable: any[] }> {
+  const now = Date.now();
+  const TTL_MS = 10_000;
+  if (__spawnableCache.value && __spawnableCache.expires > now) return __spawnableCache.value;
+  if (!__spawnableCache.inflight) {
+    __spawnableCache.inflight = (async () => {
+      const result = await computeSpawnableTemplates();
+      __spawnableCache.value = result;
+      __spawnableCache.expires = Date.now() + TTL_MS;
+      __spawnableCache.inflight = null;
+      return result;
+    })();
+  }
+  return __spawnableCache.inflight;
 }

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Tooltip } from './Tooltip';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
 
@@ -23,6 +24,19 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
   const [toast, setToast] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useState(false);
 
+  // Escalation content streams from harness_escalations (Zero) — chokidar
+  // watcher mirrors .harness/escalation.md + supervisor-notes.md into PG.
+  // The mount-time REST fetch is gone.
+  const { data: escalationRows } = useSyncQuery<{
+    escalation: string | null;
+    supervisorNotes: string | null;
+    mtimeMs: number | null;
+  }>({
+    queryName: 'harnessEscalations.byHarness',
+    args: { harnessSlug: slug, phase: 'staging' },
+    enabled: !!slug && escalated,
+  });
+
   useEffect(() => {
     if (!escalated) {
       setPayload(null);
@@ -30,11 +44,15 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
       setToast(null);
       return;
     }
-    fetch(`/api/harness/${slug}/escalation`)
-      .then((r) => r.json())
-      .then((d) => setPayload(d))
-      .catch((e) => setToast(`load failed: ${e}`));
-  }, [escalated, slug]);
+    const row = Array.isArray(escalationRows) ? escalationRows[0] : null;
+    if (row) {
+      setPayload({
+        escalation: row.escalation ?? null,
+        supervisorNotes: row.supervisorNotes ?? null,
+        mtimeMs: row.mtimeMs ?? null,
+      });
+    }
+  }, [escalated, escalationRows]);
 
   const resolve = useCallback(async (action: 'clear' | 'keep') => {
     if (busy) return;

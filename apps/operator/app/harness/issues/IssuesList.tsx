@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { toast } from 'sonner';
 import {
@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useSyncQuery } from '@restart/sync';
-import { slugToIssuesKey, type IssueRow } from '@restart/zero-harness';
+import type { IssueConsolidatedRow } from '@restart/zero-harness';
 import type { Issue, IssueSeverity, IssueSource, IssueStatus } from './types';
 import { IssueDetail } from './IssueDetail';
 import { Tooltip } from '../Tooltip';
@@ -20,7 +20,7 @@ type LocalIssueRow = {
   evidence?: string | null; suggestedFix?: string | null; codePointer?: string | null;
   linkedFeatureId?: string | null; attempts?: number | string; notes?: unknown;
 };
-function rowToIssue(rRaw: IssueRow): Issue {
+function rowToIssue(rRaw: IssueConsolidatedRow): Issue {
   const r = rRaw as unknown as LocalIssueRow;
   // PG TIMESTAMPTZ → zero-cache → number (epoch ms). Issue.foundAt is ISO
   // string for downstream display compat.
@@ -81,7 +81,7 @@ const SOURCE_ICON: Record<IssueSource, typeof User> = {
   human: User,
 };
 
-export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: number) => void }) {
+function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number) => void }) {
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [pending, setPending] = useState<Issue[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -94,42 +94,51 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
   const [triaging, setTriaging] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
-  // Issues stream live from Zero (`harness_<slug>.harness_issues` via
-  // `useQuery`). The legacy `/api/harness/<slug>/issues-list` endpoint still
-  // exists and dual-writes JSON↔PG, but reads come straight from the replica.
-  // `pending` (validator findings awaiting curation) still lives in
-  // `pending-issues.jsonl` and is fetched separately until that file is also
-  // migrated to PG.
-  const queryName = slug ? `${slugToIssuesKey(slug)}.all` : null;
-  const { data: zeroRows, loading } = useSyncQuery<IssueRow>({
-    queryName: queryName ?? 'issuesSheets.all',
-    enabled: !!queryName,
+  // Issues stream live from the slug-agnostic consolidated table. One Zero
+  // query per harness (Migration 030); no per-slug exports.
+  const { data: zeroRows, loading } = useSyncQuery<IssueConsolidatedRow>({
+    queryName: 'issuesConsolidated.bySlug',
+    args: slug ? { harnessSlug: slug } : undefined,
+    enabled: !!slug,
   });
 
   useEffect(() => {
-    if (!queryName || loading || !Array.isArray(zeroRows)) return;
+    if (!slug || loading || !Array.isArray(zeroRows)) return;
     setIssues(zeroRows.map(rowToIssue));
     setError(null);
-  }, [queryName, zeroRows, loading]);
+  }, [slug, zeroRows, loading]);
 
-  // Pending findings are file-system only; keep polling them.
+  // Pending findings now stream from harness_pending_issues (Zero) — the
+  // chokidar watcher mirrors .harness/pending-issues.jsonl into PG. The
+  // 15s REST poll is gone.
+  const { data: pendingRows } = useSyncQuery<{
+    issueId: string;
+    featureId?: string | null;
+    title: string;
+    severity: string;
+    source: string;
+    payload: Record<string, unknown>;
+    ts: number;
+  }>({
+    queryName: 'harnessPendingIssues.byHarness',
+    args: slug ? { harnessSlug: slug, phase: 'staging' } : undefined,
+    enabled: !!slug,
+  });
+
   useEffect(() => {
-    if (!slug) return;
-    let aborted = false;
-    const fetchPending = () => {
-      fetch(`/api/harness/${slug}/issues-list`)
-        .then((r) => r.json())
-        .then((d) => {
-          if (aborted) return;
-          if (d.error) return;
-          setPending(d.pending ?? []);
-        })
-        .catch(() => {});
-    };
-    fetchPending();
-    const interval = setInterval(fetchPending, 5000);
-    return () => { aborted = true; clearInterval(interval); };
-  }, [slug, reloadTick]);
+    if (!Array.isArray(pendingRows)) return;
+    setPending(pendingRows.map((r) => ({
+      id: r.issueId,
+      title: r.title,
+      severity: r.severity as IssueSeverity,
+      source: r.source as IssueSource,
+      status: 'open' as IssueStatus,
+      foundAt: r.ts ? new Date(r.ts).toISOString() : '',
+      linkedFeatureId: r.featureId ?? undefined,
+      attempts: 0,
+      notes: [],
+    })));
+  }, [pendingRows]);
 
   useEffect(() => {
     onCount?.((issues?.length ?? 0) + pending.length);
@@ -311,7 +320,7 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
             return (
               <button
                 key={f}
-                className={`h-chip${filter === f ? ' on' : ''}`}
+                className={`h-chip h-issues-filter h-issues-filter--${f}${filter === f ? ' on' : ''}`}
                 onClick={() => setFilter(f)}
                 aria-pressed={filter === f}
               >
@@ -374,3 +383,7 @@ export function IssuesList({ slug, onCount }: { slug: string; onCount?: (n: numb
     </>
   );
 }
+
+const IssuesList = memo(IssuesListInner);
+export default IssuesList;
+export { IssuesList };

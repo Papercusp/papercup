@@ -3,34 +3,32 @@
 //
 // Two modes:
 //   - desktop (Tauri shell injects __TAURI_INTERNALS__): use the native
-//     commands, which also kill the sidecar + pglite-server on switch.
+//     commands, which also kill the sidecar + per-workspace PG backend
+//     (embedded-postgres-server by default, or pglite-server in legacy
+//     mode) on switch.
 //   - webapp (no Tauri runtime): fall back to the operator's
 //     /api/workspaces HTTP endpoints, which write the same registry.json
 //     and let papercuspRoot() pick up the change on its next call.
+//
+// Tauri-side calls go through the typed tauri-bindings produced by
+// tauri-specta; the public API of this file is unchanged.
 
-export interface Workspace {
-  id: string;
-  name: string;
-  createdAt: number;
-}
+import type { Workspace as BindingsWorkspace, Registry } from './tauri-bindings';
+
+export type Workspace = BindingsWorkspace;
 
 export interface WorkspaceRegistry {
   current: string;
   workspaces: Workspace[];
 }
 
-interface TauriInternals {
-  invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
-}
-
-function tauri(): TauriInternals | null {
-  if (typeof window === 'undefined') return null;
-  const w = window as unknown as { __TAURI_INTERNALS__?: TauriInternals };
-  return w.__TAURI_INTERNALS__ ?? null;
+function isDesktopRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  return Boolean((window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 }
 
 export function isDesktop(): boolean {
-  return tauri() !== null;
+  return isDesktopRuntime();
 }
 
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
@@ -45,20 +43,30 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function listWorkspaces(): Promise<WorkspaceRegistry> {
-  const t = tauri();
-  if (t) return t.invoke<WorkspaceRegistry>('workspaces_list');
+  if (isDesktopRuntime()) {
+    const { commands } = await import('./tauri-bindings');
+    return commands.workspacesList() as Promise<Registry>;
+  }
   return http<WorkspaceRegistry>('/api/workspaces');
 }
 
 export async function createWorkspace(name: string): Promise<Workspace> {
-  const t = tauri();
-  if (t) return t.invoke<Workspace>('workspaces_create', { name });
+  if (isDesktopRuntime()) {
+    const { commands } = await import('./tauri-bindings');
+    const r = await commands.workspacesCreate(name);
+    if (r.status === 'error') throw new Error(r.error);
+    return r.data;
+  }
   return http<Workspace>('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) });
 }
 
 export async function renameWorkspace(id: string, name: string): Promise<void> {
-  const t = tauri();
-  if (t) return t.invoke<void>('workspaces_rename', { id, name });
+  if (isDesktopRuntime()) {
+    const { commands } = await import('./tauri-bindings');
+    const r = await commands.workspacesRename(id, name);
+    if (r.status === 'error') throw new Error(r.error);
+    return;
+  }
   await http<unknown>(`/api/workspaces/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify({ name }),
@@ -66,17 +74,22 @@ export async function renameWorkspace(id: string, name: string): Promise<void> {
 }
 
 export async function deleteWorkspace(id: string): Promise<void> {
-  const t = tauri();
-  if (t) return t.invoke<void>('workspaces_delete', { id });
+  if (isDesktopRuntime()) {
+    const { commands } = await import('./tauri-bindings');
+    const r = await commands.workspacesDelete(id);
+    if (r.status === 'error') throw new Error(r.error);
+    return;
+  }
   await http<unknown>(`/api/workspaces/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 /**
  * Switch to a different workspace.
  *
- * In desktop mode, the Tauri shell kills the sidecar + pglite-server and
- * then calls app.restart() — the returned promise never resolves; the
- * page reloads under us.
+ * In desktop mode, the Tauri shell kills the sidecar + per-workspace PG
+ * backend (embedded-postgres-server by default, pglite-server legacy)
+ * and then calls app.restart() — the returned promise never resolves;
+ * the page reloads under us.
  *
  * In webapp mode, just write the new `current` to registry.json. The
  * operator's papercuspRoot() invalidates on registry mtime, so the next
@@ -85,13 +98,14 @@ export async function deleteWorkspace(id: string): Promise<void> {
  * the panels) doesn't lag behind.
  */
 export async function switchWorkspace(id: string, opts?: { resetTo?: string }): Promise<void> {
-  const t = tauri();
-  if (t) return t.invoke<void>('workspaces_switch', { id });
+  if (isDesktopRuntime()) {
+    const { commands } = await import('./tauri-bindings');
+    const r = await commands.workspacesSwitch(id);
+    if (r.status === 'error') throw new Error(r.error);
+    return;
+  }
   await http<unknown>('/api/workspaces/switch', { method: 'POST', body: JSON.stringify({ id }) });
   if (typeof window !== 'undefined') {
-    // Navigate to a clean URL so panel/modal/filter URL state from the
-    // previous workspace doesn't carry over (e.g. ?panel=experts pointing
-    // at a panel that doesn't exist in the new workspace).
     window.location.href = opts?.resetTo ?? `/harness?ws=${encodeURIComponent(id)}`;
   }
 }

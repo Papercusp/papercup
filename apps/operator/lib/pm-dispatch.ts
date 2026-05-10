@@ -1,7 +1,8 @@
 /**
- * Project Manager dispatch — spawn claude with the PM role prompt for a
- * specific project, parse the three-section output, persist the new spec
- * revision, and mark consumed pm_due events.
+ * Project Manager dispatch — spawn the agent CLI (omp -p default via
+ * Meridian, claude -p when AGENT_BACKEND=claude-code) with the PM role
+ * prompt for a specific project, parse the three-section output, persist
+ * the new spec revision, and mark consumed pm_due events.
  *
  * Output format produced by `prompts/project_manager.md`:
  *
@@ -27,7 +28,7 @@ import { projectDirForSlug } from './operator-notes';
 export interface RunPmOptions {
   slug: string;
   projectId: string;
-  /** Override claude command (default: `process.env.CLAUDE_CMD ?? 'claude'`). */
+  /** Override claude command (default: `process.env.AGENT_CMD ?? process.env.CLAUDE_CMD ?? 'omp'`). */
   claudeCmd?: string;
   /** Force a run even if no pending pm_due events exist (manual trigger). */
   bypassDebounce?: boolean;
@@ -145,7 +146,7 @@ async function releaseProjectLock(db: ReturnType<typeof getLegacyClient>, projec
 }
 
 export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult | RunPmError> {
-  const { slug, projectId, claudeCmd = process.env.CLAUDE_CMD ?? 'claude', bypassDebounce = false } = opts;
+  const { slug, projectId, claudeCmd = process.env.AGENT_CMD ?? process.env.CLAUDE_CMD ?? 'omp', bypassDebounce = false } = opts;
   // Wrap the entire PM run in a workspace-scoped tx so harness_shared.*
   // queries pass RLS predicates. Note: the advisory lock + sub-transactions
   // run within this outer transaction. claude spawn happens inside but PG
@@ -159,7 +160,7 @@ async function runProjectManagerInner(
   opts: RunPmOptions,
   db: ReturnType<typeof getLegacyClient>,
 ): Promise<RunPmResult | RunPmError> {
-  const { slug, projectId, claudeCmd = process.env.CLAUDE_CMD ?? 'claude', bypassDebounce = false } = opts;
+  const { slug, projectId, claudeCmd = process.env.AGENT_CMD ?? process.env.CLAUDE_CMD ?? 'omp', bypassDebounce = false } = opts;
 
   // 1. Acquire the per-project advisory lock so concurrent PM runs for the
   // same project serialize.
@@ -341,9 +342,19 @@ interface SpawnFailure { ok: false; detail: string }
 async function spawnClaude(claudeCmd: string, promptText: string, cwd?: string): Promise<SpawnSuccess | SpawnFailure> {
   return await new Promise((resolve) => {
     const argv = claudeCmd.split(/\s+/).filter(Boolean);
-    const exe = argv[0] ?? 'claude';
+    const exe = argv[0] ?? 'omp';
     const baseArgs = argv.slice(1);
-    const alreadyStreamJson = argv.some((a) => a.includes('stream-json'));
+
+    // Backend-aware flag set. pm-dispatch was originally claude-only;
+    // post-omp-default flip, it must emit the right structured-stream
+    // flags per CLI:
+    //   - claude: --output-format stream-json --verbose --include-partial-messages
+    //   - omp:    --mode json --no-session
+    // omp also reads the prompt from a positional `@file` argument
+    // rather than stdin (its `-p` mode doesn't accept stdin), so we
+    // route the prompt via tmpfile when backend=omp.
+    const isOmp = /(?:^|\/)(omp|pi)$/.test(exe);
+    const alreadyStructured = argv.some((a) => a.includes('stream-json') || a === '--mode');
     // Substrate-level authorization: PM produces structured text output
     // (the three-section format that's parsed and written to project_spec_revisions);
     // it has no business writing files directly. Disallow Edit/Write/Create
@@ -351,9 +362,27 @@ async function spawnClaude(claudeCmd: string, promptText: string, cwd?: string):
     // or anything else even if its prompt rule is forgotten or overridden.
     // Read/Grep/Glob/Bash remain available for context discovery.
     const denyToolFlags = ['--disallowed-tools', 'Edit Write Create MultiEdit NotebookEdit'];
-    const args = alreadyStreamJson
-      ? [...baseArgs, '-p', ...denyToolFlags]
-      : [...baseArgs, '-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', ...denyToolFlags];
+
+    let promptFilePath: string | null = null;
+    let args: string[];
+    if (isOmp) {
+      // Write prompt to tmp file, append @file. omp's -p reads positional
+      // arg, not stdin, so child.stdin.write would silently drop the prompt.
+      const { writeFileSync, mkdtempSync } = require('node:fs');
+      const { join } = require('node:path');
+      const { tmpdir } = require('node:os');
+      const tmpDir = mkdtempSync(join(tmpdir(), 'pm-dispatch-'));
+      promptFilePath = join(tmpDir, 'prompt.md');
+      writeFileSync(promptFilePath, promptText, 'utf8');
+      const structFlags = alreadyStructured ? [] : ['--mode', 'json', '--no-session'];
+      args = [...baseArgs, '-p', ...structFlags, ...denyToolFlags, `@${promptFilePath}`];
+    } else {
+      // claude-code path. Stream-json flags only if not already configured.
+      const structFlags = alreadyStructured
+        ? []
+        : ['--output-format', 'stream-json', '--verbose', '--include-partial-messages'];
+      args = [...baseArgs, '-p', ...structFlags, ...denyToolFlags];
+    }
 
     const child = spawn(exe, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd });
     let stderrBuf = '';
@@ -374,23 +403,51 @@ async function spawnClaude(claudeCmd: string, promptText: string, cwd?: string):
         if (!line || !line.startsWith('{')) continue;
         try {
           const ev = JSON.parse(line);
-          if (ev.type === 'result') {
-            if (typeof ev.result === 'string') resultText = ev.result;
-            if (ev.usage) {
-              tokensIn = ev.usage.input_tokens ?? tokensIn;
-              tokensOut = ev.usage.output_tokens ?? tokensOut;
+          if (isOmp) {
+            // omp event shapes:
+            //   - turn_end / message_end with role:'assistant' carries the
+            //     final text + cumulative usage + cost.
+            //   - message_update with text_delta carries assistant deltas.
+            if ((ev.type === 'turn_end' || ev.type === 'message_end') && ev.message?.role === 'assistant') {
+              const content = Array.isArray(ev.message.content) ? ev.message.content : [];
+              const textPart = content.find((c: any) => c?.type === 'text');
+              if (textPart && typeof textPart.text === 'string') resultText = textPart.text;
+              const usage = ev.message.usage;
+              if (usage) {
+                tokensIn = usage.input ?? tokensIn;
+                tokensOut = usage.output ?? tokensOut;
+                if (usage.cost && typeof usage.cost.total === 'number') costUsd = usage.cost.total;
+              }
+            } else if (ev.type === 'message_update' && ev.assistantMessageEvent?.type === 'text_delta') {
+              assistantText += ev.assistantMessageEvent.delta ?? '';
             }
-            if (typeof ev.total_cost_usd === 'number') costUsd = ev.total_cost_usd;
-          } else if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta'
-                     && ev.event?.delta?.type === 'text_delta') {
-            assistantText += ev.event.delta.text ?? '';
+          } else {
+            // claude-code event shapes (legacy stream-json).
+            if (ev.type === 'result') {
+              if (typeof ev.result === 'string') resultText = ev.result;
+              if (ev.usage) {
+                tokensIn = ev.usage.input_tokens ?? tokensIn;
+                tokensOut = ev.usage.output_tokens ?? tokensOut;
+              }
+              if (typeof ev.total_cost_usd === 'number') costUsd = ev.total_cost_usd;
+            } else if (ev.type === 'stream_event' && ev.event?.type === 'content_block_delta'
+                       && ev.event?.delta?.type === 'text_delta') {
+              assistantText += ev.event.delta.text ?? '';
+            }
           }
         } catch { /* malformed line — skip */ }
       }
     });
     child.stderr.on('data', (b: Buffer) => { stderrBuf += b.toString('utf8'); });
-    child.on('error', (err) => resolve({ ok: false, detail: `spawn error: ${err.message}` }));
+    const cleanup = () => {
+      // omp prompt tmpfile cleanup. Best-effort; harmless if it fails.
+      if (promptFilePath) {
+        try { require('node:fs').unlinkSync(promptFilePath); } catch { /* ignore */ }
+      }
+    };
+    child.on('error', (err) => { cleanup(); resolve({ ok: false, detail: `spawn error: ${err.message}` }); });
     child.on('exit', (code) => {
+      cleanup();
       if (code === 0) {
         resolve({
           ok: true,
@@ -400,10 +457,17 @@ async function spawnClaude(claudeCmd: string, promptText: string, cwd?: string):
           cost_usd: costUsd,
         });
       } else {
-        resolve({ ok: false, detail: `claude exit=${code} stderr=${stderrBuf.slice(-500)}` });
+        resolve({ ok: false, detail: `${exe} exit=${code} stderr=${stderrBuf.slice(-500)}` });
       }
     });
-    child.stdin.write(promptText);
-    child.stdin.end();
+    if (isOmp) {
+      // omp reads the prompt from the @file positional we appended; close
+      // stdin so the child doesn't block on a TTY check.
+      try { child.stdin.end(); } catch { /* ignore */ }
+    } else {
+      // claude-code: prompt over stdin.
+      child.stdin.write(promptText);
+      child.stdin.end();
+    }
   });
 }

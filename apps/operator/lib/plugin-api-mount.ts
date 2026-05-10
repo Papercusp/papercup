@@ -116,6 +116,21 @@ export function mountPluginApiRoutes(_parent: Hono<any, any, any>, opts: MountPl
     }
 
     for (const err of discovered.errors) {
+      // "no entry point found" is the loader's signal that this plugin has
+      // no JS surface — i.e. it's a provision-only plugin (declarative
+      // resources + scripts, capabilities like compute:exec:wrangler).
+      // Those are valid; the loader should treat absence-of-entry-point as
+      // "skip silently" rather than "error". Demote to info-level so it
+      // doesn't show up in the boot-time `errors=N` count and stop the
+      // log spam from every cold render walking global-plugins/.
+      // Real errors (corrupt manifest, missing dependency at a present
+      // entry point) keep the original error path.
+      if (/no entry point found/i.test(err.error)) {
+        // eslint-disable-next-line no-console
+        console.info(`[plugin-mount] skipping provision-only plugin at ${err.path}`);
+        skipped++;
+        continue;
+      }
       errors.push(`plugin discovery error at ${err.path}: ${err.error}`);
     }
 

@@ -22,12 +22,12 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const engine = url.searchParams.get('engine');
-  const prefs = loadVoicePrefs();
+  const prefs = await loadVoicePrefs();
   if (!prefs.webSpeechLeakAcked) {
     return new Response('not-acked', { status: 404 });
   }
   if (engine === 'deepgram' && prefs.sttEngine === 'deepgram') {
-    const k = readDeepgramKey();
+    const k = await readDeepgramKey();
     if (!k) return new Response('no-key', { status: 404 });
     return Response.json({ apiKey: k });
   }

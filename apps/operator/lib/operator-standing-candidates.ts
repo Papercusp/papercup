@@ -12,19 +12,13 @@
  * render them without re-querying audit_log on every mount.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { withWorkspace } from '@restart/db-org';
 import { activeWorkspaceId } from './workspace-registry';
-import { papercuspPath } from './papercusp-root';
 import { loadPreferences } from './operator-preferences';
+import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 const SILENT_DISPATCH_THRESHOLD = 3;
 const WINDOW_MS = 24 * 60 * 60 * 1000;
-
-function CANDIDATES_PATH() {
-  return papercuspPath('system', 'operator', 'standing-candidates.json');
-}
 
 export interface StandingCandidate {
   capability: string;
@@ -44,21 +38,18 @@ export interface StandingCandidate {
   firstShownAt: string | null;
 }
 
-export function readCandidates(): StandingCandidate[] {
-  const p = CANDIDATES_PATH();
-  if (!existsSync(p)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(p, 'utf8'));
-    return Array.isArray(raw) ? raw : [];
-  } catch {
-    return [];
-  }
+export async function readCandidates(): Promise<StandingCandidate[]> {
+  const raw = await readOperatorState<{ candidates?: StandingCandidate[] } | StandingCandidate[]>(
+    'operator_standing_candidates',
+  );
+  if (!raw) return [];
+  // Payload may be the bare array (legacy) or { candidates: [...] }; accept both.
+  if (Array.isArray(raw)) return raw;
+  return Array.isArray(raw.candidates) ? raw.candidates : [];
 }
 
-function writeCandidates(cands: StandingCandidate[]): void {
-  const p = CANDIDATES_PATH();
-  mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, JSON.stringify(cands, null, 2));
+async function writeCandidates(cands: StandingCandidate[]): Promise<void> {
+  await writeOperatorState('operator_standing_candidates', { candidates: cands });
 }
 
 /**
@@ -80,7 +71,7 @@ export async function refreshCandidates(): Promise<StandingCandidate[]> {
       `;
     });
   } catch {
-    return readCandidates();
+    return await readCandidates();
   }
 
   const groups = new Map<string, { count: number; lastSeenMs: number; capability: string; target: string }>();
@@ -105,11 +96,8 @@ export async function refreshCandidates(): Promise<StandingCandidate[]> {
 
   // Preserve firstShownAt across recomputations: if the same
   // (capability, targetHarness) pair already had a non-null
-  // firstShownAt in the prior list, carry it forward. The plan §5d
-  // implementer-comment exception: this preservation is keyed on
-  // (cap, target) NOT on candidate id, so a re-proposed pair after a
-  // dismissal carries forward only when the pair was previously shown.
-  const prior = readCandidates();
+  // firstShownAt in the prior list, carry it forward.
+  const prior = await readCandidates();
   const priorShown = new Map<string, string>();
   for (const p of prior) {
     if (p.firstShownAt) priorShown.set(`${p.capability}::${p.targetHarness}`, p.firstShownAt);
@@ -128,7 +116,7 @@ export async function refreshCandidates(): Promise<StandingCandidate[]> {
     });
   }
 
-  writeCandidates(candidates);
+  await writeCandidates(candidates);
   return candidates;
 }
 
@@ -141,8 +129,8 @@ export async function refreshCandidates(): Promise<StandingCandidate[]> {
  * non-null, so the user can only voice-grant something they've actually
  * seen.
  */
-export function markCandidateShown(capability: string, targetHarness: string): void {
-  const all = readCandidates();
+export async function markCandidateShown(capability: string, targetHarness: string): Promise<void> {
+  const all = await readCandidates();
   let changed = false;
   for (const c of all) {
     if (c.capability === capability && c.targetHarness === targetHarness && !c.firstShownAt) {
@@ -150,5 +138,5 @@ export function markCandidateShown(capability: string, targetHarness: string): v
       changed = true;
     }
   }
-  if (changed) writeCandidates(all);
+  if (changed) await writeCandidates(all);
 }

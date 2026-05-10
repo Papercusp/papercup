@@ -69,6 +69,11 @@ export function ChatwootWidget() {
     script.src = `${baseUrl}/packs/js/sdk.js`;
     script.defer = true;
     script.async = true;
+    script.onerror = () => {
+      // Chatwoot host unreachable. Don't pollute the console with stack traces;
+      // the widget just won't be available this session.
+      script.remove();
+    };
     script.onload = () => {
       window.chatwootSDK?.run({ websiteToken, baseUrl });
       const ready = (cb: () => void) => {

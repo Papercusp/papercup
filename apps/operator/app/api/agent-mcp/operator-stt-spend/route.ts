@@ -19,7 +19,7 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
-  return Response.json(loadSttSpend());
+  return Response.json(await loadSttSpend());
 }
 
 export async function POST(req: NextRequest) {
@@ -33,7 +33,7 @@ export async function POST(req: NextRequest) {
   if (!Number.isFinite(m) || m < 0 || m > 60) {
     return new Response('bad-minutes', { status: 400 });
   }
-  const update = recordSttSpend(m);
+  const update = await recordSttSpend(m);
   return Response.json({
     todayUsd: update.todayUsd,
     fireSoftCap: update.fireSoftCap,
@@ -48,13 +48,13 @@ export async function PUT(req: NextRequest) {
   } catch {
     return new Response('bad-json', { status: 400 });
   }
-  const cur = loadSttSpend();
+  const cur = await loadSttSpend();
   const next: SttSpendState = {
     ...DEFAULT_STT_SPEND_STATE,
     ...cur,
     ...body,
     spend: cur.spend,
   };
-  saveSttSpend(next);
+  await saveSttSpend(next);
   return Response.json(next);
 }

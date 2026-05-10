@@ -20,8 +20,8 @@
  */
 import type { Hono } from 'hono';
 import { stream } from 'hono/streaming';
-import { existsSync, readFileSync, mkdirSync, writeFileSync, readdirSync, renameSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, mkdtempSync, readFileSync, mkdirSync, writeFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
 import {
@@ -74,13 +74,13 @@ interface SpawnBody {
 }
 
 /** Resolve the harness's project directory by reading its registry. */
-function projectDirForSlug(slug: string): string | null {
-  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+async function projectDirForSlug(slug: string): Promise<string | null> {
+  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 /** Resolve the harness's state directory. */
-function stateDirForSlug(slug: string): string | null {
-  const projectDir = projectDirForSlug(slug);
+async function stateDirForSlug(slug: string): Promise<string | null> {
+  const projectDir = await projectDirForSlug(slug);
   if (!projectDir) return null;
   return join(projectDir, '.harness');
 }
@@ -125,10 +125,19 @@ async function buildFeaturePromptFile(
     }
     if (lineageBlock) lines.push(lineageBlock);
 
-    const promptDir = join(stateDir, 'pi-prompts');
-    mkdirSync(promptDir, { recursive: true });
-    const path = join(promptDir, `${featureId}.md`);
+    // Write to a ramTmpRoot dir (Linux: /dev/shm tmpfs; macOS+Windows:
+    // os.tmpdir() page-cache-backed). omp reads --append-system-prompt
+    // once at startup, so we schedule a cleanup ~30s later to keep
+    // /tmp clean. The harness directory stays pure-code.
+    const ramRoot = (process.platform === 'linux' && existsSync('/dev/shm'))
+      ? '/dev/shm'
+      : tmpdir();
+    const tmpDir = mkdtempSync(join(ramRoot, 'papercusp-pty-'));
+    const path = join(tmpDir, `${featureId}.md`);
     writeFileSync(path, lines.join('\n'), 'utf8');
+    setTimeout(() => {
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* GC */ }
+    }, 30_000).unref();
     return path;
   } catch {
     return null;
@@ -224,11 +233,34 @@ function exportPiSessions(opts: {
 }
 
 /**
- * Resolve the pi binary. Many launch contexts (mac homebrew + Tauri-Cocoa,
- * Linux desktop launchers) miss the user's login-shell PATH entries. Probe
- * the known locations on top of $PATH and fall back to the bare name.
+/**
+ * Resolve the agent terminal binary. Respects the user's /settings/agent
+ * toggle: when AGENT_BACKEND === 'claude-code' (or AGENT_CMD points at
+ * claude), launch the claude CLI; otherwise launch omp/pi-coding-agent.
+ *
+ * Many launch contexts (mac homebrew + Tauri-Cocoa, Linux desktop
+ * launchers) miss the user's login-shell PATH entries — probe known
+ * locations on top of $PATH and fall back to the bare name.
  */
-function resolvePiBinary(): string {
+function resolveAgentTerminalBinary(): string {
+  const cmdEnv = (process.env.AGENT_CMD ?? '').trim();
+  if (cmdEnv) {
+    const first = cmdEnv.split(/\s+/)[0];
+    if (first) return first;
+  }
+  const backend = (process.env.AGENT_BACKEND ?? '').trim().toLowerCase();
+  const wantClaude = backend === 'claude-code' || backend === 'claude';
+  if (wantClaude) {
+    const candidates = [
+      process.env.PAPERCUSP_CLAUDE_BIN,
+      '/usr/local/bin/claude',
+      '/opt/homebrew/bin/claude',
+      join(homedir(), '.local', 'bin', 'claude'),
+      join(homedir(), '.claude', 'local', 'claude'),
+    ].filter((p): p is string => typeof p === 'string' && p.length > 0);
+    for (const p of candidates) if (existsSync(p)) return p;
+    return 'claude';
+  }
   const candidates = [
     process.env.PAPERCUSP_PI_BIN,
     '/usr/local/bin/omp',
@@ -240,41 +272,25 @@ function resolvePiBinary(): string {
   return 'omp';
 }
 
-// Ensure ~/.omp/agent/mcp.json has the `papercusp` server entry pointing at
-// the bundled MCP server. Idempotent: only writes if missing or stale.
-function ensurePapercuspMcpRegistered(): void {
-  const mcpPath = join(homedir(), '.omp', 'agent', 'mcp.json');
-  // Find the bundled MCP server. Production: bundled into the sidecar at
-  // <sidecar>/papercusp-mcp-server/bin/papercusp-mcp-server.mjs. Dev: at
-  // <repo>/packages/papercusp-mcp-server/bin/papercusp-mcp-server.mjs.
-  const bundledCandidates = [
-    process.env.PAPERCUSP_MCP_SERVER,
-    // Production bundle (Tauri sidecar): co-located inside the sidecar dir.
-    join(process.cwd(), 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
-    // Dev: papercupai/papercup workspace at apps/operator → walk up to repo
-    // root, then sibling submodule papercusp/packages/.
-    join(process.cwd(), '..', '..', '..', '..', 'papercusp', 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
-    // Direct local clones side-by-side (e.g. /home/<user>/papercupai-workspace/).
-    join(homedir(), 'papercupai-workspace', 'papercusp', 'packages', 'papercusp-mcp-server', 'bin', 'papercusp-mcp-server.mjs'),
-  ].filter((p): p is string => typeof p === 'string' && p.length > 0);
-  let serverBin: string | null = null;
-  for (const p of bundledCandidates) {
-    if (existsSync(p)) { serverBin = p; break; }
-  }
-  if (!serverBin) return; // Server not bundled — skip silently.
+// Back-compat alias: existing callers used resolvePiBinary; keep the
+// name working but route through the backend-aware resolver above.
+function resolvePiBinary(): string {
+  return resolveAgentTerminalBinary();
+}
 
-  let cfg: { mcpServers?: Record<string, unknown> } = {};
-  if (existsSync(mcpPath)) {
-    try { cfg = JSON.parse(readFileSync(mcpPath, 'utf-8')); } catch { return; }
-  } else {
-    mkdirSync(join(homedir(), '.omp', 'agent'), { recursive: true });
-  }
-  cfg.mcpServers = cfg.mcpServers ?? {};
-  const existing = cfg.mcpServers.papercusp as { command?: string; args?: string[] } | undefined;
-  const desired = { type: 'stdio', command: 'node', args: [serverBin] };
-  if (existing && existing.command === 'node' && existing.args?.[0] === serverBin) return; // Already correct.
-  cfg.mcpServers.papercusp = desired;
-  writeFileSync(mcpPath, JSON.stringify(cfg, null, 2));
+// Legacy: registered the deprecated `@restart/papercusp-mcp-server` (7
+// read-only tools) as a stdio entry in `~/.omp/agent/mcp.json`. That
+// package was deleted 2026-05-09; the agent-mcp HTTP/SSE transport at
+// `/api/[transport]/route.ts` is the canonical surface and exposes 27
+// tools versus the legacy 7. omp clients should be configured against
+// the HTTP endpoint, not stdio — kept as a no-op shim only because
+// the call site in pty spawn flow is best-effort.
+function ensurePapercuspMcpRegistered(): void {
+  // Intentionally empty. If a future client needs auto-registration of
+  // the agent-mcp HTTP endpoint, do it here — but the current pattern
+  // is to surface the URL in operator UI / docs and let users configure
+  // it themselves.
+  return;
 }
 
   /**
@@ -310,21 +326,48 @@ function ensurePapercuspMcpRegistered(): void {
    * the /pty/prewarm endpoint and the /pty/spawn refill path. Idempotent
    * — if a slot is already reserved (warm or in-flight), we leave it.
    *
-   * Returns the handle the caller can await, or null if no spawn was
-   * needed (slot already populated).
+   * CRITICAL: the slot is registered in `prewarmed` SYNCHRONOUSLY before
+   * any async work or fork. The actual cfg-build + spawnPty fork runs
+   * out-of-band on setImmediate; the entry's promise resolves once that
+   * lands. This is what makes prewarm race-safe: a /pty/spawn POST that
+   * arrives milliseconds after /pty/prewarm sees the slot immediately
+   * and awaits the eventual handle, instead of cold-forking past it.
+   *
+   * The `command` argument is REQUIRED — callers compute it synchronously
+   * (body.command ?? resolvePiBinary()) so the slot key matches what
+   * /pty/spawn computes synchronously without buildSpawnConfig.
    */
   function reservePrewarmSlot(opts: {
     slug: string;
     laneId: string | undefined;
-    cfg: { command: string; args: readonly string[]; cwd: string; env: Record<string, string>; sd: string | null };
-  }): PrewarmEntry | null {
-    const { slug, laneId, cfg } = opts;
-    const key = prewarmKey(slug, laneId, cfg.command);
+    command: string;
+    /** Async builder run AFTER the slot is registered. Returns 'unknown-slug' on bad input. */
+    buildCfg: () => Promise<
+      | { kind: 'ok'; command: string; args: readonly string[]; cwd: string; env: Record<string, string>; sd: string | null }
+      | { kind: 'unknown-slug' }
+    >;
+  }): PrewarmEntry {
+    const { slug, laneId, command, buildCfg } = opts;
+    const key = prewarmKey(slug, laneId, command);
     const existing = prewarmed.get(key);
     if (existing) return existing;
-    const entry: PrewarmEntry = { promise: Promise.resolve(null), reaper: null };
-    entry.promise = new Promise<ReturnType<typeof spawnPty> | null>((resolve) => {
+
+    let resolveHandle: (h: ReturnType<typeof spawnPty> | null) => void = () => {};
+    const entry: PrewarmEntry = {
+      promise: new Promise<ReturnType<typeof spawnPty> | null>((r) => { resolveHandle = r; }),
+      reaper: null,
+    };
+    // Register the slot SYNCHRONOUSLY so a concurrent /pty/spawn sees it.
+    prewarmed.set(key, entry);
+
+    setImmediate(async () => {
       try {
+        const cfg = await buildCfg();
+        if (cfg.kind === 'unknown-slug') {
+          if (prewarmed.get(key) === entry) prewarmed.delete(key);
+          resolveHandle(null);
+          return;
+        }
         const handle = spawnPty({
           command: cfg.command,
           args: cfg.args,
@@ -339,13 +382,53 @@ function ensurePapercuspMcpRegistered(): void {
           try { killPty(handle.id); } catch { /* ignore */ }
         }, PREWARM_TTL_MS);
         entry.reaper.unref?.();
-        resolve(handle);
+
+        // Don't mark the slot adoptable until omp has finished its init.
+        //
+        // Naively resolving with the handle right after spawnPty made warm
+        // adoption feel cold: omp spends ~1.2s connecting to its MCP
+        // servers and emits visible chatter ("Connecting to MCP servers:
+        // voice-mode, hindsight, plur, …") before clearing the screen and
+        // showing its welcome banner. When the client adopted a freshly-
+        // forked warm pty, the byte history replayed into xterm started
+        // with that connection log — the user perceived it as "starting
+        // pi for several seconds" and reported warming as broken.
+        //
+        // Hold the slot for PREWARM_BOOT_MS before marking it adoptable.
+        // 1500 ms is comfortably past omp's measured cold-boot time
+        // (~1.2 s on this box: 265 ms `omp --version` + ~1 s MCP server
+        // connection). After that, the pty's history buffer contains the
+        // full welcome banner *plus* the post-init clear-screen sequence,
+        // so the SSE/WS replay into the client's xterm scrubs the boot
+        // chatter and the user sees a ready prompt immediately.
+        //
+        // We tried data-driven detection (clear-screen sequence + byte
+        // threshold) but the pty.onData fan-out wasn't reliably hitting
+        // the prewarm subscriber inside the bundled chunk — the slot was
+        // always falling through to the time fallback anyway. A fixed
+        // wait is simpler, deterministic, and within budget.
+        const PREWARM_BOOT_MS = 1500;
+        let resolved = false;
+        const ready = () => {
+          if (resolved) return;
+          resolved = true;
+          resolveHandle(handle);
+        };
+        const bootTimer = setTimeout(ready, PREWARM_BOOT_MS);
+        bootTimer.unref?.();
+        // If the pty exits during boot (omp crash, missing binary), make
+        // sure we still resolve so /pty/spawn doesn't hang. The handle
+        // will be `killed` so the adopt branch falls through to cold-fork.
+        handle.onExit.add(() => {
+          clearTimeout(bootTimer);
+          ready();
+        });
       } catch {
         if (prewarmed.get(key) === entry) prewarmed.delete(key);
-        resolve(null);
+        resolveHandle(null);
       }
     });
-    prewarmed.set(key, entry);
+
     return entry;
   }
 
@@ -362,11 +445,11 @@ function ensurePapercuspMcpRegistered(): void {
     const { slug, body, requestUrl } = opts;
     const command = body.command ?? resolvePiBinary();
 
-    const projectDir = projectDirForSlug(slug);
+    const projectDir = await projectDirForSlug(slug);
     if (!projectDir) return { kind: 'unknown-slug' };
 
     let cwd = projectDir;
-    const sd = stateDirForSlug(slug);
+    const sd = await stateDirForSlug(slug);
     if (body.laneId && sd) {
       const wt = join(sd, 'worktrees', body.laneId);
       if (existsSync(wt)) cwd = wt;
@@ -390,16 +473,21 @@ function ensurePapercuspMcpRegistered(): void {
     let args: readonly string[];
     if (body.args) {
       args = body.args;
-    } else {
+    } else if (command.includes('omp')) {
       const baseArgs: string[] = ['--no-pty'];
-      if (command.includes('omp') && piExtensionAvailable) {
+      if (piExtensionAvailable) {
         baseArgs.push('-e', piExtensionPath);
       }
-      if (body.laneId && sd && command.includes('omp')) {
+      if (body.laneId && sd) {
         const promptPath = await buildFeaturePromptFile(slug, body.laneId, sd);
         if (promptPath) baseArgs.push(`--append-system-prompt=${promptPath}`);
       }
       args = baseArgs;
+    } else {
+      // claude (or other): launch interactive REPL with no flags. omp's
+      // --no-pty / -e extension / --append-system-prompt are all
+      // backend-specific and do not apply here.
+      args = [];
     }
 
     return { kind: 'ok', command, args, cwd, env: { ...env, ...body.env }, sd };
@@ -442,29 +530,35 @@ function ensurePapercuspMcpRegistered(): void {
     // Stale id — fall through to a normal spawn flow.
   }
 
-  const cfg = await buildSpawnConfig({ slug, body, requestUrl: c.req.url });
-  if (cfg.kind === 'unknown-slug') {
-    return c.json({ error: 'unknown harness slug', slug }, 404);
-  }
-
-  const key = prewarmKey(slug, body.laneId, cfg.command);
+  // Compute the prewarm key synchronously so we can adopt an in-flight
+  // prewarm slot WITHOUT awaiting buildSpawnConfig. Without this,
+  // /pty/spawn and /pty/prewarm race through their respective awaits and
+  // /spawn frequently checks `prewarmed` before /prewarm has registered
+  // its slot — every fresh terminal then cold-forks omp, defeating the
+  // prewarm pool entirely.
+  const command = body.command ?? resolvePiBinary();
+  const key = prewarmKey(slug, body.laneId, command);
   const reserved = prewarmed.get(key);
+  const refill = () => {
+    setImmediate(() => {
+      try {
+        reservePrewarmSlot({
+          slug,
+          laneId: body.laneId,
+          command,
+          buildCfg: () => buildSpawnConfig({ slug, body, requestUrl: c.req.url }),
+        });
+      } catch { /* best-effort */ }
+    });
+  };
+
   if (reserved) {
     const handle = await reserved.promise;
-    prewarmed.delete(key);
+    if (prewarmed.get(key) === reserved) prewarmed.delete(key);
     if (reserved.reaper) clearTimeout(reserved.reaper);
     if (handle && !handle.killed) {
       try { handle.pty.resize(cols, rows); } catch { /* ignore */ }
-      // Defer the refill so the user's spawn response returns immediately.
-      // reservePrewarmSlot calls spawnPty synchronously, which forks omp
-      // and blocks for ~150-200 ms — without setImmediate, every spawn
-      // adoption pays the next refill's fork time before responding,
-      // negating the prewarm benefit. Decoupling lets the response fly
-      // out in <5 ms while the refill races in the background.
-      setImmediate(() => {
-        try { reservePrewarmSlot({ slug, laneId: body.laneId, cfg }); }
-        catch { /* refill is best-effort */ }
-      });
+      refill();
       return c.json({
         id: handle.id,
         command: handle.command,
@@ -478,6 +572,12 @@ function ensurePapercuspMcpRegistered(): void {
     // — fall through to a normal cold spawn.
   }
 
+  // No (or dead) prewarm slot — pay the full config-build + fork cost now.
+  const cfg = await buildSpawnConfig({ slug, body, requestUrl: c.req.url });
+  if (cfg.kind === 'unknown-slug') {
+    return c.json({ error: 'unknown harness slug', slug }, 404);
+  }
+
   try {
     const handle = spawnPty({
       command: cfg.command,
@@ -488,12 +588,7 @@ function ensurePapercuspMcpRegistered(): void {
       env: cfg.env,
     });
     attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
-    // Cold-spawn path also kicks a refill — deferred (same reasoning
-    // as the prewarm-adopt branch above).
-    setImmediate(() => {
-      try { reservePrewarmSlot({ slug, laneId: body.laneId, cfg }); }
-      catch { /* refill is best-effort */ }
-    });
+    refill();
     return c.json({
       id: handle.id,
       command: handle.command,
@@ -544,24 +639,33 @@ function ensurePapercuspMcpRegistered(): void {
     let body: SpawnBody;
     try { body = (await c.req.json<SpawnBody>()) ?? {}; } catch { body = {}; }
 
-    const cfg = await buildSpawnConfig({ slug, body, requestUrl: c.req.url });
-    if (cfg.kind === 'unknown-slug') {
-      return c.json({ error: 'unknown harness slug', slug }, 404);
-    }
-
-    const key = prewarmKey(slug, body.laneId, cfg.command);
+    // Compute the slot key synchronously and reserve immediately, BEFORE
+    // any await — the actual omp fork happens out-of-band on setImmediate
+    // (see reservePrewarmSlot). This way a /pty/spawn POST arriving
+    // microseconds later finds the slot and adopts it.
+    const command = body.command ?? resolvePiBinary();
+    const key = prewarmKey(slug, body.laneId, command);
     const existing = prewarmed.get(key);
     if (existing) {
       const handle = await existing.promise.catch(() => null);
       if (handle && !handle.killed) return c.json({ reserved: true, reused: true });
       if (existing.reaper) clearTimeout(existing.reaper);
-      prewarmed.delete(key);
+      if (prewarmed.get(key) === existing) prewarmed.delete(key);
     }
 
-    const entry = reservePrewarmSlot({ slug, laneId: body.laneId, cfg });
-    if (!entry) return c.json({ reserved: true, reused: true });
+    const entry = reservePrewarmSlot({
+      slug,
+      laneId: body.laneId,
+      command,
+      buildCfg: () => buildSpawnConfig({ slug, body, requestUrl: c.req.url }),
+    });
     const handle = await entry.promise;
-    if (!handle) return c.json({ error: 'prewarm spawn failed' }, 503);
+    if (!handle) {
+      // buildCfg returned unknown-slug or spawnPty threw. The slot was
+      // already removed from `prewarmed` by reservePrewarmSlot's error
+      // path; surface to caller.
+      return c.json({ error: 'prewarm spawn failed' }, 503);
+    }
     return c.json({ reserved: true });
   });
 
@@ -693,9 +797,9 @@ function ensurePapercuspMcpRegistered(): void {
   // These endpoints surface those HTML files to the UI so users can
   // browse past pi conversations from the harness dashboard.
 
-  harness.get('/:slug/pi-sessions/audit', (c) => {
+  harness.get('/:slug/pi-sessions/audit', async (c) => {
     const slug = c.req.param('slug') ?? '';
-    const sd = stateDirForSlug(slug);
+    const sd = await stateDirForSlug(slug);
     if (!sd) return c.json({ error: 'unknown harness slug', slug }, 404);
     const auditDir = join(sd, 'audit', 'pi-sessions');
     if (!existsSync(auditDir)) return c.json({ sessions: [] });
@@ -730,14 +834,14 @@ function ensurePapercuspMcpRegistered(): void {
     return c.json({ sessions });
   });
 
-  harness.get('/:slug/pi-sessions/audit/:filename', (c) => {
+  harness.get('/:slug/pi-sessions/audit/:filename', async (c) => {
     const slug = c.req.param('slug') ?? '';
     const filename = c.req.param('filename');
     // Defense in depth: filename must be a simple HTML basename, no path traversal.
     if (!/^[\w.-]+\.html$/.test(filename)) {
       return c.json({ error: 'invalid filename' }, 400);
     }
-    const sd = stateDirForSlug(slug);
+    const sd = await stateDirForSlug(slug);
     if (!sd) return c.json({ error: 'unknown harness slug', slug }, 404);
     const full = join(sd, 'audit', 'pi-sessions', filename);
     if (!existsSync(full)) return c.json({ error: 'not found' }, 404);

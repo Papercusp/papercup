@@ -54,7 +54,7 @@ describe('pty-bridge', () => {
     });
     liveIds.push(handle.id);
     await waitForOutput(handle.id, (s) => s.includes('LINE_BETA'));
-    const replay = getScreenSerialization(handle.id);
+    const replay = await getScreenSerialization(handle.id);
     expect(replay).toBeTruthy();
     expect(replay!).toContain('LINE_ALPHA');
     expect(replay!).toContain('LINE_BETA');
@@ -76,7 +76,7 @@ describe('pty-bridge', () => {
     await waitForOutput(handle.id, (s) => s.includes('PRE_RESIZE'));
     expect(resizePty(handle.id, 100, 30)).toBe(true);
     await waitForOutput(handle.id, (s) => s.includes('POST_RESIZE'));
-    const replay = getScreenSerialization(handle.id);
+    const replay = await getScreenSerialization(handle.id);
     expect(replay).toBeTruthy();
     expect(replay!).toContain('PRE_RESIZE');
     expect(replay!).toContain('POST_RESIZE');

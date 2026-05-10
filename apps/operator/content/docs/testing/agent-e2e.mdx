@@ -15,14 +15,24 @@ mispositioned, focus stolen). If you only test the API layer you'll
 miss them.
 </Callout>
 
-<Callout type="warn" title="Run these tests against the desktop app">
-The target of this playbook is the **Papercusp desktop app** (the Tauri
-shell + bundled Node sidecar that ships to users), or its dev-server
-equivalent at `http://localhost:3055`. Marketing/website surfaces
-(`/`, `/marketplace`, `/support`, `/docs`, auth pages) deliberately
-omit some app-side affordances (e.g. the Oracle dock); don't flag those
-as failures — see the route table for which surfaces each feature
-should appear on.
+<Callout type="warn" title="Run these tests against the prod build at :3070">
+The target of this playbook is the **prod operator build** at
+`http://localhost:3070`. Do **not** test against the dev server at
+`:3055` — Turbopack cold-compiles disrupt timing-sensitive checks and
+the dev tree is concurrently edited by other agents, so bugs you find
+may be transient.
+
+**Always do a fresh build before starting.** From
+`papercupai-workspace/papercup`, run `bin/prod` (or whatever rebuild
+script the repo uses) and wait until `curl -s -o /dev/null -w "%{http_code}" http://localhost:3070/` returns `200`. Stale
+bundles silently mask bugs (deleted endpoints still appear to work,
+new routes 404, etc.) — never test against a build that predates your
+last code change.
+
+Marketing/website surfaces (`/`, `/marketplace`, `/support`, `/docs`,
+auth pages) deliberately omit some app-side affordances (e.g. the
+Oracle dock); don't flag those as failures — see the route table for
+which surfaces each feature should appear on.
 </Callout>
 
 ## 0. Tools
@@ -42,14 +52,18 @@ Forbidden:
 
 ## 1. Pre-flight
 
-1. **Operator process is up.** `curl -s -o /dev/null -w "%{http_code}"
-   http://localhost:3055/` returns `200`. If not, start it from
-   `papercupai-workspace/papercup/apps/operator` via `npm run dev`.
-   Wait until `/api/oracle/config` returns `200` (proves Hono routes
-   mounted).
-2. **Stale Turbopack cache.** If you see a JSX parse error in logs
+1. **Fresh prod build.** Always rebuild before testing — stale bundles
+   mask real bugs. From `papercupai-workspace/papercup` run `bin/prod`
+   (or the repo's documented rebuild path) and wait for it to come up
+   on :3070.
+2. **Prod operator is up.** `curl -s -o /dev/null -w "%{http_code}"
+   http://localhost:3070/` returns `200`. Then verify
+   `/api/oracle/config` returns `200` (proves Hono routes mounted).
+   Do **not** fall back to `:3055` (the dev server) — see the warning
+   callout at the top of this page for why.
+3. **Stale Next build cache.** If you see a JSX parse error in logs
    while the on-disk file is correct, the parse error is cached —
-   `rm -rf .next/cache` and restart.
+   `rm -rf .next/cache` and rebuild.
 3. **Browser sharing.** `verdict status` → if `Refs:` is high or URL
    keeps mutating between calls, the human user is browsing. Pause
    or use `verdict newtab` for an isolated tab.
@@ -69,7 +83,7 @@ On `FAIL`, capture:
 - `verdict screenshot <path>`
 - The `verdict js` snapshot of relevant DOM state
 - `verdict console error`
-- Operator log tail (`tail -200 /tmp/operator-3055.log`)
+- Operator log tail (`tail -200 /tmp/operator-3070.log`)
 
 `PASS` requires positive evidence. **Silence is not success.** A test
 that "looks fine" without a DOM/screenshot/log assertion is

@@ -48,7 +48,13 @@ const approve: CommandDef<ApproveArgT, { ok: true }> = {
   description: 'Approve a pending capability for a harness slug. Server-side; no panel needed.',
   schema: ApproveArg,
   agents: ['operator', 'oracle', 'palette'],
-  browser: 'optional',
+  // Has to be 'required' for the EL Conv AI agent: it's pushed via
+  // el-agent-sync.mjs as a client-tool, and buildClientTools only
+  // exposes browser:'required'. Otherwise the agent calls it and crashes
+  // with "Client tool with name operator_approve_pending is not defined
+  // on client". The handler still does a server-side fetch — browser
+  // tag is about *where the handler runs*, not where it talks to.
+  browser: 'required',
   concurrent: 'queue',
   tier: 'short',
   handler: async ({ slug, capability }) => {
