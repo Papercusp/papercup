@@ -21,8 +21,12 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
-const SEMVER_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
+export const SLUG_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/i;
+// Accepts numeric-major.minor.patch with optional `-prerelease`,
+// optional `+build`, or both in that order (semver §9 + §10). Bug
+// caught by SEMVER_RE.test('1.0.0-rc.1+build.5') returning false
+// before this loosening.
+export const SEMVER_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 interface Body {
   slug: string;

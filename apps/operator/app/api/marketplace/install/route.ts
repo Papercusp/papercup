@@ -116,6 +116,24 @@ function run(cmd: string, args: string[], env: NodeJS.ProcessEnv): Promise<RunRe
   });
 }
 
+/**
+ * Probe `<base>-2`, `<base>-3`, … through `<base>-99` and return the first
+ * value the `taken` predicate doesn't claim. Returns null if all are
+ * taken (pathological case; an operator with 99 forks of the same template
+ * is in some other kind of trouble). Pure — testable without filesystem.
+ */
+export function suggestNextFreeName(
+  base: string,
+  taken: (candidate: string) => boolean,
+  ceiling = 99,
+): string | null {
+  for (let n = 2; n <= ceiling; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken(candidate)) return candidate;
+  }
+  return null;
+}
+
 function isValidSlug(s: string): boolean {
   return /^[a-z][a-z0-9-]{0,63}$/.test(s);
 }
@@ -325,14 +343,9 @@ export async function POST(req: Request) {
     const projectsRoot = process.env.PAPERCUSP_PROJECTS_ROOT ?? papercuspPath('projects');
     projectPath = join(projectsRoot, projectName);
     if (existsSync(projectPath)) {
-      // Suggest the first free slug in the family <name>-2, <name>-3, … so
-      // the UI can offer "use this name instead". Capped at 99 to avoid
-      // pathological loops if someone has a thousand collisions.
-      let suggested: string | null = null;
-      for (let n = 2; n <= 99; n++) {
-        const candidate = `${projectName}-${n}`;
-        if (!existsSync(join(projectsRoot, candidate))) { suggested = candidate; break; }
-      }
+      const suggested = suggestNextFreeName(projectName, (n) =>
+        existsSync(join(projectsRoot, n)),
+      );
       return json(
         {
           ok: false,
