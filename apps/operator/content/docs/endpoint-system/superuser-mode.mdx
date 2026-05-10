@@ -35,7 +35,7 @@ ACLs that prevent the orchestrator user from reading the token.
 ```bash
 $ apps/operator/scripts/install-standalone-mcp.sh
 ✓ Wrote ~/.papercusp/superuser-token (mode 0600)
-✓ Wrote ~/.config/omp/mcp.json (mode 0600)
+✓ Wrote ~/.omp/agent/mcp.json (mode 0600)
 ✓ Endpoint responded 200
 ```
 
@@ -43,7 +43,7 @@ The script:
 
 1. Generates a 32-byte random token
 2. Writes it to `~/.papercusp/superuser-token` (mode 0600, owned by you)
-3. Writes `~/.config/omp/mcp.json` with the operator URL +
+3. Writes `~/.omp/agent/mcp.json` with the operator URL +
    `Authorization: Bearer <token>`
 4. Verifies the operator is running and accepts the token
 
@@ -54,7 +54,7 @@ token without restart (file mtime triggers cache refresh).
 
 ```
 omp shell anywhere on the box
-  └─ reads ~/.config/omp/mcp.json
+  └─ reads ~/.omp/agent/mcp.json
   └─ POST http://localhost:3070/api/mcp?superuser=1
        Authorization: Bearer <token>
        Accept: application/json, text/event-stream
@@ -126,7 +126,7 @@ Three things still apply to superuser:
 | `unauthorized` 401 | Token mismatch or token file missing | Re-run `install-standalone-mcp.sh` |
 | `unknown_tool` 404 | Plugin didn't load | `curl /api/plugins/host/refresh` to see load errors |
 | `workspace required` from a tool | Tool needs a real workspace; `*` doesn't work for it | Pass `workspace: "default"` (or other slug from `list_workspaces`) explicitly |
-| `invalid_request_context` | URL had `?superuser=1` but bearer was missing/wrong (MCP transport) | Check `Authorization: Bearer <token>` header is set in `~/.config/omp/mcp.json` |
+| `invalid_request_context` | URL had `?superuser=1` but bearer was missing/wrong (MCP transport) | Check `Authorization: Bearer <token>` header is set in `~/.omp/agent/mcp.json` |
 
 ## Telemetry
 
