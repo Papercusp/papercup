@@ -1,15 +1,17 @@
 /**
- * harness:list_features — list features in the harness queue,
- * filterable by status.
+ * harness:list_features — list features for a harness slug (with phase
+ * variant). Read-only projection of harness-features.
  *
- * Mirrors the `harness.list-features` registry def. Hits
- * /api/harness/:slug/status and projects to
- * { id, title, status, claims, attempts }.
+ * Calls listFeaturesForHarness() in lib/harness-readers.ts directly.
+ * The hono /:slug/status route returns a superset of fields including
+ * features; this tool returns just the features array since that's what
+ * the registry-residual command exposes.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { operatorBaseUrl } from '@/lib/agent-tools/_baseUrl';
+import { phasePhaseLabel } from '@/lib/harness-phases';
+import { listFeaturesForHarness } from '@/lib/harness-readers';
 
 const ALL_ROLES = [
   'scoper',
@@ -25,7 +27,7 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:list_features',
-  description: 'List features in the harness queue (filterable by status). Returns id/title/status/claims/attempts only.',
+  description: 'List features for a harness slug (optionally for a specific phase: staging, testing, production).',
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
@@ -36,16 +38,13 @@ export default defineTool({
     phase: z.enum(['staging', 'testing', 'production']).optional(),
   }),
   async handler(args) {
-    const phase = args.phase ?? 'staging';
-    const r = await fetch(
-      `${operatorBaseUrl()}/api/harness/${encodeURIComponent(args.slug)}/status?phase=${phase}`,
-    );
-    if (!r.ok) throw new Error(`harness:list_features failed: HTTP ${r.status}`);
-    const d = await r.json();
-    let features: Array<Record<string, unknown>> = Array.isArray(d?.features) ? d.features : [];
+    const result = await listFeaturesForHarness(args.slug, phasePhaseLabel(args.phase ?? 'staging'));
+    if (!result.ok) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: result.error }) }] };
+    }
+    let features = result.data.features as Array<Record<string, unknown>>;
     if (args.status) features = features.filter((f) => f.status === args.status);
-    const limit = args.limit ?? 50;
-    features = features.slice(0, limit);
+    features = features.slice(0, args.limit ?? 50);
     const projected = features.map((f) => ({
       id: f.id,
       title: f.title,
@@ -54,10 +53,12 @@ export default defineTool({
       attempts: f.attempts,
     }));
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({ slug: args.slug, count: projected.length, features: projected }),
-      }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ slug: args.slug, count: projected.length, features: projected }),
+        },
+      ],
     };
   },
 });

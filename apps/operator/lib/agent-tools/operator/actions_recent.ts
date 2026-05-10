@@ -2,14 +2,14 @@
  * actions:recent — list recent long-running user-initiated actions for
  * a harness (replan, cleanup, snapshot).
  *
- * Wraps GET /api/user-actions/:slug. Mirrors the
- * `actions.recent` registry def in
- * apps/operator/lib/commands/defs/recent-activity.ts.
+ * Calls listUserActions() in lib/user-actions-data.ts directly — same
+ * function the GET /api/user-actions/:slug route projects. Shares the
+ * same in-memory cache so MCP and HTTP polls coalesce.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { operatorBaseUrl } from '@/lib/agent-tools/_baseUrl';
+import { InvalidSlugError, listUserActions } from '@/lib/user-actions-data';
 
 const ALL_ROLES = [
   'scoper',
@@ -34,19 +34,17 @@ export default defineTool({
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args) {
-    const params = new URLSearchParams();
-    if (args.limit) params.set('limit', String(args.limit));
-    const r = await fetch(`${operatorBaseUrl()}/api/user-actions/${encodeURIComponent(args.slug)}?${params}`);
-    if (!r.ok) {
-      if (r.status === 404) {
+    try {
+      const result = await listUserActions({ slug: args.slug, limit: args.limit });
+      const actions = result.actions.slice(0, args.limit ?? 20);
+      return {
+        content: [{ type: 'text', text: JSON.stringify({ count: actions.length, actions }) }],
+      };
+    } catch (err) {
+      if (err instanceof InvalidSlugError) {
         return { content: [{ type: 'text', text: JSON.stringify({ count: 0, actions: [] }) }] };
       }
-      throw new Error(`actions:recent failed: HTTP ${r.status}`);
+      throw err;
     }
-    const d = await r.json();
-    const actions = (d?.actions ?? []).slice(0, args.limit ?? 20);
-    return {
-      content: [{ type: 'text', text: JSON.stringify({ count: actions.length, actions }) }],
-    };
   },
 });

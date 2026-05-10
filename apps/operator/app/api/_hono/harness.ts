@@ -126,7 +126,7 @@ const __pulseCache: Map<string, PulseCacheEntry> = (() => {
 })();
 const PULSE_RE = /── iteration \d+ ──/g;
 
-function countPulsesFromRunLog(path: string): number {
+export function countPulsesFromRunLog(path: string): number {
   if (!existsSync(path)) return 0;
   let st: { mtimeMs: number; size: number };
   try { st = statSync(path); } catch { return 0; }
@@ -204,7 +204,7 @@ const __costPerFileCache: Map<string, CostPerFileEntry> = (() => {
   return g[__costPerFileCacheKey]!;
 })();
 
-function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggregate {
+export function aggregateCostFromLogDir(logDir: string, ttlMs = 5000): CostAggregate {
   const now = Date.now();
   let sig = 'no-dir';
   try {
@@ -320,16 +320,16 @@ async function cachedGitLog(projectPath: string, limit: number, ttlMs = 3000): P
 const loadRegistry = loadHarnessRegistry;
 const saveRegistry = saveHarnessRegistry;
 
-async function resolveProject(slug: string): Promise<ProjectEntry | null> {
+export async function resolveProject(slug: string): Promise<ProjectEntry | null> {
   const reg = await loadRegistry();
   return reg.projects.find((p) => p.slug === slug) ?? null;
 }
 
-function harnessDir(project: ProjectEntry): string {
+export function harnessDir(project: ProjectEntry): string {
   return join(project.path, '.harness');
 }
 
-function safeRead(path: string): string | null {
+export function safeRead(path: string): string | null {
   try { return readFileSync(path, 'utf8'); } catch { return null; }
 }
 
@@ -374,7 +374,7 @@ function scanForRunShCwd(projectPath: string): boolean {
   return false;
 }
 
-function isProjectAlive(projectPath: string, ttlMs = 2000): boolean {
+export function isProjectAlive(projectPath: string, ttlMs = 2000): boolean {
   const now = Date.now();
   const cached = __aliveCache.get(projectPath);
   if (cached && cached.expires > now) return cached.value;
@@ -389,7 +389,7 @@ function isProjectAlive(projectPath: string, ttlMs = 2000): boolean {
  * This helper queries the harness_features table for a given project.
  * Returns the same shape callers expect: array of {id, title, status, attempts, claims, ...}.
  */
-async function parseFeatures(project: ProjectEntry): Promise<any[]> {
+export async function parseFeatures(project: ProjectEntry): Promise<any[]> {
   try {
     const c = dbcFor(project.slug);
     const rows = await c.prepare(`
@@ -481,7 +481,7 @@ function auditFeatureChange(harnessSlug: string, featureId: string, field: strin
   })();
 }
 
-function tailFile(path: string, maxBytes = 64 * 1024): string {
+export function tailFile(path: string, maxBytes = 64 * 1024): string {
   // Read only the last `maxBytes` of the file via openSync+readSync(offset).
   // Previously did `readFileSync(path).slice(...)` which read the WHOLE file
   // then sliced the tail in memory — on a 12 MB run.log that's 12 MB of
@@ -2651,24 +2651,10 @@ harness.get('/:slug/runs/:name', async (c) => {
 });
 
 harness.get('/:slug/escalation', async (c) => {
-  const slug = c.req.param('slug');
-  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const escalationPath = join(harnessDir(project), 'escalation.md');
-  const supervisorNotesPath = join(harnessDir(project), 'supervisor-notes.md');
-  let mtimeMs: number | null = null;
-  try { mtimeMs = statSync(escalationPath).mtimeMs; } catch {}
-  // PG canonical (Migration 035) with FS fallback.
-  const { loadTextArtifact } = await import('@/lib/text-artifacts');
-  const [pgEscalation, pgNotes] = await Promise.all([
-    loadTextArtifact(slug, 'escalation.md'),
-    loadTextArtifact(slug, 'supervisor-notes.md'),
-  ]);
-  return c.json({
-    escalation: pgEscalation ?? safeRead(escalationPath),
-    supervisorNotes: pgNotes ?? safeRead(supervisorNotesPath),
-    mtimeMs,
-  });
+  const { getEscalation } = await import('@/lib/harness-readers');
+  const result = await getEscalation(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json(result.data);
 });
 
 // ─── competitions (Conductor-inspired same-feature races) ───────────
@@ -3114,83 +3100,10 @@ harness.post('/:slug/checkpoint/:name/grant', async (c) => {
 });
 
 harness.get('/:slug/health', async (c) => {
-  const project = await resolveProject(c.req.param('slug'));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-
-  // Features
-  const features = await parseFeatures(project);
-  const totalFeatures = features.length;
-  const passed = features.filter((f: any) => f.status === 'passed').length;
-  const failing = features.filter((f: any) => f.status === 'failing').length;
-  const inProgress = features.filter((f: any) => f.status === 'in_progress' || f.status === 'validating').length;
-  const blocked = features.filter((f: any) => f.status === 'blocked').length;
-
-  // Escalation
-  const escalated = existsSync(join(harnessDir(project), 'escalation.md'));
-
-  // Alive check: same as /status — uses the 2 s TTL cache so concurrent
-  // /health + /status calls share one /proc walk instead of duplicating it.
-  const alive = isProjectAlive(project.path);
-
-  // Recent activity: most recent agent run mtime
-  let lastRunMs = 0;
-  try {
-    const logDir = join(harnessDir(project), 'logs');
-    if (existsSync(logDir)) {
-      for (const f of readdirSync(logDir)) {
-        if (!f.endsWith('.out') && !f.endsWith('.jsonl')) continue;
-        try {
-          const s = statSync(join(logDir, f));
-          if (s.mtimeMs > lastRunMs) lastRunMs = s.mtimeMs;
-        } catch {}
-      }
-    }
-  } catch {}
-  const lastRunAgeSeconds = lastRunMs ? Math.floor((Date.now() - lastRunMs) / 1000) : null;
-
-  // Decision parser ghost rate
-  const runLog = tailFile(join(harnessDir(project), 'logs', 'run.log'), 128 * 1024);
-  const decLines = [...runLog.matchAll(/^\[[^\]]+\] ORCH decision:\s*(\S+)/gm)];
-  const knownVerbs = new Set(['NEXT_WORKER', 'NEXT_VALIDATOR', 'NEXT_ARCHITECT', 'ESCALATE', 'CONVERTED', 'DONE']);
-  const ghosts = decLines.filter((m) => !knownVerbs.has(m[1])).length;
-  const ghostRate = decLines.length > 0 ? ghosts / decLines.length : 0;
-
-  // Pending checkpoints
-  let pendingCheckpoints = 0;
-  try {
-    for (const f of readdirSync(harnessDir(project))) {
-      if (/^checkpoint-[A-Za-z0-9_.-]+\.md$/.test(f) && !existsSync(join(harnessDir(project), `${f}.granted`))) {
-        pendingCheckpoints += 1;
-      }
-    }
-  } catch {}
-
-  // Smoke test result (if present)
-  const smokeFail = existsSync(join(harnessDir(project), 'smoke-failure.md'));
-
-  // Verdict
-  const checks: Array<{ name: string; ok: boolean; detail?: string }> = [
-    { name: 'spec_present',        ok: existsSync(join(project.path, 'SPEC.md')) },
-    { name: 'features_present',    ok: (await parseFeatures(project)).length > 0 },
-    { name: 'contract_present',    ok: existsSync(join(harnessDir(project), 'validation-contract.md')) },
-    { name: 'not_escalated',       ok: !escalated, detail: escalated ? 'see escalation.md' : undefined },
-    { name: 'no_pending_checkpoints', ok: pendingCheckpoints === 0, detail: pendingCheckpoints > 0 ? `${pendingCheckpoints} awaiting grant` : undefined },
-    { name: 'smoke_test_clean',    ok: !smokeFail, detail: smokeFail ? 'last smoke test failed' : undefined },
-    { name: 'recent_activity',     ok: lastRunAgeSeconds !== null && lastRunAgeSeconds < 600, detail: lastRunAgeSeconds !== null ? `${lastRunAgeSeconds}s since last run` : 'no runs' },
-    { name: 'low_ghost_rate',      ok: ghostRate < 0.1, detail: `${ghosts}/${decLines.length} parser ghosts` },
-    { name: 'not_stuck',           ok: failing === 0 || inProgress > 0, detail: `${failing} failing, ${inProgress} in progress` },
-  ];
-  const overallOk = checks.every((c) => c.ok);
-
-  return c.json({
-    ok: overallOk,
-    alive,
-    escalated,
-    features: { total: totalFeatures, passed, failing, inProgress, blocked },
-    lastRunAgeSeconds,
-    ghostRate,
-    checks,
-  });
+  const { getHealth } = await import('@/lib/harness-readers');
+  const result = await getHealth(c.req.param('slug'));
+  if (!result.ok) return c.json({ error: result.error }, result.status);
+  return c.json(result.data);
 });
 
 /**
@@ -5549,22 +5462,12 @@ function reviewsDir(project: ProjectEntry): string {
 }
 
 harness.get('/:slug/reviews', async (c) => {
-  const slug = c.req.param('slug');
-  const phase = phasePhaseLabel(c.req.query('phase'));
-  // PG canonical (mirrored from .harness/pending-reviews/*.json by
-  // harness-fs-watcher.ts). Filtering out resolved=true matches the
-  // legacy FS behavior where resolved reviews moved to a subdir.
-  const { sql } = getOrgPg();
-  const rows = await sql<{ payload: PendingReview; review_id: string; resolved: boolean; ts: number }[]>`
-    SELECT payload, review_id, resolved, ts
-      FROM harness_shared.pending_reviews
-     WHERE harness_slug = ${slug}
-       AND phase = ${phase}
-       AND resolved = false
-     ORDER BY ts DESC
-  `;
-  const reviews = rows.map((r) => ({ ...r.payload, id: r.review_id, resolved: r.resolved, ts: r.ts }));
-  return c.json({ reviews });
+  const { listPendingReviews } = await import('@/lib/harness-readers');
+  const result = await listPendingReviews(
+    c.req.param('slug'),
+    phasePhaseLabel(c.req.query('phase')),
+  );
+  return c.json(result);
 });
 
 harness.get('/:slug/reviews/:id', async (c) => {
@@ -6678,7 +6581,7 @@ interface PhaseInfo {
 // Override existing resolveProject fetches so ?phase= can route to a sibling
 // worktree. The cleanest backwards-compatible path is a helper that returns
 // a "virtual project" pointing at the right worktree.
-async function resolvePhasedProject(slug: string, phase: Phase | undefined): Promise<ProjectEntry | null> {
+export async function resolvePhasedProject(slug: string, phase: Phase | undefined): Promise<ProjectEntry | null> {
   const base = await resolveProject(slug);
   if (!base) return null;
   if (!phase || phase === 'staging') return base;

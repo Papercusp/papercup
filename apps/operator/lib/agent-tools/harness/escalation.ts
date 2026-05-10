@@ -1,13 +1,15 @@
 /**
- * harness:escalation — get escalation + supervisor notes for a harness.
+ * harness:escalation — read escalation.md + supervisor-notes.md for a
+ * harness slug.
  *
- * Wraps GET /api/harness/:slug/escalation. Mirrors the
- * `escalations.get` registry def in lib/commands/defs/harness.ts.
+ * Calls getEscalation() in lib/harness-readers.ts directly — same
+ * function the GET /api/harness/:slug/escalation route projects.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { operatorBaseUrl } from '@/lib/agent-tools/_baseUrl';
+import { phasePhaseLabel } from '@/lib/harness-phases';
+import { getEscalation } from '@/lib/harness-readers';
 
 const ALL_ROLES = [
   'scoper',
@@ -23,38 +25,40 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:escalation',
-  description: 'Get escalation + supervisor notes (if any) for a harness. { hasEscalation, escalation, supervisorNotes, mtimeMs }.',
+  description: 'Read escalation.md + supervisor-notes.md for a harness slug.',
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({
     slug: z.string().min(1),
+    phase: z.string().optional(),
   }),
   async handler(args) {
-    const r = await fetch(`${operatorBaseUrl()}/api/harness/${encodeURIComponent(args.slug)}/escalation`);
-    if (!r.ok) {
-      if (r.status === 404) {
-        return {
-          content: [{
+    const result = await getEscalation(args.slug, phasePhaseLabel(args.phase));
+    if (!result.ok) {
+      return {
+        content: [
+          {
             type: 'text',
-            text: JSON.stringify({ hasEscalation: false, escalation: null, supervisorNotes: null, mtimeMs: null }),
-          }],
-        };
-      }
-      throw new Error(`harness:escalation failed: HTTP ${r.status}`);
+            text: JSON.stringify({
+              hasEscalation: false,
+              escalation: null,
+              supervisorNotes: null,
+              mtimeMs: null,
+            }),
+          },
+        ],
+      };
     }
-    const d = await r.json();
-    const hasEscalation = !!(d?.escalation && String(d.escalation).trim());
+    const { escalation, supervisorNotes, mtimeMs } = result.data;
+    const hasEscalation = !!(escalation && String(escalation).trim());
     return {
-      content: [{
-        type: 'text',
-        text: JSON.stringify({
-          hasEscalation,
-          escalation: d?.escalation ?? null,
-          supervisorNotes: d?.supervisorNotes ?? null,
-          mtimeMs: d?.mtimeMs ?? null,
-        }),
-      }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ hasEscalation, escalation, supervisorNotes, mtimeMs }),
+        },
+      ],
     };
   },
 });

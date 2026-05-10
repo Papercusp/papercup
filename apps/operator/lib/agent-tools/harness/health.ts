@@ -1,14 +1,13 @@
 /**
- * harness:health — fast health snapshot for a harness (alive,
- * escalated, feature-status counts).
+ * harness:health — single-call health verdict for a harness slug.
  *
- * Single fast call instead of harness:status + harness:escalation
- * separately. Wraps GET /api/harness/:slug/health.
+ * Calls getHealth() in lib/harness-readers.ts directly — same function
+ * the GET /api/harness/:slug/health route projects.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { operatorBaseUrl } from '@/lib/agent-tools/_baseUrl';
+import { getHealth } from '@/lib/harness-readers';
 
 const ALL_ROLES = [
   'scoper',
@@ -24,7 +23,8 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'harness:health',
-  description: 'Fast health snapshot for a harness — alive/escalated/feature_counts/lastRunMs in one call.',
+  description:
+    'Read consolidated health verdict for a harness (alive, escalated, feature counts, ghost rate, checks).',
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
@@ -32,9 +32,10 @@ export default defineTool({
     slug: z.string().min(1),
   }),
   async handler(args) {
-    const r = await fetch(`${operatorBaseUrl()}/api/harness/${encodeURIComponent(args.slug)}/health`);
-    if (!r.ok) throw new Error(`harness:health failed: HTTP ${r.status}`);
-    const d = await r.json();
-    return { content: [{ type: 'text', text: JSON.stringify(d) }] };
+    const result = await getHealth(args.slug);
+    if (!result.ok) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: result.error }) }] };
+    }
+    return { content: [{ type: 'text', text: JSON.stringify(result.data) }] };
   },
 });

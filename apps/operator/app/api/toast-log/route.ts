@@ -7,11 +7,15 @@
  * Captured client-side by ToastHistoryRecorder which observes the sonner
  * Toaster <ol> for new toast <li>s. Read by NotificationCenter (the bell
  * icon in the chrome).
+ *
+ * GET delegates to listToasts() in lib/toast-log-data.ts so the same
+ * function backs the notifications:recent MCP tool.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getOrgPg } from '@restart/db-org';
 import { ensureToastLogTable } from '../../../lib/ensure-schema';
 import { notifySyncInvalidate } from '../../../lib/sync-sse';
+import { listToasts } from '../../../lib/toast-log-data';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,8 +58,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     typeof b.actionLabel === 'string' && b.actionLabel.trim()
       ? b.actionLabel.slice(0, 120).trim()
       : null;
-  // Only same-origin paths and explicit external URLs allowed; no
-  // javascript: or data: schemes that would be a click-through risk.
   const rawHref = typeof b.actionHref === 'string' ? b.actionHref.trim() : '';
   const actionHref = rawHref && (rawHref.startsWith('/') || /^https?:\/\//i.test(rawHref))
     ? rawHref.slice(0, 2000)
@@ -72,8 +74,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     RETURNING id
   `) as Array<{ id: string }>;
 
-  // Best-effort ring-buffer trim. Runs out-of-band so the response isn't
-  // delayed; failure is non-fatal (worst case the table grows another row).
   void sql`
     DELETE FROM harness_shared.toast_log
     WHERE id IN (
@@ -83,8 +83,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     )
   `.catch(() => {});
 
-  // Phase 1 push: NotificationCenter subscribes via toastLog.recent — emit
-  // an invalidate so it refetches without waiting for poll cadence.
   void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
 
   return NextResponse.json({ id: Number(row.id), createdAt });
@@ -92,42 +90,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const url = new URL(req.url);
-  const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') ?? '50') || 50));
+  const limit = Number(url.searchParams.get('limit') ?? '50') || 50;
   const since = Number(url.searchParams.get('since') ?? '0') || 0;
-  const slugFilter = url.searchParams.get('slug');
-  const slugClause = slugFilter && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slugFilter) ? slugFilter : null;
-
-  await ensureToastLogTable();
-  const { sql } = getOrgPg();
-  const rows = slugClause
-    ? ((await sql`
-        SELECT id, level, message, description, harness_slug, created_at, action_label, action_href
-        FROM harness_shared.toast_log
-        WHERE created_at >= ${since}
-          AND harness_slug = ${slugClause}
-        ORDER BY created_at DESC
-        LIMIT ${limit}
-      `) as Array<Row>)
-    : ((await sql`
-        SELECT id, level, message, description, harness_slug, created_at, action_label, action_href
-        FROM harness_shared.toast_log
-        WHERE created_at >= ${since}
-        ORDER BY created_at DESC
-        LIMIT ${limit}
-      `) as Array<Row>);
-
-  return NextResponse.json({
-    toasts: rows.map((r) => ({
-      id: Number(r.id),
-      level: r.level,
-      message: r.message,
-      description: r.description,
-      harnessSlug: r.harness_slug,
-      createdAt: Number(r.created_at),
-      actionLabel: r.action_label,
-      actionHref: r.action_href,
-    })),
-  });
+  const slug = url.searchParams.get('slug');
+  const result = await listToasts({ limit, since, slug });
+  return NextResponse.json(result);
 }
 
 export async function DELETE(req: NextRequest): Promise<NextResponse> {
@@ -140,15 +107,4 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true, cleared: 'all' });
   }
   return NextResponse.json({ error: 'pass ?all=1 to clear' }, { status: 400 });
-}
-
-interface Row {
-  id: string;
-  level: string;
-  message: string;
-  description: string | null;
-  harness_slug: string | null;
-  created_at: string;
-  action_label: string | null;
-  action_href: string | null;
 }

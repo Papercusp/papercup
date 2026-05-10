@@ -2,13 +2,13 @@
  * notifications:recent — list recent toast notifications shown
  * anywhere in the app (errors, warnings, info).
  *
- * Wraps GET /api/toast-log. Mirrors the `notifications.recent`
- * registry def in lib/commands/defs/recent-activity.ts.
+ * Calls listToasts() in lib/toast-log-data.ts directly — same function
+ * the GET /api/toast-log route projects. No HTTP roundtrip.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { operatorBaseUrl } from '@/lib/agent-tools/_baseUrl';
+import { listToasts } from '@/lib/toast-log-data';
 
 const ALL_ROLES = [
   'scoper',
@@ -33,17 +33,13 @@ export default defineTool({
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args) {
-    const params = new URLSearchParams();
-    if (args.limit) params.set('limit', String(args.limit));
-    const r = await fetch(`${operatorBaseUrl()}/api/toast-log?${params}`);
-    if (!r.ok) throw new Error(`notifications:recent failed: HTTP ${r.status}`);
-    const d = await r.json();
-    let toasts: Array<Record<string, unknown>> = d?.toasts ?? [];
-    if (args.level && args.level !== 'all') {
-      toasts = toasts.filter((t) => t.level === args.level);
-    }
+    const { toasts } = await listToasts({ limit: args.limit });
+    const filtered =
+      args.level && args.level !== 'all' ? toasts.filter((t) => t.level === args.level) : toasts;
     return {
-      content: [{ type: 'text', text: JSON.stringify({ count: toasts.length, notifications: toasts }) }],
+      content: [
+        { type: 'text', text: JSON.stringify({ count: filtered.length, notifications: filtered }) },
+      ],
     };
   },
 });
