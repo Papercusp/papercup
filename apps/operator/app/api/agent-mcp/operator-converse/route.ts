@@ -143,17 +143,28 @@ export async function POST(req: NextRequest) {
         const principalOk =
           principal !== null && principal.workspaceId === workspaceId;
         // HTTP MCP transport — points at the operator's own /api/mcp
-        // route (apps/operator/app/api/[transport]/route.ts), which is
-        // the only catalog with plugin tools (orchestrator.spawn et al)
-        // already mounted. The standalone tsx subprocess server only
-        // has built-ins; using it would silently make spawn unavailable.
-        // The route also requires per-spawn URL query params
-        // (harness/workspace/role/run/spawn) — we synthesize them since
-        // operator-converse runs at chrome scope, not inside a spawn.
-        const mcpRunId = `op-converse-${Date.now()}`;
-        const mcpSpawnId = `op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        const mcpUrl = `http://127.0.0.1:3055/api/mcp?harness=system&workspace=${encodeURIComponent(workspaceId)}&role=operator&run=${mcpRunId}&spawn=${mcpSpawnId}`;
-        const mcpConfig = principalOk
+        // route (apps/operator/app/api/[transport]/route.ts), which
+        // exposes the full plugin catalog (orchestrator.spawn et al).
+        //
+        // Uses ?superuser=1 + Authorization: Bearer <superuser-token>
+        // (commit 0ccac7cf) since operator-converse runs at chrome
+        // scope (no specific harness/spawn/run context). The bypass
+        // turns off role-allowlist + quota gates — the operator role
+        // could spawn anything anyway, and we don't have a real spawn
+        // to derive runId from. Token lives at ~/.papercusp/superuser-token
+        // and is read by the operator process itself, never sent to
+        // remote agents.
+        const mcpUrl = 'http://127.0.0.1:3055/api/mcp?superuser=1';
+        let superuserToken: string | null = null;
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          superuserToken = require('node:fs').readFileSync(
+            require('node:path').join(require('node:os').homedir(), '.papercusp', 'superuser-token'),
+            'utf8',
+          ).trim();
+          if (!superuserToken || superuserToken.length < 16) superuserToken = null;
+        } catch { superuserToken = null; }
+        const mcpConfig = principalOk && superuserToken
           ? {
               mcpServers: {
                 // omp silently drops type:'http' MCP servers — bridge
@@ -169,13 +180,14 @@ export async function POST(req: NextRequest) {
                     'mcp-remote@latest',
                     mcpUrl,
                     '--header',
-                    `Authorization:Bearer ${principal!.bearer}`,
+                    `Authorization:Bearer ${superuserToken}`,
                   ],
                 },
               },
             }
           : undefined;
-        const allowedTools: readonly string[] = principalOk ? ALL_AGENT_MCP_TOOLS : [];
+        const allowedTools: readonly string[] =
+          principalOk && superuserToken ? ALL_AGENT_MCP_TOOLS : [];
 
         const events = runClaudeChat({
           promptText,
