@@ -163,6 +163,16 @@ export interface HttpToolHostExtras {
    * `resolveHarnessPaths`; HTTP needs the same resolver so plugin tools
    * (repomix, code2prompt, …) get a populated `ctx.projectDir`.
    */
+  /**
+   * Optional superuser admission check. Called when the request URL
+   * has `?superuser=1`. Return true to admit (bypasses role + quota
+   * gates). Return false to reject — the dispatcher returns 401
+   * unauthorized rather than fall through to anonymous dispatch.
+   *
+   * Hosts typically check loopback origin + bearer-token equality.
+   * See `apps/operator/lib/superuser-token.ts` for the operator impl.
+   */
+  validateSuperuser?(req: HttpToolRequest): boolean;
   resolveHarnessPaths?(
     harnessSlug: string,
     workspaceId: string,
@@ -197,14 +207,45 @@ async function resolveToolAndContext(
       body: { error: { code: 'method_not_allowed', message: `Tool "${req.pathname}" does not accept ${req.method}` } },
     };
   }
+  // Superuser path: if `?superuser=1` is set, the host's validator MUST
+  // accept it. If not, reject with 401 — never fall through to anonymous
+  // dispatch, otherwise unauthenticated callers could trigger plugin tools
+  // by appending ?superuser=1 and exploiting any tool that fails-open on
+  // missing context.
+  const wantsSuperuser = req.searchParams.get('superuser') === '1';
+  if (wantsSuperuser && !extras.validateSuperuser?.(req)) {
+    return {
+      ok: false,
+      status: 401,
+      body: { error: { code: 'unauthorized', message: '?superuser=1 requires loopback origin + valid bearer token (see ~/.papercusp/superuser-token)' } },
+    };
+  }
   const spawnCtx = buildHttpSpawnContext({ headers: req.headers, searchParams: req.searchParams });
+  let isSuperuser = false;
+  if (wantsSuperuser) {
+    isSuperuser = true;
+    if (!spawnCtx.workspaceId) spawnCtx.workspaceId = '*';
+    if (!spawnCtx.harnessSlug) spawnCtx.harnessSlug = '*';
+    if (!spawnCtx.role) spawnCtx.role = 'operator' as AgentRole;
+    if (!spawnCtx.runId) spawnCtx.runId = 'standalone';
+    if (!spawnCtx.spawnId) {
+      const buf = new Uint8Array(8);
+      globalThis.crypto.getRandomValues(buf);
+      spawnCtx.spawnId = `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`;
+    }
+  }
   // Resolve project + state dirs from harness slug + workspace id when
   // both are present and the host supplied a resolver. Without this the
   // ctx fields stay undefined and tools needing `ctx.projectDir` (repomix,
   // code2prompt) fail with a transport-layer error.
-  if (extras.resolveHarnessPaths && spawnCtx.harnessSlug && spawnCtx.workspaceId) {
+  // Skip path resolution for superuser wildcards ('*') — tools that
+  // need a real workspace path will fail loud with their own per-tool
+  // fallback ("workspace= arg required").
+  const realWorkspace = spawnCtx.workspaceId && spawnCtx.workspaceId !== '*';
+  const realHarness = spawnCtx.harnessSlug && spawnCtx.harnessSlug !== '*';
+  if (extras.resolveHarnessPaths && realHarness && realWorkspace) {
     try {
-      const paths = await extras.resolveHarnessPaths(spawnCtx.harnessSlug, spawnCtx.workspaceId);
+      const paths = await extras.resolveHarnessPaths(spawnCtx.harnessSlug!, spawnCtx.workspaceId!);
       (spawnCtx as { projectDir?: string }).projectDir = paths.projectDir;
       (spawnCtx as { stateDir?: string }).stateDir = paths.stateDir;
     } catch { /* leave undefined; tool will surface a clear error */ }
@@ -221,6 +262,7 @@ async function resolveToolAndContext(
       extras.progress?.(pct, msg, fullCtx);
     },
     ...spawnCtx,
+    isSuperuser,
     ...(extras.spawn ? { spawn: extras.spawn } : {}),
     ...(extras.secret ? { secret: extras.secret } : {}),
   };

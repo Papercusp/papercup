@@ -95,7 +95,10 @@ export async function dispatchProjectedTool(
   const startedAt = Date.now();
 
   // 1. Role allowlist (only when both sides are known).
-  if (tool.roles && ctx.role && !tool.roles.includes(ctx.role as AgentRole)) {
+  // Superuser bypass: shell-launched agents (loopback + bearer token,
+  // see /docs/endpoint-system/superuser-mode) skip role-allowlist + quota
+  // gates. Capability gate below still runs when a principal is attached.
+  if (tool.roles && ctx.role && !ctx.isSuperuser && !tool.roles.includes(ctx.role as AgentRole)) {
     if (deps.recordInvocation) {
       try {
         await deps.recordInvocation({
@@ -154,7 +157,7 @@ export async function dispatchProjectedTool(
   const windowKey = computeProjectedQuotaWindowKey(ctx);
   const role = ctx.role as AgentRole | undefined;
   const roleQuota = role && tool.rolesQuota?.[role];
-  if (windowKey && role && roleQuota && deps.readQuotaState) {
+  if (windowKey && role && roleQuota && deps.readQuotaState && !ctx.isSuperuser) {
     const limit = role === 'worker' ? roleQuota.perChunk : roleQuota.perRun;
     if (typeof limit === 'number' && limit > 0) {
       try {

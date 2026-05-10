@@ -42,6 +42,7 @@ import {
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
 import { getOrgPg } from '@restart/db-org';
+import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,6 +64,17 @@ function urlFromExtra(extra: unknown): URL | null {
   try { return new URL(raw); } catch { return null; }
 }
 
+function headersFromExtra(extra: unknown): Headers {
+  const raw = (extra as { requestInfo?: { headers?: Record<string, string | string[] | undefined> } })
+    ?.requestInfo?.headers ?? {};
+  const h = new Headers();
+  for (const [k, v] of Object.entries(raw)) {
+    const flat = Array.isArray(v) ? v.join(', ') : v;
+    if (typeof flat === 'string') h.set(k, flat);
+  }
+  return h;
+}
+
 /**
  * Parse the seven per-spawn URL params and return a partial
  * UnifiedToolContext fragment. Returns null if any required params are
@@ -78,9 +90,33 @@ function tryBuildSpawnContext(extra: unknown): {
   runId: string;
   spawnId: string;
   parentSpawnId: string | null;
+  isSuperuser?: boolean;
 } | null {
   const url = urlFromExtra(extra);
   if (!url) return null;
+  // Superuser path: ?superuser=1 + loopback + valid bearer token. See
+  // /docs/endpoint-system/superuser-mode and apps/operator/lib/superuser-token.ts.
+  if (url.searchParams.get('superuser') === '1') {
+    const headers = headersFromExtra(extra);
+    if (!isLoopbackRequest(headers)) return null;
+    const bearer = bearerFromExtra(extra);
+    if (!isValidSuperuserBearer(bearer)) return null;
+    const wsParam = (url.searchParams.get('workspace') ?? '').trim();
+    const harnessParam = (url.searchParams.get('harness') ?? '').trim();
+    const buf = new Uint8Array(8);
+    globalThis.crypto.getRandomValues(buf);
+    return {
+      workspaceId: wsParam || '*',
+      harnessSlug: harnessParam || '*',
+      role: 'operator' as AgentRole,
+      featureId: null,
+      chunkId: null,
+      runId: 'standalone',
+      spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+      parentSpawnId: null,
+      isSuperuser: true,
+    };
+  }
   try {
     const parsed = parseRequestContext(url);
     return {
@@ -219,7 +255,11 @@ async function buildMcpToolContext(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sendNotification: ((notif: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
 ): Promise<UnifiedToolContext> {
-  const paths = await resolveHarnessPathsImpl(spawn.harnessSlug, spawn.workspaceId);
+  // Superuser context: workspaceId/harnessSlug may be '*'. Skip path
+  // resolution; per-tool fallbacks ("workspace= arg required") will fire.
+  const paths = (spawn.isSuperuser && (spawn.workspaceId === '*' || spawn.harnessSlug === '*'))
+    ? { projectDir: undefined as unknown as string, stateDir: undefined as unknown as string }
+    : await resolveHarnessPathsImpl(spawn.harnessSlug, spawn.workspaceId);
   // Plugin handlers call ctx.progress(pct, msg). When the MCP client
   // supplied a progressToken, fan each call to a notifications/progress
   // event keyed by that token. Otherwise no-op (client opted out).
@@ -251,6 +291,7 @@ async function buildMcpToolContext(
     runId: spawn.runId,
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
+    isSuperuser: spawn.isSuperuser ?? false,
     log: (msg) => {
       // eslint-disable-next-line no-console
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);

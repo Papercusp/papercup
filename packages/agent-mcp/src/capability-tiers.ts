@@ -47,6 +47,7 @@ const EXACT: Record<string, CapabilityTier> = {
   // Intel panel reads from harness_shared.tool_invocations(_spawn_tree|_artifacts).
   // High-tier because it surfaces every agent's prompt + workspace activity.
   'intel:read': 'high',
+  'workspaces:read': 'low',
   'harness:dispatch': 'high',
   'hindsight:retain': 'high',
 };

@@ -27,6 +27,7 @@ import './tools/messages/feature_inbox';
 import './tools/audit/list';
 import './tools/intel/spawn_tree';
 import './tools/intel/artifacts';
+import './tools/papercusp/list_workspaces';
 import './tools/pending_events/list';
 import './tools/hindsight/recall';
 import './tools/search/query';

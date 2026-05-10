@@ -18,6 +18,7 @@ import {
 import { getOrgPg } from '@restart/db-org';
 import { pluginSpawnImpl, secretImpl } from '@/lib/plugin-spawn-impl';
 import { resolveHarnessPaths } from '@/lib/resolve-harness-paths';
+import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -98,6 +99,16 @@ const HOST_EXTRAS: HttpToolHostExtras = {
   spawn: pluginSpawnImpl,
   secret: secretImpl,
   resolveHarnessPaths,
+  validateSuperuser: (req) => {
+    const h = new Headers();
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v === 'string') h.set(k, v);
+    }
+    if (!isLoopbackRequest(h)) return false;
+    const auth = req.headers['authorization'] ?? '';
+    const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : auth;
+    return isValidSuperuserBearer(bearer);
+  },
 };
 
 /* ─── Request → response ─────────────────────────────────────────────── */

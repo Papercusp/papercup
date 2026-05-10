@@ -66,6 +66,15 @@ export interface UnifiedToolContext {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tx?: any;
 
+  /**
+   * True when the call entered through the superuser endpoint
+   * (loopback + bearer-token auth — see apps/operator/lib/superuser-token.ts
+   * and apps/operator/content/docs/endpoint-system/superuser-mode.mdx).
+   * Bypasses role-allowlist and quota gates; capability gate still runs
+   * when a principal is attached.
+   */
+  isSuperuser?: boolean;
+
   /* ── Spawn context (typically agent-driven calls) ─────────────────── */
   workspaceId?: string;
   harnessSlug?: string;
