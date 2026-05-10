@@ -50,7 +50,21 @@ export type ExecuteAction =
   | PauseProjectAction
   | ResumeProjectAction
   | MarkCampaignPublishedAction
-  | AddDirectiveSummaryAction;
+  | AddDirectiveSummaryAction
+  | CreateFeatureAction;
+
+export interface CreateFeatureAction {
+  op: 'create_feature';
+  harness_slug: string;
+  title: string;
+  summary?: string;
+  goal_id?: string;
+  expected_cost_cents?: number;
+  /** Audit string (≥10 chars) — why this feature is being created. */
+  reason: string;
+  /** Optional explicit feature_id; if absent, server generates one. */
+  feature_id?: string;
+}
 
 export interface AddDirectiveSummaryAction {
   op: 'add_directive_summary';
@@ -242,6 +256,15 @@ async function verifyEffectExists(
     `;
     return rows.length > 0;
   }
+  if (op === 'create_feature' && targetSlug) {
+    const featureId = response?.result?.feature_id;
+    if (!featureId) return true;
+    const rows = await sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${targetSlug} AND feature_id = ${featureId} LIMIT 1
+    `;
+    return rows.length > 0;
+  }
   // Unknown ops: trust the cache.
   return true;
 }
@@ -275,6 +298,7 @@ async function saveAction(opts: {
 
 function extractTargetSlug(action: ExecuteAction): string | null {
   switch (action.op) {
+    case 'create_feature': return action.harness_slug ?? null;
     case 'send_message': return action.to?.[0] ?? null;
     case 'mark_message_status': return null;
     case 'spinup_project': return null;
@@ -790,11 +814,119 @@ async function doMarkCampaignPublished(
   return { ok: true, actionId: '', result: { id: action.messageId, channels: action.channels } };
 }
 
+const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
+
+async function doCreateFeature(
+  callerSlug: string,
+  action: CreateFeatureAction,
+): Promise<ExecuteActionResult> {
+  if (!action.harness_slug || typeof action.harness_slug !== 'string') {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'harness_slug required' };
+  }
+  if (!action.title || typeof action.title !== 'string' || action.title.trim().length === 0) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'title required' };
+  }
+  if (typeof action.reason !== 'string' || action.reason.trim().length < 10) {
+    return { ok: false, actionId: '', error: 'validation_error', detail: 'reason (≥10 chars) required' };
+  }
+  // Caller must own the target harness, or be an admin caller
+  // (matches the existing pattern in validateIdentityFields — when the
+  // bearer principal's slug differs from action.harness_slug we treat
+  // it as cross-harness which the gateway already rejects unless the
+  // bearer has admin scope; here we simply require the caller to be
+  // the harness owner).
+  if (callerSlug !== action.harness_slug) {
+    return {
+      ok: false, actionId: '', error: 'forbidden',
+      detail: `caller ${callerSlug} cannot create features in harness ${action.harness_slug}`,
+    };
+  }
+
+  // Generate or validate the feature id.
+  const explicitId = action.feature_id?.trim() ?? '';
+  let featureId: string;
+  if (explicitId) {
+    if (!FEATURE_ID_RE.test(explicitId)) {
+      return {
+        ok: false, actionId: '', error: 'validation_error',
+        detail: `feature_id must match ${FEATURE_ID_RE.source}`,
+      };
+    }
+    featureId = explicitId;
+  } else {
+    // F-AUTO-{base36 timestamp + 4 random chars}, all uppercase to satisfy
+    // FEATURE_ID_RE.
+    const ts = Date.now().toString(36).toUpperCase();
+    const rand = Math.random().toString(36).slice(2, 6).toUpperCase();
+    featureId = `F-AUTO-${ts}${rand}`;
+  }
+
+  const { sql } = getOrgPg();
+  const now = Date.now();
+
+  // Use a transaction so the duplicate-check + insert can't race.
+  // Direct write to harness_features_consolidated (the canonical store
+  // post-migration 029); BEFORE INSERT trigger fill_needs_design_trg
+  // (migration 050) auto-computes needs_design from title + summary.
+  try {
+    await sql.begin(async (tx) => {
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [callerSlug]);
+      const dup = await tx`
+        SELECT 1 FROM harness_shared.harness_features_consolidated
+         WHERE harness_slug = ${action.harness_slug} AND feature_id = ${featureId}
+         LIMIT 1
+      `;
+      if ((dup as Array<unknown>).length > 0) {
+        throw new Error(`duplicate:${featureId}`);
+      }
+      await tx`
+        INSERT INTO harness_shared.harness_features_consolidated (
+          harness_slug, feature_id, title, summary, status, attempts,
+          expected_cost_cents, goal_id, needs_human_review,
+          ts, created_ts, updated_ts
+        ) VALUES (
+          ${action.harness_slug}, ${featureId},
+          ${action.title.trim()},
+          ${action.summary ?? null},
+          'todo', 0,
+          ${action.expected_cost_cents ?? null},
+          ${action.goal_id ?? null},
+          FALSE,
+          ${now}, ${now}, ${now}
+        )
+      `;
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith('duplicate:')) {
+      return {
+        ok: false, actionId: '', error: 'conflict',
+        detail: `feature_id ${featureId} already exists in ${action.harness_slug}`,
+      };
+    }
+    return {
+      ok: false, actionId: '', error: 'pg_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  return {
+    ok: true,
+    actionId: '',
+    result: {
+      feature_id: featureId,
+      harness_slug: action.harness_slug,
+      title: action.title.trim(),
+      status: 'todo',
+    },
+  };
+}
+
 export async function dispatchAction(
   callerSlug: string,
   action: ExecuteAction,
 ): Promise<ExecuteActionResult> {
   switch (action.op) {
+    case 'create_feature': return doCreateFeature(callerSlug, action);
     case 'send_message': return doSendMessage(callerSlug, action);
     case 'mark_message_status': return doMarkMessageStatus(callerSlug, action);
     case 'spinup_project': return doSpinupProject(callerSlug, action);
