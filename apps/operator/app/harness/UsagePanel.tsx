@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+
 
 interface Usage {
   runs: number;
@@ -40,6 +42,18 @@ interface FeatureSummary {
   byRole: Record<string, number>;
 }
 
+// Shape coming back from Zero's per-harness agent_runs table.
+interface AgentRunRow {
+  runId: string;
+  role: string;
+  featureId?: string | null;
+  ts: number;
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+}
+
 interface Props {
   slug: string;
   onClose: () => void;
@@ -69,25 +83,69 @@ function fmtCost(n: number): string {
   return `$${n.toFixed(6)}`;
 }
 
-export default function UsagePanel({ slug, onClose }: Props) {
-  const [data, setData] = useState<{ totals: Usage; byRole: RoleSummary[]; byFeature?: FeatureSummary[]; recent: RecentRun[] } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function UsagePanelInner({ slug, onClose }: Props) {
+  // Subscribes to the per-harness agent_runs Zero table. The previous
+  // implementation polled /api/harness/<slug>/usage every 5s, which itself
+  // re-aggregated the same rows server-side. Now we get rows live (via Zero
+  // push when WS is healthy, or REST fallback driven by HarnessZeroProvider)
+  // and aggregate client-side. Same UI, no extra polling.
+  const { data: rows, loading, error: zeroError } = useSyncQuery<AgentRunRow>({
+    queryName: 'agentRunsConsolidated.bySlug',
+    args: { harnessSlug: slug },
+  });
 
-  const load = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/usage`).then((r) => r.json());
-      if (d.error) throw new Error(d.error);
-      setData(d);
-    } catch (e) {
-      setError(String(e));
+  const data = useMemo(() => {
+    if (loading || !Array.isArray(rows)) return null;
+    const totals: Usage = { runs: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 };
+    const roleMap = new Map<string, Usage>();
+    const featureMap = new Map<string, { sum: Usage; byRole: Record<string, number> }>();
+    for (const r of rows) {
+      const cost = Number(r.costUsd) || 0;
+      const inTok = Number(r.inputTokens) || 0;
+      const outTok = Number(r.outputTokens) || 0;
+      const dur = Number(r.durationMs) || 0;
+      totals.runs += 1;
+      totals.costUsd += cost;
+      totals.inputTokens += inTok;
+      totals.outputTokens += outTok;
+      totals.durationMs += dur;
+
+      const role = r.role || 'unknown';
+      const ru = roleMap.get(role) ?? { runs: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 };
+      ru.runs += 1; ru.costUsd += cost; ru.inputTokens += inTok; ru.outputTokens += outTok; ru.durationMs += dur;
+      roleMap.set(role, ru);
+
+      if (r.featureId) {
+        const fm = featureMap.get(r.featureId) ?? { sum: { runs: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, durationMs: 0 }, byRole: {} };
+        fm.sum.runs += 1; fm.sum.costUsd += cost; fm.sum.inputTokens += inTok; fm.sum.outputTokens += outTok; fm.sum.durationMs += dur;
+        fm.byRole[role] = (fm.byRole[role] ?? 0) + cost;
+        featureMap.set(r.featureId, fm);
+      }
     }
-  }, [slug]);
+    const byRole: RoleSummary[] = Array.from(roleMap.entries()).map(([role, u]) => ({
+      role, ...u,
+      avgCostUsd: u.runs ? u.costUsd / u.runs : 0,
+      avgDurationMs: u.runs ? u.durationMs / u.runs : 0,
+    }));
+    const byFeature: FeatureSummary[] = Array.from(featureMap.entries()).map(([featureId, fm]) => ({
+      featureId, ...fm.sum,
+      avgCostUsd: fm.sum.runs ? fm.sum.costUsd / fm.sum.runs : 0,
+      byRole: fm.byRole,
+    }));
+    const recent: RecentRun[] = rows.slice(0, 50).map((r) => ({
+      runId: r.runId,
+      role: r.role,
+      featureId: r.featureId ?? null,
+      ts: Number(r.ts) || 0,
+      costUsd: Number(r.costUsd) || 0,
+      inputTokens: Number(r.inputTokens) || 0,
+      outputTokens: Number(r.outputTokens) || 0,
+      durationMs: Number(r.durationMs) || 0,
+    }));
+    return { totals, byRole, byFeature, recent };
+  }, [rows, loading]);
 
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  const error = zeroError ? String(zeroError) : null;
 
   return (
     <Modal
@@ -101,8 +159,8 @@ export default function UsagePanel({ slug, onClose }: Props) {
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Usage — {slug}</strong>
-          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>aggregated from .harness/logs/*.jsonl</span>
-          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>auto-refresh 5s</span>
+          <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>aggregated from agent_runs (live via Zero)</span>
+          <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: '#6b7280' }}>live</span>
           <button
             onClick={onClose}
             style={{ background: 'transparent', color: '#9ca3af', border: '1px solid #374151', borderRadius: 3, padding: '0.35rem 0.75rem', cursor: 'pointer', fontSize: '0.8rem' }}
@@ -236,3 +294,6 @@ function RecentRunsGrid({ rows }: { rows: RecentRun[] }) {
   ], []);
   return <RichGrid<RecentRun> rows={rows} columns={columns} getRowId={(r) => r.runId} inline />;
 }
+
+const UsagePanel = memo(UsagePanelInner);
+export default UsagePanel;

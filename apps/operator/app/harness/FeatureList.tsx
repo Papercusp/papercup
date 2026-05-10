@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Tooltip } from './Tooltip';
@@ -13,7 +13,14 @@ import { StatusPill, IdPill, IconButton, KbdHint } from './primitives';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useShortcut } from '../../lib/hotkeys';
 
-const OperatorNoteForm = dynamic(() => import('./OperatorNoteForm'), { ssr: false });
+// Loaded eagerly (no `dynamic` wrapper) so the inline-note pane renders
+// its textarea immediately when the user clicks "steer". Was lazy-loaded
+// via next/dynamic, but in dev with Turbopack rebuilding sibling files
+// the chunk took multiple seconds to materialize, leaving the user
+// staring at an empty steer panel and assuming an extra click was
+// needed. The form is small (~250 LOC) — eagerly loading it is cheaper
+// than the lazy-load + chunk-fetch flicker.
+import OperatorNoteForm from './OperatorNoteForm';
 interface Feature {
   id: string;
   title: string;
@@ -57,10 +64,15 @@ interface Props {
   onAdd: () => void;
   onBatchReset: (ids: string[]) => void;
   onBatchDelete: (ids: string[]) => void;
+  /** Optional eager notes map (featureId → raw markdown). When provided,
+   *  the inline steer form reads from this synchronously instead of
+   *  fetching on click. Falls back to its internal fetch if unset. */
+  notesByFeatureId?: Map<string, string>;
 }
 
-export default function FeatureList({
+function FeatureListInner({
   slug, features, activeFeatureId, onSelect, onReset, onEdit, onSwitchToPi, onAdd, onBatchReset, onBatchDelete,
+  notesByFeatureId,
 }: Props) {
   const [mode, setMode] = useQueryState(
     'view',
@@ -350,6 +362,7 @@ export default function FeatureList({
             onSwitchToPi={onSwitchToPi}
             compact={isCompact}
             scrollRef={listRef}
+            notesByFeatureId={notesByFeatureId}
           />
         ) : (
           <BoardView
@@ -379,10 +392,16 @@ export default function FeatureList({
   );
 }
 
+// All props are now stable references at the call site (callbacks via
+// useCallback, features via featuresStable's content-aware ref preservation,
+// scalars are scalars). Default shallow compare is sufficient.
+const FeatureList = memo(FeatureListInner);
+export default FeatureList;
+
 // ─── List view ─────────────────────────────────────────────────────
 
 function ListView({
-  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onSwitchToPi, compact = false, scrollRef,
+  slug, features, focusIdx, activeId, selected, onSelect, onToggleSelect, onReset, onEdit, onSwitchToPi, compact = false, scrollRef, notesByFeatureId,
 }: {
   slug: string;
   features: Feature[];
@@ -396,6 +415,7 @@ function ListView({
   onSwitchToPi?: () => void;
   compact?: boolean;
   scrollRef: MutableRefObject<HTMLDivElement | null>;
+  notesByFeatureId?: Map<string, string>;
 }) {
   const [noteFeatureId, setNoteFeatureId] = useState<string | null>(null);
   const [chatBusyId, setChatBusyId] = useState<string | null>(null);
@@ -665,7 +685,7 @@ function ListView({
           {chatError?.id === row.id && (
             <div className="h-feature-inline-note-error">chat failed: {chatError.message}</div>
           )}
-          <OperatorNoteForm slug={slug} featureId={row.id} />
+          <OperatorNoteForm slug={slug} featureId={row.id} initialNotes={notesByFeatureId?.get(row.id)} />
         </div>
       )}
       inline

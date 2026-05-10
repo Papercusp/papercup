@@ -1,11 +1,16 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
 import { Select } from './Select';
+import { useSyncQuery } from '@restart/sync';
 
 const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'] as const;
 type Status = (typeof VALID_STATUSES)[number];
+
+function safeParse(s: string): unknown {
+  try { return JSON.parse(s); } catch { return s; }
+}
 
 interface Feature {
   id: string;
@@ -98,27 +103,37 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
     }
   }, [slug, feature, onClose, onSaved]);
 
-  // Audit history (lazy-loaded when expanded).
+  // Audit history — eager via the cross-harness audit subscription.
+  // Replaces the lazy /audit fetch when the History section was expanded.
   type AuditEntry = { ts: number; field: string; old: unknown; new: unknown; actor: string };
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyRows, setHistoryRows] = useState<AuditEntry[] | null>(null);
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!historyOpen || isCreate || !feature?.id) return;
-    if (historyRows !== null) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await fetch(`/api/harness/${slug}/features/${feature.id}/audit`);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const d = await r.json();
-        if (!cancelled) setHistoryRows(Array.isArray(d?.audit) ? d.audit : []);
-      } catch (e) {
-        if (!cancelled) setHistoryError(String((e as Error).message ?? e));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [historyOpen, isCreate, slug, feature?.id, historyRows]);
+  const [historyError, _setHistoryError] = useState<string | null>(null);
+  const { data: auditRows } = useSyncQuery<{
+    harnessSlug: string;
+    featureId: string;
+    ts: number;
+    field: string;
+    oldValue?: string | null;
+    newValue?: string | null;
+    actor?: string | null;
+  }>({
+    queryName: 'featureAudit.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !isCreate && !!slug,
+  });
+  const historyRows: AuditEntry[] | null = useMemo(() => {
+    if (isCreate || !feature?.id) return null;
+    if (!Array.isArray(auditRows)) return null;
+    return auditRows
+      .filter((r) => r.featureId === feature.id)
+      .map((r) => ({
+        ts: r.ts,
+        field: r.field,
+        old: r.oldValue ? safeParse(r.oldValue) : null,
+        new: r.newValue ? safeParse(r.newValue) : null,
+        actor: r.actor ?? '',
+      }));
+  }, [auditRows, isCreate, feature?.id]);
 
   // Cmd+S save
   useEffect(() => {
@@ -138,13 +153,13 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
       onOpenChange={(o) => { if (!o) onClose(); }}
       title={`Edit feature`}
       srOnlyTitle
-      zIndex={60}
+      zIndex={120}
       contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
     >
         {/* Header */}
         <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong style={{ color: '#e5e7eb' }}>{isCreate ? 'New feature' : `Edit ${feature!.id}`}</strong>
-          <span style={{ color: '#6b7280', fontSize: '0.75rem', fontFamily: 'monospace' }}>.harness/features.json</span>
+          <span style={{ color: '#6b7280', fontSize: '0.75rem', fontFamily: 'monospace' }} title="Features live in Postgres (harness_features); edits dispatch via /api/harness/<slug>/features">harness_features</span>
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
             {toast && (
               <span style={{ color: /failed/i.test(toast) ? '#f87171' : '#10b981', fontSize: '0.8rem' }}>{toast}</span>

@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Send, Archive, Loader2, AlertTriangle, Coins, RotateCcw } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './theme';
 import { Tooltip } from './Tooltip';
+import { useSyncQuery } from '@restart/sync';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
@@ -70,7 +71,51 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
+  // Eager via Zero — subscribe to all chats for this harness; pick out
+  // the one matching chatId. Replaces the per-chatId REST fetch so the
+  // panel renders the transcript same-frame on mount.
+  const { data: zeroChatRows } = useSyncQuery<{
+    harnessSlug: string;
+    id: string;
+    role: string;
+    featureId?: string | null;
+    title?: string | null;
+    transcript: unknown;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    totalCostUsdCents: number;
+    createdAt: number;
+    updatedAt: number;
+    archivedAt?: number | null;
+  }>({
+    queryName: 'agentChats.byHarness',
+    args: { harnessSlug: slug, limit: 200 },
+    enabled: !!slug,
+  });
+
   const loadChat = useCallback(async () => {
+    // Try the cached subscription first.
+    const row = (zeroChatRows ?? []).find((r) => r.id === chatId);
+    if (row) {
+      setChat({
+        id: row.id,
+        role: row.role,
+        feature_id: row.featureId ?? null,
+        title: row.title ?? null,
+        transcript: (row.transcript ?? []) as TranscriptTurn[],
+        total_input_tokens: row.totalInputTokens,
+        total_output_tokens: row.totalOutputTokens,
+        total_cost_usd_cents: row.totalCostUsdCents,
+        created_at: new Date(row.createdAt).toISOString(),
+        updated_at: new Date(row.updatedAt).toISOString(),
+        archived_at: row.archivedAt ? new Date(row.archivedAt).toISOString() : null,
+      } as unknown as ChatRow);
+      setLoadError(null);
+      return;
+    }
+    // Fall back to REST when the row hasn't been mirrored to consolidated
+    // (e.g. chat created in the legacy per-harness table without a
+    // consolidated dual-write yet).
     try {
       const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/agent-chats/${encodeURIComponent(chatId)}`);
       if (!r.ok) {
@@ -83,7 +128,7 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
     } catch (err) {
       setLoadError(`load failed: ${(err as Error).message}`);
     }
-  }, [slug, chatId]);
+  }, [slug, chatId, zeroChatRows]);
 
   useEffect(() => { void loadChat(); }, [loadChat]);
 

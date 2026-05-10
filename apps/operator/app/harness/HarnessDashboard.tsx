@@ -14,27 +14,32 @@ import { Modal } from './Modal';
 import { Tooltip } from './Tooltip';
 import { Checkbox } from './Checkbox';
 import { Select } from './Select';
+import HarnessSettingsPanel from './HarnessSettingsPanel';
+import AgentThinkingPopover from './AgentThinkingPopover';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Activity as ReactActivity, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
+import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { useForm } from 'react-hook-form';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { makeAjvResolver } from '@/lib/forms';
 import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { useQuery } from '@tanstack/react-query';
 import {
-  slugToFeaturesKey,
-  slugToAgentRunsKey,
+
   type FeatureRow,
-  type AgentRunRow,
+  type AgentRunConsolidatedRow,
 } from '@restart/zero-harness';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { useParams, useSearchParams } from 'next/navigation';
 import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 'nuqs';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
+import { notify } from '@/lib/notify';
 import { Group as PanelGroup, Panel as RPanel, Separator } from 'react-resizable-panels';
 import {
   Activity, Play, Square, SlidersHorizontal, RotateCcw, RefreshCw,
@@ -83,7 +88,7 @@ function openInVSCode(projectPath: string) {
   window.open(url, VSCODE_WINDOW_NAME);
 }
 
-type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'insights' | 'config' | `plugin:${string}`;
+type MainPanel = 'brainstorm' | 'proposals' | 'git' | 'dashboard' | 'summary' | 'insights' | 'config' | 'settings' | `plugin:${string}`;
 
 import { Panel } from '@restart/ui-primitives';
 import { StatCard } from '@restart/ui-primitives';
@@ -104,13 +109,16 @@ import { slugSchema, semverSchema, fieldError } from '../../lib/validators';
 import PluginReactTab from '../../lib/PluginReactTab';
 import FeatureList from './FeatureList';
 import FeaturePeekPanel from './FeaturePeekPanel';
-import PulseFeed, { usePulse } from './PulseFeed';
 import InsightsPanel from './InsightsPanel';
 import TriageQueue from './TriageQueue';
 import ArchitectInbox from './ArchitectInbox';
+import { CollapsedGitRail } from './CollapsedRails';
 import PhaseTabs, { type Phase } from './PhaseTabs';
 import TestsTab from './TestsTab';
-import ProposalsPanel from './ProposalsPanel';
+// Dynamic + sticky-mount (see proposalsEverMounted gating below): defers
+// the proposals JS+CSS chunks until the user first opens that tab, then
+// keeps the component mounted so subsequent tab switches stay instant.
+const ProposalsPanel = dynamic(() => import('./ProposalsPanel'), { ssr: false });
 import HarnessHudOverlay from './HarnessHudOverlay';
 
 /**
@@ -121,30 +129,57 @@ import HarnessHudOverlay from './HarnessHudOverlay';
  * nothing — there's no signal that anything went wrong, and the user
  * has to refresh the page to recover.
  */
+type DynamicWithRetryOptions = {
+  /**
+   * Pre-warm the chunk on window mount. Defaults to true (matches historical
+   * behavior — chunk fetches eagerly so first user click is instant).
+   *
+   * Set to false for cold panels that are NOT visible by default (e.g.
+   * BrainstormFull, GitGraphPanel, SnapshotsPanel). When false, the chunk
+   * — including its CSS — only fetches when the component is first
+   * rendered, saving bytes/parse on cold dashboard load. The first user
+   * interaction with that panel pays a one-time fetch cost.
+   */
+  prewarm?: boolean;
+};
 function dynamicWithRetry<T extends { default: React.ComponentType<any> }>(
   loader: () => Promise<T>,
   label: string,
+  options?: DynamicWithRetryOptions,
 ): React.ComponentType<React.ComponentProps<T['default']>>;
 function dynamicWithRetry<P>(
   loader: () => Promise<any>,
   label: string,
   pickComponent: (mod: any) => React.ComponentType<P>,
+  options?: DynamicWithRetryOptions,
 ): React.ComponentType<P>;
 function dynamicWithRetry(
   loader: () => Promise<any>,
   label: string,
-  pickComponent?: (mod: any) => React.ComponentType<any>,
+  pickComponentOrOptions?: ((mod: any) => React.ComponentType<any>) | DynamicWithRetryOptions,
+  maybeOptions?: DynamicWithRetryOptions,
 ): React.ComponentType<any> {
+  const pickComponent =
+    typeof pickComponentOrOptions === 'function' ? pickComponentOrOptions : undefined;
+  const options =
+    typeof pickComponentOrOptions === 'function' ? maybeOptions : pickComponentOrOptions;
+  const prewarm = options?.prewarm ?? true;
   const importer = async () => {
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        // Race the import against an 8s timeout — if the chunk fetches but the
+        // Race the import against a 30s timeout — if the chunk fetches but the
         // module's top-level evaluation hangs (e.g. an internal dep is stalled),
         // we want to fall through to retry/fallback instead of spinning forever.
+        // 30s (was 8s) tolerates Turbopack dev rebuilds: when a sibling file is
+        // being edited concurrently (paperclip agents, hot-saves), Fast Refresh
+        // can hold the dynamic chunk for 5–10s per cycle, and 8s was tripping
+        // even on healthy reloads. 30s is well past any normal recompile and
+        // still short enough to bail before the user gives up watching a
+        // genuinely-stuck import.
         const mod = await Promise.race([
           loader(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error('import timeout')), 8000)),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('import timeout')), 30000)),
         ]) as any;
         return pickComponent ? pickComponent(mod) : (mod.default ?? mod);
       } catch (e) {
@@ -169,17 +204,64 @@ function dynamicWithRetry(
   };
   // Pre-warm: kick off the import immediately so Turbopack compiles the chunk
   // before the user clicks the tab. No-op on error (retry happens on render).
-  if (typeof window !== 'undefined') void loader().catch(() => {});
+  // Opt out via { prewarm: false } for cold panels — see DynamicWithRetryOptions.
+  if (prewarm && typeof window !== 'undefined') void loader().catch(() => {});
   return dynamic(importer, {
     ssr: false,
-    loading: () => null,
+    // Show a small placeholder while the chunk is fetching/compiling.
+    // `loading: () => null` rendered an empty container, which on
+    // dynamically-mounted modals (FeatureEditor especially) made the
+    // modal look like nothing happened — the user clicked "edit", a
+    // 0×0 wrapper div appeared, and they thought the button was dead.
+    // A visible "loading" stub at least confirms the click registered.
+    loading: () => (
+      <div
+        role="status"
+        aria-live="polite"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          padding: '14px 18px',
+          fontSize: 13,
+          color: 'var(--fg-mute, #94a3b8)',
+        }}
+      >
+        <span
+          aria-hidden="true"
+          style={{
+            display: 'inline-block',
+            width: 12,
+            height: 12,
+            borderRadius: '50%',
+            border: '2px solid currentColor',
+            borderTopColor: 'transparent',
+            animation: 'pc-spin 800ms linear infinite',
+          }}
+        />
+        <span>Loading {label}…</span>
+      </div>
+    ),
   }) as unknown as React.ComponentType<any>;
 }
 
+// PiTerminalsDock is normally mounted inside an iframe pointing at the
+// operator's /pi route (via the @papercupai/pi-coding plugin). In Next 16
+// dev that iframe gets stuck on the Mission Control loading skeleton —
+// hydration never completes inside the same-origin sub-frame. Since
+// /pi is operator-internal anyway, render it inline when the active
+// plugin tab is pi-coding's pi.
+const InlinePiDock = dynamicWithRetry(() => import('./PiTerminalsDock'), 'PiTerminalsDock');
 const SpecEditor = dynamicWithRetry(() => import('./SpecEditor'), 'SpecEditor');
 const ManifestSpecEditor = dynamicWithRetry(() => import('./ManifestSpecEditor'), 'ManifestSpecEditor');
 const EscalationBanner = dynamicWithRetry(() => import('./EscalationBanner'), 'EscalationBanner');
 const CheckpointBanner = dynamicWithRetry(() => import('./CheckpointBanner'), 'CheckpointBanner');
+const PlanReviewBanner = dynamicWithRetry(() => import('./PlanReviewBanner'), 'PlanReviewBanner');
+// NOTE: prewarm:false would be a no-op here — the @restart/git-graph chunk
+// is also pulled in by the static `preloadGitLog` import at the top of this
+// file and by CollapsedRails.tsx, so it's in the dashboard's eager graph
+// regardless. Deferring would require splitting the package (preload helpers
+// out of the panel module) — separate task.
 const GitGraphPanelLib = dynamicWithRetry(
   () => import('@restart/git-graph').then((m) => ({ default: m.GitGraphPanel })),
   'GitGraphPanel',
@@ -198,26 +280,28 @@ const BrainstormFull = dynamicWithRetry<{ slug: string }>(
   'Brainstorm',
   (m: any) => m.BrainstormFull,
 );
-const HooksPanel = dynamicWithRetry(() => import('./HooksPanel'), 'HooksPanel');
-const FeatureEditor = dynamicWithRetry(() => import('./FeatureEditor'), 'FeatureEditor');
-const InterventionPanel = dynamicWithRetry(() => import('./InterventionPanel'), 'InterventionPanel');
-const UsagePanel = dynamicWithRetry(() => import('./UsagePanel'), 'UsagePanel');
-const SnapshotsPanel = dynamicWithRetry(() => import('./SnapshotsPanel'), 'SnapshotsPanel');
-const ScreenshotsPanel = dynamicWithRetry(() => import('./ScreenshotsPanel'), 'ScreenshotsPanel');
-const TemplatesModal = dynamicWithRetry(() => import('./TemplatesModal'), 'TemplatesModal');
-const FeatureDiffModal = dynamicWithRetry(() => import('./FeatureDiffModal'), 'FeatureDiffModal');
-const ArchivesPanel = dynamicWithRetry(() => import('./ArchivesPanel'), 'ArchivesPanel');
-const DecisionsPanel = dynamicWithRetry(() => import('./DecisionsPanel'), 'DecisionsPanel');
+const HooksPanel = dynamicWithRetry(() => import('./HooksPanel'), 'HooksPanel', { prewarm: false });
+const FeatureEditor = dynamicWithRetry(() => import('./FeatureEditor'), 'FeatureEditor', { prewarm: false });
+const InterventionPanel = dynamicWithRetry(() => import('./InterventionPanel'), 'InterventionPanel', { prewarm: false });
+const UsagePanel = dynamicWithRetry(() => import('./UsagePanel'), 'UsagePanel', { prewarm: false });
+const SnapshotsPanel = dynamicWithRetry(() => import('./SnapshotsPanel'), 'SnapshotsPanel', { prewarm: false });
+const ScreenshotsPanel = dynamicWithRetry(() => import('./ScreenshotsPanel'), 'ScreenshotsPanel', { prewarm: false });
+const TemplatesModal = dynamicWithRetry(() => import('./TemplatesModal'), 'TemplatesModal', { prewarm: false });
+const FeatureDiffModal = dynamicWithRetry(() => import('./FeatureDiffModal'), 'FeatureDiffModal', { prewarm: false });
+const ArchivesPanel = dynamicWithRetry(() => import('./ArchivesPanel'), 'ArchivesPanel', { prewarm: false });
+const DecisionsPanel = dynamicWithRetry(() => import('./DecisionsPanel'), 'DecisionsPanel', { prewarm: false });
+const IntelPanel = dynamicWithRetry(() => import('./IntelPanel'), 'IntelPanel', { prewarm: false });
 const HealthBadge = dynamicWithRetry(() => import('./HealthBadge'), 'HealthBadge');
 const SmokeTestPanel = dynamicWithRetry(() => import('./SmokeTestPanel'), 'SmokeTestPanel');
 const IdentityPanel = dynamicWithRetry(() => import('./IdentityPanel'), 'IdentityPanel');
-const PlanReviewBanner = dynamicWithRetry(() => import('./PlanReviewBanner'), 'PlanReviewBanner');
 const SummaryPanel = dynamicWithRetry(() => import('./SummaryPanel'), 'SummaryPanel');
 const ExpertsPanel = dynamicWithRetry(() => import('./ExpertsPanel'), 'ExpertsPanel');
 
 // ─── Types ─────────────────────────────────────────────────────────────
 
-type FeatureStatus = 'todo' | 'in_progress' | 'validating' | 'failing' | 'passed' | 'blocked';
+// FeatureStatus comes from @restart/ui-primitives so the canonical
+// list (rendered by StatusPill) and the dashboard's typing stay in sync.
+import type { FeatureStatus } from '@restart/ui-primitives';
 
 interface ProjectEntry {
   slug: string;
@@ -284,7 +368,6 @@ interface AgentRun {
 // ─── Helpers ───────────────────────────────────────────────────────────
 
 const STATUS_ORDER: FeatureStatus[] = ['in_progress', 'validating', 'failing', 'todo', 'blocked', 'passed'];
-const FOCUS_ORDER: FeatureStatus[] = ['failing', 'blocked', 'in_progress', 'validating', 'todo', 'passed'];
 const STATUS_LABELS: Record<FeatureStatus, string> = {
   todo: 'todo',
   in_progress: 'running',
@@ -293,18 +376,6 @@ const STATUS_LABELS: Record<FeatureStatus, string> = {
   passed: 'passed',
   blocked: 'blocked',
 };
-
-function focusVerb(status: FeatureStatus): string {
-  switch (status) {
-    case 'failing': return 'Needs recovery';
-    case 'blocked': return 'Needs decision';
-    case 'in_progress': return 'Watch current run';
-    case 'validating': return 'Await validation';
-    case 'todo': return 'Next up';
-    case 'passed': return 'Recently passed';
-    default: return 'Focus';
-  }
-}
 
 const EMPTY_FEATURES: Feature[] = [];
 
@@ -384,6 +455,14 @@ function CollapseTopSectionPortalButton({ direction, onClick, expanded }: {
   );
 }
 
+function mainTabAccentClassForPlugin(tabId: string, label: string) {
+  const key = `${tabId} ${label}`.toLowerCase();
+  if (key.includes('docs') || key.includes('fumadocs')) return 'h-tab--docs';
+  if (key === 'pi' || key.includes('plugin:pi') || /\bpi\b/.test(key)) return 'h-tab--pi';
+  if (key.includes('vscode') || key.includes('vs code') || key.includes('code-server')) return 'h-tab--vscode';
+  return 'h-tab--plugin';
+}
+
 /**
  * Plugin tab trigger.
  */
@@ -398,7 +477,7 @@ function PluginTabTrigger({ pluginSlug, pluginVersion, tabId, label, icon, activ
 }) {
   return (
     <Tooltip label={`${label} — from ${pluginSlug}@${pluginVersion}`}>
-      <Tabs.Trigger value={`plugin:${tabId}`} className="h-tab" disabled={!activeSlug}>
+      <Tabs.Trigger value={`plugin:${tabId}`} className={`h-tab ${mainTabAccentClassForPlugin(tabId, label)}`} disabled={!activeSlug}>
         <PluginIcon name={icon} /> {label}
       </Tabs.Trigger>
     </Tooltip>
@@ -421,8 +500,9 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
     return () => clearTimeout(t);
   }, [url]);
   return (
-    <div style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+    <div className="h-plugin-embed-shell" style={{ flex: 1, position: 'relative', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
       <iframe
+        className="h-plugin-embed-frame"
         src={url}
         title={title}
         onLoad={() => setLoaded(true)}
@@ -430,6 +510,7 @@ function PluginIframeWithLoader({ url, title }: { url: string; title: string }) 
       />
       {!loaded ? (
         <div
+          className="h-plugin-embed-loading"
           style={{
             position: 'absolute', inset: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -910,7 +991,7 @@ function ManifestOrLegacySpecEditor({ slug, projectPath, alive, onClose }: {
  * -ready and can be edited at /installed/templates/<slug>/edit (page TBD).
  *
  * Distinct from SaveSnapshotButton — templates capture the recipe, not the
- * in-flight state. No DB rows, no agent transcripts, no features.json.
+ * in-flight state. No harness_features rows, no agent transcripts, no logs.
  */
 function SaveTemplateButton({ slug }: { slug: string }) {
   const [open, setOpen] = useState(false);
@@ -961,7 +1042,7 @@ function SaveTemplateButton({ slug }: { slug: string }) {
 
   return (
     <>
-      <button className="h-btn ghost" onClick={() => setOpen(true)} disabled={busy}>
+      <button className="h-btn ghost h-save-template-btn" onClick={() => setOpen(true)} disabled={busy}>
         <Layers size={13} /> {busy ? 'saving…' : 'save template'}
       </button>
       <Modal
@@ -1107,7 +1188,7 @@ function SaveSnapshotButton({ slug }: { slug: string }) {
   return (
     <>
       <Tooltip label="Save current harness state as a tarball">
-        <button type="button" className="h-btn ghost" onClick={() => setOpen(true)} disabled={busy}>
+        <button type="button" className="h-btn ghost h-save-snapshot-btn" onClick={() => setOpen(true)} disabled={busy}>
           {busy ? '…' : 'save snapshot'}
         </button>
       </Tooltip>
@@ -1288,10 +1369,6 @@ function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs, pluginsMi
 
   return (
     <div className="h-quick-action-row" aria-label="Plugin actions">
-      <div className="h-quick-action-copy">
-        <span>Plugin actions</span>
-        <strong>Buttons contributed by enabled plugins.</strong>
-      </div>
       <div className="h-quick-action-buttons">
         {actions.map((a) => {
           const key = `${a.pluginDirSlug}/${a.name}`;
@@ -1326,6 +1403,142 @@ function HarnessQuickActionRow({ harnessSlug, installed, enabledSlugs, pluginsMi
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/**
+ * "What's running right now" bar — one pill per in-flight agent_runs row
+ * (where `running=true`). Visible above the plugin-actions row whenever
+ * the harness is alive, hidden when no agents are active. Pills shrink
+ * proportionally if many lanes run in parallel.
+ */
+
+function ActiveAgentsBar({ slug, phase, runs, alive, onPillClick, onStart, onStop }: {
+  slug: string;
+  phase: string;
+  runs: Array<{ runId: string; role: string; featureId?: string | null; ts: number }>;
+  alive: boolean;
+  onPillClick?: (runId: string) => void;
+  onStart?: () => void;
+  onStop?: () => void;
+}) {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    if (runs.length === 0) return;
+    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [runs.length]);
+
+  // Hover popover state.
+  //
+  // Open after a 250ms hover (avoids flicker when sweeping across pills).
+  // Stay open while the cursor is over EITHER the pill OR the popover.
+  // Close 150ms after both go inactive (gives cursor time to transit
+  // pill → popover without a flash close).
+  const [hovered, setHovered] = useState<
+    | { run: { runId: string; role: string; featureId?: string | null }; rect: DOMRect }
+    | null
+  >(null);
+  const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelClose = () => {
+    if (closeTimer.current) { clearTimeout(closeTimer.current); closeTimer.current = null; }
+  };
+  const scheduleClose = () => {
+    cancelClose();
+    closeTimer.current = setTimeout(() => setHovered(null), 150);
+  };
+  const onPillEnter = (
+    run: { runId: string; role: string; featureId?: string | null },
+    el: HTMLElement,
+  ) => {
+    cancelClose();
+    if (enterTimer.current) clearTimeout(enterTimer.current);
+    const rect = el.getBoundingClientRect();
+    enterTimer.current = setTimeout(() => setHovered({ run, rect }), 250);
+  };
+  const onPillLeave = () => {
+    if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
+    scheduleClose();
+  };
+
+  const fmt = (sec: number): string => {
+    const s = Math.max(0, sec);
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return m > 0 ? `${m}:${String(r).padStart(2, '0')}` : `0:${String(r).padStart(2, '0')}`;
+  };
+
+  const isIdle = runs.length === 0;
+  const headline = !alive
+    ? 'Harness stopped'
+    : isIdle
+      ? 'No agents in flight'
+      : runs.length === 1 ? '1 agent in flight' : `${runs.length} agents in flight`;
+  const subtitle = !alive ? null : isIdle ? 'Orchestrator deciding next step…' : null;
+  const rowStateClass = !alive ? ' is-stopped' : ' is-running';
+
+  return (
+    <div className={`h-active-agents-row${isIdle || !alive ? ' is-idle' : ''}${rowStateClass}`} aria-label="Active agents">
+      {alive && onStop && (
+        <button type="button" className="h-active-agents-stop" onClick={onStop}>
+          STOP
+        </button>
+      )}
+      <div className="h-active-agents-copy">
+        {alive && <span>Now running</span>}
+        <strong>{headline}</strong>
+      </div>
+      <div className="h-active-agents-pills" data-count={runs.length}>
+        {runs.map((r) => {
+          const dur = now - r.ts;
+          const label = `${r.role}${r.featureId ? ` · ${r.featureId}` : ''} · ${fmt(dur)}`;
+          return (
+            <button
+              key={r.runId}
+              type="button"
+              className="h-active-agent-pill"
+              title={onPillClick
+                ? `${r.role}${r.featureId ? ` · ${r.featureId}` : ''} · ${fmt(dur)} — hover for live thinking, click for full timeline`
+                : `${r.role} run ${r.runId} · ${fmt(dur)} elapsed`}
+              onClick={onPillClick ? () => onPillClick(r.runId) : undefined}
+              onMouseEnter={(e) => onPillEnter(
+                { runId: r.runId, role: r.role, featureId: r.featureId },
+                e.currentTarget,
+              )}
+              onMouseLeave={onPillLeave}
+              style={onPillClick ? { cursor: 'pointer' } : undefined}
+            >
+              <span className="h-active-agent-pill-dot" aria-hidden="true" />
+              <span className="h-active-agent-pill-label">{label}</span>
+            </button>
+          );
+        })}
+        {!alive && onStart && (
+          <button type="button" className="h-active-agents-idle h-active-agents-start" onClick={onStart}>
+            Start The Harness
+          </button>
+        )}
+        {alive && isIdle && subtitle && (
+          <span className="h-active-agents-idle">{subtitle}</span>
+        )}
+      </div>
+      {hovered && (
+        <AgentThinkingPopover
+          slug={slug}
+          phase={phase}
+          runId={hovered.run.runId}
+          role={hovered.run.role}
+          anchorRect={hovered.rect}
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+          onOpenInspector={() => {
+            setHovered(null);
+            onPillClick?.(hovered.run.runId);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1711,18 +1924,51 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
     mode: 'onSubmit',
   });
 
-  // Prefetch config eagerly on mount.
+  // Eager via Zero — pluginConfigs.byHarness returns all rows for this
+  // harness; filter for the single (harnessSlug, pluginSlug) match.
+  // Avoid pluginConfigs.byKey because it uses .one() — per memory
+  // feedback_zero_one_shape_mismatch that can return undefined even
+  // when upstream has rows. byHarness + client-side find is robust.
+  const pluginConfigEditorWs = useWorkspaceId();
+  const { data: pluginConfigEditorRows } = useSyncQuery<{
+    harnessSlug: string;
+    pluginSlug: string;
+    config: Record<string, unknown> | null;
+  }>({
+    queryName: 'pluginConfigs.byHarness',
+    args: { harnessSlug, workspaceId: pluginConfigEditorWs },
+    enabled: !!harnessSlug && !!dirSlug && !!pluginConfigEditorWs,
+  });
   useEffect(() => {
     if (loaded !== null) return;
-    fetch(`/api/plugins/config?harness=${encodeURIComponent(harnessSlug)}&plugin=${encodeURIComponent(dirSlug)}`, { cache: 'no-store' })
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((d) => {
-        const cfg = (d?.config ?? {}) as Record<string, unknown>;
-        setLoaded(cfg);
-        rhfReset(cfg);
-        setDraftJson(JSON.stringify(cfg, null, 2));
-      })
-      .catch((e) => setServerError(String(e?.message ?? e)));
+    if (!Array.isArray(pluginConfigEditorRows)) return;
+    const row = pluginConfigEditorRows.find((r) => r.pluginSlug === dirSlug);
+    if (!row) return;
+    const cfg = (row.config ?? {}) as Record<string, unknown>;
+    setLoaded(cfg);
+    rhfReset(cfg);
+    setDraftJson(JSON.stringify(cfg, null, 2));
+  }, [loaded, pluginConfigEditorRows, dirSlug, rhfReset]);
+
+  // REST back-stop — fires only if Zero hasn't hydrated within ~600ms,
+  // covering harnesses that pre-date the plugin_configs mirror.
+  useEffect(() => {
+    if (loaded !== null) return;
+    let cancelled = false;
+    const t = setTimeout(() => {
+      if (cancelled || loaded !== null) return;
+      fetch(`/api/plugins/config?harness=${encodeURIComponent(harnessSlug)}&plugin=${encodeURIComponent(dirSlug)}`, { cache: 'no-store' })
+        .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+        .then((d) => {
+          if (cancelled || loaded !== null) return;
+          const cfg = (d?.config ?? {}) as Record<string, unknown>;
+          setLoaded(cfg);
+          rhfReset(cfg);
+          setDraftJson(JSON.stringify(cfg, null, 2));
+        })
+        .catch((e) => { if (!cancelled) setServerError(String(e?.message ?? e)); });
+    }, 600);
+    return () => { cancelled = true; clearTimeout(t); };
   }, [loaded, harnessSlug, dirSlug, rhfReset]);
 
   function resetToLoaded() {
@@ -2045,6 +2291,8 @@ const tagStyle: React.CSSProperties = {
 export default function HarnessDashboard() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const reducedMotion = useReducedMotion() ?? false;
+  const visualEffectsEnabled = useFancyEffectsEnabled();
+  const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   const [activeSlug, setActiveSlug] = useState<string | null>(null);
 
@@ -2069,17 +2317,31 @@ export default function HarnessDashboard() {
   // "is this plugin enabled here?". Independent of which plugins contribute
   // dashboard tabs (action-only plugins like @papercupai/jira-sync would
   // otherwise look un-enabled).
-  const [enabledByHarness, setEnabledByHarness] = useState<Record<string, string[]>>({});
-  useEffect(() => {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 30000);
-    fetch('/api/plugins/enabled', { cache: 'no-store', signal: ac.signal })
-      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then((d) => setEnabledByHarness(d?.enabled ?? {}))
-      .catch(() => { /* best-effort; popover still works without this */ })
-      .finally(() => clearTimeout(t));
-    return () => { clearTimeout(t); ac.abort(); };
-  }, [installedPluginsRefreshKey]);
+  // Eager via Zero — pluginEnables.byWorkspace returns rows of
+  // (harnessSlug, pluginSlug, enabled). Derive the harness → slugs map
+  // client-side. Replaces the lazy /plugins/enabled fetch on dashboard
+  // mount; the popover's enabled-list is hot before the user opens it.
+  // Inline-imported workspace id so this hook can run before the
+  // activeWorkspaceParam declaration further down.
+  const __pluginEnablesWs = useWorkspaceId();
+  const { data: pluginEnableRows } = useSyncQuery<{
+    harnessSlug: string;
+    pluginSlug: string;
+    enabled: boolean;
+  }>({
+    queryName: 'pluginEnables.byWorkspace',
+    args: { workspaceId: __pluginEnablesWs },
+    enabled: !!__pluginEnablesWs,
+  });
+  const enabledByHarness = useMemo<Record<string, string[]>>(() => {
+    const m: Record<string, string[]> = {};
+    if (!Array.isArray(pluginEnableRows)) return m;
+    for (const r of pluginEnableRows) {
+      if (!r.enabled) continue;
+      (m[r.harnessSlug] ??= []).push(r.pluginSlug);
+    }
+    return m;
+  }, [pluginEnableRows]);
   useEffect(() => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), 30000);
@@ -2110,6 +2372,7 @@ export default function HarnessDashboard() {
     componentRoot: string | null;
     componentId: string | null;
     replaces: string[];
+    embedMode: 'iframe' | 'inline-dock' | null;
   }>>([]);
   useEffect(() => {
     if (!activeSlug) {
@@ -2134,6 +2397,7 @@ export default function HarnessDashboard() {
             componentRoot?: string;
             componentId?: string;
             replaces?: string[];
+            embedMode?: 'iframe' | 'inline-dock';
           }>;
         };
         if (cancelled) return;
@@ -2154,6 +2418,7 @@ export default function HarnessDashboard() {
             componentRoot: t.componentRoot ?? null,
             componentId: t.componentId ?? null,
             replaces: Array.isArray(t.replaces) ? t.replaces : [],
+            embedMode: (t.embedMode === 'iframe' || t.embedMode === 'inline-dock') ? t.embedMode : null,
           }));
         setPluginTabs(tabs);
       } catch {
@@ -2168,6 +2433,45 @@ export default function HarnessDashboard() {
   // Other plugins that still use the older `replaces: [<id>]` field are
   // honored by the per-plugin enable flow — there are no built-in tab ids
   // left to suppress at this layer.
+  //
+  // Deep-link compatibility: ?panel=pi (and docs/vscode) used to be valid
+  // built-in tab ids. Now they're plugin-mounted, so the literal `pi` value
+  // has no rendering branch. Resolve it to the matching `plugin:<tabId>`
+  // once the plugin tabs have loaded. Same shim covers callers that still
+  // call `setActivePanel('pi')` directly (FeatureList chat button, etc).
+  const [activePanel, setActivePanel] = useQueryState('panel', parseAsString.withDefault('dashboard'));
+  // Plugin tab replacement shim uses activePanel, so declare it before the effect.
+  const LEGACY_ALIASES = useMemo(() => ['pi', 'docs', 'vscode'], []);
+  useEffect(() => {
+    if (!LEGACY_ALIASES.includes(activePanel)) return;
+    if (pluginTabs.length === 0) return;
+    const replacement = pluginTabs.find((pt) => pt.replaces.includes(activePanel));
+    if (replacement) setActivePanel(`plugin:${replacement.tabId}`);
+  }, [activePanel, pluginTabs, setActivePanel, LEGACY_ALIASES]);
+  // Synchronous resolved-panel value: if activePanel is a legacy alias
+  // ('pi', 'docs', 'vscode') and we already know the matching plugin tab,
+  // render as if URL had `plugin:<tabId>` directly. Eliminates the blank
+  // flash when:
+  //   - the user clicks a "switch to Pi" button in the FeatureList
+  //     (chat button — issue #3 "reloads whole page"), OR
+  //   - the user deep-links via ?panel=pi (issue #4).
+  // The URL still updates to the canonical `plugin:<tabId>` form via
+  // the effect above, but the visible panel doesn't have to wait for
+  // that round-trip.
+  const resolvedPanel = useMemo(() => {
+    if (LEGACY_ALIASES.includes(activePanel) && pluginTabs.length > 0) {
+      const replacement = pluginTabs.find((pt) => pt.replaces.includes(activePanel));
+      if (replacement) return `plugin:${replacement.tabId}`;
+    }
+    return activePanel;
+  }, [activePanel, pluginTabs, LEGACY_ALIASES]);
+  // Sticky mount: defer ProposalsPanel's first mount (and its CSS chunk)
+  // until the user first opens that tab. After first visit, remains
+  // mounted to preserve the "instant tab switch" guarantee.
+  const [proposalsEverMounted, setProposalsEverMounted] = useState(false);
+  useEffect(() => {
+    if (resolvedPanel === 'proposals' && !proposalsEverMounted) setProposalsEverMounted(true);
+  }, [resolvedPanel, proposalsEverMounted]);
   const [status, setStatus] = useState<Status | null>(null);
   const [agents, setAgents] = useState<AgentRun[]>([]);
   const [issues, setIssues] = useState<string>('');
@@ -2181,14 +2485,16 @@ export default function HarnessDashboard() {
   const agentPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [peekFeature, setPeekFeature] = useState<Feature | null>(null);
-  // Left sidebar defaults to 'inbox'; user can flip to git graph via toggle.
-  const [leftPane, setLeftPane] = useQueryState(
-    'left',
-    parseAsStringEnum<'inbox' | 'git'>(['inbox', 'git']).withDefault('inbox'),
-  );
   const [activePhase, setActivePhase] = useQueryState(
     'phase',
     parseAsStringEnum<Phase>(['staging', 'testing', 'production']).withDefault('staging'),
+  );
+  // Dashboard sidebar parent panel collapse — when true, only the
+  // CollapsedGitRail (40px) shows; click it to expand back to the
+  // full RPanel + git subpanel.
+  const [gitCollapsed, setGitCollapsed] = useQueryState(
+    'gitCollapsed',
+    parseAsBoolean.withDefault(false),
   );
   const [reviewCount, setReviewCount] = useState(0);
   const [showTriage, setShowTriage] = useQueryState('triage', parseAsBoolean.withDefault(false));
@@ -2202,11 +2508,35 @@ export default function HarnessDashboard() {
   const [showIdentity, setShowIdentity] = useQueryState('identity', parseAsBoolean.withDefault(false));
   const [showTemplates, setShowTemplates] = useQueryState('templates', parseAsBoolean.withDefault(false));
   const [showArchives, setShowArchives] = useQueryState('archives', parseAsBoolean.withDefault(false));
+  const [showIntel, setShowIntel] = useQueryState('intel', parseAsBoolean.withDefault(false));
   const [diffFeatureId, setDiffFeatureId] = useQueryState('diff', parseAsString);
   const [editingFeature, setEditingFeature] = useState<Feature | null | 'new'>(null);
+  // Memoized handler for FeatureList's onEdit prop — without this, every
+  // parent render creates a new arrow, invalidating ListView's `columns`
+  // useMemo (which has onEdit in its deps) and forcing every virtualized
+  // row to re-render on every keystroke. INP storm fix per diagnostic
+  // 2026-05-06 finding D (247ms INP, 28 long tasks per 3s of clicks).
+  const handleEditFeature = useCallback((f: Feature) => setEditingFeature(f), []);
+  // Stable handler refs for FeatureList — without these the inline arrows
+  // would create new function references on every dashboard render and
+  // defeat React.memo on FeatureList. setActivePanel from useQueryState
+  // is a stable ref so the deps list is empty.
+  const handleSelectFeature = useCallback(
+    (f: Feature) => setPeekFeature(f),
+    [],
+  );
+  const handleSwitchToPi = useCallback(() => setActivePanel('pi'), [setActivePanel]);
+  const handleAddFeature = useCallback(() => setEditingFeature('new'), []);
+  // Stable handler for ArchitectInbox.onFeatureFocus — closes over the latest
+  // status via a ref so the callback identity stays stable across renders
+  // (lets ArchitectInbox's memo short-circuit).
+  const statusRefForFocus = useRef<Status | null>(null);
+  const handleArchitectFocus = useCallback((fid: string) => {
+    const f = statusRefForFocus.current?.features.find((ff) => ff.id === fid);
+    if (f) setPeekFeature(f as Feature);
+  }, []);
   const [lanes, setLanes] = useState<{ lanes: Array<{ pid: number; featureId: string; startedAt: number; elapsedSeconds: number; alive: boolean }>; max: number } | null>(null);
   const [pendingProposals, setPendingProposals] = useState(0);
-  const [activePanel, setActivePanel] = useQueryState('panel', parseAsString.withDefault('dashboard'));
   const [configPane, setConfigPane] = useQueryState('configPane', parseAsString.withDefault('harness'));
   const [topChromeCollapsed, setTopChromeCollapsed] = useQueryState('chromeCollapsed', parseAsBoolean.withDefault(false));
 
@@ -2232,11 +2562,18 @@ export default function HarnessDashboard() {
         const empty = !d.spec || !d.spec.trim();
         setSpecPromptShownFor(activeSlug);
         if (empty) {
-          toast.message(`Define ${activeSlug}'s goal`, {
+          // Use `notify` (not raw `toast`) so the action button is also
+          // captured in the Notification Center history. The `href`
+          // form encodes the destination as a URL — same panel state
+          // setActivePanel/setConfigPane would set, but reachable from
+          // the bell history hours later. The synthetic onClick keeps
+          // the in-session soft-navigation behavior.
+          notify.message(`Define ${activeSlug}'s goal`, {
             description: 'SPEC.md is empty — open Config → Harness → SPEC.md to describe what this project should accomplish.',
             duration: 8000,
             action: {
               label: 'Open Config',
+              href: `/harness?ws=default&slug=${encodeURIComponent(activeSlug)}&panel=config&configPane=harness`,
               onClick: () => {
                 void setActivePanel('config');
                 void setConfigPane('harness');
@@ -2260,61 +2597,71 @@ export default function HarnessDashboard() {
    * its enabled-plugin list changes. Fetches each enabled plugin's
    * config in parallel and intersects against `configSchema.required`.
    */
+  // Eager via Zero — pluginConfigs.byHarness returns one row per
+  // (harnessSlug, pluginSlug) for the workspace. Replaces the lazy
+  // /api/plugins/configs?harness=X&plugins=a,b,c batched round-trip on
+  // every (activeSlug, installedPlugins, enabledByHarness) change.
+  // Plugin enable/disable + config saves push updates same-frame.
+  const { data: pluginConfigRows } = useSyncQuery<{
+    harnessSlug: string;
+    pluginSlug: string;
+    config: Record<string, unknown> | null;
+  }>({
+    queryName: 'pluginConfigs.byHarness',
+    args: { harnessSlug: activeSlug ?? '', workspaceId: __pluginEnablesWs },
+    enabled: !!activeSlug && !!__pluginEnablesWs,
+  });
   useEffect(() => {
     if (!activeSlug || !installedPlugins) return;
     const enabled = enabledByHarness[activeSlug] ?? [];
-    if (enabled.length === 0) {
-      setPluginsMissing({});
-      return;
+    if (enabled.length === 0) { setPluginsMissing({}); return; }
+    type Candidate = {
+      manifestName: string;
+      dirSlug: string;
+      required: string[];
+    };
+    const candidates: Candidate[] = [];
+    for (const slug of enabled) {
+      const manifest = installedPlugins.find((p) => {
+        const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
+        return p.name === slug || dirSlug === slug;
+      });
+      if (!manifest) continue;
+      const schema = (manifest as { configSchema?: { required?: string[]; properties?: Record<string, { default?: unknown }> } }).configSchema;
+      const required = schema?.required ?? [];
+      if (required.length === 0) continue;
+      const dirSlug = manifest.path ? pluginSlugFromPath(manifest.path, manifest.name) : manifest.name;
+      candidates.push({ manifestName: manifest.name, dirSlug, required });
     }
-    let cancelled = false;
-    (async () => {
-      const out: Record<string, string[]> = {};
-      await Promise.all(
-        enabled.map(async (slug) => {
-          const manifest = installedPlugins.find((p) => {
-            const dirSlug = p.path ? pluginSlugFromPath(p.path, p.name) : null;
-            return p.name === slug || dirSlug === slug;
-          });
-          if (!manifest) return;
-          const schema = (manifest as { configSchema?: { required?: string[]; properties?: Record<string, { default?: unknown }> } }).configSchema;
-          const required = schema?.required ?? [];
-          if (required.length === 0) return;
-          const dirSlug = manifest.path ? pluginSlugFromPath(manifest.path, manifest.name) : manifest.name;
-          let cfg: Record<string, unknown> = {};
-          try {
-            const r = await fetch(
-              `/api/plugins/config?harness=${encodeURIComponent(activeSlug)}&plugin=${encodeURIComponent(dirSlug)}`,
-              { cache: 'no-store' },
-            );
-            if (r.ok) {
-              const d = await r.json();
-              cfg = d?.config ?? {};
-            }
-          } catch {
-            // Best effort — leave cfg empty so all required fields show as missing
-          }
-          const missing = required.filter((field) => {
-            const v = cfg[field];
-            // A field with a non-empty user value is fine. A field that's
-            // absent or empty-string IS missing — but a `default` in the
-            // schema doesn't count as user-supplied (defaults render in
-            // the UI as placeholders, not as written values).
-            if (v === undefined || v === null) return true;
-            if (typeof v === 'string' && v.length === 0) return true;
-            return false;
-          });
-          if (missing.length > 0) out[manifest.name] = missing;
-        }),
-      );
-      if (!cancelled) setPluginsMissing(out);
-    })();
-    return () => { cancelled = true; };
-  }, [activeSlug, installedPlugins, enabledByHarness]);
+    const out: Record<string, string[]> = {};
+    if (candidates.length === 0) { setPluginsMissing(out); return; }
+    const configByDirSlug = new Map<string, Record<string, unknown>>();
+    if (Array.isArray(pluginConfigRows)) {
+      for (const r of pluginConfigRows) {
+        configByDirSlug.set(r.pluginSlug, (r.config ?? {}) as Record<string, unknown>);
+      }
+    }
+    for (const c of candidates) {
+      const cfg = configByDirSlug.get(c.dirSlug) ?? {};
+      const missing = c.required.filter((field) => {
+        const v = cfg[field];
+        if (v === undefined || v === null) return true;
+        if (typeof v === 'string' && v.length === 0) return true;
+        return false;
+      });
+      if (missing.length > 0) out[c.manifestName] = missing;
+    }
+    setPluginsMissing(out);
+  }, [activeSlug, installedPlugins, enabledByHarness, pluginConfigRows]);
   const [isCompact, setIsCompact] = useState(false);
   const esRef = useRef<EventSource | null>(null);
   const searchParams = useSearchParams();
-  const projectQueryParam = searchParams?.get('project') ?? null;
+  // Both `?project=<slug>` and `?slug=<slug>` work — `slug` is the
+  // common shorthand most other handlers in the app use (recorders,
+  // toast helpers, plugin routes), so accepting it here lets bookmarks
+  // / direct deep links / `notify` action hrefs survive without a
+  // redirect dance.
+  const projectQueryParam = searchParams?.get('project') ?? searchParams?.get('slug') ?? null;
   // URL path takes precedence over query param + localStorage. When the
   // dashboard is mounted under /harness/<slug>/, that slug is the source
   // of truth — we shouldn't surreptitiously fall back to whatever was
@@ -2381,25 +2728,10 @@ export default function HarnessDashboard() {
     // Warm the dynamic GitGraphPanel chunk so the first left-pane click doesn't pay Turbopack compile cost.
     import('@restart/git-graph').catch(() => {});
 
-    const loadAll = async () => {
-      try {
-        const q = `?phase=${activePhase}`;
-        const [statusRes, agentsRes, issuesRes] = await Promise.all([
-          fetch(`/api/harness/${activeSlug}/status${q}`).then((r) => r.json()),
-          fetch(`/api/harness/${activeSlug}/agents${q}`).then((r) => r.json()),
-          fetch(`/api/harness/${activeSlug}/issues${q}`).then((r) => r.json()),
-        ]);
-        if (statusRes.error) throw new Error(statusRes.error);
-        setStatus(statusRes);
-        setAgents(agentsRes.runs ?? []);
-        setIssues(issuesRes.issues ?? '');
-        // logEvents are populated by the SSE stream below — backfill is
-        // server-side via /log/stream's ?tail=N replay.
-      } catch (e) {
-        toast.error(String(e));
-      }
-    };
-    loadAll();
+    // Initial /status and /agents fetches were here in a Promise.all alongside
+    // /issues — they're now owned by the useQuery hooks above which fire on
+    // mount and refetch every 5s. /issues moved to a Zero subscription on
+    // text-artifacts (above), so the issues.md ribbon is eager + live.
 
     // Subscribe to the structured JSONL stream. Server backfills the last
     // 500 events on connect, then live-tails via fs.watch.
@@ -2433,34 +2765,308 @@ export default function HarnessDashboard() {
     return () => { es.close(); esRef.current = null; };
   }, [activeSlug, activePhase]);
 
+  // Polling: 5 endpoints refetched every 5 s while the dashboard is open.
+  // Replaces a hand-rolled `setInterval` + 5x `fetch().then(setX)` loop.
+  // Wins from going through TanStack Query (already provided by HarnessZeroProvider):
+  //   - dedup with other panels that read the same keys (SummaryPanel,
+  //     CollapsedRails, ArchitectInbox, ProposalsPanel, IssuesList) once
+  //     they migrate to the same keys
+  //   - request abort when the slug changes mid-flight
+  //   - stale-while-revalidate: switching slugs and back doesn't flash empty
+  //   - no overlapping in-flight requests if a previous fetch hasn't returned
+  // Preserves existing setStatus/setAgents/setReviewCount/setLanes/
+  // setPendingProposals state shape so downstream consumers don't change.
+  const enablePoll = !!activeSlug;
+  const phaseKey = activePhase;
+  const activeWorkspaceParam = useWorkspaceId();
+  const slugForPoll = activeSlug ?? '';
+  // /status: still REST-polled for fields the orchestrator doesn't write
+  // (alive, escalated, smokeFail, mission* tokens). The Phase-3 harnessStatus
+  // Zero subscription below pushes iteration + counts + status flag live,
+  // so this poll covers only the slow-moving residual fields. 30s cadence
+  // is the right balance — escalation/smoke-fail are rare events; immediate
+  // updates after launch/resume already trigger a manual setStatus refetch
+  // via the inline `fetch('/api/harness/<slug>/status?...')` calls in
+  // event handlers below.
+  const harnessStatusQuery = useQuery({
+    queryKey: ['harness', slugForPoll, 'status', phaseKey],
+    queryFn: ({ signal }) => fetch(`/api/harness/${slugForPoll}/status?phase=${phaseKey}`, { signal }).then((r) => r.json()),
+    enabled: enablePoll,
+    refetchInterval: 30000,
+    staleTime: 15000,
+  });
+  // Eager subscription to text-artifacts (issues.md, memory/*, prompts/*,
+  // plan-review.md, etc). Replaces the lazy `/issues?phase=` fetch that
+  // ran on mount — `issues` ribbon now hydrates same-frame.
+  const { data: zeroTextArtifactRows } = useSyncQuery<{
+    harnessSlug: string;
+    relPath: string;
+    content: string;
+    updatedAt: number;
+  }>({
+    queryName: 'harnessTextArtifact.byHarness',
+    args: activeSlug ? { harnessSlug: activeSlug } : undefined,
+    enabled: !!activeSlug,
+  });
   useEffect(() => {
-    if (!activeSlug) return;
-    const q = `?phase=${activePhase}`;
-    const t = setInterval(() => {
-      fetch(`/api/harness/${activeSlug}/status${q}`).then((r) => r.json()).then(setStatus).catch(() => {});
-      fetch(`/api/harness/${activeSlug}/agents${q}`).then((r) => r.json()).then((d) => setAgents(d.runs ?? [])).catch(() => {});
-      fetch(`/api/harness/${activeSlug}/reviews${q}`).then((r) => r.json()).then((d) => setReviewCount((d.reviews ?? []).length)).catch(() => {});
-      fetch(`/api/harness/${activeSlug}/lanes${q}`).then((r) => r.json()).then(setLanes).catch(() => {});
-      fetch(`/api/harness/${activeSlug}/proposals`).then((r) => r.json()).then((d) => {
-        const pending = (d.proposals ?? []).filter((p: any) => p.status === 'pending').length;
-        setPendingProposals(pending);
-      }).catch(() => {});
-    }, 5000);
-    return () => clearInterval(t);
-  }, [activeSlug, activePhase]);
+    if (!Array.isArray(zeroTextArtifactRows)) return;
+    const issuesRow = zeroTextArtifactRows.find((r) => r.relPath === 'issues.md');
+    setIssues(issuesRow?.content ?? '');
+  }, [zeroTextArtifactRows]);
+
+  // Eager subscription to per-feature operator notes. Replaces the lazy
+  // /features/<id>/notes fetch in OperatorNoteForm and FeaturePeekPanel —
+  // clicking "steer" or opening the side panel now shows existing notes
+  // same-frame instead of after a round trip.
+  const { data: zeroFeatureNotesRows } = useSyncQuery<{
+    harnessSlug: string;
+    featureId: string;
+    content: string;
+    updatedAt: number;
+  }>({
+    queryName: 'featureNotes.byHarness',
+    args: activeSlug ? { harnessSlug: activeSlug } : undefined,
+    enabled: !!activeSlug,
+  });
+  const notesByFeatureId = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!Array.isArray(zeroFeatureNotesRows)) return m;
+    for (const r of zeroFeatureNotesRows) m.set(r.featureId, r.content ?? '');
+    return m;
+  }, [zeroFeatureNotesRows]);
+
+  // Per-feature debugger-role notes. PG mirror of .harness/debug/<id>.md
+  // via the harness-fs-watcher; subscription means FeaturePeekPanel
+  // renders the debug section same-frame.
+  const { data: zeroDebugNotesRows } = useSyncQuery<{
+    harnessSlug: string;
+    featureId: string;
+    content: string;
+    mtimeMs: number;
+  }>({
+    queryName: 'featureDebugNotes.byHarness',
+    args: activeSlug ? { harnessSlug: activeSlug } : undefined,
+    enabled: !!activeSlug,
+  });
+  const debugNotesByFeatureId = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!Array.isArray(zeroDebugNotesRows)) return m;
+    for (const r of zeroDebugNotesRows) m.set(r.featureId, r.content ?? '');
+    return m;
+  }, [zeroDebugNotesRows]);
+
+  // Per-feature PR URL+state. PG mirror of .harness/prs.json via fs-watcher.
+  const { data: zeroPrsRows } = useSyncQuery<{
+    harnessSlug: string;
+    featureId: string;
+    prUrl: string;
+    prState: string;
+    openedTs: number;
+    updatedTs: number;
+  }>({
+    queryName: 'featurePrs.byHarness',
+    args: activeSlug ? { harnessSlug: activeSlug } : undefined,
+    enabled: !!activeSlug,
+  });
+  const prsByFeatureId = useMemo(() => {
+    const m = new Map<string, { url: string; state: string; openedTs: number }>();
+    if (!Array.isArray(zeroPrsRows)) return m;
+    for (const r of zeroPrsRows) m.set(r.featureId, { url: r.prUrl, state: r.prState, openedTs: r.openedTs });
+    return m;
+  }, [zeroPrsRows]);
+
+  // Phase 3: orchestrator-written status. Pushes iteration + counts + the
+  // 'idle/running/stalled/paused/error' flag live, replacing the parts of
+  // /status that need to update faster than 5s.
+  const { data: zeroStatusRows } = useSyncQuery<{
+    iteration: number;
+    totalFeatures: number;
+    passedCount: number;
+    todoCount: number;
+    blockedCount: number;
+    status: string;
+    lastActiveTs?: number;
+    costUsd?: number;
+  }>({
+    queryName: 'harnessStatus.byHarness',
+    args: { harnessSlug: slugForPoll, workspaceId: activeWorkspaceParam, phase: phaseKey },
+    enabled: enablePoll,
+  });
+  // /agents REST poll dropped: pre-flight A confirmed Zero already provides
+  // agent_runs via the per-harness namespace (see zeroAgentRows below).
+  // The /agents endpoint stays as a PG-reading shim for any non-dashboard
+  // caller; the dashboard no longer hits it.
+  // /reviews + /proposals: when on staging (the only phase the FS watcher
+  // Reviews via Zero (Item 2: phase-aware watcher mirrors all phased
+  // worktrees, so this is correct on testing/production tiles too).
+  const { data: zeroReviewRows } = useSyncQuery<{ resolved: boolean }>({
+    queryName: 'pendingReviews.byHarness',
+    args: {
+      harnessSlug: slugForPoll,
+      workspaceId: activeWorkspaceParam,
+      phase: phaseKey,
+      includeResolved: false,
+    },
+    enabled: enablePoll,
+  });
+  // Phase 3: lanes via Zero. Replaces /lanes 5s poll. Run.sh's pg_write_lane
+  // upserts on lane assignment, pg_clear_lanes empties at iteration end.
+  // The harness-status-sweep drops orphans whose recorded PID is gone.
+  const { data: zeroLaneRows } = useSyncQuery<{
+    role: string;
+    featureId?: string | null;
+    pid?: number | null;
+    startedAt: number;
+  }>({
+    queryName: 'harnessLanes.byHarness',
+    args: { harnessSlug: slugForPoll, workspaceId: activeWorkspaceParam, phase: phaseKey },
+    enabled: enablePoll,
+  });
+  // Proposals via Zero (Item 2). Phase 2.5 added rich columns (status,
+  // verdict, applied/rejected timestamps) to harness_proposals_shared so
+  // we read them directly instead of inferring from the JSON payload.
+  const { data: zeroProposalRows } = useSyncQuery<{ status?: string }>({
+    queryName: 'proposalsShared.byHarness',
+    args: {
+      harnessSlug: slugForPoll,
+      workspaceId: activeWorkspaceParam,
+      phase: phaseKey,
+    },
+    enabled: enablePoll,
+  });
+  // Propagate query results into the existing local state so downstream
+  // panels (which read status/agents/reviewCount/lanes/pendingProposals
+  // via prop drilling) don't need to change.
+  useEffect(() => {
+    if (harnessStatusQuery.data && !harnessStatusQuery.data.error) {
+      setStatus((prev) => {
+        const next = harnessStatusQuery.data as Status;
+        // Features are owned by the Zero subscription (ordered by updatedTs
+        // DESC). The REST /status payload returns the same rows ordered by
+        // id ASC; letting it overwrite causes the list to visibly reorder
+        // every 30s as the two sources race. Preserve whatever Zero last
+        // set if we already have it.
+        if (prev && Array.isArray(prev.features) && prev.features.length > 0) {
+          return { ...next, features: prev.features };
+        }
+        return next;
+      });
+    }
+  }, [harnessStatusQuery.data]);
+  // Phase 3: layer Zero-pushed iteration + counts on top of /status. Only
+  // overrides the fields the orchestrator writes; alive/escalated/smokeFail/
+  // mission* etc. continue to come from the REST poll above.
+  //
+  // Sentinel: a row with iteration=0 + lastActiveTs=null means the table
+  // exists but no real run.sh has written to it yet (placeholder rows from
+  // the orchestrator endpoint's first call, or curl tests). Don't override
+  // the /status poll values in that case — let the legitimate FS-derived
+  // numbers stand until run.sh actually runs an iteration.
+  useEffect(() => {
+    const row = Array.isArray(zeroStatusRows) ? zeroStatusRows[0] : zeroStatusRows;
+    if (!row) return;
+    const isPlaceholder =
+      (row.iteration ?? 0) === 0 && (row.lastActiveTs ?? null) == null;
+    if (isPlaceholder) return;
+    setStatus((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        iteration: typeof row.iteration === 'number' ? row.iteration : prev.iteration,
+        counts: {
+          ...prev.counts,
+          total: row.totalFeatures ?? prev.counts?.total ?? 0,
+          passed: row.passedCount ?? prev.counts?.passed ?? 0,
+          todo: row.todoCount ?? prev.counts?.todo ?? 0,
+          blocked: row.blockedCount ?? prev.counts?.blocked ?? 0,
+        },
+        ...(typeof row.costUsd === 'number' ? { missionCostUsd: row.costUsd } : {}),
+      };
+    });
+  }, [zeroStatusRows]);
+  useEffect(() => {
+    if (Array.isArray(zeroReviewRows)) setReviewCount(zeroReviewRows.length);
+  }, [zeroReviewRows]);
+  // Phase 3: lanes from Zero. The dashboard's `lanes` state shape (declared
+  // at the useState above) is the same as the legacy /api/harness/<slug>/lanes
+  // REST response: { lanes: Array<{pid, featureId, startedAt, elapsedSeconds,
+  // alive}>, max }. Adapt Zero rows into that shape so the existing consumers
+  // (lines ~3179, 3394, 3396, 3403) keep working without per-callsite changes.
+  //
+  // Notes on the missing fields:
+  //   - pid: Zero rows don't carry it (orchestrator owns the lifecycle now).
+  //     Set to 0; consumers don't read it. Sweeper uses agent_runs.running
+  //     instead of /proc-walking pids, so we no longer need it client-side.
+  //   - alive: rows in harness_lanes are currently-held by definition. The
+  //     30s sweeper deletes orphans whose owning agent_runs row has
+  //     running=false. So treat any present row as alive.
+  //   - elapsedSeconds: derived from startedAt + Date.now().
+  //   - max: derived from harnessProjectFiles.byHarness Zero subscription
+  //     (config.json's parallelWorkers.max). Editable from the dashboard's
+  //     running-stat popover (ParallelWorkersStat).
+  const [maxWorkers, setMaxWorkers] = useState<number>(1);
+  // Eager via Zero — harnessProjectFiles.byHarness mirrors PG's
+  // harness_shared.harness_project_files row that holds config.json.
+  // Replaces the lazy /spec?phase= round-trip on slug/phase changes;
+  // maxWorkers updates same-frame whenever another tab edits config.
+  // REST callback retained as back-stop for harnesses that pre-date
+  // the project-files mirror.
+  const { data: laneConfigRows } = useSyncQuery<{
+    harnessSlug: string;
+    config?: string | null;
+  }>({
+    queryName: 'harnessProjectFiles.byHarness',
+    args: { harnessSlug: activeSlug ?? '' },
+    enabled: !!activeSlug,
+  });
+  useEffect(() => {
+    if (!Array.isArray(laneConfigRows) || laneConfigRows.length === 0) return;
+    const cfgRaw = laneConfigRows[0]?.config;
+    if (typeof cfgRaw !== 'string' || !cfgRaw.trim()) { setMaxWorkers(1); return; }
+    try {
+      const cfg = JSON.parse(cfgRaw);
+      const m = Number(cfg?.parallelWorkers?.max);
+      setMaxWorkers(Number.isFinite(m) && m > 0 ? Math.floor(m) : 1);
+    } catch { /* keep previous on parse failure */ }
+  }, [laneConfigRows]);
+
+  useEffect(() => {
+    if (!Array.isArray(zeroLaneRows)) return;
+    const nowMs = Date.now();
+    const lanesArr = zeroLaneRows.map((row) => {
+      const startedAt = Number(row.startedAt) || 0;
+      return {
+        pid: 0,
+        featureId: row.featureId ?? '',
+        startedAt,
+        elapsedSeconds: startedAt > 0 ? Math.max(0, Math.floor((nowMs - startedAt) / 1000)) : 0,
+        alive: true,
+      };
+    });
+    setLanes({ lanes: lanesArr, max: maxWorkers });
+  }, [zeroLaneRows, maxWorkers]);
+  useEffect(() => {
+    if (Array.isArray(zeroProposalRows)) {
+      // Phase 2.5: shared mirror table now has the rich `status` column.
+      // Pending = anything not explicitly applied/rejected.
+      const pending = zeroProposalRows.filter((r) => {
+        const s = r.status;
+        return !s || s === 'pending';
+      }).length;
+      setPendingProposals(pending);
+    }
+  }, [zeroProposalRows]);
 
   // ── Zero live feature subscription ─────────────────────────────────────
-  // Subscribe to harness_<slug>.harness_features via the harness Zero
-  // (zero-cache-harness :4849). Replaces /status's features field whenever
-  // a row from Zero is available, so feature updates propagate live (~3s).
-  // Falls back to polled features for unknown slugs.
-  const slugKey = useMemo(
-    () => (activeSlug ? slugToFeaturesKey(activeSlug) : null),
-    [activeSlug],
-  );
-  const featuresQueryName = slugKey ? `${slugKey}.all` : null;
+  // Subscribe to harness_shared.harness_features_consolidated via the
+  // single `featuresConsolidated.bySlug` query. Slug-agnostic: any
+  // harness in the registry can be queried without code changes.
+  // (Migration 029 made consolidated the canonical store. Per-slug
+  // featuresXxx queries are deprecated.)
+  const featuresQueryName = activeSlug ? 'featuresConsolidated.bySlug' : null;
   const { data: zeroFeatureRows, loading: featuresLoading } = useSyncQuery<FeatureRow>({
-    queryName: featuresQueryName ?? 'featuresSheets.all',
+    queryName: featuresQueryName ?? 'featuresConsolidated.bySlug',
+    args: activeSlug ? { harnessSlug: activeSlug } : undefined,
     enabled: !!featuresQueryName,
   });
   useEffect(() => {
@@ -2510,17 +3116,17 @@ export default function HarnessDashboard() {
   // Replaces the polled /agents fetch. Polling still happens (in the EventSource
   // handler below) but only as a sync ping that triggers the API's FS scan +
   // PG dual-write — the data the UI displays comes from Zero.
-  const agentRunsKey = useMemo(
-    () => (activeSlug ? slugToAgentRunsKey(activeSlug) : null),
-    [activeSlug],
-  );
-  const agentRunsQueryName = agentRunsKey ? `${agentRunsKey}.all` : null;
-  const { data: zeroAgentRows, loading: agentRunsLoading } = useSyncQuery<AgentRunRow>({
-    queryName: agentRunsQueryName ?? 'agentRunsSheets.all',
-    enabled: !!agentRunsQueryName,
+  // Slug-agnostic agent runs query (Migration 031). One query for ANY harness;
+  // server-side `.recent` caps at 50 to keep wire bytes small for the chat
+  // history adapter (the panel further trims to 200 client-side, kept for
+  // back-compat with the old slice math).
+  const { data: zeroAgentRows, loading: agentRunsLoading } = useSyncQuery<AgentRunConsolidatedRow>({
+    queryName: 'agentRunsConsolidated.recent',
+    args: activeSlug ? { harnessSlug: activeSlug } : undefined,
+    enabled: !!activeSlug,
   });
   useEffect(() => {
-    if (!agentRunsQueryName || agentRunsLoading || !Array.isArray(zeroAgentRows)) return;
+    if (!activeSlug || agentRunsLoading || !Array.isArray(zeroAgentRows)) return;
     type LocalAgentRunRow = { runId: string; role: string; ts: number | string; sizeBytes: number | string };
     const adapted: AgentRun[] = (zeroAgentRows as unknown as LocalAgentRunRow[])
       .slice(0, 200)
@@ -2531,12 +3137,34 @@ export default function HarnessDashboard() {
         sizeBytes: Number(r.sizeBytes) || 0,
       }));
     setAgents(adapted);
-  }, [agentRunsQueryName, zeroAgentRows, agentRunsLoading]);
+  }, [activeSlug, zeroAgentRows, agentRunsLoading]);
 
   const loadAgent = useCallback(async (runId: string) => {
+    // Instant-paint: render the inspector shell from already-cached
+    // agentRunsConsolidated metadata so the panel opens same-frame even
+    // before the heavy /agents/<runId> JSONL parse returns. The full
+    // payload (timeline + per-event tokens etc.) replaces the stub when
+    // fetch resolves; the live-poll effect below handles further updates.
+    const meta = Array.isArray(zeroAgentRows)
+      ? (zeroAgentRows as Array<{ runId: string; role?: string; featureId?: string | null; ts?: number; durationMs?: number; costUsd?: number; inputTokens?: number; outputTokens?: number; running?: boolean }>).find((r) => r.runId === runId)
+      : undefined;
+    if (meta) {
+      setSelectedAgent({
+        runId,
+        role: meta.role ?? '',
+        feature_id: meta.featureId ?? null,
+        ts: meta.ts ?? 0,
+        durationMs: meta.durationMs ?? 0,
+        costUsd: meta.costUsd ?? 0,
+        inputTokens: meta.inputTokens ?? 0,
+        outputTokens: meta.outputTokens ?? 0,
+        running: meta.running ?? false,
+        timeline: [],
+      } as unknown as AgentDetail);
+    }
     const r = await fetch(`/api/harness/${activeSlug}/agents/${runId}?phase=${activePhase}`).then((r) => r.json());
     setSelectedAgent(r as AgentDetail);
-  }, [activeSlug, activePhase]);
+  }, [activeSlug, activePhase, zeroAgentRows]);
 
 
   useEffect(() => {
@@ -2572,18 +3200,24 @@ export default function HarnessDashboard() {
       const d = await res.json();
       toast.success('Harness launched', { description: d.logPath });
       setTimeout(() => {
-        fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
+        fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then((next) => setStatus((prev) => prev && Array.isArray(prev.features) && prev.features.length > 0 ? { ...next, features: prev.features } : next)).catch(() => {});
       }, 2000);
     } catch (e) {
       toast.error('Launch failed', { description: String(e) });
     }
-  }, [activeSlug]);
+  }, [activeSlug, activePhase]);
 
   // Poll the scoper-result endpoint until the wrapper signals completion,
   // then surface the agent's terminal summary line as a follow-up toast.
   // Polls every 5s up to ~10 minutes; gives up silently if it doesn't
   // finish in that window (scoper rarely runs that long).
-  const pollScoperResult = useCallback(async (slug: string, invocationId: string, modeLabel: string) => {
+  const pollScoperResult = useCallback(async (
+    slug: string,
+    invocationId: string,
+    modeLabel: string,
+    narrationOpKind?: 'replan' | 'cleanup',
+    narrationHandle?: { cancel(): void },
+  ) => {
     const start = Date.now();
     const maxMs = 10 * 60 * 1000;
     while (Date.now() - start < maxMs) {
@@ -2596,14 +3230,29 @@ export default function HarnessDashboard() {
           if (d.summary) {
             toast.success(`${modeLabel} done`, { description: d.summary });
           }
+          // Side-channel TTS narration fires once the scoper actually
+          // finishes. counts come straight from the endpoint's parse —
+          // they may be undefined for runs that don't emit them.
+          if (narrationOpKind) {
+            const { announceOpEnd } = await import('@/lib/voice-narration');
+            announceOpEnd(narrationOpKind, { outcome: 'ok', slug, counts: d.counts }, narrationHandle);
+          }
           return;
         }
       } catch { /* keep polling */ }
+    }
+    // Timed out — narrate a "still working" rather than a failure since
+    // the scoper might still be alive but our poll window expired.
+    if (narrationOpKind) {
+      const { announceOpEnd } = await import('@/lib/voice-narration');
+      announceOpEnd(narrationOpKind, { outcome: 'fail', slug, reason: 'timed out polling' }, narrationHandle);
     }
   }, []);
 
   const replanHarness = useCallback(async () => {
     if (!activeSlug) return;
+    const { announceOpStart, announceOpEnd } = await import('@/lib/voice-narration');
+    const handle = announceOpStart('replan', { slug: activeSlug });
     try {
       const res = await fetch(`/api/harness/${activeSlug}/replan`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -2611,15 +3260,37 @@ export default function HarnessDashboard() {
       toast.success('Replan started', {
         description: 'Scoper is folding new SPEC.md bullets into the work queue. Updates will appear in a few minutes.',
       });
-      if (d.invocationId) void pollScoperResult(activeSlug, d.invocationId, 'Replan');
+      if (d.invocationId) {
+        // Poll fires completion narration when the scoper finishes,
+        // and clears the mid-timer via the handle. Fire-and-forget.
+        void pollScoperResult(activeSlug, d.invocationId, 'Replan', 'replan', handle);
+      } else {
+        handle.cancel();
+      }
     } catch (e) {
+      announceOpEnd('replan', { outcome: 'fail', reason: 'request rejected', slug: activeSlug }, handle);
       toast.error('Replan failed', { description: String(e) });
     }
   }, [activeSlug, pollScoperResult]);
 
+  const proposeHarness = useCallback(async () => {
+    if (!activeSlug) return;
+    try {
+      const res = await fetch(`/api/harness/${activeSlug}/product-review`, { method: 'POST' });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      toast.success('Propose started', {
+        description: 'Scoper is reading SPEC.md and drafting proposals. New cards will appear in the Proposals tab in a few minutes.',
+      });
+    } catch (e) {
+      toast.error('Propose failed', { description: String(e) });
+    }
+  }, [activeSlug]);
+
   const cleanupHarness = useCallback(async () => {
     if (!activeSlug) return;
     if (!confirm('Run cleanup? Scoper will deprecate features whose claims no longer match SPEC.md and modify partial-matches. No new features will be added. Code is not auto-removed.')) return;
+    const { announceOpStart, announceOpEnd } = await import('@/lib/voice-narration');
+    const handle = announceOpStart('cleanup', { slug: activeSlug });
     try {
       const res = await fetch(`/api/harness/${activeSlug}/cleanup`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -2627,8 +3298,13 @@ export default function HarnessDashboard() {
       toast.success('Cleanup started', {
         description: 'Scoper is comparing existing features against SPEC.md. Updates will appear in a few minutes.',
       });
-      if (d.invocationId) void pollScoperResult(activeSlug, d.invocationId, 'Cleanup');
+      if (d.invocationId) {
+        void pollScoperResult(activeSlug, d.invocationId, 'Cleanup', 'cleanup', handle);
+      } else {
+        handle.cancel();
+      }
     } catch (e) {
+      announceOpEnd('cleanup', { outcome: 'fail', reason: 'request rejected', slug: activeSlug }, handle);
       toast.error('Cleanup failed', { description: String(e) });
     }
   }, [activeSlug, pollScoperResult]);
@@ -2644,7 +3320,7 @@ export default function HarnessDashboard() {
     } catch (e) {
       toast.error('Stop failed', { description: String(e) });
     }
-  }, [activeSlug]);
+  }, [activeSlug, activePhase]);
 
   // ─── Linear-inspired extensions ─────
 
@@ -2700,18 +3376,41 @@ export default function HarnessDashboard() {
     }
   }, [status, peekFeature]);
 
-  // Pulse feed derived from feature snapshots.
-  const pulseEvents = usePulse(
-    (status?.features ?? EMPTY_FEATURES) as unknown as Parameters<typeof usePulse>[0],
-    status?.iteration ?? 0,
-    status?.escalated ?? false,
-  );
-
   const totalCount = status?.features.length ?? 0;
   const passedCount = status?.counts.passed ?? 0;
   const todoCount = status?.counts.todo ?? 0;
   const blockedCount = status?.counts.blocked ?? 0;
   const progressPct = totalCount ? Math.round((passedCount / totalCount) * 100) : 0;
+
+  // Sync status to the focus-handler ref every render. Refs may be written
+  // during render in React; this keeps handleArchitectFocus's closure
+  // current without forcing the callback identity to change.
+  statusRefForFocus.current = status;
+
+  // Stable features reference: when status updates but features array's
+  // identities are unchanged (same id+status+attempts), return the previous
+  // array so React.memo on FeatureList can short-circuit. Without this, the
+  // dashboard's frequent setStatus calls (Zero pushes, polling fallbacks)
+  // would create a new features array reference each time and force
+  // FeatureList to re-render its 92-row tree.
+  const featuresArrayRef = useRef<Feature[] | null>(null);
+  const featuresStable: Feature[] = useMemo(() => {
+    const next = (status?.features ?? []) as Feature[];
+    const prev = featuresArrayRef.current;
+    if (prev && prev.length === next.length) {
+      let same = true;
+      for (let i = 0; i < next.length; i++) {
+        const a = prev[i]; const b = next[i];
+        if (a !== b && (a.id !== b.id || a.status !== b.status || a.attempts !== b.attempts || a.title !== b.title)) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return prev;
+    }
+    featuresArrayRef.current = next;
+    return next;
+  }, [status?.features]);
 
   const sortedFeatures = useMemo(() => {
     if (!status) return [];
@@ -2731,16 +3430,6 @@ export default function HarnessDashboard() {
       count: features.filter((f) => f.status === featureStatus).length,
     })).filter((entry) => entry.count > 0);
   }, [status]);
-
-  const focusFeature = useMemo(() => {
-    const features = status?.features ?? [];
-    for (const featureStatus of FOCUS_ORDER) {
-      const match = features.find((f) => f.status === featureStatus);
-      if (match) return match;
-    }
-    return null;
-  }, [status]);
-
 
   const commands: Command[] = useMemo(() => {
     const cs: Command[] = [];
@@ -2838,18 +3527,29 @@ export default function HarnessDashboard() {
       cs.push({ id: 'newfeat', section: 'Control', title: 'Create new feature', icon: '＋', keywords: 'add feature', perform: () => setEditingFeature('new') });
       cs.push({ id: 'templates', section: 'Control', title: 'Start from template — seed SPEC.md + AGENTS.md', icon: '📋', keywords: 'template starter bootstrap spec', perform: () => setShowTemplates(true) });
       cs.push({ id: 'archives', section: 'Control', title: 'Archives — snapshot / restore mission state', icon: '📦', keywords: 'archive restore backup reset', perform: () => setShowArchives(true) });
+      cs.push({ id: 'intel', section: 'Control', title: 'Intel — tool-invocation telemetry', icon: '🔭', keywords: 'intel telemetry spawn tool invocation gitnexus repomix code2prompt diff pack', perform: () => setShowIntel(true) });
       cs.push({
         id: 'supervisor', section: 'Control',
         title: 'Run supervisor — fresh review of mission',
         icon: '🧭', keywords: 'supervisor review check-in',
         perform: async () => {
           toast.info('Running supervisor…');
+          const { announceOpStart, announceOpEnd } = await import('@/lib/voice-narration');
+          const handle = announceOpStart('supervisor');
           try {
             const r = await fetch(`/api/harness/${activeSlug}/supervisor?phase=${activePhase}`, { method: 'POST' });
             const d = await r.json();
-            if (d.ok) toast.success(`${d.outcome || 'supervisor complete'}`, { duration: 6000 });
-            else toast.error(`supervisor failed: ${d.error ?? 'unknown'}`);
-          } catch (e) { toast.error(String(e)); }
+            if (d.ok) {
+              toast.success(`${d.outcome || 'supervisor complete'}`, { duration: 6000 });
+              announceOpEnd('supervisor', { outcome: 'ok', reason: d.outcome }, handle);
+            } else {
+              toast.error(`supervisor failed: ${d.error ?? 'unknown'}`);
+              announceOpEnd('supervisor', { outcome: 'fail', reason: d.error ?? 'unknown' }, handle);
+            }
+          } catch (e) {
+            toast.error(String(e));
+            announceOpEnd('supervisor', { outcome: 'fail', reason: 'request error' }, handle);
+          }
         },
       });
       // Note: a second `id: 'replan'` command was here (legacy destructive
@@ -2960,76 +3660,45 @@ export default function HarnessDashboard() {
 
   useGSAP(
     () => {
-      if (!rootRef.current || reducedMotion) return;
+      if (!rootRef.current || !fancyEffectsEnabled) return;
       const q = gsap.utils.selector(rootRef.current);
       const intro = gsap.timeline({ defaults: { ease: 'power3.out' } });
+      const topChromeTargets = q('.h-header, .h-quick-action-row, .h-tabs.h-main-tabs');
 
-      intro
-        .fromTo(
-          q('.h-hud-dial'),
-          { autoAlpha: 0, scale: 0.72, rotate: -42 },
-          { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.96 },
-          0,
-        )
-        .fromTo(
-          q('.h-header, .h-phase-plan-row, .h-quick-action-row, .h-tabs.h-main-tabs'),
-          { autoAlpha: 0, y: -18 },
-          { autoAlpha: 1, y: 0, duration: 0.56, stagger: 0.06 },
-          0.08,
-        )
-        .fromTo(
-          q('.h-dashboard-panel-anchor'),
-          { autoAlpha: 0, y: 28, rotationX: 8 },
-          { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.64, stagger: 0.08 },
-          0.22,
-        );
+      // Panel changes re-run this GSAP context. The top chrome is persistent
+      // page furniture, so keep it stable instead of replaying the HUD intro
+      // when switching between Brainstorm / Proposals / Dashboard / etc.
+      gsap.set(topChromeTargets, { autoAlpha: 1, y: 0 });
+      gsap.set(topChromeTargets, { clearProps: 'opacity,visibility,transform' });
 
-      const loops = [
-        gsap.to(q('.h-hud-dial-ring--outer'), { rotate: 360, duration: 22, ease: 'none', repeat: -1 }),
-        gsap.to(q('.h-hud-dial-ring--inner'), { rotate: -360, duration: 13, ease: 'none', repeat: -1 }),
-        gsap.to(q('.h-hud-overlay__grid'), { backgroundPosition: '0px 180px', duration: 8, ease: 'none', repeat: -1 }),
-        gsap.fromTo(
-          q('.h-hud-overlay__scanline'),
-          { xPercent: -18, autoAlpha: 0.08 },
-          { xPercent: 24, autoAlpha: 0.42, duration: 2.9, ease: 'sine.inOut', repeat: -1, yoyo: true },
-        ),
-        gsap.to(q('.h-hud-node'), { y: -5, duration: 2.2, ease: 'sine.inOut', yoyo: true, repeat: -1, stagger: 0.24 }),
-      ];
+      intro.fromTo(
+        q('.h-hud-dial'),
+        { autoAlpha: 0, scale: 0.72, rotate: -42 },
+        { autoAlpha: 1, scale: 1, rotate: 0, duration: 0.96 },
+        0,
+      );
+      intro.fromTo(
+        q('.h-dashboard-panel-anchor'),
+        { autoAlpha: 0, y: 28, rotationX: 8 },
+        { autoAlpha: 1, y: 0, rotationX: 0, duration: 0.64, stagger: 0.08 },
+        0.22,
+      );
 
-      if (status?.alive) {
-        loops.push(
-          gsap.to(q('.h-running-lane.live'), {
-            y: -2,
-            boxShadow: '0 0 0 1px rgba(103, 232, 249, 0.24), 0 0 28px rgba(34, 211, 238, 0.22)',
-            duration: 1.3,
-            ease: 'sine.inOut',
-            yoyo: true,
-            repeat: -1,
-            stagger: 0.1,
-          }),
-        );
-        loops.push(
-          gsap.fromTo(
-            q('.h-pulse-dot.live'),
-            { scale: 0.8, boxShadow: '0 0 0 0 rgba(34, 211, 238, 0.48)' },
-            { scale: 1.18, boxShadow: '0 0 0 15px rgba(34, 211, 238, 0)', duration: 1.28, ease: 'power2.out', repeat: -1 },
-          ),
-        );
-        loops.push(
-          gsap.fromTo(
-            q('.h-header.alive'),
-            { filter: 'brightness(1)' },
-            { filter: 'brightness(1.08)', duration: 1.9, ease: 'sine.inOut', repeat: -1, yoyo: true },
-          ),
-        );
-      }
+      // Idle/ambient animations (rotating dial rings, scanline sweep, grid
+      // scroll, node hover-bob, pulse dots, brightness pulse) are now driven
+      // by pure CSS @keyframes in harness.css. GSAP rAF tweens for these
+      // were running ~22 long-tasks/sec at idle and producing 600+ DOM
+      // mutations per 8-second window — the dominant cost on the harness
+      // page even with no PG writes happening. Pure CSS animation runs on
+      // the compositor thread and doesn't touch React's commit path.
+      // Status-alive variants are toggled via the `is-live` class on
+      // .h-hud-overlay (set by the alive prop) and CSS rules.
 
       return () => {
         intro.kill();
-        loops.forEach((loop) => loop.kill());
       };
     },
-    { scope: rootRef, dependencies: [reducedMotion, activePanel, topChromeCollapsed, !!status?.alive, activeLanes.length, todoCount] },
+    { scope: rootRef, dependencies: [fancyEffectsEnabled, activePanel, topChromeCollapsed, !!status?.alive, activeLanes.length, todoCount] },
   );
 
   return (
@@ -3072,50 +3741,7 @@ export default function HarnessDashboard() {
                   <PhaseTabs slug={activeSlug} activePhase={activePhase} onChange={setActivePhase} />
                 </div>
               )}
-              {status && (
-                <div className="h-project-topline-statuses">
-                  <div className="h-overview-pulse h-project-pulse">
-                    <PulseFeed
-                      compact
-                      events={pulseEvents}
-                      onOpenFeature={(id) => {
-                        const f = status.features.find((ff) => ff.id === id);
-                        if (f) setPeekFeature(f);
-                      }}
-                    />
-                  </div>
-                  {lanes && (
-                    <div className="h-overview-lanes h-project-lanes" aria-label="Now running lanes">
-                      <div className="h-running-head">
-                        <span>Now running</span>
-                        <strong>{activeLanes.length}/{lanes.max}</strong>
-                      </div>
-                      <div className="h-running-lanes">
-                        {Array.from({ length: Math.max(lanes.max, activeLanes.length, 1) }).map((_, index) => {
-                          const lane = activeLanes[index];
-                          if (!lane) {
-                            return <span key={`idle-${index}`} className="h-running-lane idle">available lane</span>;
-                          }
-                          const feature = status.features.find((f) => f.id === lane.featureId);
-                          return (
-                            <button
-                              key={`${lane.pid}-${lane.featureId}`}
-                              className="h-running-lane live"
-                              onClick={() => { if (feature) setPeekFeature(feature); }}
-                              title={`PID ${lane.pid} · ${lane.featureId}`}
-                            >
-                              <span className="h-running-dot" />
-                              <span className="h-running-id">{lane.featureId}</span>
-                              <span className="h-running-title">{feature?.title ?? 'working'}</span>
-                              <span className="h-running-time">{fmtDuration(lane.elapsedSeconds)}</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+
               {status && (
                 <span className="h-project-badges">
                   <span className={`h-status-chip ${status.alive ? 'live' : 'idle'}`}>
@@ -3192,8 +3818,8 @@ export default function HarnessDashboard() {
         {status ? (
           <div className="h-header-side">
             <div className="h-stats">
-              <Tooltip label="Pulse iteration — latest operator loop count. The pulse chip shows how recently it advanced.">
-                <div title={`Pulse iteration ${status.iteration}`}>
+              <Tooltip label="Total pulses — every orchestrator main-loop tick across all runs of this harness.">
+                <div title={`Total pulses: ${status.iteration}`}>
                   <StatCard
                     label="pulse"
                     value={`#${status.iteration}`}
@@ -3201,6 +3827,18 @@ export default function HarnessDashboard() {
                   />
                 </div>
               </Tooltip>
+              {lanes && Array.isArray(lanes.lanes) && activeSlug && (() => {
+                const activeLanes = lanes.lanes.filter((l) => l.alive);
+                const activeCount = activeLanes.length;
+                const title = activeCount > 0
+                  ? `Active lanes:\n${activeLanes.map((l) => `  ${l.featureId} · ${l.elapsedSeconds}s`).join('\n')}`
+                  : 'No active lanes — adjust max in the Settings tab.';
+                return (
+                  <div title={title}>
+                    <StatCard label="Lanes" value={`${activeCount}/${lanes.max}`} />
+                  </div>
+                );
+              })()}
               <Tooltip label="Features passed out of total in this harness queue">
                 <div title={`${passedCount} passed out of ${totalCount} features`}>
                   <StatCard
@@ -3212,10 +3850,10 @@ export default function HarnessDashboard() {
                 </div>
               </Tooltip>
               {typeof status.missionCostUsd === 'number' && status.missionCostUsd > 0 && (
-                <Tooltip label="Open per-role cost breakdown">
+                <Tooltip label="Open the Insights tab">
                   <button
                     className="h-stat-button"
-                    onClick={() => setShowUsage(true)}
+                    onClick={() => setActivePanel('insights')}
                   >
                     <StatCard
                       label="$ spent"
@@ -3254,36 +3892,51 @@ export default function HarnessDashboard() {
                   </button>
                 </Tooltip>
               )}
-              {lanes && (lanes.max > 1 || lanes.lanes.filter((l) => l.alive).length > 0) && (() => {
-                const alive = lanes.lanes.filter((l) => l.alive);
-                const title = alive.length > 0
-                  ? `Active lanes:\n${alive.map((l) => `  ${l.featureId} · ${l.elapsedSeconds}s`).join('\n')}`
-                  : 'No active lanes';
-                return (
-                  <div title={title}>
-                    <StatCard
-                      label="lanes"
-                      value={`${alive.length}/${lanes.max}`}
-                      tone={alive.length === lanes.max && lanes.max > 1 ? 'good' : undefined}
-                    />
-                  </div>
-                );
-              })()}
-              {/* Save template + Save snapshot live up here in the stats row.
-                  Both produce reusable artifacts derived from the running harness:
-                    template = the recipe (manifest + SPEC.md / AGENTS.md / role prompts)
-                    snapshot = template + DB state + agent transcripts (the whole frozen install)
-                  Save snapshot was previously in the phase-plan-actions row; moved
-                  here per UX request 2026-05-01. Save template is new; the click
-                  handler kicks off a flow that's still being built — for now it
-                  toasts a TODO so the button is discoverable. */}
-              {activeSlug && (
-                <Tooltip label="Save current harness as a reusable template (recipe; no in-flight state)">
-                  <SaveTemplateButton slug={activeSlug} />
+              {status && (
+                <Tooltip label="Command palette (⌘K)">
+                  <button
+                    className="h-btn ghost h-key-btn"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() => setPaletteOpen(true)}
+                  >
+                    ⌘K
+                  </button>
                 </Tooltip>
               )}
-              {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
             </div>
+            {status && (
+              <div className="h-header-actions h-header-actions-row">
+                <Tooltip label="Triage — features needing attention">
+                  <button
+                    className={`h-btn ${triageCount > 0 ? 'danger' : 'ghost'}`}
+                    onClick={() => setShowTriage(true)}
+                  >
+                    <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
+                  </button>
+                </Tooltip>
+                <Tooltip label="Propose — run the scoper agent (MODE=proposal) to read SPEC.md and suggest scoped features in the Proposals tab">
+                  <button className="h-btn ghost" onClick={proposeHarness}>
+                    <Lightbulb size={13} /> propose
+                  </button>
+                </Tooltip>
+                <Tooltip label="Replan — fold new SPEC.md bullets into the work queue without restarting the harness">
+                  <button className="h-btn ghost" onClick={replanHarness}>
+                    <RefreshCw size={13} /> replan
+                  </button>
+                </Tooltip>
+                <Tooltip label="Cleanup — deprecate or modify existing features that no longer match SPEC.md (won't add new ones)">
+                  <button className="h-btn ghost" onClick={cleanupHarness}>
+                    <Wrench size={13} /> cleanup
+                  </button>
+                </Tooltip>
+                {activeSlug && (
+                  <Tooltip label="Save current harness as a reusable template (recipe; no in-flight state)">
+                    <SaveTemplateButton slug={activeSlug} />
+                  </Tooltip>
+                )}
+                {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
+              </div>
+            )}
 
           </div>
         ) : (
@@ -3294,85 +3947,32 @@ export default function HarnessDashboard() {
       </div>
 
       {activeSlug && (
-        <div className="h-phase-plan-row">
-          {status && !isBrainstormPanel && focusFeature && (
-            <button
-              className={`h-focus-card h-phase-plan-focus ${focusFeature.status}`}
-              onClick={() => setPeekFeature(focusFeature)}
-              title={`Open ${focusFeature.id}`}
-            >
-              <span className="h-overline">Mission focus</span>
-              <strong>{focusVerb(focusFeature.status)}</strong>
-              <span className="h-focus-title">
-                {focusFeature.id} · {focusFeature.title}
-              </span>
-            </button>
-          )}
-          {status && !isBrainstormPanel && triageCount > 0 && (
-            <Tooltip label="Open the triage queue (features needing attention)">
-              <button
-              className="h-overview-action warn h-phase-plan-review"
-              onClick={() => setShowTriage(true)}
-            >
-              Review {triageCount} issue{triageCount === 1 ? '' : 's'}
-            </button>
-            </Tooltip>
-          )}
-          <PlanReviewBanner slug={activeSlug} compact />
-          {status && (
-            <div className="h-header-actions h-phase-plan-actions">
-              {status.escalated && (
-                <span className="h-escalated-pill">
-                  <AlertTriangle size={12} /> escalated
-                </span>
-              )}
-              {status.lastDecision && (
-                <span className="h-decision-chip h-phase-plan-decision" title={`Last decision: ${status.lastDecision}`}>
-                  <ArrowRight size={11} />
-                  <span>decision</span>
-                  <strong>{status.lastDecision}</strong>
-                </span>
-              )}
-              <Tooltip label="Command palette (⌘K)">
-                <button className="h-btn ghost h-key-btn" onClick={() => setPaletteOpen(true)}>
-                  ⌘K
-                </button>
-              </Tooltip>
-              <Tooltip label="Triage — features needing attention">
-                <button
-                  className={`h-btn ${triageCount > 0 ? 'danger' : 'ghost'}`}
-                  onClick={() => setShowTriage(true)}
-                >
-                  <AlertTriangle size={13} /> triage{triageCount > 0 ? ` · ${triageCount}` : ''}
-                </button>
-              </Tooltip>
-              <Tooltip label="Replan — fold new SPEC.md bullets into the work queue without restarting the harness">
-                <button className="h-btn ghost" onClick={replanHarness}>
-                  <RefreshCw size={13} /> replan
-                </button>
-              </Tooltip>
-              <Tooltip label="Cleanup — deprecate or modify existing features that no longer match SPEC.md (won't add new ones)">
-                <button className="h-btn ghost" onClick={cleanupHarness}>
-                  <Wrench size={13} /> cleanup
-                </button>
-              </Tooltip>
-              {status.alive ? (
-                <Tooltip label="Stop the autonomous loop for this harness">
-                  <button className="h-btn danger" onClick={stopHarness}>
-                    <Square size={13} fill="currentColor" /> stop
-                  </button>
-                </Tooltip>
-              ) : (
-                <Tooltip label="Start the autonomous loop for this harness">
-                  <button className="h-btn primary" onClick={launchHarness}>
-                    <Play size={13} fill="currentColor" /> start
-                  </button>
-                </Tooltip>
-              )}
-            </div>
-          )}
-        </div>
+        <ActiveAgentsBar
+          slug={activeSlug}
+          phase={activePhase}
+          alive={status?.alive ?? false}
+          runs={(Array.isArray(zeroLaneRows) ? zeroLaneRows : [])
+            .map((l) => ({
+              // Use the real runId format that the orchestrator's invoke()
+              // function writes to <startedAt-seconds>-<role>[-<featureId>].jsonl,
+              // so onPillClick → loadAgent(runId) hits the right
+              // /api/harness/<slug>/agents/<runId> shape.
+              runId: `${Math.floor(Number(l.startedAt) / 1000)}-${l.role}${l.featureId ? `-${l.featureId}` : ''}`,
+              role: l.role,
+              featureId: l.featureId ?? null,
+              ts: Math.floor(Number(l.startedAt) / 1000),
+            }))
+            .sort((a, b) => a.ts - b.ts)}
+          onPillClick={loadAgent}
+          onStart={launchHarness}
+          onStop={stopHarness}
+        />
       )}
+
+      {/* Plan review + checkpoint banners surface above the plugin-actions row
+          so user-required decisions don't get hidden under tool buttons. */}
+      {activeSlug && <PlanReviewBanner slug={activeSlug} />}
+      {activeSlug && <CheckpointBanner slug={activeSlug} />}
 
       {activeSlug && status && (
         <HarnessQuickActionRow
@@ -3392,12 +3992,10 @@ export default function HarnessDashboard() {
           slug={activeSlug}
           escalated={status.escalated}
           onResumed={() => {
-            fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
+            fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then((next) => setStatus((prev) => prev && Array.isArray(prev.features) && prev.features.length > 0 ? { ...next, features: prev.features } : next)).catch(() => {});
           }}
         />
       )}
-
-      {activeSlug && <CheckpointBanner slug={activeSlug} />}
 
 
 
@@ -3420,23 +4018,28 @@ export default function HarnessDashboard() {
       >
         <Tabs.List className="h-tabs h-main-tabs" aria-label="Harness workspace sections">
           <Tooltip label={activeSlug ? 'Brainstorm — write, mindmap, canvas, chat with Claude' : 'Select a project to brainstorm'}>
-            <Tabs.Trigger value="brainstorm" className="h-tab" disabled={!activeSlug}>
+            <Tabs.Trigger value="brainstorm" className="h-tab h-tab--brainstorm" disabled={!activeSlug}>
               <Lightbulb size={13} /> brainstorm
             </Tabs.Trigger>
           </Tooltip>
           <Tooltip label={activeSlug ? `Product proposals — scope expansion from SPEC.md${pendingProposals > 0 ? ` · ${pendingProposals} pending` : ''}` : 'Select a project to view proposals'}>
-            <Tabs.Trigger value="proposals" className="h-tab" disabled={!activeSlug}>
+            <Tabs.Trigger value="proposals" className="h-tab h-tab--proposals" disabled={!activeSlug}>
               🪄 proposals
               {pendingProposals > 0 && <span className="h-tab-count">{pendingProposals}</span>}
             </Tabs.Trigger>
           </Tooltip>
+          <Tooltip label={activeSlug ? 'Experts — instanced spec-authoring agents (one per high-level feature area)' : 'Select a project to view experts'}>
+            <Tabs.Trigger value="experts" className="h-tab h-tab--experts" disabled={!activeSlug}>
+              🧠 experts
+            </Tabs.Trigger>
+          </Tooltip>
           <Tooltip label="Harness dashboard — feature queue, agents, logs, issues">
-            <Tabs.Trigger value="dashboard" className="h-tab">
+            <Tabs.Trigger value="dashboard" className="h-tab h-tab--dashboard">
               <LayoutDashboard size={13} /> dashboard
             </Tabs.Trigger>
           </Tooltip>
           <Tooltip label={activeSlug ? 'Project summary — high-level changelog of what has been built' : 'Select a project to view summary'}>
-            <Tabs.Trigger value="summary" className="h-tab" disabled={!activeSlug}>
+            <Tabs.Trigger value="summary" className="h-tab h-tab--summary" disabled={!activeSlug}>
               <FileText size={13} /> summary
             </Tabs.Trigger>
           </Tooltip>
@@ -3457,19 +4060,19 @@ export default function HarnessDashboard() {
               }}
             />
           ))}
-          <Tooltip label={activeSlug ? 'Experts — instanced spec-authoring agents (one per high-level feature area)' : 'Select a project to view experts'}>
-            <Tabs.Trigger value="experts" className="h-tab" disabled={!activeSlug}>
-              🧠 experts
-            </Tabs.Trigger>
-          </Tooltip>
           <Tooltip label={activeSlug ? 'Insights — analytics' : 'Select a project to view insights'}>
-            <Tabs.Trigger value="insights" className="h-tab" disabled={!activeSlug}>
+            <Tabs.Trigger value="insights" className="h-tab h-tab--insights" disabled={!activeSlug}>
               <TrendingUp size={13} /> insights
             </Tabs.Trigger>
           </Tooltip>
           <Tooltip label={activeSlug ? 'Edit SPEC.md / AGENTS.md / config.json' : 'Select a project to edit config'}>
-            <Tabs.Trigger value="config" className="h-tab" disabled={!activeSlug}>
+            <Tabs.Trigger value="config" className="h-tab h-tab--config" disabled={!activeSlug}>
               <SlidersHorizontal size={13} /> config
+            </Tabs.Trigger>
+          </Tooltip>
+          <Tooltip label={activeSlug ? 'Per-harness settings (parallel workers, adaptive tiers, telemetry)' : 'Select a project to edit settings'}>
+            <Tabs.Trigger value="settings" className="h-tab h-tab--settings" disabled={!activeSlug}>
+              <Settings size={13} aria-hidden /> settings
             </Tabs.Trigger>
           </Tooltip>
           <AddPluginButton
@@ -3495,31 +4098,56 @@ export default function HarnessDashboard() {
       )}
 
       {/* ── Main area ──────────────────────────────────────────── */}
-      <div className={`h-main-shell ${activePanel === 'dashboard' ? 'dashboard' : activePanel === 'brainstorm' ? 'brainstorm-full' : 'embed'}`}>
-        {activePanel === 'brainstorm' && activeSlug && (
-          <BrainstormFull slug={activeSlug} />
+      <div className={`h-main-shell ${resolvedPanel === 'dashboard' ? 'dashboard' : resolvedPanel === 'brainstorm' ? 'brainstorm-full' : 'embed'}`}>
+        {LEGACY_ALIASES.includes(resolvedPanel) && (
+          <div role="status" aria-live="polite" style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: 'var(--fg-mute, #94a3b8)', fontSize: 13 }}>
+            <span aria-hidden="true" style={{ display: 'inline-block', width: 12, height: 12, borderRadius: '50%', border: '2px solid currentColor', borderTopColor: 'transparent', animation: 'pc-spin 800ms linear infinite' }} />
+            <span>{activeSlug ? `Loading ${resolvedPanel} plugin…` : `Pick a harness to use the "${resolvedPanel}" panel.`}</span>
+          </div>
         )}
-        {activePanel === 'proposals' && activeSlug && (
-          <ProposalsPanel slug={activeSlug} />
-        )}
-        {activePanel === 'summary' && activeSlug && (
-          <SummaryPanel
-            slug={activeSlug}
-            onOpenFeature={(fid) => {
-              const f = status?.features.find((ff) => ff.id === fid);
-              if (f) {
-                setPeekFeature(f);
-              } else {
-                setActivePanel('dashboard');
+        {/*
+          Tab panels stay mounted in <ReactActivity mode="hidden"> so switching
+          between them is a CSS visibility flip rather than a full React
+          remount. React 19's Activity also pauses effects/timers on the
+          hidden subtree, so each panel's polling stops while it's not
+          visible (re-runs on reactivation, fresh data within one cycle).
+          See the perf audit notes — this trades initial mount work for
+          instant tab switches and avoids piling N panels' poll loops on
+          top of each other.
+        */}
+        <ReactActivity mode={resolvedPanel === 'brainstorm' ? 'visible' : 'hidden'}>
+          {activeSlug && <BrainstormFull slug={activeSlug} />}
+        </ReactActivity>
+        <ReactActivity mode={resolvedPanel === 'proposals' ? 'visible' : 'hidden'}>
+          {activeSlug && proposalsEverMounted && (
+            <ProposalsPanel
+              slug={activeSlug}
+              architectInbox={
+                <ArchitectInbox slug={activeSlug} onFeatureFocus={handleArchitectFocus} />
               }
-            }}
-          />
-        )}
+            />
+          )}
+        </ReactActivity>
+        <ReactActivity mode={resolvedPanel === 'summary' ? 'visible' : 'hidden'}>
+          {activeSlug && (
+            <SummaryPanel
+              slug={activeSlug}
+              onOpenFeature={(fid) => {
+                const f = status?.features.find((ff) => ff.id === fid);
+                if (f) {
+                  setPeekFeature(f);
+                } else {
+                  setActivePanel('dashboard');
+                }
+              }}
+            />
+          )}
+        </ReactActivity>
         {/* Plugin-mounted tabs: pick whichever plugin matches the active panel
             via the plugin:<id> prefix. iframeUrl is null when the plugin's
             manifest doesn't expose one of the conventional config keys. */}
-        {activePanel.startsWith('plugin:') && activeSlug && (() => {
-          const tabId = activePanel.slice('plugin:'.length);
+        {resolvedPanel.startsWith('plugin:') && activeSlug && (() => {
+          const tabId = resolvedPanel.slice('plugin:'.length);
           const pt = pluginTabs.find((t) => t.tabId === tabId);
           if (!pt) {
             return (
@@ -3528,8 +4156,32 @@ export default function HarnessDashboard() {
               </div>
             );
           }
+          // Inline-dock mode: host renders the plugin's component directly
+          // without an intermediate iframe. Today only @papercupai/pi-coding
+          // uses this — the /pi iframe deadlocks in Next dev (see
+          // InlinePiDock comment). Plugins opt in via "embedMode": "inline-dock"
+          // in their dashboardTabs manifest entry. The host has to know
+          // which dock to render for which (componentRoot, componentId)
+          // pair — currently only PiTerminalsDock from @restart/papercup-shared
+          // is wired here. Other plugins requesting inline-dock fall back
+          // to React-mode below.
+          if (pt.embedMode === 'inline-dock'
+              && pt.componentRoot === '@restart/papercup-shared'
+              && pt.componentId === 'PiTerminalsDock') {
+            return (
+              <div key={`${pt.pluginSlug}:${pt.tabId}`} className="h-plugin-embed-shell h-plugin-embed-shell--pi" style={{ position: 'relative', flex: 1, display: 'flex', minHeight: 0 }}>
+                <InlinePiDock slug={activeSlug} />
+              </div>
+            );
+          }
           if (pt.iframeUrl) {
-            return <PluginIframeWithLoader key={`${pt.pluginSlug}:${pt.tabId}`} url={pt.iframeUrl} title={pt.label} />;
+            // Include activeSlug in the key so the iframe element is
+            // recreated on harness switch. Without this, the iframe's
+            // src prop changes but third-party services (code-server)
+            // sometimes ignore subsequent navigations and re-show the
+            // previously-cached workspace. Forcing remount guarantees a
+            // fresh load.
+            return <PluginIframeWithLoader key={`${pt.pluginSlug}:${pt.tabId}:${activeSlug}`} url={pt.iframeUrl} title={pt.label} />;
           }
           if (pt.componentRoot && pt.componentId) {
             return (
@@ -3552,42 +4204,54 @@ export default function HarnessDashboard() {
             </div>
           );
         })()}
-        {activePanel === 'insights' && status && (
-          <InsightsPanel
-            inline
-            features={status.features as any}
-            totalCostUsd={status.missionCostUsd ?? 0}
-            totalInputTokens={status.missionInputTokens ?? 0}
-            totalOutputTokens={status.missionOutputTokens ?? 0}
-            iteration={status.iteration}
-            onClose={() => setActivePanel('dashboard')}
-          />
-        )}
-        {activePanel === 'experts' && activeSlug && (
-          <ExpertsPanel
-            harnessSlug={activeSlug}
-            onClose={() => setActivePanel('dashboard')}
-          />
-        )}
-        {activePanel === 'config' && activeSlug && status && (
-          <ConfigPanel
-            harnessSlug={activeSlug}
-            projectPath={status.project.path}
-            alive={status.alive}
-            onClose={() => setActivePanel('dashboard')}
-            installedPlugins={installedPlugins ?? []}
-            enabledSlugs={enabledByHarness[activeSlug] ?? []}
-            pluginCount={enabledByHarness[activeSlug]?.length ?? 0}
-            onPluginsChange={() => {
-              setPluginRefreshKey((k) => k + 1);
-              setInstalledPluginsRefreshKey((k) => k + 1);
-            }}
-            activePane={configPane}
-            onPaneChange={(p) => void setConfigPane(p)}
-            pluginsMissing={pluginsMissing}
-          />
-        )}
-        {activePanel === 'dashboard' && (
+        <ReactActivity mode={resolvedPanel === 'insights' ? 'visible' : 'hidden'}>
+          {status && (
+            <InsightsPanel
+              inline
+              slug={activeSlug}
+              features={status.features as any}
+              totalCostUsd={status.missionCostUsd ?? 0}
+              totalInputTokens={status.missionInputTokens ?? 0}
+              totalOutputTokens={status.missionOutputTokens ?? 0}
+              iteration={status.iteration}
+              onClose={() => setActivePanel('dashboard')}
+            />
+          )}
+        </ReactActivity>
+        <ReactActivity mode={resolvedPanel === 'experts' ? 'visible' : 'hidden'}>
+          {activeSlug && (
+            <ExpertsPanel
+              harnessSlug={activeSlug}
+              onClose={() => setActivePanel('dashboard')}
+            />
+          )}
+        </ReactActivity>
+        <ReactActivity mode={resolvedPanel === 'config' ? 'visible' : 'hidden'}>
+          {activeSlug && status && (
+            <ConfigPanel
+              harnessSlug={activeSlug}
+              projectPath={status.project.path}
+              alive={status.alive}
+              onClose={() => setActivePanel('dashboard')}
+              installedPlugins={installedPlugins ?? []}
+              enabledSlugs={enabledByHarness[activeSlug] ?? []}
+              pluginCount={enabledByHarness[activeSlug]?.length ?? 0}
+              onPluginsChange={() => {
+                setPluginRefreshKey((k) => k + 1);
+                setInstalledPluginsRefreshKey((k) => k + 1);
+              }}
+              activePane={configPane}
+              onPaneChange={(p) => void setConfigPane(p)}
+              pluginsMissing={pluginsMissing}
+            />
+          )}
+        </ReactActivity>
+        <ReactActivity mode={resolvedPanel === 'settings' ? 'visible' : 'hidden'}>
+          {activeSlug && (
+            <HarnessSettingsPanel slug={activeSlug} phase={activePhase} />
+          )}
+        </ReactActivity>
+        <ReactActivity mode={resolvedPanel === 'dashboard' ? 'visible' : 'hidden'}>
           <>
             {isCompact ? (
             <div className="h-compact-dashboard">
@@ -3595,33 +4259,37 @@ export default function HarnessDashboard() {
                 <Panel title="Feature queue" count={totalCount} className="h-feature-queue-panel">
                 <FeatureList
                   slug={activeSlug ?? ''}
-                  features={(status?.features ?? []) as any}
+                  features={featuresStable}
                   activeFeatureId={peekFeature?.id ?? null}
-                  onSelect={(f) => setPeekFeature(f as Feature)}
+                  onSelect={handleSelectFeature}
                   onReset={resetFeature}
-                  onEdit={(f) => setEditingFeature(f as Feature)}
-                  onSwitchToPi={() => setActivePanel('pi')}
-                  onAdd={() => setEditingFeature('new')}
+                  onEdit={handleEditFeature}
+                  onSwitchToPi={handleSwitchToPi}
+                  onAdd={handleAddFeature}
                   onBatchReset={batchReset}
                   onBatchDelete={batchDelete}
+                  notesByFeatureId={notesByFeatureId}
                 />
               </Panel>
               </div>
 
               {activeSlug && (
-                <div className="h-compact-panel h-compact-inbox h-dashboard-panel-anchor" data-dashboard-panel={leftPane} tabIndex={-1}>
-                  <LeftPaneTabs leftPane={leftPane} setLeftPane={setLeftPane} />
+                <div
+                  className="h-compact-panel h-compact-inbox h-dashboard-panel-anchor h-dashboard-left-pane"
+                  data-dashboard-panel="git"
+                  tabIndex={-1}
+                  style={{
+                    background: 'var(--bg-2)',
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <SingleSubpanelHeader id="git" label="git" />
                   <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                    {leftPane === 'inbox' && (
-                      <ArchitectInbox
-                        slug={activeSlug}
-                        onFeatureFocus={(fid) => {
-                          const f = status?.features.find((ff) => ff.id === fid);
-                          if (f) setPeekFeature(f);
-                        }}
-                      />
-                    )}
-                    {leftPane === 'git' && <GitGraphPanel slug={activeSlug} />}
+                    <GitGraphPanel slug={activeSlug} />
                   </div>
                 </div>
               )}
@@ -3636,6 +4304,7 @@ export default function HarnessDashboard() {
                 <Panel title="run.log" count="live">
                 <LogView
                   events={logEvents}
+                  newestFirst
                   contextId={activeSlug ?? undefined}
                   onLoadOlder={async (before) => {
                     if (!activeSlug) return { hasMore: false };
@@ -3657,12 +4326,24 @@ export default function HarnessDashboard() {
             </div>
           ) : (
         <div className="h-dashboard-grid" style={{ display: 'flex', gap: 6, height: '100%', minHeight: 0, flex: 1 }}>
+          {activeSlug && (
+            <CollapsedGitRail
+              slug={activeSlug}
+              onExpand={() => setGitCollapsed((c) => !c)}
+            />
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
         <PanelGroup orientation="horizontal">
-          {activeSlug && (
+          {activeSlug && !gitCollapsed && (
             <>
-              <RPanel key={leftPane} defaultSize={leftPane === 'git' ? '30%' : '26%'} minSize={leftPane === 'git' ? '20%' : '18%'} maxSize={leftPane === 'git' ? '48%' : '42%'}>
-                <div className="h-dashboard-panel-anchor h-dashboard-left-pane" data-dashboard-panel={leftPane} tabIndex={-1} style={{
+              <RPanel
+                defaultSize="30%"
+                minSize="20%"
+                maxSize="48%"
+                collapsible
+                collapsedSize={0}
+              >
+                <div className="h-dashboard-panel-anchor h-dashboard-left-pane" data-dashboard-panel="git" tabIndex={-1} style={{
                   height: '100%',
                   background: 'var(--bg-2)',
                   border: '1px solid var(--border)',
@@ -3671,18 +4352,9 @@ export default function HarnessDashboard() {
                   flexDirection: 'column',
                   overflow: 'hidden',
                 }}>
-                  <LeftPaneTabs leftPane={leftPane} setLeftPane={setLeftPane} />
+                  <SingleSubpanelHeader id="git" label="git" />
                   <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-                    {leftPane === 'inbox' && (
-                      <ArchitectInbox
-                        slug={activeSlug}
-                        onFeatureFocus={(fid) => {
-                          const f = status?.features.find((ff) => ff.id === fid);
-                          if (f) setPeekFeature(f);
-                        }}
-                      />
-                    )}
-                    {leftPane === 'git' && <GitGraphPanel slug={activeSlug} />}
+                    <GitGraphPanel slug={activeSlug} />
                   </div>
                 </div>
               </RPanel>
@@ -3697,15 +4369,16 @@ export default function HarnessDashboard() {
                   <Panel title="Feature queue" count={totalCount} className="h-feature-queue-panel">
                     <FeatureList
                       slug={activeSlug ?? ''}
-                      features={(status?.features ?? []) as any}
+                      features={featuresStable}
                       activeFeatureId={peekFeature?.id ?? null}
-                      onSelect={(f) => setPeekFeature(f as Feature)}
+                      onSelect={handleSelectFeature}
                       onReset={resetFeature}
-                      onEdit={(f) => setEditingFeature(f as Feature)}
-                      onSwitchToPi={() => setActivePanel('pi')}
-                      onAdd={() => setEditingFeature('new')}
+                      onEdit={handleEditFeature}
+                      onSwitchToPi={handleSwitchToPi}
+                      onAdd={handleAddFeature}
                       onBatchReset={batchReset}
                       onBatchDelete={batchDelete}
+                      notesByFeatureId={notesByFeatureId}
                     />
                   </Panel>
                 </div>
@@ -3734,6 +4407,7 @@ export default function HarnessDashboard() {
                       <Panel title="run.log" count="live">
                         <LogView
                           events={logEvents}
+                          newestFirst
                           contextId={activeSlug ?? undefined}
                           onLoadOlder={async (before) => {
                             if (!activeSlug) return { hasMore: false };
@@ -3758,7 +4432,7 @@ export default function HarnessDashboard() {
         </div>
           )}
           </>
-        )}
+        </ReactActivity>
       </div>
 
       {/* ── Command palette (⌘K) ──────────────────────────── */}
@@ -3787,6 +4461,9 @@ export default function HarnessDashboard() {
           onInspectRun={loadAgent}
           onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
           onSwitchToPi={() => setActivePanel('pi')}
+          notesForFeature={notesByFeatureId.get(peekFeature.id) ?? ''}
+          debugNoteForFeature={debugNotesByFeatureId.get(peekFeature.id) ?? null}
+          prForFeature={prsByFeatureId.get(peekFeature.id) ?? null}
         />
       )}
 
@@ -3854,7 +4531,7 @@ export default function HarnessDashboard() {
             slug={activeSlug}
             onClose={() => setShowSnapshots(false)}
             onRestored={() => {
-              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
+              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then((next) => setStatus((prev) => prev && Array.isArray(prev.features) && prev.features.length > 0 ? { ...next, features: prev.features } : next)).catch(() => {});
             }}
           />
         </div>
@@ -3915,8 +4592,18 @@ export default function HarnessDashboard() {
             slug={activeSlug}
             onClose={() => setShowArchives(false)}
             onChanged={() => {
-              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
+              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then((next) => setStatus((prev) => prev && Array.isArray(prev.features) && prev.features.length > 0 ? { ...next, features: prev.features } : next)).catch(() => {});
             }}
+          />
+        </div>
+      )}
+
+      {/* ── Intel panel — tool-invocation telemetry ──────── */}
+      {showIntel && activeSlug && (
+        <div data-harness-modal="true">
+          <IntelPanel
+            slug={activeSlug}
+            onClose={() => setShowIntel(false)}
           />
         </div>
       )}
@@ -3929,23 +4616,17 @@ export default function HarnessDashboard() {
             onClose={() => setShowTemplates(false)}
             onBootstrapped={() => {
               // SPEC.md content may have changed; refetch spec + status
-              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
+              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then((next) => setStatus((prev) => prev && Array.isArray(prev.features) && prev.features.length > 0 ? { ...next, features: prev.features } : next)).catch(() => {});
             }}
           />
         </div>
       )}
 
-      {/* ── User-action log (replan/cleanup/snapshot/etc.) ─── */}
-      {activeSlug && (
-        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
-          <LazyDetails
-            summary={<span style={{ fontSize: 13, fontWeight: 600, opacity: 0.85 }}>Recent actions</span>}
-            summaryStyle={{ cursor: 'pointer', userSelect: 'none' }}
-          >
-            <OperatorActionLog slug={activeSlug} />
-          </LazyDetails>
-        </div>
-      )}
+      {/* The "Recent actions" log was relocated to the chrome bar (the
+          Activity-icon button next to the bell, see RecentActionsCenter).
+          The old in-dashboard <LazyDetails> block at the bottom of the
+          page is gone — replaced by a single popover that's reachable
+          from any panel without scrolling. */}
 
       {/* ── Feature editor modal ──────────────────────────── */}
       {editingFeature !== null && activeSlug && (
@@ -3955,7 +4636,7 @@ export default function HarnessDashboard() {
             feature={editingFeature === 'new' ? null : editingFeature}
             onClose={() => setEditingFeature(null)}
             onSaved={() => {
-              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then(setStatus).catch(() => {});
+              fetch(`/api/harness/${activeSlug}/status?phase=${activePhase}`).then((r) => r.json()).then((next) => setStatus((prev) => prev && Array.isArray(prev.features) && prev.features.length > 0 ? { ...next, features: prev.features } : next)).catch(() => {});
             }}
           />
         </div>
@@ -4045,18 +4726,13 @@ function RecentAgentsTable({
 }
 
 
-// ─── Left pane tab selector (inbox / git) ──────────
-function LeftPaneTabs({
-  leftPane,
-  setLeftPane,
-}: {
-  leftPane: 'inbox' | 'git';
-  setLeftPane: (p: 'inbox' | 'git') => void;
-}) {
-  const tabs: Array<{ id: 'inbox' | 'git'; label: string }> = [
-    { id: 'inbox', label: 'inbox' },
-    { id: 'git', label: 'git' },
-  ];
+// ─── Single-tab subpanel header ─────────────────────────────────
+// Matches the chrome of the original LeftPaneTabs strip — a single
+// uppercase tab pill in a bordered top bar — so the parent panel still
+// has the visual "subpanel inside parent panel" structure even though
+// the inbox/git toggle has been removed (each is now its own parent).
+export function SingleSubpanelHeader({ id, label }: { id: 'inbox' | 'git'; label: string }) {
+  const Icon = id === 'inbox' ? Inbox : GitBranch;
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 2,
@@ -4065,36 +4741,25 @@ function LeftPaneTabs({
       background: 'var(--bg-2)',
       flexShrink: 0,
     }}>
-      {tabs.map((t) => {
-        const active = leftPane === t.id;
-        const Icon = t.id === 'inbox' ? Inbox : GitBranch;
-        return (
-          <button
-            key={t.id}
-            onClick={() => setLeftPane(t.id)}
-            title={`Switch to ${t.label}`}
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '4px 10px',
-              fontSize: 10.5,
-              fontWeight: 600,
-              letterSpacing: 0.4,
-              textTransform: 'uppercase',
-              color: active ? 'var(--fg)' : 'var(--fg-dim)',
-              background: active ? 'var(--bg-3)' : 'transparent',
-              border: `1px solid ${active ? 'var(--border)' : 'transparent'}`,
-              borderRadius: 4,
-              cursor: 'pointer',
-              transition: 'all 120ms ease',
-            }}
-          >
-            <Icon size={12} />
-            {t.label}
-          </button>
-        );
-      })}
+      <span
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '4px 10px',
+          fontSize: 10.5,
+          fontWeight: 600,
+          letterSpacing: 0.4,
+          textTransform: 'uppercase',
+          color: 'var(--fg)',
+          background: 'var(--bg-3)',
+          border: '1px solid var(--border)',
+          borderRadius: 4,
+        }}
+      >
+        <Icon size={12} />
+        {label}
+      </span>
     </div>
   );
 }
@@ -4105,42 +4770,51 @@ function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string
   const [tab, setTab] = useState<'issues' | 'report' | 'tests'>('issues');
   const [issueCount, setIssueCount] = useState<number | null>(null);
 
-  return (
-    <div className="h-panel" style={{ height: '100%' }}>
-      <div className="h-tabs">
-        <Tooltip label="Open issue tracker — bugs and concerns surfaced by validators">
-          <button
+  // Wrap with `<Panel>` so the maximize/restore button (provided by
+  // `Panel` and styled via `.h-panel-maximize`) shows up consistently
+  // with Feature queue / Recent agents / run.log. The panel's tab strip
+  // is passed as `actions` so it sits inline with the title row instead
+  // of pushing the body down. Padded={false} to keep the existing
+  // edge-to-edge body layout.
+  const tabs = (
+    <>
+      <Tooltip label="Open issue tracker — bugs and concerns surfaced by validators">
+        <button
           className={`h-tab${tab === 'issues' ? ' on' : ''}`}
           onClick={() => setTab('issues')}
         >
           issues
           {issueCount !== null && <span className="h-tab-count">{issueCount}</span>}
         </button>
-        </Tooltip>
-        <Tooltip label="Show test claims and validator outcomes">
-          <button
+      </Tooltip>
+      <Tooltip label="Show test claims and validator outcomes">
+        <button
           className={`h-tab${tab === 'tests' ? ' on' : ''}`}
           onClick={() => setTab('tests')}
         >
           tests
         </button>
-        </Tooltip>
-        <Tooltip label="Show the validator's prose report for the latest run">
-          <button
+      </Tooltip>
+      <Tooltip label="Show the validator's prose report for the latest run">
+        <button
           className={`h-tab${tab === 'report' ? ' on' : ''}`}
           onClick={() => setTab('report')}
         >
           report
           {reportMd && <span className="h-tab-count">{reportMd.length > 0 ? 'md' : ''}</span>}
         </button>
-        </Tooltip>
-      </div>
-      <div className="h-panel-body" style={{ display: 'flex', flexDirection: 'column' }}>
+      </Tooltip>
+    </>
+  );
+
+  return (
+    <Panel title="Issues" actions={tabs}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
         {tab === 'issues' && <IssuesList slug={slug} onCount={setIssueCount} />}
         {tab === 'tests' && <TestsTab slug={slug} phase={phase} />}
         {tab === 'report' && <MarkdownView source={reportMd} />}
       </div>
-    </div>
+    </Panel>
   );
 }
 

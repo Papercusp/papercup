@@ -1,7 +1,8 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Modal } from './Modal';
+import { useSyncQuery } from '@restart/sync';
 
 interface TimelineEvent {
   ts: number;
@@ -38,6 +39,62 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
   const [data, setData] = useState<Payload | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  // Eager subscriptions: agent runs, debug note, PR — three of the four
+  // data sources used by the /timeline endpoint can be derived client-side
+  // from already-cached Zero data. The fourth (status_change events) still
+  // requires server-side parsing of historical snapshots/features.json,
+  // so we fetch /timeline in the background and merge it in.
+  const { data: agentRows } = useSyncQuery<{
+    harnessSlug: string; runId: string; role: string;
+    featureId?: string | null; ts: number;
+  }>({
+    queryName: 'agentRunsConsolidated.bySlug',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+  const { data: debugRows } = useSyncQuery<{ featureId: string; mtimeMs: number; content: string }>({
+    queryName: 'featureDebugNotes.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+  const { data: prRows } = useSyncQuery<{
+    featureId: string; prUrl: string; openedTs: number;
+  }>({
+    queryName: 'featurePrs.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+
+  const eagerEvents = useMemo<TimelineEvent[]>(() => {
+    const out: TimelineEvent[] = [];
+    if (Array.isArray(agentRows)) {
+      for (const r of agentRows) {
+        if (r.featureId !== featureId) continue;
+        const ts = (r.ts ?? 0) * 1000;
+        out.push({ ts, iso: new Date(ts).toISOString(), kind: 'agent_run', detail: `${r.role} invoked` });
+      }
+    }
+    if (Array.isArray(debugRows)) {
+      const dn = debugRows.find((r) => r.featureId === featureId);
+      if (dn) out.push({
+        ts: dn.mtimeMs,
+        iso: new Date(dn.mtimeMs).toISOString(),
+        kind: 'debug_note',
+        detail: 'debugger role investigated',
+      });
+    }
+    if (Array.isArray(prRows)) {
+      const pr = prRows.find((r) => r.featureId === featureId);
+      if (pr) out.push({
+        ts: pr.openedTs,
+        iso: new Date(pr.openedTs).toISOString(),
+        kind: 'pr_opened',
+        detail: pr.prUrl,
+      });
+    }
+    return out;
+  }, [agentRows, debugRows, prRows, featureId]);
+
   const load = useCallback(async () => {
     try {
       const r = await fetch(`/api/harness/${slug}/features/${featureId}/timeline`);
@@ -54,7 +111,13 @@ export default function FeatureTimelinePanel({ slug, featureId, onClose }: Props
     load();
   }, [load]);
 
-  const events = data?.events ?? [];
+  // Merge: prefer server-side `data.events` once it arrives (canonical, has
+  // status_change events too); until then, render the eager subset so the
+  // modal populates same-frame.
+  const events: TimelineEvent[] = useMemo(() => {
+    if (data?.events) return data.events;
+    return [...eagerEvents].sort((a, b) => a.ts - b.ts);
+  }, [data, eagerEvents]);
 
   return (
     <Modal

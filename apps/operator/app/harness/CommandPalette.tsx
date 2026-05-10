@@ -1,6 +1,6 @@
 'use client';
 
-import { memo, useDeferredValue, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { Command as CmdK } from 'cmdk';
 import { KbdHint } from './primitives';
@@ -52,10 +52,16 @@ export default function CommandPalette({
     if (!open && inputRef.current) inputRef.current.value = '';
   }, [open]);
 
-  const run = (c: Command) => {
+  // Pin `run` to a stable identity so the memoized CommandList doesn't
+  // re-render every time the parent (HarnessDashboard) re-renders.
+  // Without this, status polling every 5 s busts memo and re-renders
+  // all ~400 CmdK.Items at ~27 ms self-time per commit.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const run = useCallback((c: Command) => {
     c.perform();
-    onClose();
-  };
+    onCloseRef.current();
+  }, []);
 
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }} modal={false}>

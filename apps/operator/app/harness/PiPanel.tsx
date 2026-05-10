@@ -50,10 +50,23 @@ function ptyWsUrlForId(id: string): string | null {
   if (w.__PAPERCUSP_TAURI__?.kind === 'native') return null;
   const override = w.__PAPERCUSP_PTY_WS__;
   if (override === null) return null; // explicit opt-out
-  const base = (override && typeof override === 'string')
-    ? override
-    : (process.env.NEXT_PUBLIC_PAPERCUSP_PTY_WS
-        ?? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:3056`);
+  const buildEnv = process.env.NEXT_PUBLIC_PAPERCUSP_PTY_WS;
+  const explicit = (override && typeof override === 'string') ? override : buildEnv;
+  if (!explicit) {
+    // No configured WS endpoint. The default "operator:3055 + pty-ws:3056"
+    // pairing only works when the operator is actually on :3055. When the
+    // user has multiple operator processes (e.g. dev :3055 + prod :3070)
+    // they share host but only one binds :3056 — the other process owns
+    // its own pty handles and can't reach them via WS. Connecting to the
+    // wrong process's WS gets a 101 + immediate close ("unknown route"),
+    // which the reconnect loop happily retries forever. Skip WS entirely
+    // unless we're actually on :3055 (or it's been explicitly configured)
+    // and let SSE handle data — same-origin, always points at the
+    // process that owns the pty handle.
+    if (window.location.port !== '3055') return null;
+  }
+  const base = explicit
+    ?? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.hostname}:3056`;
   return `${base.replace(/\/$/, '')}/pty/${encodeURIComponent(id)}`;
 }
 

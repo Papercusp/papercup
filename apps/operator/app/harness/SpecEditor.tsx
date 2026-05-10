@@ -10,6 +10,10 @@ import { BacklinksPanel } from '../_components/BacklinksPanel';
 import MemoryBrowser from './MemoryBrowser';
 import PromptsTab from './PromptsTab';
 import { CollectionTab, type CollectionItem } from './CollectionTab';
+import { useSyncQuery } from '@restart/sync';
+
+type ProjectFilesRow = { harnessSlug: string; spec: string | null; agents: string | null; contract: string | null; config: string | null; updatedAt: number };
+type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 
 type SimpleTab = 'spec' | 'agents' | 'contract' | 'config' | 'knowledge' | 'mcp' | 'supervisor' | 'claudeSettings' | 'env';
 type Tab = SimpleTab | 'skills';
@@ -59,53 +63,111 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   // Prompts are managed by PromptsTab under its own section.
   const [skills, setSkills] = useState<string[]>([]);
 
-  const reloadSkills = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/skills`).then((r) => r.json());
-      setSkills(d.skills ?? []);
-    } catch {}
-  }, [slug]);
-
-  // Load content when opened.
+  // Eager: skills are mirrored to harness_shared.harness_skills by the
+  // fs-watcher. Subscribe and derive the file-name list synchronously;
+  // the row content is also passed to CollectionTab so selecting a skill
+  // paints same-frame instead of round-tripping to /skills/<id>.md.
+  const { data: skillRows } = useSyncQuery<{ name: string; content: string }>({
+    queryName: 'harnessSkills.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
   useEffect(() => {
-    setLoading(true);
-    Promise.all([
-      fetch(`/api/harness/${slug}/spec`).then((r) => r.json()),
-      fetch(`/api/harness/${slug}/knowledge`).then((r) => r.json()),
-      fetch(`/api/harness/${slug}/mcp`).then((r) => r.json()),
-      fetch(`/api/harness/${slug}/supervisor-notes`).then((r) => r.json()),
-      fetch(`/api/harness/${slug}/claude-settings`).then((r) => r.json()),
-      // .env is NOT preloaded — only fetched after user reveals it.
-    ])
-      .then(([d, k, m, s, cs]) => {
-        const o: Record<SimpleTab, string | null> = {
-          spec: d.spec ?? null,
-          agents: d.agents ?? null,
-          contract: d.contract ?? null,
-          config: d.config ?? null,
-          knowledge: k.content ?? null,
-          mcp: m.content || null,
-          supervisor: s.content || null,
-          claudeSettings: cs.content || null,
-          env: null,
-        };
-        setOriginal(o);
-        setDraft({
-          spec: o.spec ?? '',
-          agents: o.agents ?? '',
-          contract: o.contract ?? '',
-          config: o.config ?? '',
-          knowledge: o.knowledge ?? '',
-          mcp: o.mcp ?? '',
-          supervisor: o.supervisor ?? '',
-          claudeSettings: o.claudeSettings ?? '',
-          env: '',
-        });
-      })
-      .catch((e) => setToast(`load failed: ${e}`))
-      .finally(() => setLoading(false));
+    if (!Array.isArray(skillRows)) return;
+    setSkills(skillRows.map((r) => r.name).sort());
+  }, [skillRows]);
+
+  const reloadSkills = useCallback(async () => {
+    // Kept for back-compat with callers that invoked it after a CRUD
+    // action; the Zero invalidate now keeps `skills` fresh automatically.
+    return;
+  }, []);
+
+  // Eager Zero subscriptions — replaces 5 sequential REST fetches that
+  // ran on mount. spec/agents/contract/config come from the project-files
+  // table (one row per harness, four columns); knowledge/mcp/supervisor/
+  // claudeSettings come from text-artifacts (one row per rel_path).
+  // .env stays REST — file is sensitive, not eagerly synced.
+  const { data: projectFilesRows } = useSyncQuery<ProjectFilesRow>({
+    queryName: 'harnessProjectFiles.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+  const projectFilesRow = useMemo(
+    () => Array.isArray(projectFilesRows) ? projectFilesRows[0] : undefined,
+    [projectFilesRows],
+  );
+
+  const { data: textArtifactRows } = useSyncQuery<TextArtifactRow>({
+    queryName: 'harnessTextArtifact.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+  const textArtifactByPath = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!Array.isArray(textArtifactRows)) return m;
+    for (const r of textArtifactRows) m.set(r.relPath, r.content ?? '');
+    return m;
+  }, [textArtifactRows]);
+
+  // Hydrate when subscriptions land. Some artifacts (knowledge/mcp/etc.)
+  // aren't yet in PG (Phase 0d) — fall back to REST for those keys.
+  useEffect(() => {
+    // Wait for both subscriptions to have responded at least once.
+    if (projectFilesRows === undefined || textArtifactRows === undefined) return;
+
+    const knowledgeFromPg = textArtifactByPath.get('knowledge.md');
+    const mcpFromPg = textArtifactByPath.get('mcp.json');
+    const supervisorFromPg = textArtifactByPath.get('supervisor-notes.md');
+    const claudeSettingsFromPg = textArtifactByPath.get('claude-settings.json');
+
+    // For artifacts not yet PG-canonical, fall back to REST in parallel.
+    const fallbacks: Promise<unknown>[] = [];
+    let knowledge = knowledgeFromPg ?? null;
+    let mcp = mcpFromPg ?? null;
+    let supervisor = supervisorFromPg ?? null;
+    let claudeSettings = claudeSettingsFromPg ?? null;
+    if (knowledge == null) fallbacks.push(fetch(`/api/harness/${slug}/knowledge`).then((r) => r.json()).then((d) => { knowledge = d.content ?? ''; }));
+    if (mcp == null) fallbacks.push(fetch(`/api/harness/${slug}/mcp`).then((r) => r.json()).then((d) => { mcp = d.content ?? ''; }));
+    if (supervisor == null) fallbacks.push(fetch(`/api/harness/${slug}/supervisor-notes`).then((r) => r.json()).then((d) => { supervisor = d.content ?? ''; }));
+    if (claudeSettings == null) fallbacks.push(fetch(`/api/harness/${slug}/claude-settings`).then((r) => r.json()).then((d) => { claudeSettings = d.content ?? ''; }));
+
+    const apply = () => {
+      const o: Record<SimpleTab, string | null> = {
+        spec: projectFilesRow?.spec ?? null,
+        agents: projectFilesRow?.agents ?? null,
+        contract: projectFilesRow?.contract ?? null,
+        config: projectFilesRow?.config ?? null,
+        knowledge,
+        mcp,
+        supervisor,
+        claudeSettings,
+        env: null,
+      };
+      setOriginal(o);
+      setDraft({
+        spec: o.spec ?? '',
+        agents: o.agents ?? '',
+        contract: o.contract ?? '',
+        config: o.config ?? '',
+        knowledge: o.knowledge ?? '',
+        mcp: o.mcp ?? '',
+        supervisor: o.supervisor ?? '',
+        claudeSettings: o.claudeSettings ?? '',
+        env: '',
+      });
+      setLoading(false);
+    };
+
+    if (fallbacks.length === 0) {
+      apply();
+    } else {
+      Promise.all(fallbacks)
+        .then(apply)
+        .catch((e) => { setToast(`load failed: ${e}`); setLoading(false); });
+    }
     reloadSkills();
-  }, [slug, reloadSkills]);
+  }, [slug, projectFilesRow, projectFilesRows, textArtifactByPath, textArtifactRows, reloadSkills]);
 
   const dirty = useMemo(() => {
     const diffs: SimpleTab[] = [];
@@ -216,7 +278,11 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
         border: inline ? 'none' : '1px solid #374151',
         borderRadius: inline ? 0 : 6,
         width: inline ? '100%' : '90vw',
-        height: inline ? '100%' : '90vh',
+        // Inline: use flex:1 + align-self:stretch so we fill the parent
+        // (.h-config-body) regardless of its flex direction. `height: 100%`
+        // doesn't resolve reliably when the parent's height comes from
+        // `flex: 1 1 0%` rather than an explicit value.
+        ...(inline ? { flex: 1, alignSelf: 'stretch', minHeight: 0 } : { height: '90vh' }),
         display: 'flex', flexDirection: 'column', overflow: 'hidden',
       }}
       onClick={(e) => e.stopPropagation()}
@@ -323,7 +389,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
         {/* Sensitivity banner (settings only) */}
         {onSettings && sensitivity === 'warn' && (
           <div style={{ padding: '6px 16px', background: 'rgba(245, 158, 11, 0.1)', borderBottom: '1px solid rgba(245, 158, 11, 0.3)', fontSize: 11.5, color: '#fbbf24' }}>
-            ⚠ Editing {tabMeta.label} changes Claude's tool permissions and environment for this project. Malformed JSON will break `claude -p` on the next agent run — JSON is validated before save, but semantics are on you.
+            ⚠ Editing {tabMeta.label} changes the agent's tool permissions and environment for this project. Malformed JSON will break the agent CLI on the next run (omp -p / claude -p) — JSON is validated before save, but semantics are on you.
           </div>
         )}
         {onSettings && sensitivity === 'secret' && (
@@ -364,6 +430,10 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
               allowCreate
               createLabel="new skill"
               deletable={() => true}
+              getEagerContent={(id) => {
+                const row = (skillRows ?? []).find((r) => r.name === `${id}.md`);
+                return row?.content;
+              }}
             />
           ) : loading ? (
             <div style={{ padding: '2rem', color: '#9ca3af' }}>loading…</div>

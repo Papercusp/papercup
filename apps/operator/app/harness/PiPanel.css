@@ -254,6 +254,23 @@
   font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
   letter-spacing: 0.04em;
   pointer-events: none;
+  /* Warm spawns ARE fast (server adopts in 7-30ms once the warm pool
+   * is mature) but the warm pool itself isn't *fully ready* until omp
+   * has finished its ~1.2s MCP-connection boot phase. Adoption before
+   * boot completes replays the connection log into xterm, which the
+   * user perceives as "starting pi" — even though our React state has
+   * already transitioned to running.
+   *
+   * Hold the overlay invisible for 1500ms so warm-but-still-booting
+   * adoptions don't flash the message either. After 1500ms, if the
+   * panel is genuinely still in a 'starting' state (server cap, omp
+   * crash, etc.) the overlay fades in to give the user feedback. */
+  opacity: 0;
+  animation: pi-panel-loading-reveal 250ms 1500ms forwards;
+}
+
+@keyframes pi-panel-loading-reveal {
+  to { opacity: 1; }
 }
 
 .pi-panel__loading-spin {

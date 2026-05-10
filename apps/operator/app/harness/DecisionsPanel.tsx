@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { Checkbox } from './Checkbox';
@@ -23,6 +24,20 @@ interface Payload {
   byVerb: Record<string, number>;
 }
 
+// Row shape from harness_shared.harness_decisions (parsed run.log tail
+// mirrored by harness-fs-watcher.ts).
+type HarnessDecisionRow = {
+  harnessSlug: string;
+  lineHash: string;
+  ts: number;
+  iso: string;
+  verb: string;
+  args: string;
+  iteration?: number | null;
+  isGhost: boolean;
+  workspaceId: string;
+};
+
 interface Props {
   slug: string;
   onClose: () => void;
@@ -44,27 +59,42 @@ function fmtTs(ts: number): string {
 }
 
 export default function DecisionsPanel({ slug, onClose }: Props) {
-  const [data, setData] = useState<Payload | null>(null);
   const [hideGhosts, setHideGhosts] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await fetch(`/api/harness/${slug}/decisions`);
-      if (!r.ok) throw new Error(`${r.status}`);
-      const d: Payload = await r.json();
-      setData(d);
-      setErr(null);
-    } catch (e) {
-      setErr(String(e));
+  // Live-pushed via Zero (harness_shared.harness_decisions, parsed from
+  // .harness/logs/run.log tail by harness-fs-watcher.ts). Replaces
+  // useSseOrPoll(/decisions/sse, load, 5000). Aggregate stats are
+  // computed client-side from the row set.
+  const { data: decisionRows, error } = useSyncQuery<HarnessDecisionRow>({
+    queryName: 'harnessDecisions.byHarness',
+    args: { harnessSlug: slug },
+  });
+  const data = useMemo<Payload | null>(() => {
+    if (!decisionRows) return null;
+    const decisions: Decision[] = decisionRows.map((r) => ({
+      ts: r.ts,
+      iso: r.iso,
+      verb: r.verb,
+      args: r.args,
+      iteration: r.iteration ?? null,
+      isGhost: r.isGhost,
+    }));
+    const byVerb: Record<string, number> = {};
+    let ghosts = 0;
+    for (const d of decisions) {
+      if (d.isGhost) ghosts += 1;
+      else byVerb[d.verb] = (byVerb[d.verb] ?? 0) + 1;
     }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+    return {
+      decisions,
+      total: decisions.length,
+      recognized: decisions.length - ghosts,
+      ghosts,
+      ghostRate: decisions.length > 0 ? ghosts / decisions.length : 0,
+      byVerb,
+    };
+  }, [decisionRows]);
+  const err = error ? String(error) : null;
 
   const filtered = useMemo(() => {
     if (!data) return [];

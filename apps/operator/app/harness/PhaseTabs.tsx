@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
+import { useSyncQuery } from '@restart/sync';
 import { Tooltip } from './Tooltip';
 import { Play, Square, Activity, AlertTriangle, ExternalLink, ChevronDown, Settings } from 'lucide-react';
 
@@ -50,7 +51,11 @@ interface Props {
   onChange: (p: Phase) => void;
 }
 
-const PHASE_ORDER: Phase[] = ['staging', 'testing', 'production'];
+// PHASE_ORDER imported from the client-safe const module (the parent
+// harness-phases.ts uses node:fs and can't be pulled into the client
+// bundle). Single source of truth — adding a phase touches one file.
+import { ALL_PHASES } from '@/lib/harness-phases-const';
+const PHASE_ORDER: Phase[] = [...ALL_PHASES];
 const PHASE_COLOR: Record<Phase, string> = {
   staging: '#3b82f6',
   testing: '#a855f7',
@@ -62,31 +67,30 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
   const [health, setHealth] = useState<Record<Phase, 'up' | 'slow' | 'down' | 'unknown'>>({
     staging: 'unknown', testing: 'unknown', production: 'unknown',
   });
-  const [actions, setActions] = useState<Record<Phase, ActionEntry[]>>({
-    staging: [], testing: [], production: [],
+  // Live-pushed via Zero (harness_shared.harness_branch_actions, mirrored
+  // by harness-fs-watcher.ts). Replaces the 30s × 3-branch setInterval poll.
+  // Each row's `payload` is the same shape the REST endpoint returns.
+  const stagingQ = useSyncQuery<{ payload: { actions: ActionEntry[] } }>({
+    queryName: 'harnessBranchActions.byHarnessAndBranch',
+    args: { harnessSlug: slug, branch: 'staging' },
   });
+  const testingQ = useSyncQuery<{ payload: { actions: ActionEntry[] } }>({
+    queryName: 'harnessBranchActions.byHarnessAndBranch',
+    args: { harnessSlug: slug, branch: 'testing' },
+  });
+  const productionQ = useSyncQuery<{ payload: { actions: ActionEntry[] } }>({
+    queryName: 'harnessBranchActions.byHarnessAndBranch',
+    args: { harnessSlug: slug, branch: 'production' },
+  });
+  const actions = useMemo<Record<Phase, ActionEntry[]>>(() => ({
+    staging: stagingQ.data?.[0]?.payload?.actions ?? [],
+    testing: testingQ.data?.[0]?.payload?.actions ?? [],
+    production: productionQ.data?.[0]?.payload?.actions ?? [],
+  }), [stagingQ.data, testingQ.data, productionQ.data]);
   const [openMenu, setOpenMenu] = useState<Phase | null>(null);
   const [running, setRunning] = useState<{ branch: Phase; name: string } | null>(null);
 
-  // Discover actions per branch
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      const next: Record<Phase, ActionEntry[]> = { staging: [], testing: [], production: [] };
-      await Promise.all(PHASE_ORDER.map(async (b) => {
-        try {
-          const r = await fetch(`/api/harness/${slug}/branch/${b}/actions`);
-          if (!r.ok) return;
-          const d = await r.json();
-          if (Array.isArray(d.actions)) next[b] = d.actions;
-        } catch { /* ignore */ }
-      }));
-      if (alive) setActions(next);
-    };
-    load();
-    const t = setInterval(load, 8000);
-    return () => { alive = false; clearInterval(t); };
-  }, [slug]);
+  // Branch actions now live-push via Zero (above) — no more setInterval.
 
   // The menu is portal'd to document.body to escape any clipping ancestor
   // (the phase strip lives inside `.h-project-phases` which has compact
@@ -130,18 +134,46 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
     };
   }, [openMenu]);
 
+  // Phases stream from harness_phases (Zero) — chokidar watcher mirrors
+  // .harness/config.json + worktree existence into PG. The 30s REST poll
+  // is gone.
+  const { data: phaseRows } = useSyncQuery<{
+    phase: string;
+    phasePath: string;
+    branch: string | null;
+    port: number | null;
+    publicUrl: string | null;
+    existsOnDisk: boolean;
+    alive: boolean;
+    passedCount: number;
+    totalCount: number;
+    costUsd: number;
+    iteration: number;
+    promotionInFlight: boolean;
+  }>({
+    queryName: 'harnessPhases.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+
   useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const d = await fetch(`/api/harness/${slug}/phases`).then((r) => r.json());
-        if (alive && d.phases) setPhases(d.phases);
-      } catch {}
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => { alive = false; clearInterval(t); };
-  }, [slug]);
+    if (!Array.isArray(phaseRows)) return;
+    const next: PhaseInfo[] = phaseRows.map((r) => ({
+      phase: r.phase as Phase,
+      path: r.phasePath,
+      branch: r.branch ?? '',
+      port: r.port ?? null,
+      publicUrl: r.publicUrl ?? null,
+      exists: r.existsOnDisk,
+      alive: r.alive,
+      passed: r.passedCount,
+      total: r.totalCount,
+      cost: r.costUsd,
+      iteration: r.iteration,
+      promotionInFlight: r.promotionInFlight ? 'in-flight' : null,
+    }));
+    setPhases(next);
+  }, [phaseRows]);
 
   // Health pings — poll each phase's port
   useEffect(() => {

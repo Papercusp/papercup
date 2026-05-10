@@ -1,9 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { toast } from 'sonner';
 import '@excalidraw/excalidraw/index.css';
+import { useSyncQuery } from '@restart/sync';
+
+type BrainstormRow = { harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number };
 
 const Excalidraw = dynamic(
   async () => (await import('@excalidraw/excalidraw')).Excalidraw,
@@ -28,18 +31,24 @@ export function CanvasView({ slug }: Props) {
   const [loaded, setLoaded] = useState(false);
   const saveRef = useRef<((s: SceneFile) => void) | undefined>(undefined);
 
+  // Eager Zero subscription — replaces the lazy REST fetch so the canvas
+  // hydrates same-frame on open instead of after a round trip.
+  const { data: brainstormRows } = useSyncQuery<BrainstormRow>({
+    queryName: 'harnessBrainstorm.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+  const brainstormRow = useMemo(
+    () => Array.isArray(brainstormRows) ? brainstormRows.find((r) => r.phase === 'staging') ?? brainstormRows[0] : undefined,
+    [brainstormRows],
+  );
+
   useEffect(() => {
-    let aborted = false;
-    fetch(`/api/harness/${slug}/brainstorm-canvas`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (aborted) return;
-        setScene(d.scene ?? { elements: [], appState: {}, files: {} });
-        setLoaded(true);
-      })
-      .catch((e) => toast.error(`Canvas load failed: ${e}`));
-    return () => { aborted = true; };
-  }, [slug]);
+    if (brainstormRows === undefined) return; // still loading
+    const canvas = brainstormRow?.canvas as SceneFile | null | undefined;
+    setScene(canvas ?? { elements: [], appState: {}, files: {} });
+    setLoaded(true);
+  }, [brainstormRow, brainstormRows]);
 
   useEffect(() => {
     saveRef.current = debounce(async (s: SceneFile) => {
@@ -57,10 +66,21 @@ export function CanvasView({ slug }: Props) {
 
   if (!loaded || !scene) return <div className="h-empty">loading canvas…</div>;
 
+  // Force transparent canvas so the brainstorm write/map layers behind
+  // this one stay visible — this surface is one of three z-stacked
+  // layers sharing a single perceived workspace, not a standalone
+  // whiteboard. (Excalidraw paints `viewBackgroundColor` over the
+  // entire canvas; without overriding it here, even a transparent
+  // wrapper div is covered by the editor's own fill.)
+  const initialData = {
+    ...scene,
+    appState: { ...(scene.appState ?? {}), viewBackgroundColor: 'transparent' },
+  };
+
   return (
     <div className="h-brainstorm-canvas">
       <Excalidraw
-        initialData={scene}
+        initialData={initialData}
         theme="dark"
         UIOptions={{
           canvasActions: { export: false, saveAsImage: true, loadScene: false },

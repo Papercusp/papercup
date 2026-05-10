@@ -22,6 +22,7 @@ import { MarkdownEditor } from '../../../../_components/MarkdownEditor';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from '../../../theme';
 import { Tooltip } from '../../../Tooltip';
+import { useSyncQuery } from '@restart/sync';
 
 interface FeatureCounts {
   todo: number; in_progress: number; validating: number; failing: number;
@@ -115,6 +116,39 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
     } catch { /* best-effort */ }
   }, [slug, projectId]);
 
+  // Eager via Zero — projectSpecRevisions.byProject mirrors PG's
+  // harness_shared.project_spec_revisions table. History tab paints
+  // same-frame on tab open instead of round-tripping when user clicks.
+  // Map Zero's camelCase + epoch-ms to the existing RevisionRow shape.
+  const { data: zeroRevisions } = useSyncQuery<{
+    id: number;
+    summary?: string | null;
+    authorRole: string;
+    author?: string | null;
+    ts: number;
+    includeDecisions?: Array<{ feature_id: string; action: 'include' | 'exclude'; reason: string }> | null;
+    tokensIn: number;
+    tokensOut: number;
+    costUsdCents: number;
+  }>({
+    queryName: 'projectSpecRevisions.byProject',
+    args: { projectId, limit: 50 },
+    enabled: !!projectId,
+  });
+  useEffect(() => {
+    if (!Array.isArray(zeroRevisions)) return;
+    setRevisions(zeroRevisions.map((r) => ({
+      id: r.id,
+      summary: r.summary ?? null,
+      author_role: r.authorRole,
+      author: r.author ?? null,
+      ts: new Date(r.ts).toISOString(),
+      include_decisions: r.includeDecisions ?? null,
+      tokens_in: r.tokensIn,
+      tokens_out: r.tokensOut,
+      cost_usd_cents: r.costUsdCents,
+    })));
+  }, [zeroRevisions]);
   const loadRevisions = useCallback(async () => {
     try {
       const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/projects/${encodeURIComponent(projectId)}/spec/revisions?limit=50`);
@@ -124,7 +158,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
     } catch { /* best-effort */ }
   }, [slug, projectId]);
 
-  useEffect(() => { void loadProject(); void loadFeatures(); void loadRevisions(); }, [loadProject, loadFeatures, loadRevisions]);
+  useEffect(() => { void loadProject(); void loadFeatures(); }, [loadProject, loadFeatures]);
 
   const startEdit = useCallback(() => {
     setDraftSpec(project?.spec ?? '');

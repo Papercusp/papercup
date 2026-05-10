@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import './VersionBadge.css';
 
 interface VersionInfo {
@@ -13,7 +13,7 @@ interface VersionInfo {
 
 const POLL_MS = 30_000;
 
-export function VersionBadge() {
+function VersionBadgeInner() {
   const [info, setInfo] = useState<VersionInfo | null>(null);
   const [stale, setStale] = useState(false);
   const initialShaRef = useRef<string | null>(null);
@@ -71,3 +71,6 @@ export function VersionBadge() {
     </button>
   );
 }
+
+const VersionBadge = memo(VersionBadgeInner);
+export default VersionBadge;

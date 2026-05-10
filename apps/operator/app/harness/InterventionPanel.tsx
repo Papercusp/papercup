@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 
 interface Props {
@@ -9,29 +10,30 @@ interface Props {
   onClose: () => void;
 }
 
+// supervisor-notes.md is already mirrored to harness_shared.harness_escalations
+// (supervisor_notes column) by harness-fs-watcher.ts — reuse that subscription
+// instead of adding another mirror.
+type HarnessEscalationRow = {
+  harnessSlug: string;
+  phase: string;
+  escalation?: string | null;
+  supervisorNotes?: string | null;
+  mtimeMs: number;
+};
+
 export default function InterventionPanel({ slug, alive, onClose }: Props) {
-  const [notes, setNotes] = useState<string | null>(null);
-  const [mtimeMs, setMtimeMs] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const notesRef = useRef<HTMLPreElement>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/notes`).then((r) => r.json());
-      setNotes(d.content ?? null);
-      setMtimeMs(d.mtimeMs ?? null);
-    } catch (e) {
-      setToast(`load failed: ${e}`);
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  // Live-pushed via Zero. Replaces useSseOrPoll(/notes/sse, load, 5000).
+  const { data: escalationRows } = useSyncQuery<HarnessEscalationRow>({
+    queryName: 'harnessEscalations.byHarness',
+    args: { harnessSlug: slug, phase: 'staging' },
+  });
+  const notes = useMemo(() => escalationRows?.[0]?.supervisorNotes ?? null, [escalationRows]);
+  const mtimeMs = useMemo(() => escalationRows?.[0]?.mtimeMs ?? null, [escalationRows]);
 
   // Auto-scroll notes to bottom when content changes
   useEffect(() => {
@@ -55,14 +57,14 @@ export default function InterventionPanel({ slug, alive, onClose }: Props) {
       if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
       setDraft('');
       setToast('appended to supervisor-notes.md');
-      await load();
+      // Zero pushes the new mtime+content once chokidar mirrors the file write.
     } catch (e) {
       setToast(`send failed: ${e}`);
     } finally {
       setSending(false);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [draft, slug, load]);
+  }, [draft, slug]);
 
   // Ctrl/Cmd+Enter to send
   useEffect(() => {

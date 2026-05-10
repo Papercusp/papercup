@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import { Checkbox } from './Checkbox';
@@ -10,6 +11,16 @@ interface Archive {
   sizeBytes: number;
   ts: number;
 }
+
+// Row shape from the harness_shared.harness_archives Zero query.
+type HarnessArchiveRow = {
+  harnessSlug: string;
+  phase: string;
+  id: string;
+  sizeBytes: number;
+  ts: number;
+  workspaceId: string;
+};
 
 interface Props {
   slug: string;
@@ -27,25 +38,22 @@ function fmtSize(n: number): string {
 }
 
 export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
-  const [items, setItems] = useState<Archive[]>([]);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [resetOnArchive, setResetOnArchive] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/archives`).then((r) => r.json());
-      setItems(d.archives ?? []);
-    } catch (e) {
-      setToast(`load: ${e}`);
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  // Live-pushed via Zero (harness_shared.harness_archives, mirrored from
+  // .harness/archives/*.tar.gz by harness-fs-watcher.ts). Replaces the
+  // useSseOrPoll(/archives/sse, load, 5000) pattern; mutations still use
+  // the existing REST routes below.
+  const { data: archiveRows } = useSyncQuery<HarnessArchiveRow>({
+    queryName: 'harnessArchives.byHarness',
+    args: { harnessSlug: slug, phase: 'staging' },
+  });
+  const items = useMemo<Archive[]>(
+    () => (archiveRows ?? []).map((r) => ({ id: r.id, sizeBytes: r.sizeBytes, ts: r.ts })),
+    [archiveRows],
+  );
 
   const archive = useCallback(async () => {
     if (resetOnArchive && !confirm('Archive current .harness/ AND reset it for a fresh mission? Transient files will be removed (config.json, hooks/, knowledge.md preserved).')) return;
@@ -60,14 +68,14 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
       const d = await r.json();
       setToast(`archived ${d.id} (${fmtSize(d.sizeBytes)})${d.reset ? ` · reset: ${d.resetRemoved?.join(', ')}` : ''}`);
       onChanged();
-      await load();
+      // Zero pushes the new row once chokidar mirrors the file — no manual reload.
     } catch (e) {
       setToast(`archive failed: ${e}`);
     } finally {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, resetOnArchive, load, onChanged]);
+  }, [slug, resetOnArchive, onChanged]);
 
   const restore = useCallback(async (id: string) => {
     if (!confirm(`Restore mission state from ${id}? Current .harness/ will be overwritten (a pre-restore snapshot will be created).`)) return;
@@ -82,14 +90,14 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
       const d = await r.json();
       setToast(`restored from ${d.restored} (undo: ${d.undoSnapshot})`);
       onChanged();
-      await load();
+      // Zero pushes the (potentially new) snapshot rows on the next mirror tick.
     } catch (e) {
       setToast(`restore failed: ${e}`);
     } finally {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, load, onChanged]);
+  }, [slug, onChanged]);
 
   return (
     <Modal

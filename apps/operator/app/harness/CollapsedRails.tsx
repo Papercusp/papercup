@@ -1,13 +1,23 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS } from './theme';
-import { fetchGitLog as libFetchGitLog, getCachedGitLog as libGetCachedGitLog } from '@restart/git-graph';
 
-function harnessScope(slug: string) { return `harness:${slug}`; }
-function harnessLogUrl(slug: string, limit: number) { return `/api/harness/${slug}/git/log?limit=${limit}`; }
-function getCachedGitLog(slug: string, limit: number) { return libGetCachedGitLog(harnessScope(slug), limit); }
-function fetchGitLog(slug: string, limit: number) { return libFetchGitLog(harnessScope(slug), limit, harnessLogUrl(slug, limit)); }
+// Row shape from harness_shared.harness_git_log (mirrored by
+// harness-fs-watcher.ts on every .git/HEAD or .git/refs/* change).
+type HarnessGitLogRow = {
+  harnessSlug: string;
+  sha: string;
+  parents: readonly string[] | null;
+  subject: string;
+  author: string;
+  ts: number;
+  refs: readonly string[] | null;
+  workspaceId: string;
+};
 
 const RAIL_WIDTH = 40;
 
@@ -23,7 +33,6 @@ interface Commit {
 const GIT_LAST_SEEN_KEY = (slug: string) => `harness.git.lastSeen.${slug}`;
 
 export function CollapsedGitRail({ slug, onExpand }: { slug: string; onExpand: () => void }) {
-  const [commits, setCommits] = useState<Commit[]>(() => (getCachedGitLog(slug, 300) as Commit[]) ?? []);
   const [lastSeen, setLastSeen] = useState<number>(0);
 
   useEffect(() => {
@@ -33,20 +42,22 @@ export function CollapsedGitRail({ slug, onExpand }: { slug: string; onExpand: (
     } catch {}
   }, [slug]);
 
-  const load = useCallback(async () => {
-    try {
-      const cs = await fetchGitLog(slug, 300);
-      setCommits(cs as Commit[]);
-    } catch {}
-  }, [slug]);
-
-  useEffect(() => {
-    const cached = getCachedGitLog(slug, 300);
-    if (cached) setCommits(cached as Commit[]);
-    load();
-    const t = setInterval(load, 10_000);
-    return () => clearInterval(t);
-  }, [load, slug]);
+  // Live-pushed via Zero (harness_shared.harness_git_log, mirrored from
+  // `git log` output by harness-fs-watcher.ts on every .git/HEAD or
+  // .git/refs/* change). Replaces setInterval(fetchGitLog, 10_000).
+  const { data: gitLogRows } = useSyncQuery<HarnessGitLogRow>({
+    queryName: 'harnessGitLog.byHarness',
+    args: { harnessSlug: slug, limit: 300 },
+  });
+  const commits = useMemo<Commit[]>(
+    () => (gitLogRows ?? []).map((r) => ({
+      sha: r.sha,
+      subject: r.subject,
+      author: r.author,
+      ts: r.ts,
+    })),
+    [gitLogRows],
+  );
 
   // Unread commits = commits newer than lastSeen
   const unreadCount = useMemo(
@@ -182,19 +193,15 @@ export function CollapsedGitRail({ slug, onExpand }: { slug: string; onExpand: (
 // ─── Inbox collapsed rail ───────────────────────────────────────────
 
 export function CollapsedInboxRail({ slug, onExpand }: { slug: string; onExpand: () => void }) {
-  const [reviewCount, setReviewCount] = useState(0);
-
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const d = await fetch(`/api/harness/${slug}/reviews`).then((r) => r.json());
-        setReviewCount((d.reviews ?? []).length);
-      } catch {}
-    };
-    load();
-    const t = setInterval(load, 5_000);
-    return () => clearInterval(t);
-  }, [slug]);
+  const workspaceId = useWorkspaceId();
+  // Reviews via Zero (push). Same query name as ArchitectInbox; Zero
+  // dedupes the materialization across both subscribers.
+  const { data: reviewRows } = useSyncQuery<{ resolved: boolean }>({
+    queryName: 'pendingReviews.byHarness',
+    args: { harnessSlug: slug, workspaceId, includeResolved: false },
+    enabled: !!slug,
+  });
+  const reviewCount = Array.isArray(reviewRows) ? reviewRows.length : 0;
 
   return (
     <button

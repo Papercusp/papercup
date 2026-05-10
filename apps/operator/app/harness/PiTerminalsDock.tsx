@@ -48,6 +48,40 @@ function layoutKey(slug: string): string {
 }
 
 /**
+ * Module-level dedup guard for /pty/prewarm fetches.
+ *
+ * React rule: parent useEffects run AFTER child useEffects. If we only
+ * fired prewarm from PiTerminalsDock's useEffect, PiPanel's /pty/spawn
+ * POST would already be on the wire by the time prewarm fires — server
+ * sees /spawn first and cold-forks omp every time, even with the
+ * synchronous slot reservation in pty.ts. Firing during render (with a
+ * dedup guard so React StrictMode and re-renders don't multi-fire) gets
+ * prewarm to the server BEFORE the dock children mount.
+ *
+ * Guard expires just under PREWARM_TTL_MS so a long-lived dock that
+ * exhausts the warm pool eventually re-warms instead of going cold.
+ */
+const FIRED_PREWARMS = new Set<string>();
+const PREWARM_GUARD_MS = 55_000;
+
+function firePrewarmOnce(slug: string, laneId: string | undefined): void {
+  if (typeof window === 'undefined' || !slug) return;
+  const k = `${slug}|${laneId ?? ''}`;
+  if (FIRED_PREWARMS.has(k)) return;
+  FIRED_PREWARMS.add(k);
+  setTimeout(() => FIRED_PREWARMS.delete(k), PREWARM_GUARD_MS);
+  fetch(`/api/harness/${encodeURIComponent(slug)}/pty/prewarm`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(laneId ? { laneId } : {}),
+  }).catch(() => {
+    // Failure is fine — guard expires after PREWARM_GUARD_MS, and
+    // /pty/spawn falls through to a cold fork anyway.
+    FIRED_PREWARMS.delete(k);
+  });
+}
+
+/**
  * Cross-component event for opening a chat panel from elsewhere in the
  * dashboard (e.g., FeaturePeekPanel's "chat" button). Dispatched on
  * window; the dock listens. Detail = the chat metadata to mount.
@@ -172,17 +206,16 @@ function ChatPanelComponent(props: IDockviewPanelProps<ChatPanelParams>) {
 
 /** Header action: "+" to add another terminal as a new tab. */
 function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: string }) {
+  // Pre-warm the no-laneId pool while the user is hovering / focusing the
+  // button — by the time the click fires, omp has already forked and the
+  // /pty/spawn POST adopts it instead of cold-forking. The dedup guard
+  // makes hover-spam free.
+  const onPointerEnter = useCallback(() => firePrewarmOnce(slug, undefined), [slug]);
   const onClick = useCallback(() => {
     if (!api) return;
-    // Fire prewarm BEFORE addPanel so the slot is reserved by the time
-    // the new PiPanel's /pty/spawn POST arrives — otherwise spawn races
-    // prewarm and cold-forks. Best-effort; failure falls through to
-    // normal cold spawn.
-    fetch(`/api/harness/${encodeURIComponent(slug)}/pty/prewarm`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-    }).catch(() => { /* best-effort */ });
+    // Belt-and-braces: also fire on click in case the user tabbed in via
+    // keyboard and skipped pointerenter.
+    firePrewarmOnce(slug, undefined);
     const id = `term-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const existing = api.panels.filter((p) => p.id.startsWith('term-')).length;
     api.addPanel({
@@ -198,6 +231,8 @@ function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: strin
       <button
         type="button"
         onClick={onClick}
+        onPointerEnter={onPointerEnter}
+        onFocus={onPointerEnter}
         className="pi-dock__add-btn"
       >
         <Plus size={13} />
@@ -209,6 +244,13 @@ function AddTerminalAction({ api, slug }: { api: DockviewApi | null; slug: strin
 
 
 export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDockProps) {
+  // Fire prewarm DURING render — must run before child PiPanel effects
+  // POST /pty/spawn. Both keys: the lane-scoped one for the seed terminal
+  // (initialLaneId) and the no-laneId one used by the + button. Dedup'd
+  // via FIRED_PREWARMS so re-renders / StrictMode don't spawn extras.
+  firePrewarmOnce(slug, initialLaneId);
+  if (initialLaneId !== undefined) firePrewarmOnce(slug, undefined);
+
   const apiRef = useRef<DockviewApi | null>(null);
   const [api, setApi] = useState<DockviewApi | null>(null);
 
@@ -303,20 +345,6 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
       apiRef.current = null;
     };
   }, [slug]);
-
-  // Prewarm a pty as soon as the dock mounts. The server reserves it under
-  // <slug>|<laneId>|<command> for ~60s; PiPanel's /pty/spawn POST adopts
-  // it instead of forking fresh, eliminating omp's startup from the
-  // user-visible critical path. Fire-and-forget; failures (slug missing,
-  // pty cap reached) are surfaced when /spawn falls through to a real
-  // spawn.
-  useEffect(() => {
-    fetch(`/api/harness/${encodeURIComponent(slug)}/pty/prewarm`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ laneId: initialLaneId }),
-    }).catch(() => { /* best-effort */ });
-  }, [slug, initialLaneId]);
 
   // Listen for cross-component "open chat" events. The dispatcher
   // (openFeatureChat) has already created the chat row AND pushed the

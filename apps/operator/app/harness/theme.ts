@@ -67,6 +67,16 @@ export const BOARD_COLUMN_ORDER: HarnessStatus[] = [
   'todo', 'in_progress', 'validating', 'failing', 'blocked', 'passed', 'deprecated',
 ];
 
+/**
+ * Canonical role color/label overrides. Roles not listed here get a
+ * stable color derived from their name (see getRoleStyle below) — adding
+ * a new role file under libs/papercusp/packages/harness/prompts/ gives
+ * it a distinct UI color without a code edit.
+ *
+ * Use getRoleStyle(role) instead of ROLE[role] directly. The legacy
+ * ROLE export is kept for the small handful of call sites that index
+ * statically (e.g. ROLE.unknown for the fallback grey).
+ */
 export const ROLE = {
   planner:      { solid: '#a855f7', label: 'Planner' },
   orchestrator: { solid: '#ec4899', label: 'Orchestrator' },
@@ -77,6 +87,45 @@ export const ROLE = {
 } as const;
 
 export type RoleKey = keyof typeof ROLE;
+
+/**
+ * Stable hash for deriving a hue from a role name. djb2 — small, fast,
+ * adequate distribution for ~50 distinct strings (which is all we'll
+ * ever have here). Returns a value in [0, 2^32).
+ */
+function djb2(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return h >>> 0; // unsigned
+}
+
+/**
+ * Title-case a role name. Splits on dashes/underscores so 'infra-reviewer'
+ * → 'Infra Reviewer' and 'project_manager' → 'Project Manager'.
+ */
+function titleCase(s: string): string {
+  return s
+    .split(/[-_]/g)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/**
+ * Resolve a role to its color + label. Falls back to a hash-derived HSL
+ * color for roles not in the canonical ROLE map. Use this everywhere
+ * agent role colors are looked up — including for roles loaded at runtime
+ * from the prompts/ directory (getKnownRoles).
+ */
+export function getRoleStyle(role: string | null | undefined): { solid: string; label: string } {
+  const key = (role ?? '').toLowerCase();
+  if (!key) return ROLE.unknown;
+  if (key in ROLE) return ROLE[key as RoleKey];
+  // Stable hash-derived hue. 65% sat / 55% light gives consistent
+  // perceived brightness across the wheel and stays distinguishable
+  // from the 5 canonical role colors.
+  const hue = djb2(key) % 360;
+  return { solid: `hsl(${hue} 65% 55%)`, label: titleCase(key) };
+}
 
 export const FONTS = {
   ui: 'system-ui, -apple-system, "Inter", sans-serif',

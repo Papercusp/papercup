@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { memo, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Modal } from './Modal';
 
@@ -23,31 +24,29 @@ function contentLines(s: string): number {
   return s.split('\n').filter((l) => l.trim() && !l.trim().startsWith('<!--')).length;
 }
 
-export default function IdentityPanel({ onClose }: Props) {
-  const [list, setList] = useState<Identity[]>([]);
+function IdentityPanelInner({ onClose }: Props) {
   const [selected, setSelected] = useQueryState('identityRole', parseAsString);
-  const [err, setErr] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await fetch(`/api/harness/identity`);
-      if (!r.ok) throw new Error(`${r.status}`);
-      const d = await r.json();
-      setList(d.identities ?? []);
-      setErr(null);
-      if (!selected && (d.identities ?? []).length > 0) {
-        setSelected(d.identities[0].role);
-      }
-    } catch (e) {
-      setErr(String(e));
-    }
-  }, [selected]);
+  // Push-driven. Server emits `notifySyncInvalidate('harnessIdentity')`
+  // from writeIdentity / flipExpertEngaged. The SSEAdapter mounted by
+  // HarnessZeroProvider (root layout) matches `queryKey[1] === 'harnessIdentity'`
+  // and invalidates → react-query refetches. No setInterval.
+  const { data, error } = useQuery<{ identities: Identity[] }>({
+    queryKey: ['sync', 'harnessIdentity', {}],
+    queryFn: async ({ signal }) => {
+      const r = await fetch('/api/harness/identity', { signal });
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    },
+    staleTime: Infinity, // refetch only on SSE invalidate
+  });
+  const list = data?.identities ?? [];
+  const err = error ? String(error) : null;
 
+  // Auto-select first identity when data arrives.
   useEffect(() => {
-    load();
-    const t = setInterval(load, 10000);
-    return () => clearInterval(t);
-  }, [load]);
+    if (!selected && list.length > 0) setSelected(list[0].role);
+  }, [list, selected, setSelected]);
 
   const cur = list.find((i) => i.role === selected);
 
@@ -115,3 +114,6 @@ export default function IdentityPanel({ onClose }: Props) {
       </Modal>
   );
 }
+
+const IdentityPanel = memo(IdentityPanelInner);
+export default IdentityPanel;

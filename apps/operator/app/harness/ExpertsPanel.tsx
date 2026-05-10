@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import * as Collapsible from '@radix-ui/react-collapsible';
+import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 
 interface ExpertSummary {
@@ -60,32 +62,57 @@ const STATUS_COLOR: Record<string, string> = {
   error: '#dc2626',
 };
 
+type Selection =
+  | { kind: 'expert'; id: string }
+  | { kind: 'dispatch'; uaId: number; label: string }
+  | null;
+
 export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: string; onClose: () => void }) {
   const [experts, setExperts] = useState<ExpertSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [showSpawn, setShowSpawn] = useState(false);
+  const selectedId = selection?.kind === 'expert' ? selection.id : null;
+
+  // Eager subscription — harness_shared.harness_experts is mirrored
+  // from .harness/experts/<id>/identity.json by the watcher. Replaces
+  // the lazy list fetch so the panel populates same-frame.
+  const { data: zeroExpertRows } = useSyncQuery<{
+    expertId: string; title: string; status: string; budgetCents: number;
+    featureSize?: string; agentCount: number; roundCount: number;
+    personasUsed: unknown; userEngaged: boolean; updatedAt: number;
+  }>({
+    queryName: 'harnessExperts.byHarness',
+    args: { harnessSlug },
+    enabled: !!harnessSlug,
+  });
+  useEffect(() => {
+    // refreshKey is bumped on cancel/fork; we still rely on Zero invalidate
+    // for live updates but `setExperts(null)` first to clear stale UI.
+    if (refreshKey > 0) setExperts(null);
+    if (!Array.isArray(zeroExpertRows)) return;
+    const summaries: ExpertSummary[] = zeroExpertRows.map((r) => ({
+      id: r.expertId,
+      title: r.title,
+      status: r.status,
+      featureSize: (r.featureSize ?? 'standard') as ExpertSummary['featureSize'],
+      agentCount: r.agentCount,
+      roundCount: r.roundCount,
+      userEngaged: r.userEngaged,
+      createdAt: '',
+      updatedAt: new Date(r.updatedAt).toISOString(),
+    }));
+    setExperts(summaries);
+    setError(null);
+  }, [zeroExpertRows, refreshKey]);
 
   useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/harness/${harnessSlug}/experts`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (cancelled) return;
-        if (d.error) setError(d.error);
-        else setExperts(d.experts ?? []);
-      })
-      .catch((e) => !cancelled && setError(String(e)));
-    return () => { cancelled = true; };
-  }, [harnessSlug, refreshKey]);
-
-  useEffect(() => {
-    if (!experts || selectedId) return;
+    if (!experts || selection) return;
     const live = experts.find((e) => !['cancelled', 'superseded'].includes(e.status));
-    if (live) setSelectedId(live.id);
-    else if (experts.length > 0) setSelectedId(experts[0].id);
-  }, [experts, selectedId]);
+    if (live) setSelection({ kind: 'expert', id: live.id });
+    else if (experts.length > 0) setSelection({ kind: 'expert', id: experts[0].id });
+  }, [experts, selection]);
 
   return (
     <div className="experts-panel" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg)', color: 'var(--fg)' }}>
@@ -108,14 +135,18 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
           onSpawned={(id) => {
             setShowSpawn(false);
             setRefreshKey((k) => k + 1);
-            setSelectedId(id);
+            setSelection({ kind: 'expert', id });
           }}
         />
       )}
 
       <div style={{ display: 'flex', flex: 1, minHeight: 0, background: 'rgba(4, 10, 20, 0.32)' }}>
         <div style={{ width: 280, borderRight: '1px solid var(--border)', overflow: 'auto', background: 'rgba(6, 13, 24, 0.46)' }}>
-          <AutonomousExpertsSection harnessSlug={harnessSlug} />
+          <AutonomousExpertsSection
+            harnessSlug={harnessSlug}
+            selection={selection}
+            onSelectDispatch={(uaId, label) => setSelection({ kind: 'dispatch', uaId, label })}
+          />
           {error && <div style={{ padding: 12, color: 'var(--bad)' }}>{error}</div>}
           {!experts && !error && <div style={{ padding: 12, color: 'var(--fg-mute)' }}>loading…</div>}
           {experts && experts.length === 0 && (
@@ -126,20 +157,27 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
             </div>
           )}
           {experts && experts.map((e) => (
-            <ExpertRow key={e.id} expert={e} selected={selectedId === e.id} onSelect={() => setSelectedId(e.id)} />
+            <ExpertRow key={e.id} expert={e} selected={selectedId === e.id} onSelect={() => setSelection({ kind: 'expert', id: e.id })} />
           ))}
         </div>
 
         <div style={{ flex: 1, overflow: 'hidden', minWidth: 0, display: 'flex', background: 'linear-gradient(180deg, rgba(11, 18, 32, 0.78), rgba(4, 10, 20, 0.58))' }}>
-          {selectedId ? (
+          {selection?.kind === 'expert' ? (
             <ExpertDetailView
-              key={selectedId}
+              key={selection.id}
               harnessSlug={harnessSlug}
-              expertId={selectedId}
+              expertId={selection.id}
               onChange={() => setRefreshKey((k) => k + 1)}
             />
+          ) : selection?.kind === 'dispatch' ? (
+            <DispatchDetailView
+              key={`dispatch-${selection.uaId}`}
+              harnessSlug={harnessSlug}
+              uaId={selection.uaId}
+              label={selection.label}
+            />
           ) : (
-            <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Select an expert.</div>
+            <div style={{ padding: 24, color: 'var(--fg-mute)' }}>Select an expert or autonomous dispatch.</div>
           )}
         </div>
       </div>
@@ -178,19 +216,66 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<'spec' | 'feedback' | 'chat' | 'identity'>('spec');
 
+  // Eager: per-expert identity + SPEC.md content live in
+  // harness_shared.harness_experts (mirrored by harness-fs-watcher).
+  // Selecting an expert now hydrates the detail view same-frame.
+  // Feedback stays a separate /feedback fetch — the file tree is
+  // arbitrary and rarely-populated; not worth eager-mirroring.
+  const { data: expertRows } = useSyncQuery<{
+    expertId: string; title: string; status: string; budgetCents: number;
+    featureSize?: string; highLevelSpec: string; agentCount: number;
+    roundCount: number; personasUsed: unknown; userEngaged: boolean;
+    createdAt: number; updatedAt: number; terminationReason?: string;
+    specContent: string;
+  }>({
+    queryName: 'harnessExperts.byHarness',
+    args: { harnessSlug },
+    enabled: !!harnessSlug,
+  });
+
   useEffect(() => {
     let cancelled = false;
-    setDetail(null); setFeedback(null); setError(null);
-    Promise.all([
-      fetch(`/api/harness/${harnessSlug}/experts/${expertId}`).then((r) => r.json()),
-      fetch(`/api/harness/${harnessSlug}/experts/${expertId}/feedback`).then((r) => r.json()),
-    ]).then(([d, f]) => {
-      if (cancelled) return;
-      if (d.error) setError(d.error); else setDetail(d as ExpertDetail);
-      if (!f.error) setFeedback(f.feedback ?? []);
-    }).catch((e) => !cancelled && setError(String(e)));
+    const eager = (expertRows ?? []).find((r) => r.expertId === expertId);
+    if (eager) {
+      setDetail({
+        id: eager.expertId,
+        title: eager.title,
+        slug: harnessSlug,
+        status: eager.status as ExpertSummary['status'],
+        budgetCents: eager.budgetCents,
+        featureSize: (eager.featureSize ?? 'standard') as ExpertSummary['featureSize'],
+        highLevelSpec: eager.highLevelSpec,
+        agentCount: eager.agentCount,
+        roundCount: eager.roundCount,
+        personasUsed: (eager.personasUsed as string[]) ?? [],
+        userEngaged: eager.userEngaged,
+        createdAt: new Date(eager.createdAt).toISOString(),
+        updatedAt: new Date(eager.updatedAt).toISOString(),
+        terminationReason: eager.terminationReason ?? null,
+        spec: eager.specContent,
+      } as unknown as ExpertDetail);
+      setError(null);
+    } else {
+      setDetail(null);
+    }
+    setFeedback(null);
+    // Feedback stays lazy — rarely populated.
+    fetch(`/api/harness/${harnessSlug}/experts/${expertId}/feedback`)
+      .then((r) => r.json())
+      .then((f) => { if (!cancelled && !f.error) setFeedback(f.feedback ?? []); })
+      .catch((e) => !cancelled && setError(String(e)));
+    // Fall back to REST detail if not in cache (pre-watcher harnesses).
+    if (!eager) {
+      fetch(`/api/harness/${harnessSlug}/experts/${expertId}`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (cancelled) return;
+          if (d.error) setError(d.error); else setDetail(d as ExpertDetail);
+        })
+        .catch((e) => !cancelled && setError(String(e)));
+    }
     return () => { cancelled = true; };
-  }, [harnessSlug, expertId]);
+  }, [harnessSlug, expertId, expertRows]);
 
   const onCancel = async () => {
     if (!confirm(`Cancel ${expertId}?`)) return;
@@ -517,7 +602,7 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
               >
                 <option value="small">small (2 agents × 1 round)</option>
                 <option value="standard">standard (4 agents × 3 rounds)</option>
-                <option value="large">large (10 agents × 15 rounds)</option>
+                <option value="large">large (10 agents × 5 rounds)</option>
               </select>
             </label>
           </div>
@@ -548,20 +633,39 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
   const [error, setError] = useState<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Find the most recent (non-archived) chat for this expert, or signal none.
+  // Eager via Zero — agentChats.byHarness mirrors the /agent-chats list
+  // endpoint. Find the most recent non-archived expert chat for this id
+  // synchronously from the cached subscription so the conversation
+  // surface paints same-frame on open instead of after a round trip.
+  // Zero row uses camelCase + epoch numbers; map to ChatRow shape.
+  const { data: zeroChatRows } = useSyncQuery<{
+    id: string;
+    role: string;
+    featureId?: string | null;
+    title?: string | null;
+    transcript: ChatTurn[];
+    archivedAt?: number | null;
+  }>({
+    queryName: 'agentChats.byHarness',
+    args: { harnessSlug, limit: 200 },
+    enabled: !!harnessSlug,
+  });
   useEffect(() => {
-    let cancelled = false;
-    fetch(`/api/harness/${harnessSlug}/agent-chats`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (cancelled) return;
-        const chats = (d.chats ?? []) as ChatRow[];
-        const match = chats.find((c) => c.role === 'expert' && c.feature_id === expertId && !c.archived_at);
-        setChat(match ?? 'none');
-      })
-      .catch((e) => !cancelled && setError(String(e)));
-    return () => { cancelled = true; };
-  }, [harnessSlug, expertId]);
+    if (!Array.isArray(zeroChatRows)) return;
+    const match = zeroChatRows.find((c) =>
+      c.role === 'expert' && c.featureId === expertId && !c.archivedAt
+    );
+    if (!match) { setChat('none'); return; }
+    setChat({
+      id: match.id,
+      role: match.role,
+      feature_id: match.featureId ?? null,
+      title: match.title ?? null,
+      transcript: Array.isArray(match.transcript) ? match.transcript : [],
+      archived_at: match.archivedAt ? new Date(match.archivedAt).toISOString() : null,
+    });
+    setError(null);
+  }, [zeroChatRows, expertId]);
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -754,7 +858,15 @@ const inputStyle: React.CSSProperties = {
  * captured via user_actions. Click an entry → opens its run log in a
  * new tab.
  */
-function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
+function AutonomousExpertsSection({
+  harnessSlug,
+  selection,
+  onSelectDispatch,
+}: {
+  harnessSlug: string;
+  selection: Selection;
+  onSelectDispatch: (uaId: number, label: string) => void;
+}) {
   interface DispatchRow {
     id: number;
     summary: string | null;
@@ -764,25 +876,25 @@ function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
     startedAt: number;
     finishedAt?: number | null;
   }
-  const [rows, setRows] = useState<DispatchRow[] | null>(null);
   const [open, setOpen] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const r = await fetch(`/api/user-actions/${harnessSlug}?limit=20`);
-        if (!r.ok) return;
-        const d = await r.json() as { actions: Array<DispatchRow & { kind: string }> };
-        if (cancelled) return;
-        const filtered = (d.actions ?? []).filter((a) => a.kind === 'expert.dispatch');
-        setRows(filtered);
-      } catch { /* ignore */ }
-    };
-    load();
-    const t = setInterval(load, 5000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, [harnessSlug]);
+  const selectedUaId = selection?.kind === 'dispatch' ? selection.uaId : null;
+  const workspaceId = useWorkspaceId();
+  const { data: zeroRows } = useSyncQuery<DispatchRow & { kind: string; status: string }>({
+    queryName: 'userActions.byKind',
+    args: { harnessSlug, workspaceId, kind: 'expert.dispatch', limit: 20 },
+  });
+  const rows: DispatchRow[] | null = Array.isArray(zeroRows)
+    ? zeroRows.map(({ id, summary, status, detailUrl, invocationId, startedAt, finishedAt }) => ({
+        id,
+        summary: summary ?? null,
+        status: (status === 'running' || status === 'succeeded' || status === 'failed' || status === 'cancelled')
+          ? status : 'running',
+        detailUrl: detailUrl ?? null,
+        invocationId: invocationId ?? null,
+        startedAt,
+        finishedAt: finishedAt ?? null,
+      }))
+    : null;
 
   const dotColor = (status: DispatchRow['status']): string =>
     status === 'running' ? '#3b82f6' :
@@ -826,7 +938,7 @@ function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
           }}
         >
           <span>{open ? '▾' : '▸'} Autonomous dispatches ({rows.length})</span>
-          <span style={{ fontSize: 9, opacity: 0.7, textTransform: 'none' }}>via scoper / triggers / CLI</span>
+          <span style={{ fontSize: 9, opacity: 0.7, textTransform: 'none' }}>via scoper / triggers / CLI · click row for log</span>
         </button>
       </Collapsible.Trigger>
       <Collapsible.Content>
@@ -840,15 +952,28 @@ function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
         ) : (
           <ul style={{ listStyle: 'none', padding: 0, margin: 0, borderBottom: '1px solid var(--border)' }}>
             {rows.map((r) => (
-              <li key={r.id} style={{
-                padding: '6px 12px',
-                fontSize: 11,
-                color: 'var(--fg)',
-                borderBottom: '1px solid rgba(255,255,255,0.04)',
-                display: 'flex',
-                alignItems: 'flex-start',
-                gap: 8,
-              }}>
+              <li
+                key={r.id}
+                onClick={() => onSelectDispatch(r.id, r.invocationId ?? `ua-${r.id}`)}
+                title="Click to load this dispatch's run log in the right pane"
+                style={{
+                  padding: '6px 12px',
+                  fontSize: 11,
+                  color: 'var(--fg)',
+                  borderBottom: '1px solid rgba(255,255,255,0.04)',
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                  cursor: 'pointer',
+                  background: selectedUaId === r.id ? 'rgba(99,102,241,0.16)' : 'transparent',
+                }}
+                onMouseEnter={(e) => {
+                  if (selectedUaId !== r.id) (e.currentTarget as HTMLLIElement).style.background = 'rgba(99,102,241,0.08)';
+                }}
+                onMouseLeave={(e) => {
+                  if (selectedUaId !== r.id) (e.currentTarget as HTMLLIElement).style.background = 'transparent';
+                }}
+              >
                 <span aria-label={r.status} style={{
                   width: 7, height: 7, borderRadius: '50%',
                   background: dotColor(r.status),
@@ -874,6 +999,9 @@ function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
                           rel="noopener noreferrer"
                           style={{ color: 'var(--accent-cool)', textDecoration: 'none' }}
                           onClick={(e) => {
+                            // Don't trigger the row's openLog handler when the user
+                            // is specifically asking for the path/url.
+                            e.stopPropagation();
                             // Local file paths can't be opened via http; surface as copyable text.
                             if (!r.detailUrl?.startsWith('http')) {
                               e.preventDefault();
@@ -881,7 +1009,7 @@ function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
                             }
                           }}
                         >
-                          {r.detailUrl.startsWith('http') ? 'log↗' : 'copy log path'}
+                          {r.detailUrl.startsWith('http') ? 'log↗' : 'copy path'}
                         </a>
                       </>
                     )}
@@ -893,5 +1021,82 @@ function AutonomousExpertsSection({ harnessSlug }: { harnessSlug: string }) {
         )}
       </Collapsible.Content>
     </Collapsible.Root>
+  );
+}
+
+// Renders an autonomous-dispatch run log inside the right-hand main pane,
+// matching the shape of <ExpertDetailView> for manual experts. Vditor
+// renders the log inside a fenced text block so output is monospace and
+// scrollable.
+function DispatchDetailView({
+  harnessSlug,
+  uaId,
+  label,
+}: {
+  harnessSlug: string;
+  uaId: number;
+  label: string;
+}) {
+  const [body, setBody] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [meta, setMeta] = useState<{ status?: string; kind?: string }>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setBody('');
+    (async () => {
+      try {
+        const r = await fetch(`/api/user-actions/${harnessSlug}/${uaId}/log`);
+        if (cancelled) return;
+        if (!r.ok) {
+          const e = await r.json().catch(() => ({}));
+          setError((e as { error?: string }).error ?? `HTTP ${r.status}`);
+          setLoading(false);
+          return;
+        }
+        const text = await r.text();
+        setBody(text);
+        setMeta({
+          status: r.headers.get('x-user-action-status') ?? undefined,
+          kind: r.headers.get('x-user-action-kind') ?? undefined,
+        });
+        setLoading(false);
+      } catch (e) {
+        if (cancelled) return;
+        setError(String((e as Error)?.message ?? e));
+        setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [harnessSlug, uaId]);
+
+  // Wrap raw log content in a fenced block so Vditor renders it as
+  // monospace pre, preserving whitespace and ANSI-stripped lines.
+  const md = body
+    ? `## ${label}\n\n_status:_ \`${meta.status ?? 'unknown'}\` · _kind:_ \`${meta.kind ?? 'unknown'}\`\n\n\`\`\`\n${body}\n\`\`\`\n`
+    : `## ${label}\n\n_status:_ \`${meta.status ?? 'unknown'}\`\n\n*(empty log — role likely timed out before producing output)*\n`;
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{
+        padding: '10px 14px', borderBottom: '1px solid var(--border)',
+        display: 'flex', alignItems: 'center', gap: 10, fontSize: 12,
+      }}>
+        <strong style={{ fontFamily: 'ui-monospace, monospace' }}>{label}</strong>
+        <span style={{ color: 'var(--fg-dim)', fontSize: 11 }}>autonomous dispatch · run log</span>
+      </div>
+      <div style={{ flex: 1, overflow: 'auto', padding: 14 }}>
+        {loading ? (
+          <span style={{ color: 'var(--fg-dim)' }}>loading…</span>
+        ) : error ? (
+          <span style={{ color: '#dc2626' }}>error: {error}</span>
+        ) : (
+          <MarkdownPreview value={md} />
+        )}
+      </div>
+    </div>
   );
 }

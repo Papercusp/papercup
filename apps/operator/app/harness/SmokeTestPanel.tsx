@@ -1,8 +1,21 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
+import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
+
+// Row shape from harness_shared.harness_smoke_test (single-row aggregate
+// of smoke-{pass,failure,results,startup} sibling files).
+type HarnessSmokeTestRow = {
+  harnessSlug: string;
+  status: 'pass' | 'fail' | 'unknown';
+  passContent?: string | null;
+  failureContent?: string | null;
+  results?: SmokeResult[] | null;
+  startupLog?: string | null;
+  mtimeMs: number;
+};
 
 interface SmokeResult {
   url: string;
@@ -32,27 +45,29 @@ function fmtTs(ms: number): string {
 }
 
 export default function SmokeTestPanel({ slug, onClose }: Props) {
-  const [data, setData] = useState<SmokeData | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [runOutput, setRunOutput] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await fetch(`/api/harness/${slug}/smoke-test`);
-      if (!r.ok) throw new Error(`${r.status}`);
-      setData(await r.json());
-      setErr(null);
-    } catch (e) {
-      setErr(String(e));
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 5000);
-    return () => clearInterval(t);
-  }, [load]);
+  // Live-pushed via Zero (harness_shared.harness_smoke_test, aggregated
+  // from 4 source files by harness-fs-watcher.ts). Replaces
+  // useSseOrPoll(/smoke-test/sse, load, 5000).
+  const { data: smokeRows, error } = useSyncQuery<HarnessSmokeTestRow>({
+    queryName: 'harnessSmokeTest.byHarness',
+    args: { harnessSlug: slug },
+  });
+  const data = useMemo<SmokeData | null>(() => {
+    const row = smokeRows?.[0];
+    if (!row) return null;
+    return {
+      status: row.status,
+      mtimeMs: row.mtimeMs ?? null,
+      pass: row.passContent ?? null,
+      failure: row.failureContent ?? null,
+      results: row.results ?? null,
+      startupLog: row.startupLog ?? null,
+    };
+  }, [smokeRows]);
+  const err = error ? String(error) : null;
 
   const runNow = useCallback(async () => {
     if (busy) return;
@@ -62,13 +77,13 @@ export default function SmokeTestPanel({ slug, onClose }: Props) {
       const r = await fetch(`/api/harness/${slug}/smoke-test/run`, { method: 'POST' });
       const d = await r.json();
       setRunOutput(d.output ?? '(no output)');
-      await load();
+      // Zero pushes the new row once chokidar mirrors the smoke-* file writes.
     } catch (e) {
       setRunOutput(`error: ${e}`);
     } finally {
       setBusy(false);
     }
-  }, [slug, busy, load]);
+  }, [slug, busy]);
 
   const tone = data?.status === 'pass' ? '#10b981' : data?.status === 'fail' ? '#f87171' : '#9ca3af';
 

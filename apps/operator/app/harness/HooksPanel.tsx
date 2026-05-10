@@ -1,7 +1,19 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
+import { useSyncQuery } from '@restart/sync';
+
+// Row shape from harness_shared.harness_hook_logs (mirrored metadata only;
+// log bodies are still fetched on demand via /hook-logs/<logId> REST).
+type HarnessHookLogRow = {
+  harnessSlug: string;
+  logId: string;
+  name: string;
+  ts: number;
+  sizeBytes: number;
+  workspaceId: string;
+};
 import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
@@ -103,15 +115,32 @@ interface Props {
   onClose: () => void;
 }
 
-export default function HooksPanel({ slug, alive, onClose }: Props) {
+function HooksPanelInner({ slug, alive, onClose }: Props) {
   const [tab, setTab] = useQueryState('hookTab', parseAsString.withDefault(''));
   const [hooks, setHooks] = useState<Record<HookName, HookEntry> | null>(null);
   const [hookNames, setHookNames] = useState<string[]>([]);
   const [draft, setDraft] = useState<Record<HookName, string>>({});
   const [saving, setSaving] = useState<HookName | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [runs, setRuns] = useState<HookRun[]>([]);
   const [selectedLog, setSelectedLog] = useState<{ logId: string; content: string } | null>(null);
+
+  // Live-pushed via Zero (harness_shared.harness_hook_logs, mirrored from
+  // .harness/logs/hooks/*.log file metadata by harness-fs-watcher.ts).
+  // Replaces useSseOrPoll(/hook-logs/sse, loadRuns, 3000).
+  const { data: hookLogRows } = useSyncQuery<HarnessHookLogRow>({
+    queryName: 'harnessHookLogs.byHarness',
+    args: { harnessSlug: slug },
+  });
+  const runs = useMemo<HookRun[]>(
+    () =>
+      (hookLogRows ?? []).map((r) => ({
+        logId: r.logId,
+        name: r.name,
+        ts: r.ts,
+        sizeBytes: r.sizeBytes,
+      })),
+    [hookLogRows],
+  );
   const [loadingLog, setLoadingLog] = useState(false);
 
   const load = useCallback(async () => {
@@ -139,20 +168,16 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
     setTab(hookNames[0]);
   }, [hookNames, tab, setTab]);
 
-  const loadRuns = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/hook-logs`).then((r) => r.json());
-      setRuns(d.runs ?? []);
-    } catch {}
-  }, [slug]);
-
-  useEffect(() => {
-    loadRuns();
-    const t = setInterval(loadRuns, 3000);
-    return () => clearInterval(t);
-  }, [loadRuns]);
-
   const openLog = useCallback(async (logId: string) => {
+    // Eager: hook log content is mirrored into harness_hook_logs.content
+    // by the watcher (cap 256KB). Read from the cached row synchronously.
+    // Falls back to REST for harnesses that pre-date the watcher
+    // mirroring or for content-truncated rows.
+    const cached = (hookLogRows ?? []).find((r) => r.logId === logId) as (HarnessHookLogRow & { content?: string }) | undefined;
+    if (cached?.content && cached.content.length > 0) {
+      setSelectedLog({ logId, content: cached.content });
+      return;
+    }
     setLoadingLog(true);
     try {
       const d = await fetch(`/api/harness/${slug}/hook-logs/${logId}`).then((r) => r.json());
@@ -164,7 +189,7 @@ export default function HooksPanel({ slug, alive, onClose }: Props) {
     } finally {
       setLoadingLog(false);
     }
-  }, [slug]);
+  }, [slug, hookLogRows]);
 
   const dirty = useMemo(() => {
     if (!hooks) return new Set<HookName>();
@@ -435,3 +460,6 @@ function HookRunsGrid({
     />
   );
 }
+
+const HooksPanel = memo(HooksPanelInner);
+export default HooksPanel;

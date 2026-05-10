@@ -6,6 +6,9 @@ import { BlockNoteView } from '@blocknote/mantine';
 import '@blocknote/core/fonts/inter.css';
 import '@blocknote/mantine/style.css';
 import { toast } from 'sonner';
+import { useSyncQuery } from '@restart/sync';
+
+type BrainstormRow = { harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number };
 
 interface Props {
   slug: string;
@@ -30,29 +33,37 @@ export function WriteView({ slug, onMarkdownChange }: Props) {
     initialContent: undefined,
   });
 
-  // Load initial markdown
+  // Eager subscription to the brainstorm row for this harness. Replaces
+  // the per-mount REST fetch so the editor populates same-frame on open
+  // (and follows changes from other tabs via SSE invalidate).
+  const { data: brainstormRows } = useSyncQuery<BrainstormRow>({
+    queryName: 'harnessBrainstorm.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+  const brainstormRow = useMemo(
+    () => Array.isArray(brainstormRows) ? brainstormRows.find((r) => r.phase === 'staging') ?? brainstormRows[0] : undefined,
+    [brainstormRows],
+  );
+
+  // Hydrate the BlockNote editor when the row arrives (and only once per
+  // distinct content — replaceBlocks resets editor state, so we guard
+  // against re-running on irrelevant row updates).
   useEffect(() => {
+    if (!brainstormRow || !editor) return;
     let aborted = false;
-    fetch(`/api/harness/${slug}/brainstorm`)
-      .then((r) => r.json())
-      .then(async (d) => {
-        if (aborted) return;
-        const md = typeof d.content === 'string' ? d.content : '';
-        lastSavedRef.current = md;
-        setInitialMd(md);
-        if (md.trim() && editor) {
-          try {
-            const blocks = await editor.tryParseMarkdownToBlocks(md);
-            editor.replaceBlocks(editor.document, blocks);
-          } catch (e) {
-            console.error('markdown parse failed', e);
-          }
-        }
-        onMarkdownChange?.(md);
-      })
-      .catch((e) => toast.error(`Load failed: ${e}`));
+    const md = typeof brainstormRow.content === 'string' ? brainstormRow.content : '';
+    if (md === lastSavedRef.current && initialMd !== null) return;
+    lastSavedRef.current = md;
+    setInitialMd(md);
+    if (md.trim()) {
+      Promise.resolve(editor.tryParseMarkdownToBlocks(md)).then((blocks) => {
+        if (!aborted) editor.replaceBlocks(editor.document, blocks);
+      }).catch((e: unknown) => console.error('markdown parse failed', e));
+    }
+    onMarkdownChange?.(md);
     return () => { aborted = true; };
-  }, [slug, editor]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [brainstormRow, editor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Save on change (debounced)
   const save = useMemo(() =>

@@ -1,8 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useSyncQuery } from '@restart/sync';
 import { MarkdownPreview } from '../_components/MarkdownEditor';
+
+type HarnessPlanReviewRow = {
+  harnessSlug: string;
+  content: string;
+  mtimeMs: number;
+};
 
 interface Props {
   slug: string;
@@ -21,7 +28,17 @@ const VERDICT_TONE: Record<string, { bg: string; border: string; fg: string; ico
 };
 
 export default function PlanReviewBanner({ slug, compact = false }: Props) {
-  const [content, setContent] = useState<string | null>(null);
+  // Live-pushed via Zero (harness_shared.harness_plan_review, mirrored from
+  // .harness/plan-review.md by harness-fs-watcher.ts). Replaces
+  // useSseOrPoll(/plan-review/sse, load, 15000).
+  const { data: planReviewRows } = useSyncQuery<HarnessPlanReviewRow>({
+    queryName: 'harnessPlanReview.byHarness',
+    args: { harnessSlug: slug },
+  });
+  const content = useMemo<string | null>(
+    () => planReviewRows?.[0]?.content || null,
+    [planReviewRows],
+  );
   const [open, setOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const bannerRef = useRef<HTMLDivElement | null>(null);
@@ -44,21 +61,6 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
       window.removeEventListener('scroll', update, true);
     };
   }, [compact, open]);
-
-  const load = useCallback(async () => {
-    try {
-      const d = await fetch(`/api/harness/${slug}/plan-review`).then((r) => r.json());
-      setContent(d.content ?? null);
-    } catch {
-      setContent(null);
-    }
-  }, [slug]);
-
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 15000);
-    return () => clearInterval(t);
-  }, [load]);
 
   if (!content || dismissed) return null;
   const verdict = extractVerdict(content) ?? 'unknown';

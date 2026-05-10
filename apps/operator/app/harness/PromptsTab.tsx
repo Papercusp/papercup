@@ -1,11 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Tooltip } from './Tooltip';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { Trash2, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { useShortcut } from '../../lib/hotkeys';
+import { useSyncQuery } from '@restart/sync';
+
+type TextArtifactRow = { harnessSlug: string; relPath: string; content: string; updatedAt: number };
 
 interface Props {
   slug: string;
@@ -50,25 +53,55 @@ export default function PromptsTab({ slug, alive }: Props) {
     }
   }, [roles, selected]);
 
-  // Load role data when selected role changes
+  // Eager Zero subscription — pulls all prompt overrides for this
+  // harness in one shot. The override content lives in
+  // harness_text_artifacts at rel_path = `prompts/<role>.md`. We still
+  // hit REST for `globalContent` (the orchestrator default lives in the
+  // harness runtime dir, not per-harness PG).
+  const { data: textArtifactRows } = useSyncQuery<TextArtifactRow>({
+    queryName: 'harnessTextArtifact.byHarness',
+    args: { harnessSlug: slug },
+    enabled: !!slug,
+  });
+  const overrideByRole = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!Array.isArray(textArtifactRows)) return m;
+    for (const r of textArtifactRows) {
+      const match = /^prompts\/(.+)\.md$/.exec(r.relPath);
+      if (match) m.set(match[1], r.content ?? '');
+    }
+    return m;
+  }, [textArtifactRows]);
+
+  // Hydrate the panel when the selected role changes. Override content
+  // is available synchronously from the Zero subscription Map; render
+  // immediately, then enrich with globalContent when REST returns.
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
-    setLoading(true);
+    const overrideContent = overrideByRole.get(selected.role) ?? '';
+    // Render immediately with the cached override (no loading flash).
+    setData({ content: overrideContent, globalContent: '', overrideExists: overrideContent.length > 0 });
+    setDraft(overrideContent);
+    setOriginalOverride(overrideContent);
+    setLoading(false);
+    // Fetch globalContent in the background; merge when it lands.
     fetch(`/api/harness/${slug}/prompts/${selected.role}`)
       .then((r) => r.json())
       .then((d) => {
         if (cancelled) return;
-        const content = typeof d.content === 'string' ? d.content : '';
         const globalContent = typeof d.globalContent === 'string' ? d.globalContent : '';
-        setData({ content, globalContent, overrideExists: !!d.overrideExists });
-        setDraft(content);
-        setOriginalOverride(content);
+        const overrideFromRest = typeof d.content === 'string' ? d.content : '';
+        // Subscription wins for override; REST only fills global.
+        setData((prev) => ({
+          content: prev?.content ?? overrideFromRest,
+          globalContent,
+          overrideExists: prev?.overrideExists || !!d.overrideExists,
+        }));
       })
-      .catch((e) => toast.error(`load failed: ${e.message ?? e}`))
-      .finally(() => { if (!cancelled) setLoading(false); });
+      .catch((e) => toast.error(`load global failed: ${e.message ?? e}`));
     return () => { cancelled = true; };
-  }, [slug, selected?.role]);
+  }, [slug, selected?.role, overrideByRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dirty = selected?.scope === 'override' && draft !== originalOverride;
 

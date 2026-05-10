@@ -3,11 +3,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Drawer } from 'vaul';
+import { X } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES, STATUS, HarnessStatus } from './theme';
-import { StatusPill, IdPill, RolePill, IconButton, KbdHint } from './primitives';
-import { Tooltip } from './Tooltip';
+import { StatusPill, IdPill, RolePill, KbdHint } from './primitives';
+import { HarnessMarkdownView } from './HarnessMarkdownView';
+import { FeatureTagsAndSeeAlso, FeatureMessagesList } from './FeatureMetadataPanels';
+import { PromptBudgetView } from './PromptBudgetView';
 
 const FeatureTimelinePanel = dynamic(() => import('./FeatureTimelinePanel'), { ssr: false });
+const ChunkPlanInline = dynamic(() => import('./ChunkPlanInline'), { ssr: false });
 
 interface Feature {
   id: string;
@@ -38,35 +42,98 @@ interface Props {
   onSetStatus: (id: string, status: HarnessStatus) => void;
   /** Switch the harness UI to the pi tab (which hosts the dockview). */
   onSwitchToPi?: () => void;
+  /** Eager-loaded raw markdown notes for the current feature. When
+   *  provided, replaces the per-feature REST fetch. Falls back to fetch
+   *  if undefined. */
+  notesForFeature?: string;
+  /** Eager-loaded debugger-role note content for the current feature.
+   *  null = no note exists; string = note content. Replaces the per-
+   *  feature /debug-notes/<id> REST fetch when provided. */
+  debugNoteForFeature?: string | null;
+  /** Eager-loaded PR data for the current feature. null = no PR.
+   *  Replaces the harness-wide /prs fetch when provided. */
+  prForFeature?: { url: string; state: string; openedTs: number } | null;
 }
 
 export default function FeaturePeekPanel({
-  slug, feature, agents, issues, onClose, onInspectRun, onSetStatus,
+  slug, feature, agents, issues, onClose, onInspectRun, onSetStatus, notesForFeature, debugNoteForFeature, prForFeature,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [debugNote, setDebugNote] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
+  // Operator notes — what the user wrote via the inline "steer" form
+  // in FeatureList. Same backing file the worker reads on next dispatch.
+  const [operatorNotes, setOperatorNotes] = useState<Array<{ author: string; ts: string; body: string }>>([]);
 
-  // Fetch PR URL (if branchIsolation.onPass=pr has opened one for this feature).
+  // PR URL — eager via the parent's Zero subscription. Falls back to
+  // fetch when the prop is undefined for callers not yet migrated.
   useEffect(() => {
-    if (!feature) return;
+    if (!feature) { setPrUrl(null); return; }
+    if (prForFeature !== undefined) {
+      setPrUrl(prForFeature?.url ?? null);
+      return;
+    }
     fetch(`/api/harness/${slug}/prs`)
       .then((r) => r.json())
       .then((d) => setPrUrl(d.prs?.[feature.id]?.url ?? null))
       .catch(() => setPrUrl(null));
-  }, [slug, feature?.id]);
+  }, [slug, feature?.id, prForFeature]);
 
-  // Fetch debug note (if debugger role has investigated this feature).
+  // Debug note — eager via the parent's Zero subscription. Falls back
+  // to fetch when the prop is undefined (caller hasn't been migrated).
   useEffect(() => {
     if (!feature) { setDebugNote(null); setShowDebug(false); return; }
+    setShowDebug(false);
+    if (debugNoteForFeature !== undefined) {
+      setDebugNote(debugNoteForFeature || null);
+      return;
+    }
     fetch(`/api/harness/${slug}/debug-notes/${feature.id}`)
       .then((r) => r.json())
       .then((d) => setDebugNote(d.content ?? null))
       .catch(() => setDebugNote(null));
-    setShowDebug(false);
-  }, [slug, feature?.id]);
+  }, [slug, feature?.id, debugNoteForFeature]);
+
+  // Operator notes — eager via the parent's Zero subscription. When
+  // `notesForFeature` is provided we parse it client-side; the Zero
+  // subscription pushes updates from other tabs automatically. Falls
+  // back to fetch when the parent hasn't been migrated yet.
+  useEffect(() => {
+    if (!feature) { setOperatorNotes([]); return; }
+    if (notesForFeature !== undefined) {
+      // Parse the same way the GET route does: "## <author> <ts>" headers
+      // separating bodies. Empty string → empty list.
+      const blocks: Array<{ author: string; ts: string; body: string }> = [];
+      const raw = notesForFeature ?? '';
+      if (raw.trim()) {
+        const headerRe = /^##\s+(\S+)\s+(\S+)\s*$/gm;
+        const headers: { idx: number; author: string; ts: string }[] = [];
+        let m: RegExpExecArray | null;
+        while ((m = headerRe.exec(raw)) !== null) {
+          headers.push({ idx: m.index, author: m[1], ts: m[2] });
+        }
+        for (let i = 0; i < headers.length; i++) {
+          const start = headers[i].idx;
+          const end = i + 1 < headers.length ? headers[i + 1].idx : raw.length;
+          const lineEnd = raw.indexOf('\n', start);
+          const body = raw.slice(lineEnd + 1, end).trim();
+          blocks.push({ author: headers[i].author, ts: headers[i].ts, body });
+        }
+      }
+      setOperatorNotes(blocks);
+      return;
+    }
+    // Legacy fallback: fetch when caller didn't pass eager notes.
+    let aborted = false;
+    const fid = feature.id;
+    fetch(`/api/harness/${slug}/features/${encodeURIComponent(fid)}/notes`)
+      .then((r) => r.ok ? r.json() : { blocks: [] })
+      .then((d) => { if (!aborted) setOperatorNotes(d.blocks ?? []); })
+      .catch(() => { if (!aborted) setOperatorNotes([]); });
+    return () => { aborted = true; };
+  }, [slug, feature?.id, notesForFeature]);
 
   // Filter issues.md excerpt to lines mentioning this feature id
   const issuesForFeature = useMemo(() => {
@@ -116,6 +183,7 @@ export default function FeaturePeekPanel({
           className="h-feature-peek-drawer"
           data-anim="slide-right"
           aria-describedby={undefined}
+          aria-modal="true"
           style={{
             position: 'fixed', top: 0, right: 0, bottom: 0,
             width: 'min(720px, 72vw)',
@@ -126,9 +194,6 @@ export default function FeaturePeekPanel({
             zIndex: 81, outline: 'none',
           }}
         >
-          <Drawer.Title style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
-            Feature {feature.id}
-          </Drawer.Title>
         {/* Header */}
         <div style={{
           padding: '12px 16px',
@@ -139,9 +204,7 @@ export default function FeaturePeekPanel({
           gap: 10,
           flexShrink: 0,
         }}>
-          <IdPill id={feature.id} onClick={() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }} />
-          {copied && <span style={{ fontSize: SIZES.xs, color: COLORS.successText }}>copied</span>}
-          <StatusPill status={feature.status} />
+          <span className="h-drawer-topbar-label">Feature detail</span>
           {prUrl && (
             <a
               href={prUrl}
@@ -163,35 +226,27 @@ export default function FeaturePeekPanel({
               View PR ↗
             </a>
           )}
-          <Tooltip label="Close (Esc)">
-            <button
-              onClick={onClose}
-              style={{
-                marginLeft: 'auto',
-                background: 'transparent',
-                color: COLORS.textMuted,
-                border: `1px solid ${COLORS.border}`,
-                borderRadius: 999,
-                padding: '5px 9px',
-                fontSize: SIZES.xs,
-                lineHeight: 1,
-                cursor: 'pointer',
-                fontWeight: 700,
-                whiteSpace: 'nowrap',
-              }}
-            >✕</button>
-          </Tooltip>
+          <button
+            type="button"
+            className="h-btn-icon"
+            onClick={onClose}
+            aria-label="Close feature details"
+            title="Close (Esc)"
+            style={{ marginLeft: 'auto' }}
+          >
+            <X size={14} />
+          </button>
         </div>
 
         {/* Body */}
         {/* Body */}
-        <div style={{
+        <div className="h-drawer-body" style={{
           flex: 1,
           overflowY: 'auto',
           padding: '16px 18px 18px',
           background: '#17131f',
         }}>
-          <div style={{
+          <div className="h-drawer-title-card" style={{
             marginBottom: 18,
             padding: '14px 14px 12px',
             border: `1px solid ${COLORS.border}` ,
@@ -199,7 +254,21 @@ export default function FeaturePeekPanel({
             background: '#1d1826',
             boxShadow: '0 16px 34px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02)',
           }}>
-            <h2 style={{
+            <div className="h-drawer-eyebrow" aria-label={`Feature ${feature.id}, status ${STATUS[feature.status].label}`} style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+              marginBottom: feature.summary ? 8 : 10,
+            }}>
+              <span>Feature</span>
+              <span aria-hidden>·</span>
+              <IdPill id={feature.id} onClick={() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }} />
+              {copied && <span style={{ fontSize: SIZES.xs, color: COLORS.successText }}>copied</span>}
+              <span className="h-drawer-eyebrow-separator" aria-hidden="true">·</span>
+              <StatusPill status={feature.status} />
+            </div>
+            <Drawer.Title style={{
               margin: 0,
               marginBottom: feature.summary ? 8 : 10,
               fontSize: '1.14rem',
@@ -209,7 +278,7 @@ export default function FeaturePeekPanel({
               lineHeight: 1.4,
             }}>
               {feature.summary || feature.title}
-            </h2>
+            </Drawer.Title>
             {feature.summary && (
               <div style={{
                 fontFamily: FONTS.mono,
@@ -230,16 +299,19 @@ export default function FeaturePeekPanel({
               borderTop: `1px solid ${COLORS.borderSubtle}`,
             }}>
               <span style={{ color: COLORS.textDim }}>Status</span>
-              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+              <div className="h-feature-status-controls" role="radiogroup" aria-label="Feature lifecycle status" style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                 {(['todo','in_progress','validating','failing','blocked','passed'] as HarnessStatus[]).map((st) => {
                   const active = st === feature.status;
                   const ss = STATUS[st];
                   return (
                     <button
                       key={st}
-                      onClick={() => onSetStatus(feature.id, st)}
-                      disabled={active}
-                      title={`Set status to ${ss.label}`}
+                      type="button"
+                      className={`h-feature-status-button${active ? ' is-current' : ''}`}
+                      onClick={() => { if (!active) onSetStatus(feature.id, st); }}
+                      aria-pressed={active}
+                      aria-label={active ? `Current status: ${ss.label}` : `Move feature to ${ss.label}`}
+                      title={active ? `Current status: ${ss.label}` : `Move to: ${ss.label}`}
                       style={{
                         display: 'inline-flex', alignItems: 'center', gap: 5,
                         padding: '3px 8px',
@@ -248,10 +320,10 @@ export default function FeaturePeekPanel({
                         borderRadius: 999,
                         fontSize: SIZES.xs,
                         color: active ? ss.text : COLORS.textMuted,
-                        cursor: active ? 'default' : 'pointer',
+                        cursor: 'pointer',
                       }}
                     >
-                      <span style={{ width: 6, height: 6, borderRadius: '50%', background: ss.solid }} />
+                      {active ? <span aria-hidden>✓</span> : <span style={{ width: 6, height: 6, borderRadius: '50%', background: ss.solid }} />}
                       {ss.label}
                     </button>
                   );
@@ -281,6 +353,58 @@ export default function FeaturePeekPanel({
           )}
 
 
+          {/* Operator (steer) notes — guidance the user has written for the
+           * worker via the inline "steer" form on the feature list. Mirrors
+           * what's in <projectDir>/.harness/notes/<featureId>.md, which the
+           * worker prompt's Required Reads pulls on next dispatch. */}
+          {operatorNotes.length > 0 && (
+            <Section title={`User notes · ${operatorNotes.length}`}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {operatorNotes.map((n) => (
+                  <div key={`${n.author}-${n.ts}`} style={{
+                    padding: '8px 10px',
+                    background: COLORS.bg,
+                    border: `1px solid ${COLORS.borderSubtle}`,
+                    borderRadius: RADIUS.sm,
+                    display: 'flex', flexDirection: 'column', gap: 4,
+                  }}>
+                    <div style={{
+                      fontFamily: FONTS.mono, fontSize: '0.65rem',
+                      color: COLORS.textDim, display: 'flex', gap: 6,
+                    }}>
+                      <span>{n.author}</span>
+                      <span>·</span>
+                      <span>{new Date(n.ts).toLocaleString(undefined, {
+                        year: 'numeric', month: 'short', day: 'numeric',
+                        hour: '2-digit', minute: '2-digit',
+                      })}</span>
+                    </div>
+                    <HarnessMarkdownView
+                      value={n.body}
+                      className="h-note-markdown"
+                      emptyLabel="No note content."
+                    />
+                  </div>
+                ))}
+              </div>
+            </Section>
+          )}
+
+          {/* Phase 2 — tags + see-also editor. */}
+          <Section title="Tags & see-also">
+            <FeatureTagsAndSeeAlso slug={slug} featureId={feature.id} />
+          </Section>
+
+          {/* Phase 3 — feature-addressed messages from other features. */}
+          <Section title="Messages from other features">
+            <FeatureMessagesList slug={slug} featureId={feature.id} />
+          </Section>
+
+          {/* Phase 5 — prompt-composition telemetry for this feature. */}
+          <Section title="Prompt budget">
+            <PromptBudgetView slug={slug} featureId={feature.id} />
+          </Section>
+
           {/* Debugger notes, if the debugger role has investigated this feature */}
           {debugNote && (
             <Section title="Debugger notes">
@@ -306,49 +430,61 @@ export default function FeaturePeekPanel({
                 </button>
               </div>
               {showDebug && (
-                <pre style={{
-                  background: COLORS.bg, color: COLORS.text,
-                  padding: '10px 12px', borderRadius: RADIUS.sm,
-                  fontFamily: FONTS.mono, fontSize: SIZES.xs,
-                  whiteSpace: 'pre-wrap', maxHeight: '30vh', overflow: 'auto',
-                  margin: 0, border: `1px solid ${COLORS.borderSubtle}`,
-                }}>{debugNote}</pre>
+                <HarnessMarkdownView
+                  value={debugNote}
+                  className="h-debug-markdown"
+                  emptyLabel="No debugger notes."
+                />
               )}
             </Section>
           )}
+
+          {/* Worker chunk plan — only renders when the chunk-loop has
+              produced one. Empty for legacy single-shot worker runs. */}
+          <ChunkPlanInline slug={slug} featureId={feature.id} />
 
           {/* Related runs */}
           <Section title={`Recent agent runs${recentRuns.length ? ` · ${recentRuns.length}` : ''}`}>
             {recentRuns.length === 0 ? (
               <Empty>No runs yet</Empty>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {recentRuns.map((r) => (
-                  <button
-                    key={r.runId}
-                    onClick={() => onInspectRun(r.runId)}
-                    title="Inspect this agent run's full output"
-                    style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      padding: '5px 8px',
-                      background: '#201a2a',
-                      border: `1px solid ${COLORS.borderSubtle}`,
-                      borderRadius: RADIUS.sm,
-                      color: COLORS.text,
-                      cursor: 'pointer',
-                      fontSize: SIZES.sm,
-                      textAlign: 'left',
-                      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
-                    }}>
-                    <RolePill role={r.role} />
-                    <span style={{ fontFamily: FONTS.mono, color: COLORS.textMuted, fontSize: SIZES.xs }}>
-                      {r.runId.slice(-20)}
-                    </span>
-                    <span style={{ marginLeft: 'auto', color: COLORS.textDim, fontSize: SIZES.xs }}>
-                      {new Date(r.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  </button>
-                ))}
+              <div className="h-feature-run-list" role="list" aria-label="Recent agent runs" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {recentRuns.map((r) => {
+                  const runLabel = displayRunId(r);
+                  const runTime = new Date(r.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+                  return (
+                    <div key={r.runId} role="listitem">
+                      <button
+                        type="button"
+                        className="h-feature-run-row"
+                        onClick={() => onInspectRun(r.runId)}
+                        aria-label={`${r.role || 'unknown'} run ${runLabel} at ${runTime}. Inspect full output.`}
+                        title="Inspect this agent run's full output"
+                        style={{
+                          display: 'grid', alignItems: 'center', gap: 8,
+                          gridTemplateColumns: 'minmax(7.5rem, auto) auto auto minmax(0, 1fr)',
+                          padding: '6px 8px',
+                          background: '#201a2a',
+                          border: `1px solid ${COLORS.borderSubtle}`,
+                          borderRadius: RADIUS.sm,
+                          color: COLORS.text,
+                          cursor: 'pointer',
+                          fontSize: SIZES.sm,
+                          textAlign: 'left',
+                          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
+                        }}>
+                        <RolePill role={r.role} />
+                        <span style={{ color: COLORS.textDim, fontSize: SIZES.xs }}>
+                          {runTime}
+                        </span>
+                        <span aria-hidden style={{ color: COLORS.textFaint }}>·</span>
+                        <code style={{ fontFamily: FONTS.mono, color: COLORS.textMuted, fontSize: SIZES.xs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {runLabel}
+                        </code>
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </Section>
@@ -356,26 +492,16 @@ export default function FeaturePeekPanel({
           {/* Issues for this feature */}
           {issuesForFeature && (
             <Section title="Validator issues">
-              <pre style={{
-                margin: 0,
-                fontFamily: FONTS.mono,
-                fontSize: SIZES.xs,
-                color: COLORS.text,
-                background: COLORS.bg,
-                border: `1px solid ${COLORS.borderSubtle}`,
-                borderRadius: RADIUS.sm,
-                padding: '8px 10px',
-                whiteSpace: 'pre-wrap',
-                maxHeight: 300,
-                overflow: 'auto',
-              }}>
-                {issuesForFeature}
-              </pre>
+              <HarnessMarkdownView
+                value={issuesForFeature}
+                className="h-validator-issues-markdown"
+                emptyLabel="No validator issues."
+              />
             </Section>
           )}
 
           {/* Actions row */}
-          <div style={{
+          <div className="h-drawer-footer" style={{
             marginTop: 18,
             marginInline: -18,
             marginBottom: -18,
@@ -424,6 +550,21 @@ export default function FeaturePeekPanel({
       )}
     </Drawer.Root>
   );
+}
+
+function displayRunId(run: AgentRun): string {
+  const role = run.role?.trim();
+  let label = run.runId.replace(/\.log$/i, '').trim();
+  if (role) {
+    label = label.replace(new RegExp(`^[-_]?${escapeRegExp(role)}[-_]?`, 'i'), '');
+  }
+  label = label.replace(/^[-_]+/, '').trim();
+  if (!label) label = run.runId.replace(/\.log$/i, '').trim() || 'run';
+  return label.length > 28 ? `…${label.slice(-27)}` : label;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

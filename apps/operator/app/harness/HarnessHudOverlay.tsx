@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { HudFrameCorners, HudReticleGlyph, HudRingGlyph, HudTelemetryMarquee } from '../_components/hud/HudPrimitives';
 
 type HarnessHudOverlayProps = {
@@ -8,7 +9,7 @@ type HarnessHudOverlayProps = {
   escalated: boolean;
 };
 
-export default function HarnessHudOverlay({
+function HarnessHudOverlayInner({
   alive,
   activePanel,
   laneCount,
@@ -28,12 +29,6 @@ export default function HarnessHudOverlay({
       <div className="h-hud-overlay__grid" />
       <div className="h-hud-overlay__scanline" />
       <div className="h-hud-overlay__wash" />
-
-      <div className="h-hud-node h-hud-node--left">
-        <HudReticleGlyph className="h-hud-node__reticle" size={88} />
-        <span>lane mesh</span>
-        <strong>{laneCount}</strong>
-      </div>
 
       <div className="h-hud-node h-hud-node--right">
         <HudReticleGlyph className="h-hud-node__reticle" size={88} />
@@ -55,3 +50,9 @@ export default function HarnessHudOverlay({
     </div>
   );
 }
+
+// All 5 props are primitives — default shallow compare is sufficient. Without
+// this memo, the HUD overlay re-renders on every HarnessDashboard render
+// (~22/sec at idle, per long-task profiling), which churns the marquee child
+// list and registers ~600 DOM mutations per 8-second idle window.
+export default memo(HarnessHudOverlayInner);

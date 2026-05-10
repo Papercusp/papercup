@@ -31,6 +31,11 @@ interface Props {
   // For prompts: show "global" content as placeholder for missing overrides
   fallbackKey?: string;
   disabled?: boolean;
+  // Optional synchronous content lookup — when the parent has an eager
+  // subscription (e.g. harnessSkills.byHarness) it can pass a getter so
+  // selecting an item paints same-frame instead of round-tripping. The
+  // REST GET still fires as a back-stop when the getter returns undefined.
+  getEagerContent?: (id: string) => string | undefined;
 }
 
 export function CollectionTab({
@@ -41,6 +46,7 @@ export function CollectionTab({
   deletable,
   fallbackKey = 'globalContent',
   disabled,
+  getEagerContent,
 }: Props) {
   const [selectedId, setSelectedId] = useQueryState('item', parseAsString);
   const [draft, setDraft] = useState<string>('');
@@ -58,6 +64,17 @@ export function CollectionTab({
   const dirty = draft !== original;
 
   const loadItem = useCallback(async (id: string) => {
+    // Eager path: if the parent has a Zero subscription, paint same-frame
+    // from cache. Skip the round trip entirely when the getter returns
+    // a string (treat empty string as a real "exists but empty" answer).
+    const eager = getEagerContent?.(id);
+    if (typeof eager === 'string') {
+      setDraft(eager);
+      setOriginal(eager);
+      setFallback('');
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const r = await fetch(itemUrl(id));
@@ -71,7 +88,7 @@ export function CollectionTab({
     } finally {
       setLoading(false);
     }
-  }, [itemUrl, fallbackKey]);
+  }, [itemUrl, fallbackKey, getEagerContent]);
 
   useEffect(() => {
     if (selectedId) loadItem(selectedId);
