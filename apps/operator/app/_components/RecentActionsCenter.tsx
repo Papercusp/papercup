@@ -1,0 +1,155 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Activity, X } from 'lucide-react';
+import { OperatorActionLog, prefetchRecentActions } from './OperatorActionLog';
+
+/**
+ * Recent-actions popover. Mirrors the NotificationCenter bell pattern
+ * (button + dropdown anchored top-right of pc-header). Replaces the
+ * old in-dashboard `<LazyDetails><OperatorActionLog/></LazyDetails>`
+ * block that lived at the bottom of the harness page.
+ *
+ * The popover only shows when the user clicks the button — no badge,
+ * no polling on close (the OperatorActionLog component handles its
+ * own polling once mounted, and unmounts when the popover closes).
+ *
+ * Pulls the active harness slug from the URL (`?slug=`, `?project=`,
+ * or `/harness/<slug>` path) so it can render outside HarnessDashboard.
+ */
+function readActiveSlug(): string | null {
+  if (typeof window === 'undefined') return null;
+  const isValid = (s: string | null | undefined) =>
+    !!s && /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(s);
+  try {
+    const url = new URL(window.location.href);
+    const fromSlug = url.searchParams.get('slug') ?? url.searchParams.get('project');
+    if (isValid(fromSlug)) return fromSlug as string;
+    const m = url.pathname.match(/\/harness\/([a-z0-9][a-z0-9._-]{0,63})\b/i);
+    if (m) return m[1];
+  } catch { /* ignore */ }
+  // Fallback: HarnessDashboard persists the active harness here whenever
+  // the user picks one (see `harness.activeProject` write in
+  // HarnessDashboard.tsx). Without this, opening the popover from a
+  // route that doesn't carry `?slug=` (most of /harness in practice)
+  // would always show "Pick a harness…" even though the dashboard
+  // clearly has one selected.
+  try {
+    const saved = window.localStorage.getItem('harness.activeProject');
+    if (isValid(saved)) return saved;
+  } catch { /* ignore */ }
+  return null;
+}
+
+export function RecentActionsCenter() {
+  const [open, setOpen] = useState(false);
+  const [slug, setSlug] = useState<string | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+
+  // Re-read slug whenever the popover is opened so it follows the
+  // user's current harness without needing parent state. Also re-read
+  // on URL changes (`popstate`).
+  useEffect(() => {
+    const next = readActiveSlug();
+    setSlug(next);
+    // Prefetch the action log on chrome mount so the first popover
+    // open paints instantly from cache instead of running a fresh
+    // request through Next.js dev (which always pays a ~1s framework
+    // overhead on first cold compile of the route). `requestIdleCallback`
+    // ensures we don't fight foreground rendering for resources.
+    if (next) {
+      const ric = (window as any).requestIdleCallback as
+        | ((cb: () => void, opts?: { timeout?: number }) => number)
+        | undefined;
+      if (typeof ric === 'function') {
+        ric(() => { void prefetchRecentActions(next); }, { timeout: 2000 });
+      } else {
+        // Safari / older browsers: fall back to a short timeout so we
+        // still let LCP/initial paint finish before fetching.
+        window.setTimeout(() => { void prefetchRecentActions(next); }, 800);
+      }
+    }
+    const onPop = () => {
+      const fresh = readActiveSlug();
+      setSlug(fresh);
+      if (fresh) void prefetchRecentActions(fresh);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
+  useEffect(() => {
+    if (open) {
+      const fresh = readActiveSlug();
+      setSlug(fresh);
+      // Refresh on each open so the cache is at most one click old.
+      // Cache is still served immediately from inside OperatorActionLog;
+      // this just kicks off a background refetch.
+      if (fresh) void prefetchRecentActions(fresh);
+    }
+  }, [open]);
+
+  // Close on outside click + Escape, same as NotificationCenter.
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (panelRef.current?.contains(t)) return;
+      if (buttonRef.current?.contains(t)) return;
+      setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onClick);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onClick);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const close = useCallback(() => setOpen(false), []);
+
+  return (
+    <div className="notif-center">
+      <button
+        ref={buttonRef}
+        type="button"
+        className="notif-bell"
+        aria-label="Recent actions"
+        title="Recent actions (replan, cleanup, snapshots, plugin ops, expert dispatches)"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <Activity size={16} aria-hidden="true" />
+      </button>
+      {open && (
+        <div ref={panelRef} className="notif-panel" role="dialog" aria-label="Recent actions">
+          <div className="notif-panel-head">
+            <span>Recent actions {slug && <span style={{ opacity: 0.6, fontWeight: 400 }}>· {slug}</span>}</span>
+            <button
+              type="button"
+              className="notif-panel-action"
+              onClick={close}
+              aria-label="Close"
+            >
+              <X size={13} aria-hidden="true" />
+            </button>
+          </div>
+          <div
+            className="notif-panel-body"
+            style={{ padding: slug ? '4px 8px 8px' : 12 }}
+          >
+            {slug ? (
+              <OperatorActionLog slug={slug} />
+            ) : (
+              <div className="notif-empty" style={{ padding: '20px 4px' }}>
+                Pick a harness to see its action log.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
