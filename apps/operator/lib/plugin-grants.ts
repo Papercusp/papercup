@@ -150,9 +150,15 @@ export async function revokeCapabilities(input: GrantInput): Promise<void> {
 export async function copyGrantsToNewHarness(
   sourceSlug: string,
   targetSlug: string,
+  /**
+   * Optional: override the postgres-js client. Used by the integration
+   * test to point at a testcontainers PG schema; default uses the
+   * operator's org-PG. Production callers omit this.
+   */
+  opts?: { sql?: ReturnType<typeof getOrgPg>['sql'] },
 ): Promise<{ copied: number }> {
   if (!sourceSlug || !targetSlug || sourceSlug === targetSlug) return { copied: 0 };
-  const { sql } = getOrgPg();
+  const sql = opts?.sql ?? getOrgPg().sql;
   await ensureTable(sql);
   const result = await sql`
     INSERT INTO harness_shared.plugin_capability_grants
