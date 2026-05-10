@@ -11,7 +11,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { withTestSchema, teardownTestPg } from '@papercusp/test-config';
-import { copyGrantsToNewHarness } from '../lib/plugin-grants';
+import {
+  copyGrantsToNewHarness,
+  grantCapabilities,
+  revokeCapabilities,
+  getGrantsForPluginInHarness,
+} from '../lib/plugin-grants';
 
 let sql: postgres.Sql;
 let baseUri: string;
@@ -148,5 +153,159 @@ describe('copyGrantsToNewHarness', () => {
       ORDER BY plugin_version
     `;
     expect(target.map((r) => r.plugin_version)).toEqual(['0.1.0', '0.2.0']);
+  });
+});
+
+describe('grantCapabilities', () => {
+  it('inserts every cap in the input', async () => {
+    await grantCapabilities({
+      pluginName: '@papercupai/cf-pages',
+      pluginVersion: '0.1.0',
+      harnessSlug: 'sheets',
+      capabilities: ['http:fetch:api.cloudflare.com', 'secrets:read:CF_TOKEN'],
+      grantedBy: 'user',
+      reason: 'install consent',
+    }, { sql });
+
+    const after = await listGrantsFor('sheets');
+    expect(after.map((r) => r.capability).sort()).toEqual([
+      'http:fetch:api.cloudflare.com',
+      'secrets:read:CF_TOKEN',
+    ]);
+    expect(after.every((r) => r.granted_by === 'user' && r.reason === 'install consent')).toBe(true);
+  });
+
+  it('empty capabilities[] is a no-op (no error, no rows)', async () => {
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: 'v', harnessSlug: 'h', capabilities: [],
+    }, { sql });
+    const all = await sql`SELECT count(*)::int AS n FROM harness_shared.plugin_capability_grants`;
+    expect((all as any)[0].n).toBe(0);
+  });
+
+  it('re-granting the same tuple is ON CONFLICT DO NOTHING (preserves original audit row)', async () => {
+    await grantCapabilities({
+      pluginName: '@papercupai/cf-pages', pluginVersion: '0.1.0', harnessSlug: 'sheets',
+      capabilities: ['tasks:read'], grantedBy: 'first-user', reason: 'first reason',
+    }, { sql });
+
+    await grantCapabilities({
+      pluginName: '@papercupai/cf-pages', pluginVersion: '0.1.0', harnessSlug: 'sheets',
+      capabilities: ['tasks:read'], grantedBy: 'second-user', reason: 'should-not-overwrite',
+    }, { sql });
+
+    const after = await listGrantsFor('sheets');
+    expect(after).toHaveLength(1);
+    expect(after[0].granted_by).toBe('first-user');
+    expect(after[0].reason).toBe('first reason');
+  });
+});
+
+describe('revokeCapabilities', () => {
+  it('removes the matching tuple', async () => {
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'h',
+      capabilities: ['a', 'b', 'c'],
+    }, { sql });
+
+    await revokeCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'h',
+      capabilities: ['b'],
+    }, { sql });
+
+    const after = await listGrantsFor('h');
+    expect(after.map((r) => r.capability).sort()).toEqual(['a', 'c']);
+  });
+
+  it('revoking a non-existent cap is a no-op', async () => {
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'h', capabilities: ['a'],
+    }, { sql });
+    await revokeCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'h', capabilities: ['z'],
+    }, { sql });
+
+    const after = await listGrantsFor('h');
+    expect(after.map((r) => r.capability)).toEqual(['a']);
+  });
+
+  it('only revokes the exact (plugin, version, harness, cap) match', async () => {
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'h1', capabilities: ['a'],
+    }, { sql });
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.2.0', harnessSlug: 'h1', capabilities: ['a'],
+    }, { sql });
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'h2', capabilities: ['a'],
+    }, { sql });
+
+    // Only revoke (p, 0.1.0, h1, a)
+    await revokeCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'h1', capabilities: ['a'],
+    }, { sql });
+
+    const remaining = await sql<{ plugin_version: string; harness_slug: string }[]>`
+      SELECT plugin_version, harness_slug FROM harness_shared.plugin_capability_grants
+      ORDER BY plugin_version, harness_slug
+    `;
+    expect(remaining).toEqual([
+      { plugin_version: '0.1.0', harness_slug: 'h2' },
+      { plugin_version: '0.2.0', harness_slug: 'h1' },
+    ]);
+  });
+});
+
+describe('getGrantsForPluginInHarness', () => {
+  it('returns the caps granted to a specific (plugin, version, harness) tuple', async () => {
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'sheets',
+      capabilities: ['http:fetch:api.cloudflare.com', 'secrets:read:CF_TOKEN'],
+    }, { sql });
+
+    const caps = await getGrantsForPluginInHarness('p', '0.1.0', 'sheets', { sql, skipLegacy: true });
+    expect(caps.sort()).toEqual(['http:fetch:api.cloudflare.com', 'secrets:read:CF_TOKEN']);
+  });
+
+  it('unions per-harness with empty-string global grants (harness_slug = "")', async () => {
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'sheets',
+      capabilities: ['per-harness'],
+    }, { sql });
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: '',
+      capabilities: ['global'],
+    }, { sql });
+
+    const caps = await getGrantsForPluginInHarness('p', '0.1.0', 'sheets', { sql, skipLegacy: true });
+    expect(caps.sort()).toEqual(['global', 'per-harness']);
+  });
+
+  it('does NOT leak grants from a different version (per-version isolation)', async () => {
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.1.0', harnessSlug: 'sheets',
+      capabilities: ['x'],
+    }, { sql });
+    await grantCapabilities({
+      pluginName: 'p', pluginVersion: '0.2.0', harnessSlug: 'sheets',
+      capabilities: ['y'],
+    }, { sql });
+
+    expect(await getGrantsForPluginInHarness('p', '0.1.0', 'sheets', { sql, skipLegacy: true })).toEqual(['x']);
+    expect(await getGrantsForPluginInHarness('p', '0.2.0', 'sheets', { sql, skipLegacy: true })).toEqual(['y']);
+  });
+
+  it('returns [] when nothing matches', async () => {
+    const caps = await getGrantsForPluginInHarness('nope', '0.0.0', 'nowhere', { sql, skipLegacy: true });
+    expect(caps).toEqual([]);
+  });
+
+  it('does NOT leak grants from a different plugin', async () => {
+    await grantCapabilities({
+      pluginName: 'plugin-a', pluginVersion: '0.1.0', harnessSlug: 'sheets',
+      capabilities: ['shared-cap'],
+    }, { sql });
+    const caps = await getGrantsForPluginInHarness('plugin-b', '0.1.0', 'sheets', { sql, skipLegacy: true });
+    expect(caps).toEqual([]);
   });
 });

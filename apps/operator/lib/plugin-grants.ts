@@ -80,10 +80,12 @@ export async function getGrantsForPluginInHarness(
   pluginName: string,
   pluginVersion: string,
   harnessSlug: string,
+  /** Optional sql override for tests; production callers omit. */
+  opts?: { sql?: ReturnType<typeof getOrgPg>['sql']; skipLegacy?: boolean },
 ): Promise<string[]> {
   const out = new Set<string>();
   try {
-    const { sql } = getOrgPg();
+    const sql = opts?.sql ?? getOrgPg().sql;
     await ensureTable(sql);
     const rows = await sql<{ capability: string }[]>`
       SELECT capability FROM harness_shared.plugin_capability_grants
@@ -95,11 +97,13 @@ export async function getGrantsForPluginInHarness(
   } catch {
     // PG unavailable — caller still gets file-fallback below.
   }
-  for (const g of readLegacyGrants()) {
-    if (g.pluginName !== pluginName) continue;
-    if (g.pluginVersion !== pluginVersion && g.pluginVersion !== '0.0.0') continue;
-    if (g.harnessSlug !== harnessSlug && g.harnessSlug !== '') continue;
-    for (const c of g.capabilities) out.add(c);
+  if (!opts?.skipLegacy) {
+    for (const g of readLegacyGrants()) {
+      if (g.pluginName !== pluginName) continue;
+      if (g.pluginVersion !== pluginVersion && g.pluginVersion !== '0.0.0') continue;
+      if (g.harnessSlug !== harnessSlug && g.harnessSlug !== '') continue;
+      for (const c of g.capabilities) out.add(c);
+    }
   }
   return Array.from(out);
 }
@@ -110,9 +114,12 @@ export async function getGrantsForPluginInHarness(
  * granted_at + granted_by — re-granting at the same scope shouldn't
  * silently mutate the audit trail.
  */
-export async function grantCapabilities(input: GrantInput): Promise<void> {
+export async function grantCapabilities(
+  input: GrantInput,
+  opts?: { sql?: ReturnType<typeof getOrgPg>['sql'] },
+): Promise<void> {
   if (input.capabilities.length === 0) return;
-  const { sql } = getOrgPg();
+  const sql = opts?.sql ?? getOrgPg().sql;
   await ensureTable(sql);
   for (const cap of input.capabilities) {
     await sql`
@@ -125,9 +132,12 @@ export async function grantCapabilities(input: GrantInput): Promise<void> {
   }
 }
 
-export async function revokeCapabilities(input: GrantInput): Promise<void> {
+export async function revokeCapabilities(
+  input: GrantInput,
+  opts?: { sql?: ReturnType<typeof getOrgPg>['sql'] },
+): Promise<void> {
   if (input.capabilities.length === 0) return;
-  const { sql } = getOrgPg();
+  const sql = opts?.sql ?? getOrgPg().sql;
   await ensureTable(sql);
   for (const cap of input.capabilities) {
     await sql`
