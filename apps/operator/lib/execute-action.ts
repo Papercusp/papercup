@@ -21,10 +21,10 @@ import { promisify } from 'node:util';
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
+import { scaffoldHarnessSchema } from '@/lib/scaffold-harness-schema';
 
 const execFileP = promisify(execFile);
 
-// Slug → schema name (matches bin/scaffold-harness-schema.sh).
 function slugToSchema(slug: string): string {
   return 'harness_' + slug.replace(/-/g, '_').toLowerCase();
 }
@@ -98,6 +98,10 @@ export interface SendMessageAction {
   op: 'send_message';
   to: string[];
   toRole?: string; // optional: narrow to a specific role within each recipient
+  /** Phase 3 feature messaging — feature this message is addressed to (within each `to` harness). */
+  toFeatureId?: string;
+  /** Feature whose worker authored this message (within `from` harness). Identifies the sender at feature granularity. */
+  fromFeatureId?: string;
   kind: string;
   subject: string;
   body?: string;
@@ -209,6 +213,11 @@ export function validateIdentityFields(
 const REPLAY_VERIFY = process.env.PAPERCUSP_REPLAY_VERIFY === '1';
 
 async function getCachedAction(callerSlug: string, actionId: string): Promise<any | null> {
+  // System principals don't have a per-harness executed_actions schema —
+  // see saveAction for the rationale. No cache means no idempotency for
+  // operator-initiated actions, which is acceptable: the dispatch path
+  // already de-dupes by card id.
+  if (callerSlug.startsWith('system:')) return null;
   const { sql } = getOrgPg();
   const schema = slugToSchema(callerSlug);
   const rows = await sql.unsafe(
@@ -278,6 +287,12 @@ async function saveAction(opts: {
   request: any;
   response: any;
 }): Promise<void> {
+  // System principals (e.g. "system:operator") have no per-harness
+  // schema; persisting an executed_actions row would generate
+  // `harness_system:operator.executed_actions` which Postgres rejects
+  // with `syntax error at or near ":"`. Skip the cache write — the
+  // operator's own audit_log captures the dispatch separately.
+  if (opts.callerSlug.startsWith('system:')) return;
   const { sql } = getOrgPg();
   const schema = slugToSchema(opts.callerSlug);
   await sql.unsafe(
@@ -316,6 +331,13 @@ const RATE_WINDOW_MS = 60_000;
 
 async function checkSendMessageRate(callerSlug: string): Promise<{ ok: true } | { ok: false; detail: string }> {
   if (SEND_MESSAGE_RATE_LIMIT <= 0) return { ok: true }; // disabled
+  // System principals (e.g. "system:operator") have no per-harness
+  // executed_actions schema — skip the rate-limit check rather than
+  // generate an invalid SQL identifier (`harness_system:operator`,
+  // which Postgres rejects with `syntax error at or near ":"`). The
+  // operator already throttles its own send_message frequency at the
+  // scan-loop level.
+  if (callerSlug.startsWith('system:')) return { ok: true };
   const { sql } = getOrgPg();
   const schema = slugToSchema(callerSlug);
   const since = new Date(Date.now() - RATE_WINDOW_MS).toISOString();
@@ -356,15 +378,21 @@ async function doSendMessage(
   const { sql } = getOrgPg();
 
   const toRole = action.toRole && /^[a-z][a-z0-9_-]*$/i.test(action.toRole) ? action.toRole : null;
+  // Feature-id format check (Phase 3). Accept the canonical F-XXX-NNN
+  // shape; reject silently → null so a malformed id can't be used to
+  // smuggle into the column.
+  const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
+  const toFeatureId = action.toFeatureId && FEATURE_ID_RE.test(action.toFeatureId) ? action.toFeatureId : null;
+  const fromFeatureId = action.fromFeatureId && FEATURE_ID_RE.test(action.fromFeatureId) ? action.fromFeatureId : null;
   const inserted: { recipient: string; messageId: string }[] = [];
   for (const recipient of action.to) {
     const schema = slugToSchema(recipient);
     // INSERT one message into the recipient's inbox. to_role optional.
     const rows = await sql.unsafe(
-      `INSERT INTO ${schema}.messages (from_slug, to_slug, to_role, kind, subject, body, parent_message_id, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending')
+      `INSERT INTO ${schema}.messages (from_slug, to_slug, to_role, from_feature_id, to_feature_id, kind, subject, body, parent_message_id, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
        RETURNING id`,
-      [callerSlug, recipient, toRole, action.kind, action.subject, action.body ?? null, action.parentMessageId ?? null],
+      [callerSlug, recipient, toRole, fromFeatureId, toFeatureId, action.kind, action.subject, action.body ?? null, action.parentMessageId ?? null],
     );
     const messageId = (rows as any)[0].id as string;
 
@@ -633,25 +661,10 @@ async function doScaffoldHarness(
   }
 
   // `papercusp init` already added the harness to the file registry (which
-  // the operator reads via /api/harness/projects). What it does NOT do is
-  // provision the per-harness PG schema. Trigger that directly via the
-  // scaffold script.
-  const restartRoot = process.env.PAPERCUSP_REPO_ROOT ?? '/home/marsh-office/Restart';
-  const scaffoldScript = process.env.PAPERCUSP_SCAFFOLD_SCRIPT ??
-    join(homeDir, 'papercupai-workspace/papercup/bin/scaffold-harness-schema.sh');
+  // the operator reads via /api/harness/projects). Provision the per-harness
+  // PG schema in-process — see lib/scaffold-harness-schema.ts.
   try {
-    await execFileP('bash', [scaffoldScript, action.projectSlug], {
-      cwd: restartRoot,
-      env: {
-        ...process.env,
-        PGUSER: 'postgres_app',
-        PGPASSWORD: 'postgres',
-        PGHOST: 'localhost',
-        PGDATABASE: 'papercusp',
-      },
-      timeout: 30_000,
-      maxBuffer: 4 * 1024 * 1024,
-    });
+    await scaffoldHarnessSchema(action.projectSlug);
   } catch (e: any) {
     return {
       ok: false,

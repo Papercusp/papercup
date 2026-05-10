@@ -133,7 +133,7 @@ async function fetchCatalogManifest(slug: string): Promise<{ kind?: string; inst
 
 async function lookupHarnessPath(slug: string): Promise<string | null> {
   const { loadHarnessRegistry } = await import('@/lib/harness-registry');
-  return loadHarnessRegistry().projects.find((p) => p.slug === slug)?.path ?? null;
+  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
 async function installSubagentPack(

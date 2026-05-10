@@ -1,6 +1,43 @@
 import { NextResponse } from 'next/server';
+import FALLBACK_CATALOG from './fallback-catalog.json';
+import { getOrgPg } from '@restart/db-org';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * Plugins hidden from marketplace UIs. Source: harness_shared.hidden_plugins
+ * (Migration 036). workspace_id='' rows are global defaults; per-workspace
+ * rows can override. Cached for 30s — list changes very infrequently and a
+ * brief cache lets the catalog endpoint return without per-request PG round-trips.
+ */
+let _hiddenCache: { value: Set<string>; expires: number } | null = null;
+const HIDDEN_TTL_MS = 30_000;
+
+async function getHiddenBasenames(): Promise<Set<string>> {
+  const now = Date.now();
+  if (_hiddenCache && _hiddenCache.expires > now) return _hiddenCache.value;
+  try {
+    const { sql } = getOrgPg();
+    // Idempotent ensure — keeps the route working even if the migration
+    // hasn't been applied to a particular environment yet.
+    await sql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.hidden_plugins (
+        basename TEXT NOT NULL,
+        reason TEXT,
+        hidden_at BIGINT NOT NULL DEFAULT 0,
+        hidden_by TEXT,
+        workspace_id TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (workspace_id, basename)
+      )
+    `);
+    const rows = await sql<{ basename: string }[]>`SELECT basename FROM harness_shared.hidden_plugins`;
+    const set = new Set(rows.map((r) => r.basename));
+    _hiddenCache = { value: set, expires: now + HIDDEN_TTL_MS };
+    return set;
+  } catch {
+    return new Set();
+  }
+}
 
 /**
  * Marketplace catalog API.
@@ -13,38 +50,18 @@ export const dynamic = 'force-dynamic';
 // surface (AddPluginButton, /marketplace/plugins, /installed/plugins).
 // Match by the unscoped basename so `@papercupai/<x>` and a future
 // rename don't slip through.
-const HIDDEN_PLUGIN_BASENAMES = new Set([
-  'notion-export',
-  'slack-notifier',
-  'vscode-server',
-  'jira-sync',
-]);
-function isHidden(slugOrName: string | undefined | null): boolean {
-  if (!slugOrName) return false;
-  const base = slugOrName.includes('/') ? slugOrName.split('/').pop()! : slugOrName;
-  return HIDDEN_PLUGIN_BASENAMES.has(base);
+function makeIsHidden(hidden: Set<string>) {
+  return function isHidden(slugOrName: string | undefined | null): boolean {
+    if (!slugOrName) return false;
+    const base = slugOrName.includes('/') ? slugOrName.split('/').pop()! : slugOrName;
+    return hidden.has(base);
+  };
 }
-const FALLBACK_CATALOG = [
-  {
-    name: 'papercup-org',
-    version: '0.1.0',
-    description: '5-department fictional company with cross-dept message bus, directives, and an automated YouTube briefing pipeline.',
-    author: 'Papercusp Team',
-    license: 'MIT',
-    plugins: ['briefings@0.1.0'],
-    homepage: 'https://papercupai.com',
-  },
-  {
-    name: 'papercup-coding',
-    version: '0.1.0',
-    description: 'Solo coding harness: scoper plans features, workers implement, validators verify, reviewers gate proposals. Drop in a SPEC.md and go.',
-    author: 'Papercusp Team',
-    license: 'MIT',
-    plugins: [],
-  },
-];
+// Fallback catalog (loaded from ./fallback-catalog.json at module
+// import) used when the marketplace server is unreachable.
 
 export async function GET() {
+  const isHidden = makeIsHidden(await getHiddenBasenames());
   const base = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
   // Try DB-backed `/v1/catalog` first (sees R2-only publishes). Fall back to
   // the filesystem-backed `/catalog` if v1 isn't available (e.g. older
