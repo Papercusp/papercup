@@ -83,6 +83,12 @@ export function MarketplaceIndex() {
             <span>One click installs into your local operator. Watch it work in mission control.</span>
           </li>
         </ol>
+        <p className="pc-marketplace-build-cta" style={{ marginTop: 16 }}>
+          Want to publish your own?{' '}
+          <a href="/docs/spec/plugin-quickstart" className="pc-link">
+            Five-minute plugin quickstart →
+          </a>
+        </p>
       </section>
     </div>
   );
