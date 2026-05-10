@@ -19,7 +19,8 @@
     "papercusp-fire-hook": "./bin/fire-hook"
   },
   "dependencies": {
-    "@papercusp/plugin-sdk": "*"
+    "@papercusp/plugin-sdk": "*",
+    "ajv": "^8.0.0"
   },
   "devDependencies": {
     "tsx": "^4.7.0",

@@ -68,6 +68,51 @@ describe('hasCapability / requireCapability', () => {
     const ctx = { pluginName: 'p', capabilities: ['secrets:read:*'] as any };
     assert.equal(hasCapability(ctx, 'secrets:read:ANY'), false);
   });
+
+  describe('two-tier (Batch B)', () => {
+    it('manifest-declared cap with no granted set is allowed (legacy path)', () => {
+      const ctx = { pluginName: 'p', capabilities: ['tasks:read'] as any };
+      assert.equal(hasCapability(ctx, 'tasks:read'), true);
+    });
+
+    it('manifest-declared cap NOT in granted set is denied', () => {
+      const ctx = {
+        pluginName: 'p',
+        capabilities: ['tasks:read'] as any,
+        granted: [] as any,
+      };
+      assert.equal(hasCapability(ctx, 'tasks:read'), false);
+    });
+
+    it('manifest + granted both declare the cap → allowed', () => {
+      const ctx = {
+        pluginName: 'p',
+        capabilities: ['tasks:read'] as any,
+        granted: ['tasks:read'] as any,
+      };
+      assert.equal(hasCapability(ctx, 'tasks:read'), true);
+    });
+
+    it('granted set with the cap but manifest does NOT → denied (Tier 1 still required)', () => {
+      const ctx = {
+        pluginName: 'p',
+        capabilities: [] as any,
+        granted: ['tasks:read'] as any,
+      };
+      assert.equal(hasCapability(ctx, 'tasks:read'), false);
+    });
+
+    it('granted wildcard authorizes anything in its match set the manifest also declared', () => {
+      const ctx = {
+        pluginName: 'p',
+        capabilities: ['http:fetch:api.foo.com', 'http:fetch:cdn.foo.com'] as any,
+        granted: ['http:fetch:*.foo.com'] as any,
+      };
+      assert.equal(hasCapability(ctx, 'http:fetch:api.foo.com'), true);
+      assert.equal(hasCapability(ctx, 'http:fetch:cdn.foo.com'), true);
+      assert.equal(hasCapability(ctx, 'http:fetch:other.bar.com'), false);
+    });
+  });
 });
 
 describe('wrapServiceWithCaps', () => {
@@ -185,9 +230,36 @@ describe('HookBus + createPluginHookBus', () => {
 
   it('emit checks events:emit:<event>', async () => {
     const bus = new HookBus();
-    const ctx = { pluginName: 'p', capabilities: [] as any };
+    const ctx = { pluginName: 'mytool', capabilities: [] as any };
     const scoped = createPluginHookBus(bus, ctx);
-    await assert.rejects(() => scoped.emit('briefing.ready', {}), /events:emit:briefing\.ready/);
+    // Plugin-emitted events MUST be prefixed with the plugin id (Batch
+    // A3 namespace rule), so use 'mytool.briefing-ready' not the
+    // substrate-style 'briefing.ready'. Bare 'briefing.ready' would now
+    // be rejected by the namespace check before the capability check.
+    await assert.rejects(
+      () => scoped.emit('mytool.briefing-ready', {}),
+      /events:emit:mytool\.briefing-ready/,
+    );
+  });
+
+  it('emit rejects substrate-reserved event names', async () => {
+    const bus = new HookBus();
+    const ctx = { pluginName: 'mytool', capabilities: ['events:emit:mission.start'] as any };
+    const scoped = createPluginHookBus(bus, ctx);
+    await assert.rejects(
+      () => scoped.emit('mission.start', {}),
+      /reserved for the substrate/,
+    );
+  });
+
+  it('emit rejects events not prefixed with the plugin id', async () => {
+    const bus = new HookBus();
+    const ctx = { pluginName: 'mytool', capabilities: ['events:emit:something.else'] as any };
+    const scoped = createPluginHookBus(bus, ctx);
+    await assert.rejects(
+      () => scoped.emit('something.else', {}),
+      /must prefix emitted events with its plugin id/,
+    );
   });
 
   it('unregisterPlugin removes all that plugin\'s registrations', async () => {

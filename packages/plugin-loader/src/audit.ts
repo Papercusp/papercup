@@ -19,6 +19,22 @@ export interface AuditRow {
   outcome: 'ok' | 'error' | 'timeout' | 'capability-denied';
   durationMs: number;
   errorMessage?: string;
+  /**
+   * Subset of capabilities the plugin actually consulted during this
+   * action. Populated for spawn + a few other gated host calls; empty
+   * array when the action is pure compute. Rust-port-feedback item 6.
+   */
+  capabilitiesUsed?: string[];
+  /**
+   * Spawn-specific fields — populated only when the audit row is for a
+   * `ctx.spawn` invocation. Lets the operator audit panel surface
+   * "killed by timeout" or "output truncated" without parsing logs.
+   * Rust-port-feedback item 11.
+   */
+  killedByTimeout?: boolean;
+  stdoutBytes?: number;
+  stderrBytes?: number;
+  truncated?: boolean;
 }
 
 export interface AuditWriter {

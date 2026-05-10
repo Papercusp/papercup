@@ -37,6 +37,20 @@ export class UnknownMethodError extends Error {
 export interface CapabilityCheckContext {
   pluginName: string;
   capabilities: Capability[];
+  /**
+   * User-granted capability set for this (plugin, harness) pair. When
+   * present, capability checks AND the manifest-declared set with this
+   * granted set — a manifest cap that the user hasn't granted is denied.
+   * When undefined, falls back to manifest-only (legacy behavior; the
+   * operator host always populates this).
+   *
+   * Wildcards in `granted` follow the same matching rules as `capabilities`
+   * (subdomain `*.host`, suffix `head*`). Granting `http:fetch:*.foo.com`
+   * authorizes every subdomain the manifest already declared under it.
+   *
+   * Rust-port-feedback item 3 — biggest single security improvement.
+   */
+  granted?: Capability[];
 }
 
 /**
@@ -57,9 +71,23 @@ export interface CapabilityCheckContext {
  */
 export function hasCapability(ctx: CapabilityCheckContext, cap: Capability | string): boolean {
   const target = String(cap);
-  if (ctx.capabilities.includes(target as Capability)) return true;
-  for (const declared of ctx.capabilities) {
-    if (matchWildcardCap(String(declared), target)) return true;
+  // Tier 1 — manifest declared the cap.
+  let manifestOk = false;
+  if (ctx.capabilities.includes(target as Capability)) {
+    manifestOk = true;
+  } else {
+    for (const declared of ctx.capabilities) {
+      if (matchWildcardCap(String(declared), target)) { manifestOk = true; break; }
+    }
+  }
+  if (!manifestOk) return false;
+  // Tier 2 — user granted the cap (if a granted set is present). When
+  // `granted` is undefined the host is on the legacy single-tier path
+  // (CLI dev mode, tests). Operator hosts always populate it.
+  if (ctx.granted === undefined) return true;
+  if (ctx.granted.includes(target as Capability)) return true;
+  for (const g of ctx.granted) {
+    if (matchWildcardCap(String(g), target)) return true;
   }
   return false;
 }

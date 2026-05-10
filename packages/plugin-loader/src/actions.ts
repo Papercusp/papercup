@@ -155,11 +155,11 @@ export class ServerActionRegistry {
   async invoke(req: InvokeRequest): Promise<ActionResult> {
     const decl = this.declared.get(req.name);
     if (!decl) {
-      return this.fail(req, 'capability-denied', `action "${req.name}" not declared`);
+      return this.failSync(req, 'capability-denied', `action "${req.name}" not declared`);
     }
     const handler = this.handlers.get(req.name);
     if (!handler) {
-      return this.fail(req, 'error', `no handler registered for "${req.name}"`);
+      return this.failSync(req, 'error', `no handler registered for "${req.name}"`);
     }
     const timeoutMs = (decl.serverHandler?.timeoutSec ?? this.defaultTimeoutSec) * 1000;
     const ctrl = new AbortController();
@@ -175,12 +175,27 @@ export class ServerActionRegistry {
         }),
       ]);
       const result = this.normalizeResult(out);
-      this.recordAudit(req, result.ok ? 'ok' : 'error', Date.now() - start, result.error);
+      try {
+        await this.recordAudit(req, result.ok ? 'ok' : 'error', Date.now() - start, result.error);
+      } catch (auditErr: unknown) {
+        // Fail-closed (Batch C5): an action that ran but couldn't be
+        // audited is worse than one that didn't run. Surface the audit
+        // failure as the action's failure; the handler's effects may
+        // have completed but the host won't lie about whether they're
+        // recorded.
+        const msg = auditErr instanceof Error ? auditErr.message : String(auditErr);
+        return { ok: false, error: `audit write failed: ${msg}` };
+      }
       return result;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       const outcome: AuditRow['outcome'] = ctrl.signal.aborted ? 'timeout' : 'error';
-      this.recordAudit(req, outcome, Date.now() - start, msg);
+      try {
+        await this.recordAudit(req, outcome, Date.now() - start, msg);
+      } catch (auditErr: unknown) {
+        const auditMsg = auditErr instanceof Error ? auditErr.message : String(auditErr);
+        return { ok: false, error: `${msg} (also: audit write failed: ${auditMsg})` };
+      }
       return { ok: false, error: msg };
     } finally {
       clearTimeout(timer);
@@ -194,23 +209,27 @@ export class ServerActionRegistry {
     return { ok: true, result: out };
   }
 
-  private fail(
+  private failSync(
     req: InvokeRequest,
     outcome: AuditRow['outcome'],
     msg: string,
   ): ActionResult {
-    this.recordAudit(req, outcome, 0, msg);
+    // Fire-and-forget audit for sync-fail paths (action not declared, no
+    // handler). These are programmer errors caught before the action's
+    // effects could run; the audit best-effort suffices.
+    void this.recordAudit(req, outcome, 0, msg).catch(() => {});
     return { ok: false, error: msg };
   }
 
-  private recordAudit(
+  private async recordAudit(
     req: InvokeRequest,
     outcome: AuditRow['outcome'],
     durationMs: number,
     errorMessage?: string,
-  ): void {
+    extras?: Partial<Pick<AuditRow, 'capabilitiesUsed' | 'killedByTimeout' | 'stdoutBytes' | 'stderrBytes' | 'truncated'>>,
+  ): Promise<void> {
     const ctxObj = (req.ctx as { installSlug?: string }) ?? {};
-    void this.audit.write({
+    const row: AuditRow = {
       ts: Date.now(),
       pluginName: this.pluginName,
       installSlug: ctxObj.installSlug ?? '',
@@ -221,7 +240,15 @@ export class ServerActionRegistry {
       outcome,
       durationMs,
       errorMessage,
-    });
+      ...(extras ?? {}),
+    };
+    // Fail-closed (Batch C5, Rust-port-feedback item 9): if the audit
+    // writer fails, the action invocation must be considered untrusted.
+    // The InMemoryAuditWriter never throws (used in CLI/dev); the
+    // operator's PgAuditWriter throws on PG outage, which surfaces here
+    // as a rejected promise the host treats as a hard error. Callers
+    // (invoke()) propagate the rejection up.
+    await this.audit.write(row);
   }
 
   /**

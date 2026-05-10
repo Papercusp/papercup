@@ -43,6 +43,44 @@ import {
   runWithPluginExecCtx,
   currentPluginExecCtx,
 } from '@/lib/log-events';
+import { getGrantsForPluginInHarness } from '@/lib/plugin-grants';
+import { PgAuditWriter } from '@/lib/plugin-audit-writer';
+import { InMemoryAuditWriter as _InMemoryAuditWriter } from '@papercusp/plugin-loader';
+
+let _operatorAuditWriter: import('@papercusp/plugin-loader').AuditWriter | null = null;
+function getOperatorAuditWriter(): import('@papercusp/plugin-loader').AuditWriter {
+  if (_operatorAuditWriter) return _operatorAuditWriter;
+  // Tests opt out of PG audit by setting NODE_ENV=test, which keeps the
+  // legacy in-memory writer (rows queryable via rowsForInspection()).
+  // Production / dev / staging all hit PG. Audit fail-closed semantics
+  // (Batch C5) live in the host's invoke path, not here.
+  _operatorAuditWriter = process.env.NODE_ENV === 'test'
+    ? new _InMemoryAuditWriter()
+    : new PgAuditWriter();
+  return _operatorAuditWriter;
+}
+
+/**
+ * Tier-2 grants loader — never throws. PG unavailability or a transient
+ * read failure must not kill plugin init; we fall back to "no grants"
+ * which combined with manifest-only behavior denies user-grant-required
+ * caps but doesn't crash the host.
+ */
+async function loadGrantedCapsSafe(
+  pluginName: string,
+  pluginVersion: string,
+  harnessSlug: string,
+): Promise<string[]> {
+  try {
+    return await getGrantsForPluginInHarness(pluginName, pluginVersion, harnessSlug);
+  } catch (e) {
+    // Don't spam the log every init — sample at warn level once per
+    // harness; a real outage will surface via the audit fail-closed path
+    // (Batch C5).
+    console.warn(`[plugin-grants] read failed for ${pluginName}@${pluginVersion} in ${harnessSlug}:`, (e as Error)?.message);
+    return [];
+  }
+}
 
 // papercuspRoot() invalidates on registry mtime, so call it per-use.
 
@@ -59,6 +97,13 @@ interface HostState {
   initialized: Set<string>;
   /** (pluginName, installSlug) → sealed action registry from `init()`. */
   registries: Map<string, ServerActionRegistry>;
+  /**
+   * (pluginName, installSlug) → user-granted caps loaded at init time.
+   * Hot-path readers (spawn, action invoke) consult this cache instead of
+   * re-querying PG. Invalidated alongside `initialized` on plugin reload.
+   * Tier 2 of the two-tier capability check (Batch B).
+   */
+  grants: Map<string, string[]>;
 }
 
 const __key = '__papercuspPluginHostRuntime';
@@ -87,18 +132,78 @@ export interface PluginHostStatus {
   hookRegistrations: { event: string; kind: 'action' | 'filter'; plugins: string[] }[];
 }
 
+/**
+ * In development we also look for plugins bundled inside the monorepo
+ * at `<repo-root>/libs/papercusp/plugins/`. We walk up from the
+ * operator app's working directory (Next.js bundles to `.next/`, which
+ * makes `__dirname` unreliable, so process.cwd() is the entry point).
+ * Returns null in installed builds where the in-repo path doesn't exist.
+ */
+function findBundledPluginsParent(): string | null {
+  try {
+    const { existsSync } = require('node:fs') as typeof import('node:fs');
+    const { dirname, join } = require('node:path') as typeof import('node:path');
+    // Search both cwd and __dirname-equivalent (this module's path).
+    // The operator dev server is typically launched from the home dir
+    // (`/home/marsh-office`), so cwd won't find the in-repo plugin
+    // dir; the module's own path always traces back to apps/operator/lib
+    // and walking up gets us to the repo root.
+    const seeds = [process.cwd(), __dirname];
+    for (const seed of seeds) {
+      let dir = seed;
+      for (let i = 0; i < 12; i++) {
+        if (existsSync(join(dir, 'libs', 'papercusp', 'plugins'))) {
+          return join(dir, 'libs', 'papercusp');
+        }
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+  } catch { /* not in dev */ }
+  return null;
+}
+
 async function discover(): Promise<HostState> {
   const bus = new HookBus();
   let loaded: LoadedPlugin[] = [];
   let loadErrors: Array<{ error: string; path: string }> = [];
   try {
-    const r = await loadPlugins({ harnessSlugs: discoverHarnessSlugs() });
+    const r = await loadPlugins({
+      harnessSlugs: discoverHarnessSlugs(),
+      // Pick up bundled in-repo plugins (Repomix, fetch-plus, code2prompt,
+      // firecrawl-bridge, etc) without requiring symlinks into ~/.papercusp.
+      projectDir: findBundledPluginsParent() ?? undefined,
+    });
     loaded = r.loaded;
     loadErrors = r.errors;
   } catch (e: any) {
     loadErrors = [{ error: `discovery threw: ${e?.message ?? e}`, path: '<discovery>' }];
   }
-  return { loaded, loadErrors, bus, initialized: new Set(), registries: new Map() };
+
+  // Wire plugin-contributed tools into agent-mcp's projected-tool registry
+  // (PR 0c.A-E). Each manifest tools[] entry is mounted on both HTTP and
+  // MCP transports automatically, with sensible defaults derived from
+  // plugin name + tool function key.
+  if (loaded.length > 0) {
+    try {
+      const { registerPluginTools } = await import('@papercusp/plugin-loader');
+      const result = await registerPluginTools(loaded);
+      for (const err of result.errors) {
+        loadErrors.push({
+          error: `tool wiring failed for "${err.tool}" in plugin "${err.plugin}": ${err.error}`,
+          path: err.plugin,
+        });
+      }
+    } catch (e: any) {
+      loadErrors.push({
+        error: `plugin-tool wiring threw: ${e?.message ?? e}`,
+        path: '<plugin-tool-wiring>',
+      });
+    }
+  }
+
+  return { loaded, loadErrors, bus, initialized: new Set(), registries: new Map(), grants: new Map() };
 }
 
 function regKey(pluginName: string, installSlug: string): string {
@@ -106,6 +211,15 @@ function regKey(pluginName: string, installSlug: string): string {
 }
 
 const SPAWN_DEFAULT_TIMEOUT_MS = 30_000;
+
+/**
+ * Snapshot of $PATH at host startup (Batch D1, Rust-port-feedback item
+ * 10). Every plugin spawn uses this PATH regardless of subsequent
+ * mutations to process.env.PATH. The snapshot is intentionally captured
+ * at module import time — the host's PATH is whatever the supervisor
+ * (systemd unit / shell) handed to us at boot.
+ */
+const FROZEN_PATH: string = process.env.PATH ?? '';
 const SPAWN_DEFAULT_MAX_BUFFER = 1024 * 1024;
 
 /**
@@ -127,29 +241,50 @@ const SPAWN_DEFAULT_MAX_BUFFER = 1024 * 1024;
  */
 function makePluginSpawn(args: {
   pluginName: string;
+  pluginVersion?: string;
+  harnessSlug?: string;
   capabilities: readonly string[];
+  granted?: readonly string[];
   defaultCwd: string;
 }): PluginSpawn {
   const capCtx: CapabilityCheckContext = {
     pluginName: args.pluginName,
     capabilities: args.capabilities as any,
+    granted: args.granted as any,
   };
   return async function spawn(bin, argv, opts) {
     if (typeof bin !== 'string' || bin.length === 0) {
       throw new Error(`plugin "${args.pluginName}" ctx.spawn: bin must be a non-empty string`);
     }
+    // Absolute-path policy (Batch D2, Rust-port-feedback item 10): an
+    // absolute path is allowed iff the plugin declared either an exact
+    // matching cap `compute:exec:<abs>` or a wildcard cap that covers it
+    // (e.g. `compute:exec:/usr/bin/*`). This prevents `which`-style
+    // discovery from finding ffmpeg in a writable dir and bypassing the
+    // intended exec gate.
+    const isAbsolute = bin.startsWith('/') || /^[A-Za-z]:[\\/]/.test(bin);
     if (bin.includes('/') || bin.includes('\\')) {
-      throw new Error(
-        `plugin "${args.pluginName}" ctx.spawn: bin "${bin}" must be a basename, not a path. ` +
-        `Declare a 'compute:exec:<name>' capability and pass just the binary name; PATH lookup will resolve it.`,
-      );
-    }
-    const cap = `compute:exec:${bin}`;
-    if (!hasCapability(capCtx, cap)) {
-      throw new Error(
-        `plugin "${args.pluginName}" missing capability "${cap}". ` +
-        `Add it to the plugin's manifest \`capabilities[]\` (or a wildcard like 'compute:exec:py-*').`,
-      );
+      if (!isAbsolute) {
+        throw new Error(
+          `plugin "${args.pluginName}" ctx.spawn: bin "${bin}" must be either a basename or an absolute path. ` +
+          `Relative paths are rejected because $PATH semantics make them ambiguous.`,
+        );
+      }
+      const cap = `compute:exec:${bin}`;
+      if (!hasCapability(capCtx, cap)) {
+        throw new Error(
+          `plugin "${args.pluginName}" missing capability "${cap}". ` +
+          `Absolute-path spawns require the manifest to declare the exact path or a covering wildcard like 'compute:exec:/usr/bin/*'.`,
+        );
+      }
+    } else {
+      const cap = `compute:exec:${bin}`;
+      if (!hasCapability(capCtx, cap)) {
+        throw new Error(
+          `plugin "${args.pluginName}" missing capability "${cap}". ` +
+          `Add it to the plugin's manifest \`capabilities[]\` (or a wildcard like 'compute:exec:py-*').`,
+        );
+      }
     }
     const cp = require('node:child_process') as typeof import('node:child_process');
     const fsSync = require('node:fs') as typeof import('node:fs');
@@ -158,7 +293,15 @@ function makePluginSpawn(args: {
     // on first spawn. Ensure it before handing to libuv (which would
     // otherwise reject the spawn with ENOENT).
     try { fsSync.mkdirSync(cwd, { recursive: true }); } catch { /* ignore — caller will see the spawn error */ }
-    const env = { ...process.env, ...(opts?.env ?? {}) };
+    // PATH snapshot (Batch D1, Rust-port-feedback item 10): plugins must
+    // not be able to alter the resolution of basename binaries by
+    // mutating process.env.PATH at runtime. We pin the host's $PATH at
+    // module load (FROZEN_PATH below) and force every spawn to use it.
+    // Plugins can still pass per-spawn env additions, but a PATH key in
+    // opts.env is silently overridden.
+    const optsEnv = { ...(opts?.env ?? {}) } as Record<string, string>;
+    delete optsEnv.PATH;
+    const env = { ...process.env, ...optsEnv, PATH: FROZEN_PATH };
     const timeoutMs = opts?.timeoutMs ?? SPAWN_DEFAULT_TIMEOUT_MS;
     const maxBuffer = opts?.maxBufferBytes ?? SPAWN_DEFAULT_MAX_BUFFER;
     return new Promise<PluginSpawnResult>((resolve, reject) => {
@@ -314,11 +457,15 @@ function attachPluginCtxExtras(
   ctx: PapercuspContext,
   lp: LoadedPlugin,
   registry: ServerActionRegistry,
+  granted?: readonly string[],
 ): void {
   ctx.actions = registry as unknown as PapercuspContext['actions'];
   ctx.spawn = makePluginSpawn({
     pluginName: lp.plugin.name,
+    pluginVersion: lp.plugin.version,
+    harnessSlug: ctx.installSlug,
     capabilities: lp.plugin.capabilities ?? [],
+    granted,
     defaultCwd: ctx.pluginDataDir,
   });
 
@@ -393,14 +540,30 @@ async function ensureInitialized(
   ctx: PapercuspContext,
 ): Promise<void> {
   const key = regKey(lp.plugin.name, ctx.installSlug);
+  // Sealed init() contract (Batch C1, Rust-port-feedback item 4): exactly
+  // once per (plugin, harness) pair. The guard below makes the second
+  // call a no-op (the documented happy path); explicit reload via
+  // resetInitialized() is the only way to re-init. If we ever observe
+  // double-init in the wild, surface a warning so authors fix the
+  // calling pattern instead of relying on the silent skip.
   if (state.initialized.has(key)) return;
   state.initialized.add(key);
 
   // Register the plugin's free-form hook subscriptions first so an init()
   // that fires its own events can reach its own filters/actions.
+  // Tier 2 of the capability check: load the user-granted set for this
+  // (plugin@version, harness) pair so the loader's hasCapability ANDs
+  // manifest with the granted set. See lib/plugin-grants.ts.
+  const granted = await loadGrantedCapsSafe(
+    lp.plugin.name,
+    lp.plugin.version,
+    ctx.installSlug,
+  );
+  state.grants.set(key, granted);
   const capCtx: CapabilityCheckContext = {
     pluginName: lp.plugin.name,
     capabilities: lp.plugin.capabilities ?? [],
+    granted: granted as any,
   };
   void createPluginHookBus(state.bus, capCtx);
 
@@ -419,13 +582,14 @@ async function ensureInitialized(
     registry = new ServerActionRegistry(declaredActions, {
       pluginName: lp.plugin.name,
       pluginCapabilities: lp.plugin.capabilities ?? [],
+      audit: getOperatorAuditWriter(),
     });
   } catch (e: any) {
     ctx.log(`action registry init threw: ${e?.message ?? e}`);
     return;
   }
   state.registries.set(key, registry);
-  attachPluginCtxExtras(ctx, lp, registry);
+  attachPluginCtxExtras(ctx, lp, registry, state.grants.get(regKey(lp.plugin.name, ctx.installSlug)));
 
   try {
     await runUnderPluginCtx(lp.plugin.name, ctx, undefined, async () => {
@@ -438,7 +602,16 @@ async function ensureInitialized(
       }
     });
   } catch (e: any) {
+    // Roll back partial state so a retry re-runs init() cleanly (Batch
+    // C1/C2, Rust-port-feedback item 5). The previous behavior left
+    // `initialized` set + an empty registry, so the plugin appeared
+    // healthy to the rest of the host but never actually finished
+    // setup. Better to surface the failure on the next dispatch.
     ctx.log(`init/onLoad threw: ${e?.message ?? e}`);
+    state.initialized.delete(key);
+    state.registries.delete(key);
+    state.grants.delete(key);
+    return;
   } finally {
     registry.seal();
   }
@@ -489,7 +662,7 @@ export async function invokePluginAction(args: {
   if (!registry) return { ok: false, error: `no action registry for "${args.pluginName}@${args.installSlug}" — init may have failed` };
   // ensureInitialized worked on its own ctx — attach the same extras to
   // this ctx (which is what the action handler will receive as its first arg).
-  attachPluginCtxExtras(ctx, lp, registry);
+  attachPluginCtxExtras(ctx, lp, registry, state.grants.get(regKey(lp.plugin.name, ctx.installSlug)));
   // Mint a correlation id per invocation so every line emitted during
   // this run (ctx.log + console.* + final result) is threadable in the UI.
   const corrId = args.triggerId ?? `inv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -587,7 +760,7 @@ export async function firePluginLifecycle<K extends keyof PluginHooks>(
       stateDir: args.stateDir,
     });
     const registry = state.registries.get(regKey(lp.plugin.name, args.installSlug));
-    if (registry) attachPluginCtxExtras(ctx, lp, registry);
+    if (registry) attachPluginCtxExtras(ctx, lp, registry, state.grants.get(regKey(lp.plugin.name, ctx.installSlug)));
     try {
       await runUnderPluginCtx(lp.plugin.name, ctx, undefined, async () => {
         // Cast through `any` — the conditional-type indexed handler doesn't
@@ -703,9 +876,42 @@ export function _resetPluginHostForTests(): void {
     if (fs.existsSync(root)) {
       collectRealpaths(root, 0);
     }
+    // Also walk project-plugin roots (libs/papercusp/plugins/ and any
+    // <projectDir>/plugins/) so freshly-edited project plugins reload too.
+    // Without this, project-plugin .cjs entries survive refresh and stale
+    // module objects keep being served — visible as edits to a project
+    // plugin's index.cjs not taking effect after POST /api/plugins/host/refresh.
+    //
+    // Search from BOTH cwd and __dirname. Dev operator launched from the
+    // home dir has cwd=/home/marsh-office where no libs/papercusp/plugins
+    // exists — the module's own __dirname is what reliably traces back
+    // to the repo.
+    const projectPluginRoots = [
+      ...(() => {
+        const found: string[] = [];
+        for (const seed of [process.cwd(), __dirname]) {
+          let cur = seed;
+          for (let i = 0; i < 12; i++) {
+            const candidate = join(cur, 'libs', 'papercusp', 'plugins');
+            if (fs.existsSync(candidate) && !found.includes(candidate)) {
+              found.push(candidate);
+              break;
+            }
+            const parent = join(cur, '..');
+            if (parent === cur) break;
+            cur = parent;
+          }
+        }
+        return found;
+      })(),
+    ];
+    for (const r of projectPluginRoots) {
+      collectRealpaths(r, 0);
+    }
     for (const k of Object.keys(require.cache)) {
       const matches =
         k.startsWith(root) ||
+        projectPluginRoots.some((r) => k.startsWith(r)) ||
         Array.from(resolvedRoots).some((r) => k.startsWith(r));
       if (matches) delete require.cache[k];
     }
@@ -728,9 +934,13 @@ export function _injectPluginHostForTests(loaded: LoadedPlugin[]): void {
     bus: new HookBus(),
     initialized: new Set(),
     registries: new Map(),
+    grants: new Map(),
   };
   __cache.state = state;
   __cache.promise = Promise.resolve(state);
+  // Pin rootAtCache so getPluginHost()'s workspace-switch invalidation
+  // doesn't immediately wipe the injected state on first call.
+  __cache.rootAtCache = papercuspRoot();
 }
 
 /**

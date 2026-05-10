@@ -34,6 +34,39 @@
 import type { Capability } from '@papercusp/plugin-sdk';
 import { hasCapability, type CapabilityCheckContext } from './capabilities';
 
+/**
+ * Namespace rule for plugin-emitted events. The substrate fires events
+ * named `mission.*`, `task.*`, `feature.*`, `proposal.*`, `worker.*`,
+ * `validator.*`, `orchestrator.*`, `pending_event.*`. Plugins must NOT
+ * emit those — otherwise plugin A could fake a `mission.start` and
+ * trigger plugin B's substrate-listening handler. Plugin events must be
+ * prefixed with the plugin id so namespaces stay clean.
+ */
+const RESERVED_EMIT_PREFIXES = [
+  'mission.', 'task.', 'feature.', 'proposal.',
+  'worker.', 'validator.', 'orchestrator.', 'pending_event.',
+];
+
+function assertEmitNameAllowed(event: string, pluginName: string): void {
+  for (const prefix of RESERVED_EMIT_PREFIXES) {
+    if (event === prefix.slice(0, -1) || event.startsWith(prefix)) {
+      throw new Error(
+        `plugin "${pluginName}" cannot emit "${event}" — names starting with ` +
+        `${RESERVED_EMIT_PREFIXES.map((p) => `"${p}"`).join(', ')} are reserved for the substrate.`,
+      );
+    }
+  }
+  // Plugin-emitted events must be `<pluginId>.<rest>` to keep namespaces
+  // distinct. Allow the bare plugin id for "module loaded" style emits.
+  const idBare = pluginName.includes('/') ? pluginName.split('/').pop()! : pluginName;
+  if (event !== idBare && event !== pluginName && !event.startsWith(`${pluginName}.`) && !event.startsWith(`${idBare}.`)) {
+    throw new Error(
+      `plugin "${pluginName}" must prefix emitted events with its plugin id. ` +
+      `"${event}" should be "${idBare}.${event}".`,
+    );
+  }
+}
+
 type ActionHandler<T = unknown> = (arg: T) => void | Promise<void>;
 type FilterHandler<T = unknown> = (arg: T) => T | Promise<T>;
 
@@ -147,6 +180,11 @@ export function createPluginHookBus(bus: HookBus, ctx: CapabilityCheckContext) {
     },
 
     async emit<T>(event: string, arg: T): Promise<void> {
+      // Namespace rule (Batch A3): plugin-emitted events MUST be prefixed
+      // with the plugin id, and substrate-reserved names are forbidden so
+      // a plugin can't masquerade as the substrate. Reject before the
+      // capability check so authors see the clearer error.
+      assertEmitNameAllowed(event, ctx.pluginName);
       const cap: Capability = `events:emit:${event}`;
       if (!hasCapability(ctx, cap)) {
         throw new Error(
