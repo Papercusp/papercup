@@ -59,6 +59,11 @@ export default function PluginsPage() {
           <p>
             Plugins extend an installed workflow with new actions — publishing, integrations, dashboards, hooks. Each one declares exactly what it can access before you install it.
           </p>
+          <p style={{ marginTop: 8, fontSize: 13 }}>
+            <a href="/docs/spec/plugin-quickstart" className="pc-link">
+              Build your own →
+            </a>
+          </p>
         </div>
         <div className="pc-marketplace-mini-stats" aria-label="Plugin status">
           <div><strong>{plugins.length}</strong><span>available</span></div>
