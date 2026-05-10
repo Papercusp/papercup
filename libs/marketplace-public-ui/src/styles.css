@@ -2528,3 +2528,969 @@ body.h-harness-top-collapsed .pc-header {
 .oracle-form {
   background: #060d18 !important;
 }
+
+
+/* Marketplace / installed plugins: metallic HUD pass, paint-only. */
+.pc-marketplace-frame {
+  --pc-market-metal: rgba(7, 18, 32, 0.88);
+  --pc-market-metal-strong: rgba(5, 13, 24, 0.96);
+  --pc-market-rim: rgba(148, 196, 228, 0.18);
+  --pc-market-cyan: rgba(103, 232, 249, 0.20);
+  --pc-market-violet: rgba(167, 139, 250, 0.18);
+  --pc-market-mint: rgba(45, 212, 191, 0.16);
+}
+
+.pc-marketplace-shell {
+  position: relative;
+}
+
+.pc-marketplace-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 520px;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.030), transparent 22%),
+    radial-gradient(circle at 12% 0%, rgba(103, 232, 249, 0.10), transparent 28rem),
+    radial-gradient(circle at 82% 4%, rgba(167, 139, 250, 0.08), transparent 24rem);
+  mask-image: linear-gradient(180deg, #000 0, #000 30%, transparent 100%);
+  z-index: -1;
+}
+
+.pc-marketplace-tabs.pc-tabs,
+.pc-marketplace-hero-v2,
+.pc-marketplace-pagehead,
+.pc-marketplace-toolbar-copy,
+.pc-marketplace-search,
+.pc-marketplace-card,
+.pc-marketplace-empty,
+.pc-marketplace-loading,
+.pc-marketplace-mini-stats div,
+.pc-marketplace-category-card,
+.pc-marketplace-steps,
+.pc-marketplace-steps li {
+  border-color: rgba(148, 196, 228, 0.18) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.040), rgba(255,255,255,0.010)),
+    linear-gradient(135deg, rgba(255,255,255,0.020), transparent 42%, rgba(103, 232, 249, 0.04) 74%, transparent 100%),
+    var(--pc-market-metal) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.070),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 18px 44px rgba(0, 0, 0, 0.18),
+    0 0 0 1px rgba(103, 232, 249, 0.05) !important;
+}
+
+.pc-marketplace-hero-v2,
+.pc-marketplace-pagehead,
+.pc-marketplace-card,
+.pc-marketplace-category-card,
+.pc-marketplace-steps li {
+  position: relative;
+  isolation: isolate;
+}
+
+.pc-marketplace-hero-v2::after,
+.pc-marketplace-pagehead::after,
+.pc-marketplace-card::after,
+.pc-marketplace-category-card::after,
+.pc-marketplace-steps li::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background:
+    linear-gradient(118deg, transparent 0 34%, rgba(255,255,255,0.14) 44%, transparent 54%) -120% 0 / 36% 100% no-repeat,
+    radial-gradient(circle at 100% 0%, rgba(167, 139, 250, 0.08), transparent 32%),
+    radial-gradient(circle at 0% 0%, rgba(103, 232, 249, 0.08), transparent 28%);
+  mix-blend-mode: screen;
+  opacity: 0.82;
+}
+
+.pc-marketplace-tabs.pc-tabs {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.036), rgba(255,255,255,0.008)),
+    linear-gradient(90deg, rgba(103, 232, 249, 0.05), transparent 26%, rgba(167, 139, 250, 0.04) 76%, transparent),
+    rgba(6, 14, 26, 0.82) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(103, 232, 249, 0.10),
+    0 18px 40px rgba(0, 0, 0, 0.16) !important;
+}
+
+.pc-marketplace-tabs .pc-tab {
+  border-color: rgba(255,255,255,0.04);
+  background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+}
+
+.pc-marketplace-tabs .pc-tab.active {
+  border-color: rgba(103, 232, 249, 0.22);
+  background:
+    linear-gradient(180deg, rgba(103, 232, 249, 0.14), rgba(255,255,255,0.02)),
+    rgba(8, 20, 34, 0.88);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    0 0 0 1px rgba(103, 232, 249, 0.06),
+    0 0 26px rgba(103, 232, 249, 0.08);
+}
+
+.pc-marketplace-hero-v2 {
+  background:
+    radial-gradient(circle at 88% 0%, rgba(167, 139, 250, 0.16), transparent 28%),
+    radial-gradient(circle at 8% 0%, rgba(45, 212, 191, 0.10), transparent 24rem),
+    linear-gradient(180deg, rgba(255,255,255,0.042), rgba(255,255,255,0.010)),
+    linear-gradient(135deg, rgba(255,255,255,0.018), transparent 42%, rgba(103, 232, 249, 0.05) 74%, transparent 100%),
+    rgba(5, 14, 26, 0.86) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 26px 70px rgba(0, 0, 0, 0.22),
+    0 0 40px rgba(103, 232, 249, 0.05) !important;
+}
+
+.pc-marketplace-hero-tagline,
+.pc-marketplace-pagehead > div > p {
+  color: color-mix(in oklab, var(--fg-dim), white 10%) !important;
+  text-shadow: 0 0 14px rgba(103, 232, 249, 0.06);
+}
+
+.pc-marketplace-hero-search-v2,
+.pc-marketplace-search {
+  position: relative;
+  isolation: isolate;
+  border: 1px solid rgba(148, 196, 228, 0.22) !important;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.038), rgba(255,255,255,0.008)),
+    linear-gradient(135deg, rgba(255,255,255,0.018), transparent 42%, rgba(103, 232, 249, 0.04) 74%, transparent 100%),
+    rgba(5, 14, 26, 0.82) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.30),
+    0 16px 34px rgba(0, 0, 0, 0.16) !important;
+}
+
+.pc-marketplace-hero-search-v2 {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px 0 16px;
+  width: min(720px, 100%);
+}
+
+.pc-marketplace-hero-search-v2 svg,
+.pc-marketplace-search svg {
+  color: #dff8ff;
+  filter: drop-shadow(0 0 10px rgba(103, 232, 249, 0.24));
+}
+
+.pc-marketplace-hero-search-v2 input,
+.pc-marketplace-search input {
+  color: #f3fbff;
+  text-shadow: 0 0 10px rgba(103, 232, 249, 0.06);
+}
+
+.pc-marketplace-hero-search-v2 input::placeholder,
+.pc-marketplace-search input::placeholder {
+  color: color-mix(in oklab, var(--fg-mute), white 6%);
+}
+
+.pc-marketplace-category-card,
+.pc-marketplace-card.installed {
+  border-color: rgba(45, 212, 191, 0.22) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.075),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 20px 50px rgba(0, 0, 0, 0.18),
+    0 0 34px rgba(45, 212, 191, 0.05) !important;
+}
+
+.pc-marketplace-card:hover,
+.pc-marketplace-category-card:hover {
+  border-color: rgba(103, 232, 249, 0.26) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.085),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 26px 60px rgba(0, 0, 0, 0.22),
+    0 0 38px rgba(103, 232, 249, 0.08) !important;
+}
+
+.pc-marketplace-card-head > em {
+  padding: 4px 8px;
+  border: 1px solid rgba(45, 212, 191, 0.26);
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(45, 212, 191, 0.14), rgba(5, 14, 26, 0.54));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+}
+
+.pc-marketplace-card-icon {
+  border-color: rgba(103, 232, 249, 0.26);
+  background:
+    radial-gradient(circle at 24% 20%, rgba(255,255,255,0.16), transparent 34%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.14), rgba(5, 13, 24, 0.88));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(0,0,0,0.32),
+    0 0 22px rgba(103, 232, 249, 0.08);
+}
+
+.pc-marketplace-card-icon.plugin {
+  border-color: rgba(167, 139, 250, 0.30);
+  background:
+    radial-gradient(circle at 24% 20%, rgba(255,255,255,0.16), transparent 34%),
+    linear-gradient(180deg, rgba(167, 139, 250, 0.18), rgba(22, 14, 36, 0.90));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(0,0,0,0.32),
+    0 0 22px rgba(167, 139, 250, 0.10);
+}
+
+.pc-marketplace-meta span,
+.pc-marketplace-enabled code,
+.pc-marketplace-publishes a {
+  border-color: rgba(148, 196, 228, 0.18) !important;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.030), rgba(255,255,255,0.008)),
+    rgba(4, 12, 22, 0.72) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 0 14px rgba(103, 232, 249, 0.04);
+}
+
+.pc-marketplace-mini-stats div {
+  background:
+    radial-gradient(circle at 86% 0%, rgba(103, 232, 249, 0.10), transparent 34%),
+    linear-gradient(180deg, rgba(255,255,255,0.036), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.82) !important;
+}
+
+.pc-marketplace-mini-stats strong {
+  text-shadow: 0 0 18px rgba(103, 232, 249, 0.18);
+}
+
+.pc-marketplace-steps {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.036), rgba(255,255,255,0.010)),
+    linear-gradient(135deg, rgba(255,255,255,0.018), transparent 42%, rgba(103, 232, 249, 0.04) 74%, transparent 100%),
+    rgba(5, 14, 26, 0.84) !important;
+}
+
+.pc-marketplace-steps li {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.032), rgba(255,255,255,0.010)),
+    rgba(6, 15, 27, 0.78) !important;
+}
+
+.pc-marketplace-card-actions .pc-button,
+.pc-marketplace-hero-search-v2 .pc-button.primary {
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.16),
+    inset 0 -1px 0 rgba(0,0,0,0.28),
+    0 18px 34px rgba(10, 60, 94, 0.18);
+}
+
+.pc-marketplace-card-actions .pc-button.ghost {
+  background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(4, 12, 22, 0.72));
+  border-color: rgba(148, 196, 228, 0.20);
+}
+
+.pc-marketplace-card-actions .pc-button.danger {
+  background: linear-gradient(180deg, rgba(251, 113, 133, 0.14), rgba(34, 9, 16, 0.92));
+  border-color: rgba(251, 113, 133, 0.28);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.28),
+    0 18px 34px rgba(94, 24, 37, 0.16);
+}
+
+.pc-marketplace-empty,
+.pc-marketplace-loading {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.032), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.82) !important;
+}
+
+/* Marketplace overview repair: make category CTAs read as integrated metallic cards. */
+.pc-marketplace-categories {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 18px 0 28px;
+}
+
+.pc-marketplace-category-card {
+  display: grid !important;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 12px;
+  min-height: 236px;
+  padding: 22px !important;
+  color: var(--fg) !important;
+  text-decoration: none !important;
+}
+
+.pc-marketplace-category-card:nth-of-type(1) {
+  border-color: rgba(103, 232, 249, 0.24) !important;
+  background:
+    radial-gradient(circle at 84% 8%, rgba(103, 232, 249, 0.13), transparent 34%),
+    linear-gradient(180deg, rgba(255,255,255,0.044), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.90) !important;
+}
+
+.pc-marketplace-category-card:nth-of-type(2) {
+  border-color: rgba(167, 139, 250, 0.25) !important;
+  background:
+    radial-gradient(circle at 84% 8%, rgba(167, 139, 250, 0.14), transparent 34%),
+    linear-gradient(180deg, rgba(255,255,255,0.044), rgba(255,255,255,0.010)),
+    rgba(7, 13, 27, 0.92) !important;
+}
+
+.pc-marketplace-category-card:nth-of-type(3) {
+  border-color: rgba(45, 212, 191, 0.23) !important;
+  background:
+    radial-gradient(circle at 84% 8%, rgba(45, 212, 191, 0.12), transparent 34%),
+    linear-gradient(180deg, rgba(255,255,255,0.044), rgba(255,255,255,0.010)),
+    rgba(4, 16, 24, 0.92) !important;
+}
+
+.pc-marketplace-category-icon {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 1px solid rgba(148, 196, 228, 0.24);
+  border-radius: 14px;
+  color: #e5fbff;
+  background:
+    radial-gradient(circle at 28% 22%, rgba(255,255,255,0.18), transparent 38%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.16), rgba(4, 12, 22, 0.88));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(0,0,0,0.30),
+    0 0 20px rgba(103, 232, 249, 0.10);
+}
+
+.pc-marketplace-category-card h3 {
+  margin: 2px 0 0;
+  color: #f3fbff;
+  font-size: 20px;
+  line-height: 1.15;
+  text-shadow: 0 0 16px rgba(103, 232, 249, 0.12);
+}
+
+.pc-marketplace-category-card p {
+  margin: 0;
+  color: color-mix(in oklab, var(--fg-dim), white 12%);
+  font-size: 13px;
+  line-height: 1.58;
+}
+
+.pc-marketplace-category-card b {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  min-height: 32px;
+  padding: 6px 12px;
+  border: 1px solid rgba(148, 196, 228, 0.22);
+  border-radius: 999px;
+  color: #dff8ff;
+  font-size: 12px;
+  font-weight: 820;
+  letter-spacing: 0.01em;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.070), rgba(255,255,255,0.014)),
+    rgba(4, 13, 24, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    inset 0 -1px 0 rgba(0,0,0,0.26),
+    0 10px 22px rgba(0,0,0,0.16);
+}
+
+.pc-marketplace-category-card:hover b {
+  border-color: rgba(103, 232, 249, 0.34);
+  color: #ffffff;
+  background:
+    linear-gradient(180deg, rgba(103, 232, 249, 0.14), rgba(255,255,255,0.018)),
+    rgba(4, 15, 28, 0.86);
+}
+
+.pc-marketplace-hero-search-v2 .pc-button.primary,
+.pc-marketplace-card-actions .pc-button.primary {
+  min-height: 34px;
+  padding: 7px 14px;
+  border-radius: 12px;
+  border-color: rgba(103, 232, 249, 0.34) !important;
+  color: #e8fbff !important;
+  background:
+    radial-gradient(circle at 24% 12%, rgba(255,255,255,0.18), transparent 34%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.22), rgba(7, 19, 32, 0.94)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.18),
+    inset 0 -1px 0 rgba(0,0,0,0.32),
+    0 12px 28px rgba(8, 145, 178, 0.16) !important;
+  text-shadow: 0 0 10px rgba(103, 232, 249, 0.20);
+}
+
+.pc-marketplace-hero-search-v2 .pc-button.primary:hover,
+.pc-marketplace-card-actions .pc-button.primary:hover {
+  background:
+    radial-gradient(circle at 24% 12%, rgba(255,255,255,0.22), transparent 34%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.30), rgba(9, 26, 43, 0.96)) !important;
+}
+
+.pc-marketplace-card-actions .pc-button,
+.pc-marketplace-dialog-actions .pc-button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.054), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.82);
+}
+
+.pc-marketplace-card-actions .pc-button:hover,
+.pc-marketplace-dialog-actions .pc-button:hover {
+  border-color: rgba(103, 232, 249, 0.30);
+  background:
+    linear-gradient(180deg, rgba(103, 232, 249, 0.10), rgba(255,255,255,0.012)),
+    rgba(6, 17, 30, 0.90);
+}
+
+@media (max-width: 1120px) {
+  .pc-marketplace-categories {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .pc-marketplace-categories {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .pc-marketplace-category-card {
+    min-height: 0;
+  }
+}
+
+/* Marketplace overview repair: restore missing spacing/structure around hero and steps. */
+.pc-marketplace-hero-v2 {
+  padding: 34px 36px 36px;
+  margin-bottom: 18px;
+}
+
+.pc-marketplace-hero-v2 h1 {
+  max-width: 980px;
+  margin: 8px 0 18px;
+  font-size: clamp(48px, 6.4vw, 78px);
+  line-height: 0.96;
+  letter-spacing: -0.058em;
+}
+
+.pc-marketplace-hero-tagline {
+  max-width: 860px;
+  margin-bottom: 20px;
+}
+
+.pc-marketplace-steps {
+  padding: 22px;
+  margin: 8px 0 36px;
+  border-radius: 24px;
+}
+
+.pc-marketplace-steps h2 {
+  margin: 6px 0 16px;
+  font-size: 28px;
+  line-height: 1.05;
+}
+
+.pc-marketplace-steps ol {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pc-marketplace-steps li {
+  display: grid;
+  gap: 7px;
+  min-height: 112px;
+  padding: 16px;
+  border: 1px solid rgba(148, 196, 228, 0.18);
+  border-radius: 16px;
+}
+
+.pc-marketplace-steps li strong,
+.pc-marketplace-steps li span {
+  position: relative;
+  z-index: 1;
+  display: block;
+}
+
+.pc-marketplace-steps li strong {
+  color: #f3fbff;
+  font-size: 13px;
+  text-shadow: 0 0 12px rgba(103, 232, 249, 0.12);
+}
+
+.pc-marketplace-steps li span {
+  color: color-mix(in oklab, var(--fg-dim), white 8%);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1120px) {
+  .pc-marketplace-steps ol {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .pc-marketplace-hero-v2 {
+    padding: 24px;
+  }
+}
+
+/* Marketplace clarity pass: sharpen what is selectable and what action happens next. */
+.pc-marketplace-tabs .pc-tab {
+  border-color: rgba(148, 196, 228, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.006)),
+    rgba(5, 14, 26, 0.62);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    inset 0 -1px 0 rgba(0,0,0,0.28);
+}
+
+.pc-marketplace-tabs .pc-tab:hover {
+  border-color: rgba(103, 232, 249, 0.24);
+  background:
+    linear-gradient(180deg, rgba(103, 232, 249, 0.09), rgba(255,255,255,0.010)),
+    rgba(6, 17, 30, 0.80);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.09),
+    0 10px 22px rgba(8, 145, 178, 0.09);
+}
+
+.pc-marketplace-tabs .pc-tab.active {
+  border-color: rgba(103, 232, 249, 0.32);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(103, 232, 249, 0.18), transparent 44%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.16), rgba(255,255,255,0.012)),
+    rgba(7, 20, 34, 0.92);
+}
+
+.pc-marketplace-tabs .pc-tab-label {
+  color: color-mix(in oklab, var(--fg), white 8%);
+}
+
+.pc-marketplace-tabs .pc-tab-hint {
+  color: color-mix(in oklab, var(--fg-mute), white 8%);
+}
+
+.pc-marketplace-hero-search-v2 {
+  border-color: rgba(103, 232, 249, 0.30) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.10),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 16px 34px rgba(0,0,0,0.18),
+    0 0 28px rgba(103, 232, 249, 0.08) !important;
+}
+
+.pc-marketplace-hero-search-v2:focus-within {
+  border-color: rgba(103, 232, 249, 0.52) !important;
+  background:
+    linear-gradient(180deg, rgba(103, 232, 249, 0.075), rgba(255,255,255,0.012)),
+    rgba(6, 17, 30, 0.92) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 0 0 1px rgba(103, 232, 249, 0.11),
+    0 0 32px rgba(103, 232, 249, 0.16) !important;
+}
+
+.pc-marketplace-hero-search-v2 input {
+  font-weight: 660;
+}
+
+.pc-marketplace-hero-search-v2 .pc-button.primary {
+  min-width: 92px;
+  font-weight: 860;
+}
+
+.pc-marketplace-category-card {
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.085),
+    inset 0 -1px 0 rgba(0,0,0,0.35),
+    0 20px 48px rgba(0,0,0,0.18),
+    0 0 0 1px rgba(103, 232, 249, 0.050) !important;
+}
+
+.pc-marketplace-category-card:hover {
+  transform: translateY(-2px);
+}
+
+.pc-marketplace-category-card:focus-visible,
+.pc-marketplace-tabs .pc-tab:focus-visible,
+.pc-marketplace-card-actions .pc-button:focus-visible,
+.pc-marketplace-hero-search-v2 .pc-button:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.62);
+  outline-offset: 3px;
+}
+
+.pc-marketplace-category-card b {
+  align-self: end;
+  transition:
+    transform 140ms var(--ease-out),
+    border-color 140ms var(--ease-out),
+    background 140ms var(--ease-out),
+    box-shadow 140ms var(--ease-out);
+}
+
+.pc-marketplace-category-card:hover b,
+.pc-marketplace-category-card:focus-visible b {
+  transform: translateX(2px);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.14),
+    inset 0 -1px 0 rgba(0,0,0,0.28),
+    0 0 22px rgba(103, 232, 249, 0.14);
+}
+
+.pc-marketplace-category-card:hover .pc-marketplace-category-icon,
+.pc-marketplace-category-card:focus-visible .pc-marketplace-category-icon {
+  border-color: rgba(103, 232, 249, 0.38);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.18),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 0 28px rgba(103, 232, 249, 0.18);
+}
+
+.pc-marketplace-card-actions {
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148, 196, 228, 0.12);
+  background: linear-gradient(180deg, rgba(103, 232, 249, 0.025), transparent 60%);
+}
+
+.pc-marketplace-card-actions .pc-button {
+  font-weight: 820;
+  letter-spacing: 0.005em;
+}
+
+.pc-marketplace-steps li strong {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  min-height: 30px;
+  padding: 5px 10px;
+  border: 1px solid rgba(148, 196, 228, 0.20);
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.060), rgba(255,255,255,0.010)),
+    rgba(4, 13, 24, 0.76);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.09),
+    0 0 16px rgba(103, 232, 249, 0.07);
+}
+
+.pc-marketplace-steps li:nth-child(1) strong {
+  border-color: rgba(103, 232, 249, 0.26);
+  color: #dff8ff;
+}
+
+.pc-marketplace-steps li:nth-child(2) strong {
+  border-color: rgba(167, 139, 250, 0.26);
+  color: #ece8ff;
+}
+
+.pc-marketplace-steps li:nth-child(3) strong {
+  border-color: rgba(45, 212, 191, 0.26);
+  color: #d8fff8;
+}
+
+/* Marketplace clarity pass v2: make controls scan as primary, secondary, or status. */
+.pc-marketplace-toolbar-copy {
+  position: relative;
+  border-color: rgba(103, 232, 249, 0.24) !important;
+  background:
+    radial-gradient(circle at 0% 14%, rgba(103, 232, 249, 0.12), transparent 52%),
+    linear-gradient(180deg, rgba(255,255,255,0.044), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.86) !important;
+  box-shadow:
+    inset 3px 0 0 rgba(103, 232, 249, 0.28),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    0 16px 32px rgba(0,0,0,0.14) !important;
+}
+
+.pc-marketplace-toolbar-copy strong {
+  color: #f3fbff;
+  text-shadow: 0 0 14px rgba(103, 232, 249, 0.14);
+}
+
+.pc-marketplace-toolbar-copy em {
+  color: color-mix(in oklab, var(--fg-mute), white 12%);
+}
+
+.pc-marketplace-search:focus-within {
+  border-color: rgba(103, 232, 249, 0.50) !important;
+  background:
+    radial-gradient(circle at 96% 0%, rgba(103, 232, 249, 0.10), transparent 42%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.070), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.92) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.11),
+    0 0 0 1px rgba(103, 232, 249, 0.12),
+    0 0 28px rgba(103, 232, 249, 0.12) !important;
+}
+
+.pc-marketplace-search input {
+  font-weight: 650;
+}
+
+.pc-marketplace-search input::placeholder {
+  color: color-mix(in oklab, var(--fg-mute), white 16%) !important;
+}
+
+.pc-marketplace-card {
+  border-color: rgba(148, 196, 228, 0.20) !important;
+}
+
+.pc-marketplace-card-title {
+  color: #f2fbff;
+  text-shadow: 0 0 12px rgba(103, 232, 249, 0.10);
+}
+
+.pc-marketplace-card-head > div > span {
+  color: color-mix(in oklab, var(--fg-mute), white 10%);
+}
+
+.pc-marketplace-card-head > em {
+  color: #b9fff1;
+  border-color: rgba(45, 212, 191, 0.34);
+  background:
+    radial-gradient(circle at 22% 0%, rgba(45, 212, 191, 0.18), transparent 48%),
+    linear-gradient(180deg, rgba(45, 212, 191, 0.14), rgba(5, 14, 26, 0.68));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.12),
+    0 0 18px rgba(45, 212, 191, 0.10);
+}
+
+.pc-marketplace-card.installed {
+  background:
+    radial-gradient(circle at 90% 0%, rgba(45, 212, 191, 0.11), transparent 38%),
+    linear-gradient(180deg, rgba(255,255,255,0.036), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.90) !important;
+}
+
+.pc-marketplace-card-actions .pc-button:not(.ghost):not(.danger) {
+  margin-right: auto;
+  min-width: 112px;
+  border-color: rgba(103, 232, 249, 0.36) !important;
+  color: #e8fbff !important;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255,255,255,0.17), transparent 38%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.20), rgba(7, 19, 32, 0.94)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.16),
+    inset 0 -1px 0 rgba(0,0,0,0.32),
+    0 12px 26px rgba(8, 145, 178, 0.14) !important;
+}
+
+.pc-marketplace-card-actions .pc-button:not(.ghost):not(.danger):hover {
+  border-color: rgba(103, 232, 249, 0.52) !important;
+  background:
+    radial-gradient(circle at 20% 0%, rgba(255,255,255,0.20), transparent 38%),
+    linear-gradient(180deg, rgba(103, 232, 249, 0.28), rgba(8, 24, 40, 0.98)) !important;
+}
+
+.pc-marketplace-card-actions .pc-button.ghost {
+  color: color-mix(in oklab, var(--fg-dim), white 10%);
+  border-color: rgba(148, 196, 228, 0.18);
+}
+
+.pc-marketplace-card-actions .pc-button.danger {
+  border-color: rgba(251, 113, 133, 0.34);
+  color: #ffd5db;
+}
+
+.pc-marketplace-category-card:nth-of-type(1) b {
+  border-color: rgba(103, 232, 249, 0.30);
+}
+
+.pc-marketplace-category-card:nth-of-type(2) b {
+  border-color: rgba(167, 139, 250, 0.30);
+}
+
+.pc-marketplace-category-card:nth-of-type(3) b {
+  border-color: rgba(45, 212, 191, 0.30);
+}
+
+.pc-marketplace-steps li:nth-child(1) {
+  border-color: rgba(103, 232, 249, 0.22) !important;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(103, 232, 249, 0.10), transparent 48%),
+    linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.010)),
+    rgba(5, 14, 26, 0.84) !important;
+}
+
+.pc-marketplace-steps li:nth-child(2) {
+  border-color: rgba(167, 139, 250, 0.22) !important;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(167, 139, 250, 0.10), transparent 48%),
+    linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.010)),
+    rgba(7, 13, 27, 0.84) !important;
+}
+
+.pc-marketplace-steps li:nth-child(3) {
+  border-color: rgba(45, 212, 191, 0.22) !important;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(45, 212, 191, 0.10), transparent 48%),
+    linear-gradient(180deg, rgba(255,255,255,0.034), rgba(255,255,255,0.010)),
+    rgba(4, 16, 24, 0.84) !important;
+}
+
+/* Marketplace clarity pass v2.1: separate primary install from secondary attach. */
+.pc-marketplace-card-actions > div:has(.pc-button.primary) {
+  width: 100%;
+  justify-content: space-between !important;
+}
+
+/* Marketplace clarity pass v3: clearer state lanes and action affordances. */
+.pc-marketplace-category-card:nth-of-type(1),
+.pc-marketplace-card:not(.installed) {
+  box-shadow:
+    inset 3px 0 0 rgba(103, 232, 249, 0.26),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 20px 48px rgba(0,0,0,0.18),
+    0 0 0 1px rgba(103, 232, 249, 0.055) !important;
+}
+
+.pc-marketplace-category-card:nth-of-type(2) {
+  box-shadow:
+    inset 3px 0 0 rgba(167, 139, 250, 0.27),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 20px 48px rgba(0,0,0,0.18),
+    0 0 0 1px rgba(167, 139, 250, 0.060) !important;
+}
+
+.pc-marketplace-category-card:nth-of-type(3),
+.pc-marketplace-card.installed {
+  box-shadow:
+    inset 3px 0 0 rgba(45, 212, 191, 0.28),
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    inset 0 -1px 0 rgba(0,0,0,0.34),
+    0 20px 48px rgba(0,0,0,0.18),
+    0 0 0 1px rgba(45, 212, 191, 0.055) !important;
+}
+
+.pc-marketplace-hero-search-v2::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  pointer-events: none;
+  border: 1px solid rgba(103, 232, 249, 0.18);
+  border-radius: 20px;
+  opacity: 0.72;
+}
+
+.pc-marketplace-hero-search-v2:focus-within::after {
+  border-color: rgba(103, 232, 249, 0.38);
+  box-shadow: 0 0 22px rgba(103, 232, 249, 0.12);
+}
+
+.pc-marketplace-card-title {
+  text-decoration-color: rgba(103, 232, 249, 0.0);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 4px;
+}
+
+.pc-marketplace-card-title:hover,
+.pc-marketplace-card-title:focus-visible {
+  color: #e8fbff;
+  text-decoration-line: underline;
+  text-decoration-color: rgba(103, 232, 249, 0.58);
+}
+
+.pc-marketplace-card-actions {
+  border-radius: 14px;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.045),
+    inset 0 0 0 1px rgba(148, 196, 228, 0.075);
+}
+
+.pc-marketplace-card-actions:has(.pc-button.primary) {
+  background:
+    linear-gradient(90deg, rgba(103, 232, 249, 0.075), transparent 46%),
+    linear-gradient(180deg, rgba(255,255,255,0.028), transparent 70%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.060),
+    inset 0 0 0 1px rgba(103, 232, 249, 0.12);
+}
+
+.pc-marketplace-card-actions:has(.pc-button.danger):not(:has(.pc-button.primary)) {
+  background:
+    linear-gradient(90deg, rgba(251, 113, 133, 0.035), transparent 48%),
+    linear-gradient(180deg, rgba(255,255,255,0.024), transparent 70%);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.045),
+    inset 0 0 0 1px rgba(251, 113, 133, 0.080);
+}
+
+.pc-marketplace-card-actions .pc-button.ghost:hover {
+  color: #f3fbff;
+  border-color: rgba(148, 196, 228, 0.30);
+  background:
+    linear-gradient(180deg, rgba(148, 196, 228, 0.09), rgba(255,255,255,0.010)),
+    rgba(6, 16, 29, 0.88);
+}
+
+.pc-marketplace-meta span {
+  color: color-mix(in oklab, var(--fg-mute), white 11%);
+}
+
+.pc-marketplace-meta .accent {
+  border-color: rgba(103, 232, 249, 0.30) !important;
+  color: #dff8ff;
+  background:
+    linear-gradient(180deg, rgba(103, 232, 249, 0.095), rgba(255,255,255,0.008)),
+    rgba(4, 13, 24, 0.76) !important;
+}
+
+.pc-marketplace-steps ol {
+  position: relative;
+}
+
+.pc-marketplace-steps ol::before {
+  content: "";
+  position: absolute;
+  left: 9%;
+  right: 9%;
+  top: 50%;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(103, 232, 249, 0.32), rgba(167, 139, 250, 0.24), rgba(45, 212, 191, 0.30));
+  opacity: 0.42;
+  box-shadow: 0 0 18px rgba(103, 232, 249, 0.12);
+}
+
+.pc-marketplace-steps li {
+  z-index: 1;
+}
+
+@media (max-width: 1120px) {
+  .pc-marketplace-steps ol::before {
+    display: none;
+  }
+}

@@ -1,6 +1,10 @@
 import { Download, Eye, Layers, MonitorCog, Search } from 'lucide-react';
 
-const DEFAULT_DESKTOP_RELEASE_URL = 'https://github.com/aviynw/Restart/releases/latest';
+// Last-resort fallback used only when no desktopReleaseUrl prop is passed
+// AND the consumer didn't fetch one from /api/operator/settings/desktop_release_url
+// (canonical source — Migration 038). Consumers SHOULD pass the prop;
+// this default exists so the page still renders something on a fresh install.
+const DEFAULT_DESKTOP_RELEASE_URL = '#';
 
 interface Props {
   desktopReleaseUrl?: string;

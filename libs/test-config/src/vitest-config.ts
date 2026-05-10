@@ -1,5 +1,7 @@
 import { defineConfig, type UserConfig } from 'vitest/config';
 import tsconfigPaths from 'vite-tsconfig-paths';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
 export type TestLayer = 'unit' | 'integration' | 'browser';
 
@@ -9,12 +11,18 @@ export interface DefineVitestConfigOptions {
   globalSetup?: string[];
   include?: string[];
   exclude?: string[];
+  /** Disable the default vitest-fail-on-console setup. Default: false. */
+  allowConsoleNoise?: boolean;
 }
 
 const baseExclude = ['**/node_modules/**', '**/dist/**', '**/.next/**'];
 
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FAIL_ON_CONSOLE_SETUP = resolve(__dirname, 'setup-fail-on-console.ts');
+
 export function defineVitestConfig(opts: DefineVitestConfigOptions): UserConfig {
-  const { layer, setupFiles = [], globalSetup = [], include, exclude = [] } = opts;
+  const { layer, setupFiles = [], globalSetup = [], include, exclude = [], allowConsoleNoise = false } = opts;
+  const finalSetup = allowConsoleNoise ? setupFiles : [FAIL_ON_CONSOLE_SETUP, ...setupFiles];
 
   const layerInclude =
     include ??
@@ -38,12 +46,14 @@ export function defineVitestConfig(opts: DefineVitestConfigOptions): UserConfig 
       pool: layer === 'integration' ? 'forks' : 'threads',
       testTimeout: layer === 'unit' ? 5_000 : layer === 'integration' ? 30_000 : 60_000,
       hookTimeout: layer === 'integration' ? 60_000 : 10_000,
-      setupFiles,
+      setupFiles: finalSetup,
       globalSetup,
       reporters: process.env.CI
         ? [['default', { summary: false }], ['junit', { outputFile: './junit.xml' }]]
         : ['default'],
-      retry: process.env.CI ? (layer === 'integration' ? 1 : 0) : 0,
+      // Per testing-spec §1.9: integration retry=0 (deterministic via testcontainers
+      // per worker); unit retry=0; E2E (Playwright config) handles its own retries.
+      retry: 0,
     },
   });
 }

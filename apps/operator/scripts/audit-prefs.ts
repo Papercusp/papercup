@@ -19,10 +19,10 @@ import {
 
 const [, , cmd, ...rest] = process.argv;
 
-function listCmd() {
+async function listCmd() {
   const filterIdx = rest.indexOf('--filter');
   const filter = filterIdx >= 0 ? rest[filterIdx + 1] : 'all';
-  let entries = listPreferenceEntries();
+  let entries = await listPreferenceEntries();
   if (filter === 'user-typed') {
     entries = entries.filter((e) => e.tags.includes('USER-TYPED'));
   } else if (filter === 'operator-proposed') {
@@ -38,13 +38,13 @@ function listCmd() {
   }
 }
 
-function removeCmd() {
+async function removeCmd() {
   const key = rest[0];
   if (!key) {
     console.error('usage: audit-prefs remove <key>');
     process.exit(1);
   }
-  const ok = removePreferenceEntry(key);
+  const ok = await removePreferenceEntry(key);
   if (!ok) {
     console.error(`no entry with key=${key}`);
     process.exit(1);
@@ -52,7 +52,7 @@ function removeCmd() {
   console.log(`removed ${key}`);
 }
 
-function purgeCmd() {
+async function purgeCmd() {
   const beforeIdx = rest.indexOf('--before');
   const before = beforeIdx >= 0 ? rest[beforeIdx + 1] : '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(before)) {
@@ -60,27 +60,29 @@ function purgeCmd() {
     process.exit(1);
   }
   const cutoff = new Date(`${before}T00:00:00.000Z`).getTime();
-  const entries = listPreferenceEntries();
+  const entries = await listPreferenceEntries();
   let removed = 0;
   for (const e of entries) {
     if (new Date(e.addedAt).getTime() < cutoff) {
-      if (removePreferenceEntry(e.key)) removed++;
+      if (await removePreferenceEntry(e.key)) removed++;
     }
   }
   console.log(`removed ${removed} entries with date < ${before}`);
 }
 
-switch (cmd) {
-  case 'list':
-    listCmd();
-    break;
-  case 'remove':
-    removeCmd();
-    break;
-  case 'purge':
-    purgeCmd();
-    break;
-  default:
-    console.error('usage: audit-prefs <list|remove|purge> [...args]');
-    process.exit(1);
-}
+(async () => {
+  switch (cmd) {
+    case 'list':
+      await listCmd();
+      break;
+    case 'remove':
+      await removeCmd();
+      break;
+    case 'purge':
+      await purgeCmd();
+      break;
+    default:
+      console.error('usage: audit-prefs <list|remove|purge> [...args]');
+      process.exit(1);
+  }
+})();

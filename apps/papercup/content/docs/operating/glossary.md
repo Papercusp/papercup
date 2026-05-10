@@ -87,7 +87,7 @@ description: Terms used across the harness and these docs.
 
 **allowedActions** · Per-dept whitelist of ACTION ops the dept's worker is permitted to emit (charter-symmetric with `outboxKinds` for messages). Validated at `executeAction(action, callingDept)`. Defaults: Business gets full set including spinup_project + scaffold_harness; Management gets scaffold_harness + pause/resume; Tech gets scaffold_harness; R&D send-only; Marketing gets mark_campaign_published.
 
-**Department director** · One of 5 LLM-backed agents (Business, R&D, Technology, Management, Marketing). Each runs as a `claude -p` subprocess with a per-role + per-dept resolved prompt + live state injected.
+**Department director** · One of 5 LLM-backed agents (Business, R&D, Technology, Management, Marketing). Each runs as an agent CLI subprocess (default `omp -p` via Meridian + Claude Max OAuth, or `claude -p` when `AGENT_BACKEND=claude-code`) with a per-role + per-dept resolved prompt + live state injected.
 
 **Director memory** · Synthesized block of the dept's last N director-run records (when / decision keyword / first action / final outcome). Injected into every prompt as "Recent decisions (your own memory, newest first)" so directors notice their own patterns.
 

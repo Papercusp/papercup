@@ -113,8 +113,14 @@ ssh root@178.156.253.226 'docker exec restart-postgres-1 psql -U postgres_app -d
 
 That's the long-term answer (no replication needed; Hetzner becomes
 authoritative). Requires:
-- claude CLI in the operator container
-- ANTHROPIC_API_KEY in compose env
+- Agent CLI in the operator container — both `omp` (default, via Meridian)
+  and `claude` (fallback for AGENT_BACKEND=claude-code) baked in by
+  `Dockerfile.operator`
+- Meridian daemon running in-container on `:3456` (started by the
+  operator container's CMD; reads Claude Code OAuth from the mounted
+  `~/.claude/.credentials.json`)
+- `ANTHROPIC_API_KEY` env is **optional** — only needed if AGENT_BACKEND
+  is explicitly set to `claude-code` AND no OAuth credentials are mounted
 - Persistent worker loops for each harness (systemd in operator container)
 - Plugin runtime (papercusp CLI) installed there
 - Snapshot/git working trees on Hetzner storage

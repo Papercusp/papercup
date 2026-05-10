@@ -14,11 +14,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-SRC=$(node -e "console.log(require.resolve('@ricky0123/vad-web/package.json'))" 2>/dev/null \
-      | xargs dirname 2>/dev/null \
-      | sed 's|$|/dist|')
+# Same require.resolve('pkg/package.json') trap as setup-wake-runtime.sh —
+# probe paths directly instead.
+SRC=""
+for cand in \
+  "$(pwd)/node_modules/@ricky0123/vad-web/dist" \
+  "$(pwd)/../../node_modules/@ricky0123/vad-web/dist"; do
+  if [ -d "$cand" ]; then
+    SRC="$cand"
+    break
+  fi
+done
 
-if [ ! -d "$SRC" ]; then
+if [ -z "$SRC" ]; then
   echo "ERR: can't find @ricky0123/vad-web/dist; install @ricky0123/vad-web first" >&2
   exit 1
 fi

@@ -65,8 +65,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
      && apt-get update && apt-get install -y --no-install-recommends gh) \
  && rm -rf /var/lib/apt/lists/*
 
-# claude CLI + tsx (for the papercusp CLI wrapper) installed globally.
-RUN npm install -g @anthropic-ai/claude-code tsx
+# Agent CLIs + tsx (for the papercusp CLI wrapper) installed globally.
+# Default backend is omp (routes through Meridian + Claude Max OAuth);
+# claude is also installed as a fallback for users who set
+# AGENT_BACKEND=claude-code. Meridian itself runs as a separate sidecar
+# container — operator talks HTTP to it on MERIDIAN_BASE_URL (default
+# http://meridian:3456 in compose).
+RUN npm install -g \
+      @anthropic-ai/claude-code \
+      @oh-my-pi/cli \
+      @rynfar/meridian \
+      tsx
 
 COPY --from=builder /repo/apps/operator/.next/standalone ./
 COPY --from=builder /repo/apps/operator/.next/static ./apps/operator/.next/static
@@ -95,9 +104,18 @@ ENV HOSTNAME=0.0.0.0
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PAPERCUSP_HARNESS_DIR=/opt/harness
+# meridian default: in-container loopback. compose overrides if running
+# meridian as a sibling service.
+ENV MERIDIAN_BASE_URL=http://127.0.0.1:3456
 EXPOSE 3055
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \
   CMD wget -q --spider http://127.0.0.1:3055/ || exit 1
 
-CMD ["node", "apps/operator/server.js"]
+# Start meridian in the background, then the operator. Meridian needs
+# ~/.claude credentials (mounted by compose) — it speaks the Anthropic
+# API on :3456 and routes omp invocations through Claude Max OAuth.
+# Operator + meridian run in the same container so failures are colocated;
+# meridian fails non-fatally (operator stays up; preflight surfaces the
+# 'meridian missing' state and the user is prompted to investigate).
+CMD ["bash", "-c", "(meridian > /var/log/meridian.log 2>&1 &) && exec node apps/operator/server.js"]

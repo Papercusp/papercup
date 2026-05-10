@@ -8,3 +8,6 @@ package-lock.json
 .env
 .env.local
 .source/
+
+# Rust/Tauri build artifacts — accidentally committed before; never again.
+apps/operator-mobile/src-tauri/target/

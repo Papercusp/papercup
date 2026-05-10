@@ -2,14 +2,19 @@
 
 The papercupai.com production box can now run the autonomous harness
 runtime end-to-end. Phase 1 (this doc): a harness can be invoked one role
-at a time via the operator API, with claude calling claude.ai over OAuth.
-Phase 2 (deferred): a persistent run-loop service per harness.
+at a time via the operator API. Default backend is `omp -p` routed through
+Meridian to the user's Claude Max subscription via Claude Code OAuth (no
+direct Anthropic API charges); `AGENT_BACKEND=claude-code` falls back to
+direct `claude -p` if needed. Phase 2 (deferred): a persistent run-loop
+service per harness.
 
 ## What's baked into the operator image
 
 | Component | Path | Purpose |
 |---|---|---|
-| `claude` CLI | `/usr/local/bin/claude` | Every role spawns it. OAuth from mounted creds. |
+| `claude` CLI | `/usr/local/bin/claude` | Fallback when `AGENT_BACKEND=claude-code`; also vendors the OAuth credentials Meridian reads. |
+| `omp` (oh-my-pi) | `/usr/local/lib/node_modules/.bin/omp` | Default agent CLI; spawns one process per role invocation. |
+| `meridian` | `/usr/local/lib/node_modules/.bin/meridian` | Local HTTP daemon on `:3456` that routes omp's Anthropic calls through Claude Max OAuth (via the Claude Code SDK). Started by the operator container's CMD. |
 | `gh` CLI | `/usr/bin/gh` | GitHub-side ops (PRs, comments). Token mount. |
 | `papercusp` CLI | `/usr/local/bin/papercusp` | Plugin host + harness orchestrator wrapper. |
 | `tsx` | global npm | Used by the papercusp wrapper script. |
@@ -25,13 +30,18 @@ the operator 500s every harness route with
 runner stage to `node:20-bookworm-slim`. Image is ~1 GB, vs ~250 MB on
 alpine, but the entire harness stack works without rebuild dances.
 
-## Auth: claude OAuth
+## Auth: Claude Code OAuth (used by both backends)
 
 The local laptop's `~/.claude/.credentials.json` is staged at
 `/opt/papercup-data/claude-credentials.json` on the Hetzner host (mode 0600)
 and mounted read-only into the operator container at
 `/root/.claude/.credentials.json`. `claude auth status` reports `loggedIn:
 true`. Same identity as the local box — billing and rate limits converge.
+
+Both backends use this same file:
+  - `omp -p` (default) → talks HTTP to in-container Meridian on `:3456` →
+    Meridian uses the Claude Code SDK against the OAuth token in this file.
+  - `claude -p` (when `AGENT_BACKEND=claude-code`) reads the file directly.
 
 > **Rotation note.** The OAuth tokens in this file appeared in chat
 > transcripts during deploy iteration. Run `claude auth login` on the

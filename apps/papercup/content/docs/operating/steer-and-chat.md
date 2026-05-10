@@ -8,7 +8,7 @@ Papercup is autonomous by default — the orchestrator dispatches roles, roles r
 | Use | When | Cost |
 |---|---|---|
 | **Steer** (operator note) | Async hint the worker reads on its next dispatch | Free — no extra LLM call |
-| **Chat** (real-time conversation) | Multi-turn dialogue with any role's full context | One `claude -p` per message |
+| **Chat** (real-time conversation) | Multi-turn dialogue with any role's full context | One agent CLI invocation per message (default `omp -p`, or `claude -p` when `AGENT_BACKEND=claude-code`) |
 
 Both are surfaced on the harness dashboard at `/harness/<slug>` (default `localhost:3055`).
 
@@ -51,7 +51,7 @@ Notes are **additive forever**. Three contradictory notes over a week means the 
 
 ## Chat — real-time conversation with any agent
 
-The expensive path. Opens a fresh `claude -p` invocation with the agent's full prompt + state, streams responses, lets you have a multi-turn dialogue. Best for *"let me understand what you're doing"* or *"let's work through this problem together."*
+The expensive path. Opens a fresh agent invocation (`omp -p` by default, or `claude -p` when `AGENT_BACKEND=claude-code`) with the agent's full prompt + state, streams responses, lets you have a multi-turn dialogue. Best for *"let me understand what you're doing"* or *"let's work through this problem together."*
 
 ### Two ways to start a chat
 
@@ -94,7 +94,7 @@ Use Path B when you want to talk to a role that doesn't naturally appear in the 
 4. Calls `assembleRolePrompt()` — the same prompt assembly the autonomous loop uses, plus:
    - `MODE=chat` preamble telling the agent it's in conversational mode
    - The transcript as conversation history
-5. Spawns `claude -p` with `--output-format stream-json`. Pipes deltas back to the browser via SSE.
+5. Spawns the agent CLI (`omp -p --mode json --no-session` by default, or `claude -p --output-format stream-json --include-partial-messages` when `AGENT_BACKEND=claude-code`). Pipes deltas back to the browser via SSE.
 6. On stream end: persists the assistant turn to the transcript, updates token + cost counters.
 7. Enforces `maxChatCostUsd` (per-chat) and `maxAggregateChatCostUsd` (across all non-archived chats) caps if set in `.harness/config.json`. Default: uncapped.
 
@@ -134,7 +134,7 @@ The consoles tab is built on Dockview — terminals and chat panels coexist as p
 
 ## Cost discipline
 
-Every chat turn is a full `claude -p` call. The cost meter in each chat header shows running spend. To set hard caps, add to `.harness/config.json`:
+Every chat turn is a full agent CLI invocation. With the default `omp -p` backend routing through Meridian + Claude Max, in-chat cost is $0 (your subscription's quota covers it). With `AGENT_BACKEND=claude-code` it's billed against your Anthropic API key. The cost meter in each chat header shows running spend. To set hard caps, add to `.harness/config.json`:
 
 ```json
 {

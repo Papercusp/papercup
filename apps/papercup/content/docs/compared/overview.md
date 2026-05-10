@@ -67,7 +67,7 @@ We landed in a third cluster: a tiny supervised loop that owns no opinion about 
 | **Decisions timeline + ghost rate** | Detect orchestrator parser regressions | `/api/harness/:slug/decisions` + dashboard panel |
 | **Cost-per-feature attribution** | Per-session cost tracking is too coarse | Filename tag pattern: `<ts>-<role>-<fid>.jsonl` → `/usage byFeature` |
 | **Plan-reviewer as autonomous gate** | gstack's `/plan-ceo-review` is human-triggered; ours fires automatically | `prompts/plan-reviewer.md` + run.sh gate |
-| **Autonomous Product role** | MOLTRON evolves capabilities; we wanted scope expansion | `prompts/product.md` reading SPEC.md's north-star vs current scope + proposals CRUD |
+| **Autonomous scope-expansion (scoper MODE=proposal)** | MOLTRON evolves capabilities; we wanted scope expansion | `prompts/scoper.md` (the proposal-mode section) reading SPEC.md's north-star vs current scope + proposals CRUD. *Pre-2026-04-25 this lived in a separate `prompts/product.md`, since consolidated; the legacy file is at `prompts/_archived/product.md`.* |
 | **Proposals CRUD with bulk accept/reject** | Operator triage workflow | `.harness/proposals/*.md` + dashboard 🪄 tab |
 | **Per-feature timeline** aggregating snapshots + agent runs + debug + PR | Forensics replacement for log scrolling | `/api/harness/:slug/features/:id/timeline` |
 | **Health endpoint with 9 composite checks** | One-glance system health | `/api/harness/:slug/health` |

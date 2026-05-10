@@ -9,9 +9,9 @@
 // PII, no tokens, no full message bodies that might contain secrets.
 
 import { Hono } from 'hono';
-import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { capLog, capBody, scrub, scrubFreeText } from './public-sanitize';
+import { runClaudeChat } from '@restart/papercup-shared/agent';
 
 export const publicPapercup = new Hono();
 
@@ -656,32 +656,17 @@ ${context}`;
         controller.enqueue(enc.encode(`event: ${event}\ndata: ${data.replace(/\n/g, '\\n')}\n\n`));
       };
 
-      const claudeBin = process.env.CLAUDE_BIN ?? 'claude';
-      const args = [
-        '-p',
-        '--model', 'claude-haiku-4-5',
-        '--output-format', 'stream-json',
-        '--include-partial-messages',
-        '--verbose',
-      ];
-      const child = spawn(claudeBin, args, {
-        cwd: tmpdir(),
-        env: { ...process.env },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      child.stdin.write(`${systemPrompt}\n\n---\n\n${fullPrompt}\n`);
-      child.stdin.end();
-
-      // Buffer for filtering action blocks across deltas.
+      // Buffer for filtering action blocks across deltas. The visitor
+      // chatbot must never produce promote:/patch:/proposal: action
+      // blocks even if the model regresses — strip them before they
+      // reach the browser.
       let pendingDelta = '';
       const ACTION_RE = /```(promote|patch|proposal|note):[^\n]*\n[\s\S]*?```/g;
 
       const flushFilteredDelta = () => {
-        // If we have an unclosed fenced block, hold back; otherwise send filtered text.
         const lastFenceOpen = pendingDelta.lastIndexOf('```');
         const fenceCount = (pendingDelta.match(/```/g) ?? []).length;
         if (fenceCount % 2 === 1 && lastFenceOpen !== -1) {
-          // Unbalanced — hold off on sending the half-fenced section.
           const safe = pendingDelta.slice(0, lastFenceOpen);
           pendingDelta = pendingDelta.slice(lastFenceOpen);
           if (safe.length > 0) send('delta', safe.replace(ACTION_RE, ''));
@@ -692,62 +677,36 @@ ${context}`;
         pendingDelta = '';
       };
 
-      let buf = '';
-      let errBuf = '';
-      let receivedAnyDelta = false;
       let doneSent = false;
-      child.stdout.on('data', (chunk: Buffer) => {
-        buf += chunk.toString('utf8');
-        let nl: number;
-        while ((nl = buf.indexOf('\n')) >= 0) {
-          const line = buf.slice(0, nl);
-          buf = buf.slice(nl + 1);
-          if (!line.trim()) continue;
-          try {
-            const obj = JSON.parse(line);
-            if (obj.type === 'stream_event' && obj.event?.type === 'content_block_delta') {
-              const t = obj.event?.delta?.text;
-              if (typeof t === 'string') {
-                receivedAnyDelta = true;
-                pendingDelta += t;
-                flushFilteredDelta();
-              }
-            } else if (obj.type === 'assistant' && obj.message?.content && !receivedAnyDelta) {
-              // Fallback only if no streaming deltas arrived (older CLIs).
-              for (const block of obj.message.content) {
-                if (block.type === 'text') {
-                  pendingDelta += block.text;
-                  flushFilteredDelta();
-                }
-              }
-            } else if (obj.type === 'result') {
-              const cost = Number(obj.total_cost_usd ?? 0);
-              if (cost > 0) dailyCostUsd += cost;
-              // Final flush
-              if (pendingDelta.length > 0) {
-                send('delta', pendingDelta.replace(ACTION_RE, ''));
-                pendingDelta = '';
-              }
-              if (!doneSent) { send('done', JSON.stringify({ cost })); doneSent = true; }
+      try {
+        for await (const ev of runClaudeChat({
+          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
+          cwd: tmpdir(),
+          model: 'claude-haiku-4-5',
+        })) {
+          if (ev.type === 'delta') {
+            pendingDelta += ev.text;
+            flushFilteredDelta();
+          } else if (ev.type === 'result') {
+            const cost = ev.costUsd;
+            if (cost > 0) dailyCostUsd += cost;
+            if (pendingDelta.length > 0) {
+              send('delta', pendingDelta.replace(ACTION_RE, ''));
+              pendingDelta = '';
             }
-          } catch { /* ignore parse error */ }
+            if (!doneSent) { send('done', JSON.stringify({ cost })); doneSent = true; }
+          } else if (ev.type === 'error') {
+            send('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 300)}` : ''}`);
+          }
         }
-      });
-      child.stderr.on('data', (chunk: Buffer) => { errBuf += chunk.toString('utf8'); });
-      child.on('error', (err) => {
-        send('error', `spawn: ${err.message}`);
-        controller.close();
-      });
-      child.on('close', (code) => {
-        if (code !== 0 && errBuf) send('error', errBuf.slice(0, 300));
-        // Final flush in case 'result' wasn't received.
-        if (pendingDelta.length > 0) {
-          send('delta', pendingDelta.replace(ACTION_RE, ''));
-          pendingDelta = '';
-        }
-        if (!doneSent) { send('done', '{}'); doneSent = true; }
-        controller.close();
-      });
+      } catch (err) {
+        send('error', `chat failed: ${(err as Error).message}`);
+      }
+      if (pendingDelta.length > 0) {
+        send('delta', pendingDelta.replace(ACTION_RE, ''));
+        pendingDelta = '';
+      }
+      if (!doneSent) { send('done', '{}'); doneSent = true; }
     },
   }), {
     headers: {

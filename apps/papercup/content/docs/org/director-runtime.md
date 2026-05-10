@@ -85,15 +85,15 @@ Each department has a `.harness/director-config.json` with `{autoLoop, autoInter
 
 ## In-flight control
 
-- `GET /api/org/active-runs` — list current claude processes across all depts (pid, kind, elapsed)
-- `POST /api/org/:dept/stop-loop` — SIGTERM the active claude process for that dept (then SIGKILL after 2s grace)
+- `GET /api/org/active-runs` — list current agent processes across all depts (pid, kind, elapsed)
+- `POST /api/org/:dept/stop-loop` — SIGTERM the active agent process for that dept (then SIGKILL after 2s grace)
 - `POST /api/org/admin/stop-all` — emergency stop: cancels all active runs + clears all schedulers + persists `autoLoop: false` to every dept
 
 These controls live in each dept's **Director Agent** tab (in `/harness/org-{slug}`). The earlier per-tile cockpit on `/papercup/organization` and the standalone `/papercup/health` page were removed; their code is preserved at `libs/papercup-shared/src/_discarded/HarnessOpsCockpit.tsx`.
 
 ## Streaming director output
 
-`GET /api/org/:dept/run-director-stream?role=&mode=` is an SSE endpoint that streams claude's stdout chunk-by-chunk:
+`GET /api/org/:dept/run-director-stream?role=&mode=` is an SSE endpoint that streams the agent CLI's stdout chunk-by-chunk:
 
 - `event: start` — run kicked off
 - `event: chunk` — partial stdout
@@ -104,7 +104,7 @@ The Department Harness Dashboard's **Director Agent** tab uses this to stream ou
 
 ## Director run records
 
-Every claude invocation produces a `~/org-{dept}/.harness/director-runs/<ts>_<kind>.md` file with the prompt summary, decision keyword, and full stdout. Surfaced as a "Recent runs" disclosure in the Director Agent tab; click to expand any run inline.
+Every agent invocation produces a `~/org-{dept}/.harness/director-runs/<ts>_<kind>.md` file with the prompt summary, decision keyword, and full stdout. Surfaced as a "Recent runs" disclosure in the Director Agent tab; click to expand any run inline.
 
 `GET /api/org/:dept/director-stats` parses these records to compute KPIs: total runs, breakdown by outcome (DONE/NEXT_WORKER/cancelled/etc), breakdown by kind (orchestrator/loop/scheduler).
 
