@@ -16,9 +16,18 @@ interface InstalledPluginRecord {
   hidden?: boolean;
 }
 
+interface UpdateRow {
+  slug: string;
+  name: string;
+  installed: string;
+  available: string;
+  capChange: { added: string[]; removed: string[]; unchanged: string[] };
+}
+
 export default function InstalledPluginsPage() {
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
   const [enabledMap, setEnabledMap] = useState<Record<string, string[]>>({});
+  const [updates, setUpdates] = useState<Record<string, UpdateRow>>({});
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
@@ -53,11 +62,18 @@ export default function InstalledPluginsPage() {
     async function load() {
       setLoading(true);
       try {
-        const pluginsRes = await fetch('/api/plugins/global', { cache: 'no-store' });
+        const [pluginsRes, updatesRes] = await Promise.all([
+          fetch('/api/plugins/global', { cache: 'no-store' }),
+          fetch('/api/plugins/updates', { cache: 'no-store' }),
+        ]);
         const pluginsJson = pluginsRes.ok ? await pluginsRes.json() : { plugins: [] };
+        const updatesJson = updatesRes.ok ? await updatesRes.json() : { updates: [] };
         if (cancelled) return;
         const list = Array.isArray(pluginsJson?.plugins) ? pluginsJson.plugins : [];
         setPlugins(list.filter((p: InstalledPluginRecord) => !p.hidden));
+        const upd: Record<string, UpdateRow> = {};
+        for (const u of updatesJson?.updates ?? []) upd[u.slug] = u;
+        setUpdates(upd);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -65,6 +81,43 @@ export default function InstalledPluginsPage() {
     void load();
     return () => { cancelled = true; };
   }, [reloadKey]);
+
+  async function update(slug: string) {
+    const u = updates[slug];
+    if (!u) return;
+    if (u.capChange.added.length > 0) {
+      const lines = u.capChange.added.map((c) => `  • ${c}`).join('\n');
+      const ok = confirm(
+        `${slug} v${u.installed} → v${u.available}\n\n` +
+        `New capabilities this version requests:\n${lines}\n\n` +
+        `Continue?`,
+      );
+      if (!ok) return;
+    }
+    setBusy(slug);
+    try {
+      const r = await fetch('/api/marketplace/install-plugin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug, version: u.available }),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.ok) {
+        const cleanLog = String(d.log ?? '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+        toast.error(`Update failed: ${slug}`, {
+          description: cleanLog.split('\n').filter(Boolean).slice(-3).join('\n') || d.error || 'unknown',
+          duration: 10000,
+        });
+        return;
+      }
+      toast.success(`${slug} updated to v${u.available}`);
+      setTimeout(() => setReloadKey((k) => k + 1), 400);
+    } catch (e: any) {
+      toast.error(`Update failed: ${slug}`, { description: String(e?.message ?? e), duration: 10000 });
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function uninstall(slug: string) {
     if (!confirm(`Remove ${slug}? Plugin will be disabled in every harness it was enabled in.`)) return;
@@ -97,6 +150,12 @@ export default function InstalledPluginsPage() {
         </div>
         <div className="pc-marketplace-mini-stats" aria-label="Installed plugins">
           <div><strong>{plugins.length}</strong><span>installed</span></div>
+          {Object.keys(updates).length > 0 && (
+            <div style={{ background: 'var(--accent, #22d3ee)', color: '#000' }}>
+              <strong>{Object.keys(updates).length}</strong>
+              <span>update{Object.keys(updates).length === 1 ? '' : 's'}</span>
+            </div>
+          )}
         </div>
       </section>
       {loading ? (
@@ -132,6 +191,17 @@ export default function InstalledPluginsPage() {
                   </div>
                 )}
                 <div className="pc-marketplace-card-actions pc-installed-plugin-actions">
+                  {updates[p.name] && (
+                    <button
+                      className="pc-button"
+                      style={{ background: 'var(--accent, #22d3ee)', color: '#000' }}
+                      onClick={() => update(p.name)}
+                      disabled={busy === p.name}
+                      title={`Update v${updates[p.name].installed} → v${updates[p.name].available}${updates[p.name].capChange.added.length ? ` (new caps: ${updates[p.name].capChange.added.join(', ')})` : ''}`}
+                    >
+                      {busy === p.name ? 'updating…' : `Update → v${updates[p.name].available}`}
+                    </button>
+                  )}
                   <RouteLink
                     href={`/installed/plugins/${encodeURIComponent(p.name)}/permissions`}
                     className="pc-button"

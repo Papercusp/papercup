@@ -140,6 +140,33 @@ export async function revokeCapabilities(input: GrantInput): Promise<void> {
   }
 }
 
+/**
+ * Copy every (plugin, version, capability) grant on `sourceSlug` to the
+ * same triple keyed under `targetSlug`. Used by snapshot fork so the new
+ * harness inherits its parent's capability decisions instead of silently
+ * degrading on first invocation. ON CONFLICT DO NOTHING — a re-fork
+ * doesn't duplicate.
+ */
+export async function copyGrantsToNewHarness(
+  sourceSlug: string,
+  targetSlug: string,
+): Promise<{ copied: number }> {
+  if (!sourceSlug || !targetSlug || sourceSlug === targetSlug) return { copied: 0 };
+  const { sql } = getOrgPg();
+  await ensureTable(sql);
+  const result = await sql`
+    INSERT INTO harness_shared.plugin_capability_grants
+      (plugin_name, plugin_version, harness_slug, capability, granted_by, reason)
+    SELECT plugin_name, plugin_version, ${targetSlug}, capability,
+           'system', ${`fork from ${sourceSlug}`}
+      FROM harness_shared.plugin_capability_grants
+     WHERE harness_slug = ${sourceSlug}
+    ON CONFLICT DO NOTHING
+    RETURNING 1
+  `;
+  return { copied: result.length };
+}
+
 let _ensured = false;
 async function ensureTable(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
   if (_ensured) return;

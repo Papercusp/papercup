@@ -22,10 +22,14 @@ function isValidSlug(s: string): boolean {
 }
 
 export async function POST(req: Request) {
-  let body: { slug?: string };
+  let body: { slug?: string; version?: string };
   try { body = await req.json(); } catch { return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400 }); }
   const slug = String(body.slug ?? '').trim();
   if (!isValidSlug(slug)) return NextResponse.json({ ok: false, error: `invalid slug "${slug}"` }, { status: 400 });
+  const version = body.version ? String(body.version).trim() : undefined;
+  if (version && !/^[a-z0-9.+\-]+$/i.test(version)) {
+    return NextResponse.json({ ok: false, error: `invalid version "${version}"` }, { status: 400 });
+  }
 
   const env = {
     ...process.env,
@@ -35,7 +39,8 @@ export async function POST(req: Request) {
     PAPERCUSP_ACCEPT_CAPABILITIES: '1',
   };
 
-  const r = await run(PAPERCUSP_BIN, ['install', slug, '--accept-capabilities'], env);
+  const target = version ? `${slug}@${version}` : slug;
+  const r = await run(PAPERCUSP_BIN, ['install', target, '--accept-capabilities'], env);
   if (r.code !== 0) {
     return NextResponse.json({
       ok: false,
