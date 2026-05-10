@@ -1,0 +1,81 @@
+/**
+ * artifacts:append — append to a PG-canonical text artifact.
+ *
+ * Concatenates `suffix` to the existing `content`. If the row doesn't
+ * exist yet, creates it with `suffix` as the initial content. Returns
+ * the post-append byte length so callers can detect overflow without a
+ * follow-up `load`.
+ */
+
+import { z } from 'zod';
+import { getOrgPg } from '@restart/db-org';
+import { defineTool } from '../../define-tool';
+
+const SLUG_RE = /^[a-z0-9._-]+$/i;
+const WRITE_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const;
+
+function normalizeRelPath(rel: string): string {
+  return rel.replace(/^\.harness\//, '');
+}
+
+export default defineTool({
+  name: 'artifacts:append',
+  description: 'Append to a PG-canonical text artifact (harness_text_artifacts). Creates the row if absent.',
+  capability: 'artifacts:write',
+  requirePrincipal: false,
+  roles: [...WRITE_ROLES],
+  rolesQuota: {
+    worker: { perChunk: 50 },
+    architect: { perRun: 200 },
+    scoper: { perRun: 200 },
+    operator: { perRun: 500 },
+  },
+  args: z.object({
+    slug: z.string().min(1).regex(SLUG_RE).optional(),
+    rel_path: z.string().min(1),
+    suffix: z.string().min(1),
+  }),
+  async handler(args, ctx) {
+    const slug = args.slug ?? ctx.harnessSlug;
+    if (!slug) {
+      throw new Error('artifacts:append — `slug` required (no harnessSlug in spawn context)');
+    }
+    if (!SLUG_RE.test(slug)) {
+      throw new Error(`artifacts:append — invalid slug ${JSON.stringify(slug)}`);
+    }
+    const key = normalizeRelPath(args.rel_path);
+    const { sql } = getOrgPg();
+    const now = Date.now();
+    const rows = await sql<{ content: string }[]>`
+      INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
+      VALUES (${slug}, ${key}, ${args.suffix}, ${now})
+      ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
+        content    = harness_text_artifacts.content || EXCLUDED.content,
+        updated_at = EXCLUDED.updated_at
+      RETURNING content
+    `;
+    const merged = rows[0]?.content ?? args.suffix;
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            slug,
+            rel_path: key,
+            appended_bytes: args.suffix.length,
+            total_bytes: merged.length,
+            updated_at: now,
+          }),
+        },
+      ],
+    };
+  },
+});
