@@ -1,0 +1,252 @@
+/**
+ * GET /api/agent-mcp/delegate-chat?request=<text>&sessionId=<uuid>
+ *
+ * Conversational sibling of /api/agent-mcp/operator-scan. Same Claude
+ * spawn pattern + same agent-mcp tool config + same per-workspace
+ * principal, BUT:
+ *   - Free-form conversational system prompt (not suggestion-extraction).
+ *   - Returns SSE stream of deltas + tool_calls + final result.
+ *   - Optional `sessionId` resumes an existing claude-session via
+ *     `--session-id <uuid>`. When omitted, a fresh UUID is minted and
+ *     a new claude_sessions row is inserted.
+ *   - Records the turn in claude_sessions (turn_count++, last_active).
+ *   - Auto-archives idle (>24h) sessions on every call.
+ *
+ * Used by:
+ *   - delegate_to_claude tool (voice agent's deep-work escape hatch).
+ *
+ * See /docs/agents/action-registry §5.
+ */
+
+import { NextRequest } from 'next/server';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { papercuspPath } from '@/lib/papercusp-root';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { readSystemPrincipal } from '@/lib/system-principal';
+import {
+  bumpDelegate,
+  createDelegate,
+  getDelegate,
+  autoArchiveIdleDelegates,
+  appendDelegateTurn,
+} from '@/lib/delegates';
+import { generateSessionTitle } from '@/lib/delegate-summary';
+
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+interface SystemPrincipalConfig {
+  bearer: string;
+  workspaceId: string;
+}
+
+async function loadOperatorBearer(): Promise<SystemPrincipalConfig | null> {
+  const p = await readSystemPrincipal('operator');
+  return p ? { bearer: p.bearer, workspaceId: p.workspaceId } : null;
+}
+
+const ALL_AGENT_MCP_TOOLS = [
+  'mcp__agentmcp__harness:list',
+  'mcp__agentmcp__harness:get',
+  'mcp__agentmcp__harness:status',
+  'mcp__agentmcp__tasks:list',
+  'mcp__agentmcp__tasks:get',
+  'mcp__agentmcp__tasks:create',
+  'mcp__agentmcp__tasks:update',
+  'mcp__agentmcp__tasks:close',
+  'mcp__agentmcp__goals:list',
+  'mcp__agentmcp__goals:get',
+  'mcp__agentmcp__issues:list',
+  'mcp__agentmcp__messages:inbox',
+  'mcp__agentmcp__messages:outbox',
+  'mcp__agentmcp__messages:send',
+  'mcp__agentmcp__audit:list',
+  'mcp__agentmcp__pending_events:list',
+  'mcp__agentmcp__hindsight:recall',
+  'mcp__agentmcp__search:query',
+  // Cross-harness agent dispatch surface (Plan v6 phase B).
+  'mcp__delegate__listHarnesses',
+  'mcp__delegate__listAgents',
+  'mcp__delegate__getHarnessStatus',
+  'mcp__delegate__listChats',
+  'mcp__delegate__dispatchToAgent',
+  'mcp__delegate__followUpInChat',
+];
+
+const SYSTEM_PROMPT = `You are a Delegate — a Claude process the Operator voice assistant spawned to handle work that needs real reasoning. The user just spoke a request the Operator decided to route to you. Papercusp is a coding-harness control plane.
+
+You have two MCP tool surfaces:
+  - 'agentmcp' — read/write across the workspace: tasks, goals, issues, messages, audit, hindsight, search. Use these for research and bookkeeping.
+  - 'delegate' — agent dispatch: listHarnesses, listAgents, getHarnessStatus, listChats, dispatchToAgent, followUpInChat. Use these when the user asks you to ask, tell, or wake another agent (architect, orchestrator, scoper, worker, etc.).
+
+The "wake" semantic: dispatchToAgent creates a chat record AND sends the first message — the harness spawns the role-scoped Claude on demand even if its pty isn't running. You don't need to start anything separately. followUpInChat continues an existing thread by id.
+
+Before dispatching: if the user names an agent loosely ("the architect", "the marketplace researcher"), use listAgents to find which harness has the most-active matching role. If they name a harness loosely, use listHarnesses to resolve the slug.
+
+Be thorough — your response is shown in the operator panel, not spoken aloud. The voice layer will summarize a one-sentence gist and announce "details in the panel." Don't abbreviate for voice.
+
+If a request is ambiguous, prefer answering with the most likely interpretation rather than asking for clarification — voice users get poor at multi-turn back-and-forth.
+
+When you take an action via tools, briefly explain what you did and why. When you can't take an action (no auth, no MCP tool for it, etc.), say so plainly.`;
+
+export async function GET(req: NextRequest): Promise<Response> {
+  const url = new URL(req.url);
+  const requestText = url.searchParams.get('request')?.trim();
+  if (!requestText) {
+    return new Response('missing required param: request', { status: 400 });
+  }
+  const requestedSessionId = url.searchParams.get('sessionId')?.trim() || null;
+  const newSession = url.searchParams.get('newSession') === '1';
+
+  const principal = await loadOperatorBearer();
+  if (!principal) {
+    return new Response('Operator principal not provisioned. POST /api/agent-mcp/provision first.', { status: 503 });
+  }
+  const workspaceId = activeWorkspaceId();
+  if (principal.workspaceId !== workspaceId) {
+    return new Response(
+      `Operator principal workspace mismatch (file=${principal.workspaceId} active=${workspaceId}).`,
+      { status: 503 },
+    );
+  }
+
+  // Choose claude-session id.
+  let claudeSessionId: string;
+  let sessionCreated = false;
+  if (newSession || !requestedSessionId) {
+    claudeSessionId = randomUUID();
+    sessionCreated = true;
+  } else {
+    const existing = await getDelegate(workspaceId, requestedSessionId).catch(() => null);
+    if (existing && existing.status === 'open') {
+      claudeSessionId = existing.claudeSessionId;
+    } else {
+      // Requested session unknown or archived → start fresh.
+      claudeSessionId = randomUUID();
+      sessionCreated = true;
+    }
+  }
+
+  // Side-effect maintenance: archive idle sessions for this workspace.
+  // Runs once per delegation; cheap.
+  void autoArchiveIdleDelegates(workspaceId).catch(() => {});
+
+  if (sessionCreated) {
+    await createDelegate({
+      workspace: workspaceId,
+      claudeSessionId,
+      origin: 'voice',
+      initiatorMsg: requestText.slice(0, 500),
+    }).catch(() => { /* table missing → degraded mode, no PG persistence */ });
+  } else {
+    void bumpDelegate(workspaceId, claudeSessionId).catch(() => {});
+  }
+
+  // Build the conversational prompt. Single-turn shape — claude --session-id
+  // resumes any prior turns via its own session store.
+  const promptText = sessionCreated
+    ? `${SYSTEM_PROMPT}\n\nUser request: ${requestText}`
+    : `User: ${requestText}`;
+
+  const enc = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: string, data: Record<string, unknown>) => {
+        try {
+          controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch { /* writer closed */ }
+      };
+      send('session', { claudeSessionId, created: sessionCreated });
+
+      let assistantText = '';
+      try {
+        const events = runClaudeChat({
+          promptText,
+          sessionId: claudeSessionId,
+          sessionMode: 'force',
+          mcpConfig: {
+            mcpServers: {
+              agentmcp: {
+                command: './node_modules/.bin/tsx',
+                args: [join(process.cwd(), 'packages/agent-mcp/src/server-entry.ts')],
+                env: {
+                  AGENT_MCP_BEARER: principal.bearer,
+                  // Was hardcoded to :3155 (retired worktree). Use the operator's
+                  // own base URL — same convention as the rest of the codebase.
+                  OPERATOR_BASE_URL: process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055',
+                },
+              },
+              delegate: {
+                command: 'node',
+                args: [join(process.cwd(), 'apps/operator/lib/delegate-mcp-server.mjs')],
+                env: {
+                  DELEGATE_BASE: process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055',
+                },
+              },
+            },
+          },
+          allowedTools: ALL_AGENT_MCP_TOOLS,
+          toolEventFilter: (raw) => {
+            if (raw.startsWith('mcp__agentmcp__')) return raw.replace(/^mcp__agentmcp__/, '');
+            if (raw.startsWith('mcp__delegate__')) return raw.replace(/^mcp__delegate__/, 'delegate:');
+            return null;
+          },
+          permissionMode: 'bypassPermissions',
+          signal: req.signal,
+        });
+
+        for await (const ev of events) {
+          if (ev.type === 'delta') {
+            assistantText += ev.text;
+            send('delta', { text: ev.text });
+          } else if (ev.type === 'tool_call') {
+            send('tool_call', { name: ev.name, input: ev.input });
+          } else if (ev.type === 'result') {
+            const fullText = ev.finalText || assistantText;
+            send('done', {
+              claudeSessionId,
+              costUsd: ev.costUsd,
+              tokensIn: ev.tokensIn,
+              tokensOut: ev.tokensOut,
+              fullText,
+            });
+            // Persist the turn so the Delegates panel can render history
+            // when the user resumes. Best-effort — table may be missing
+            // (degraded mode), failure shouldn't break the SSE stream.
+            void appendDelegateTurn(workspaceId, claudeSessionId, {
+              ts: new Date().toISOString(),
+              request: requestText,
+              response: fullText,
+            }).catch(() => { /* ignore */ });
+            // Background title generation on first turn (non-blocking).
+            if (sessionCreated) {
+              void generateSessionTitle({
+                workspace: workspaceId,
+                claudeSessionId,
+                initiatorMsg: requestText,
+                firstResponse: fullText,
+              }).catch(() => { /* best-effort */ });
+            }
+          } else if (ev.type === 'error') {
+            send('error', { message: ev.message, stderr: ev.stderr });
+          }
+        }
+      } catch (e: unknown) {
+        send('error', { message: (e as Error)?.message ?? String(e) });
+      } finally {
+        try { controller.close(); } catch { /* already closed */ }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-cache, no-transform',
+      'connection': 'keep-alive',
+    },
+  });
+}
