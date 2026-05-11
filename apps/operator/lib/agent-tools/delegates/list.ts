@@ -28,6 +28,11 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'delegates:list',
+  guidance: {
+    when: 'User asks "what delegates are running?", "what background work is in flight?". Cross-harness delegate-process enumeration.',
+    notWhen: 'For SPAWNED agents (orchestrator children), use `orchestrator.list_active`. Delegates and spawns are different process kinds; check both if uncertain.',
+    chaining: 'Pair with `delegates:inbox` if the user is asking about completion messages.',
+  },
   description: 'List delegate sessions by status, search by ILIKE, or fetch one by id. Same shape as the legacy /api/agent-mcp/delegates GET.',
   capability: 'delegates:read',
   requirePrincipal: false,

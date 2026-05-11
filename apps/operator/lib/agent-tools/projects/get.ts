@@ -23,6 +23,11 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'projects:get',
+  guidance: {
+    when: 'User names a specific project and wants its full record (spec, status, metadata).',
+    notWhen: 'For SPEC revisions / history, use `projects:spec_revisions`. For the runtime harness state, use `harness:get`.',
+    chaining: 'Follow `projects:list` for the slug.',
+  },
   description: 'Fetch a single project detail (spec, feature counts, last spec revision summary). Returns null when not found.',
   capability: 'projects:read',
   requirePrincipal: false,

@@ -21,6 +21,10 @@ const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 export default defineTool({
   name: 'messages:feature_inbox',
+  guidance: {
+    when: 'You need messages scoped to a specific feature thread — incoming on that feature.',
+    notWhen: 'For your general inbox, use `messages:inbox`. For ALL feature threads, fetch each feature\'s id and call this per feature.',
+  },
   capability: 'messages:read',
   args: z.object({
     slug: z.string().min(1),

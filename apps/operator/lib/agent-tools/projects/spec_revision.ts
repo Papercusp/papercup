@@ -22,6 +22,11 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'projects:spec_revision',
+  guidance: {
+    when: 'User names a specific revision id and wants its full body — what the spec looked like at that point.',
+    notWhen: 'For the CURRENT spec, use `projects:get`. For the list of revisions, use `projects:spec_revisions`.',
+    chaining: 'Follow `projects:spec_revisions` for the id.',
+  },
   description: 'Fetch one project spec-revision in full (includes the spec body). Returns null when not found.',
   capability: 'projects:read',
   requirePrincipal: false,

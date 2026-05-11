@@ -18,6 +18,10 @@ function newActionId(): string {
 
 export default defineTool({
   name: 'messages:feature_dismiss',
+  guidance: {
+    when: 'User says "ignore that feature note", "dismiss the comment on X" — soft-hides without deleting.',
+    notWhen: 'For deleting a message, this isn\'t it — dismiss is reversible. For archiving a CHAT (multi-turn), use `agent_chats:archive`.',
+  },
   capability: 'messages:write',
   args: z.object({
     message_id: z.string().min(1),

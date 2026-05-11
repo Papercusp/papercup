@@ -34,6 +34,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'delegates:inbox',
+  guidance: {
+    when: 'User asks "did the delegate finish?", "what did the worker come back with?" — read pending delegate-completion messages.',
+    notWhen: 'For YOUR ordinary inbox, use `messages:inbox`. delegates:inbox is the narrow stream of "delegate finished, here\'s the summary" messages.',
+  },
   description: 'Peek, drain, or push to the delegate inbox (Hindsight queue for the EL voice agent).',
   capability: 'delegates:write',
   requirePrincipal: false,

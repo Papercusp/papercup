@@ -22,6 +22,11 @@ const FEATURE_ID_RE = /^[A-Z][A-Z0-9-]+(-[A-Z0-9-]+)?$/;
 
 export default defineTool({
   name: 'messages:feature_send',
+  guidance: {
+    when: 'Post to a feature-scoped thread — comment / directive that\'s tied to one feature, not the harness as a whole.',
+    notWhen: 'For broadcasting to arbitrary recipients, use `messages:send`. feature_send is for feature-thread context.',
+    chaining: 'Pair with `messages:feature_inbox` to read replies.',
+  },
   capability: 'messages:write',
   args: z.object({
     to_slug: z.string().min(1),
