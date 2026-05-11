@@ -29,6 +29,10 @@ export default defineTool({
   name: 'operator:preview_prompt',
   description: 'Build the operator scanner prompt for a request without running it. Useful for debug + plugin-author validation.',
   capability: 'operator:read',
+  guidance: {
+    when: `Render the operator's assembled prompt for a given trigger — debug tool to verify what the model sees.`,
+    notWhen: `Production code shouldn't depend on this; it's diagnostic only.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

@@ -14,6 +14,10 @@ export default defineTool({
   name: 'dev:telemetry',
   description: 'Per-tool invocation rollup (count, error rate, p50/p95) across selected workspaces over the last N hours.',
   capability: 'intel:read',
+  guidance: {
+    when: `Read recent telemetry datapoints (errors, slow requests). For the /dev/telemetry dashboard.`,
+    notWhen: `For per-agent audit, use \`audit:list\`. telemetry is observability-shaped, not action-shaped.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

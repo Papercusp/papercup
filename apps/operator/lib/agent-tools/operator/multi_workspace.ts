@@ -26,6 +26,10 @@ export default defineTool({
   name: 'operator:multi_workspace',
   description: 'Aggregation of every other workspace\'s last-scan snapshot (active workspace omitted).',
   capability: 'operator:read',
+  guidance: {
+    when: `List workspaces the operator can switch between — used by the workspace switcher.`,
+    notWhen: `For the CURRENT workspace's harnesses, use \`harness:list\`. multi_workspace is the workspace enumerator.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

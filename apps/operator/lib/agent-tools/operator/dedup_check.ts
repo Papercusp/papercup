@@ -29,6 +29,10 @@ export default defineTool({
   name: 'operator:dedup_check',
   description: 'Check if a candidate title fuzzy-matches any card in `existing` above the threshold. Returns { match, threshold }.',
   capability: 'operator:read',
+  guidance: {
+    when: `Check whether a suggestion / scan candidate duplicates a recent one before committing it to the panel.`,
+    notWhen: `For listing existing scans, use \`operator:scans_list\`.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

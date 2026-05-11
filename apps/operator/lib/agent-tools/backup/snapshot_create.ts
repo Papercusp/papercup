@@ -23,6 +23,10 @@ export default defineTool({
     'Create a kopia snapshot of the active workspace before a destructive op. ' +
     'Returns the snapshot id so the same agent can restore from it if needed.',
   capability: 'backup:write',
+  guidance: {
+    when: `Create a new backup snapshot of the workspace. Use before risky migrations or major state changes.`,
+    notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

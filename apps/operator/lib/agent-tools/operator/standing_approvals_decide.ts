@@ -18,6 +18,10 @@ export default defineTool({
   name: 'operator:standing_approvals_decide',
   description: 'Approve or dismiss a standing-approval candidate. Approve writes a [STANDING-APPROVE] entry to operator preferences.',
   capability: 'operator:write',
+  guidance: {
+    when: `User answered yes/no to a standing-approval prompt — record the decision so the autoaccept rule applies / doesn't.`,
+    notWhen: `For ONE-OFF dispatch confirmation, just call \`panel_dispatch_card\` after the user yes/nos verbally. standing_approvals_decide is for the persistent rule.`,
+  },
   requirePrincipal: false,
   roles: ['operator'],
   rolesQuota: { operator: { perRun: 50 } },

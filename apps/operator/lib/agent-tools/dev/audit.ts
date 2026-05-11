@@ -12,6 +12,10 @@ export default defineTool({
   name: 'dev:audit',
   description: 'Cross-workspace audit_log feed (last N hours).',
   capability: 'audit:read',
+  guidance: {
+    when: `Dev-panel audit view — filtered + paginated for UI display.`,
+    notWhen: `For analysis or LLM consumption, use \`audit:list\` directly. dev:audit is a UI-shaped projection.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

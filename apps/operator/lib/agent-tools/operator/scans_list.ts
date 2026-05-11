@@ -37,6 +37,10 @@ export default defineTool({
   name: 'operator:scans_list',
   description: 'List recent operator scans, search by ILIKE, or fetch one by id. Mirrors the agent-mcp/operator-scans route.',
   capability: 'operator:read',
+  guidance: {
+    when: `List past operator scans — summaries only (id, ts, summary, error). Use to find a scan id.`,
+    notWhen: `For ONE scan's full body, use the scans_get tool. For LIVE scanning state, use \`operator:last_scan\` or \`operator:trigger_state\`.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

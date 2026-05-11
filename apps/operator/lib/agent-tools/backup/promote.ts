@@ -18,6 +18,10 @@ export default defineTool({
     'Live dir becomes .broken-<ts>-<name>/. Reversible by renaming back. ' +
     'Auto-snapshots before promotion as belt-and-suspenders.',
   capability: 'backup:write',
+  guidance: {
+    when: `Promote a backup to active (roll forward to it without rolling back). Used after testing a restore.`,
+    notWhen: `For UNDOING to an earlier state, use \`backup:rollback\`. promote moves forward; rollback moves back.`,
+  },
   requirePrincipal: false,
   roles: [...PROMOTE_ROLES],
   args: z.object({

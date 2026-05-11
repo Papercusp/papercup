@@ -14,6 +14,10 @@ export default defineTool({
   name: 'operator:conv_voice',
   description: 'Read or set the EL Conv AI agent voice (voice_id, optional model_id). Adds public voices to library if needed.',
   capability: 'operator:write',
+  guidance: {
+    when: `Read voice-conversation state (mode, engine, transcript). Diagnostic for the voice-converse pipeline.`,
+    notWhen: `For voice PREFS (defaults), use \`operator:voice_prefs\`. conv_voice is runtime, not config.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect'],
   rolesQuota: { architect: { perRun: 20 }, operator: { perRun: 50 } },

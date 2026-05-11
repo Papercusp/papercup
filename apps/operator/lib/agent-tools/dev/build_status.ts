@@ -13,6 +13,10 @@ export default defineTool({
   name: 'dev:build_status',
   description: 'Local-host build mtime + bin/prod log tail + dev/prod server reachability.',
   capability: 'intel:read',
+  guidance: {
+    when: `Read recent build status from the dev panel — pass/fail per harness.`,
+    notWhen: `For ONE harness's smoke tests, use harness-specific tools. dev:build_status is the cross-harness dev panel feed.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({}),

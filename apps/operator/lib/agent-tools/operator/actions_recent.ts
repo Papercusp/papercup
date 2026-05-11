@@ -27,6 +27,10 @@ export default defineTool({
   name: 'actions:recent',
   description: 'List recent long-running user-initiated actions for a harness (replan, cleanup, snapshot).',
   capability: 'actions:read',
+  guidance: {
+    when: `User asks "what have I been doing?", "recent actions". Read-only feed from the actions log.`,
+    notWhen: `For workspace-wide audit (cross-harness), use \`cross_harness:recent_activity\` or \`audit:list\`.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

@@ -37,6 +37,10 @@ export default defineTool({
   name: 'operator:credentials_status',
   description: 'Masked credential status for voice providers (set/not-set + tail). Read-only — never returns raw keys.',
   capability: 'secrets:operator-credentials:read',
+  guidance: {
+    when: `Check which API credentials (EL, OpenAI, etc.) are configured + valid. Used in onboarding + diagnostics.`,
+    notWhen: `For SETTING credentials, use the /settings UI directly — agents shouldn't paste secrets.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

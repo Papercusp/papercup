@@ -11,6 +11,10 @@ export default defineTool({
   name: 'dev:activity',
   description: 'Most-recent tool invocations across selected workspaces (live activity feed).',
   capability: 'intel:read',
+  guidance: {
+    when: `Diagnostic feed of recent workspace activity — for dashboards and debugging. Lower-detail than \`audit:list\`.`,
+    notWhen: `For agent action audit, use \`audit:list\`. dev:activity is for the /dev panel, not for analysis.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

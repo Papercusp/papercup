@@ -23,6 +23,10 @@ export default defineTool({
   name: 'backup:diff',
   description: 'Diff two kopia snapshots — list files added/changed/removed.',
   capability: 'backup:read',
+  guidance: {
+    when: `Diff current state vs a backup snapshot — what would change if we restored. Read-only.`,
+    notWhen: `For applying the diff, use \`backup:restore\`. diff is the dry-run view.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

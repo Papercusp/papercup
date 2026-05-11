@@ -19,6 +19,10 @@ export default defineTool({
   name: 'operator:nudge',
   description: 'Arbitrate a spoken nudge — returns { fired } indicating whether the per-kind dedup window allows speaking now.',
   capability: 'operator:write',
+  guidance: {
+    when: `Send a one-shot toast to the user — "checkpoint?", "smoke failed", etc. Use sparingly; chat is the primary channel.`,
+    notWhen: `For conversation, just speak in your reply. nudge is for non-conversational status only.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect'],
   rolesQuota: {

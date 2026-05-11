@@ -26,6 +26,10 @@ export default defineTool({
   name: 'notifications:recent',
   description: 'List recent toast notifications shown in the app (errors, warnings, info, success).',
   capability: 'notifications:read',
+  guidance: {
+    when: `Read recent toast notifications shown to the user — for "did I miss anything?" / replay.`,
+    notWhen: `For PERSISTENT inbox items, use \`messages:inbox\`. Notifications are ephemeral toasts.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

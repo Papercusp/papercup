@@ -1,5 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
+import { sseResponse } from '@restart/sse';
 import { existsSync, mkdirSync } from 'node:fs';
 import { homedir, platform } from 'node:os';
 import { join } from 'node:path';
@@ -41,27 +42,30 @@ export async function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS_HEADERS });
 }
 
-export async function POST() {
-  // Track the in-flight child so we can kill it if the client disconnects
-  // mid-stream. Without this, an abandoned tab leaks a real installer
-  // process that keeps writing to ~/.claude / ~/.papercusp/runtime even
-  // though nobody is listening to the SSE log.
+export async function POST(req: NextRequest) {
   let activeChild: ReturnType<typeof spawn> | null = null;
   let aborted = false;
 
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const encoder = new TextEncoder();
+  return sseResponse({
+    signal: req.signal,
+    headers: CORS_HEADERS,
+    setup: async (sink) => {
+      sink.onClose(() => {
+        // Client disconnected (closed tab, navigated away, lost network).
+        // Kill the in-flight installer process tree so we don't keep
+        // writing to ~/.claude / ~/.papercusp/runtime with no UI watching.
+        aborted = true;
+        if (activeChild?.pid) {
+          try { process.kill(-activeChild.pid, 'SIGTERM'); }
+          catch {
+            try { activeChild.kill('SIGTERM'); } catch { /* dead already */ }
+          }
+        }
+      });
+
       const send = (event: string, data: unknown) => {
         if (aborted) return;
-        try {
-          controller.enqueue(
-            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
-          );
-        } catch {
-          // controller already closed (client disconnected); swallow.
-          aborted = true;
-        }
+        sink.event(event, data as Record<string, unknown>);
       };
 
       const runStreaming = (
@@ -167,8 +171,7 @@ export async function POST() {
           code: claudeRc,
         });
         if (claudeRc !== 0) {
-          send('done', { ok: false, reason: 'claude installer exited non-zero' });
-          controller.close();
+          sink.done({ ok: false, reason: 'claude installer exited non-zero' });
           return;
         }
 
@@ -215,8 +218,7 @@ export async function POST() {
           code: meridianRc,
         });
         if (meridianRc !== 0) {
-          send('done', { ok: false, reason: 'meridian + omp install failed' });
-          controller.close();
+          sink.done({ ok: false, reason: 'meridian + omp install failed' });
           return;
         }
 
@@ -233,8 +235,7 @@ export async function POST() {
           code: ompFound ? 0 : 1,
         });
         if (!ompFound) {
-          send('done', { ok: false, reason: `omp binary missing at ${ompBin}` });
-          controller.close();
+          sink.done({ ok: false, reason: `omp binary missing at ${ompBin}` });
           return;
         }
 

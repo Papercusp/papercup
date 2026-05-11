@@ -14,6 +14,10 @@ export default defineTool({
   name: 'dev:session_detail',
   description: 'Drilldown for one spawn_id: agent metadata, tool invocations timeline, child spawns, related chats.',
   capability: 'intel:read',
+  guidance: {
+    when: `Read full detail of one /dev session — request history, env, traces.`,
+    notWhen: `For the SESSION LIST, use \`dev:sessions\` first.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

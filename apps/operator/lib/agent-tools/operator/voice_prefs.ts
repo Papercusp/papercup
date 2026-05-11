@@ -13,6 +13,10 @@ export default defineTool({
   name: 'operator:voice_prefs',
   description: 'Read or partial-update operator voice prefs (engine selectors, feature toggles, agent ids).',
   capability: 'operator:write',
+  guidance: {
+    when: `Read/set voice preferences — engine, wake word, autostart, persona name.`,
+    notWhen: `For runtime state of an active session, use \`operator:conv_voice\`. voice_prefs is user-set config.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },

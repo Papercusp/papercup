@@ -28,6 +28,10 @@ export default defineTool({
   name: 'operator:decisions',
   description: 'Read recent operator_decisions rows for the active workspace (id, ts, actor, action, target, details).',
   capability: 'operator:read',
+  guidance: {
+    when: `Read the operator decision log — what flips, dispatches, and autoaccepts happened and why.`,
+    notWhen: `For action audit (user-action style), use \`actions:recent\` or \`operator:audit\`. decisions is the operator-policy view.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

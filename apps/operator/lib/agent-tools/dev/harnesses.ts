@@ -12,6 +12,10 @@ export default defineTool({
   name: 'dev:harnesses',
   description: 'List harnesses across selected workspaces with health verdict for each.',
   capability: 'harness:read',
+  guidance: {
+    when: `Dev-panel harness enumeration with diagnostic columns (active connections, recent errors).`,
+    notWhen: `For ordinary list, use \`harness:list\`. dev:harnesses is the diagnostic projection.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect'],
   args: z.object({

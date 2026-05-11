@@ -14,6 +14,10 @@ export default defineTool({
   name: 'dev:sessions',
   description: 'Cross-workspace agent sessions, one row per spawn_id with started/ended/tool_count/error_count/duration totals.',
   capability: 'intel:read',
+  guidance: {
+    when: `List recent /dev panel sessions — used by the dev UI to populate session pickers.`,
+    notWhen: `For application AGENT chat sessions, use \`agent_chats:list\`. dev:sessions is the panel's own concept.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

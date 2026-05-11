@@ -11,6 +11,10 @@ export default defineTool({
   name: 'dev:pg_table_sizes',
   description: 'List tables in a pg schema with total size, index size, and estimated row count. Defaults to harness_shared.',
   capability: 'intel:read',
+  guidance: {
+    when: `Diagnostic: per-table sizes + row counts. Use when investigating storage growth.`,
+    notWhen: `For application data analysis, query the relevant tools directly. pg_table_sizes is an ops view.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

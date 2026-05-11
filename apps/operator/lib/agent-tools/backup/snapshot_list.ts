@@ -12,6 +12,10 @@ export default defineTool({
   name: 'backup:snapshot_list',
   description: 'List recent kopia snapshots for the active workspace.',
   capability: 'backup:read',
+  guidance: {
+    when: `List backup snapshots — point-in-time captures of the workspace's PG + filesystem state.`,
+    notWhen: `For HARNESS snapshots (portable artifacts you can publish), use \`snapshots:list\`. backup:snapshot_list is the full-workspace recovery view.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

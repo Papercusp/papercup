@@ -13,6 +13,10 @@ export default defineTool({
   name: 'dev:pg_active_queries',
   description: 'List current pg_stat_activity rows (pid, state, query, duration) for the operator database.',
   capability: 'intel:read',
+  guidance: {
+    when: `Diagnostic: list currently-running PG queries (pg_stat_activity). Use when investigating slow / hung queries.`,
+    notWhen: `For routine diagnostics, the /dev/pg panel is enough. Use this tool when scripting an investigation.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

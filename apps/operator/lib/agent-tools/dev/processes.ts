@@ -16,6 +16,10 @@ export default defineTool({
   name: 'dev:processes',
   description: 'Inventory of agent-related processes on this host (run.sh, omp, claude, paperclip, pty, next) with cmdline, cwd, and inferred harness/workspace.',
   capability: 'intel:read',
+  guidance: {
+    when: `List tracked processes (delegates, plugin subprocesses, orchestrator children) for the /dev panel.`,
+    notWhen: `For ACTIVE spawns, use \`orchestrator.list_active\`. For delegates, use \`delegates:list\`. dev:processes is the unified diagnostic view.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

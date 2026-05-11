@@ -18,6 +18,10 @@ export default defineTool({
   name: 'operator:scanner_reset',
   description: 'Wipe the workspace scanner session so the next scan starts a fresh Claude conversation.',
   capability: 'operator:write',
+  guidance: {
+    when: `Reset the scanner's state machine (cooldown, queues). Use when diagnostics show the scanner is stuck.`,
+    notWhen: `Don't reset speculatively — only when a scan has visibly failed to fire for >1 cycle.`,
+  },
   requirePrincipal: false,
   roles: ['operator'],
   rolesQuota: { operator: { perRun: 20 } },

@@ -29,6 +29,10 @@ export default defineTool({
   name: 'operator:standing_approvals_list',
   description: 'Standing-approval candidates: capability/target pairs the operator has silently dispatched ≥3× in 24h, eligible for "always allow".',
   capability: 'operator:read',
+  guidance: {
+    when: `List standing approvals — pre-authorized actions the user said "go ahead" to once.`,
+    notWhen: `For one-off pending reviews, use \`harness:pending_reviews\`. Standing approvals are session-persistent autoaccepts.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

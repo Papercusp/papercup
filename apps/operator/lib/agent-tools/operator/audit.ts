@@ -36,6 +36,10 @@ export default defineTool({
   name: 'operator:audit',
   description: 'Log a single operator-card lifecycle event (accepted / ignored / dispatched / dismissed / …) so the dashboard reconstruction sees it.',
   capability: 'operator:write',
+  guidance: {
+    when: `Operator-scoped audit feed — every operator action (scans fired, cards dispatched, mode flips).`,
+    notWhen: `For workspace-wide audit including non-operator actors, use \`audit:list\`. operator:audit is the narrower operator-only stream.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'scoper', 'worker', 'debugger', 'curator'],
   rolesQuota: {

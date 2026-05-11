@@ -30,6 +30,10 @@ export default defineTool({
   name: 'operator:preferences',
   description: 'List / append / remove operator preference entries (provenance-tagged markdown).',
   capability: 'operator:write',
+  guidance: {
+    when: `Read or update operator-level preferences (scan cadence, autoAccept tier, persona name, etc.).`,
+    notWhen: `For VOICE prefs specifically, use \`operator:voice_prefs\`. For workspace-level config, use \`multi_workspace\`/\`papercusp:list_workspaces\`.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { architect: { perRun: 30 }, operator: { perRun: 100 } },

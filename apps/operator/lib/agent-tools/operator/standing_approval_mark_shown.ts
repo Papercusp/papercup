@@ -12,6 +12,10 @@ export default defineTool({
   name: 'operator:standing_approval_mark_shown',
   description: 'Mark a standing-approval candidate as first-shown (timestamp gate for voice-approve eligibility).',
   capability: 'operator:write',
+  guidance: {
+    when: `Mark a standing-approval banner as shown so it doesn't re-flash. Internal UI bookkeeping.`,
+    notWhen: `For listing approvals, use \`operator:standing_approvals_list\`. For deciding, \`operator:standing_approvals_decide\`.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect'],
   rolesQuota: { architect: { perRun: 50 }, operator: { perRun: 200 } },

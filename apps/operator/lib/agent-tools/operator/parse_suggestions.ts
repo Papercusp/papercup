@@ -31,6 +31,10 @@ export default defineTool({
   name: 'operator:parse_suggestions',
   description: 'Extract <suggestion> blocks from text, Zod-validate, and enrich with tier + auto_dispatch derivation.',
   capability: 'operator:read',
+  guidance: {
+    when: `Parse a free-text suggestion list into structured cards. Internal helper for the scanner pipeline.`,
+    notWhen: `User-facing tools should not call this directly — it's a scanner-internal step.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

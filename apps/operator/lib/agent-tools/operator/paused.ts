@@ -27,6 +27,10 @@ export default defineTool({
   name: 'operator:paused',
   description: 'Read the operator pause sentinel — true when scans are suppressed.',
   capability: 'operator:read',
+  guidance: {
+    when: `Read/set the global operator-pause flag — silences scans + scanner-triggered cards across the workspace.`,
+    notWhen: `For per-harness autoloop pause, use \`autoloop:control\`. paused is operator-global; autoloop is harness-scoped.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

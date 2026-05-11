@@ -81,6 +81,10 @@ export default defineTool({
   name: 'operator:voice_spend_summary',
   description: 'Voice spend snapshot — el (Conv AI minutes), stt (today USD + caps), tts (per-K-char rate + caps), or all merged.',
   capability: 'operator:read',
+  guidance: {
+    when: `Read aggregated voice-engine spend (EL minutes, OpenAI tokens) for budget visibility.`,
+    notWhen: `For operator daily budget across all surfaces, use \`operator:budget\`. voice_spend_summary is the voice slice.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

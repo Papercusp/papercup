@@ -18,6 +18,10 @@ export default defineTool({
     'and never overwrites live state; mode="in_place" overwrites the target ' +
     'after taking a safety snapshot first.',
   capability: 'backup:write',
+  guidance: {
+    when: `Restore a backup snapshot — replay PG dump + filesystem into the workspace. Destructive: replaces current state.`,
+    notWhen: `For ROLLING BACK without changing the snapshot list, use \`backup:rollback\`. restore is the full apply.`,
+  },
   requirePrincipal: false,
   roles: [...RESTORE_ROLES],
   args: z.object({

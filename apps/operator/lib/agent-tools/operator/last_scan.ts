@@ -30,6 +30,10 @@ export default defineTool({
   name: 'operator:last_scan',
   description: 'Most-recent operator scan snapshot, with each card merged with its current lifecycle state from audit_log.',
   capability: 'operator:read',
+  guidance: {
+    when: `Read the most recent operator scan's result — summary + suggestions produced.`,
+    notWhen: `For older scans, use \`operator:scans_list\`. For full detail of a specific scan, use the \`scans_get\` tool.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

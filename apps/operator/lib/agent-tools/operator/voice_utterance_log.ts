@@ -14,6 +14,10 @@ export default defineTool({
   name: 'operator:voice_utterance_log',
   description: 'Append a voice-utterance audit row (source/mode/length/persona-flags/modifications).',
   capability: 'operator:write',
+  guidance: {
+    when: `Read recent voice transcripts — what STT heard, what TTS spoke. Useful for "what did I just say?" / debugging mishears.`,
+    notWhen: `For TEXT chat history, that lives in operator_turns. voice_utterance_log is voice-only.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'worker'],
   rolesQuota: {

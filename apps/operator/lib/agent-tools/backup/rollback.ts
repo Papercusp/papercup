@@ -17,6 +17,10 @@ export default defineTool({
     'Undo a previous backup:promote. Renames the .broken-<ts>-<name>/ dir ' +
     'back to live; current live becomes .rolled-back-<ts>-<name>/.',
   capability: 'backup:write',
+  guidance: {
+    when: `Roll back to the immediately-prior backup. Reversible only by re-applying via restore.`,
+    notWhen: `For applying a SPECIFIC backup, use \`backup:restore\` with the id.`,
+  },
   requirePrincipal: false,
   roles: [...ROLLBACK_ROLES],
   args: z.object({ brokenPath: z.string().min(1) }),

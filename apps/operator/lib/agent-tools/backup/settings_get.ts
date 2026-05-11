@@ -12,6 +12,10 @@ export default defineTool({
   name: 'backup:settings_get',
   description: 'Read backup settings + repo stats for the active workspace.',
   capability: 'backup:read',
+  guidance: {
+    when: `Read backup configuration — schedule, retention, destinations.`,
+    notWhen: `For runtime BACKUP state (last run, next run), check the destinations directly.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

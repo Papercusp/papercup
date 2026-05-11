@@ -32,6 +32,10 @@ export default defineTool({
   name: 'operator:stats',
   description: '7-day operator KPIs: card counts, auto-dispatch rate, dismissal rate, escalation rate, median ack latency, spend.',
   capability: 'operator:read',
+  guidance: {
+    when: `Aggregate operator stats — scans/day, dispatches/day, mode-flip counts. For dashboards / status reports.`,
+    notWhen: `For LIVE state, use the specific dedicated tool. stats is historical aggregates.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

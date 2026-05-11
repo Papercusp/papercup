@@ -31,6 +31,10 @@ export default defineTool({
   name: 'operator:notes',
   description: 'Read or append feature-scoped operator notes (Steer primitive). { op: read|append, slug?, featureId, content?, author? }.',
   capability: 'operator:write',
+  guidance: {
+    when: `Read or update the operator's free-form note buffer — long-running scratch the user adds via /settings.`,
+    notWhen: `For HINDSIGHT (cross-agent memory), use \`hindsight:recall\`. Notes is operator-only, user-editable.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, architect: { perRun: 50 }, operator: { perRun: 200 } },

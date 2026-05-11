@@ -15,6 +15,10 @@ export default defineTool({
   name: 'backup:settings_set',
   description: 'Patch backup settings for the active workspace. All fields optional; missing keys preserve existing values.',
   capability: 'backup:write',
+  guidance: {
+    when: `Update backup configuration. Confirm the change out loud first — affects automated backups going forward.`,
+    notWhen: `For one-shot backup creation, use \`backup:snapshot_create\`. settings_set is for the schedule/policy.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'debugger'],
   args: z.object({

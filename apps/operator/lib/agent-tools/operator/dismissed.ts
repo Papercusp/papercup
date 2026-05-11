@@ -12,6 +12,10 @@ export default defineTool({
   name: 'operator:dismissed',
   description: 'Record a card-id as dismissed so the parser filters re-emissions during the cooldown window.',
   capability: 'operator:write',
+  guidance: {
+    when: `List suggestion cards the user has dismissed — for "why isn't X showing up anymore?".`,
+    notWhen: `For ACTIVE pending cards, use \`panel_cards\`. dismissed is the soft-archive view.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'scoper'],
   rolesQuota: {

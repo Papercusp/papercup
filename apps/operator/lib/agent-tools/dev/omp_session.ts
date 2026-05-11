@@ -17,6 +17,10 @@ export default defineTool({
   description:
     'Find and read the omp session JSONL file for a spawn_id, by cwd + start-time match against ~/.omp/agent/sessions/.',
   capability: 'intel:read',
+  guidance: {
+    when: `Inspect an OMP CLI session's state — useful when debugging long-running CLI flows.`,
+    notWhen: `For PRODUCTION agent runs, the orchestrator owns sessions. dev:omp_session is the CLI-tool inspector.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({

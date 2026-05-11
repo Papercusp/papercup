@@ -24,6 +24,10 @@ export default defineTool({
   name: 'operator:budget',
   description: 'Read or set the daily operator budget cap. Get is any role; set is operator only.',
   capability: 'operator:write',
+  guidance: {
+    when: `Read operator daily-spend status — todaySpendUsd, capUsd, exceeded flag.`,
+    notWhen: `For voice-specific spend, use \`operator:voice_spend_summary\`. For raising the cap, use /settings/operator.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { operator: { perRun: 50 } },

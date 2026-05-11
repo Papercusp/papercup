@@ -25,6 +25,10 @@ export default defineTool({
   name: 'operator:trigger_state',
   description: 'Read the workspace trigger-state fingerprint + raw state (used by background scanner to decide rescans).',
   capability: 'operator:read',
+  guidance: {
+    when: `Read scanner trigger state — when the next scan fires, what's pending.`,
+    notWhen: `For LIVE scan results, use \`operator:last_scan\` or \`operator:scans_list\`.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({}),

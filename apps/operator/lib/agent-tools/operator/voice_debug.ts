@@ -22,6 +22,10 @@ export default defineTool({
   name: 'operator:voice_debug',
   description: 'Read, append, or clear the process-local voice-debug ring buffer (same buffer as the agent-mcp/voice-debug route).',
   capability: 'operator:write',
+  guidance: {
+    when: `Debug snapshot of the voice engine state — engine in use, last connection, transcript queue. Diagnostic only.`,
+    notWhen: `For voice preferences, use \`operator:voice_prefs\`. voice_debug is read-only diagnostic.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger', 'reviewer'],
   args: z.discriminatedUnion('op', [

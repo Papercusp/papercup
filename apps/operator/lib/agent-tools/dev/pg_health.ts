@@ -13,6 +13,10 @@ export default defineTool({
   name: 'dev:pg_health',
   description: 'PostgreSQL version + connection counts (total/active/idle) for the operator database.',
   capability: 'intel:read',
+  guidance: {
+    when: `Diagnostic snapshot of PG health — connections, longest query, lock count. For the /dev/pg dashboard.`,
+    notWhen: `For application-level health, use \`harness:health\`. pg_health is the database layer.`,
+  },
   requirePrincipal: false,
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({}),

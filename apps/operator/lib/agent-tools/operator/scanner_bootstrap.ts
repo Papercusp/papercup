@@ -28,6 +28,10 @@ export default defineTool({
   name: 'operator:scanner_bootstrap',
   description: 'Build the scanner bootstrap blob (prior-scan summary + workspace cues) without starting a scan.',
   capability: 'operator:read',
+  guidance: {
+    when: `Initialize the operator scanner's state on first install or after \`scanner_reset\`. Idempotent.`,
+    notWhen: `For TRIGGERING a scan, the scanner runs on its own cadence — there's no manual trigger here.`,
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({
