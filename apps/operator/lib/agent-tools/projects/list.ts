@@ -32,9 +32,21 @@ export default defineTool({
     harnessSlug: z.string().optional(),
   }),
   async handler(args, ctx) {
-    const slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    let slug = args.harnessSlug ?? ctx.harnessSlug ?? '';
+    // Under ?superuser=1 the spawn ctx supplies harnessSlug='*' as a
+    // workspace-wildcard. listProjectsForHarness then tries to set
+    // search_path to schema `harness_*`, which doesn't exist, and PG
+    // throws `relation "harness_features" does not exist`. Treat '*'
+    // the same as a missing slug — the caller has to pick a harness.
+    if (slug === '*') slug = '';
     if (!slug) {
-      throw new Error('projects:list — harness slug required (passed or in spawn ctx)');
+      return {
+        isError: true,
+        content: [{
+          type: 'text',
+          text: 'harness_slug_required: projects:list needs a specific harness. Pass {"harnessSlug":"<slug>"} (e.g. from harness:list first) or invoke from a harness-scoped spawn URL.',
+        }],
+      };
     }
     const projects = await listProjectsForHarness(slug);
     return { content: [{ type: 'text', text: JSON.stringify({ harnessSlug: slug, projects }) }] };

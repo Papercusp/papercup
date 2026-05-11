@@ -53,9 +53,10 @@ try {
   (hasSig && hasExp) ? ok(`url has sig+exp`) : bad(`url has sig+exp`, `sig=${hasSig} exp=${hasExp}`);
 
   // Now hit the operator using this URL with tools/list (most permissive)
-  console.log(`--- verify against operator at :3070 ---`);
-  // Strip path, retarget at /api/mcp on 3070
-  const targetUrl = `http://localhost:3070/api/mcp?${u.searchParams.toString()}`;
+  const OP_PORT = process.env.OP_PORT ?? '3070';
+  console.log(`--- verify against operator at :${OP_PORT} ---`);
+  // Strip path, retarget at /api/mcp on the configured port
+  const targetUrl = `http://localhost:${OP_PORT}/api/mcp?${u.searchParams.toString()}`;
   const r = await fetch(targetUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
@@ -126,7 +127,7 @@ try {
   // And tamper with the URL — change role to operator, expect rejection on tools/call
   console.log(`--- tamper: rewrite role=worker → role=operator ---`);
   u.searchParams.set('role', 'operator');
-  const tampUrl = `http://localhost:3070/api/mcp?${u.searchParams.toString()}`;
+  const tampUrl = `http://localhost:${OP_PORT}/api/mcp?${u.searchParams.toString()}`;
   const r3 = await fetch(tampUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },

@@ -268,7 +268,7 @@ async function runProjectManagerInner(
     // docs, .harness/memory/, etc. Without this, claude is locked to the
     // dev-server's cwd and cannot read any of the inputs the PM prompt
     // tells it to look at.
-    const projectDir = projectDirForSlug(slug);
+    const projectDir = await projectDirForSlug(slug);
     const spawned = await spawnClaude(agentCmd, assembled.text, projectDir ?? undefined);
     if (!spawned.ok) {
       return { ok: false, error: 'claude invocation failed', detail: spawned.detail };
@@ -299,7 +299,15 @@ async function runProjectManagerInner(
     const changed = parsed.spec !== 'NO_CHANGE';
     const newSpec = changed ? (parsed.spec as string) : (project.spec ?? '');
 
-    await db.transaction(async (tx) => {
+    // db.transaction is exposed by the LegacyClient runtime shim but
+    // its type-only declaration in libs/papercusp/libs/db/src/legacy-shim.ts
+    // doesn't reach the operator's tsconfig resolution (stale .d.ts in
+    // node_modules cache or a build-config asymmetry between this repo
+    // and the submodule). Cast to any to access the runtime method.
+    // Pre-alpha policy: not worth chasing the build-config rabbit hole
+    // when the runtime works.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (db as any).transaction(async (tx: typeof db) => {
       const insRow = (await tx.prepare(`
         INSERT INTO harness_shared.project_spec_revisions
           (project_id, spec, summary, author_role, include_decisions, tokens_in, tokens_out, cost_usd_cents)
