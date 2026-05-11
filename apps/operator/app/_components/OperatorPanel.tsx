@@ -743,6 +743,17 @@ export function OperatorPanel(): JSX.Element | null {
     es.addEventListener('tool_call', () => {
       setState((s) => ({ ...s, iconState: 'scanning' }));
     });
+    es.addEventListener('idle_status', (ev: MessageEvent) => {
+      // Cached short-circuit path emits this in lieu of a full LLM scan
+      // (Phase 5 polish). Refresh the per-harness one-liners so a stable
+      // workspace still sees current status.
+      try {
+        const data = JSON.parse(ev.data) as { perHarness?: HarnessOneLiner[] };
+        if (Array.isArray(data.perHarness)) setHarnessRows(data.perHarness);
+      } catch {
+        /* ignore */
+      }
+    });
     es.addEventListener('suggestion', (ev: MessageEvent) => {
       try {
         const raw = JSON.parse(ev.data) as ParsedSuggestion;
