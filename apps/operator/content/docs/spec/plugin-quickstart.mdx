@@ -70,6 +70,11 @@ Reserved namespaces:
 - `events:emit:<name>` / `events:listen:<name>` — must be prefixed with your plugin id (`my-tool.foo`); substrate names (`mission.*`, `task.*`, `feature.*`, `proposal.*`, `worker.*`, `validator.*`, `orchestrator.*`, `pending_event.*`) are reserved.
 - `ui:dashboard-tab` / `ui:sidebar-item` / `ui:harness-route` — UI surface claims.
 
+**Wildcards** only work in the leaf segment, and only with non-empty heads:
+- `*.foo.com` matches subdomains (subdomain form)
+- `MY_*` matches prefixes (head must be non-empty)
+- Bare `:*` (e.g. `compute:exec:*`) is **not** a wildcard — it only matches the literal cap string. Enumerate or use a non-empty prefix.
+
 ## 3. Lint
 
 ```bash
