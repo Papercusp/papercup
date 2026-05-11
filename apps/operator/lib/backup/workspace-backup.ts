@@ -539,16 +539,19 @@ export class WorkspaceBackup {
     const env = this.envWithPassword(password);
     try {
       const out = await this.kopia(['content', 'stats', '--raw'], { env });
-      // `--raw` prints stats in `key=value` lines. We pull packed size + count.
-      const lines = out.split('\n');
-      const get = (k: string) => {
-        const m = lines.find((l) => l.startsWith(`${k}=`) || l.includes(` ${k}=`));
+      // `kopia content stats --raw` is human-readable, not key=value.
+      // Format we parse:
+      //   Count: 7095
+      //   Total Bytes: 9021138605
+      //   Total Packed: 9019861807 (compression 0.0%)
+      const get = (re: RegExp): number | null => {
+        const m = out.match(re);
         if (!m) return null;
-        const v = Number(m.split('=')[1]?.trim());
+        const v = Number(m[1]!.replace(/,/g, ''));
         return Number.isFinite(v) ? v : null;
       };
-      const totalSize = get('total-packed') ?? get('packed') ?? get('size') ?? 0;
-      const objectCount = get('count') ?? get('total-count') ?? 0;
+      const totalSize   = get(/^Total Packed:\s*(\d[\d,]*)/m) ?? get(/^Total Bytes:\s*(\d[\d,]*)/m) ?? 0;
+      const objectCount = get(/^Count:\s*(\d[\d,]*)/m) ?? 0;
       return { totalSize, objectCount };
     } catch {
       return null;
