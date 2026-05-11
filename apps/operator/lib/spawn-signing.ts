@@ -71,6 +71,8 @@ const SIGNED_PARAM_ALLOWLIST = new Set([
 
 interface KeyCache {
   buf: Buffer;
+  /** rotated_at from PG; cache invalidates when PG's value advances. */
+  rotatedAt: number;
   loadedAt: number;
 }
 
@@ -81,21 +83,39 @@ export function _resetSpawnSigningKeyCache(): void {
   __g.__papercuspSpawnSigningKey = null;
 }
 
+/**
+ * Read the current key from PG. Honors PG's rotated_at so a rotate on
+ * any other operator process invalidates this process's cache on the
+ * next call. One extra PG row per signing/verifying call — negligible
+ * compared to the rest of the MCP-call cost, and necessary to avoid
+ * the multi-instance cache-coherence bug surfaced by the audit (any
+ * concurrent admin-rotate from a sibling process would otherwise leave
+ * this process serving a stale key for up to 5 minutes).
+ *
+ * The 5-minute TTL is kept as a safety net in case rotated_at can't be
+ * read for some reason — but the rotated_at check is the primary
+ * mechanism.
+ */
 async function loadOrCreateKey(): Promise<Buffer> {
-  const cached = __g.__papercuspSpawnSigningKey;
-  // Cache for 5 minutes so rotation propagates without restart.
-  if (cached && Date.now() - cached.loadedAt < 5 * 60 * 1000) return cached.buf;
-
   await ensureOperatorSecretsTable();
   const { db } = getOrgPg();
   const rows = await db
-    .select({ value_b64: os.value_b64 })
+    .select({ value_b64: os.value_b64, rotated_at: os.rotated_at })
     .from(os)
     .where(eq(os.name, KEY_NAME))
     .limit(1);
   if (rows.length > 0) {
+    const rotatedAt = new Date(rows[0].rotated_at as never).getTime();
+    const cached = __g.__papercuspSpawnSigningKey;
+    if (
+      cached &&
+      cached.rotatedAt === rotatedAt &&
+      Date.now() - cached.loadedAt < 5 * 60 * 1000
+    ) {
+      return cached.buf;
+    }
     const buf = Buffer.from(rows[0].value_b64, 'base64');
-    __g.__papercuspSpawnSigningKey = { buf, loadedAt: Date.now() };
+    __g.__papercuspSpawnSigningKey = { buf, rotatedAt, loadedAt: Date.now() };
     return buf;
   }
 
@@ -106,12 +126,13 @@ async function loadOrCreateKey(): Promise<Buffer> {
   await db.insert(os).values({ name: KEY_NAME, value_b64: fresh_b64 }).onConflictDoNothing();
   // Re-read to win-or-lose deterministically.
   const after = await db
-    .select({ value_b64: os.value_b64 })
+    .select({ value_b64: os.value_b64, rotated_at: os.rotated_at })
     .from(os)
     .where(eq(os.name, KEY_NAME))
     .limit(1);
+  const rotatedAt = new Date(after[0]!.rotated_at as never).getTime();
   const buf = Buffer.from(after[0]!.value_b64, 'base64');
-  __g.__papercuspSpawnSigningKey = { buf, loadedAt: Date.now() };
+  __g.__papercuspSpawnSigningKey = { buf, rotatedAt, loadedAt: Date.now() };
   return buf;
 }
 
