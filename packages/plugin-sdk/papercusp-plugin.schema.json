@@ -108,6 +108,14 @@
         "allowOverride": { "type": "string", "enum": ["security-patch", "always", "never"] }
       }
     },
+    "hotReload": {
+      "description": "Hot-reload state preservation opt-in. When `preserveState: true`, the host calls `getStateForReload` before unload and `restoreFromReload(state)` on the next init. State must be JSON-serialisable and ≤ 64 KiB.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "preserveState": { "type": "boolean" }
+      }
+    },
     "kvQuota": {
       "description": "Optional override of the default ctx.kv quotas. maxBytesPerKey defaults to 10 KiB; maxBytesPerPlugin defaults to 1 MiB.",
       "type": "object",

@@ -10,6 +10,7 @@
 import { NextResponse } from 'next/server';
 import {
   _resetPluginHostForTests,
+  captureReloadStates,
   getPluginHost,
   pluginHostStatus,
 } from '@/lib/plugin-host-runtime';
@@ -18,6 +19,9 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST() {
+  // Save reload state for plugins that opted in BEFORE wiping the host
+  // — the reset clears the `initialized` set we iterate over.
+  await captureReloadStates();
   _resetPluginHostForTests();
   await getPluginHost();
   return NextResponse.json({ ok: true, status: await pluginHostStatus() });
