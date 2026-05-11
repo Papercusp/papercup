@@ -12,6 +12,7 @@ import RouteProgressProvider from './_components/RouteProgressProvider';
 import RouteTransitionProvider from './_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from './_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from './_components/ToastHistoryRecorder';
+import { UiPresenceProvider } from './_components/UiPresenceProvider';
 import './globals.css';
 
 const visualEffectsBootstrapScript = `
@@ -106,6 +107,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <GlobalShortcutDispatcher />
               <Suspense fallback={null}>
                 <NuqsAdapter>
+                  {/* UiPresenceProvider: mirrors this tab's URL to
+                      harness_shared.ui_clients and SSE-subscribes for
+                      agent-driven UI intents. Inside NuqsAdapter so the
+                      built-in `set_url` intent triggers nuqs's URL
+                      subscription. See docs/ui-control-plan.md. */}
+                  <UiPresenceProvider />
                   <RouteTransitionProvider>
                     <WslOnboardingGate>
                       {/* OperatorConversationProvider owns the

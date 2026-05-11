@@ -43,6 +43,12 @@ interface ConverseRequestBody {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
   trigger?: 'user_message' | 'silence_nudge' | 'silence_check' | 'quiet_wait_resume';
   mayAskActive?: boolean;
+  /**
+   * UI client id of the originating browser tab. The chat surface
+   * passes this through so the agent's MCP URL is bound to that tab
+   * — `ctx.uiClientId` is populated and `ui:*` tools default to it.
+   */
+  uiClientId?: string;
 }
 
 const HISTORY_KEEP = 30; // last 30 messages — bounds token cost on long convos
@@ -155,7 +161,16 @@ export async function POST(req: NextRequest) {
         // to derive runId from. Token lives at ~/.papercusp/superuser-token
         // and is read by the operator process itself, never sent to
         // remote agents.
-        const mcpUrl = 'http://127.0.0.1:3055/api/mcp?superuser=1';
+        // Pass the originating tab's client_id through to the agent's
+        // MCP URL so ctx.uiClientId is set and `ui:dispatch` can default
+        // to it. Validated as a UUID-ish — anything else is dropped to
+        // avoid passing arbitrary attacker-controlled query through.
+        const uiClientId = typeof body.uiClientId === 'string' && /^[0-9a-fA-F-]{16,128}$/.test(body.uiClientId)
+          ? body.uiClientId
+          : null;
+        const mcpUrl =
+          'http://127.0.0.1:3055/api/mcp?superuser=1' +
+          (uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '');
         let superuserToken: string | null = null;
         try {
           // eslint-disable-next-line @typescript-eslint/no-require-imports

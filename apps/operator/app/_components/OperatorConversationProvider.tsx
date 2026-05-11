@@ -232,6 +232,10 @@ export type GenerationFn = (req: GenerationRequest) => Promise<GenerationStream>
  * the realtime-session's turn output the same way.
  */
 const defaultGenerationFn: GenerationFn = async (req) => {
+  // Lazy import — avoids dragging the sessionStorage path into SSR.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getOrCreateClientId } = require('@/lib/ui/client-id') as typeof import('@/lib/ui/client-id');
+  const uiClientId = getOrCreateClientId();
   const res = await fetch('/api/agent-mcp/operator-converse', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -239,6 +243,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
       messages: req.messages,
       trigger: req.trigger,
       mayAskActive: req.mayAskActive,
+      uiClientId: uiClientId || undefined,
     }),
     signal: req.signal,
   });

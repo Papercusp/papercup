@@ -111,3 +111,4 @@ import './dev/build_status';
 import './dev/processes';
 import './dev/session_detail';
 import './processes/kill';
+import './dev/omp_session';

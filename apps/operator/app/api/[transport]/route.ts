@@ -98,6 +98,7 @@ export interface BuiltSpawnContext {
   runId: string;
   spawnId: string;
   parentSpawnId: string | null;
+  uiClientId: string | null;
   isSuperuser?: boolean;
 }
 
@@ -140,6 +141,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     if (!isValidSuperuserBearer(bearer)) return { kind: 'failed', reason: 'superuser_invalid_bearer' };
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
     const harnessParam = (url.searchParams.get('harness') ?? '').trim();
+    const clientParam = (url.searchParams.get('client') ?? '').trim();
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
@@ -153,6 +155,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         runId: 'standalone',
         spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
         parentSpawnId: null,
+        uiClientId: clientParam.length > 0 ? clientParam : null,
         isSuperuser: true,
       },
     };
@@ -223,6 +226,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         runId: parsed.runId,
         spawnId: parsed.spawnId,
         parentSpawnId: parsed.parentSpawnId,
+        uiClientId: parsed.uiClientId,
       },
     };
   } catch (err) {
@@ -409,6 +413,7 @@ async function buildMcpToolContext(
     runId: spawn.runId,
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
+    uiClientId: spawn.uiClientId,
     isSuperuser: spawn.isSuperuser ?? false,
     log: (msg) => {
       // eslint-disable-next-line no-console

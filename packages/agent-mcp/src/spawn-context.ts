@@ -8,10 +8,13 @@
  * URL shape:
  *   ?harness=<slug>&workspace=<id>&role=<role>
  *   &run=<runId>&spawn=<spawnId>
- *   &feature=<id?>&chunk=<id?>&parent_spawn=<id?>
+ *   &feature=<id?>&chunk=<id?>&parent_spawn=<id?>&client=<uiClientId?>
  *
  * Required: harness, workspace, role, run, spawn.
- * Optional: feature, chunk, parent_spawn (set by Phase 9 spawn-of-spawn).
+ * Optional: feature, chunk, parent_spawn (set by Phase 9 spawn-of-spawn),
+ *           client (UI client id; when an agent is invoked from a
+ *           browser tab, the tab's client_id is baked here so tools
+ *           like `ui:dispatch` can default to it).
  *
  * Spec: apps/operator/docs/plugin-mcp-host-design.md (D4).
  */
@@ -27,6 +30,7 @@ export interface PluginRequestContext {
   runId: string;
   spawnId: string;
   parentSpawnId: string | null;
+  uiClientId: string | null;
 }
 
 export class InvalidRequestContextError extends Error {
@@ -48,6 +52,7 @@ export function parseRequestContext(url: URL | string): PluginRequestContext {
   const featureRaw = (u.searchParams.get('feature') ?? '').trim();
   const chunkRaw = (u.searchParams.get('chunk') ?? '').trim();
   const parentRaw = (u.searchParams.get('parent_spawn') ?? '').trim();
+  const clientRaw = (u.searchParams.get('client') ?? '').trim();
 
   const missing: string[] = [];
   if (!harnessSlug) missing.push('harness');
@@ -66,5 +71,6 @@ export function parseRequestContext(url: URL | string): PluginRequestContext {
     featureId: featureRaw.length > 0 ? featureRaw : null,
     chunkId: chunkRaw.length > 0 ? chunkRaw : null,
     parentSpawnId: parentRaw.length > 0 ? parentRaw : null,
+    uiClientId: clientRaw.length > 0 ? clientRaw : null,
   };
 }
