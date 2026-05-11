@@ -24,10 +24,20 @@ interface UpdateRow {
   capChange: { added: string[]; removed: string[]; unchanged: string[] };
 }
 
+interface RuntimeStatusRow {
+  plugin: string;
+  runtime: 'wasm' | 'daemon';
+  pid?: number;
+  restartCount?: number;
+  ok: boolean;
+  loadedFor: string[];
+}
+
 export default function InstalledPluginsPage() {
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
   const [enabledMap, setEnabledMap] = useState<Record<string, string[]>>({});
   const [updates, setUpdates] = useState<Record<string, UpdateRow>>({});
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatusRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
@@ -62,18 +72,21 @@ export default function InstalledPluginsPage() {
     async function load() {
       setLoading(true);
       try {
-        const [pluginsRes, updatesRes] = await Promise.all([
+        const [pluginsRes, updatesRes, runtimeRes] = await Promise.all([
           fetch('/api/plugins/global', { cache: 'no-store' }),
           fetch('/api/plugins/updates', { cache: 'no-store' }),
+          fetch('/api/plugins/host/runtime-status', { cache: 'no-store' }),
         ]);
         const pluginsJson = pluginsRes.ok ? await pluginsRes.json() : { plugins: [] };
         const updatesJson = updatesRes.ok ? await updatesRes.json() : { updates: [] };
+        const runtimeJson = runtimeRes.ok ? await runtimeRes.json() : { rows: [] };
         if (cancelled) return;
         const list = Array.isArray(pluginsJson?.plugins) ? pluginsJson.plugins : [];
         setPlugins(list.filter((p: InstalledPluginRecord) => !p.hidden));
         const upd: Record<string, UpdateRow> = {};
         for (const u of updatesJson?.updates ?? []) upd[u.slug] = u;
         setUpdates(upd);
+        setRuntimeStatus(Array.isArray(runtimeJson?.rows) ? runtimeJson.rows : []);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -156,8 +169,45 @@ export default function InstalledPluginsPage() {
               <span>update{Object.keys(updates).length === 1 ? '' : 's'}</span>
             </div>
           )}
+          {runtimeStatus.length > 0 && (
+            <div style={{ background: 'var(--bg-elevated, #1f2937)' }}>
+              <strong>{runtimeStatus.length}</strong>
+              <span>non-JS runtime{runtimeStatus.length === 1 ? '' : 's'}</span>
+            </div>
+          )}
         </div>
       </section>
+      {runtimeStatus.length > 0 && (
+        <section className="pc-card" style={{ padding: 12, marginBottom: 12 }}>
+          <p className="pc-eyebrow" style={{ marginBottom: 8 }}>Plugin runtime status</p>
+          <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ textAlign: 'left', opacity: 0.7 }}>
+                <th>Plugin</th>
+                <th>Runtime</th>
+                <th>Loaded for</th>
+                <th>PID</th>
+                <th>Restarts</th>
+                <th>OK</th>
+              </tr>
+            </thead>
+            <tbody>
+              {runtimeStatus.map((row) => (
+                <tr key={`${row.plugin}::${row.runtime}`} style={{ borderTop: '1px solid var(--border, rgba(255,255,255,0.1))' }}>
+                  <td>{row.plugin}</td>
+                  <td><code style={{ fontSize: 11 }}>{row.runtime}</code></td>
+                  <td>{row.loadedFor.join(', ') || <em style={{ opacity: 0.5 }}>—</em>}</td>
+                  <td>{row.pid ?? <em style={{ opacity: 0.5 }}>—</em>}</td>
+                  <td>{row.restartCount ?? <em style={{ opacity: 0.5 }}>—</em>}</td>
+                  <td style={{ color: row.ok ? 'var(--ok, #22c55e)' : 'var(--danger, #ef4444)' }}>
+                    {row.ok ? '●' : '○'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
       {loading ? (
         <div className="pc-card pc-marketplace-loading">Loading installed plugins…</div>
       ) : plugins.length === 0 ? (
