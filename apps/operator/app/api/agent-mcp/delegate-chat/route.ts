@@ -152,27 +152,46 @@ export async function GET(req: NextRequest): Promise<Response> {
           promptText,
           sessionId: claudeSessionId,
           sessionMode: 'force',
-          mcpConfig: {
-            mcpServers: {
-              agentmcp: {
-                command: './node_modules/.bin/tsx',
-                args: [join(process.cwd(), 'packages/agent-mcp/src/server-entry.ts')],
-                env: {
-                  AGENT_MCP_BEARER: principal.bearer,
-                  // Was hardcoded to :3155 (retired worktree). Use the operator's
-                  // own base URL — same convention as the rest of the codebase.
-                  OPERATOR_BASE_URL: process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055',
-                },
-              },
+          // agentmcp: HTTP via mcp-remote bridge (covers the full operator
+          // tool catalog including agent_tools:list, ui:*, autoloop:*,
+          // not just the standalone bootstrap.ts subset).
+          // delegate: stays stdio because it has its own UI-coupled
+          // semantics (dispatchToAgent, followUpInChat) not in the
+          // projected catalog.
+          mcpConfig: (() => {
+            const superuserToken = (() => {
+              try {
+                return require('node:fs').readFileSync(
+                  require('node:path').join(require('node:os').homedir(), '.papercusp', 'superuser-token'),
+                  'utf8',
+                ).trim();
+              } catch { return ''; }
+            })();
+            const opBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://127.0.0.1:3055';
+            const servers: Record<string, unknown> = {
               delegate: {
                 command: 'node',
                 args: [join(process.cwd(), 'apps/operator/lib/delegate-mcp-server.mjs')],
                 env: {
-                  DELEGATE_BASE: process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://localhost:3055',
+                  DELEGATE_BASE: opBase,
                 },
               },
-            },
-          },
+            };
+            if (superuserToken) {
+              servers.agentmcp = {
+                type: 'stdio',
+                command: 'npx',
+                args: [
+                  '-y',
+                  'mcp-remote@latest',
+                  `${opBase}/api/mcp?superuser=1`,
+                  '--header',
+                  `Authorization:Bearer ${superuserToken}`,
+                ],
+              };
+            }
+            return { mcpServers: servers };
+          })(),
           allowedTools: [...ALL_DELEGATE_TOOLS],
           toolEventFilter: (raw) => {
             if (raw.startsWith('mcp__agentmcp__')) return raw.replace(/^mcp__agentmcp__/, '');

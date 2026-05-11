@@ -137,19 +137,40 @@ export async function GET(req: NextRequest): Promise<Response> {
           promptText,
           sessionId: claudeSessionId,
           sessionMode: 'force',
-          mcpConfig: {
-            mcpServers: {
-              agentmcp: {
-                command: './node_modules/.bin/tsx',
-                args: [join(process.cwd(), 'packages/agent-mcp/src/server-entry.ts')],
-                env: {
-                  AGENT_MCP_BEARER: principal.bearer,
-                  OPERATOR_BASE_URL: 'http://localhost:3155',
+          // HTTP MCP via mcp-remote stdio bridge (same shape as
+          // operator-converse). Switched from the standalone stdio
+          // agent-mcp server because that one's bootstrap.ts catalog
+          // misses the operator-side tools (agent_tools:list, ui:*,
+          // autoloop:*, etc.) — those live in apps/operator/lib/agent-tools
+          // and are only reachable via the operator's projected /api/mcp
+          // dispatcher.
+          mcpConfig: (() => {
+            const superuserToken = (() => {
+              try {
+                return require('node:fs').readFileSync(
+                  require('node:path').join(require('node:os').homedir(), '.papercusp', 'superuser-token'),
+                  'utf8',
+                ).trim();
+              } catch { return ''; }
+            })();
+            if (!superuserToken) return undefined;
+            return {
+              mcpServers: {
+                agentmcp: {
+                  type: 'stdio',
+                  command: 'npx',
+                  args: [
+                    '-y',
+                    'mcp-remote@latest',
+                    'http://127.0.0.1:3055/api/mcp?superuser=1',
+                    '--header',
+                    `Authorization:Bearer ${superuserToken}`,
+                  ],
                 },
               },
-            },
-          },
-          allowedTools: ALL_AGENT_MCP_TOOLS,
+            };
+          })(),
+          allowedTools: [...ALL_AGENT_MCP_TOOLS],
           toolEventFilter: (raw) =>
             raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
           permissionMode: 'bypassPermissions',

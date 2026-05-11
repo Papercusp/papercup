@@ -19,6 +19,7 @@ import type { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 import { papercuspPath } from '@/lib/papercusp-root';
@@ -353,14 +354,44 @@ export function registerOracle(app: Hono) {
           },
         };
         if (oracleBearer) {
-          mcpServers.agentmcp = {
-            command: tsxBin,
-            args: [agentMcpPath],
-            env: {
-              AGENT_MCP_BEARER: oracleBearer,
-              OPERATOR_BASE_URL: oracleBase,
-            },
-          };
+          // HTTP MCP via mcp-remote bridge — covers the full operator
+          // tool catalog (agent_tools:list, ui:*, autoloop:*, harness:*,
+          // etc.) instead of just the standalone bootstrap.ts subset
+          // (which omits operator-side defineTool entries).
+          //
+          // Reads the superuser-token at request time (file may not
+          // exist on a fresh install — degrade to the legacy stdio
+          // server in that case so Oracle still has a partial catalog).
+          let superuserToken: string | null = null;
+          try {
+            const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
+            superuserToken = require('node:fs').readFileSync(tokenPath, 'utf8').trim();
+            if (!superuserToken || superuserToken.length < 16) superuserToken = null;
+          } catch { /* missing token → fallthrough */ }
+
+          if (superuserToken) {
+            mcpServers.agentmcp = {
+              command: 'npx',
+              args: [
+                '-y',
+                'mcp-remote@latest',
+                `${oracleBase}/api/mcp?superuser=1`,
+                '--header',
+                `Authorization:Bearer ${superuserToken}`,
+              ],
+            };
+          } else {
+            // Legacy stdio fallback — catalog is incomplete but better
+            // than no agentmcp at all.
+            mcpServers.agentmcp = {
+              command: tsxBin,
+              args: [agentMcpPath],
+              env: {
+                AGENT_MCP_BEARER: oracleBearer,
+                OPERATOR_BASE_URL: oracleBase,
+              },
+            };
+          }
         }
         const allowedTools = [
           'mcp__oracle__navigate',

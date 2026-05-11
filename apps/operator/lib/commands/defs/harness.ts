@@ -2,9 +2,11 @@
  * harness.* — fast queries about harness state.
  *
  * Reflects what voice / Oracle / Pi all need to read fast: status, list,
- * features, last-scan, recent-suggestions. Pi already has narrower variants
- * via papercusp-mcp-server; PR 6 will migrate Pi's MCP server to delegate
- * to these same definitions.
+ * features, last-scan, recent-suggestions. Pi (omp) hits the same
+ * projected-tool dispatcher at /api/[transport]/route.ts as everyone
+ * else — the old @restart/papercusp-mcp-server stdio shim was deleted
+ * 2026-05-09 and is fully superseded by this registry + the projected
+ * tool catalog.
  *
  * All queries are server-runnable (browser:'none' implicit since they're
  * QueryDef). Browser-side reflexive queries fetch through `/api/...`

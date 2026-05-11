@@ -278,21 +278,6 @@ function resolvePiBinary(): string {
   return resolveAgentTerminalBinary();
 }
 
-// Legacy: registered the deprecated `@restart/papercusp-mcp-server` (7
-// read-only tools) as a stdio entry in `~/.omp/agent/mcp.json`. That
-// package was deleted 2026-05-09; the agent-mcp HTTP/SSE transport at
-// `/api/[transport]/route.ts` is the canonical surface and exposes 27
-// tools versus the legacy 7. omp clients should be configured against
-// the HTTP endpoint, not stdio — kept as a no-op shim only because
-// the call site in pty spawn flow is best-effort.
-function ensurePapercuspMcpRegistered(): void {
-  // Intentionally empty. If a future client needs auto-registration of
-  // the agent-mcp HTTP endpoint, do it here — but the current pattern
-  // is to surface the URL in operator UI / docs and let users configure
-  // it themselves.
-  return;
-}
-
   /**
    * Prewarm pool. Keyed by `<slug>|<laneId>|<command>` so a /pty/prewarm
    * call from PiTerminalsDock.onMount reserves a pty whose env/cwd/args
@@ -466,9 +451,11 @@ function ensurePapercuspMcpRegistered(): void {
     const piExtensionPath = papercuspPath('global-plugins', 'pi', 'extension.ts');
     const piExtensionAvailable = existsSync(piExtensionPath);
 
-    if (command.includes('omp')) {
-      try { ensurePapercuspMcpRegistered(); } catch { /* best-effort */ }
-    }
+    // Note: legacy `ensurePapercuspMcpRegistered()` was removed once
+    // @restart/papercusp-mcp-server was deleted (2026-05-09). The
+    // canonical MCP surface is now the projected HTTP/SSE dispatcher at
+    // /api/[transport]/route.ts — orchestrator-spawned ptys discover it
+    // via the signed `.mcp.json` written by writeSignedSpawnMcp().
 
     let args: readonly string[];
     if (body.args) {
