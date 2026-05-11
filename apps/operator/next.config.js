@@ -204,6 +204,14 @@ const nextConfig = {
         { source: '/api/admin-sidebar/:path*', destination: `${WEB_UPSTREAM}/api/admin-sidebar/:path*` },
         { source: '/api/repo-git/:path*',      destination: `${WEB_UPSTREAM}/api/repo-git/:path*` },
         { source: '/api/build-info',           destination: `${WEB_UPSTREAM}/api/build-info` },
+
+        // Drizzle Studio SPA proxy — serves https://local.drizzle.studio
+        // through the local origin so its hardcoded fetch("http://localhost:4983")
+        // calls aren't blocked by Chrome's Private Network Access policy
+        // (public HTTPS origin → private localhost = denied even with CORS).
+        // The /dev "Drizzle Studio" tab iframes /drizzle-studio.
+        { source: '/drizzle-studio',           destination: 'https://local.drizzle.studio/' },
+        { source: '/drizzle-studio/:path*',    destination: 'https://local.drizzle.studio/:path*' },
       ],
       fallback: [],
     };

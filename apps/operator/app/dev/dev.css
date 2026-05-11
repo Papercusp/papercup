@@ -601,3 +601,131 @@
 .pc-dev-transcript > summary:hover {
   color: #7dd3fc;
 }
+
+/* ── Drizzle Studio embed ──────────────────────────── */
+
+.pc-studio-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  gap: 14px;
+  padding: 24px;
+  color: var(--fg-mute, #94a3b8);
+  font-size: 14px;
+  background: #0a0d10;
+}
+.pc-studio-state-text { color: var(--fg-mute, #94a3b8); }
+.pc-studio-state-icon { font-size: 40px; line-height: 1; }
+.pc-studio-state-title {
+  color: var(--fg, #e2e8f0);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.pc-studio-state-body {
+  margin: 0;
+  max-width: 460px;
+  text-align: center;
+  line-height: 1.6;
+}
+.pc-studio-state-body code {
+  background: rgba(125, 211, 252, 0.08);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.pc-studio-state-err {
+  margin: 0;
+  color: #f87171;
+  font-size: 13px;
+}
+.pc-studio-state-stderr {
+  margin: 0;
+  max-width: 600px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.06);
+  border: 1px solid rgba(248, 113, 113, 0.20);
+  color: #fca5a5;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+}
+.pc-studio-start-btn {
+  margin-top: 4px;
+  padding: 9px 22px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #7c6bff 0%, #6b5be5 100%);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: filter 120ms;
+}
+.pc-studio-start-btn:hover:not(:disabled) { filter: brightness(1.10); }
+.pc-studio-start-btn:disabled { opacity: 0.6; cursor: progress; }
+
+.pc-studio-running {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #0a0d10;
+}
+.pc-studio-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  background: rgba(255, 255, 255, 0.015);
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--fg-mute, #94a3b8);
+}
+.pc-studio-toolbar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.pc-studio-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 6px rgba(74, 222, 128, 0.6);
+}
+.pc-studio-toolbar-link {
+  color: #7dd3fc;
+  text-decoration: none;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background 120ms;
+}
+.pc-studio-toolbar-link:hover { background: rgba(125, 211, 252, 0.10); }
+.pc-studio-toolbar-btn {
+  padding: 4px 12px;
+  border-radius: 4px;
+  background: transparent;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  color: var(--fg, #e2e8f0);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.pc-studio-toolbar-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.04); }
+.pc-studio-iframe {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: none;
+  display: block;
+  background: #0a0d10;
+}
