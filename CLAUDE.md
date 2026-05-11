@@ -1,5 +1,20 @@
 # Papercup — agent guide
 
+## This app is in testing — there are no users yet
+
+There is no production. **Don't defer fixes for "let's see how it fares in production first"** — there's nothing to fare in. That gives us the luxury to break things continuously until the app is right. Pick the right fix *now*; don't ship awkward compromises to preserve compatibility with a future you haven't built yet.
+
+In practice this means:
+- Redesign APIs that are wrong instead of layering on top
+- Rename identifiers when the old name is confusing — don't keep deprecation aliases "for one release cycle"
+- Take schema migrations now if they're correct, not when usage forces your hand
+- Refactor architecture when foundational decisions are wrong, not when they're load-bearing
+- Pick the *best* tool/library, not the safe one — license + compatibility are footnotes, not vetoes
+
+Surface what you're changing so the user knows; don't ask permission to do it well.
+
+---
+
 ## Branch discipline: **the main directory always stays on `main`**
 
 The repo at `/home/marsh-office/papercupai-workspace/papercup` is the
