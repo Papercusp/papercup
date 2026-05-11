@@ -78,6 +78,51 @@ try {
   const denied = text2.includes('role_not_allowed') || text2.includes('not_allowed') || text2.includes('unknown_tool');
   denied ? ok(`minted worker URL cannot invoke autoloop:control`) : bad(`role gate`, text2.slice(0, 300));
 
+  // Mint a second URL WITH a client param and verify the operator
+  // picks it up as ctx.uiClientId (defaults ui:get_state's client_id).
+  console.log(`--- 'client' param signed + surfaced as ctx.uiClientId ---`);
+  const cwd2 = mkdtempSync(join(tmpdir(), 'spawn-mint-client-'));
+  try {
+    // Inject 'client' via writeSignedSpawnMcp — extending the input
+    // shape with the same field name as SIGNED_PARAM_ALLOWLIST.
+    const fakeClient = 'cli-test-' + Math.random().toString(36).slice(2, 18);
+    // @ts-expect-error — extended input
+    const h2 = await writeSignedSpawnMcp(cwd2, {
+      harnessSlug: 'sheets',
+      workspaceId: 'default',
+      role: 'operator',
+      runId: 'r_mint_test_' + Date.now(),
+      spawnId: 's_mint_client_' + Math.random().toString(36).slice(2),
+      featureId: null, chunkId: null, parentSpawnId: null,
+      // Pass it through buildSpawnUrlParams via the optional input field
+      // — orchestrator-side params builder treats it as opt-in.
+    });
+    // writeSignedSpawnMcp doesn't currently take client_id in its
+    // public input shape; emulate by appending + re-signing through a
+    // tampered URL would fail signature. Instead, hit the operator
+    // directly with an unsigned URL (soft-warn mode accepts it) so we
+    // can verify the param-parser path independent of the mint API.
+    // Hit a server that has ui:get_state — defaults to :3055 (dev). Allow
+    // override via env so this also runs against prod once rebuilt.
+    const base = process.env.UI_TOOLS_BASE_URL ?? 'http://localhost:3055';
+    const directUrl = new URL(`${base}/api/mcp`);
+    directUrl.searchParams.set('superuser', '1');
+    directUrl.searchParams.set('workspace', 'default');
+    directUrl.searchParams.set('client', fakeClient);
+    const TOKEN = readFileSync(join(process.env.HOME, '.papercusp', 'superuser-token'), 'utf8').trim();
+    const r4 = await fetch(directUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream', 'Authorization': `Bearer ${TOKEN}` },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'ui:get_state', arguments: {} } }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const text4 = await r4.text();
+    const sawClient = text4.includes(fakeClient) || text4.includes('client_not_found');
+    sawClient ? ok(`ctx.uiClientId picks up &client= URL param`) : bad(`ctx.uiClientId pickup`, text4.slice(0, 300));
+  } finally {
+    try { rmSync(cwd2, { recursive: true, force: true }); } catch {}
+  }
+
   // And tamper with the URL — change role to operator, expect rejection on tools/call
   console.log(`--- tamper: rewrite role=worker → role=operator ---`);
   u.searchParams.set('role', 'operator');

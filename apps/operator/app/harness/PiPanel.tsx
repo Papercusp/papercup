@@ -17,6 +17,7 @@
  * pure browser-side component.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import '@xterm/xterm/css/xterm.css';
 import { Loader2 } from 'lucide-react';
 import { Tooltip } from './Tooltip';
@@ -186,9 +187,13 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
   const [state, setState] = useState<PaneState>({ kind: 'starting' });
   const [restartTick, setRestartTick] = useState(0);
   const [tools, setTools] = useState<ToolDef[] | null>(null);
-  const [showTools, setShowTools] = useState(false);
+  // Modal toggles are URL-backed so agents can open them via set_url.
+  // showFind / findQuery stay local — showFind is ref-coupled to xterm's
+  // search addon (sync-read in keyboard handlers), findQuery would spam
+  // the URL on every keystroke.
+  const [showTools, setShowTools] = useQueryState('piTools', parseAsBoolean.withDefault(false));
   const [sessions, setSessions] = useState<AuditSession[] | null>(null);
-  const [showSessions, setShowSessions] = useState(false);
+  const [showSessions, setShowSessions] = useQueryState('piSessions', parseAsBoolean.withDefault(false));
 
   // Fetch the static papercusp_* tool list once. Endpoint reflects whether
   // the extension file is present on disk; sidecar passes -e <path> on

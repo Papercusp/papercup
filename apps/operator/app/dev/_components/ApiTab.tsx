@@ -12,6 +12,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import SchemaForm from './SchemaForm';
 
 interface Tool {
@@ -59,18 +60,19 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
   const [tools, setTools] = useState<Tool[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Tool | null>(null);
-  const [filter, setFilter] = useState('');
-  const [showBuiltins, setShowBuiltins] = useState(true);
-  const [showPlugins, setShowPlugins] = useState(true);
+  // URL-backed: deep-link filter state + agent visibility via ui:get_state.
+  const [filter, setFilter] = useQueryState('q', parseAsString.withDefault(''));
+  const [showBuiltins, setShowBuiltins] = useQueryState('showBuiltins', parseAsBoolean.withDefault(true));
+  const [showPlugins, setShowPlugins] = useQueryState('showPlugins', parseAsBoolean.withDefault(true));
 
   // Spawn-context (shared across every invocation on this page)
   const [ctxWorkspace, setCtxWorkspace] = useState(
     workspaceIds && workspaceIds.length === 1 ? workspaceIds[0] : 'default',
   );
-  const [ctxHarness, setCtxHarness] = useState('');
+  const [ctxHarness, setCtxHarness] = useQueryState('ctxH', parseAsString.withDefault(''));
   const [ctxRole, setCtxRole] = useState<(typeof ALL_ROLES)[number]>('architect');
-  const [ctxRun, setCtxRun] = useState('dev-page');
-  const [ctxSpawn, setCtxSpawn] = useState('dev-page');
+  const [ctxRun, setCtxRun] = useQueryState('ctxRun', parseAsString.withDefault('dev-page'));
+  const [ctxSpawn, setCtxSpawn] = useQueryState('ctxSpawn', parseAsString.withDefault('dev-page'));
 
   const [args, setArgs] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);

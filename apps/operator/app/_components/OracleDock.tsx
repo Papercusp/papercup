@@ -13,6 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState, parseAsBoolean, parseAsString } from 'nuqs';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
@@ -318,10 +319,12 @@ export function OracleDock() {
   const reducedMotion = useReducedMotion() ?? false;
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
-  const [open, setOpen] = useState(false);
+  // URL-backed so agents can read dock state via ui:get_state and
+  // open/close it via set_url.
+  const [open, setOpen] = useQueryState('oracle', parseAsBoolean.withDefault(false));
   const [tabs, setTabs] = useState<ChatTab[]>([]);
-  const [activeId, setActiveId] = useState<string>('');
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [activeId, setActiveId] = useQueryState('oracleId', parseAsString.withDefault(''));
+  const [pickerOpen, setPickerOpen] = useQueryState('oraclePicker', parseAsBoolean.withDefault(false));
   const [supportEverOpened, setSupportEverOpened] = useState(false);
   const [pickerHarnesses, setPickerHarnesses] = useState<{ slug: string; harness_kind?: string }[] | null>(null);
   const [agentRoles, setAgentRoles] = useState<string[]>(FALLBACK_AGENT_ROLES);

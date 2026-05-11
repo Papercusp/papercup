@@ -1,6 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useState, useCallback } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 
 interface Entry {
   spawn_id: string;
@@ -81,7 +82,11 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hours, setHours] = useState(24);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  // Selected spawn for drilldown. nuqs-backed so:
+  //   (a) the URL deep-links to a specific spawn
+  //   (b) `ui:get_state` surfaces the selection to agents
+  //   (c) `ui:dispatch set_url` can drive selection from outside
+  const [expanded, setExpanded] = useQueryState('spawn', parseAsString);
   const [details, setDetails] = useState<Record<string, Detail | null>>({});
   const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({});
 

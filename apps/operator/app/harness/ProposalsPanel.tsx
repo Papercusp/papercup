@@ -2,7 +2,7 @@
 
 import './h-proposals.css';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsBoolean, parseAsString } from 'nuqs';
 import { MarkdownPreview } from '../_components/MarkdownEditor';
 import * as Tabs from '@radix-ui/react-tabs';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
@@ -310,7 +310,8 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
     parseAsBoolean.withDefault(true),
   );
   const [items, setItems] = useState<Proposal[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  // Selected proposal — URL-backed for deep-links + agent visibility.
+  const [selected, setSelected] = useQueryState('proposal', parseAsString);
   const [content, setContent] = useState<string>('');
   const [goal, setGoal] = useState<string>('');
   const [editingGoal, setEditingGoal] = useState(false);
@@ -330,7 +331,7 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [pendingReplanPrompt, setPendingReplanPrompt] = useState<number>(0);
   const [replanOnAccept, setReplanOnAccept] = useState<boolean>(true);
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useQueryState('proposalQuery', parseAsString.withDefault(''));
   const [statusFilter, setStatusFilter] = useQueryState(
     'proposalStatus',
     parseAsStringEnum<StatusFilter>(['all', 'pending', 'applied', 'rejected']).withDefault('all'),

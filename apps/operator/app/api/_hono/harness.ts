@@ -5541,25 +5541,26 @@ harness.post('/:slug/reviews/:id/resolve', async (c) => {
   const body = await c.req.json() as { response?: string; accept?: boolean };
 
   // PG canonical: read from the mirrored row.
-  const { sql } = getOrgPg();
-  const rows = await sql<{ payload: PendingReview }[]>`
-    SELECT payload
-      FROM harness_shared.pending_reviews
-     WHERE harness_slug = ${slug} AND phase = ${phase} AND review_id = ${id}
-     LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const prev = generated.pending_reviewsInHarness_shared;
+  const rows = await db
+    .select({ payload: prev.payload })
+    .from(prev)
+    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, id)))
+    .limit(1);
   if (!rows.length) return c.json({ error: 'not found' }, 404);
-  const review: PendingReview = { ...rows[0].payload };
+  const review: PendingReview = { ...(rows[0].payload as PendingReview) };
   review.resolved = true;
   review.userResponse = body.response ?? (body.accept ? review.recommendedAnswer : '');
 
   // Update PG immediately so GET /reviews and Zero subscriptions reflect
   // the resolution before the watcher catches the FS move.
-  await sql`
-    UPDATE harness_shared.pending_reviews
-       SET resolved = true, payload = ${JSON.stringify(review)}::jsonb
-     WHERE harness_slug = ${slug} AND phase = ${phase} AND review_id = ${id}
-  `;
+  await db
+    .update(prev)
+    .set({ resolved: true, payload: review as any })
+    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, id)));
 
   // Append the response to supervisor-notes.md (PG canonical, FS mirror).
   const notesPath = join(harnessDir(project), 'supervisor-notes.md');

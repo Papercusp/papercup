@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { z } from 'zod';
 import { useFormWith, FormField as RhfFormField, SubmitButton } from '@/lib/forms';
 import RouteLink from '@/app/_components/RouteLink';
@@ -58,14 +59,15 @@ export default function EditTemplatePage() {
   const [allRows, setAllRows] = useState<TemplateRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [resolvedVersion, setResolvedVersion] = useState<string | null>(null);
-  const [activePath, setActivePath] = useState<string>('');
+  // Selected file in the template tree — deep-linkable + agent-visible.
+  const [activePath, setActivePath] = useQueryState('file', parseAsString.withDefault(''));
   const [original, setOriginal] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [loadingFile, setLoadingFile] = useState(false);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
-  const [manifestRawMode, setManifestRawMode] = useState(false);
-  const [addFileOpen, setAddFileOpen] = useState(false);
+  const [manifestRawMode, setManifestRawMode] = useQueryState('manifestRaw', parseAsBoolean.withDefault(false));
+  const [addFileOpen, setAddFileOpen] = useQueryState('addFile', parseAsBoolean.withDefault(false));
 
   // Two-step load: hit /api/templates for the version list (so the
   // dropdown can show every version of this slug), then fetch the
