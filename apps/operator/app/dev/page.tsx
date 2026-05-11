@@ -32,8 +32,9 @@ const AuditTab = dynamic(() => import('./_components/AuditTab'), { ssr: false })
 const PgTab = dynamic(() => import('./_components/PgTab'), { ssr: false });
 const ProcessesTab = dynamic(() => import('./_components/ProcessesTab'), { ssr: false });
 const StudioTab = dynamic(() => import('./_components/StudioTab'), { ssr: false });
+const TablesTab = dynamic(() => import('./_components/TablesTab'), { ssr: false });
 
-type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'studio';
+type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'studio';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'harnesses', label: 'Harnesses' },
@@ -43,6 +44,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'audit', label: 'Audit' },
   { id: 'pg', label: 'PG' },
   { id: 'processes', label: 'Processes' },
+  { id: 'tables', label: 'Tables' },
   { id: 'studio', label: 'Drizzle Studio' },
 ];
 
@@ -90,6 +92,7 @@ export default function DevPage() {
           {tab === 'audit' && <AuditTab workspaceIds={workspaceIds} />}
           {tab === 'pg' && <PgTab />}
           {tab === 'processes' && <ProcessesTab />}
+          {tab === 'tables' && <TablesTab />}
           {tab === 'studio' && <StudioTab />}
         </Suspense>
       </main>
