@@ -14,9 +14,13 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const he = generated.harness_escalationsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -36,10 +40,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -66,17 +72,26 @@ export async function POST(req: Request): Promise<Response> {
   const mtimeMs = Date.now();
   const ws = activeWorkspaceId();
 
-  // INSERT or partial UPDATE — null values keep the existing column.
-  await sql`
-    INSERT INTO harness_shared.harness_escalations
-      (harness_slug, phase, escalation, supervisor_notes, mtime_ms, workspace_id)
-    VALUES (${slug}, ${phase}, ${escalation}, ${supervisorNotes}, ${mtimeMs}, ${ws})
-    ON CONFLICT (harness_slug, phase) DO UPDATE
-      SET escalation       = COALESCE(${escalation}, harness_escalations.escalation),
-          supervisor_notes = COALESCE(${supervisorNotes}, harness_escalations.supervisor_notes),
-          mtime_ms         = EXCLUDED.mtime_ms,
-          workspace_id     = EXCLUDED.workspace_id
-  `;
+  // INSERT or partial UPDATE — null values keep the existing column via COALESCE.
+  await db
+    .insert(he)
+    .values({
+      harness_slug: slug,
+      phase,
+      escalation,
+      supervisor_notes: supervisorNotes,
+      mtime_ms: mtimeMs,
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [he.harness_slug, he.phase],
+      set: {
+        escalation: dsql`COALESCE(${escalation}, ${he.escalation})`,
+        supervisor_notes: dsql`COALESCE(${supervisorNotes}, ${he.supervisor_notes})`,
+        mtime_ms: dsql`EXCLUDED.mtime_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   void notifySyncInvalidate('harnessEscalations.byHarness', { harnessSlug: slug, phase }).catch(() => {});
   return NextResponse.json({ ok: true });
 }

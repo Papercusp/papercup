@@ -669,6 +669,15 @@ export interface Plugin {
   version: string;
   /** Required Papercusp framework semver range. */
   papercusp: string;
+  /**
+   * Plugin runtime descriptor. Defaults to `{ kind: 'js' }` when omitted.
+   * For Plugin literals exported from TS source, you can usually leave this
+   * unset (JS implied). For WASM and daemon plugins, the runtime descriptor
+   * is declared in `papercusp.json`, not here — Plugin literals don't exist
+   * for those runtimes. Kept on the interface so authors who DO want to be
+   * explicit can be. See {@link PluginRuntime}.
+   */
+  runtime?: PluginRuntime;
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
   /**

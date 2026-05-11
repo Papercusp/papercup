@@ -12,9 +12,13 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const hl = generated.harness_hook_logsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -35,10 +39,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db, sql } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -62,17 +68,27 @@ export async function POST(req: Request): Promise<Response> {
   const tsMs = tsSec * 1000;
 
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_hook_logs
-      (harness_slug, log_id, name, ts, size_bytes, content, workspace_id)
-    VALUES (${slug}, ${logId}, ${name}, ${tsMs}, ${sizeBytes}, ${content}, ${ws})
-    ON CONFLICT (harness_slug, log_id) DO UPDATE
-      SET name = EXCLUDED.name,
-          ts = EXCLUDED.ts,
-          size_bytes = EXCLUDED.size_bytes,
-          content = EXCLUDED.content,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hl)
+    .values({
+      harness_slug: slug,
+      log_id: logId,
+      name,
+      ts: tsMs,
+      size_bytes: sizeBytes,
+      content,
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [hl.harness_slug, hl.log_id],
+      set: {
+        name: dsql`EXCLUDED.name`,
+        ts: dsql`EXCLUDED.ts`,
+        size_bytes: dsql`EXCLUDED.size_bytes`,
+        content: dsql`EXCLUDED.content`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   // Trim to most-recent HOOK_KEEP rows per harness — same cap the
   // chokidar mirror enforced.
   await sql`

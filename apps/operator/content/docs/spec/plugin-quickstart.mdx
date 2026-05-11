@@ -75,6 +75,46 @@ Reserved namespaces:
 - `MY_*` matches prefixes (head must be non-empty)
 - Bare `:*` (e.g. `compute:exec:*`) is **not** a wildcard — it only matches the literal cap string. Enumerate or use a non-empty prefix.
 
+### Snapshot version pinning
+
+Plugins can declare how aggressively a snapshot-fork should preserve the installed version:
+
+```json
+"versionPin": { "mode": "exact" }
+```
+
+- `"mode": "semver"` (default) — fork accepts compatible upgrades.
+- `"mode": "exact"` — fork pins to the snapshot's exact version.
+- `"mode": "hash"` — fork pins to the snapshot's content hash.
+
+Optional `"allowOverride": "security-patch" | "always" | "never"` controls whether the operator can override the pin (e.g. force a security update). The capture path writes `versionPin` into the snapshot manifest; legacy `pluginVersionPinned: true` is translated to `{ mode: "exact" }` for back-compat.
+
+### Plugin runtime
+
+The optional `"runtime"` field declares which host runtime your plugin needs. It's an **object** with a required `kind` plus kind-specific config:
+
+```json
+// WASM plugin
+"runtime": {
+  "kind": "wasm",
+  "wasmPath": "pkg/my-plugin.wasm",
+  "memoryBudgetMb": 64,
+  "concurrency": "serial"
+}
+
+// Daemon plugin
+"runtime": {
+  "kind": "daemon",
+  "daemonCommand": ["/usr/bin/my-daemon", "--stdio"],
+  "daemonRestart": { "policy": "on-failure", "maxRestarts": 3 }
+}
+```
+
+`kind` is one of:
+- `"js"` (default) — in-process Node host. Plugin literals exported from `index.cjs`. Omit `runtime` entirely.
+- `"wasm"` — WASM component, run via `jco` (TS host) or `wasmtime` (Rust host). See `@papercusp/plugin-wit` for the WIT contract. Requires `wasmPath` relative to the manifest dir. Default `memoryBudgetMb: 64`.
+- `"daemon"` — sandboxed subprocess. Requires `daemonCommand`. Reserved for the upcoming subprocess host.
+
 ## 3. Lint
 
 ```bash

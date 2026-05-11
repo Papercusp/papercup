@@ -9,9 +9,13 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const pr = generated.harness_plan_reviewInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -28,10 +32,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -49,15 +55,17 @@ export async function POST(req: Request): Promise<Response> {
   const mtimeMs = Date.now();
   const ws = activeWorkspaceId();
 
-  await sql`
-    INSERT INTO harness_shared.harness_plan_review
-      (harness_slug, content, mtime_ms, workspace_id)
-    VALUES (${slug}, ${content}, ${mtimeMs}, ${ws})
-    ON CONFLICT (harness_slug) DO UPDATE
-      SET content = EXCLUDED.content,
-          mtime_ms = EXCLUDED.mtime_ms,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(pr)
+    .values({ harness_slug: slug, content, mtime_ms: mtimeMs, workspace_id: ws })
+    .onConflictDoUpdate({
+      target: pr.harness_slug,
+      set: {
+        content: dsql`EXCLUDED.content`,
+        mtime_ms: dsql`EXCLUDED.mtime_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   void notifySyncInvalidate('harnessPlanReview.byHarness', { harnessSlug: slug }).catch(() => {});
   return NextResponse.json({ ok: true });
 }

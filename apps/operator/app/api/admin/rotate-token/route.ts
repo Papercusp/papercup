@@ -13,7 +13,10 @@
  * Documented as v2 in docs/spec/auth-and-identity.mdx.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
+
+const ti = generated.token_indexInHarness_shared;
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -58,20 +61,21 @@ export async function POST(req: Request) {
   const newToken = base64url(randomBytes(32));
   const oldToken = req.headers.get('authorization')!.slice(7).trim();
   const schema = slugToSchema(slug);
-  const { sql } = getOrgPg();
+  const { db, sql } = getOrgPg();
 
   // Atomic-ish: insert new token, update token_index, then write to disk,
   // then drop the old token. Order matters: if disk write fails we don't
-  // want to have already lost the old token.
+  // want to have already lost the old token. Per-harness config_token
+  // table is reached via raw sql.unsafe (dynamic schema name).
   try {
     await sql.unsafe(`INSERT INTO ${schema}.config_token (token) VALUES ($1) ON CONFLICT (token) DO NOTHING`, [newToken]);
-    // token_index has UNIQUE on harness_slug — UPDATE in place rather than INSERT.
-    // Keep the row's PK on `token` updated atomically.
-    await sql`
-      INSERT INTO harness_shared.token_index (token, harness_slug)
-      VALUES (${newToken}, ${slug})
-      ON CONFLICT (harness_slug) DO UPDATE SET token = EXCLUDED.token, created_at = now()
-    `;
+    await db
+      .insert(ti)
+      .values({ token: newToken, harness_slug: slug })
+      .onConflictDoUpdate({
+        target: ti.harness_slug,
+        set: { token: dsql`EXCLUDED.token`, created_at: dsql`now()` },
+      });
   } catch (e: any) {
     return NextResponse.json(
       { ok: false, error: 'internal', detail: `failed to insert new token: ${e?.message}` },
@@ -95,7 +99,7 @@ export async function POST(req: Request) {
   } catch (e: any) {
     // Roll back the new-token insert
     try {
-      await sql`DELETE FROM harness_shared.token_index WHERE token = ${newToken}`;
+      await db.delete(ti).where(eq(ti.token, newToken));
       await sql.unsafe(`DELETE FROM ${schema}.config_token WHERE token = $1`, [newToken]);
     } catch { /* ignore */ }
     return NextResponse.json(
@@ -106,7 +110,7 @@ export async function POST(req: Request) {
 
   // Drop the old token. Future requests with it return 401.
   try {
-    await sql`DELETE FROM harness_shared.token_index WHERE token = ${oldToken}`;
+    await db.delete(ti).where(eq(ti.token, oldToken));
     await sql.unsafe(`DELETE FROM ${schema}.config_token WHERE token = $1`, [oldToken]);
   } catch (e: any) {
     // Old token still works — not great, but the new one is also active.

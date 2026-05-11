@@ -17,9 +17,13 @@
  */
 import { NextResponse } from 'next/server';
 import { createHash } from 'node:crypto';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const hd = generated.harness_decisionsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,10 +42,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -66,20 +72,31 @@ export async function POST(req: Request): Promise<Response> {
   const lineHash = createHash('sha1').update(`${iso}|${verb}|${args}`).digest('hex');
 
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_decisions
-      (harness_slug, line_hash, ts, iso, verb, args, iteration, is_ghost, workspace_id)
-    VALUES (${slug}, ${lineHash}, ${Number.isNaN(ts) ? 0 : ts}, ${iso}, ${verb},
-            ${args}, ${iteration}, ${isGhost}, ${ws})
-    ON CONFLICT (harness_slug, line_hash) DO UPDATE
-      SET ts = EXCLUDED.ts,
-          iso = EXCLUDED.iso,
-          verb = EXCLUDED.verb,
-          args = EXCLUDED.args,
-          iteration = EXCLUDED.iteration,
-          is_ghost = EXCLUDED.is_ghost,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hd)
+    .values({
+      harness_slug: slug,
+      line_hash: lineHash,
+      ts: Number.isNaN(ts) ? 0 : ts,
+      iso,
+      verb,
+      args,
+      iteration,
+      is_ghost: isGhost,
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [hd.harness_slug, hd.line_hash],
+      set: {
+        ts: dsql`EXCLUDED.ts`,
+        iso: dsql`EXCLUDED.iso`,
+        verb: dsql`EXCLUDED.verb`,
+        args: dsql`EXCLUDED.args`,
+        iteration: dsql`EXCLUDED.iteration`,
+        is_ghost: dsql`EXCLUDED.is_ghost`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   void notifySyncInvalidate('harnessDecisions.byHarness', { harnessSlug: slug }).catch(() => {});
 
   return NextResponse.json({ ok: true });

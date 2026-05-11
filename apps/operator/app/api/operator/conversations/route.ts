@@ -11,13 +11,16 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, sql as dsql } from 'drizzle-orm';
 import {
   getOrCreateActiveConversation,
   listTurns,
 } from '@/lib/operator-conversations';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+
+const oc = generated.operator_conversationsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -36,23 +39,24 @@ export async function POST(req: NextRequest): Promise<Response> {
   };
   const slug = body.harnessSlug ?? null;
   const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
 
   // Close any existing active conversation in the same scope.
-  await sql`
-    UPDATE harness_shared.operator_conversations
-       SET status = 'done', ended_at = ${Date.now()}
-     WHERE workspace_id = ${ws}
-       AND COALESCE(harness_slug, '') = ${slug ?? ''}
-       AND status = 'active'
-  `;
+  await db
+    .update(oc)
+    .set({ status: 'done', ended_at: Date.now() })
+    .where(
+      and(
+        eq(oc.workspace_id, ws),
+        dsql`COALESCE(${oc.harness_slug}, '') = ${slug ?? ''}`,
+        eq(oc.status, 'active'),
+      ),
+    );
 
-  const created = (await sql`
-    INSERT INTO harness_shared.operator_conversations
-      (workspace_id, harness_slug, started_at)
-    VALUES (${ws}, ${slug}, ${Date.now()})
-    RETURNING id
-  `) as Array<{ id: string }>;
+  const created = await db
+    .insert(oc)
+    .values({ workspace_id: ws, harness_slug: slug, started_at: Date.now() })
+    .returning({ id: oc.id });
   const id = created[0].id;
   return NextResponse.json({ conversation: { id }, turns: [] });
 }

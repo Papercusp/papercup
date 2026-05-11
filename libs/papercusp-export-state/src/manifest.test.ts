@@ -386,6 +386,40 @@ describe('readCapturePluginExtras', () => {
     expect(readCapturePluginExtras({ runtime: 'wasm' }).runtime).toBe('wasm');
     expect(readCapturePluginExtras({ runtime: 'daemon' }).runtime).toBe('daemon');
   });
+
+  it("object form: runtime { kind: 'wasm', wasmPath } extracts kind only", () => {
+    const r = readCapturePluginExtras({
+      runtime: { kind: 'wasm', wasmPath: 'pkg/plugin.wasm', memoryBudgetMb: 128 },
+    });
+    expect(r.runtime).toBe('wasm');
+  });
+
+  it("object form: runtime { kind: 'daemon', daemonCommand } extracts kind", () => {
+    const r = readCapturePluginExtras({
+      runtime: { kind: 'daemon', daemonCommand: ['/usr/bin/my-daemon', '--stdio'] },
+    });
+    expect(r.runtime).toBe('daemon');
+  });
+
+  it('object form: invalid kind is dropped (no fallback to string)', () => {
+    const r = readCapturePluginExtras({
+      runtime: { kind: 'rust-native', wasmPath: 'pkg/plugin.wasm' },
+    });
+    expect(r).not.toHaveProperty('runtime');
+  });
+
+  it('object form: missing kind is dropped', () => {
+    const r = readCapturePluginExtras({
+      runtime: { wasmPath: 'pkg/plugin.wasm' },
+    });
+    expect(r).not.toHaveProperty('runtime');
+  });
+
+  it('string and object forms produce identical captured value', () => {
+    const a = readCapturePluginExtras({ runtime: 'wasm' });
+    const b = readCapturePluginExtras({ runtime: { kind: 'wasm', wasmPath: 'x.wasm' } });
+    expect(a.runtime).toBe(b.runtime);
+  });
 });
 
 /* ───── reconcileMigrations (rev3 plan G+6 / A4 fix) ───────────────── */

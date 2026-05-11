@@ -25,7 +25,11 @@
     "test:spawn-signing:dev": "OP_PORT=3055 node __tests__/integration/spawn-signing-e2e.mjs",
     "test:mint-roundtrip": "bun __tests__/integration/mint-roundtrip.mjs",
     "rotate:spawn-key": "node scripts/rotate-spawn-signing-key.mjs",
-    "test:admin-rotate": "node __tests__/integration/admin-rotate.mjs"
+    "test:admin-rotate": "node __tests__/integration/admin-rotate.mjs",
+    "test:agent-tools-list": "node __tests__/integration/agent-tools-list.mjs",
+    "test:agent-tools-list:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/agent-tools-list.mjs",
+    "test:admin-failures": "node __tests__/integration/admin-failures.mjs",
+    "test:admin-failures:dev": "OPERATOR_BASE_URL=http://localhost:3055 node __tests__/integration/admin-failures.mjs"
   },
   "dependencies": {
     "@blocknote/core": "^0.49.0",

@@ -12,10 +12,12 @@
  * function backs the notifications:recent MCP tool.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
 import { ensureToastLogTable } from '../../../lib/ensure-schema';
 import { notifySyncInvalidate } from '../../../lib/sync-sse';
 import { listToasts } from '../../../lib/toast-log-data';
+
+const tl = generated.toast_logInHarness_shared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -65,15 +67,22 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const createdAt = Date.now();
 
   await ensureToastLogTable();
-  const { sql } = getOrgPg();
-  const [row] = (await sql`
-    INSERT INTO harness_shared.toast_log
-      (level, message, description, harness_slug, created_at, action_label, action_href)
-    VALUES
-      (${level}, ${message}, ${description}, ${harnessSlug}, ${createdAt}, ${actionLabel}, ${actionHref})
-    RETURNING id
-  `) as Array<{ id: string }>;
+  const { db, sql } = getOrgPg();
+  const [row] = await db
+    .insert(tl)
+    .values({
+      level,
+      message,
+      description,
+      harness_slug: harnessSlug,
+      created_at: createdAt,
+      action_label: actionLabel,
+      action_href: actionHref,
+    })
+    .returning({ id: tl.id });
 
+  // Ring-buffer trim: DELETE WHERE id IN (SELECT id ... ORDER BY ... OFFSET N).
+  // The subquery pattern is awkward in drizzle's query builder; keep this raw.
   void sql`
     DELETE FROM harness_shared.toast_log
     WHERE id IN (

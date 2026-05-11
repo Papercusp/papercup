@@ -7,9 +7,37 @@
  * B+C-lite architecture sketch (operator chat unification, 2026-05-10).
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, desc, eq, sql as dsql } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
+
+const oc = generated.operator_conversationsInHarness_shared;
+const ot = generated.operator_turnsInHarness_shared;
+
+const conversationCols = {
+  id: oc.id,
+  workspace_id: oc.workspace_id,
+  harness_slug: oc.harness_slug,
+  title: oc.title,
+  status: oc.status,
+  started_at: oc.started_at,
+  ended_at: oc.ended_at,
+  el_conversation_ids: oc.el_conversation_ids,
+  has_audio: oc.has_audio,
+} as const;
+
+const turnCols = {
+  id: ot.id,
+  conversation_id: ot.conversation_id,
+  seq: ot.seq,
+  role: ot.role,
+  text: ot.text,
+  source: ot.source,
+  el_conv_id: ot.el_conv_id,
+  audio_url: ot.audio_url,
+  created_at: ot.created_at,
+} as const;
 
 export type TurnRole = 'user' | 'assistant' | 'system';
 export type TurnSource = 'text_typed' | 'voice_stt' | 'voice_tts' | 'system';
@@ -42,42 +70,42 @@ export async function getOrCreateActiveConversation(
   harnessSlug: string | null,
 ): Promise<ConversationRow> {
   await ensureOperatorConversationsTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const slugKey = harnessSlug ?? '';
 
-  const existing = (await sql`
-    SELECT id, workspace_id, harness_slug, title, status, started_at, ended_at, el_conversation_ids, has_audio
-      FROM harness_shared.operator_conversations
-     WHERE workspace_id = ${ws}
-       AND COALESCE(harness_slug, '') = ${slugKey}
-       AND status = 'active'
-     ORDER BY started_at DESC
-     LIMIT 1
-  `) as Array<Record<string, unknown>>;
+  const existing = await db
+    .select(conversationCols)
+    .from(oc)
+    .where(
+      and(
+        eq(oc.workspace_id, ws),
+        dsql`COALESCE(${oc.harness_slug}, '') = ${slugKey}`,
+        eq(oc.status, 'active'),
+      ),
+    )
+    .orderBy(desc(oc.started_at))
+    .limit(1);
 
-  if (existing.length > 0) return rowToConversation(existing[0]);
+  if (existing.length > 0) return rowToConversation(existing[0] as Record<string, unknown>);
 
-  const created = (await sql`
-    INSERT INTO harness_shared.operator_conversations
-      (workspace_id, harness_slug, started_at)
-    VALUES (${ws}, ${harnessSlug}, ${Date.now()})
-    RETURNING id, workspace_id, harness_slug, title, status, started_at, ended_at, el_conversation_ids, has_audio
-  `) as Array<Record<string, unknown>>;
+  const created = await db
+    .insert(oc)
+    .values({ workspace_id: ws, harness_slug: harnessSlug, started_at: Date.now() })
+    .returning(conversationCols);
 
-  return rowToConversation(created[0]);
+  return rowToConversation(created[0] as Record<string, unknown>);
 }
 
 export async function listTurns(conversationId: string): Promise<TurnRow[]> {
   await ensureOperatorConversationsTable();
-  const { sql } = getOrgPg();
-  const rows = (await sql`
-    SELECT id, conversation_id, seq, role, text, source, el_conv_id, audio_url, created_at
-      FROM harness_shared.operator_turns
-     WHERE conversation_id = ${conversationId}
-     ORDER BY seq ASC
-  `) as Array<Record<string, unknown>>;
-  return rows.map(rowToTurn);
+  const { db } = getOrgPg();
+  const rows = await db
+    .select(turnCols)
+    .from(ot)
+    .where(eq(ot.conversation_id, conversationId))
+    .orderBy(ot.seq);
+  return (rows as Array<Record<string, unknown>>).map(rowToTurn);
 }
 
 export async function appendTurn(input: {
@@ -89,29 +117,32 @@ export async function appendTurn(input: {
   audioUrl?: string | null;
 }): Promise<TurnRow> {
   await ensureOperatorConversationsTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
 
   // Compute next seq. We collide-tolerate via the UNIQUE (conv,seq) constraint
   // and a single retry — concurrent inserters in the same conversation are
   // rare (one user, two transports max), so this is cheap.
   for (let attempt = 0; attempt < 3; attempt++) {
-    const next = (await sql`
-      SELECT COALESCE(MAX(seq), -1) + 1 AS s
-        FROM harness_shared.operator_turns
-       WHERE conversation_id = ${input.conversationId}
-    `) as Array<{ s: number }>;
+    const next = await db
+      .select({ s: dsql<number>`COALESCE(MAX(${ot.seq}), -1) + 1` })
+      .from(ot)
+      .where(eq(ot.conversation_id, input.conversationId));
     const seq = Number(next[0].s);
     try {
-      const inserted = (await sql`
-        INSERT INTO harness_shared.operator_turns
-          (conversation_id, seq, role, text, source, el_conv_id, audio_url, created_at)
-        VALUES
-          (${input.conversationId}, ${seq}, ${input.role}, ${input.text},
-           ${input.source ?? 'text_typed'}, ${input.elConvId ?? null},
-           ${input.audioUrl ?? null}, ${Date.now()})
-        RETURNING id, conversation_id, seq, role, text, source, el_conv_id, audio_url, created_at
-      `) as Array<Record<string, unknown>>;
-      return rowToTurn(inserted[0]);
+      const inserted = await db
+        .insert(ot)
+        .values({
+          conversation_id: input.conversationId,
+          seq,
+          role: input.role,
+          text: input.text,
+          source: input.source ?? 'text_typed',
+          el_conv_id: input.elConvId ?? null,
+          audio_url: input.audioUrl ?? null,
+          created_at: Date.now(),
+        })
+        .returning(turnCols);
+      return rowToTurn(inserted[0] as Record<string, unknown>);
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code !== '23505') throw err; // not a unique violation
@@ -127,20 +158,22 @@ export async function correctLastAssistantTurn(
   newText: string,
 ): Promise<TurnRow | null> {
   await ensureOperatorConversationsTable();
-  const { sql } = getOrgPg();
-  const rows = (await sql`
-    UPDATE harness_shared.operator_turns
-       SET text = ${newText}
-     WHERE id = (
-       SELECT id FROM harness_shared.operator_turns
-        WHERE conversation_id = ${conversationId}
-          AND role = 'assistant'
-        ORDER BY seq DESC
-        LIMIT 1
-     )
-    RETURNING id, conversation_id, seq, role, text, source, el_conv_id, audio_url, created_at
-  `) as Array<Record<string, unknown>>;
-  return rows.length > 0 ? rowToTurn(rows[0]) : null;
+  const { db } = getOrgPg();
+  // UPDATE ... WHERE id = (SELECT id ... ORDER BY ... LIMIT 1) — drizzle
+  // doesn't have a direct subquery-in-WHERE primitive that's cleaner than
+  // composing it via dsql. Build the subquery as a Drizzle qb then pass it.
+  const subq = db
+    .select({ id: ot.id })
+    .from(ot)
+    .where(and(eq(ot.conversation_id, conversationId), eq(ot.role, 'assistant')))
+    .orderBy(desc(ot.seq))
+    .limit(1);
+  const rows = await db
+    .update(ot)
+    .set({ text: newText })
+    .where(dsql`${ot.id} = (${subq})`)
+    .returning(turnCols);
+  return rows.length > 0 ? rowToTurn(rows[0] as Record<string, unknown>) : null;
 }
 
 function rowToConversation(r: Record<string, unknown>): ConversationRow {

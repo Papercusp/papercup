@@ -13,9 +13,13 @@
  *     has decided pass vs fail.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const hs = generated.harness_smoke_testInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -35,10 +39,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -59,24 +65,30 @@ export async function POST(req: Request): Promise<Response> {
   const mtimeMs = typeof body.mtimeMs === 'number' ? Math.floor(body.mtimeMs) : Date.now();
 
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_smoke_test
-      (harness_slug, status, pass_content, failure_content, results,
-       startup_log, mtime_ms, workspace_id)
-    VALUES (
-      ${slug}, ${status}, ${passContent}, ${failureContent},
-      ${resultsJson}::jsonb,
-      ${startupLog}, ${mtimeMs}, ${ws}
-    )
-    ON CONFLICT (harness_slug) DO UPDATE
-      SET status = EXCLUDED.status,
-          pass_content = EXCLUDED.pass_content,
-          failure_content = EXCLUDED.failure_content,
-          results = EXCLUDED.results,
-          startup_log = EXCLUDED.startup_log,
-          mtime_ms = EXCLUDED.mtime_ms,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hs)
+    .values({
+      harness_slug: slug,
+      status,
+      pass_content: passContent,
+      failure_content: failureContent,
+      results: resultsJson ? (JSON.parse(resultsJson) as any) : null,
+      startup_log: startupLog,
+      mtime_ms: mtimeMs,
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: hs.harness_slug,
+      set: {
+        status: dsql`EXCLUDED.status`,
+        pass_content: dsql`EXCLUDED.pass_content`,
+        failure_content: dsql`EXCLUDED.failure_content`,
+        results: dsql`EXCLUDED.results`,
+        startup_log: dsql`EXCLUDED.startup_log`,
+        mtime_ms: dsql`EXCLUDED.mtime_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   void notifySyncInvalidate('harnessSmokeTest.byHarness', { harnessSlug: slug }).catch(() => {});
   return NextResponse.json({ ok: true });
 }

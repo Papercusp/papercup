@@ -12,9 +12,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq } from 'drizzle-orm';
 import { ensureUserActionsTable } from '../../../../../../lib/ensure-schema';
 import { loadHarnessRegistry } from '../../../../../../lib/harness-registry';
+
+const ua = generated.user_actionsInHarness_shared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,13 +39,12 @@ export async function GET(
   if (!project) return NextResponse.json({ error: 'unknown harness' }, { status: 404 });
 
   await ensureUserActionsTable();
-  const { sql } = getOrgPg();
-  const rows = (await sql`
-    SELECT detail_url, kind, status
-      FROM harness_shared.user_actions
-     WHERE harness_slug = ${slug} AND id = ${numericId}
-     LIMIT 1
-  `) as Array<{ detail_url: string | null; kind: string; status: string }>;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ detail_url: ua.detail_url, kind: ua.kind, status: ua.status })
+    .from(ua)
+    .where(and(eq(ua.harness_slug, slug), eq(ua.id, BigInt(numericId))))
+    .limit(1);
   if (rows.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const detailUrl = rows[0].detail_url;
   if (!detailUrl) {

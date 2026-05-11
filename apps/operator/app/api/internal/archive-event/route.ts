@@ -12,9 +12,13 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const ha = generated.harness_archivesInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,10 +38,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -56,15 +62,24 @@ export async function POST(req: Request): Promise<Response> {
   const phase = typeof body.phase === 'string' && VALID_PHASES.has(body.phase) ? body.phase : 'staging';
 
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_archives
-      (harness_slug, phase, id, size_bytes, ts, workspace_id)
-    VALUES (${slug}, ${phase}, ${id}, ${sizeBytes}, ${ts}, ${ws})
-    ON CONFLICT (harness_slug, phase, id) DO UPDATE
-      SET size_bytes = EXCLUDED.size_bytes,
-          ts = EXCLUDED.ts,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(ha)
+    .values({
+      harness_slug: slug,
+      phase,
+      id,
+      size_bytes: sizeBytes,
+      ts,
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [ha.harness_slug, ha.phase, ha.id],
+      set: {
+        size_bytes: dsql`EXCLUDED.size_bytes`,
+        ts: dsql`EXCLUDED.ts`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   void notifySyncInvalidate('harnessArchives.byHarness', { harnessSlug: slug, phase }).catch(() => {});
   return NextResponse.json({ ok: true });
 }
