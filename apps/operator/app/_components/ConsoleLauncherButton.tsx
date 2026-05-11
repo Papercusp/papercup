@@ -24,7 +24,12 @@ import { launchNativeConsole, isConsoleLauncherSupported } from '@/lib/native-co
 
 export function ConsoleLauncherButton() {
   const [busy, setBusy] = useState(false);
-  const [supported, setSupported] = useState(false);
+  // Tracked but not used as a hide-gate any more — we render the
+  // button on every page (browser + Tauri) and explain on click if
+  // the user is in the browser-served operator without the desktop
+  // bridge. Hiding it conditionally meant the user couldn't see
+  // where this affordance was supposed to live.
+  const [supported, setSupported] = useState(true);
   const pathname = usePathname();
   const harnessSlug = extractHarnessSlug(pathname ?? '');
 
@@ -32,20 +37,24 @@ export function ConsoleLauncherButton() {
     setSupported(isConsoleLauncherSupported());
   }, []);
 
-  if (!supported) return null;
-
-  const tooltip = harnessSlug
-    ? `Launch terminal in ${harnessSlug}`
-    : 'Launch terminal in workspace root';
+  const tooltip = supported
+    ? (harnessSlug
+        ? `Launch terminal in ${harnessSlug}`
+        : 'Launch terminal in workspace root')
+    : 'Launch terminal (desktop app only)';
 
   return (
     <button
       type="button"
-      className={`pc-console-btn${busy ? ' is-busy' : ''}`}
+      className={`pc-console-btn${busy ? ' is-busy' : ''}${supported ? '' : ' is-unsupported'}`}
       aria-label="Launch terminal"
       title={tooltip}
       disabled={busy}
       onClick={async () => {
+        if (!supported) {
+          toast.info('The native terminal only opens from the desktop app.');
+          return;
+        }
         setBusy(true);
         try {
           await launchNativeConsole({ slug: harnessSlug });

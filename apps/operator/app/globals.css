@@ -24091,6 +24091,14 @@ body:has(.operator-panel) {
   cursor: progress;
 }
 
+/* Not in the Tauri desktop bridge (e.g. browser tab on :3055). The
+ * button still renders — clicking surfaces a toast — but visually
+ * fades so the user can tell it's not the primary surface here. */
+.pc-console-btn.is-unsupported {
+  opacity: 0.55;
+  cursor: help;
+}
+
 .pc-console-btn svg {
   display: block;
 }
