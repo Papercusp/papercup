@@ -232,24 +232,20 @@ export default function BackupsTab() {
 
       <section className="pc-dev-backups-terminal">
         <header>
-          <h3>Terminal — last {terminal.length} action{terminal.length === 1 ? '' : 's'}</h3>
-          {terminal.length > 0 && (
-            <button type="button" onClick={() => setTerminal([])}>Clear</button>
-          )}
+          <h3>Terminal — {terminal.length === 0 ? 'idle' : `last ${terminal.length} action${terminal.length === 1 ? '' : 's'}`}</h3>
+          <button type="button" disabled={terminal.length === 0} onClick={() => setTerminal([])}>Clear</button>
         </header>
-        {terminal.length === 0 ? (
-          <p className="pc-dev-backups-note">Click an action button above — the command, exit code, stdout, and stderr show up here.</p>
-        ) : (
-          <pre className="pc-dev-api-response">
-            {terminal.map((t) => [
+        <pre className="pc-dev-api-response">
+          {terminal.length === 0
+            ? `# Idle.\n# Click an action above; the command, exit code, stdout, and stderr appear here.\n# Each kopia invocation is captured in full (no truncation).\n$ _`
+            : terminal.map((t) => [
               `[${t.startedAt.slice(11, 19)}] $ ${t.command}`,
               `  exit=${t.exitCode}  duration=${t.durationMs}ms`,
               t.stdout ? `  ── stdout ──\n${t.stdout.split('\n').map((l) => '    ' + l).join('\n')}` : '',
               t.stderr ? `  ── stderr ──\n${t.stderr.split('\n').map((l) => '    ' + l).join('\n')}` : '',
               '',
             ].filter(Boolean).join('\n')).join('\n')}
-          </pre>
-        )}
+        </pre>
       </section>
 
       {server && (
