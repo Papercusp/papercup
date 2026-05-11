@@ -311,3 +311,79 @@ describe('DEFAULT_DENY includes _jco/', () => {
     expect(entry?.reason).toBe('denylist:re-derivable');
   });
 });
+
+/* ───── readCapturePluginExtras (capture-side write helper) ────────── */
+
+import { readCapturePluginExtras } from './manifest';
+
+describe('readCapturePluginExtras', () => {
+  it('empty manifest → defaults to semver + legacy false', () => {
+    expect(readCapturePluginExtras({})).toEqual({
+      versionPin: { mode: 'semver' },
+      pluginVersionPinned: false,
+    });
+  });
+
+  it('v1 pluginVersionPinned: true → versionPin.mode=exact + legacy true', () => {
+    expect(readCapturePluginExtras({ pluginVersionPinned: true })).toEqual({
+      versionPin: { mode: 'exact' },
+      pluginVersionPinned: true,
+    });
+  });
+
+  it('v1 pluginVersionPinned: false → versionPin.mode=semver + legacy false', () => {
+    expect(readCapturePluginExtras({ pluginVersionPinned: false })).toEqual({
+      versionPin: { mode: 'semver' },
+      pluginVersionPinned: false,
+    });
+  });
+
+  it('v2 versionPin wins over legacy field when both present', () => {
+    const r = readCapturePluginExtras({
+      versionPin: { mode: 'hash', allowOverride: 'never' },
+      pluginVersionPinned: true,
+    });
+    expect(r.versionPin).toEqual({ mode: 'hash', allowOverride: 'never' });
+    // Legacy boolean derived from v2: hash → false
+    expect(r.pluginVersionPinned).toBe(false);
+  });
+
+  it("v2 versionPin.mode='exact' derives legacy true", () => {
+    const r = readCapturePluginExtras({ versionPin: { mode: 'exact' } });
+    expect(r.pluginVersionPinned).toBe(true);
+  });
+
+  it('v2 versionPin without allowOverride omits the field (cleaner output)', () => {
+    const r = readCapturePluginExtras({ versionPin: { mode: 'semver' } });
+    expect(r.versionPin).toEqual({ mode: 'semver' });
+  });
+
+  it('v2 versionPin with bogus mode falls through to default', () => {
+    const r = readCapturePluginExtras({
+      versionPin: { mode: 'mysterious' },
+    });
+    expect(r.versionPin).toEqual({ mode: 'semver' });
+    expect(r.pluginVersionPinned).toBe(false);
+  });
+
+  it("runtime: 'wasm' is passed through", () => {
+    const r = readCapturePluginExtras({ runtime: 'wasm' });
+    expect(r.runtime).toBe('wasm');
+  });
+
+  it('runtime omitted when not declared in manifest', () => {
+    const r = readCapturePluginExtras({});
+    expect(r).not.toHaveProperty('runtime');
+  });
+
+  it('runtime with bogus value (not in enum) is dropped', () => {
+    const r = readCapturePluginExtras({ runtime: 'not-a-real-runtime' });
+    expect(r).not.toHaveProperty('runtime');
+  });
+
+  it('all three runtimes round-trip', () => {
+    expect(readCapturePluginExtras({ runtime: 'js' }).runtime).toBe('js');
+    expect(readCapturePluginExtras({ runtime: 'wasm' }).runtime).toBe('wasm');
+    expect(readCapturePluginExtras({ runtime: 'daemon' }).runtime).toBe('daemon');
+  });
+});
