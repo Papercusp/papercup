@@ -11,10 +11,17 @@ export {
   validateSnapshotManifest,
   newSnapshotId,
   newForkSlugSuffix,
+  effectiveRuntime,
+  effectiveVersionPin,
+  effectiveMigrationManifest,
   type SnapshotManifest,
   type SnapshotKind,
   type SnapshotPlugin,
   type SnapshotProvenance,
+  type SnapshotVersionPin,
+  type SnapshotVersionPinMode,
+  type SnapshotVersionPinOverride,
+  type SnapshotMigrationEntry,
 } from './manifest';
 export {
   DEFAULT_DENY,

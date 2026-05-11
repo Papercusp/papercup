@@ -36,6 +36,7 @@ describe('GET /api/snapshots/[id]/shape', () => {
       findSnapshot: async () => ({ id: 'snap_x', tarballPath: '/no/such/path.tar.gz' }),
     }));
     vi.doMock('@papercusp/export-state', () => ({
+      effectiveVersionPin: (p: { versionPin?: { mode: string; allowOverride?: string }; pluginVersionPinned?: boolean }) => p.versionPin ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' } : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
       readManifestFromTarball: async () => { throw new Error('tarball missing'); },
     }));
     const r = await call('snap_x');
@@ -49,6 +50,7 @@ describe('GET /api/snapshots/[id]/shape', () => {
       findSnapshot: async () => ({ id: 'snap_x', tarballPath: '/fake/path.tar.gz' }),
     }));
     vi.doMock('@papercusp/export-state', () => ({
+      effectiveVersionPin: (p: { versionPin?: { mode: string; allowOverride?: string }; pluginVersionPinned?: boolean }) => p.versionPin ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' } : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
       readManifestFromTarball: async () => ({
         plugins: [
           {
@@ -97,6 +99,7 @@ describe('GET /api/snapshots/[id]/shape', () => {
       findSnapshot: async () => ({ id: 'snap_x', tarballPath: '/fake/path.tar.gz' }),
     }));
     vi.doMock('@papercusp/export-state', () => ({
+      effectiveVersionPin: (p: { versionPin?: { mode: string; allowOverride?: string }; pluginVersionPinned?: boolean }) => p.versionPin ? { mode: p.versionPin.mode, allowOverride: p.versionPin.allowOverride ?? 'security-patch' } : { mode: p.pluginVersionPinned === false ? 'semver' : 'exact', allowOverride: 'security-patch' },
       readManifestFromTarball: async () => ({
         plugins: [
           { name: 'broken', version: '0.1.0', shapeJson: '{not json' },
