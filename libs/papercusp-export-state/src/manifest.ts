@@ -268,3 +268,24 @@ export function effectiveMigrationManifest(
 ): SnapshotMigrationEntry[] {
   return p.migrationManifest ?? [];
 }
+
+/* ───────── Bundled-plugin filter (rev3 plan G+5 / A10) ─────────────── */
+
+/**
+ * `manifest.bundled: true` is a tooling-set field stamped by the build
+ * pipeline when a plugin ships pre-installed with the operator (e.g.
+ * the bundled `slack-notifier`). Capture excludes these from
+ * `snapshot.plugins[]` because they're substrate, not user state — a
+ * fork of the snapshot will already have them via the new install's
+ * own bundled set.
+ *
+ * Authors must NOT set this in their own manifests; lint is expected
+ * to reject author-set `bundled` (build-only field).
+ */
+export interface BundledLikeManifest {
+  bundled?: unknown;
+}
+
+export function isBundledPlugin(manifest: BundledLikeManifest): boolean {
+  return manifest.bundled === true;
+}

@@ -67,6 +67,10 @@
     "publishedBy": { "type": "string" },
     "tierMap": { "type": "object" },
     "icon": { "type": "string", "description": "Lucide icon name or emoji shown next to the plugin in catalog UI." },
+    "bundled": {
+      "type": "boolean",
+      "description": "Build-pipeline only — DO NOT set in your plugin's manifest. Operator install stamps this on plugins that ship pre-installed; capture excludes bundled plugins from snapshot.plugins[]. Lint rejects author-set values. (rev3 plan G+5 / A10)"
+    },
     "hidden": { "type": "boolean", "description": "Hide from catalog surfaces; complements harness_shared.hidden_plugins." },
     "hiddenReason": { "type": "string" },
     "publisher": { "type": "string", "description": "Publisher slug (often === author or scope)." },

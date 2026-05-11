@@ -600,6 +600,21 @@ export interface Plugin {
   papercusp: string;
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
+  /**
+   * @internal Build-pipeline only — DO NOT set this in your plugin's
+   * manifest. The operator install pipeline stamps `bundled: true`
+   * on plugins that ship pre-installed with the operator (e.g.
+   * the bundled slack-notifier). Capture excludes bundled plugins
+   * from `snapshot.plugins[]` because they're substrate, not user
+   * state — a fork's new install will already have them via its own
+   * bundled set.
+   *
+   * Lint should reject author-set `bundled: true`. Plugin authors
+   * who try to ship `bundled: true` are either confused or trying to
+   * smuggle their plugin into "no consent needed" status; both wrong.
+   */
+  bundled?: boolean;
+
   /** When true, the plugin is hidden from the marketplace listing UI. The
    *  plugin still loads, enables, and runs — this only suppresses its
    *  appearance in the marketplace catalog cards. Use for in-development

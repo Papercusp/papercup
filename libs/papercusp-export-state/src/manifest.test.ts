@@ -210,3 +210,30 @@ describe('effectiveMigrationManifest', () => {
     expect(effectiveMigrationManifest(p)).toEqual(entries);
   });
 });
+
+/* ───── bundled-plugin filter (rev3 plan G+5 / A10) ────────────────── */
+
+import { isBundledPlugin } from './manifest';
+
+describe('isBundledPlugin', () => {
+  it('returns true for bundled: true', () => {
+    expect(isBundledPlugin({ bundled: true })).toBe(true);
+  });
+
+  it('returns false for bundled: false', () => {
+    expect(isBundledPlugin({ bundled: false })).toBe(false);
+  });
+
+  it('returns false when bundled is absent', () => {
+    expect(isBundledPlugin({})).toBe(false);
+  });
+
+  it('returns false for non-boolean values (defensive — e.g. author wrote a string)', () => {
+    // We DO NOT trust truthy non-booleans. bundled:"true" is treated
+    // as not-bundled so a confused author can't accidentally smuggle.
+    // (Real defense is the lint rule rejecting the field at publish.)
+    expect(isBundledPlugin({ bundled: 'true' })).toBe(false);
+    expect(isBundledPlugin({ bundled: 1 })).toBe(false);
+    expect(isBundledPlugin({ bundled: {} })).toBe(false);
+  });
+});
