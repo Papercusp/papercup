@@ -8,6 +8,7 @@ import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorPanel';
 import { VoiceButton } from './voice/VoiceButton';
+import { ConsoleLauncherButton } from './ConsoleLauncherButton';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
@@ -160,6 +161,7 @@ export default function ChromeShell() {
           <OperatorAutoScanToggle />
           <OperatorActiveToggle />
           <VoiceButton />
+          <ConsoleLauncherButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
           <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
