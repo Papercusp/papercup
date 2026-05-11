@@ -79,3 +79,29 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // apps/operator/lib/agent-tools/chat/ask_choice.ts.
   'mcp__agentmcp__chat:ask_choice',
 ];
+
+/**
+ * Subset of ALL_AGENT_MCP_TOOLS that require an INTERACTIVE chat
+ * surface — i.e., a real-time user the agent can solicit a response
+ * from. These should NOT be in allowedTools for one-shot surfaces
+ * like operator-scan (which emits suggestions, not chat turns) or
+ * spawn-pi (which boots a workspace; no chat).
+ *
+ * If a chat-only tool is given to a one-shot surface, the model might
+ * call it expecting an answer that will never come — the suggestion
+ * stream incompletes; the operator stalls.
+ *
+ * Keep this list in sync with the `chat:*` namespace and any other
+ * tool whose contract requires an interactive responder.
+ */
+export const INTERACTIVE_CHAT_TOOLS: readonly string[] = [
+  'mcp__agentmcp__chat:ask_choice',
+];
+
+/**
+ * The non-interactive subset — everything except INTERACTIVE_CHAT_TOOLS.
+ * For one-shot surfaces (operator-scan etc.) that spawn an agent but
+ * don't have a user-facing chat session.
+ */
+export const NON_INTERACTIVE_AGENT_MCP_TOOLS: readonly string[] =
+  ALL_AGENT_MCP_TOOLS.filter((t) => !INTERACTIVE_CHAT_TOOLS.includes(t));

@@ -16,7 +16,14 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const BASE = process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070';
+// Honor both OP_PORT (used by admin-rotate / spawn-signing-e2e / etc.)
+// and OPERATOR_BASE_URL (this suite's historical default). OP_PORT wins
+// if both are set, so `OP_PORT=3055 npm run test:battery` exercises the
+// dev port consistently across the whole battery.
+const OP_PORT = process.env.OP_PORT ?? null;
+const BASE = OP_PORT
+  ? `http://localhost:${OP_PORT}`
+  : (process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070');
 const TOKEN = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
 
 let pass = 0, fail = 0;

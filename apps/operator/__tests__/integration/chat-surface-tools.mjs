@@ -30,17 +30,29 @@ const REQUIRED = [
   'mcp__agentmcp__chat:ask_choice',
 ];
 
-// Each surface: route file + a label.
+// Each surface: route file + a label + a `kind`.
+//   kind='chat'      — interactive: REQUIRED tools (including chat:*)
+//                       MUST be present.
+//   kind='oneshot'   — one-shot scanner: NON-interactive tools may be
+//                       present, but chat:* tools MUST NOT be (model
+//                       would call them expecting an answer that never
+//                       comes; suggestion stream incompletes).
+//   kind='url-bridge'— hands an MCP server config out; no allowedTools
+//                       of its own. Test verifies the bridge URL/transport.
 const SURFACES = [
-  { label: 'operator-converse', file: 'apps/operator/app/api/agent-mcp/operator-converse/route.ts' },
-  { label: 'operator-chat',     file: 'apps/operator/app/api/agent-mcp/operator-chat/route.ts' },
-  { label: 'operator-scan',     file: 'apps/operator/app/api/agent-mcp/operator-scan/route.ts' },
-  { label: 'delegate-chat',     file: 'apps/operator/app/api/agent-mcp/delegate-chat/route.ts' },
-  { label: 'oracle',            file: 'apps/operator/app/api/_hono/oracle.ts' },
-  // spawn-pi returns an mcpServer config to the pi process; uses HTTP
-  // via mcp-remote so pi sees the full operator catalog. Grep target
-  // for the test is the URL of the projected dispatcher.
-  { label: 'spawn-pi',          file: 'apps/operator/app/api/agent-mcp/spawn-pi/route.ts', urlOnly: true },
+  { label: 'operator-converse', kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/operator-converse/route.ts' },
+  { label: 'operator-chat',     kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/operator-chat/route.ts' },
+  { label: 'delegate-chat',     kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/delegate-chat/route.ts' },
+  { label: 'oracle',            kind: 'chat',       file: 'apps/operator/app/api/_hono/oracle.ts' },
+  { label: 'operator-scan',     kind: 'oneshot',    file: 'apps/operator/app/api/agent-mcp/operator-scan/route.ts' },
+  { label: 'spawn-pi',          kind: 'url-bridge', file: 'apps/operator/app/api/agent-mcp/spawn-pi/route.ts' },
+];
+
+// Tools that are interactive-only — chat surfaces include them; one-shot
+// surfaces (operator-scan, spawn-pi) must NOT include them in
+// allowedTools, since calling them expects a user response in chat.
+const INTERACTIVE_ONLY = [
+  'mcp__agentmcp__chat:ask_choice',
 ];
 
 // Surfaces that delegate to the shared list — count as having a tool
@@ -50,10 +62,18 @@ const SHARED = readFileSync(join(REPO, 'apps/operator/lib/operator-mcp-tools.ts'
 let pass = 0, fail = 0;
 const check = (n, c) => (c ? (console.log(`  ✓ ${n}`), pass++) : (console.log(`  ✗ ${n}`), fail++));
 
+// Helper: expand shared content if the surface imports the shared list.
+// Returns the effective source we should grep for tool names.
+function effectiveSourceFor(src) {
+  const importsShared = /from\s+'@\/lib\/operator-mcp-tools'/.test(src);
+  return importsShared ? src + '\n' + SHARED : src;
+}
+
 for (const surface of SURFACES) {
-  console.log(`--- ${surface.label} ---`);
+  console.log(`--- ${surface.label} (${surface.kind}) ---`);
   const src = readFileSync(join(REPO, surface.file), 'utf8');
-  if (surface.urlOnly) {
+
+  if (surface.kind === 'url-bridge') {
     // spawn-pi hands an MCP server config to the pi process. It doesn't
     // build an allowedTools list — instead, it just points the pi at the
     // operator's projected dispatcher URL, which exposes the full
@@ -64,11 +84,37 @@ for (const surface of SURFACES) {
       /mcp-remote/.test(src));
     continue;
   }
-  const importsShared = /from\s+'@\/lib\/operator-mcp-tools'/.test(src);
-  const effectiveSrc = importsShared ? src + '\n' + SHARED : src;
-  for (const tool of REQUIRED) {
-    const found = effectiveSrc.includes(tool);
-    check(`includes ${tool}`, found);
+
+  const effectiveSrc = effectiveSourceFor(src);
+
+  if (surface.kind === 'chat') {
+    // Chat surfaces must include the full required catalog (including
+    // interactive chat:* tools).
+    for (const tool of REQUIRED) {
+      check(`includes ${tool}`, effectiveSrc.includes(tool));
+    }
+  } else if (surface.kind === 'oneshot') {
+    // One-shot surfaces (operator-scan): must NOT include interactive
+    // chat:* tools — the agent has no user-facing chat to wait on.
+    // They MUST include the non-interactive base (or use
+    // NON_INTERACTIVE_AGENT_MCP_TOOLS in their allowedTools).
+    for (const tool of REQUIRED) {
+      if (INTERACTIVE_ONLY.includes(tool)) {
+        // Negative test: tool MUST NOT appear as a string literal in
+        // the surface's own source (importing the shared list still
+        // counts the tool as "present" because effectiveSrc concatenates
+        // it; for the negative check we look at the surface file ONLY).
+        check(`one-shot surface DOES NOT include ${tool} as a string literal`,
+          !new RegExp(`['"\`]${tool.replace(/:/g, '\\:')}['"\`]`).test(src));
+      } else {
+        check(`includes ${tool}`, effectiveSrc.includes(tool));
+      }
+    }
+    // Belt-and-suspenders: assert the file references the non-interactive
+    // import name (catches a future refactor that accidentally puts
+    // ALL_AGENT_MCP_TOOLS back into operator-scan).
+    check(`uses NON_INTERACTIVE_AGENT_MCP_TOOLS (not ALL_AGENT_MCP_TOOLS)`,
+      /NON_INTERACTIVE_AGENT_MCP_TOOLS/.test(src) || !/ALL_AGENT_MCP_TOOLS/.test(src));
   }
   // Surface-specific regression checks.
   if (surface.label === 'oracle') {

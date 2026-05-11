@@ -11,7 +11,12 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const BASE = process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070';
+// OP_PORT takes priority over OPERATOR_BASE_URL so a single env var
+// flips the whole test battery between dev/prod.
+const OP_PORT = process.env.OP_PORT ?? null;
+const BASE = OP_PORT
+  ? `http://localhost:${OP_PORT}`
+  : (process.env.OPERATOR_BASE_URL ?? 'http://localhost:3070');
 const TOKEN = readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
 
 let pass = 0, fail = 0;
