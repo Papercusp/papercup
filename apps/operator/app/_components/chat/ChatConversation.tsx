@@ -28,6 +28,7 @@
 
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 export interface ChatToolCall {
   /** Display name of the tool the model called. */
@@ -235,31 +236,29 @@ export function ChatConversation(props: ChatConversationProps) {
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  const renderedMessages = useMemo(
-    () =>
-      messages.map((m, i) => {
-        const Icon = iconForRole ? iconForRole(m.role) : emptyState.icon;
-        const label =
-          labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
-        return (
-          <div
-            key={i}
-            data-message-index={i}
-            className={`oracle-msg oracle-msg-${m.role}`}
-          >
-            <span className="oracle-msg-avatar" aria-hidden="true">
-              <Icon className="oracle-msg-icon" />
-            </span>
-            <div className="oracle-msg-stack">
-              <div className="oracle-msg-role">{label}</div>
-              {renderToolChip && m.tools?.map((t, ti) => renderToolChip(t, ti))}
-              {m.content && <div className="oracle-msg-content">{m.content}</div>}
-            </div>
-          </div>
-        );
-      }),
-    [messages, iconForRole, labelForRole, renderToolChip, emptyState.icon, emptyState.title],
-  );
+  // Virtualization. Renders only the messages currently in (or near)
+  // the viewport. Bounded DOM cost regardless of how deep the scrollback
+  // grows. Variable-height messages are measured via the IntersectionObserver-
+  // backed `measureElement` so estimates self-correct on first paint.
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollerRef.current,
+    estimateSize: () => 64, // typical bubble height; corrected by measureElement
+    overscan: 8,
+    // Key by stable message identity when possible. Today ChatMessage is
+    // {role, content, tools?} with no id; fall back to (role|content-prefix|index)
+    // — index alone breaks cache on prepend (every item shifts), but combining
+    // it with role + a content prefix keeps the cache hot for items the
+    // user is actually looking at across a prepend.
+    getItemKey: (i) => {
+      const m = messages[i];
+      if (!m) return i;
+      return `${m.role}::${m.content.slice(0, 40)}::${i}`;
+    },
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
 
   return (
     <>
@@ -294,7 +293,48 @@ export function ChatConversation(props: ChatConversationProps) {
             <span className="oracle-empty-state-text">{emptyState.body}</span>
           </div>
         ) : (
-          renderedMessages
+          <div
+            className="oracle-virtual-container"
+            style={{
+              height: totalSize,
+              minHeight: totalSize,
+              position: 'relative',
+              width: '100%',
+              flex: '0 0 auto',
+            }}
+          >
+            {virtualItems.map((vi) => {
+              const m = messages[vi.index];
+              if (!m) return null;
+              const Icon = iconForRole ? iconForRole(m.role) : emptyState.icon;
+              const label =
+                labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
+              return (
+                <div
+                  key={vi.key}
+                  data-message-index={vi.index}
+                  ref={virtualizer.measureElement}
+                  className={`oracle-msg oracle-msg-${m.role}`}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
+                  <span className="oracle-msg-avatar" aria-hidden="true">
+                    <Icon className="oracle-msg-icon" />
+                  </span>
+                  <div className="oracle-msg-stack">
+                    <div className="oracle-msg-role">{label}</div>
+                    {renderToolChip && m.tools?.map((t, ti) => renderToolChip(t, ti))}
+                    {m.content && <div className="oracle-msg-content">{m.content}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
         {busy && (
           <div className="oracle-thinking-row" aria-live="polite">

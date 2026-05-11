@@ -1,18 +1,20 @@
 /**
- * GET  /api/operator/conversations?slug=<slug>
- *   Returns the active conversation for the current workspace + (optional)
- *   harness slug, with all turns inlined. The sidebar calls this on mount
- *   to hydrate from PG instead of sessionStorage.
+ * GET  /api/operator/conversations?limit=N
+ *   Returns the workspace's active operator conversation with the most
+ *   recent N turns inlined (default 50, max 500; pass `limit=all` for
+ *   the full history shape used by snapshot/export). The chat is
+ *   workspace-scoped — switching harnesses does NOT change which
+ *   conversation surfaces.
  *
- * POST /api/operator/conversations  { harnessSlug?: string }
- *   Force-create a fresh active conversation (marks any existing active row
- *   as 'done' first). Used by a future "new chat" button. Not wired into
- *   the sidebar yet — included so step-2 (voice wiring) can use it.
+ * POST /api/operator/conversations
+ *   Force-create a fresh active conversation for the workspace (marks
+ *   any existing active row as 'done' first). Used by a future "new
+ *   chat" button.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getOrgPg, generated } from '@restart/db-org';
-import { and, eq, sql as dsql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import {
   getOrCreateActiveConversation,
   listTurns,
@@ -27,9 +29,8 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const slug = req.nextUrl.searchParams.get('slug');
   const limitParam = req.nextUrl.searchParams.get('limit');
-  const conv = await getOrCreateActiveConversation(slug ?? null);
+  const conv = await getOrCreateActiveConversation();
 
   // Default to a windowed initial load so a long conversation doesn't
   // hammer the chat sidebar with thousands of turns. Callers that need
@@ -48,30 +49,21 @@ export async function GET(req: NextRequest): Promise<Response> {
   });
 }
 
-export async function POST(req: NextRequest): Promise<Response> {
+export async function POST(_req: NextRequest): Promise<Response> {
   await ensureOperatorConversationsTable();
-  const body = (await req.json().catch(() => ({}))) as {
-    harnessSlug?: string | null;
-  };
-  const slug = body.harnessSlug ?? null;
   const ws = activeWorkspaceId();
   const { db } = getOrgPg();
 
-  // Close any existing active conversation in the same scope.
+  // Close any existing active conversation for this workspace.
+  // Workspace-scoped: harness slug is intentionally ignored.
   await db
     .update(oc)
     .set({ status: 'done', ended_at: Date.now() })
-    .where(
-      and(
-        eq(oc.workspace_id, ws),
-        dsql`COALESCE(${oc.harness_slug}, '') = ${slug ?? ''}`,
-        eq(oc.status, 'active'),
-      ),
-    );
+    .where(and(eq(oc.workspace_id, ws), eq(oc.status, 'active')));
 
   const created = await db
     .insert(oc)
-    .values({ workspace_id: ws, harness_slug: slug, started_at: Date.now() })
+    .values({ workspace_id: ws, harness_slug: null, started_at: Date.now() })
     .returning({ id: oc.id });
   const id = created[0].id;
   return NextResponse.json({ conversation: { id }, turns: [] });

@@ -1,10 +1,16 @@
 /**
  * Server-side helpers for the operator conversation log.
  *
- * One logical thread per (workspace_id, harness_slug). Both the text
- * sidebar and the ElevenLabs voice session append turns into the same
- * thread; the `source` column distinguishes them. See SPEC.md and the
- * B+C-lite architecture sketch (operator chat unification, 2026-05-10).
+ * **Workspace-scoped**: one logical thread per workspace_id. The
+ * `operator_conversations` table still has a `harness_slug` column for
+ * back-compat with the original (workspace_id, harness_slug)-keyed
+ * design, but new code MUST NOT vary by harness — switching harnesses
+ * should never spawn or surface a different conversation. Both the
+ * text sidebar and the ElevenLabs voice session append turns into the
+ * same thread; the `source` column distinguishes them.
+ *
+ * See SPEC.md and the B+C-lite architecture sketch (operator chat
+ * unification, 2026-05-10).
  */
 
 import { getOrgPg, generated } from '@restart/db-org';
@@ -66,24 +72,20 @@ export interface TurnRow {
   createdAt: number;
 }
 
-export async function getOrCreateActiveConversation(
-  harnessSlug: string | null,
-): Promise<ConversationRow> {
+/**
+ * Returns the workspace's active operator conversation, creating it if
+ * none exists. Workspace-scoped: NEVER varies by harness slug. The
+ * `harness_slug` column is always written as NULL on new rows.
+ */
+export async function getOrCreateActiveConversation(): Promise<ConversationRow> {
   await ensureOperatorConversationsTable();
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  const slugKey = harnessSlug ?? '';
 
   const existing = await db
     .select(conversationCols)
     .from(oc)
-    .where(
-      and(
-        eq(oc.workspace_id, ws),
-        dsql`COALESCE(${oc.harness_slug}, '') = ${slugKey}`,
-        eq(oc.status, 'active'),
-      ),
-    )
+    .where(and(eq(oc.workspace_id, ws), eq(oc.status, 'active')))
     .orderBy(desc(oc.started_at))
     .limit(1);
 
@@ -91,7 +93,7 @@ export async function getOrCreateActiveConversation(
 
   const created = await db
     .insert(oc)
-    .values({ workspace_id: ws, harness_slug: harnessSlug, started_at: Date.now() })
+    .values({ workspace_id: ws, harness_slug: null, started_at: Date.now() })
     .returning(conversationCols);
 
   return rowToConversation(created[0] as Record<string, unknown>);
