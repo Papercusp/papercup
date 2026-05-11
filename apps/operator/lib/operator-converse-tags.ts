@@ -236,6 +236,13 @@ export function readOperatorModeFromSession(): OperatorMode | null {
     // reload navigation so the bootstrap re-seeds from voice prefs.
     // Only do this once per page lifetime — subsequent reads should
     // see the cleared value (null → bootstrap → 'active').
+    //
+    // C5 of the audit: we also clear SLEEP_UNTIL_KEY. Intentional —
+    // a reload is treated as a fresh session, and "active" mode with
+    // a stale sleep timer would manifest as a chip that says "Active"
+    // but operator-doesn't-talk for an inexplicable interval. If
+    // sleep-persists-across-reload becomes a product requirement,
+    // gate this on a separate setting; today, freshness wins.
     if (!reloadResetApplied) {
       reloadResetApplied = true;
       try {

@@ -40,7 +40,7 @@ The row is auto-minted on first use by either side. Both the operator and the or
 4. HMAC-SHA256 over the canonical string, base64url-encoded, appended as `sig=`.
 5. Writes the `.mcp.json` with mode 0600. The per-spawn worktree dir is mode 0700.
 
-The orchestrator's PG DSN is inherited from the operator-set env. If signing fails (DSN missing, row missing on first boot), it falls back to an unsigned URL and emits a console warning — soft-warn mode will accept it.
+The orchestrator's PG DSN is inherited from the operator-set env. If signing fails (DSN missing, row missing on first boot), `writeSignedSpawnMcp` throws — the outer try/catch in `invoke()` logs `spawn-mcp write failed` and the agent boots without an MCP endpoint, making the failure visible. Callers that need the historical soft-warn fallback (emit unsigned + warn) can pass `allowUnsigned: true` AND run the operator with `PAPERCUSP_REQUIRE_SPAWN_SIG` unset.
 
 ### Verify side — operator
 
@@ -55,22 +55,25 @@ The orchestrator's PG DSN is inherited from the operator-set env. If signing fai
 
 Any non-`ok` result is persisted to `harness_shared.spawn_sig_verification_failures` (reason + claimed role/harness/workspace/spawn + remote_addr + user_agent + exp_claim) and the request is rejected with `request_rejected: spawn_sig_<reason>`.
 
-<Callout type="warn" title="tools/list is lenient by design">
-The signature is **only verified at `tools/call` time**. `tools/list`
-returns whatever the *claimed* role would see — useful introspection
-even from a forged URL. The hard rejection happens when the agent
-actually tries to invoke something.
+<Callout type="info" title="tools/list mirrors tools/call in strict mode">
+Both `tools/list` and `tools/call` reject when the URL claims a spawn
+context (role/workspace/spawn) without a valid sig. `tools/list` on a
+bare `/api/mcp` URL with no claims still returns the full catalog —
+that's anonymous discovery, not an escalation attempt. (Prior behavior
+returned the claimed-role catalog even for forged URLs; that leaked
+the operator-tier surface to anyone setting `?role=operator` and left
+no audit trace.)
 </Callout>
 
 ## Operating modes
 
-### Soft-warn (default)
+### Strict (default)
 
-`PAPERCUSP_REQUIRE_SPAWN_SIG` unset or `!= '1'`. Unsigned URLs are accepted with a console warning so legacy in-flight spawns aren't killed mid-run. Failed verifications still hard-reject.
+`PAPERCUSP_REQUIRE_SPAWN_SIG=1` in `apps/operator/.env.local`. Unsigned URLs that claim a spawn context (any of `role=`, `spawn=`, `workspace=`) hard-reject with `request_rejected: spawn_sig_missing_sig_required_mode`. Bare URLs with no claims are accepted (tools/list returns the full catalog, tools/call fails on `invalid_request_context` from the dispatcher).
 
-### Strict
+### Soft-warn (rollout-only)
 
-`PAPERCUSP_REQUIRE_SPAWN_SIG=1`. Unsigned URLs hard-reject with `request_rejected: spawn_sig_missing_sig_required_mode`. Flip this once the audit table shows no legitimate unsigned-URL traffic for a clean week.
+`PAPERCUSP_REQUIRE_SPAWN_SIG` unset or `!= '1'`. Unsigned-with-claims URLs accepted with a console warning. Was the default during the 2026-05-11 rollout window for in-flight spawn compatibility.
 
 ## Coarse revocation
 

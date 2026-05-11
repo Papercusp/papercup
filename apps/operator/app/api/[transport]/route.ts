@@ -171,6 +171,19 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
   const remoteAddr = pickHeader(headers, 'x-forwarded-for') ?? null;
   const userAgent = pickHeader(headers, 'user-agent') ?? null;
 
+  // A URL "claims a spawn context" if it carries any of the load-bearing
+  // params an attacker would need to escalate (role/spawn/workspace).
+  // Bare /api/mcp with no params at all isn't trying to escalate
+  // anything — it's a probe / health check / pre-spawn discovery — so
+  // we shouldn't audit-log it as a sig-missing failure in strict mode.
+  // (Calling tools/list on it returns an empty list per the handler
+  // above; tools/call falls through to the "none" path which rejects
+  // with invalid_request_context.)
+  const claimsSpawn =
+    url.searchParams.has('role') ||
+    url.searchParams.has('spawn') ||
+    url.searchParams.has('workspace');
+
   if (hasSig || hasExp) {
     const v = await verifySpawnParams(url);
     if (!v.ok) {
@@ -191,7 +204,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
       );
       return { kind: 'failed', reason: `spawn_sig_${v.reason}` };
     }
-  } else if (requireSig) {
+  } else if (requireSig && claimsSpawn) {
     await logVerificationFailure({
       reason: 'missing_sig_required_mode',
       claimedRole: url.searchParams.get('role'),
@@ -443,10 +456,21 @@ const handler = createMcpHandler(
         // tools, so a single iteration covers both. Iterating getCatalog()
         // on top would emit each built-in twice.
         //
-        // tools/list is intentionally lenient on bad sigs — surface what
-        // the spawn *could* do if it had valid credentials. tools/call is
-        // where the hard rejection happens.
+        // Strict mode (default since 2026-05-11): tools/list mirrors
+        // tools/call — a failed spawn context returns an empty list.
+        // Returning the full catalog to an unsigned/forged URL would:
+        //   1. leak the tool surface to probing without an audit trail
+        //      (tools/list failures aren't logged); and
+        //   2. let `role=operator` in an unsigned URL surface the
+        //      operator-tier catalog without role-allowlist filtering,
+        //      because tryBuildSpawnContext returns kind=failed and
+        //      role falls back to `undefined` (no filter applied).
+        // Soft-warn behavior is preserved when kind='none' (no spawn
+        // params at all — e.g. a bare /api/mcp probe).
         const spawnRes = await tryBuildSpawnContext(extra);
+        if (spawnRes.kind === 'failed') {
+          return { tools: [] };
+        }
         const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
         return { tools: listMcpProjections(role).map((t) => ({ ...t })) };
       },

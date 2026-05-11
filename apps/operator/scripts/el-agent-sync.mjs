@@ -134,6 +134,40 @@ if (xiKey && agentId && preflight.ok) {
     } else {
       cfg = await cfgResp.json();
       console.log(`  agent: ok (${cfg.name ?? '(no name)'}, llm=${cfg.conversation_config?.agent?.prompt?.llm ?? 'unset'})`);
+
+      // C4 of the active-mode audit — drift detection. Warn loudly
+      // if the live agent's `turn` config diverges from the values
+      // this script intends to set. Catches the case where someone
+      // edits the agent from the EL dashboard after a sync and
+      // surprises voice-side silence-ladder behavior.
+      const liveTurn = cfg.conversation_config?.turn ?? {};
+      const expectedTurnTimeout = 10;
+      const expectedTurnEagerness = 'patient';
+      if (liveTurn.turn_timeout !== undefined && liveTurn.turn_timeout !== expectedTurnTimeout) {
+        console.warn(
+          `  ⚠ DRIFT: live turn_timeout=${liveTurn.turn_timeout}, expected ${expectedTurnTimeout}. ` +
+          `This script will overwrite it. If the dashboard value is intentional, ` +
+          `update scripts/el-agent-sync.mjs before re-running.`,
+        );
+      }
+      if (liveTurn.turn_eagerness !== undefined && liveTurn.turn_eagerness !== expectedTurnEagerness) {
+        console.warn(
+          `  ⚠ DRIFT: live turn_eagerness=${liveTurn.turn_eagerness}, expected '${expectedTurnEagerness}'. ` +
+          `This script will overwrite it.`,
+        );
+      }
+      // Drift on first_message: the operator-as-voice-shell design
+      // demands first_message=false (the operator brain emits the
+      // opener via ask_operator with trigger=open_canvas). A
+      // dashboard edit re-enabling it would bypass the brain.
+      const liveFirstMsg = cfg.conversation_config?.agent?.first_message;
+      if (liveFirstMsg !== undefined && liveFirstMsg !== '' && liveFirstMsg !== false && liveFirstMsg !== null) {
+        console.warn(
+          `  ⚠ DRIFT: live first_message is set to "${String(liveFirstMsg).slice(0, 60)}". ` +
+          `Active-mode design requires first_message=false (opener comes from operator brain ` +
+          `via ask_operator + trigger=open_canvas). This script will overwrite it.`,
+        );
+      }
     }
   } catch (e) {
     fail(`agent fetch failed: ${e?.message ?? e}`, 'Network or DNS issue.');

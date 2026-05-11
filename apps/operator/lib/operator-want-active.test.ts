@@ -32,8 +32,21 @@ describe('userDismissesOperator', () => {
     'thinking about it',
     'quiet morning',
     'how do I focus on the right thing?',
+    "I'm busy with the worker right now, can you check on it?", // C2: long context, has '?'
+    'are you busy with that?',                                    // C2: question
+    'let me think — what are the options?',                       // C2: question
+    'when I said let me think I meant about the auth flow not generally', // C2: phrase deep in long sentence
   ])('does NOT match conversational/incidental: %s', (s) =>
     expect(userDismissesOperator(s)).toBe(false),
+  );
+
+  it.each([
+    'ok, leave me alone',     // preamble allowed
+    'hey, shut up',           // preamble allowed
+    'wait — be quiet',        // preamble allowed
+    'i need quiet for a sec', // short message
+  ])('matches with brief preamble or short message: %s', (s) =>
+    expect(userDismissesOperator(s)).toBe(true),
   );
 });
 

@@ -110,10 +110,32 @@ async function main() {
   check('tampered URL rejected on tools/call', tamperedRejected, r2.text.slice(0, 300));
 
   // 3. unsigned URL: soft-warn passes (today)
-  log('\n--- 3. unsigned URL (soft-warn mode) ---');
+  log('\n--- 3. unsigned URL with claimed context: tools/list returns empty in strict mode ---');
   const p3 = freshParams();
   const r3 = await mcp(p3, listToolsPayload);
-  check('unsigned still works (soft-warn)', r3.status === 200 && r3.text.includes('"tools"'), `status=${r3.status} body=${r3.text.slice(0,200)}`);
+  // freshParams() sets role/workspace/spawn (claims a spawn context).
+  // In strict mode tools/list returns 200 with an empty tools array
+  // so the bridge stays valid for the agent, but doesn't leak the
+  // claimed-role catalog. See route.ts ListToolsRequestSchema handler.
+  const r3body = r3.text.match(/"tools":\s*(\[[^\]]*\])/);
+  check(
+    'unsigned + claimed context → empty tool list (strict)',
+    r3.status === 200 && r3body && r3body[1] === '[]',
+    `status=${r3.status} body=${r3.text.slice(0,200)}`,
+  );
+
+  log('\n--- 3b. bare /api/mcp (no claim) still returns full catalog ---');
+  const r3b = await fetch(`${BASE}/api/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json, text/event-stream' },
+    body: JSON.stringify(listToolsPayload),
+  });
+  const r3btext = await r3b.text();
+  check(
+    'bare /api/mcp → tools present (no claim = no escalation attempt)',
+    r3b.status === 200 && /"tools":\s*\[\s*\{/.test(r3btext),
+    `status=${r3b.status} body=${r3btext.slice(0,200)}`,
+  );
 
   // 4. expired sig rejected on tools/call
   log('\n--- 4. expired sig on tools/call ---');

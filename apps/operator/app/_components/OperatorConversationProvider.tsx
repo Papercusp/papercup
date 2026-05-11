@@ -333,11 +333,36 @@ export function userReplyDeclinesActive(text: string): boolean {
  *
  * Conservative — better to miss a dismissal (chat keeps talking) than
  * to mis-detect (user types "stop sharing that screen" and we go
- * passive). The patterns are explicit imperatives only.
+ * passive). Two layers of conservatism:
+ *
+ *   1. The phrase must START the message (with at most a brief
+ *      filler like "hey", "ok", "wait"), OR be the entire message
+ *      (length ≤ ~50 chars). A long sentence that incidentally
+ *      contains "i'm busy" deep in it isn't a dismissal — it's
+ *      context ("I'm busy with the worker right now, can you
+ *      check on it?").
+ *   2. Question marks anywhere → not a dismissal. Questions are
+ *      engagement, not pushback ("are you busy with that?", "let me
+ *      think — what are the options?").
  */
-const DISMISS_RE = /\b(shut up|leave me alone|stop talking|stop asking|ease off|be quiet|go quiet|i'?m busy|i am busy|let me (think|work|focus)|i need (quiet|silence)|you'?re talking too much|too much talking)\b/i;
+const DISMISS_PHRASE_RE = /(shut up|leave me alone|stop talking|stop asking|ease off|be quiet|go quiet|i'?m busy|i am busy|let me (think|work|focus)|i need (quiet|silence)|you'?re talking too much|too much talking)/i;
+const SHORT_UTTERANCE_MAX = 50;
+const PREAMBLE_RE = /^(hey|ok(ay)?|wait|listen|um|uh|so|well)[,!\s.]+/i;
 export function userDismissesOperator(text: string): boolean {
-  return DISMISS_RE.test(text.trim());
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // Questions are engagement, not pushback.
+  if (trimmed.includes('?')) return false;
+  // Strip a brief conversational preamble so "ok, leave me alone"
+  // still matches at start.
+  const stripped = trimmed.replace(PREAMBLE_RE, '');
+  // Whole message short and matches → dismissal.
+  if (stripped.length <= SHORT_UTTERANCE_MAX && DISMISS_PHRASE_RE.test(stripped)) {
+    return true;
+  }
+  // Long message must START with the phrase to count.
+  const headRe = new RegExp('^' + DISMISS_PHRASE_RE.source, 'i');
+  return headRe.test(stripped);
 }
 
 // ─── Silence-timer config ───────────────────────────────────────────────
