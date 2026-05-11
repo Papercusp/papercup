@@ -36,6 +36,10 @@ const SURFACES = [
   { label: 'operator-scan',     file: 'apps/operator/app/api/agent-mcp/operator-scan/route.ts' },
   { label: 'delegate-chat',     file: 'apps/operator/app/api/agent-mcp/delegate-chat/route.ts' },
   { label: 'oracle',            file: 'apps/operator/app/api/_hono/oracle.ts' },
+  // spawn-pi returns an mcpServer config to the pi process; uses HTTP
+  // via mcp-remote so pi sees the full operator catalog. Grep target
+  // for the test is the URL of the projected dispatcher.
+  { label: 'spawn-pi',          file: 'apps/operator/app/api/agent-mcp/spawn-pi/route.ts', urlOnly: true },
 ];
 
 // Surfaces that delegate to the shared list — count as having a tool
@@ -48,6 +52,17 @@ const check = (n, c) => (c ? (console.log(`  ✓ ${n}`), pass++) : (console.log(
 for (const surface of SURFACES) {
   console.log(`--- ${surface.label} ---`);
   const src = readFileSync(join(REPO, surface.file), 'utf8');
+  if (surface.urlOnly) {
+    // spawn-pi hands an MCP server config to the pi process. It doesn't
+    // build an allowedTools list — instead, it just points the pi at the
+    // operator's projected dispatcher URL, which exposes the full
+    // catalog. Verify the URL hookup.
+    check(`points at /api/mcp?superuser=1 (full operator catalog)`,
+      /\/api\/mcp\?superuser=1/.test(src));
+    check(`uses mcp-remote bridge (HTTP, not standalone stdio)`,
+      /mcp-remote/.test(src));
+    continue;
+  }
   const importsShared = /from\s+'@\/lib\/operator-mcp-tools'/.test(src);
   const effectiveSrc = importsShared ? src + '\n' + SHARED : src;
   for (const tool of REQUIRED) {
