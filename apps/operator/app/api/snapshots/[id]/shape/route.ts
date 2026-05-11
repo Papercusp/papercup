@@ -10,7 +10,12 @@
  */
 
 import { NextResponse } from 'next/server';
-import { readManifestFromTarball } from '@papercusp/export-state';
+import {
+  readManifestFromTarball,
+  effectiveVersionPin,
+  type SnapshotPlugin,
+  type SnapshotVersionPin,
+} from '@papercusp/export-state';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 
 export const dynamic = 'force-dynamic';
@@ -23,6 +28,7 @@ interface PluginManifestEntry {
   configJson?: string;
   shapeJson?: string;
   pluginVersionPinned?: boolean;
+  versionPin?: SnapshotVersionPin;
 }
 
 export async function GET(
@@ -56,10 +62,14 @@ export async function GET(
     if (p.configJson) {
       try { config = JSON.parse(p.configJson); } catch { /* skip */ }
     }
+    const vp = effectiveVersionPin(p as SnapshotPlugin);
     return {
       name: p.name,
       version: p.version,
-      pluginVersionPinned: p.pluginVersionPinned ?? true,
+      versionPin: vp,
+      // Back-compat for UI consumers that haven't migrated yet — both
+      // are advisory; new readers should use versionPin.
+      pluginVersionPinned: vp.mode === 'exact',
       shape,
       preservedConfig: config,
     };
