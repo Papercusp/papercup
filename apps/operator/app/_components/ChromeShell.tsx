@@ -166,9 +166,12 @@ export default function ChromeShell() {
           <a href="/installed/harnesses" {...navLinkProps('/installed/harnesses')}>Harnesses</a>
           <a href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</a>
           <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
-          <a href="/design" {...navLinkProps('/design')}>Design</a>
           <a href="/support" {...navLinkProps('/support')}>Support</a>
           <a href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</a>
+          {(() => {
+            const p = navLinkProps('/dev');
+            return <a href="/dev" {...p} className={`${p.className} is-dev`}>DEV</a>;
+          })()}
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
           <TutorialButton />
           <UpdateChip />

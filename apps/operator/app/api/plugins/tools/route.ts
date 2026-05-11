@@ -27,6 +27,8 @@ interface SerializedTool {
   roles?: string[];
   rolesQuota?: Record<string, { perChunk?: number; perRun?: number; perDay?: number }>;
   timeoutSec?: number;
+  /** JSON Schema for `arguments` — drives the /dev API-tab form builder. */
+  inputSchema: Record<string, unknown>;
   expose: {
     http?: { path: string; methods?: string[] };
     mcp?: { name: string; streaming?: boolean; largeOutput?: boolean };
@@ -55,6 +57,7 @@ export async function GET(request: Request) {
     roles: t.roles,
     rolesQuota: t.rolesQuota,
     timeoutSec: t.timeoutSec,
+    inputSchema: t.inputSchema,
     expose: {
       http: t.expose.http ? {
         path: t.expose.http.path,

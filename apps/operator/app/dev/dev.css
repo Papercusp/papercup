@@ -1,0 +1,344 @@
+/* /dev — developer console styles */
+
+.pc-dev-shell {
+  display: grid;
+  grid-template-columns: 240px 1fr 320px;
+  gap: 0;
+  min-height: calc(100vh - 60px);
+  background: var(--bg, #0a0e14);
+  color: var(--fg, #e7eef7);
+  font-size: 13px;
+}
+
+.pc-dev-left,
+.pc-dev-right {
+  background: rgba(255, 255, 255, 0.02);
+  border-right: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+  padding: 16px 12px;
+  overflow-y: auto;
+}
+.pc-dev-right {
+  border-right: none;
+  border-left: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+}
+
+.pc-dev-section {
+  margin-bottom: 24px;
+}
+.pc-dev-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-mute, #94a3b8);
+  margin-bottom: 8px;
+}
+
+.pc-dev-tab {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  margin: 2px 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.pc-dev-tab:hover {
+  background: rgba(125, 211, 252, 0.08);
+}
+.pc-dev-tab.is-active {
+  background: rgba(56, 189, 248, 0.16);
+  color: #7dd3fc;
+  font-weight: 600;
+}
+
+.pc-dev-ws-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pc-dev-ws-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pc-dev-main {
+  padding: 16px 20px;
+  overflow-y: auto;
+}
+
+.pc-dev-stub,
+.pc-dev-loading {
+  padding: 32px;
+  color: var(--fg-mute, #94a3b8);
+  font-style: italic;
+}
+
+.pc-dev-muted {
+  color: var(--fg-mute, #94a3b8);
+}
+
+.pc-dev-input {
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  color: inherit;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font: inherit;
+  width: 100%;
+  box-sizing: border-box;
+}
+.pc-dev-input:focus {
+  outline: 1px solid #7dd3fc;
+  border-color: #7dd3fc;
+}
+.pc-dev-input-multi {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 12px;
+}
+
+.pc-dev-btn-primary {
+  background: #38bdf8;
+  color: #0a0e14;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pc-dev-btn-primary:disabled {
+  opacity: 0.5;
+  cursor: progress;
+}
+
+/* ── API tab ────────────────────────────────────────── */
+
+.pc-dev-api {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  align-items: start;
+  min-height: 100%;
+}
+
+.pc-dev-api-sidebar {
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 76px);
+  overflow-y: auto;
+}
+.pc-dev-api-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  margin-bottom: 12px;
+}
+.pc-dev-toggles {
+  display: flex;
+  gap: 12px;
+}
+.pc-dev-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.pc-dev-api-group {
+  margin-bottom: 16px;
+}
+.pc-dev-api-group-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-mute, #94a3b8);
+  padding: 4px 6px;
+}
+
+.pc-dev-api-tool {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 4px 8px;
+  margin: 1px 0;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.pc-dev-api-tool:hover {
+  background: rgba(125, 211, 252, 0.08);
+}
+.pc-dev-api-tool.is-active {
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+  font-weight: 600;
+}
+.pc-dev-api-tool-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+}
+.pc-dev-api-tool-stats {
+  font-size: 10px;
+  color: var(--fg-mute, #94a3b8);
+}
+.pc-dev-api-err {
+  color: #f87171;
+}
+
+.pc-dev-api-detail {
+  padding: 0 4px;
+}
+.pc-dev-api-hint {
+  color: var(--fg-mute, #94a3b8);
+  font-style: italic;
+  padding: 24px 0;
+}
+.pc-dev-api-header {
+  margin-bottom: 16px;
+}
+.pc-dev-api-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 18px;
+  margin: 0 0 4px 0;
+}
+.pc-dev-api-meta {
+  font-size: 11px;
+  color: var(--fg-mute, #94a3b8);
+  display: flex;
+  gap: 6px;
+}
+.pc-dev-api-desc {
+  margin: 8px 0 0 0;
+  color: #cbd5e1;
+}
+
+.pc-dev-api-ctx,
+.pc-dev-api-args {
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+.pc-dev-api-ctx legend,
+.pc-dev-api-args legend {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-mute, #94a3b8);
+  padding: 0 6px;
+}
+
+.pc-dev-ctx-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+.pc-dev-ctx-grid label {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  gap: 2px;
+  color: var(--fg-mute, #94a3b8);
+}
+
+.pc-dev-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pc-dev-form-row {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.pc-dev-form-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 12px;
+  padding-top: 4px;
+}
+.pc-dev-req {
+  color: #f87171;
+  font-style: normal;
+  margin-left: 2px;
+}
+.pc-dev-form-hint {
+  margin-left: 4px;
+  cursor: help;
+  color: var(--fg-mute, #94a3b8);
+}
+
+.pc-dev-api-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pc-dev-api-response {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border-radius: 4px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 480px;
+  overflow-y: auto;
+}
+
+/* ── Right rail ────────────────────────────────────── */
+
+.pc-dev-rail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.pc-dev-rail-block {
+}
+.pc-dev-rail-h {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-mute, #94a3b8);
+  margin: 0 0 8px 0;
+}
+.pc-dev-rail-stats {
+  display: flex;
+  gap: 18px;
+}
+.pc-dev-rail-stats > div {
+  display: flex;
+  flex-direction: column;
+}
+.pc-dev-rail-stats strong {
+  font-size: 18px;
+}
+
+/* ── Header link tint ──────────────────────────────── */
+
+.pc-header-nav-link.is-dev {
+  color: #fbbf24;
+}
+.pc-header-nav-link.is-dev:hover {
+  color: #fde68a;
+}
