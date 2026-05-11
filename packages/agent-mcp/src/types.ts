@@ -72,6 +72,68 @@ export interface ToolResponse<T = unknown> {
   uiResources?: UIResourceContent[];
 }
 
+/**
+ * Per-tool guidance for the role's system prompt. Lives next to the tool
+ * (single source of truth) and is projected into the prompt for every
+ * role that's allowed to call it. Cross-tool patterns and workflows live
+ * in `<role>.tools.md`; this slot is for the per-tool answer to:
+ *   "When should the agent reach for me, when should it reach for a
+ *    sibling instead, and what should it pair me with?"
+ *
+ * All fields are optional in v1. CI sync flips `when` to required after
+ * the catalog-wide backfill lands.
+ */
+export interface ToolGuidance {
+  /**
+   * Primary trigger — "When user asks 'X' or 'Y'", or "When you need to
+   * Z". 1-2 lines. The MOST important field; aim to populate this first.
+   */
+  when?: string;
+  /**
+   * Disambiguation — "NOT for X; use `<other_tool>` instead". 1-2 lines.
+   * Populate when there's a sibling tool the model might confuse with
+   * this one (e.g. `harness:status` vs `harness_health` vs
+   * `escalations_get` all surface "what's going on with X").
+   */
+  notWhen?: string;
+  /**
+   * Pairing hint — "Chain after `<tool_a>` to get the id, then call
+   * me", or "Pair with `*_get` to drill down". Only when relevant.
+   */
+  chaining?: string;
+  /**
+   * Per-role override. Set ONLY the fields that differ from the base
+   * guidance; shallowly merged at projection time. Use sparingly — most
+   * tools share guidance across roles.
+   *
+   * Example: `harness:list` is used by operator as "show me my work"
+   * and by worker as "find the chunk I'm assigned to" — same tool,
+   * different framing.
+   */
+  byRole?: Partial<Record<AgentRole, Partial<Omit<ToolGuidance, 'byRole'>>>>;
+}
+
+/**
+ * Resolve a per-role view of `ToolGuidance` by merging `byRole[<role>]`
+ * over the base fields. Returns `null` when the base has no guidance and
+ * the role has no override (signals "render description only").
+ */
+export function resolveGuidance(
+  guidance: ToolGuidance | undefined,
+  role: AgentRole | null,
+): { when?: string; notWhen?: string; chaining?: string } | null {
+  if (!guidance) return null;
+  const base = {
+    when: guidance.when,
+    notWhen: guidance.notWhen,
+    chaining: guidance.chaining,
+  };
+  const override = role ? guidance.byRole?.[role] : undefined;
+  const merged = override ? { ...base, ...override } : base;
+  if (!merged.when && !merged.notWhen && !merged.chaining) return null;
+  return merged;
+}
+
 /** Tool definition produced by `defineTool`. */
 export interface ToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
   /** Tool name, e.g. `"tasks:list"`. Defaults to file-path-derived. */
@@ -86,6 +148,12 @@ export interface ToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
   args: TArgs;
   /** Implementation. Tools may return any data shape inside ToolResponse. */
   handler: (args: z.infer<TArgs>, ctx: ToolContext) => Promise<ToolResponse>;
+  /**
+   * Optional per-tool guidance for the role's system prompt.
+   * Projected into the prompt assembly by `assembleRolePrompt`.
+   * See `ToolGuidance` for shape.
+   */
+  guidance?: ToolGuidance;
 }
 
 /** Input shape for `defineTool` — same as ToolDefinition minus derived fields. */
@@ -97,6 +165,8 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
   capability: string;
   args: TArgs;
   handler: (args: z.infer<TArgs>, ctx: ToolContext) => Promise<ToolResponse>;
+  /** See `ToolGuidance`. */
+  guidance?: ToolGuidance;
 }
 
 /**
@@ -137,6 +207,8 @@ export interface RoleToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
     args: z.infer<TArgs>,
     ctx: UnifiedToolContext,
   ) => Promise<ToolResult | ToolResponse>;
+  /** See `ToolGuidance`. */
+  guidance?: ToolGuidance;
 }
 
 /** Input shape for role-gated `defineTool` — same as RoleToolDefinition minus derived fields. */
@@ -153,6 +225,8 @@ export interface RoleToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> 
     args: z.infer<TArgs>,
     ctx: UnifiedToolContext,
   ) => Promise<ToolResult | ToolResponse>;
+  /** See `ToolGuidance`. */
+  guidance?: ToolGuidance;
 }
 
 // ──────────────────────────────────────────────────────────────────────

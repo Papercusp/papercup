@@ -113,6 +113,7 @@ function definePrincipalGatedTool<TArgs extends ZodTypeAny>(
     tier,
     args: input.args,
     handler: input.handler,
+    guidance: input.guidance,
   };
 
   register(def);
@@ -158,6 +159,7 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
     timeoutSec: input.timeoutSec,
     args: input.args,
     handler: input.handler,
+    guidance: input.guidance,
   };
 
   registerRoleGatedAsProjected(def);
@@ -230,6 +232,7 @@ function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition
       http: { path: httpPath, methods: ['POST'] },
     },
     fn: projectedFn,
+    guidance: def.guidance as never,
   });
 }
 
@@ -289,5 +292,6 @@ function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
       http: { path: httpPath, methods: ['POST'] },
     },
     fn: projectedFn,
+    guidance: def.guidance as never,
   });
 }

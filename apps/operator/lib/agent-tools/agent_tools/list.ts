@@ -76,6 +76,14 @@ export default defineTool({
       rolesQuota: Record<string, unknown> | null;
       allowed: boolean;
       reason: string | null;
+      /**
+       * Per-tool guidance, resolved against the queried role (i.e.
+       * `byRole[role]` shallow-merged over the base). Null when the tool
+       * has no guidance authored. This is the runtime playbook the model
+       * consults when a tool isn't in `<role>.tools.md`. Phase 1a of the
+       * tool-guidance arc.
+       */
+      guidance: { when?: string; notWhen?: string; chaining?: string } | null;
     }> = [];
 
     for (const tool of listAllProjectedTools()) {
@@ -107,6 +115,12 @@ export default defineTool({
 
       if (onlyAllowed && !allowed) continue;
 
+      // Resolve per-role guidance: shallow-merge byRole[role] over base.
+      // Returns null when the tool has no guidance OR when every resolved
+      // field is empty — keeps the response payload small for the common
+      // un-migrated case.
+      const guidance = resolveProjectedGuidance(tool.guidance, role ?? null);
+
       out.push({
         name,
         description: tool.description,
@@ -119,6 +133,7 @@ export default defineTool({
         rolesQuota: (tool.rolesQuota as Record<string, unknown> | undefined) ?? null,
         allowed,
         reason,
+        guidance,
       });
 
       if (out.length >= limit) break;
@@ -146,4 +161,29 @@ function safeRegex(input: string): RegExp | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve per-tool guidance for a specific role. Shallow-merges
+ * `byRole[role]` over the base `{ when, notWhen, chaining }`. Returns
+ * null when there's nothing to surface — keeps the response compact for
+ * tools that haven't authored guidance yet.
+ */
+function resolveProjectedGuidance(
+  raw:
+    | {
+        when?: string;
+        notWhen?: string;
+        chaining?: string;
+        byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
+      }
+    | undefined,
+  role: string | null,
+): { when?: string; notWhen?: string; chaining?: string } | null {
+  if (!raw) return null;
+  const base = { when: raw.when, notWhen: raw.notWhen, chaining: raw.chaining };
+  const override = role && raw.byRole ? raw.byRole[role] : undefined;
+  const merged = override ? { ...base, ...override } : base;
+  if (!merged.when && !merged.notWhen && !merged.chaining) return null;
+  return merged;
 }

@@ -380,6 +380,105 @@ app.get('/runtime-config', async (c) => {
   });
 });
 
+// ── Backfill of /api/mobile routes mobile clients hit but Hono didn't
+// have. Added 2026-05-11 by mobile agent to unblock testing while
+// backend agent ports the same shape into their roadmap. Wire shapes
+// mirror papercup-rust-server/openapi.yaml. All gated by deviceAuth.
+
+app.get('/workspaces', async (c) => {
+  const claims = c.get('deviceClaims');
+  const reg = readRegistry();
+  // Field name `name` matches the openapi.yaml WorkspaceItem shape the
+  // Rust mobile client decodes; emitting `label` made the iOS Settings
+  // tab fail with ApiError::Decode.
+  return c.json({
+    workspaces: reg.workspaces.map((w) => ({
+      id: w.id,
+      name: w.name,
+      current: w.id === claims.workspace_id,
+    })),
+  });
+});
+
+// Note: paired-devices live at the pre-existing GET /devices and
+// DELETE /devices/:deviceId (above the runtime-config block). The
+// Rust client was updated to hit those rather than /desktop/devices,
+// which is pre-empted by the desktopAuth middleware at line 110.
+
+// Voice lease — only one device listens at a time. Phone pre-empts.
+app.get('/voice-lease', async (c) => {
+  const claims = c.get('deviceClaims');
+  const lease = await readVoiceLease(claims.workspace_id);
+  return c.json({ lease });
+});
+
+app.post('/voice-lease/claim', async (c) => {
+  const claims = c.get('deviceClaims');
+  await claimVoiceLease({
+    workspaceId: claims.workspace_id,
+    ownerKind: 'mobile',
+    ownerId: claims.sub,
+  });
+  return c.json({ ok: true });
+});
+
+app.post('/voice-lease/heartbeat', async (c) => {
+  const claims = c.get('deviceClaims');
+  await claimVoiceLease({
+    workspaceId: claims.workspace_id,
+    ownerKind: 'mobile',
+    ownerId: claims.sub,
+  });
+  return c.json({ ok: true });
+});
+
+app.delete('/voice-lease', async (c) => {
+  const claims = c.get('deviceClaims');
+  await releaseVoiceLease({
+    workspaceId: claims.workspace_id,
+    ownerId: claims.sub,
+  });
+  return c.json({ ok: true });
+});
+
+// Activity tab feeds.
+app.get('/notifications/recent', async (c) => {
+  const claims = c.get('deviceClaims');
+  const limit = Math.min(Number(c.req.query('limit') ?? '50') || 50, 200);
+  const rows = await recentToasts(claims.workspace_id, limit);
+  return c.json({ toasts: rows });
+});
+
+app.get('/actions/recent', async (c) => {
+  const claims = c.get('deviceClaims');
+  const limit = Math.min(Number(c.req.query('limit') ?? '50') || 50, 200);
+  const rows = await recentAuditEntries(claims.workspace_id, limit);
+  return c.json({ entries: rows });
+});
+
+// Global pause flag — get / set / clear.
+app.get('/operator/pause', async (_c) => {
+  return _c.json(await getPauseInfo());
+});
+
+app.post('/operator/pause', async (c) => {
+  const claims = c.get('deviceClaims');
+  await setPaused(claims.user_email ?? 'mobile');
+  return c.json(await getPauseInfo());
+});
+
+app.delete('/operator/pause', async (c) => {
+  await setResumed();
+  return c.json(await getPauseInfo());
+});
+
+// Heartbeat — bumps last_seen so the desktop "active 3m ago" badge stays green.
+app.post('/heartbeat', async (c) => {
+  const claims = c.get('deviceClaims');
+  await touchLastSeen(claims.sub, claims.workspace_id);
+  return c.json({ ok: true });
+});
+
 // ── Operator panel surface for mobile ──────────────────────────────────
 //
 // Mobile reads operator-suggestions over plain HTTP (vs Zero) because
@@ -475,6 +574,22 @@ async function shimHarnessAction(
     headers: { 'content-type': res.headers.get('content-type') ?? 'application/json' },
   });
 }
+
+// Harnesses tab — list every harness in the device's workspace.
+app.get('/harnesses', async (c) => {
+  const claims = c.get('deviceClaims');
+  const harnesses = await listHarnessesFor(claims.workspace_id);
+  return c.json({ harnesses });
+});
+
+// Per-harness status (the detail screen consumes this).
+app.get('/harnesses/:slug', async (c) => {
+  const claims = c.get('deviceClaims');
+  const slug = c.req.param('slug');
+  const status = await harnessStatusFor(claims.workspace_id, slug);
+  if (!status) return c.json({ error: 'harness_not_in_workspace' }, 404);
+  return c.json(status);
+});
 
 app.post('/harnesses/:slug/replan', async (c) => {
   const body = await c.req.json().catch(() => ({}));
