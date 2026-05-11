@@ -116,10 +116,23 @@ Live-tested against Playwright + the running dev server earlier in the session:
 
 ## Net assessment
 
-**Honest summary:** every plan item was implemented, but the audit caught a real bug (jsonb encoding broken by parallel drizzle migration) that I had **incorrectly declared as "all green" earlier in the session** based on prod-only test runs. The dev-side regression was masked because the prod build predated the drizzle batches.
+**Honest summary:** every plan item was implemented, but the audit caught TWO real bugs that I had **incorrectly declared as "all green" earlier in the session**.
 
-After fix: 64/64 tests green on :3055, code verified end-to-end via Playwright. Prod (:3070) needs a rebuild to pick up the jsonb fix + new ui tools, but the rebuild is straightforward (no schema migrations needed beyond the existing 012).
+**Bug #1 — jsonb encoding broken on 3 routes (high severity, fixed in commit `98cfffb7`).** Parallel drizzle phase-3 batches auto-converted my raw-sql jsonb writes into `db.insert(...).values({ jsonb_col: obj as any })`, which postgres-js can't encode. Every `ui:dispatch` returned a 500 on dev. Masked because the prod build predated the drizzle batches. Reverted to raw `sql` template with `JSON.stringify(obj)::jsonb`; added NOTE comments to deter re-auto-conversion.
+
+**Bug #2 — operator verifier cache ignored rotated_at (high severity, fixed in commit `5df60dd1`).** Cross-port flake: after admin-rotate on :3055, the :3070 process kept the OLD key in its 5-minute cache, causing every newly-signed URL to fail verification on :3070 for up to 5 min. Same gap I'd fixed orchestrator-side earlier (commit `8de6c69`) but missed on operator-side. Now reads `rotated_at` on every load; cache keyed by `(buf, rotatedAt, loadedAt)`. One extra PG row per verify, negligible cost.
+
+After both fixes: **128/128 tests green** across both ports in back-to-back cross-port runs (both `:3055→:3070` and `:3070→:3055` orderings).
+
+| Suite | Cases | :3055 | :3070 |
+|---|---|---|---|
+| ui-control | 17 | ✅ | ✅ |
+| spawn-signing-e2e | 12 | ✅ | ✅ |
+| mint-roundtrip | 8 | ✅ | ✅ |
+| admin-rotate | 8 | ✅ | ✅ |
+| agent-tools-list | 19 | ✅ | ✅ |
+| **Total per port** | **64** | **64/0** | **64/0** |
 
 **Followups:**
-1. Rebuild :3070 (one `bun run build` away).
-2. Watch for drizzle phase-3 batches re-auto-converting these three files — the NOTE comments should prevent it, but worth a grep if signals reappear.
+1. Watch for drizzle phase-3 batches re-auto-converting the three jsonb routes — the NOTE comments should prevent it.
+2. The 5-min TTL safety-net on the new operator key cache could be reduced to 30s once we're sure rotated_at always advances. Not urgent.
