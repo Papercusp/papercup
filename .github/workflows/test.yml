@@ -43,6 +43,15 @@ jobs:
           CI: 'true'
         run: node scripts/affected-tests.mjs --integration
 
+      # Drizzle drift: regenerate generated.ts from the live test PG and
+      # fail if it differs from HEAD. Proves `.sql` is the source of
+      # truth (PRs that forget to re-run pull-schema fail here).
+      # Reuses HARNESS_ADMIN_DATABASE_URL set up by the integration tests.
+      - name: Drizzle drift check (informational — does not gate)
+        if: always()
+        continue-on-error: true
+        run: npm run lint:drizzle-drift
+
       - name: Knip (informational — does not gate)
         if: always()
         continue-on-error: true
