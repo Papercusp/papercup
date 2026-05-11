@@ -41,7 +41,14 @@ export async function GET() {
     ]);
     // If kopia gave us a real packed size, prefer it over the PG-computed
     // bytes_added sum (which doesn't reflect maintenance/prune compaction).
-    const merged = kopiaStats ? { ...stats, bytesOnDisk: kopiaStats.totalSize } : stats;
+    // Recompute dedupRatio against the corrected bytesOnDisk.
+    const merged = kopiaStats
+      ? {
+          ...stats,
+          bytesOnDisk: kopiaStats.totalSize,
+          dedupRatio: stats.bytesRaw === 0 ? 0 : Math.max(0, 1 - kopiaStats.totalSize / stats.bytesRaw),
+        }
+      : stats;
     return NextResponse.json({ workspaceId: ws, settings, stats: merged });
   } catch (err) {
     return NextResponse.json({ error: String(err instanceof Error ? err.message : err) }, { status: 500 });
