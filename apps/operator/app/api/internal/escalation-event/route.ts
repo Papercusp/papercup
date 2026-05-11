@@ -14,6 +14,7 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -25,13 +26,16 @@ const he = generated.harness_escalationsInHarness_shared;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  escalation?: string | null;
-  supervisorNotes?: string | null;
-  phase?: string;
-}
+const BodySchema = z
+  .object({
+    escalation: z.string().nullable().optional(),
+    supervisorNotes: z.string().nullable().optional(),
+    phase: z.enum(['staging', 'testing', 'production']).optional().default('staging'),
+  })
+  .refine((d) => d.escalation != null || d.supervisorNotes != null, {
+    message: 'escalation or supervisorNotes required',
+  });
 
-const VALID_PHASES = new Set(['staging', 'testing', 'production']);
 const MAX_BODY = 256 * 1024;
 
 export async function POST(req: Request): Promise<Response> {
@@ -51,18 +55,19 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const phase = typeof body.phase === 'string' && VALID_PHASES.has(body.phase) ? body.phase : 'staging';
-  let escalation: string | null = body.escalation === null ? null
-    : (typeof body.escalation === 'string' ? body.escalation : null);
-  let supervisorNotes: string | null = body.supervisorNotes === null ? null
-    : (typeof body.supervisorNotes === 'string' ? body.supervisorNotes : null);
-  if (escalation === null && supervisorNotes === null) {
-    return NextResponse.json({ error: 'escalation or supervisorNotes required' }, { status: 400 });
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
+  const { phase } = parsed.data;
+  let escalation: string | null = parsed.data.escalation ?? null;
+  let supervisorNotes: string | null = parsed.data.supervisorNotes ?? null;
   if (escalation && Buffer.byteLength(escalation) > MAX_BODY) {
     escalation = escalation.slice(0, MAX_BODY) + '\n...[truncated]\n';
   }

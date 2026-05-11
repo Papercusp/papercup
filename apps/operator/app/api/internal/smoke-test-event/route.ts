@@ -13,6 +13,7 @@
  *     has decided pass vs fail.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -24,14 +25,14 @@ const hs = generated.harness_smoke_testInHarness_shared;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  status?: string;
-  passContent?: string;
-  failureContent?: string;
-  results?: unknown;
-  startupLog?: string;
-  mtimeMs?: number;
-}
+const BodySchema = z.object({
+  status: z.enum(['pass', 'fail']),
+  passContent: z.string().nullable().optional(),
+  failureContent: z.string().nullable().optional(),
+  results: z.unknown().optional(),
+  startupLog: z.string().nullable().optional(),
+  mtimeMs: z.number().int().nonnegative().optional(),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -50,19 +51,22 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const status = body.status === 'pass' ? 'pass' : body.status === 'fail' ? 'fail' : 'unknown';
-  if (status === 'unknown') {
-    return NextResponse.json({ error: "status must be 'pass' or 'fail'" }, { status: 400 });
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
-  const passContent = typeof body.passContent === 'string' ? body.passContent : null;
-  const failureContent = typeof body.failureContent === 'string' ? body.failureContent : null;
-  const startupLog = typeof body.startupLog === 'string' ? body.startupLog : null;
-  const resultsJson = body.results == null ? null : JSON.stringify(body.results);
-  const mtimeMs = typeof body.mtimeMs === 'number' ? Math.floor(body.mtimeMs) : Date.now();
+  const { status } = parsed.data;
+  const passContent = parsed.data.passContent ?? null;
+  const failureContent = parsed.data.failureContent ?? null;
+  const startupLog = parsed.data.startupLog ?? null;
+  const resultsJson = parsed.data.results == null ? null : JSON.stringify(parsed.data.results);
+  const mtimeMs = parsed.data.mtimeMs ?? Date.now();
 
   const ws = activeWorkspaceId();
   await db

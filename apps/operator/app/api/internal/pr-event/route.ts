@@ -10,6 +10,7 @@
  * Body: { featureId, url, state?, createdAt?, updatedAt? }
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -21,13 +22,13 @@ const fp = generated.harness_feature_prsInHarness_shared;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  featureId?: string;
-  url?: string;
-  state?: string;
-  createdAt?: number;
-  updatedAt?: number;
-}
+const BodySchema = z.object({
+  featureId: z.string().min(1),
+  url: z.string().min(1),
+  state: z.string().optional().default('unknown'),
+  createdAt: z.number().int().nonnegative().optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -46,18 +47,19 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const featureId = typeof body.featureId === 'string' ? body.featureId : '';
-  const url = typeof body.url === 'string' ? body.url : '';
-  if (!featureId || !url) {
-    return NextResponse.json({ error: 'featureId + url required' }, { status: 400 });
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
-  const state = typeof body.state === 'string' ? body.state : 'unknown';
-  const createdAt = typeof body.createdAt === 'number' ? Math.floor(body.createdAt) : Math.floor(Date.now() / 1000);
-  const updatedAt = typeof body.updatedAt === 'number' ? Math.floor(body.updatedAt) : createdAt;
+  const { featureId, url, state } = parsed.data;
+  const createdAt = parsed.data.createdAt ?? Math.floor(Date.now() / 1000);
+  const updatedAt = parsed.data.updatedAt ?? createdAt;
 
   const ws = activeWorkspaceId();
   await db
