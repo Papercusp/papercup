@@ -154,6 +154,30 @@ export async function getExpertSpec(
   return { ok: true, data: { content: rows[0].spec_content ?? '' } };
 }
 
+// ── assertions content only ────────────────────────────────────────
+// Mirror of getExpertSpec for the assertions_content column added in
+// libs/db/sql/057-expert-assertions.sql. Experts write this during
+// finalization; phase-2 scoper merges them into validation-contract.md
+// verbatim (instead of re-deriving assertions from prose).
+
+export async function getExpertAssertions(
+  slug: string,
+  expertId: string,
+): Promise<Result<{ content: string }>> {
+  const projectDir = await lookupProjectDir(slug);
+  if (!projectDir) return { ok: false, status: 404, error: 'unknown harness' };
+  if (!EXPERT_ID_RE.test(expertId)) return { ok: false, status: 400, error: 'invalid expert id' };
+  const { db } = getOrgPg();
+  const ws = activeWorkspaceId();
+  const rows = await db
+    .select({ assertions_content: he.assertionsContent })
+    .from(he)
+    .where(and(eq(he.workspaceId, ws), eq(he.harnessSlug, slug), eq(he.expertId, expertId)))
+    .limit(1);
+  if (rows.length === 0) return { ok: false, status: 404, error: 'expert not found' };
+  return { ok: true, data: { content: rows[0].assertions_content ?? '' } };
+}
+
 // ── feedback list ──────────────────────────────────────────────────
 
 export async function listExpertFeedback(

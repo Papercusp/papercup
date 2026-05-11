@@ -913,6 +913,40 @@ export function registerExperts(harness: Hono): void {
     return c.json({ ok: true });
   });
 
+  // ── Read assertions.md ───────────────────────────────────────────────
+  harness.get('/:slug/experts/:expertId/assertions', async (c) => {
+    const { getExpertAssertions } = await import('@/lib/experts-data');
+    const result = await getExpertAssertions(c.req.param('slug'), c.req.param('expertId'));
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
+  });
+
+  // ── Write assertions.md (expert finalization output) ─────────────────
+  // Phase-2 scoper merges these into .harness/validation-contract.md
+  // verbatim instead of re-deriving assertions from SPEC.md prose.
+  harness.put('/:slug/experts/:expertId/assertions', async (c) => {
+    const slug = c.req.param('slug');
+    const projectDir = await lookupProjectDir(slug);
+    if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
+    const expertId = c.req.param('expertId');
+    if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
+    const body = await c.req.json().catch(() => ({})) as { content?: string };
+    if (typeof body.content !== 'string') return c.json({ error: 'content required' }, 400);
+    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const ws = activeWorkspaceId();
+    const updated = await sql<{ updated: boolean }[]>`
+      UPDATE harness_shared.harness_experts
+         SET assertions_content = ${body.content},
+             updated_at          = ${Date.now()}
+       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
+         AND expert_id    = ${expertId}
+      RETURNING TRUE AS updated
+    `;
+    if (updated.length === 0) return c.json({ error: 'expert not found' }, 404);
+    void notifySyncInvalidate('harnessIdentity').catch(() => {});
+    return c.json({ ok: true });
+  });
+
   // ── List feedback conversations ──────────────────────────────────────
   harness.get('/:slug/experts/:expertId/feedback', async (c) => {
     const { listExpertFeedback } = await import('@/lib/experts-data');
