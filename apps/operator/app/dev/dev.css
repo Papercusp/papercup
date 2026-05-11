@@ -1328,3 +1328,23 @@
   font-size: 12px;
   cursor: pointer;
 }
+
+.pc-tables-slug-link {
+  color: #fbbf24;
+  text-decoration: none;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-tables-slug-link:hover {
+  color: #fcd34d;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.pc-tables-slug-arrow {
+  opacity: 0.7;
+  font-size: 0.85em;
+  margin-left: 1px;
+}

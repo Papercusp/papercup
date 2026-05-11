@@ -509,9 +509,20 @@ export default function TablesTab() {
                           {Object.keys(rows.rows[0]).map((k) => {
                             const fk = fkBySourceColumn.get(k);
                             const value = r[k];
+                            const slugLink = isHarnessSlugCell(k, value);
                             return (
                               <td key={k}>
-                                {fk && value !== null && value !== undefined ? (
+                                {slugLink ? (
+                                  <a
+                                    href={`/harness?slug=${encodeURIComponent(String(value))}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="pc-tables-slug-link"
+                                    title={`Open harness "${value}" in dashboard ↗`}
+                                  >
+                                    {renderCell(value)} <span className="pc-tables-slug-arrow">↗</span>
+                                  </a>
+                                ) : fk && value !== null && value !== undefined ? (
                                   <button
                                     type="button"
                                     className="pc-tables-fklink"
@@ -641,6 +652,12 @@ function coerceHint(col: ColumnSummary): string {
   }
   if (t === 'PgBoolean') return 'true / false';
   return 'text';
+}
+
+function isHarnessSlugCell(colName: string, value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  if (typeof value !== 'string') return false;
+  return colName === 'harness_slug' || colName === 'install_slug';
 }
 
 function valueToLabel(v: unknown): string {
