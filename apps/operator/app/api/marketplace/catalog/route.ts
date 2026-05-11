@@ -60,6 +60,21 @@ function makeIsHidden(hidden: Set<string>) {
 // Fallback catalog (loaded from ./fallback-catalog.json at module
 // import) used when the marketplace server is unreachable.
 
+async function fetchPopularity(base: string): Promise<Map<string, number>> {
+  try {
+    const r = await fetch(`${base}/v1/popular?limit=100`, { cache: 'no-store', signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return new Map();
+    const d = await r.json();
+    const map = new Map<string, number>();
+    for (const p of (d.packages ?? []) as Array<{ slug: string; downloads: number }>) {
+      map.set(p.slug, Number(p.downloads) || 0);
+    }
+    return map;
+  } catch {
+    return new Map();
+  }
+}
+
 export async function GET() {
   const isHidden = makeIsHidden(await getHiddenBasenames());
   const base = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
@@ -72,29 +87,36 @@ export async function GET() {
       if (!r.ok) continue;
       const d = await r.json();
       const upstream = (d.catalog ?? []) as any[];
+      // Fetch popularity in parallel so the catalog can sort by it without
+      // an N+1 round-trip per row. Missing data → 0 (graceful degradation).
+      const popularity = path === '/v1/catalog' ? await fetchPopularity(base) : new Map<string, number>();
       // Reshape from marketplace's `{name, version, ...}` to UI's `{slug, name, install, ...}`.
       const items = upstream
         .filter((m: any) => !isHidden(m.slug ?? m.name))
-        .map((m: any) => ({
-          slug: m.slug ?? m.name,
-          name: m.name ?? m.slug,
-          version: m.version,
-          description: m.description ?? '',
-          author: m.author ?? 'unknown',
-          license: m.license ?? 'unspecified',
-          plugins: m.plugins ?? [],
-          homepage: m.homepage ?? null,
-          topology: m.topology ?? 'single',
-          subprojects: Array.isArray(m.subprojects) ? m.subprojects : [],
-          kind: m.kind ?? 'template',
-          icon: m.icon ?? null,
-          requiresTemplateKinds: Array.isArray(m.requiresTemplateKinds) ? m.requiresTemplateKinds : [],
-          retracted: m.retracted,
-          install: `papercusp install ${m.slug ?? m.name}`,
-          source: 'live',
-          publishedAt: m.publishedAt ?? null,
-          publishedBy: m.publishedBy ?? null,
-        }));
+        .map((m: any) => {
+          const slug = m.slug ?? m.name;
+          return {
+            slug,
+            name: m.name ?? m.slug,
+            version: m.version,
+            description: m.description ?? '',
+            author: m.author ?? 'unknown',
+            license: m.license ?? 'unspecified',
+            plugins: m.plugins ?? [],
+            homepage: m.homepage ?? null,
+            topology: m.topology ?? 'single',
+            subprojects: Array.isArray(m.subprojects) ? m.subprojects : [],
+            kind: m.kind ?? 'template',
+            icon: m.icon ?? null,
+            requiresTemplateKinds: Array.isArray(m.requiresTemplateKinds) ? m.requiresTemplateKinds : [],
+            retracted: m.retracted,
+            install: `papercusp install ${slug}`,
+            source: 'live',
+            publishedAt: m.publishedAt ?? null,
+            publishedBy: m.publishedBy ?? null,
+            popularity30d: popularity.get(slug) ?? 0,
+          };
+        });
       return NextResponse.json({ catalog: items, source: path === '/v1/catalog' ? 'marketplace-db' : 'marketplace-fs' });
     } catch {
       continue;
