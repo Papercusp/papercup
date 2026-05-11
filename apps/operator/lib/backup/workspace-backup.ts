@@ -669,6 +669,36 @@ export class WorkspaceBackup {
     });
   }
 
+  /**
+   * Same as kopia() but always returns the full command transcript
+   * (cmd, stdout, stderr, exit, durationMs) instead of throwing.
+   * Used by the /dev terminal so developers can see exactly what ran.
+   */
+  async kopiaTraced(args: string[]): Promise<{
+    command: string; exitCode: number; stdout: string; stderr: string; durationMs: number;
+  }> {
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+    const start = Date.now();
+    return new Promise((resolve) => {
+      const child = spawn(KOPIA_BIN, args, { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const out: Buffer[] = []; const err: Buffer[] = [];
+      child.stdout.on('data', (d) => out.push(d));
+      child.stderr.on('data', (d) => err.push(d));
+      child.on('error', (e) => resolve({
+        command: `${KOPIA_BIN} ${args.join(' ')}`,
+        exitCode: -1, stdout: '', stderr: String(e), durationMs: Date.now() - start,
+      }));
+      child.on('close', (code) => resolve({
+        command: `${KOPIA_BIN} ${args.join(' ')}`,
+        exitCode: code ?? -1,
+        stdout: Buffer.concat(out).toString('utf8'),
+        stderr: Buffer.concat(err).toString('utf8'),
+        durationMs: Date.now() - start,
+      }));
+    });
+  }
+
   private async kopiaTry(
     args: string[],
     opts: { env: NodeJS.ProcessEnv },

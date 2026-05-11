@@ -40,6 +40,10 @@ function fmtAgo(iso: string | null): string {
 
 export default function BackupsTab() {
   interface EventRow { id: number; snapshotId: number | null; kind: string; payload: unknown; at: string; }
+  interface Trace { command: string; exitCode: number; stdout: string; stderr: string; durationMs: number; }
+  const [terminal, setTerminal] = useState<Array<Trace & { startedAt: string }>>([]);
+  const appendTrace = (t: Trace) =>
+    setTerminal((prev) => [{ ...t, startedAt: new Date().toISOString() }, ...prev].slice(0, 50));
   const [stats, setStats] = useState<RepoStats | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([]);
   const [failures, setFailures] = useState<SnapshotInfo[]>([]);
@@ -93,7 +97,9 @@ export default function BackupsTab() {
     setBusy(label);
     try {
       const r = await fn();
-      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+      const json = await r.json().catch(() => ({}));
+      if (json.trace) appendTrace(json.trace as Trace);
+      if (!r.ok) throw new Error(json.error ?? `HTTP ${r.status}`);
       toast.success(`${label} ok`);
       await load();
     } catch (err) {
@@ -117,14 +123,19 @@ export default function BackupsTab() {
   const doRestore = useCallback(async () => {
     if (!restorePick) return;
     setBusy('restore');
+    const start = Date.now();
     try {
       const r = await fetch('/api/backups/restore', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ kopiaSnapshotId: restorePick }),
       });
-      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
-      const d = await r.json() as { result: { targetPath: string } };
+      const d = await r.json();
+      if (!r.ok) {
+        appendTrace({ command: `POST /api/backups/restore ${restorePick.slice(0, 12)}…`, exitCode: 1, stdout: '', stderr: d.error ?? `HTTP ${r.status}`, durationMs: Date.now() - start });
+        throw new Error(d.error ?? `HTTP ${r.status}`);
+      }
+      appendTrace({ command: `POST /api/backups/restore ${restorePick.slice(0, 12)}…`, exitCode: 0, stdout: `restored to ${d.result.targetPath}`, stderr: '', durationMs: Date.now() - start });
       setLastRestoredPath(d.result.targetPath);
       toast.success(`restored to ${d.result.targetPath}`);
     } catch (err) {
@@ -143,14 +154,19 @@ export default function BackupsTab() {
       + `Restored: ${lastRestoredPath}`,
     )) return;
     setBusy('promote');
+    const start = Date.now();
     try {
       const r = await fetch('/api/backups/promote', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ restoredPath: lastRestoredPath }),
       });
-      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
-      const d = await r.json() as { result: { broken: string; live: string } };
+      const d = await r.json();
+      if (!r.ok) {
+        appendTrace({ command: `POST /api/backups/promote`, exitCode: 1, stdout: '', stderr: d.error ?? `HTTP ${r.status}`, durationMs: Date.now() - start });
+        throw new Error(d.error ?? `HTTP ${r.status}`);
+      }
+      appendTrace({ command: `POST /api/backups/promote`, exitCode: 0, stdout: `live → ${d.result.broken}\nrestored → ${d.result.live}`, stderr: '', durationMs: Date.now() - start });
       toast.success(`promoted; old live moved to ${d.result.broken}`);
       setLastRestoredPath(null);
     } catch (err) {
@@ -200,8 +216,41 @@ export default function BackupsTab() {
         <button type="button" disabled={!!busy} onClick={maintenanceQuick}>Quick maintenance</button>
         <button type="button" disabled={!!busy} onClick={maintenanceFull}>Full maintenance</button>
         <button type="button" disabled={!!busy} onClick={verify}>Verify</button>
-        <button type="button" onClick={() => iframeRef.current?.contentWindow?.location.reload()}>Reload kopia UI</button>
+        <button
+          type="button"
+          onClick={() => {
+            const url = server?.url ?? '(not started)';
+            try {
+              iframeRef.current?.contentWindow?.location.reload();
+              appendTrace({ command: `iframe.contentWindow.location.reload()`, exitCode: 0, stdout: `Reloaded ${url}`, stderr: '', durationMs: 0 });
+            } catch (e) {
+              appendTrace({ command: `iframe.contentWindow.location.reload()`, exitCode: 1, stdout: '', stderr: String(e), durationMs: 0 });
+            }
+          }}
+        >Reload kopia UI</button>
       </div>
+
+      <section className="pc-dev-backups-terminal">
+        <header>
+          <h3>Terminal — last {terminal.length} action{terminal.length === 1 ? '' : 's'}</h3>
+          {terminal.length > 0 && (
+            <button type="button" onClick={() => setTerminal([])}>Clear</button>
+          )}
+        </header>
+        {terminal.length === 0 ? (
+          <p className="pc-dev-backups-note">Click an action button above — the command, exit code, stdout, and stderr show up here.</p>
+        ) : (
+          <pre className="pc-dev-api-response">
+            {terminal.map((t) => [
+              `[${t.startedAt.slice(11, 19)}] $ ${t.command}`,
+              `  exit=${t.exitCode}  duration=${t.durationMs}ms`,
+              t.stdout ? `  ── stdout ──\n${t.stdout.split('\n').map((l) => '    ' + l).join('\n')}` : '',
+              t.stderr ? `  ── stderr ──\n${t.stderr.split('\n').map((l) => '    ' + l).join('\n')}` : '',
+              '',
+            ].filter(Boolean).join('\n')).join('\n')}
+          </pre>
+        )}
+      </section>
 
       {server && (
         <iframe
@@ -273,13 +322,19 @@ export default function BackupsTab() {
                 onClick={async () => {
                   if (!confirm(`Rollback this promotion?\n\nCurrent live becomes .rolled-back-<ts>-<name>/.\nReversible.\n\n${b.path}`)) return;
                   setBusy(`rollback:${b.path}`);
+                  const start = Date.now();
                   try {
                     const r = await fetch('/api/backups/rollback', {
                       method: 'POST',
                       headers: { 'content-type': 'application/json' },
                       body: JSON.stringify({ brokenPath: b.path }),
                     });
-                    if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+                    const d = await r.json();
+                    if (!r.ok) {
+                      appendTrace({ command: `POST /api/backups/rollback`, exitCode: 1, stdout: '', stderr: d.error ?? `HTTP ${r.status}`, durationMs: Date.now() - start });
+                      throw new Error(d.error ?? `HTTP ${r.status}`);
+                    }
+                    appendTrace({ command: `POST /api/backups/rollback`, exitCode: 0, stdout: `live → ${d.result.liveBefore}\nbroken restored → ${d.result.liveAfter}`, stderr: '', durationMs: Date.now() - start });
                     toast.success('rolled back');
                     await load();
                   } catch (err) {

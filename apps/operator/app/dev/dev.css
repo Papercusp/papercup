@@ -1315,3 +1315,16 @@
   min-width: 70px;
   font-size: 12px;
 }
+
+.pc-dev-backups-terminal { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; }
+.pc-dev-backups-terminal header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.pc-dev-backups-terminal header h3 { margin: 0; }
+.pc-dev-backups-terminal header button {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.7);
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}

@@ -35,8 +35,34 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const { reason, context } = PostSchema.parse(body);
     const wb = workspaceBackupFor(activeWorkspaceId());
-    const result = await wb.snapshot(reason, context);
-    return NextResponse.json({ result });
+    const start = Date.now();
+    try {
+      const result = await wb.snapshot(reason, context);
+      // Synthesize a trace so the /dev terminal can show what happened
+      // even though the lifecycle is multi-step (hook + kopia + sync).
+      const trace = {
+        command: `WorkspaceBackup.snapshot(${reason})`,
+        exitCode: 0,
+        stdout: [
+          `pre-snapshot hook: pg_dumpall :16534 → db-dumps/pg-embedded.sql.gz`,
+          `kopia snapshot create ${result.kopiaSnapshotId.slice(0, 12)}…`,
+          `bytes_added=${result.bytesAdded} duration=${result.durationMs}ms`,
+          `→ backup_snapshots row id=${result.snapshotId}`,
+        ].join('\n'),
+        stderr: '',
+        durationMs: Date.now() - start,
+      };
+      return NextResponse.json({ result, trace });
+    } catch (err) {
+      const trace = {
+        command: `WorkspaceBackup.snapshot(${reason})`,
+        exitCode: 1,
+        stdout: '',
+        stderr: String(err instanceof Error ? err.message : err),
+        durationMs: Date.now() - start,
+      };
+      return NextResponse.json({ trace, error: trace.stderr }, { status: 500 });
+    }
   } catch (err) {
     return NextResponse.json({ error: String(err instanceof Error ? err.message : err) }, { status: 500 });
   }
