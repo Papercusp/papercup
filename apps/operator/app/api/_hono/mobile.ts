@@ -388,10 +388,13 @@ app.get('/runtime-config', async (c) => {
 app.get('/workspaces', async (c) => {
   const claims = c.get('deviceClaims');
   const reg = readRegistry();
+  // Field name `name` matches the openapi.yaml WorkspaceItem shape the
+  // Rust mobile client decodes; emitting `label` made the iOS Settings
+  // tab fail with ApiError::Decode.
   return c.json({
     workspaces: reg.workspaces.map((w) => ({
       id: w.id,
-      label: w.name,
+      name: w.name,
       current: w.id === claims.workspace_id,
     })),
   });
@@ -571,6 +574,22 @@ async function shimHarnessAction(
     headers: { 'content-type': res.headers.get('content-type') ?? 'application/json' },
   });
 }
+
+// Harnesses tab — list every harness in the device's workspace.
+app.get('/harnesses', async (c) => {
+  const claims = c.get('deviceClaims');
+  const harnesses = await listHarnessesFor(claims.workspace_id);
+  return c.json({ harnesses });
+});
+
+// Per-harness status (the detail screen consumes this).
+app.get('/harnesses/:slug', async (c) => {
+  const claims = c.get('deviceClaims');
+  const slug = c.req.param('slug');
+  const status = await harnessStatusFor(claims.workspace_id, slug);
+  if (!status) return c.json({ error: 'harness_not_in_workspace' }, 404);
+  return c.json(status);
+});
 
 app.post('/harnesses/:slug/replan', async (c) => {
   const body = await c.req.json().catch(() => ({}));
