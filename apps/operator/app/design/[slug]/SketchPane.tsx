@@ -12,6 +12,7 @@
  * → sketch here → save → re-loadable from the prior-sketches list.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 
@@ -35,7 +36,7 @@ export default function SketchPane({
   const workspaceId = useWorkspaceId();
   const queryClient = useQueryClient();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
+  const [tool, setTool] = useQueryState('sketchTool', parseAsStringEnum<'pen' | 'eraser'>(['pen', 'eraser']).withDefault('pen'));
   const [color, setColor] = useState('#111827');
   const [lineWidth, setLineWidth] = useState(2);
   const [drawing, setDrawing] = useState(false);

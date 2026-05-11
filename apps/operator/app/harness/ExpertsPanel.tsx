@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useQueryState, parseAsBoolean } from 'nuqs';
+import { useQueryState, parseAsBoolean, parseAsStringEnum, parseAsJson } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -71,7 +71,21 @@ type Selection =
 export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: string; onClose: () => void }) {
   const [experts, setExperts] = useState<ExpertSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selection, setSelection] = useState<Selection>(null);
+  // Selected expert or dispatch — JSON-encoded in the URL since it's a
+  // discriminated union of {kind:'expert', id} | {kind:'dispatch', uaId, label}.
+  // Agents can read this via ui:get_state's params.expertSel and rewrite via set_url.
+  const [selection, setSelection] = useQueryState(
+    'expertSel',
+    parseAsJson<Exclude<Selection, null>>((v) => {
+      if (typeof v !== 'object' || v === null) throw new Error('not an object');
+      const o = v as Record<string, unknown>;
+      if (o.kind === 'expert' && typeof o.id === 'string') return { kind: 'expert', id: o.id };
+      if (o.kind === 'dispatch' && typeof o.uaId === 'number' && typeof o.label === 'string') {
+        return { kind: 'dispatch', uaId: o.uaId, label: o.label };
+      }
+      throw new Error('invalid selection shape');
+    }),
+  );
   const [refreshKey, setRefreshKey] = useState(0);
   // Modal-open is URL-backed so agents can open/close it via `set_url`.
   const [showSpawn, setShowSpawn] = useQueryState('spawnExpert', parseAsBoolean.withDefault(false));
@@ -216,7 +230,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
   const [detail, setDetail] = useState<ExpertDetail | null>(null);
   const [feedback, setFeedback] = useState<FeedbackEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<'spec' | 'feedback' | 'chat' | 'identity'>('spec');
+  const [tab, setTab] = useQueryState('expertTab', parseAsStringEnum<'spec' | 'feedback' | 'chat' | 'identity'>(['spec', 'feedback', 'chat', 'identity']).withDefault('spec'));
 
   // Eager: per-expert identity + SPEC.md content live in
   // harness_shared.harness_experts (mirrored by harness-fs-watcher).
@@ -878,7 +892,7 @@ function AutonomousExpertsSection({
     startedAt: number;
     finishedAt?: number | null;
   }
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useQueryState('dispatchList', parseAsBoolean.withDefault(true));
   const selectedUaId = selection?.kind === 'dispatch' ? selection.uaId : null;
   const workspaceId = useWorkspaceId();
   const { data: zeroRows } = useSyncQuery<DispatchRow & { kind: string; status: string }>({

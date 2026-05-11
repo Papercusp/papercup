@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import dynamic from 'next/dynamic';
 import { Drawer } from 'vaul';
 import { X, ArrowUpRight, MessageSquarePlus } from 'lucide-react';
@@ -41,7 +42,7 @@ export function IssueDetail({
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
-  const [showTimeline, setShowTimeline] = useState(false);
+  const [showTimeline, setShowTimeline] = useQueryState('issueTimeline', parseAsBoolean.withDefault(false));
   const { data: agentRows } = useSyncQuery<IssueAgentRun>({
     queryName: 'agentRunsConsolidated.bySlug',
     args: { harnessSlug: slug },

@@ -1899,7 +1899,7 @@ function PluginConfigEditor({ harnessSlug, dirSlug, configPath, configSchema, de
   defaultConfig?: Record<string, unknown>;
 }) {
   const open = true;
-  const [mode, setMode] = useState<'fields' | 'json'>('fields');
+  const [mode, setMode] = useQueryState('editorMode', parseAsStringEnum<'fields' | 'json'>(['fields', 'json']).withDefault('fields'));
   const [loaded, setLoaded] = useState<Record<string, unknown> | null>(null);
   const [draftJson, setDraftJson] = useState<string>('');
   const [serverError, setServerError] = useState<string | null>(null);
@@ -2298,7 +2298,8 @@ export default function HarnessDashboard() {
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
-  const [activeSlug, setActiveSlug] = useState<string | null>(null);
+  // Selected harness — deep-link via ?slug=, agent-visible via ui:get_state.
+  const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
 
   // Plugin tabs (P7): when PAPERCUSP_TABS_FROM_PLUGINS=1 is set on the
   // substrate process, the docs/vscode/pi tabs come from installed plugins
@@ -3361,13 +3362,13 @@ export default function HarnessDashboard() {
   useShortcut('shortcuts.show', () => setShowShortcutsCheatSheet(true));
 
   // Linear-style `g <letter>` two-stroke tab navigation.
-  useShortcut('goto.dashboard', () => activeSlug && setActivePanel('dashboard'), {}, [activeSlug]);
-  useShortcut('goto.summary', () => activeSlug && setActivePanel('summary'), {}, [activeSlug]);
-  useShortcut('goto.config', () => activeSlug && setActivePanel('config'), {}, [activeSlug]);
-  useShortcut('goto.brainstorm', () => activeSlug && setActivePanel('brainstorm'), {}, [activeSlug]);
-  useShortcut('goto.proposals', () => activeSlug && setActivePanel('proposals'), {}, [activeSlug]);
-  useShortcut('goto.experts', () => activeSlug && setActivePanel('experts'), {}, [activeSlug]);
-  useShortcut('goto.insights', () => activeSlug && setActivePanel('insights'), {}, [activeSlug]);
+  useShortcut('goto.dashboard', () => { if (activeSlug) void setActivePanel('dashboard'); }, {}, [activeSlug]);
+  useShortcut('goto.summary', () => { if (activeSlug) void setActivePanel('summary'); }, {}, [activeSlug]);
+  useShortcut('goto.config', () => { if (activeSlug) void setActivePanel('config'); }, {}, [activeSlug]);
+  useShortcut('goto.brainstorm', () => { if (activeSlug) void setActivePanel('brainstorm'); }, {}, [activeSlug]);
+  useShortcut('goto.proposals', () => { if (activeSlug) void setActivePanel('proposals'); }, {}, [activeSlug]);
+  useShortcut('goto.experts', () => { if (activeSlug) void setActivePanel('experts'); }, {}, [activeSlug]);
+  useShortcut('goto.insights', () => { if (activeSlug) void setActivePanel('insights'); }, {}, [activeSlug]);
 
 
   // Keep peekFeature in sync with latest features data so status transitions
@@ -4220,7 +4221,7 @@ export default function HarnessDashboard() {
           {status && (
             <InsightsPanel
               inline
-              slug={activeSlug}
+              slug={activeSlug ?? undefined}
               features={status.features as any}
               totalCostUsd={status.missionCostUsd ?? 0}
               totalInputTokens={status.missionInputTokens ?? 0}
@@ -4779,7 +4780,7 @@ export function SingleSubpanelHeader({ id, label }: { id: 'inbox' | 'git'; label
 // ─── Tabbed Issues panel ──────────────────────────────────────────
 
 function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string; phase: Phase }) {
-  const [tab, setTab] = useState<'issues' | 'report' | 'tests'>('issues');
+  const [tab, setTab] = useQueryState('validationTab', parseAsStringEnum<'issues' | 'report' | 'tests'>(['issues', 'report', 'tests']).withDefault('issues'));
   const [issueCount, setIssueCount] = useState<number | null>(null);
 
   // Wrap with `<Panel>` so the maximize/restore button (provided by

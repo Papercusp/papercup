@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Bell, X, Trash2 } from 'lucide-react';
 import { useSyncQuery } from '@restart/sync';
 
@@ -38,7 +39,7 @@ type ToastLogRow = {
  * opened (tracked in localStorage).
  */
 export function NotificationCenter() {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useQueryState('notifications', parseAsBoolean.withDefault(false));
   // Source of truth is `harness_shared.operator_user_profile.toast_last_seen_ms`
   // (PG, surfaced via /api/profile). localStorage is a per-device cache for
   // instant initial render; on mount we GET /api/profile and overwrite if PG

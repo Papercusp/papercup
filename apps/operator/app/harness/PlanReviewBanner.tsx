@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { createPortal } from 'react-dom';
 import { useSyncQuery } from '@restart/sync';
 import { MarkdownPreview } from '../_components/MarkdownEditor';
@@ -39,8 +40,8 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
     () => planReviewRows?.[0]?.content || null,
     [planReviewRows],
   );
-  const [open, setOpen] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
+  const [open, setOpen] = useQueryState('planReview', parseAsBoolean.withDefault(false));
+  const [dismissed, setDismissed] = useQueryState('planDismissed', parseAsBoolean.withDefault(false));
   const bannerRef = useRef<HTMLDivElement | null>(null);
   const [popoverRect, setPopoverRect] = useState<{ top: number; left: number } | null>(null);
 

@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
@@ -59,7 +60,7 @@ function fmtTs(ts: number): string {
 }
 
 export default function DecisionsPanel({ slug, onClose }: Props) {
-  const [hideGhosts, setHideGhosts] = useState(false);
+  const [hideGhosts, setHideGhosts] = useQueryState('hideGhosts', parseAsBoolean.withDefault(false));
 
   // Live-pushed via Zero (harness_shared.harness_decisions, parsed from
   // .harness/logs/run.log tail by harness-fs-watcher.ts). Replaces

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Activity, X } from 'lucide-react';
 import { OperatorActionLog, prefetchRecentActions } from './OperatorActionLog';
 
@@ -42,7 +43,7 @@ function readActiveSlug(): string | null {
 }
 
 export function RecentActionsCenter() {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useQueryState('recent', parseAsBoolean.withDefault(false));
   const [slug, setSlug] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import { z } from 'zod';
@@ -43,7 +44,7 @@ export default function OperatorSettingsPage() {
   const [filter, setFilter] = useState<FilterMode>('all');
   const [loading, setLoading] = useState(true);
 
-  const [statsOpen, setStatsOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useQueryState('stats', parseAsBoolean.withDefault(false));
   const { control, submit, reset, isSubmitting } = useFormWith(ConfigSchema, {
     defaultValues: { prompt_user: '', preferences: '' },
   });

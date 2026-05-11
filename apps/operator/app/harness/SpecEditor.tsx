@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import { Modal } from './Modal';
 import Editor from '@monaco-editor/react';
@@ -54,7 +54,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   );
   const [original, setOriginal] = useState<Record<SimpleTab, string | null>>({ spec: null, agents: null, contract: null, config: null, knowledge: null, mcp: null, supervisor: null, claudeSettings: null, env: null });
   const [draft, setDraft] = useState<Record<SimpleTab, string>>({ spec: '', agents: '', contract: '', config: '', knowledge: '', mcp: '', supervisor: '', claudeSettings: '', env: '' });
-  const [envRevealed, setEnvRevealed] = useState(false);
+  const [envRevealed, setEnvRevealed] = useQueryState('showEnv', parseAsBoolean.withDefault(false));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);

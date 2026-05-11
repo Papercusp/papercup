@@ -9,7 +9,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
-import { useQueryState, parseAsString } from 'nuqs';
+import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useProgress } from '@bprogress/next';
 import {
   Workspace,
@@ -23,7 +23,7 @@ import {
 
 export default function WorkspaceSwitcher() {
   const [reg, setReg] = useState<WorkspaceRegistry | null>(null);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useQueryState('wsSwitch', parseAsBoolean.withDefault(false));
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const wrapRef = useRef<HTMLSpanElement | null>(null);

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import dynamic from 'next/dynamic';
 import { Drawer } from 'vaul';
 import { X } from 'lucide-react';
@@ -61,8 +62,8 @@ export default function FeaturePeekPanel({
   const [copied, setCopied] = useState(false);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [debugNote, setDebugNote] = useState<string | null>(null);
-  const [showDebug, setShowDebug] = useState(false);
-  const [showTimeline, setShowTimeline] = useState(false);
+  const [showDebug, setShowDebug] = useQueryState('peekDebug', parseAsBoolean.withDefault(false));
+  const [showTimeline, setShowTimeline] = useQueryState('peekTimeline', parseAsBoolean.withDefault(false));
   // Operator notes — what the user wrote via the inline "steer" form
   // in FeatureList. Same backing file the worker reads on next dispatch.
   const [operatorNotes, setOperatorNotes] = useState<Array<{ author: string; ts: string; body: string }>>([]);

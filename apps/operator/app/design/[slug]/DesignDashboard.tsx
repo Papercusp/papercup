@@ -15,6 +15,7 @@
  * collision risk.
  */
 import { useState, useMemo } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 import type React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -66,7 +67,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   const workspaceId = useWorkspaceId();
   const [activePane, setActivePane] = useState<Pane>('features');
   const [bucket, setBucket] = useState<Bucket>('all');
-  const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
+  const [selectedFeatureId, setSelectedFeatureId] = useQueryState('feature', parseAsString);
   const [registryQuery, setRegistryQuery] = useState('');
 
   const featuresQ = useQuery({

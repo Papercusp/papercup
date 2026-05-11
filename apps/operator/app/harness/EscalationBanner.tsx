@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 import { Tooltip } from './Tooltip';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
@@ -22,7 +23,7 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
   const [response, setResponse] = useState('');
   const [busy, setBusy] = useState<null | 'respond' | 'clear' | 'keep'>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [showNotes, setShowNotes] = useState(false);
+  const [showNotes, setShowNotes] = useQueryState('escalationNotes', parseAsBoolean.withDefault(false));
 
   // Escalation content streams from harness_escalations (Zero) — chokidar
   // watcher mirrors .harness/escalation.md + supervisor-notes.md into PG.

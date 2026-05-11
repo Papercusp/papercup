@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import dynamic from 'next/dynamic';
 import { Pencil, Network, PencilRuler, MessageSquare } from 'lucide-react';
 
@@ -18,7 +18,7 @@ export function BrainstormPanel({ slug }: { slug: string }) {
     parseAsStringEnum<SubTab>(['write', 'map', 'canvas']).withDefault('write'),
   );
   const [md, setMd] = useState('');
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useQueryState('chat', parseAsBoolean.withDefault(false));
 
   return (
     <div className="h-panel" style={{ height: '100%' }}>

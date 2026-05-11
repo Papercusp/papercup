@@ -12,6 +12,7 @@
  * regressions and sort to the top.
  */
 import { useState, useMemo } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 import { useQuery } from '@tanstack/react-query';
 
 interface RegressionItem {
@@ -32,7 +33,7 @@ interface RegressionsResponse {
 }
 
 export default function RegressionPane() {
-  const [filter, setFilter] = useState<'all' | 'regressions' | 'clean'>('all');
+  const [filter, setFilter] = useQueryState('regressionFilter', parseAsStringEnum<'all' | 'regressions' | 'clean'>(['all', 'regressions', 'clean']).withDefault('all'));
 
   const q = useQuery({
     queryKey: ['design-regressions'],

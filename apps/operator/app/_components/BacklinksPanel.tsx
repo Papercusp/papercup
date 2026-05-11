@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 
 interface Hit {
   harness: string;
@@ -26,7 +27,7 @@ export function BacklinksPanel({
 }) {
   const [hits, setHits] = useState<Hit[] | null>(null);
   const [loading, setLoading] = useState(false);
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useQueryState('backlinks', parseAsBoolean.withDefault(true));
 
   useEffect(() => {
     if (!target) return;
