@@ -20,7 +20,12 @@
     "storybook": "storybook dev -p 6009",
     "build-storybook": "storybook build -o storybook-static",
     "lostpixel": "lost-pixel",
-    "lostpixel:update": "LOST_PIXEL_GENERATE_ONLY=1 lost-pixel"
+    "lostpixel:update": "LOST_PIXEL_GENERATE_ONLY=1 lost-pixel",
+    "test:spawn-signing": "node __tests__/integration/spawn-signing-e2e.mjs",
+    "test:spawn-signing:dev": "OP_PORT=3055 node __tests__/integration/spawn-signing-e2e.mjs",
+    "test:mint-roundtrip": "bun __tests__/integration/mint-roundtrip.mjs",
+    "rotate:spawn-key": "node scripts/rotate-spawn-signing-key.mjs",
+    "test:admin-rotate": "node __tests__/integration/admin-rotate.mjs"
   },
   "dependencies": {
     "@blocknote/core": "^0.49.0",
