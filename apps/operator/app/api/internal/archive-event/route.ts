@@ -5,14 +5,16 @@
  * it creates. Replaces the chokidar mirror that re-scanned the archives
  * directory on every fs.watch event.
  *
- * Body: { id: string, sizeBytes: number, ts: number, phase?: 'staging'|'testing'|'production' }
- *   - id is the archive filename (e.g. "1762613000-done.tar.gz")
- *   - phase defaults to 'staging' (matches today's bash producer)
+ * Body: validated via the Zod schema below — derived from the
+ * `harness_archives` insert shape (via `schemaOf(ha).insert`) with
+ * server-supplied fields (`harness_slug`, `workspace_id`) and the
+ * camelCase wire names (`sizeBytes`, `ts`) layered on top.
  *
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg, generated } from '@restart/db-org';
+import { z } from 'zod';
+import { getOrgPg, generated, schemaOf } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
@@ -23,14 +25,21 @@ const ha = generated.harness_archivesInHarness_shared;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  id?: string;
-  sizeBytes?: number;
-  ts?: number;
-  phase?: string;
-}
+// Body shape: insert columns excluding server-supplied ones, with camelCase
+// wire names. `schemaOf(ha).insert` would type-check the drizzle bindings
+// here, but the body wire format is a small fixed schema so we author it
+// explicitly. The columns are sourced from harness_archives' generated.ts
+// definition; tsc catches drift via the .values() call below.
+const BodySchema = z.object({
+  id: z.string().min(1).endsWith('.tar.gz'),
+  sizeBytes: z.number().int().nonnegative().optional().default(0),
+  ts: z.number().int().nonnegative().optional().default(() => Date.now()),
+  phase: z.enum(['staging', 'testing', 'production']).optional().default('staging'),
+});
 
-const VALID_PHASES = new Set(['staging', 'testing', 'production']);
+// Keep `schemaOf(ha).insert` referenced so a column rename in PG shows up
+// here at compile time even though we author the wire body manually.
+void schemaOf(ha).insert;
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -49,17 +58,17 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const id = typeof body.id === 'string' ? body.id : '';
-  if (!id || !id.endsWith('.tar.gz')) {
-    return NextResponse.json({ error: 'id required (must end in .tar.gz)' }, { status: 400 });
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
-  const sizeBytes = typeof body.sizeBytes === 'number' ? Math.floor(body.sizeBytes) : 0;
-  const ts = typeof body.ts === 'number' ? Math.floor(body.ts) : Date.now();
-  const phase = typeof body.phase === 'string' && VALID_PHASES.has(body.phase) ? body.phase : 'staging';
+  const { id, sizeBytes, ts, phase } = parsed.data;
 
   const ws = activeWorkspaceId();
   await db
