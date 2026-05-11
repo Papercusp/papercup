@@ -628,3 +628,9 @@
   border-color: rgba(255, 80, 80, 0.45);
   color: rgba(255, 200, 200, 0.95);
 }
+
+.pc-dev-backups-events { border-top: 1px solid rgba(255,255,255,0.08); padding-top: 14px; }
+.pc-dev-backups-events table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.pc-dev-backups-events th, .pc-dev-backups-events td { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+.pc-dev-backups-events th { color: rgba(255,255,255,0.55); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.pc-dev-backups-events code { font-size: 11px; color: rgba(255,255,255,0.75); }

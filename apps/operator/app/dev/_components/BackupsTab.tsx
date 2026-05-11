@@ -39,27 +39,31 @@ function fmtAgo(iso: string | null): string {
 }
 
 export default function BackupsTab() {
+  interface EventRow { id: number; snapshotId: number | null; kind: string; payload: unknown; at: string; }
   const [stats, setStats] = useState<RepoStats | null>(null);
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([]);
   const [failures, setFailures] = useState<SnapshotInfo[]>([]);
   const [server, setServer] = useState<ServerInfo | null>(null);
   const [health, setHealth] = useState<HealthInfo | null>(null);
+  const [events, setEvents] = useState<EventRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [restorePick, setRestorePick] = useState<string>('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const load = useCallback(async () => {
     try {
-      const [a, b, c, h] = await Promise.all([
+      const [a, b, c, h, e] = await Promise.all([
         fetch('/api/backups').then((r) => r.json()),
         fetch('/api/backups/snapshots?limit=200').then((r) => r.json()),
         fetch('/api/backups/failures?limit=50').then((r) => r.json()),
         fetch('/api/backups/healthcheck').then((r) => r.json()),
+        fetch('/api/backups/events?limit=100').then((r) => r.json()),
       ]);
       setStats(a.stats);
       setSnapshots(b.snapshots ?? []);
       setFailures(c.failures ?? []);
       setHealth(h.error ? null : h as HealthInfo);
+      setEvents(e.events ?? []);
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
     }
@@ -251,6 +255,25 @@ export default function BackupsTab() {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {events.length > 0 && (
+        <section className="pc-dev-backups-events">
+          <h3>Event log ({events.length})</h3>
+          <table>
+            <thead><tr><th>Time</th><th>Snapshot</th><th>Kind</th><th>Payload</th></tr></thead>
+            <tbody>
+              {events.map((ev) => (
+                <tr key={ev.id}>
+                  <td>{ev.at.replace('T', ' ').slice(11, 19)}</td>
+                  <td>{ev.snapshotId ?? '—'}</td>
+                  <td>{ev.kind}</td>
+                  <td><code>{JSON.stringify(ev.payload)}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </section>
       )}
     </div>

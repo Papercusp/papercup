@@ -357,6 +357,20 @@ export async function runAction(opts: RunOpts): Promise<RunHandle> {
   const logPath = runLogPath(stagingPath, branch, name, runId);
   const metaPath = runMetaPath(stagingPath, branch, name, runId);
 
+  // Best-effort pre-destructive snapshot. The harness branch action
+  // runner is the largest single source of file mutations in the
+  // operator — wrap each run in a backup safety net. Errors are
+  // swallowed: backup unavailability must never block a run.
+  try {
+    const [{ triggerSnapshotEvent }, { activeWorkspaceId }] = await Promise.all([
+      import('./backup'),
+      import('./workspace-registry'),
+    ]);
+    await triggerSnapshotEvent(activeWorkspaceId(), 'pre_destructive', {
+      op: 'branch_action_run', harness, branch, name, runId,
+    }).catch(() => { /* ignore */ });
+  } catch { /* backup module not loaded — fine */ }
+
   const startedAt = new Date().toISOString();
   const meta: RunMeta = {
     runId, harness, branch, name,

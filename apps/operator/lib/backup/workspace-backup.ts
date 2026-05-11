@@ -142,18 +142,24 @@ export class WorkspaceBackup {
     const snapshotRowId = insertRows[0]!.id;
     const start = Date.now();
 
+    await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
+
     // Pre-snapshot DB dump hook. Failures are logged inside the hook
     // and do not abort the snapshot — the file tree is still useful
     // even if the dump didn't land.
+    await this.event(snapshotRowId, 'progress', { phase: 'pre_snapshot_hook' });
     await runPreSnapshotHook({
       workspaceId: this.workspaceId,
       workspaceRoot: this.workspaceRoot,
-    }).catch((err) => {
-      // eslint-disable-next-line no-console
-      console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
-    });
+    }).then(() => this.event(snapshotRowId, 'hook_pg_dump', { ok: true }))
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
+        return this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
+      });
 
     try {
+      await this.event(snapshotRowId, 'progress', { phase: 'kopia_snapshot' });
       const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
       const parsed = parseKopiaSnapshotJson(out);
       const durationMs = Date.now() - start;
@@ -166,6 +172,7 @@ export class WorkspaceBackup {
             bytes_total       = ${parsed.bytesTotal}
         WHERE id = ${snapshotRowId}
       `;
+      await this.event(snapshotRowId, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs });
       return {
         snapshotId: snapshotRowId,
         kopiaSnapshotId: parsed.snapshotId,
@@ -173,14 +180,28 @@ export class WorkspaceBackup {
         durationMs,
       };
     } catch (err) {
+      const msg = String(err instanceof Error ? err.message : err);
       await sql`
         UPDATE harness_shared.backup_snapshots
         SET finished_at = now(),
             status      = 'failed',
-            error_text  = ${String(err instanceof Error ? err.message : err)}
+            error_text  = ${msg}
         WHERE id = ${snapshotRowId}
       `;
+      await this.event(snapshotRowId, 'progress', { phase: 'failed', error: msg });
       throw err;
+    }
+  }
+
+  private async event(snapshotId: number, kind: string, payload: Record<string, unknown>): Promise<void> {
+    const { sql } = getOrgPg();
+    try {
+      await sql`
+        INSERT INTO harness_shared.backup_events (workspace_id, snapshot_id, kind, payload_json)
+        VALUES (${this.workspaceId}, ${snapshotId}, ${kind}, ${payload as unknown as object}::jsonb)
+      `;
+    } catch {
+      // Event log is best-effort.
     }
   }
 
@@ -312,8 +333,27 @@ export class WorkspaceBackup {
     const target = opts.target
       ?? join(this.workspaceRoot, '.restored', opts.kopiaSnapshotId, slug);
     await mkdir(target, { recursive: true });
-    await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
+    await this.detachedEvent('restore', { phase: 'started', kopiaSnapshotId: opts.kopiaSnapshotId, target });
+    try {
+      await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
+      await this.detachedEvent('restore', { phase: 'done', target });
+    } catch (err) {
+      await this.detachedEvent('restore', { phase: 'failed', error: String(err) });
+      throw err;
+    }
     return { targetPath: target };
+  }
+
+  private async detachedEvent(kind: string, payload: Record<string, unknown>): Promise<void> {
+    const { sql } = getOrgPg();
+    try {
+      await sql`
+        INSERT INTO harness_shared.backup_events (workspace_id, snapshot_id, kind, payload_json)
+        VALUES (${this.workspaceId}, NULL, ${kind}, ${payload as unknown as object}::jsonb)
+      `;
+    } catch {
+      // best-effort
+    }
   }
 
   /**

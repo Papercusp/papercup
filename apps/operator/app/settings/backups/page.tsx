@@ -53,20 +53,29 @@ function fmtAgo(iso: string | null): string {
   return `${Math.round(ms / 86_400_000)}d ago`;
 }
 
+interface HealthInfo {
+  state: 'ok' | 'stale' | 'failing' | 'disabled' | 'never_run';
+  ageSeconds: number | null;
+  kopia: { ok: boolean; version?: string; reason?: string };
+}
+
 export default function BackupsSettingsPage() {
   const [settings, setSettings] = useState<BackupSettings | null>(null);
   const [stats, setStats] = useState<RepoStats | null>(null);
+  const [health, setHealth] = useState<HealthInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [snapshotting, setSnapshotting] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const r = await fetch('/api/backups');
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const d = await r.json() as { settings: BackupSettings; stats: RepoStats };
-      setSettings(d.settings);
-      setStats(d.stats);
+      const [a, h] = await Promise.all([
+        fetch('/api/backups').then((r) => r.json()),
+        fetch('/api/backups/healthcheck').then((r) => r.json()),
+      ]);
+      setSettings(a.settings);
+      setStats(a.stats);
+      setHealth(h.error ? null : h);
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
     } finally {
@@ -165,6 +174,22 @@ export default function BackupsSettingsPage() {
           from your workspace key — no separate secret.
         </p>
       </header>
+
+      {health && !health.kopia.ok && (
+        <section className="pc-settings-section" style={{ borderLeft: '3px solid rgba(255, 80, 80, 0.6)', paddingLeft: 12 }}>
+          <strong>kopia binary not found</strong> ({health.kopia.reason ?? 'unknown'}).
+          <p className="pc-settings-note">
+            Install kopia (https://kopia.io/docs/installation/) or set <code>KOPIA_BIN</code> to the binary path.
+            Snapshots will not run until this is resolved.
+          </p>
+        </section>
+      )}
+      {health && health.kopia.ok && health.state === 'stale' && (
+        <section className="pc-settings-section" style={{ borderLeft: '3px solid rgba(255, 200, 80, 0.6)', paddingLeft: 12 }}>
+          <strong>Backups are stale</strong>
+          {health.ageSeconds != null && ` — last snapshot was ${Math.round(health.ageSeconds / 60)} min ago.`}
+        </section>
+      )}
 
       <section className="pc-settings-section">
         <h2>Status</h2>
