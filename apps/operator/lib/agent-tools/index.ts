@@ -43,6 +43,7 @@ import './agent_tools/list';
 import './ui/list_clients';
 import './ui/get_state';
 import './ui/dispatch';
+import './chat/ask_choice';
 import './autoloop/status';
 import './autoloop/control';
 import './operator/dedup_check';
