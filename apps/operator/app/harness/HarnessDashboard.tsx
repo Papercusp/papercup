@@ -3880,9 +3880,9 @@ export default function HarnessDashboard() {
                 </div>
               )}
               {typeof status.activeCompetitions === 'number' && status.activeCompetitions > 0 && (
-                <div title={`${status.activeCompetitions} competition${status.activeCompetitions === 1 ? '' : 's'} in progress`}>
+                <div title={`${status.activeCompetitions} synthesis run${status.activeCompetitions === 1 ? '' : 's'} in progress (workers committed, synthesizer + validator pending)`}>
                   <StatCard
-                    label="competitions"
+                    label="syntheses"
                     value={String(status.activeCompetitions)}
                   />
                 </div>
