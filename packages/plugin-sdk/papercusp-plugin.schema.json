@@ -108,6 +108,15 @@
         "allowOverride": { "type": "string", "enum": ["security-patch", "always", "never"] }
       }
     },
+    "kvQuota": {
+      "description": "Optional override of the default ctx.kv quotas. maxBytesPerKey defaults to 10 KiB; maxBytesPerPlugin defaults to 1 MiB.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxBytesPerKey": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "maxBytesPerPlugin": { "type": "integer", "minimum": 1, "maximum": 104857600 }
+      }
+    },
     "provision": { "type": "object", "description": "Cloudflare/infra provisioning hints." },
     "oauth": { "type": "array", "items": { "type": "object" }, "description": "OAuth provider declarations consumed by ctx.oauth." },
     "main": { "type": "string", "description": "Node-style entry-point hint; CLI also probes index.{cjs,js,mjs,ts}." },

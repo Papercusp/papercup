@@ -469,6 +469,27 @@ function attachPluginCtxExtras(
     defaultCwd: ctx.pluginDataDir,
   });
 
+  // ctx.kv: plugin-private K/V store backed by harness_shared.plugin_kv
+  // (Migration 054). Quotas configurable per-plugin via manifest.kvQuota.
+  // Lazy require so test contexts without PG don't crash on context build.
+  try {
+    const { makePluginKv } = require('@/lib/plugin-kv');
+    const { getOrgPg } = require('@restart/db-org');
+    const { sql } = getOrgPg();
+    const manifestQuota = (lp.plugin as unknown as {
+      kvQuota?: { maxBytesPerKey?: number; maxBytesPerPlugin?: number };
+    }).kvQuota;
+    ctx.kv = makePluginKv({
+      pluginId: lp.plugin.name,
+      harnessSlug: ctx.installSlug,
+      sql,
+      quota: manifestQuota,
+    });
+  } catch {
+    // PG unavailable or test stub — leave ctx.kv undefined; plugins must
+    // tolerate this (sdk doc says optional like ctx.spawn).
+  }
+
   // ctx.oauth.token(field): plugins that declare oauth in their manifest
   // can call this to acquire a fresh access token. Resolution of which
   // provider backs `field` comes from the plugin's manifest oauth[] entries.

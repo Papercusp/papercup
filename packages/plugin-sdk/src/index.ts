@@ -117,6 +117,13 @@ export interface PapercuspContext {
   spawn?: PluginSpawn;
 
   /**
+   * Plugin-private key/value store. Optional because `fire-hook` CLI
+   * invocations don't have a backing store; the in-process operator
+   * host always provides it. See `PluginKv` for quota semantics.
+   */
+  kv?: PluginKv;
+
+  /**
    * OAuth helper — acquires a fresh access token for the named provider,
    * refreshing the stored refresh-token if the access token has expired.
    * Concurrent callers share a single in-flight refresh Promise to avoid
@@ -168,6 +175,48 @@ export type PluginSpawn = (
   args: readonly string[],
   opts?: PluginSpawnOptions,
 ) => Promise<PluginSpawnResult>;
+
+/**
+ * Plugin-private key/value store with quotas.
+ *
+ * Each plugin sees its own namespace; cross-plugin access is impossible.
+ * Values are serialised as JSON. Per-key + per-plugin byte quotas are
+ * enforced by the host (defaults: 10 KB/key, 1 MB/plugin). Quota
+ * violations throw `KvQuotaError`.
+ *
+ * Backed by Postgres in production (operator) so state survives reloads
+ * and is observable from the operator UI. Use `pluginDataDir` (file
+ * paths) for blobs > 10 KB, code, or anything that doesn't need to be
+ * scanned/aggregated.
+ *
+ * Surface deliberately small: `get / set / delete / list`. No
+ * transactions, no atomics — high contention isn't a goal; plugins that
+ * need it should use their own per-plugin PG schema.
+ */
+export interface PluginKv {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+  /**
+   * List keys with the given prefix (lexicographic). Returns at most
+   * `limit` keys (default 100, max 500). Use cursor-based pagination
+   * (`afterKey`) if more are needed.
+   */
+  list(opts?: { prefix?: string; limit?: number; afterKey?: string }): Promise<string[]>;
+}
+
+/** Thrown by `ctx.kv.set` when the per-key or per-plugin byte quota is exceeded. */
+export class KvQuotaError extends Error {
+  constructor(
+    message: string,
+    public readonly kind: 'per-key' | 'per-plugin',
+    public readonly limit: number,
+    public readonly attempted: number,
+  ) {
+    super(message);
+    this.name = 'KvQuotaError';
+  }
+}
 
 /**
  * Per-plugin handle for binding action implementations during `init()`.
