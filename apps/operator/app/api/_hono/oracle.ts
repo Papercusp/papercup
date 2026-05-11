@@ -385,6 +385,21 @@ export function registerOracle(app: Hono) {
             'mcp__agentmcp__audit:list',
             'mcp__agentmcp__hindsight:recall',
             'mcp__agentmcp__search:query',
+            // Tool introspection — so Oracle can answer "what can I call?"
+            // honestly. Cheap, read-only.
+            'mcp__agentmcp__agent_tools:list',
+            // Agent ↔ UI surface — Oracle can read the user's tab state
+            // and drive panels. ui:dispatch requires either ctx.uiClientId
+            // (which Oracle currently does NOT pass — see TODO below) or
+            // an explicit client_id arg from a prior ui:list_clients call.
+            'mcp__agentmcp__ui:list_clients',
+            'mcp__agentmcp__ui:get_state',
+            'mcp__agentmcp__ui:dispatch',
+            // TODO(ui-control): Oracle's MCP URL doesn't currently include
+            // &client=<id>, so ctx.uiClientId is null and ui:get_state /
+            // ui:dispatch require an explicit client_id arg. Adding it
+            // means OracleDock has to pass the browser's clientId on every
+            // chat request; planned for a follow-up.
           );
         }
         const stream = runClaudeChat({

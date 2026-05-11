@@ -56,4 +56,21 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__orchestrator_poll',
   'mcp__agentmcp__orchestrator_list_active',
   'mcp__agentmcp__orchestrator_cancel',
+
+  // Tool introspection — answers "what can I call?". Companion to
+  // tools/list with role+capability+quota metadata that the standard
+  // MCP listing strips. Cheap, read-only, no ctx requirements.
+  'mcp__agentmcp__agent_tools:list',
+
+  // Agent ↔ UI control surface (commits 00f0bfc3, e548f121).
+  // ui:list_clients + ui:get_state are read-only.
+  // ui:dispatch writes a row to ui_intents that the browser tab's
+  // dispatcher consumes via SSE. Defaults to ctx.uiClientId when
+  // present (which requires the chat surface to pass &client=<id> in
+  // the operator MCP URL — currently operator-converse does, others
+  // need to follow). Even without ctx, agents can pass client_id
+  // explicitly after a ui:list_clients call.
+  'mcp__agentmcp__ui:list_clients',
+  'mcp__agentmcp__ui:get_state',
+  'mcp__agentmcp__ui:dispatch',
 ];

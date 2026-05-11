@@ -34,6 +34,7 @@ import {
   appendDelegateTurn,
 } from '@/lib/delegates';
 import { generateSessionTitle } from '@/lib/delegate-summary';
+import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -48,33 +49,17 @@ async function loadOperatorBearer(): Promise<SystemPrincipalConfig | null> {
   return p ? { bearer: p.bearer, workspaceId: p.workspaceId } : null;
 }
 
-const ALL_AGENT_MCP_TOOLS = [
-  'mcp__agentmcp__harness:list',
-  'mcp__agentmcp__harness:get',
-  'mcp__agentmcp__harness:status',
-  'mcp__agentmcp__tasks:list',
-  'mcp__agentmcp__tasks:get',
-  'mcp__agentmcp__tasks:create',
-  'mcp__agentmcp__tasks:update',
-  'mcp__agentmcp__tasks:close',
-  'mcp__agentmcp__goals:list',
-  'mcp__agentmcp__goals:get',
-  'mcp__agentmcp__issues:list',
-  'mcp__agentmcp__messages:inbox',
-  'mcp__agentmcp__messages:outbox',
-  'mcp__agentmcp__messages:send',
-  'mcp__agentmcp__audit:list',
-  'mcp__agentmcp__pending_events:list',
-  'mcp__agentmcp__hindsight:recall',
-  'mcp__agentmcp__search:query',
-  // Cross-harness agent dispatch surface (Plan v6 phase B).
+// Delegate-chat's tool surface = the shared operator MCP list + the
+// delegate-specific cross-harness dispatch tools.
+const DELEGATE_EXTRA_TOOLS = [
   'mcp__delegate__listHarnesses',
   'mcp__delegate__listAgents',
   'mcp__delegate__getHarnessStatus',
   'mcp__delegate__listChats',
   'mcp__delegate__dispatchToAgent',
   'mcp__delegate__followUpInChat',
-];
+] as const;
+const ALL_DELEGATE_TOOLS: readonly string[] = [...ALL_AGENT_MCP_TOOLS, ...DELEGATE_EXTRA_TOOLS];
 
 const SYSTEM_PROMPT = `You are a Delegate — a Claude process the Operator voice assistant spawned to handle work that needs real reasoning. The user just spoke a request the Operator decided to route to you. Papercusp is a coding-harness control plane.
 
@@ -188,7 +173,7 @@ export async function GET(req: NextRequest): Promise<Response> {
               },
             },
           },
-          allowedTools: ALL_AGENT_MCP_TOOLS,
+          allowedTools: [...ALL_DELEGATE_TOOLS],
           toolEventFilter: (raw) => {
             if (raw.startsWith('mcp__agentmcp__')) return raw.replace(/^mcp__agentmcp__/, '');
             if (raw.startsWith('mcp__delegate__')) return raw.replace(/^mcp__delegate__/, 'delegate:');

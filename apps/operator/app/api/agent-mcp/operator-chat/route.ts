@@ -32,6 +32,7 @@ import {
   autoArchiveIdleSessions,
 } from '@/lib/claude-sessions';
 import { generateSessionTitle } from '@/lib/claude-session-summary';
+import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -49,26 +50,9 @@ function loadOperatorBearer(): SystemPrincipalConfig | null {
   } catch { return null; }
 }
 
-const ALL_AGENT_MCP_TOOLS = [
-  'mcp__agentmcp__harness:list',
-  'mcp__agentmcp__harness:get',
-  'mcp__agentmcp__harness:status',
-  'mcp__agentmcp__tasks:list',
-  'mcp__agentmcp__tasks:get',
-  'mcp__agentmcp__tasks:create',
-  'mcp__agentmcp__tasks:update',
-  'mcp__agentmcp__tasks:close',
-  'mcp__agentmcp__goals:list',
-  'mcp__agentmcp__goals:get',
-  'mcp__agentmcp__issues:list',
-  'mcp__agentmcp__messages:inbox',
-  'mcp__agentmcp__messages:outbox',
-  'mcp__agentmcp__messages:send',
-  'mcp__agentmcp__audit:list',
-  'mcp__agentmcp__pending_events:list',
-  'mcp__agentmcp__hindsight:recall',
-  'mcp__agentmcp__search:query',
-];
+// Tool list moved to `@/lib/operator-mcp-tools` so it stays in lockstep
+// with operator-converse / operator-scan / delegate-chat. Adding a new
+// MCP tool there exposes it to every chat surface that uses this import.
 
 const SYSTEM_PROMPT = `You are an agent serving the Operator voice assistant for Papercusp — a coding-harness control plane.
 
