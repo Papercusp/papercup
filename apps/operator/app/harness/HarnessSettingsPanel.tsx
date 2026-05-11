@@ -137,7 +137,7 @@ export default function HarnessSettingsPanel({
     workerCountMode: 'one',
     workersPerFeature: null,
     maxFeaturesInFlight: null,
-    useChunkLoop: false,
+    useChunkLoop: true,
     workingStateCheck: 'pnpm typecheck',
     replanStrikes: 3,
     escalateToRole: 'debugger',
@@ -210,7 +210,9 @@ export default function HarnessSettingsPanel({
       workerCountMode,
       workersPerFeature: wpfRaw,
       maxFeaturesInFlight: typeof pwRaw.maxFeaturesInFlight === 'number' ? pwRaw.maxFeaturesInFlight : null,
-      useChunkLoop: pwRaw.useChunkLoop === true,
+      // Default is true (matches orchestrator's useChunkLoop()).
+      // Explicit `false` opts back into the branch-iso + synthesizer path.
+      useChunkLoop: pwRaw.useChunkLoop === undefined ? true : pwRaw.useChunkLoop === true,
       workingStateCheck: typeof pwRaw.workingStateCheck === 'string' ? pwRaw.workingStateCheck : 'pnpm typecheck',
       replanStrikes: typeof pwRaw.replanStrikes === 'number' && pwRaw.replanStrikes > 0 ? pwRaw.replanStrikes : 3,
       escalateToRole: typeof pwRaw.escalateToRole === 'string' && pwRaw.escalateToRole.length > 0 ? pwRaw.escalateToRole : 'debugger',
@@ -720,15 +722,11 @@ export default function HarnessSettingsPanel({
             </span>
           </div>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, marginTop: 6, color: hasMaxAboveOne ? 'var(--pc-muted, #9a9a9a)' : 'inherit' }}>
-            <input
-              type="checkbox"
-              checked={hasMaxAboveOne ? true : branchIso.enabled}
-              disabled={hasMaxAboveOne}
-              onChange={(e) => setBranchIso((b) => ({ ...b, enabled: e.target.checked }))}
-            />
-            <span>branch isolation</span>
-          </label>
+          {/* `branch isolation` toggle removed from UI — chunk-loop is the
+              default worker model now (orchestrator/lanes.ts useChunkLoop
+              defaults to true). The branchIsolation config field remains
+              supported in code for harnesses that opt in via direct config
+              edit. */}
 
           <div style={{ fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)', lineHeight: 1.5, marginTop: 4 }}>
             ↳{' '}
