@@ -3344,13 +3344,16 @@ harness.get('/:slug/features/:id/audit', async (c) => {
   // (un-hardcode plan item #6). Falls back to per-harness table for
   // any rows that pre-date the consolidation cutover.
   try {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
-    const rows = await sql<{ ts: number; field: string; old_value: string | null; new_value: string | null; actor: string }[]>`
-      SELECT ts, field, old_value, new_value, actor
-        FROM harness_shared.feature_audit_consolidated
-       WHERE harness_slug = ${project.slug} AND feature_id = ${id}
-       ORDER BY ts DESC LIMIT 200
-    `;
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, desc, eq } = await import('drizzle-orm');
+    const fa = generated.feature_audit_consolidatedInHarness_shared;
+    const rows = await db
+      .select({ ts: fa.ts, field: fa.field, old_value: fa.old_value, new_value: fa.new_value, actor: fa.actor })
+      .from(fa)
+      .where(and(eq(fa.harness_slug, project.slug), eq(fa.feature_id, id)))
+      .orderBy(desc(fa.ts))
+      .limit(200);
     if (rows.length > 0) {
       return c.json({
         slug: project.slug, feature_id: id, count: rows.length,
