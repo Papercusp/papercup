@@ -208,6 +208,18 @@ export async function POST(req: Request) {
 
   if (!isValidSlug(slug)) return json({ ok: false, error: `invalid slug "${slug}"` }, { status: 400 });
 
+  // Snapshot before install — marketplace install can overwrite plugin
+  // files, modify enabled-plugins.json, mutate harness scaffolding.
+  // Non-fatal: if backup fails, install still proceeds.
+  try {
+    const [{ triggerSnapshotEvent }, { activeWorkspaceId }] = await Promise.all([
+      import('@/lib/backup'),
+      import('@/lib/workspace-registry'),
+    ]);
+    await triggerSnapshotEvent(activeWorkspaceId(), 'plugin_install', { op: 'marketplace_install', slug, harness: harnessSlug || null })
+      .catch(() => { /* ignore */ });
+  } catch { /* backup module unavailable */ }
+
   // ── subagent-pack branch ─────────────────────────────────────────────
   // Pre-flight the manifest so we know if this install needs the harness
   // scaffolding flow (default) or the subagent-pack flow (copy md files
