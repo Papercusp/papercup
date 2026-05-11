@@ -7,6 +7,7 @@ const categories = [
     href: '/marketplace/templates',
     blurb: 'Complete workflows you install and run. Pick one to do a kind of job — write code, do research, run an org.',
     cta: 'Browse templates',
+    countKey: 'templates' as const,
   },
   {
     icon: Puzzle,
@@ -14,6 +15,7 @@ const categories = [
     href: '/marketplace/plugins',
     blurb: 'Optional add-ons. Plug them into a template to give it new abilities — publishing, integrations, dashboards.',
     cta: 'Browse plugins',
+    countKey: 'plugins' as const,
   },
   {
     icon: Layers,
@@ -21,10 +23,25 @@ const categories = [
     href: '/marketplace/snapshots',
     blurb: 'A frozen copy of a working setup. Fork one to start with someone else’s state instead of from scratch.',
     cta: 'Browse snapshots',
+    countKey: 'snapshots' as const,
   },
 ];
 
-export function MarketplaceIndex() {
+export interface MarketplaceIndexProps {
+  /**
+   * Live counts per kind. When provided, each category card shows
+   * "N available". When undefined (e.g. static-export usage of the
+   * marketplace site at papercuspai.com), the cards render without
+   * counts — graceful degradation.
+   */
+  counts?: {
+    templates?: number;
+    plugins?: number;
+    snapshots?: number;
+  };
+}
+
+export function MarketplaceIndex({ counts }: MarketplaceIndexProps = {}) {
   return (
     <div className="pc-shell pc-marketplace-shell">
       <section className="pc-marketplace-hero-v2" aria-labelledby="marketplace-title">
@@ -56,14 +73,33 @@ export function MarketplaceIndex() {
 
       <section className="pc-marketplace-categories" aria-labelledby="marketplace-categories-title">
         <h2 id="marketplace-categories-title" className="pc-sr-only">Browse by category</h2>
-        {categories.map(({ icon: Icon, label, href, blurb, cta }) => (
-          <a key={label} href={href} className="pc-card pc-marketplace-category-card">
-            <span className="pc-marketplace-category-icon" aria-hidden><Icon size={22} /></span>
-            <h3>{label}</h3>
-            <p>{blurb}</p>
-            <b>{cta} →</b>
-          </a>
-        ))}
+        {categories.map(({ icon: Icon, label, href, blurb, cta, countKey }) => {
+          const count = counts?.[countKey];
+          return (
+            <a key={label} href={href} className="pc-card pc-marketplace-category-card">
+              <span className="pc-marketplace-category-icon" aria-hidden><Icon size={22} /></span>
+              <h3>
+                {label}
+                {typeof count === 'number' && (
+                  <span
+                    className="pc-marketplace-category-count"
+                    style={{
+                      marginLeft: 8,
+                      fontSize: 12,
+                      fontWeight: 400,
+                      color: 'var(--fg-mute)',
+                      verticalAlign: 'middle',
+                    }}
+                  >
+                    {count} {count === 1 ? 'available' : 'available'}
+                  </span>
+                )}
+              </h3>
+              <p>{blurb}</p>
+              <b>{cta} →</b>
+            </a>
+          );
+        })}
       </section>
 
       <section className="pc-marketplace-steps" aria-labelledby="marketplace-steps-title">
