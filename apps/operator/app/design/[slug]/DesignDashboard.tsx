@@ -15,6 +15,7 @@
  * collision risk.
  */
 import { useState, useMemo } from 'react';
+import type React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import SketchPane from './SketchPane';
@@ -56,10 +57,15 @@ interface DtcgToken {
 
 type Pane = 'features' | 'memos' | 'registry' | 'tokens' | 'sketch' | 'regressions';
 
+type Bucket = 'all' | 'pending' | 'accepted' | 'ignored';
+
+const PANES: Pane[] = ['features', 'memos', 'registry', 'tokens', 'sketch', 'regressions'];
+const BUCKETS: Bucket[] = ['all', 'pending', 'accepted', 'ignored'];
+
 export default function DesignDashboard({ slug }: { slug: string }) {
   const workspaceId = useWorkspaceId();
   const [activePane, setActivePane] = useState<Pane>('features');
-  const [bucket, setBucket] = useState<'all' | 'pending' | 'accepted' | 'ignored'>('all');
+  const [bucket, setBucket] = useState<Bucket>('all');
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
   const [registryQuery, setRegistryQuery] = useState('');
 
@@ -157,35 +163,29 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   );
 
   return (
-    <div className="d-root" style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 16,
-          padding: '12px 16px',
-          borderBottom: '1px solid #e5e7eb',
-        }}
-      >
-        <h1 style={{ fontSize: 18, fontWeight: 600, margin: 0 }}>
-          Design <span style={{ color: '#9ca3af' }}>· {slug}</span>
-        </h1>
-        <nav style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
-          {(['features', 'memos', 'registry', 'tokens', 'sketch', 'regressions'] as const).map((p) => (
+    <div className="d-root pc-animate-in pc-animate-in--fast">
+      <header className="d-header">
+        <div className="d-titleblock">
+          <div className="d-eyebrow">design workspace</div>
+          <h1 className="d-title">
+            Design <span>· {slug}</span>
+          </h1>
+          <p className="d-subtitle">IR specs, registry, tokens, sketches, and visual regression review.</p>
+        </div>
+        <div className="d-metrics" aria-label="Design queue summary">
+          <Metric label="features" value={counts.all} tone="info" />
+          <Metric label="pending" value={counts.pending} tone="warn" />
+          <Metric label="accepted" value={counts.accepted} tone="good" />
+        </div>
+        <nav className="d-pane-tabs" aria-label="Design workspace panes">
+          {PANES.map((p) => (
             <button
               key={p}
               type="button"
               onClick={() => setActivePane(p)}
-              style={{
-                padding: '6px 12px',
-                borderRadius: 6,
-                border: '1px solid #e5e7eb',
-                background: activePane === p ? '#eef2ff' : 'transparent',
-                color: activePane === p ? '#4338ca' : '#374151',
-                cursor: 'pointer',
-                fontSize: 13,
-                textTransform: 'capitalize',
-              }}
+              className="d-pane-tab"
+              data-active={activePane === p}
+              aria-pressed={activePane === p}
             >
               {p}
             </button>
@@ -193,86 +193,60 @@ export default function DesignDashboard({ slug }: { slug: string }) {
         </nav>
       </header>
 
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        {/* Left rail: feature list, always visible */}
-        <aside
-          style={{
-            width: 320,
-            borderRight: '1px solid #e5e7eb',
-            display: 'flex',
-            flexDirection: 'column',
-            minHeight: 0,
-          }}
-        >
-          <div style={{ padding: 8, borderBottom: '1px solid #f3f4f6' }}>
-            <div style={{ display: 'flex', gap: 4, fontSize: 12 }}>
-              {(['all', 'pending', 'accepted', 'ignored'] as const).map((b) => (
-                <button
-                  key={b}
-                  type="button"
-                  onClick={() => setBucket(b)}
-                  style={{
-                    padding: '4px 8px',
-                    borderRadius: 4,
-                    border: '1px solid #e5e7eb',
-                    background: bucket === b ? '#dbeafe' : 'transparent',
-                    color: bucket === b ? '#1e40af' : '#374151',
-                    cursor: 'pointer',
-                    textTransform: 'capitalize',
-                  }}
-                >
-                  {b} ({counts[b]})
-                </button>
-              ))}
+      <div className="d-shell">
+        <aside className="d-rail" aria-label="Design feature queue">
+          <div className="d-rail-head">
+            <div>
+              <div className="d-section-label">Feature queue</div>
+              <div className="d-rail-subtitle">Needs design handoff</div>
             </div>
+            <span className="d-chip d-chip--info">{filteredFeatures.length}/{counts.all}</span>
           </div>
-          <ul style={{ flex: 1, overflow: 'auto', margin: 0, padding: 0, listStyle: 'none' }}>
+          <div className="d-buckets" role="group" aria-label="Filter design features by status">
+            {BUCKETS.map((b) => (
+              <button
+                key={b}
+                type="button"
+                onClick={() => setBucket(b)}
+                className="d-bucket"
+                data-active={bucket === b}
+                aria-pressed={bucket === b}
+              >
+                <span>{b}</span>
+                <strong>{counts[b]}</strong>
+              </button>
+            ))}
+          </div>
+          <ul className="d-feature-list">
             {featuresQ.isLoading ? (
-              <li style={{ padding: 12, color: '#6b7280', fontSize: 13 }}>Loading…</li>
+              <StateRow tone="info">Loading design features…</StateRow>
             ) : featuresQ.isError ? (
-              <li style={{ padding: 12, color: '#b91c1c', fontSize: 13 }}>
-                Failed to load: {String(featuresQ.error)}
-              </li>
+              <StateRow tone="bad">Failed to load: {String(featuresQ.error)}</StateRow>
             ) : filteredFeatures.length === 0 ? (
-              <li style={{ padding: 12, color: '#6b7280', fontSize: 13 }}>
-                No features {bucket === 'all' ? '' : `with design_status=${bucket}`}.
-              </li>
+              <StateRow tone="muted">No features {bucket === 'all' ? '' : `with design_status=${bucket}`}.</StateRow>
             ) : (
               filteredFeatures.map((f) => (
-                <li
-                  key={f.featureId}
-                  onClick={() => setSelectedFeatureId(f.featureId)}
-                  style={{
-                    padding: '8px 12px',
-                    borderBottom: '1px solid #f3f4f6',
-                    cursor: 'pointer',
-                    background: selectedFeatureId === f.featureId ? '#f9fafb' : 'transparent',
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>
-                    {f.title || f.featureId}
-                  </div>
-                  <div style={{ fontSize: 11, color: '#6b7280', marginTop: 2, display: 'flex', gap: 8 }}>
-                    <code style={{ fontFamily: 'monospace' }}>{f.featureId}</code>
-                    <span>·</span>
-                    <span>
-                      design:{' '}
-                      <strong style={{ color: designStatusColor(f.designStatus) }}>
-                        {f.designStatus ?? 'pending'}
-                      </strong>
+                <li key={f.featureId}>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedFeatureId(f.featureId)}
+                    className="d-feature-row"
+                    data-active={selectedFeatureId === f.featureId}
+                  >
+                    <span className="d-feature-title">{f.title || f.featureId}</span>
+                    <span className="d-feature-meta">
+                      <code>{f.featureId}</code>
+                      <span className={designStatusClass(f.designStatus)}>{f.designStatus ?? 'pending'}</span>
                     </span>
-                  </div>
+                  </button>
                 </li>
               ))
             )}
           </ul>
         </aside>
 
-        {/* Main: active pane */}
-        <main style={{ flex: 1, padding: 16, overflow: 'auto', minHeight: 0 }}>
-          {activePane === 'features' && (
-            <FeatureDetailPane feature={selectedFeature} />
-          )}
+        <main className="d-content">
+          {activePane === 'features' && <FeatureDetailPane feature={selectedFeature} counts={counts} />}
           {activePane === 'memos' && (
             <MemosPane
               memos={memosQ.data ?? []}
@@ -296,9 +270,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
               error={tokensQ.isError ? String(tokensQ.error) : null}
             />
           )}
-          {activePane === 'sketch' && (
-            <SketchPane slug={slug} featureId={selectedFeatureId} />
-          )}
+          {activePane === 'sketch' && <SketchPane slug={slug} featureId={selectedFeatureId} />}
           {activePane === 'regressions' && <RegressionPane />}
         </main>
       </div>
@@ -306,44 +278,81 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   );
 }
 
-function designStatusColor(s: 'pending' | 'accepted' | 'ignored' | null): string {
-  switch (s) {
-    case 'accepted': return '#15803d';
-    case 'ignored': return '#6b7280';
-    case 'pending':
-    default: return '#a16207';
-  }
+function Metric({ label, value, tone }: { label: string; value: number; tone: 'info' | 'warn' | 'good' }) {
+  return (
+    <div className={`d-metric d-metric--${tone}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
 }
 
-function FeatureDetailPane({ feature }: { feature: DesignFeature | null }) {
+function StateRow({ children, tone }: { children: React.ReactNode; tone: 'info' | 'bad' | 'muted' }) {
+  return <li className={`d-state-row d-state-row--${tone}`}>{children}</li>;
+}
+
+function designStatusClass(s: 'pending' | 'accepted' | 'ignored' | null): string {
+  return `d-chip d-chip--${s ?? 'pending'}`;
+}
+
+function memoStatusChipClass(status: string): string {
+  if (status === 'addressed') return 'd-chip d-chip--accepted';
+  if (status === 'wontfix') return 'd-chip d-chip--ignored';
+  return 'd-chip d-chip--pending';
+}
+
+function FeatureDetailPane({ feature, counts }: { feature: DesignFeature | null; counts: Record<Bucket, number> }) {
   if (!feature) {
-    return <p style={{ color: '#6b7280' }}>Pick a feature on the left to inspect its design state.</p>;
+    return (
+      <section className="d-empty-card">
+        <div className="d-empty-icon">◇</div>
+        <h2>Pick a feature to inspect</h2>
+        <p>
+          Choose a queue item on the left to review its design status, linked design spec, discarded work flag,
+          and implementation summary.
+        </p>
+        <div className="d-empty-chips">
+          <span className="d-chip d-chip--info">{counts.all} total</span>
+          <span className="d-chip d-chip--pending">{counts.pending} pending</span>
+          <span className="d-chip d-chip--accepted">{counts.accepted} accepted</span>
+        </div>
+      </section>
+    );
   }
   return (
-    <div>
-      <h2 style={{ fontSize: 16, fontWeight: 600, marginTop: 0 }}>{feature.title}</h2>
-      <p style={{ color: '#6b7280', fontSize: 13, marginTop: 4 }}>
-        <code>{feature.featureId}</code>
-      </p>
-      <dl style={{ fontSize: 13, marginTop: 16, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 16px' }}>
-        <dt style={{ color: '#6b7280' }}>Status</dt>
-        <dd style={{ margin: 0 }}>{feature.status ?? '—'}</dd>
-        <dt style={{ color: '#6b7280' }}>Design status</dt>
-        <dd style={{ margin: 0, color: designStatusColor(feature.designStatus), fontWeight: 500 }}>
-          {feature.designStatus ?? 'pending'}
-        </dd>
-        <dt style={{ color: '#6b7280' }}>Design spec id</dt>
-        <dd style={{ margin: 0, fontFamily: 'monospace', fontSize: 12 }}>{feature.designSpecId ?? '—'}</dd>
-        <dt style={{ color: '#6b7280' }}>Discarded design work</dt>
-        <dd style={{ margin: 0 }}>{feature.discardedDesignWork ? 'yes' : 'no'}</dd>
-      </dl>
+    <article className="d-detail-card">
+      <header className="d-card-head">
+        <div>
+          <div className="d-section-label">Selected feature</div>
+          <h2>{feature.title || feature.featureId}</h2>
+        </div>
+        <span className={designStatusClass(feature.designStatus)}>{feature.designStatus ?? 'pending'}</span>
+      </header>
+      <div className="d-kv-grid">
+        <div>
+          <dt>Feature ID</dt>
+          <dd><code>{feature.featureId}</code></dd>
+        </div>
+        <div>
+          <dt>Status</dt>
+          <dd>{feature.status ?? '—'}</dd>
+        </div>
+        <div>
+          <dt>Design spec</dt>
+          <dd><code>{feature.designSpecId ?? '—'}</code></dd>
+        </div>
+        <div>
+          <dt>Discarded work</dt>
+          <dd>{feature.discardedDesignWork ? 'yes' : 'no'}</dd>
+        </div>
+      </div>
       {feature.summary && (
-        <section style={{ marginTop: 24 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Summary</h3>
-          <p style={{ fontSize: 13, color: '#374151', whiteSpace: 'pre-wrap' }}>{feature.summary}</p>
+        <section className="d-summary-card">
+          <h3>Summary</h3>
+          <p>{feature.summary}</p>
         </section>
       )}
-    </div>
+    </article>
   );
 }
 
@@ -356,54 +365,30 @@ function MemosPane({
   loading: boolean;
   error: string | null;
 }) {
-  if (loading) return <p style={{ color: '#6b7280' }}>Loading memos…</p>;
-  if (error) return <p style={{ color: '#b91c1c' }}>Failed: {error}</p>;
-  if (memos.length === 0) return <p style={{ color: '#6b7280' }}>No memos.</p>;
+  if (loading) return <PanelState>Loading design memos…</PanelState>;
+  if (error) return <PanelState tone="bad">Failed: {error}</PanelState>;
+  if (memos.length === 0) return <PanelState>No memos yet.</PanelState>;
   return (
-    <div>
-      <h2 style={{ fontSize: 16, fontWeight: 600, marginTop: 0 }}>
-        Design memos <span style={{ color: '#9ca3af', fontWeight: 400 }}>({memos.length})</span>
-      </h2>
-      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+    <section className="d-pane-card">
+      <header className="d-card-head">
+        <div>
+          <div className="d-section-label">Memo backlog</div>
+          <h2>Design memos</h2>
+        </div>
+        <span className="d-chip d-chip--info">{memos.length}</span>
+      </header>
+      <ul className="d-list-stack">
         {memos.map((m) => (
-          <li
-            key={m.slug}
-            style={{
-              padding: '10px 0',
-              borderBottom: '1px solid #f3f4f6',
-              display: 'flex',
-              alignItems: 'baseline',
-              gap: 12,
-            }}
-          >
-            <a
-              href={`/docs/design/${m.slug}`}
-              target="_blank"
-              rel="noreferrer"
-              style={{ fontSize: 13, color: '#1d4ed8', textDecoration: 'none', fontWeight: 500 }}
-            >
+          <li key={m.slug} className="d-memo-row">
+            <a href={`/docs/design/${m.slug}`} target="_blank" rel="noreferrer">
               {m.title}
             </a>
-            <span
-              style={{
-                fontSize: 11,
-                padding: '2px 6px',
-                borderRadius: 10,
-                background:
-                  m.status === 'addressed' ? '#dcfce7' :
-                  m.status === 'wontfix' ? '#fee2e2' : '#fef3c7',
-                color:
-                  m.status === 'addressed' ? '#166534' :
-                  m.status === 'wontfix' ? '#991b1b' : '#92400e',
-              }}
-            >
-              {m.status}
-            </span>
-            <code style={{ fontSize: 11, color: '#6b7280', marginLeft: 'auto' }}>{m.slug}</code>
+            <span className={memoStatusChipClass(m.status)}>{m.status}</span>
+            <code>{m.slug}</code>
           </li>
         ))}
       </ul>
-    </div>
+    </section>
   );
 }
 
@@ -416,18 +401,18 @@ function TokensPane({
   loading: boolean;
   error: string | null;
 }) {
-  if (loading) return <p style={{ color: '#6b7280' }}>Loading tokens…</p>;
-  if (error) return <p style={{ color: '#b91c1c' }}>Failed: {error}</p>;
-  if (!data) return <p style={{ color: '#6b7280' }}>No tokens loaded.</p>;
-  if (data.error) return <p style={{ color: '#b91c1c' }}>Token store error: {data.error}</p>;
+  if (loading) return <PanelState>Loading tokens…</PanelState>;
+  if (error) return <PanelState tone="bad">Failed: {error}</PanelState>;
+  if (!data) return <PanelState>No tokens loaded.</PanelState>;
+  if (data.error) return <PanelState tone="bad">Token store error: {data.error}</PanelState>;
   if (data.tokens.length === 0) {
     return (
-      <p style={{ color: '#6b7280' }}>
+      <PanelState>
         No DTCG tokens found at workspace root <code>design/tokens/base.json</code>.
-      </p>
+      </PanelState>
     );
   }
-  // Group tokens by their top-level group (color, space, radius, …)
+
   const groups = new Map<string, DtcgToken[]>();
   for (const t of data.tokens) {
     const top = t.id.split('.')[0] || 'misc';
@@ -435,109 +420,54 @@ function TokensPane({
     arr.push(t);
     groups.set(top, arr);
   }
+
   return (
-    <div>
-      <header style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>
-          Tokens <span style={{ color: '#9ca3af', fontWeight: 400 }}>({data.count} DTCG)</span>
-        </h2>
-        {data.source && (
-          <code style={{ fontSize: 11, color: '#6b7280' }}>{data.source}</code>
-        )}
+    <section className="d-pane-card">
+      <header className="d-card-head">
+        <div>
+          <div className="d-section-label">Token source</div>
+          <h2>Tokens</h2>
+        </div>
+        <span className="d-chip d-chip--info">{data.count} DTCG</span>
+        {data.source && <code className="d-source-chip">{data.source}</code>}
       </header>
       {[...groups.entries()].map(([group, tokens]) => (
-        <section key={group} style={{ marginBottom: 24 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, color: '#374151', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-            {group} <span style={{ color: '#9ca3af', fontWeight: 400 }}>({tokens.length})</span>
+        <section key={group} className="d-token-group">
+          <h3>
+            {group} <span>({tokens.length})</span>
           </h3>
-          <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
+          <ul className="d-token-grid">
             {tokens.map((t) => (
-              <li
-                key={t.id}
-                style={{
-                  border: '1px solid #e5e7eb',
-                  borderRadius: 6,
-                  padding: '8px 10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 12,
-                }}
-              >
+              <li key={t.id} className="d-token-card">
                 <TokenSwatch token={t} />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <code style={{ fontSize: 11, color: '#111827', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {t.id}
-                  </code>
-                  <span style={{ fontSize: 11, color: '#6b7280' }}>
-                    {String(t.value)} <span style={{ marginLeft: 4 }}>· {t.type}</span>
-                  </span>
+                <div>
+                  <code>{t.id}</code>
+                  <span>{String(t.value)} · {t.type}</span>
                 </div>
               </li>
             ))}
           </ul>
         </section>
       ))}
-    </div>
+    </section>
   );
 }
 
 function TokenSwatch({ token }: { token: DtcgToken }) {
   if (token.type === 'color' && typeof token.value === 'string') {
-    return (
-      <span
-        title={String(token.value)}
-        style={{
-          width: 28,
-          height: 28,
-          borderRadius: 4,
-          background: token.value,
-          border: '1px solid #e5e7eb',
-          flexShrink: 0,
-        }}
-      />
-    );
+    return <span className="d-token-swatch" title={String(token.value)} style={{ background: token.value }} />;
   }
   if (token.type === 'dimension' && typeof token.value === 'string') {
     const px = parseFloat(token.value);
     if (Number.isFinite(px) && px > 0 && px < 80) {
       return (
-        <span
-          aria-hidden
-          style={{
-            width: 28,
-            height: 28,
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            border: '1px solid #e5e7eb',
-            borderRadius: 4,
-            flexShrink: 0,
-          }}
-        >
-          <span style={{ width: px, height: px, background: '#9ca3af', display: 'block', borderRadius: 2 }} />
+        <span className="d-token-swatch d-token-swatch--dimension" aria-hidden>
+          <span style={{ width: px, height: px }} />
         </span>
       );
     }
   }
-  return (
-    <span
-      style={{
-        width: 28,
-        height: 28,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        border: '1px solid #e5e7eb',
-        borderRadius: 4,
-        fontSize: 10,
-        color: '#9ca3af',
-        flexShrink: 0,
-      }}
-    >
-      {token.type.slice(0, 3)}
-    </span>
-  );
+  return <span className="d-token-swatch d-token-swatch--type">{token.type.slice(0, 3)}</span>;
 }
 
 function RegistryPane({
@@ -554,60 +484,52 @@ function RegistryPane({
   onQueryChange: (q: string) => void;
 }) {
   return (
-    <div>
-      <h2 style={{ fontSize: 16, fontWeight: 600, marginTop: 0 }}>
-        Component registry{' '}
-        <span style={{ color: '#9ca3af', fontWeight: 400 }}>react-tailwind</span>
-      </h2>
+    <section className="d-pane-card">
+      <header className="d-card-head d-card-head--stacked">
+        <div>
+          <div className="d-section-label">Component registry</div>
+          <h2>React + Tailwind primitives</h2>
+        </div>
+        <span className="d-chip d-chip--info">{entries.length} matches</span>
+      </header>
       <input
         type="search"
         value={query}
         onChange={(e) => onQueryChange(e.target.value)}
         placeholder="Filter by id, summary, or input name…"
-        style={{
-          width: '100%',
-          padding: '8px 10px',
-          borderRadius: 6,
-          border: '1px solid #e5e7eb',
-          fontSize: 13,
-          marginBottom: 12,
-        }}
+        className="d-search-input"
       />
       {loading ? (
-        <p style={{ color: '#6b7280' }}>Loading registry…</p>
+        <PanelState>Loading registry…</PanelState>
       ) : error ? (
-        <p style={{ color: '#b91c1c' }}>Failed: {error}</p>
+        <PanelState tone="bad">Failed: {error}</PanelState>
       ) : entries.length === 0 ? (
-        <p style={{ color: '#6b7280' }}>No matches.</p>
+        <PanelState>No matches.</PanelState>
       ) : (
-        <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        <ul className="d-list-stack d-registry-list">
           {entries.map((e) => (
-            <li
-              key={e.id}
-              style={{
-                padding: '12px 0',
-                borderBottom: '1px solid #f3f4f6',
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <code style={{ fontSize: 13, fontWeight: 500, color: '#111827' }}>{e.id}</code>
-                <span style={{ fontSize: 11, color: '#6b7280' }}>{e.kind}</span>
+            <li key={e.id} className="d-registry-row">
+              <div className="d-registry-title">
+                <code>{e.id}</code>
+                <span className="d-chip d-chip--info">{e.kind}</span>
               </div>
-              <p style={{ fontSize: 13, color: '#374151', margin: '4px 0' }}>{e.summary}</p>
+              <p>{e.summary}</p>
               {e.inputs && e.inputs.length > 0 && (
-                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+                <div className="d-registry-meta">
                   inputs: {e.inputs.map((i) => `${i.name}${i.required ? '*' : ''}: ${i.type}`).join(', ')}
                 </div>
               )}
               {e.variants && e.variants.length > 0 && (
-                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 2 }}>
-                  variants: {e.variants.join(' · ')}
-                </div>
+                <div className="d-registry-meta">variants: {e.variants.join(' · ')}</div>
               )}
             </li>
           ))}
         </ul>
       )}
-    </div>
+    </section>
   );
+}
+
+function PanelState({ children, tone = 'muted' }: { children: React.ReactNode; tone?: 'muted' | 'bad' }) {
+  return <div className={`d-panel-state d-panel-state--${tone}`}>{children}</div>;
 }
