@@ -18,7 +18,13 @@ const RUST_OPENAPI_PATH   = process.env.PAPERCUSP_RUST_OPENAPI
 function loadRustPaths() {
   let text;
   try {
-    text = fs.readFileSync(RUST_OPENAPI_PATH, 'utf8');
+    // turbopackIgnore: this FS read produces routing config consumed
+    // by `rewrites()`; the file's contents do NOT need to be in the
+    // route's NFT trace. Without the ignore comment, Turbopack treats
+    // this dynamic path read as "tracing the whole project" and fails
+    // page-data collection with "Invalid segment configuration export
+    // detected" (seen 2026-05-11).
+    text = fs.readFileSync(/*turbopackIgnore: true*/ RUST_OPENAPI_PATH, 'utf8');
   } catch (e) {
     console.warn(`[next.config] rust openapi not readable at ${RUST_OPENAPI_PATH}: ${e.message}`);
     console.warn('[next.config] ?backend=rust will resolve to ZERO routes until that file exists');
