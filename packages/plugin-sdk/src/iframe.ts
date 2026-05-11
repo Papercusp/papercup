@@ -109,6 +109,20 @@ export function initPapercupIframe(): void {
         _pendingRpc.delete(msg.id);
         cb(msg);
       }
+    } else if (msg.kind === 'query-result') {
+      // Query results share the _pendingRpc map (id → callback) but
+      // arrive on a separate envelope. Translate to an rpc-response
+      // shape so the existing usePapercupQuery resolver works
+      // unchanged. The SDK's queryResult handler synthesizes a
+      // payloadB64 from the JSON.stringify of `rows`.
+      const qr = msg as { id: string; rows: unknown[] };
+      const cb = _pendingRpc.get(qr.id);
+      if (cb) {
+        _pendingRpc.delete(qr.id);
+        const enc = new TextEncoder();
+        const bytes = enc.encode(JSON.stringify(qr.rows ?? []));
+        cb({ kind: 'rpc-response', id: qr.id, ok: true, payloadB64: bytesToB64(bytes) });
+      }
     } else if (msg.kind === 'event') {
       const handlers = _eventHandlers.get(msg.name);
       if (handlers) {

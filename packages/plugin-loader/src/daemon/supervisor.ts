@@ -138,9 +138,22 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
       opts.onLog?.(`[supervisor] bwrap unavailable; spawning unsandboxed: ${opts.pluginName}`);
     }
 
+    // When bwrap is the launcher it strips env via --clearenv inside
+    // the sandbox; the env we hand to spawn here is just bwrap's own.
+    // When falling back to unsandboxed spawn (bwrap probe failed) we
+    // need to pass a small allowlist so common runtimes have HOME/
+    // LANG to operate. Anything not in the allowlist is dropped to
+    // limit info-leakage from the operator's environment.
+    const envAllowlist = ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TZ', 'TMPDIR'];
+    const env: Record<string, string> = {};
+    for (const k of envAllowlist) {
+      const v = process.env[k];
+      if (typeof v === 'string') env[k] = v;
+    }
+    if (!env.PATH) env.PATH = '/usr/bin:/bin';
     child = spawn(binary, argv, {
       cwd: opts.cwd,
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+      env,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

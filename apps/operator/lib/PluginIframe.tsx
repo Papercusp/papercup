@@ -37,8 +37,24 @@ interface Props {
   width?: number | string;
 }
 
+/**
+ * Pure cap-check for iframe top-navigation requests (Batch H5,
+ * `iframe:navigate:<origin>`). Exported so the OAuth-roundtrip smoke
+ * test can exercise it without rendering React or simulating
+ * postMessage. Returns null on a denied or invalid URL; the parsed
+ * URL on allow.
+ */
+export function isNavigateAllowed(navigateOrigins: string[], url: string): URL | null {
+  let target: URL;
+  try { target = new URL(url); } catch { return null; }
+  const allowed = navigateOrigins.some((o) => o === target.origin || o === '*');
+  return allowed ? target : null;
+}
+
 interface RpcRequest { kind: 'rpc-request'; id: string; action: string; payloadB64: string; nonce: string }
-interface RpcResponse { kind: 'rpc-response'; id: string; ok: boolean; payloadB64?: string; error?: string; nonce: string }
+type RpcResponse =
+  | { kind: 'rpc-response'; id: string; ok: true; payloadB64: string; nonce: string }
+  | { kind: 'rpc-response'; id: string; ok: false; error: { tag: string; message: string }; nonce: string };
 interface EventSub { kind: 'event-subscribe'; name: string; nonce: string }
 interface EventUnsub { kind: 'event-unsubscribe'; name: string; nonce: string }
 interface EventMsg { kind: 'event'; name: string; payloadB64: string; nonce: string }
@@ -98,10 +114,18 @@ export default function PluginIframe({
               }),
             });
             const json = (await res.json()) as { ok: boolean; payloadB64?: string; error?: string };
-            const reply: RpcResponse = { kind: 'rpc-response', id: r.id, ok: json.ok, payloadB64: json.payloadB64, error: json.error, nonce };
+            const reply: RpcResponse = json.ok && json.payloadB64 != null
+              ? { kind: 'rpc-response', id: r.id, ok: true, payloadB64: json.payloadB64, nonce }
+              : { kind: 'rpc-response', id: r.id, ok: false, error: { tag: 'plugin-error', message: json.error ?? 'unknown' }, nonce };
             send(reply);
           } catch (e: unknown) {
-            const reply: RpcResponse = { kind: 'rpc-response', id: r.id, ok: false, error: e instanceof Error ? e.message : String(e), nonce };
+            const reply: RpcResponse = {
+              kind: 'rpc-response',
+              id: r.id,
+              ok: false,
+              error: { tag: 'plugin-error', message: e instanceof Error ? e.message : String(e) },
+              nonce,
+            };
             send(reply);
           }
           break;
@@ -144,11 +168,9 @@ export default function PluginIframe({
         case 'iframe-navigate': {
           // Batch H5 — iframe:navigate:<origin> capability check.
           const n = data as NavigateReq;
-          let target: URL;
-          try { target = new URL(n.url); } catch { return; }
-          const allowed = navigateOrigins.some((o) => o === target.origin || o === '*');
-          if (!allowed) {
-            console.warn(`[PluginIframe] navigation to ${target.origin} denied (manifest iframeNavigateOrigins=${navigateOrigins.join(',')})`);
+          const target = isNavigateAllowed(navigateOrigins, n.url);
+          if (!target) {
+            console.warn(`[PluginIframe] navigation denied for ${n.url} (manifest iframeNavigateOrigins=${navigateOrigins.join(',')})`);
             return;
           }
           // Top-navigate the parent. CSP gates which destinations
@@ -164,7 +186,11 @@ export default function PluginIframe({
       window.removeEventListener('message', onMessage);
       for (const sse of subs.values()) sse.close();
     };
-  }, [nonce, pluginName, installSlug, navigateOrigins]);
+    // navigateOrigins is an array — joining stringifies the dependency
+    // so a new-but-equal array on re-render doesn't tear down the
+    // postMessage listener + SSE handles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonce, pluginName, installSlug, navigateOrigins.join(',')]);
 
   if (error) {
     return <div style={{ padding: 24, color: 'red' }}>{error}</div>;
@@ -174,7 +200,18 @@ export default function PluginIframe({
   // The /api/plugins/<plugin>/iframe/<entry> route serves the plugin's
   // HTML wrapped in an operator-controlled <head> with the per-iframe
   // nonce embedded as a meta tag the iframe SDK reads.
-  const src = `/api/plugins/${encodeURIComponent(pluginName)}/iframe/${encodeURIComponent(iframeEntry)}?install=${encodeURIComponent(installSlug)}&nonce=${nonce}`;
+  // iframeEntry is a relative path that may contain '/' (e.g.
+  // 'iframe/index.html'). The route is a catch-all `[...entry]`, so
+  // encoding each segment individually is safest — preserves slashes
+  // as path separators while encoding any reserved chars in the
+  // segment names. Path-traversal segments ('..') are caught by the
+  // wrapper route's startsWith guard.
+  const entryEncoded = iframeEntry
+    .split('/')
+    .filter((p) => p.length > 0)
+    .map(encodeURIComponent)
+    .join('/');
+  const src = `/api/plugins/${encodeURIComponent(pluginName)}/iframe/${entryEncoded}?install=${encodeURIComponent(installSlug)}&nonce=${nonce}`;
 
   return (
     <iframe

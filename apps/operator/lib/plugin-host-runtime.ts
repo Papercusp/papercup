@@ -907,6 +907,30 @@ export async function invokePluginAction(args: {
     ...(args.pluginDataDirOverride ? { pluginDataDirOverride: args.pluginDataDirOverride } : {}),
   });
   await ensureInitialized(state, lp, ctx);
+  // WASM/daemon plugins skip the JS action registry entirely — their
+  // actions live behind the runtime handle stored in state.wasmHandles
+  // (G3 dispatch). Route through callWasmAction so existing callers
+  // (api/plugins/invoke, _hono/plugins.ts) work uniformly across
+  // runtimes without each having to know which kind they're hitting.
+  if (lp.runtime?.kind === 'wasm' || lp.runtime?.kind === 'daemon') {
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+    const payloadBytes = args.params == null
+      ? new Uint8Array(0)
+      : enc.encode(typeof args.params === 'string' ? args.params : JSON.stringify(args.params));
+    const r = await callWasmAction({
+      pluginName: args.pluginName,
+      installSlug: args.installSlug,
+      actionName: args.actionName,
+      payload: payloadBytes,
+    });
+    if (r.ok) {
+      const text = dec.decode(r.payload);
+      try { return { ok: true, result: text ? JSON.parse(text) : null }; }
+      catch { return { ok: true, result: text }; }
+    }
+    return { ok: false, error: r.error };
+  }
   const registry = state.registries.get(regKey(lp.plugin.name, args.installSlug));
   if (!registry) return { ok: false, error: `no action registry for "${args.pluginName}@${args.installSlug}" — init may have failed` };
   // ensureInitialized worked on its own ctx — attach the same extras to
@@ -1156,6 +1180,28 @@ async function buildContextFor(lp: LoadedPlugin, harnessSlug: string): Promise<P
 }
 
 export function _resetPluginHostForTests(): void {
+  // Best-effort shutdown of WASM/daemon handles BEFORE we drop the
+  // state cache. Without this, the previous wasmtime store stays in
+  // memory and (worse) any spawned daemon child processes survive
+  // the reset — over a few hot-reload cycles you'd accumulate
+  // orphaned daemons holding onto plugin work-dirs and ports.
+  // Errors are swallowed: this is teardown, the next state will be
+  // fresh either way.
+  const prev = __cache.state;
+  if (prev) {
+    for (const handle of prev.wasmHandles.values()) {
+      try {
+        const h = handle as { shutdown?: () => Promise<unknown> | unknown };
+        if (typeof h.shutdown === 'function') {
+          // Fire-and-forget — we don't want test resets to block on a
+          // potentially-stuck daemon's graceful shutdown. The daemon
+          // supervisor itself sends SIGTERM then SIGKILL after 2s.
+          void Promise.resolve(h.shutdown()).catch(() => {});
+        }
+      } catch { /* best-effort */ }
+    }
+    prev.wasmHandles.clear();
+  }
   __cache.promise = null;
   __cache.state = null;
   // Also clear Node's CJS require.cache for plugin entry files so
