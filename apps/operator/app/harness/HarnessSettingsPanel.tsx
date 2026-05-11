@@ -323,16 +323,9 @@ export default function HarnessSettingsPanel({
       // Merge into the existing spec config so we don't clobber unrelated keys.
       const cfg = { ...originalConfig } as Record<string, any>;
 
-      // Derive legacy `mode` from workerCountMode for runtime back-compat.
-      // The dispatcher still keys off `parallelWorkers.mode` until step 5
-      // of the synthesizer plan deletes the mode predicates entirely.
-      // After that lands, drop this derivation.
-      const derivedMode =
-        parallel.workerCountMode === 'one' ? 'lane'
-        : parallel.workerCountMode === 'fixed' ? 'competition'
-        : 'adaptive';
-
-      const pw: Record<string, any> = { max: parallel.max, mode: derivedMode };
+      // The runtime keys off resolveWorkerCount (workersPerFeature +
+      // tier set), not a `mode` string. Stop writing the legacy field.
+      const pw: Record<string, any> = { max: parallel.max };
 
       if (parallel.workerCountMode === 'one') {
         pw.workersPerFeature = 1;
