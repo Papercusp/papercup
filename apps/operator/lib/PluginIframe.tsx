@@ -23,6 +23,7 @@
  */
 'use client';
 
+import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
 
 interface Props {
@@ -59,7 +60,7 @@ export default function PluginIframe({
   navigateOrigins = [],
   height = '100%',
   width = '100%',
-}: Props): JSX.Element {
+}: Props): React.JSX.Element {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [nonce] = useState(genNonce);
   const [error, setError] = useState<string | null>(null);

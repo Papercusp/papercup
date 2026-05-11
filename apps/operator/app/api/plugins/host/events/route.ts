@@ -39,18 +39,20 @@ export async function GET(req: Request): Promise<Response> {
       };
       // Send a comment so the client sees the connection is open.
       controller.enqueue(encoder.encode(': ok\n\n'));
-      // HookBus.addAction returns void; collect a key for cancellation.
-      // We use a sentinel handler reference and remove via the bus's
-      // internal map. v1 keeps it simple: stream is closed when the
-      // client disconnects (the readable's cancel() runs); the handler
-      // closure captures `controller` and stops enqueuing once the
-      // controller is closed.
+      // HookBus.registerAction(event, pluginName, handler) — pluginName
+      // tags the registration so HookBus.unregisterPlugin can remove
+      // it on disconnect. We use a stable per-stream pseudo-plugin
+      // name so cancel() can drop just this stream's subscription.
+      const subKey = `__iframe_sse_${pluginName}_${installSlug}_${name}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       let active = true;
-      state.bus.addAction(name, (arg: unknown) => {
+      state.bus.registerAction(name, subKey, (arg: unknown) => {
         if (!active) return;
         send(arg);
       });
-      unsubscribe = () => { active = false; };
+      unsubscribe = () => {
+        active = false;
+        state.bus.unregisterPlugin(subKey);
+      };
     },
     cancel() {
       unsubscribe?.();

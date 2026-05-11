@@ -11,10 +11,38 @@
  * daemonPid + restartCount + bwrapExitCode (Batch I5).
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { JsonRpcBridge, type JsonRpcNotification } from './jsonrpc-bridge';
 import { buildBwrapArgs } from './bwrap-args';
+
+/**
+ * Probe whether bwrap can actually sandbox on this host. Nested user
+ * namespaces (Docker hosts, devcontainers with uid_map=0 0 4294967295)
+ * have bwrap installed but `--unshare-user` is denied, which makes
+ * every spawn fail. We run a no-op probe at supervisor-construction
+ * time and cache the result. Mirrors `require_bwrap_or_skip` from the
+ * Rust slice-3 v1 host.
+ */
+let _bwrapWorksCache: boolean | null = null;
+function bwrapWorks(): boolean {
+  if (_bwrapWorksCache !== null) return _bwrapWorksCache;
+  if (process.platform !== 'linux' || !existsSync('/usr/bin/bwrap')) {
+    _bwrapWorksCache = false;
+    return false;
+  }
+  try {
+    const r = spawnSync(
+      '/usr/bin/bwrap',
+      ['--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev', '--die-with-parent', '/bin/true'],
+      { stdio: 'ignore', timeout: 5_000 },
+    );
+    _bwrapWorksCache = r.status === 0;
+  } catch {
+    _bwrapWorksCache = false;
+  }
+  return _bwrapWorksCache;
+}
 
 export type DaemonRestartPolicy = 'never' | 'on-failure' | 'always';
 
@@ -87,7 +115,7 @@ export async function startDaemonPlugin(opts: StartDaemonOptions): Promise<Daemo
   };
 
   const spawnOnce = async (): Promise<void> => {
-    const useBwrap = process.platform === 'linux' && existsSync('/usr/bin/bwrap');
+    const useBwrap = bwrapWorks();
     let binary: string;
     let argv: string[];
     if (useBwrap) {
