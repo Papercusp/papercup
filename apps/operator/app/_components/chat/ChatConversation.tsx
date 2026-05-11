@@ -44,6 +44,16 @@ export interface ChatMessage {
   content: string;
   /** Optional tool calls to render above the content. Oracle uses; operator doesn't. */
   tools?: ChatToolCall[];
+  /**
+   * Stable id for optimistic-write dedup. Set client-side to a uuid
+   * when an optimistic local turn is dispatched; once the POST returns,
+   * the row's PG id replaces it. The live-tail Zero reconciler skips
+   * any incoming row whose id matches an already-loaded message —
+   * defeats the race where a Zero push arrives before the POST response
+   * (would otherwise double-render the user's own message). G19 of
+   * the active-mode audit.
+   */
+  id?: string;
 }
 
 export interface ChatConversationProps {

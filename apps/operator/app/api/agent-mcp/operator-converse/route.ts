@@ -41,7 +41,7 @@ export const runtime = 'nodejs';
 
 interface ConverseRequestBody {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
-  trigger?: 'user_message' | 'silence_nudge' | 'silence_check' | 'quiet_wait_resume';
+  trigger?: 'user_message' | 'silence_nudge' | 'silence_check' | 'quiet_wait_resume' | 'open_canvas';
   mayAskActive?: boolean;
   /**
    * UI client id of the originating browser tab. The chat surface
@@ -89,6 +89,7 @@ function buildPrompt(body: ConverseRequestBody): string {
     silence_nudge: 'Trigger: silence_nudge — the user has been silent ~10s. Say a brief silence prompt ("Still with me?", etc). Do not repeat your previous question.',
     silence_check: 'Trigger: silence_check — the user has been silent ~30s after your nudge. Ask once: "Do you want me to go into passive mode?". Do not self-flip.',
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
+    open_canvas: 'Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ask one open-ended question about what they\'re noticing, hoping for, or quietly worried about. Keep it warm and short — they just opened the panel.',
   };
   sections.push(`## Trigger\n\n${triggerLines[trigger]}`);
 
@@ -243,7 +244,7 @@ export async function POST(req: NextRequest) {
           const parsed = parseOperatorTurn(assembled);
           for (const sp of parsed.spawns) {
             const params = new URLSearchParams({
-              workspace: 'default',
+              workspace: workspaceId, // resolved earlier from activeWorkspaceId()
               harness: 'system',
               role: 'operator',
               run: `op-converse-${Date.now()}`,

@@ -59,6 +59,7 @@ import {
 } from '@/lib/operator-converse-tags';
 import { getVoiceState, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@restart/sync';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import type { ChatMessage } from './chat/ChatConversation';
 
 interface OperatorTurnRow {
@@ -106,6 +107,18 @@ interface State {
   wantActiveDeclinedAtMs: number;
   /** User turns recorded since the most recent decline. Resets to 0 on decline. */
   userTurnsSinceDecline: number;
+  /**
+   * Epoch ms of the most recent user-or-assistant turn. Anchors the
+   * silence ladder's 10s nudge window so mounting an old conversation
+   * doesn't immediately trigger "Still with me?". G13 of the audit.
+   */
+  lastTurnAtMs: number;
+  /**
+   * Consecutive operator-converse failures — drives exponential
+   * backoff on the silence-timer so a broken route doesn't spam the
+   * sidebar with retries. Reset to 0 on a successful turn. G14.
+   */
+  consecutiveErrorCount: number;
 }
 
 const INITIAL: State = {
@@ -117,6 +130,8 @@ const INITIAL: State = {
   wantActiveAskedAtMs: 0,
   wantActiveDeclinedAtMs: 0,
   userTurnsSinceDecline: 0,
+  lastTurnAtMs: 0,
+  consecutiveErrorCount: 0,
 };
 
 /** Lazy-init for the reducer — pull persisted messages from sessionStorage
@@ -140,13 +155,17 @@ type Action =
   | { type: 'set_mode'; mode: OperatorMode }
   | { type: 'set_sub'; sub: SubState }
   | { type: 'append_message'; message: ChatMessage }
+  | { type: 'replace_message_id'; oldId: string; newId: string }
   | { type: 'append_assistant_delta'; text: string }
   | { type: 'set_error'; error: string | null }
   | { type: 'record_user_turn'; tsMs: number }
   | { type: 'record_want_active_asked'; tsMs: number }
   | { type: 'record_want_active_declined'; tsMs: number }
+  | { type: 'mark_turn'; tsMs: number }
+  | { type: 'mark_error' }
+  | { type: 'reset_error_count' }
   | { type: 'reset_messages' }
-  | { type: 'replace_messages'; messages: ChatMessage[] }
+  | { type: 'replace_messages'; messages: ChatMessage[]; lastTurnAtMs?: number }
   | { type: 'prepend_messages'; messages: ChatMessage[] };
 
 function reducer(state: State, action: Action): State {
@@ -171,6 +190,13 @@ function reducer(state: State, action: Action): State {
       return { ...state, sub: action.sub };
     case 'append_message':
       return { ...state, messages: [...state.messages, action.message] };
+    case 'replace_message_id': {
+      const idx = state.messages.findIndex((m) => m.id === action.oldId);
+      if (idx < 0) return state;
+      const next = state.messages.slice();
+      next[idx] = { ...next[idx], id: action.newId };
+      return { ...state, messages: next };
+    }
     case 'append_assistant_delta': {
       const last = state.messages[state.messages.length - 1];
       if (!last || last.role !== 'assistant') {
@@ -205,10 +231,23 @@ function reducer(state: State, action: Action): State {
         wantActiveDeclinedAtMs: action.tsMs,
         userTurnsSinceDecline: 0,
       };
+    case 'mark_turn':
+      return state.lastTurnAtMs === action.tsMs ? state : { ...state, lastTurnAtMs: action.tsMs };
+    case 'mark_error':
+      return { ...state, consecutiveErrorCount: state.consecutiveErrorCount + 1 };
+    case 'reset_error_count':
+      return state.consecutiveErrorCount === 0
+        ? state
+        : { ...state, consecutiveErrorCount: 0 };
     case 'reset_messages':
       return { ...state, messages: [], error: null };
     case 'replace_messages':
-      return { ...state, messages: action.messages, error: null };
+      return {
+        ...state,
+        messages: action.messages,
+        error: null,
+        lastTurnAtMs: action.lastTurnAtMs ?? state.lastTurnAtMs,
+      };
     case 'prepend_messages':
       return { ...state, messages: [...action.messages, ...state.messages] };
   }
@@ -295,7 +334,8 @@ export interface GenerationRequest {
     | 'user_message'
     | 'silence_nudge'
     | 'silence_check'
-    | 'quiet_wait_resume';
+    | 'quiet_wait_resume'
+    | 'open_canvas';
   /** True when we're allowed to ask "want active?" this turn. */
   mayAskActive: boolean;
   /** AbortSignal for cancellation (e.g. mode flip mid-generation). */
@@ -443,6 +483,7 @@ interface ProviderProps {
 
 export function OperatorConversationProvider({ children, generationFn = defaultGenerationFn }: ProviderProps) {
   const [state, dispatch] = useReducer(reducer, INITIAL, initState);
+  const workspaceId = useWorkspaceId();
 
   // PG-backed conversation identity. Loaded on mount; survives refresh
   // and is shared between the text path and (later) the EL voice path.
@@ -489,7 +530,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         if (!res.ok) return;
         const json = (await res.json()) as {
           conversation: { id: string };
-          turns: Array<{ seq: number; role: 'user' | 'assistant' | 'system'; text: string }>;
+          turns: Array<{ id?: string; seq: number; role: 'user' | 'assistant' | 'system'; text: string; createdAt?: number }>;
           hasMoreEarlier: boolean;
         };
         if (cancelled) return;
@@ -499,9 +540,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           oldestLoadedSeqRef.current = json.turns[0].seq;
           newestLoadedSeqRef.current = json.turns[json.turns.length - 1].seq;
           setHasMoreEarlier(json.hasMoreEarlier);
+          // Anchor lastTurnAtMs to the most-recent turn's createdAt so
+          // the silence ladder doesn't fire "Still with me?" on mount
+          // of an old conversation. G13 of the audit.
+          const lastCreated = json.turns[json.turns.length - 1].createdAt ?? 0;
           dispatch({
             type: 'replace_messages',
-            messages: json.turns.map((t) => ({ role: t.role, content: t.text })),
+            messages: json.turns.map((t) => ({
+              role: t.role,
+              content: t.text,
+              id: typeof t.id === 'string' ? t.id : undefined,
+            })),
+            lastTurnAtMs: lastCreated,
           });
         } else {
           // Brand-new conversation — keep the sessionStorage seed for
@@ -578,12 +628,26 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     if (!Array.isArray(remoteTurns) || remoteTurns.length === 0) return;
     const sorted = [...remoteTurns].sort((a, b) => a.seq - b.seq);
     const since = newestLoadedSeqRef.current;
+    // Dedup by id: if a remote row's id matches an already-loaded
+    // message (optimistic uuid or real PG id), skip the append. G19.
+    const localIds = new Set(state.messages.map((m) => m.id).filter((x): x is string => !!x));
+    let lastTurnTs = 0;
     for (const t of sorted) {
       if (since !== null && t.seq <= since) continue;
-      dispatch({ type: 'append_message', message: { role: t.role, content: t.text } });
+      if (typeof t.id === 'string' && localIds.has(t.id)) {
+        newestLoadedSeqRef.current = t.seq;
+        continue;
+      }
+      dispatch({
+        type: 'append_message',
+        message: { role: t.role, content: t.text, id: typeof t.id === 'string' ? t.id : undefined },
+      });
       newestLoadedSeqRef.current = t.seq;
       if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = t.seq;
+      const ts = (t as { createdAt?: number }).createdAt ?? Date.now();
+      if (ts > lastTurnTs) lastTurnTs = ts;
     }
+    if (lastTurnTs > 0) dispatch({ type: 'mark_turn', tsMs: lastTurnTs });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [remoteTurns.length, convId]);
 
@@ -598,28 +662,35 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // runGeneration once the assistant turn is parsed. We don't block the
   // UI on the network — the optimistic React state has already updated.
   const persistTurn = useCallback(
-    (role: 'user' | 'assistant', text: string, source: 'text_typed' | 'voice_stt' | 'voice_tts' = 'text_typed') => {
+    (
+      role: 'user' | 'assistant',
+      text: string,
+      source: 'text_typed' | 'voice_stt' | 'voice_tts' = 'text_typed',
+      optimisticId?: string,
+    ) => {
       const id = conversationIdRef.current;
       if (!id) return;
-      // Bump newestLoadedSeqRef to the inserted seq so the live-tail
-      // reconciler doesn't double-render our optimistic message when
-      // it echoes back via Zero. Best-effort: if the POST fails we just
-      // never bump and the live tail will treat the next remote row as
-      // new (which still self-heals because the optimistic React row
-      // already has the same content).
+      // After insert: bump cursor (seq dedup) AND swap optimistic uuid
+      // for the real PG id (G19 id dedup). Either one alone has a race
+      // window where the Zero push could double-render the optimistic
+      // local message; together they're robust.
       void fetch(`/api/operator/conversations/${id}/turns`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ role, text, source }),
       })
         .then((r) => (r.ok ? r.json() : null))
-        .then((j: { turn?: { seq?: number } } | null) => {
+        .then((j: { turn?: { id?: string; seq?: number } } | null) => {
           const seq = j?.turn?.seq;
+          const realId = j?.turn?.id;
           if (typeof seq === 'number') {
             if (newestLoadedSeqRef.current === null || seq > newestLoadedSeqRef.current) {
               newestLoadedSeqRef.current = seq;
             }
             if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = seq;
+          }
+          if (optimisticId && typeof realId === 'string') {
+            dispatch({ type: 'replace_message_id', oldId: optimisticId, newId: realId });
           }
         })
         .catch(() => { /* swallow — sessionStorage cache covers refresh */ });
@@ -743,13 +814,21 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               ? { role: 'assistant', content: parsed.say, tools: collectedTools }
               : { role: 'assistant', content: parsed.say },
           });
-          // No record_turn_ts here — the engagement check tracks USER
-          // turns only. Assistant turns just need the want-active probe.
+          // Engagement check tracks USER turns only. Assistant turns
+          // (a) probe for the want-active phrase to seed G2's decline
+          // window, AND (b) RESET that seed on subsequent non-want-active
+          // turns so a "no" to a later "want passive?" check doesn't
+          // get misclassified as declining active. G12 of the audit.
           if (sayContainsWantActive(parsed.say)) {
             dispatch({ type: 'record_want_active_asked', tsMs: Date.now() });
+          } else {
+            dispatch({ type: 'record_want_active_asked', tsMs: 0 });
           }
+          dispatch({ type: 'mark_turn', tsMs: Date.now() });
           persistTurn('assistant', parsed.say, 'text_typed');
         }
+        // Successful turn → clear backoff. G14.
+        dispatch({ type: 'reset_error_count' });
 
         if (parsed.sleep) {
           writeSleepUntilMs(sleepTagToEpochMs(parsed.sleep));
@@ -764,7 +843,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         // and result land in the user-actions log + Intel panel.
         for (const sp of parsed.spawns) {
           const params = new URLSearchParams({
-            workspace: 'default',
+            workspace: workspaceId,
             harness: 'system',
             role: 'operator',
             run: `op-converse-${Date.now()}`,
@@ -819,10 +898,21 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         if (ctrl.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
         dispatch({ type: 'set_error', error: msg });
+        dispatch({ type: 'mark_error' });
         dispatch({
           type: 'set_sub',
           sub: stateRef.current.mode === 'passive' ? 'passive_idle' : 'ready',
         });
+      } finally {
+        // G15 — aborted with no follow-up taking over → reset sub so
+        // the chat doesn't get stranded in 'generating'.
+        if (ctrl.signal.aborted && inFlightRef.current === ctrl) {
+          dispatch({
+            type: 'set_sub',
+            sub: stateRef.current.mode === 'passive' ? 'passive_idle' : 'ready',
+          });
+          inFlightRef.current = null;
+        }
       }
     },
     [generationFn, persistTurn],
@@ -875,20 +965,51 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     return () => clearTimeout(t);
   }, [sleepUntilMs]);
 
+  // G13/G14 — silence ladder respects freshness + applies error backoff.
+  // SILENCE_FRESHNESS_MS: only run the ladder if the most recent turn
+  // was within this window (5min). Outside it, the chat is stale and
+  // nudges would feel out-of-context.
+  // errorMul: exponential backoff on the silence-timer wait when
+  // operator-converse keeps failing. Cap at 2^6 = 64x so the worst
+  // case is ~10min between nudges.
+  const SILENCE_FRESHNESS_MS = 5 * 60 * 1000;
+  const errorMul = state.consecutiveErrorCount > 0
+    ? Math.pow(2, Math.min(state.consecutiveErrorCount, 6))
+    : 1;
   useEffect(() => {
     if (state.mode !== 'active') return;
     if (voiceActive) return; // voice owns the conversation; no nudge filler
     if (sleepUntilMs > Date.now()) return; // operator self-quieted via <sleep> tag
+    const sinceLast = Date.now() - state.lastTurnAtMs;
+    if (state.lastTurnAtMs === 0 || sinceLast > SILENCE_FRESHNESS_MS) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (state.sub === 'ready') {
-      timer = setTimeout(() => void runGeneration('silence_nudge'), SILENCE_NUDGE_MS);
+      const wait = Math.max(0, (SILENCE_NUDGE_MS * errorMul) - sinceLast);
+      timer = setTimeout(() => void runGeneration('silence_nudge'), wait);
     } else if (state.sub === 'silence_nudge') {
-      timer = setTimeout(() => void runGeneration('silence_check'), SILENCE_CHECK_MS);
+      timer = setTimeout(() => void runGeneration('silence_check'), SILENCE_CHECK_MS * errorMul);
     } else if (state.sub === 'silence_check') {
       timer = setTimeout(() => dispatch({ type: 'set_sub', sub: 'quiet_wait' }), SILENCE_QUIET_WAIT_MS);
     }
     return () => { if (timer) clearTimeout(timer); };
-  }, [state.mode, state.sub, runGeneration, voiceActive, sleepUntilMs]);
+  }, [state.mode, state.sub, state.lastTurnAtMs, errorMul, runGeneration, voiceActive, sleepUntilMs]);
+
+  // G10 — opening utterance on fresh chat. Fires ONCE on mount when the
+  // sidebar is empty AND mode is active AND voice is off AND not sleeping.
+  // The ref guard prevents the effect from re-firing on dep changes
+  // (e.g. another flag flipping during the in-flight generation).
+  const openCanvasFiredRef = useRef(false);
+  useEffect(() => {
+    if (openCanvasFiredRef.current) return;
+    if (!hydratedRef.current) return;
+    if (state.mode !== 'active') return;
+    if (voiceActive) return;
+    if (sleepUntilMs > Date.now()) return;
+    if (state.messages.length > 0) return;
+    if (state.sub !== 'ready') return;
+    openCanvasFiredRef.current = true;
+    void runGeneration('open_canvas');
+  }, [state.mode, state.sub, state.messages.length, voiceActive, sleepUntilMs, runGeneration]);
 
   // ── Public actions ──────────────────────────────────────────────────
 
@@ -896,21 +1017,28 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     (text: string) => {
       const trimmed = text.trim();
       if (!trimmed) return;
-      const userMsg: ChatMessage = { role: 'user', content: trimmed };
+      // Optimistic id — swapped for the real PG id once the POST
+      // returns (see persistTurn). The live-tail Zero reconciler
+      // dedupes by id, so a fast Zero echo won't double-render the
+      // user's message. G19.
+      const optimisticId = `opt-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+      const userMsg: ChatMessage = { role: 'user', content: trimmed, id: optimisticId };
+      const nowMs = Date.now();
       dispatch({ type: 'append_message', message: userMsg });
-      dispatch({ type: 'record_user_turn', tsMs: Date.now() });
+      dispatch({ type: 'record_user_turn', tsMs: nowMs });
+      dispatch({ type: 'mark_turn', tsMs: nowMs });
       // Decline detection: if the operator just asked "want active?"
       // (within the last 60s) AND the user's reply reads as a "no",
       // record the decline so mayAskActiveNow() applies the cooldown.
       const askedAt = stateRef.current.wantActiveAskedAtMs;
       if (
         askedAt > 0
-        && Date.now() - askedAt < 60_000
+        && nowMs - askedAt < 60_000
         && userReplyDeclinesActive(trimmed)
       ) {
-        dispatch({ type: 'record_want_active_declined', tsMs: Date.now() });
+        dispatch({ type: 'record_want_active_declined', tsMs: nowMs });
       }
-      persistTurn('user', trimmed, 'text_typed');
+      persistTurn('user', trimmed, 'text_typed', optimisticId);
       // quiet_wait → user re-engaged; resume from the thread.
       const trigger: GenerationRequest['trigger'] =
         stateRef.current.sub === 'quiet_wait' ? 'quiet_wait_resume' : 'user_message';
