@@ -15,7 +15,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, gte, lt, count } from 'drizzle-orm';
 
-const t = generated.mobile_pair_tokensInHarness_shared;
+const t = generated.mobilePairTokensInHarnessShared;
 
 interface PendingPair {
   pairToken: string;
@@ -46,19 +46,19 @@ export async function mintPairToken(opts: {
   // mint survived, killing any earlier QR the user had screenshot.
 
   await db.insert(t).values({
-    pair_token: pairToken,
-    workspace_id: opts.workspaceId,
-    user_email: opts.userEmail ?? null,
-    desktop_host: opts.desktopHost,
-    expires_at_ms: expiresAt,
+    pairToken: pairToken,
+    workspaceId: opts.workspaceId,
+    userEmail: opts.userEmail ?? null,
+    desktopHost: opts.desktopHost,
+    expiresAtMs: expiresAt,
     consumed: false,
-    created_at_ms: now,
+    createdAtMs: now,
   });
 
   // Opportunistic GC.
   const cnt = await db.select({ n: count() }).from(t);
   if ((cnt[0]?.n ?? 0) > 1000) {
-    await db.delete(t).where(lt(t.expires_at_ms, now));
+    await db.delete(t).where(lt(t.expiresAtMs, now));
   }
 
   return { pairToken, expiresAt };
@@ -76,22 +76,22 @@ export async function consumePairToken(pairToken: string): Promise<PendingPair |
   const rows = await db
     .update(t)
     .set({ consumed: true })
-    .where(and(eq(t.pair_token, pairToken), eq(t.consumed, false), gte(t.expires_at_ms, now)))
+    .where(and(eq(t.pairToken, pairToken), eq(t.consumed, false), gte(t.expiresAtMs, now)))
     .returning({
-      pair_token: t.pair_token,
-      workspace_id: t.workspace_id,
-      user_email: t.user_email,
-      desktop_host: t.desktop_host,
-      expires_at_ms: t.expires_at_ms,
+      pairToken: t.pairToken,
+      workspaceId: t.workspaceId,
+      userEmail: t.userEmail,
+      desktopHost: t.desktopHost,
+      expiresAtMs: t.expiresAtMs,
     });
   if (rows.length === 0) return null;
   const r = rows[0];
   return {
-    pairToken: r.pair_token,
-    workspaceId: r.workspace_id,
-    userEmail: r.user_email ?? undefined,
-    expiresAt: Number(r.expires_at_ms),
-    desktopHost: r.desktop_host,
+    pairToken: r.pairToken,
+    workspaceId: r.workspaceId,
+    userEmail: r.userEmail ?? undefined,
+    expiresAt: Number(r.expiresAtMs),
+    desktopHost: r.desktopHost,
   };
 }
 

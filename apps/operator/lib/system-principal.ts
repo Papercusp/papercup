@@ -22,8 +22,8 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 
-const ti = generated.token_indexInHarness_shared;
-const sp = generated.system_principalsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const sp = generated.systemPrincipalsInHarnessShared;
 
 export interface SystemPrincipal {
   bearer: string;
@@ -44,8 +44,8 @@ export async function readSystemPrincipal(name: string): Promise<SystemPrincipal
   const rows = await db
     .select({ token: ti.token, capabilities: sp.capabilities })
     .from(ti)
-    .innerJoin(sp, and(eq(sp.workspace_id, ti.workspace_id), eq(sp.name, name)))
-    .where(and(eq(ti.kind, 'system'), eq(ti.harness_slug, slug), eq(ti.workspace_id, ws)))
+    .innerJoin(sp, and(eq(sp.workspaceId, ti.workspaceId), eq(sp.name, name)))
+    .where(and(eq(ti.kind, 'system'), eq(ti.harnessSlug, slug), eq(ti.workspaceId, ws)))
     .limit(1);
   if (rows.length === 0) return null;
   return {

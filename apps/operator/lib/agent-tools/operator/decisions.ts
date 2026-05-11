@@ -10,7 +10,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { desc } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
-const v = generated.operator_decisionsInHarness_shared;
+const v = generated.operatorDecisionsInHarnessShared;
 
 const ALL_ROLES = [
   'scoper',

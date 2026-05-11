@@ -13,7 +13,7 @@
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql } from 'drizzle-orm';
 
-const t = generated.cooldown_marksInHarness_shared;
+const t = generated.cooldownMarksInHarnessShared;
 
 /**
  * Read the most-recent mark for `key`, or null if none. Caller subtracts
@@ -22,7 +22,7 @@ const t = generated.cooldown_marksInHarness_shared;
 export async function readCooldownMark(key: string): Promise<number | null> {
   const { db } = getOrgPg();
   const rows = await db
-    .select({ marked_at_ms: t.marked_at_ms })
+    .select({ marked_at_ms: t.markedAtMs })
     .from(t)
     .where(eq(t.key, key))
     .limit(1);
@@ -34,12 +34,12 @@ export async function writeCooldownMark(key: string, markedAtMs: number = Date.n
   const { db } = getOrgPg();
   await db
     .insert(t)
-    .values({ key, marked_at_ms: markedAtMs, updated_at: Date.now() })
+    .values({ key, markedAtMs: markedAtMs, updatedAt: Date.now() })
     .onConflictDoUpdate({
       target: t.key,
       set: {
-        marked_at_ms: sql`EXCLUDED.marked_at_ms`,
-        updated_at: sql`EXCLUDED.updated_at`,
+        markedAtMs: sql`EXCLUDED.marked_at_ms`,
+        updatedAt: sql`EXCLUDED.updated_at`,
       },
     });
 }

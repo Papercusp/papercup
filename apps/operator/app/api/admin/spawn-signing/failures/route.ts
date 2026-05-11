@@ -23,7 +23,7 @@ import { and, count, desc, eq, gt, sql as dsql } from 'drizzle-orm';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { ensureSpawnSigVerificationFailuresTable } from '@/lib/ensure-schema';
 
-const sf = generated.spawn_sig_verification_failuresInHarness_shared;
+const sf = generated.spawnSigVerificationFailuresInHarnessShared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,13 +60,13 @@ export async function GET(req: Request) {
       id: sf.id,
       ts: sf.ts,
       reason: sf.reason,
-      claimed_role: sf.claimed_role,
-      claimed_harness: sf.claimed_harness,
-      claimed_workspace: sf.claimed_workspace,
-      claimed_spawn: sf.claimed_spawn,
-      exp_claim: sf.exp_claim,
-      remote_addr: sf.remote_addr,
-      user_agent: sf.user_agent,
+      claimed_role: sf.claimedRole,
+      claimed_harness: sf.claimedHarness,
+      claimed_workspace: sf.claimedWorkspace,
+      claimed_spawn: sf.claimedSpawn,
+      exp_claim: sf.expClaim,
+      remote_addr: sf.remoteAddr,
+      user_agent: sf.userAgent,
     })
     .from(sf)
     .where(rowsWhere)

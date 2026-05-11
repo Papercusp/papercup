@@ -11,7 +11,7 @@ import { eq } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
-const t = generated.operator_publish_credentialsInHarness_shared;
+const t = generated.operatorPublishCredentialsInHarnessShared;
 
 export interface PublishCredentials {
   tenantId: string;
@@ -35,7 +35,7 @@ export async function writePublishCredentials(c: PublishCredentials): Promise<vo
 export async function deletePublishCredentials(): Promise<void> {
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  await db.delete(t).where(eq(t.workspace_id, ws));
+  await db.delete(t).where(eq(t.workspaceId, ws));
 }
 
 export interface MaskedPublishCredentials {

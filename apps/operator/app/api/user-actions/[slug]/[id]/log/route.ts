@@ -17,7 +17,7 @@ import { and, eq } from 'drizzle-orm';
 import { ensureUserActionsTable } from '../../../../../../lib/ensure-schema';
 import { loadHarnessRegistry } from '../../../../../../lib/harness-registry';
 
-const ua = generated.user_actionsInHarness_shared;
+const ua = generated.userActionsInHarnessShared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,9 +41,9 @@ export async function GET(
   await ensureUserActionsTable();
   const { db } = getOrgPg();
   const rows = await db
-    .select({ detail_url: ua.detail_url, kind: ua.kind, status: ua.status })
+    .select({ detail_url: ua.detailUrl, kind: ua.kind, status: ua.status })
     .from(ua)
-    .where(and(eq(ua.harness_slug, slug), eq(ua.id, BigInt(numericId))))
+    .where(and(eq(ua.harnessSlug, slug), eq(ua.id, BigInt(numericId))))
     .limit(1);
   if (rows.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
   const detailUrl = rows[0].detail_url;

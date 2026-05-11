@@ -65,7 +65,7 @@ export async function POST(
     text: body.text,
     source: body.source,
     elConvId: body.elConvId ?? null,
-    tools: Array.isArray(body.tools) && body.tools.length > 0 ? body.tools : null,
+    tools: Array.isArray(body.tools) && body.tools.length > 0 ? (body.tools as any) : null,
   });
   void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: id })
     .catch(() => { /* sync push best-effort; PG truth is authoritative */ });

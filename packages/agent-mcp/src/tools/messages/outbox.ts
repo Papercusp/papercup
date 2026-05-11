@@ -12,7 +12,7 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-const audit = generated.audit_logInHarness_shared;
+const audit = generated.auditLogInHarnessShared;
 const AuditSelect = schemaOf(audit).select;
 type AuditRow = z.infer<typeof AuditSelect>;
 

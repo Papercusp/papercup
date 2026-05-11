@@ -532,7 +532,7 @@ async function detectCycleOrTooDeep(callerSlug: string, projectSlug: string): Pr
     if (depth > MAX_SPAWN_DEPTH) {
       return { ok: false, error: 'validation_error', detail: `spawn chain exceeds depth ${MAX_SPAWN_DEPTH}; refuse to deepen` };
     }
-    const rows = await sql<{ parent_slug: string | null }[]>`
+    const rows: { parent_slug: string | null }[] = await sql`
       SELECT parent_slug FROM harness_shared.projects WHERE slug = ${cur} LIMIT 1
     `;
     cur = rows.length > 0 ? rows[0].parent_slug : null;
@@ -751,10 +751,10 @@ async function doPauseProject(
 ): Promise<ExecuteActionResult> {
   if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
   const { db } = getOrgPg();
-  const p = generated.projectsInHarness_shared;
+  const p = generated.projectsInHarnessShared;
   const rows = await db
     .update(p)
-    .set({ status: 'paused', updated_ts: Date.now() })
+    .set({ status: 'paused', updatedTs: Date.now() })
     .where(eq(p.slug, action.projectSlug))
     .returning({ id: p.id, slug: p.slug, status: p.status });
   if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };
@@ -768,10 +768,10 @@ async function doResumeProject(
   if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
   const target = action.status ?? 'in_progress';
   const { db } = getOrgPg();
-  const p = generated.projectsInHarness_shared;
+  const p = generated.projectsInHarnessShared;
   const rows = await db
     .update(p)
-    .set({ status: target, updated_ts: Date.now() })
+    .set({ status: target, updatedTs: Date.now() })
     .where(eq(p.slug, action.projectSlug))
     .returning({ id: p.id, slug: p.slug, status: p.status });
   if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };

@@ -20,8 +20,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const he = generated.harness_escalationsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const he = generated.harnessEscalationsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -46,7 +46,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -81,20 +81,20 @@ export async function POST(req: Request): Promise<Response> {
   await db
     .insert(he)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       phase,
       escalation,
-      supervisor_notes: supervisorNotes,
-      mtime_ms: mtimeMs,
-      workspace_id: ws,
+      supervisorNotes: supervisorNotes,
+      mtimeMs: mtimeMs,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [he.harness_slug, he.phase],
+      target: [he.harnessSlug, he.phase],
       set: {
         escalation: dsql`COALESCE(${escalation}, ${he.escalation})`,
-        supervisor_notes: dsql`COALESCE(${supervisorNotes}, ${he.supervisor_notes})`,
-        mtime_ms: dsql`EXCLUDED.mtime_ms`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        supervisorNotes: dsql`COALESCE(${supervisorNotes}, ${he.supervisorNotes})`,
+        mtimeMs: dsql`EXCLUDED.mtime_ms`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   void notifySyncInvalidate('harnessEscalations.byHarness', { harnessSlug: slug, phase }).catch(() => {});

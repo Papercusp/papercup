@@ -19,7 +19,7 @@ import { and, asc, eq, gt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { publish as publishAudit } from '@/lib/provision-audit-bus';
 
-const t = generated.provision_audit_logInHarness_shared;
+const t = generated.provisionAuditLogInHarnessShared;
 
 export type AuditKind =
   | 'consent-granted'
@@ -63,12 +63,12 @@ export async function appendAudit(
   const ws = activeWorkspaceId();
   const ts = entry.ts ?? new Date().toISOString();
   await db.insert(t).values({
-    workspace_id: ws,
-    harness_slug: harness,
-    plugin_slug: plugin,
+    workspaceId: ws,
+    harnessSlug: harness,
+    pluginSlug: plugin,
     ts: new Date(ts) as any,
     kind: entry.kind,
-    run_id: entry.runId ?? null,
+    runId: entry.runId ?? null,
     data: entry.data ?? null,
   });
   // Fan out to in-process subscribers (provision/stream SSE) so the UI
@@ -87,22 +87,22 @@ export async function readAudit(
   const since = opts.sinceTs ?? null;
 
   const baseWhere = and(
-    eq(t.workspace_id, ws),
-    eq(t.harness_slug, harness),
-    eq(t.plugin_slug, plugin),
+    eq(t.workspaceId, ws),
+    eq(t.harnessSlug, harness),
+    eq(t.pluginSlug, plugin),
   );
   const where = since ? and(baseWhere, gt(t.ts, new Date(since) as any)) : baseWhere;
   const rows = (await db
-    .select({ ts: t.ts, kind: t.kind, run_id: t.run_id, data: t.data })
+    .select({ ts: t.ts, kind: t.kind, runId: t.runId, data: t.data })
     .from(t)
     .where(where)
     .orderBy(asc(t.ts), asc(t.id))
-    .limit(limit)) as unknown as Array<{ ts: Date; kind: AuditKind; run_id: string | null; data: Record<string, unknown> | null }>;
+    .limit(limit)) as unknown as Array<{ ts: Date; kind: AuditKind; runId: string | null; data: Record<string, unknown> | null }>;
 
   return rows.map((r) => ({
     ts: r.ts.toISOString(),
     kind: r.kind,
-    ...(r.run_id ? { runId: r.run_id } : {}),
+    ...(r.runId ? { runId: r.runId } : {}),
     ...(r.data ? { data: r.data } : {}),
   }));
 }

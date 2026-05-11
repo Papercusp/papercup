@@ -18,7 +18,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { loadHarnessRegistry } from './harness-registry';
 
-const sa = generated.spawned_agentsInHarness_shared;
+const sa = generated.spawnedAgentsInHarnessShared;
 
 const SESSIONS_ROOT = join(homedir(), '.omp', 'agent', 'sessions');
 
@@ -97,9 +97,9 @@ async function lookupSpawnHints(
 ): Promise<{ startedAtMs: number; harnessSlug: string | null; projectPath: string | null } | null> {
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: sa.harness_slug, started_at: sa.started_at })
+    .select({ harness_slug: sa.harnessSlug, started_at: sa.startedAt })
     .from(sa)
-    .where(eq(sa.spawn_id, spawnId))
+    .where(eq(sa.spawnId, spawnId))
     .limit(1);
   if (rows.length === 0) return null;
   const startedAtMs = rows[0].started_at ? new Date(rows[0].started_at as any).getTime() : 0;

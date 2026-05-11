@@ -23,7 +23,7 @@ import {
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
-const oc = generated.operator_conversationsInHarness_shared;
+const oc = generated.operatorConversationsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -58,12 +58,12 @@ export async function POST(_req: NextRequest): Promise<Response> {
   // Workspace-scoped: harness slug is intentionally ignored.
   await db
     .update(oc)
-    .set({ status: 'done', ended_at: Date.now() })
-    .where(and(eq(oc.workspace_id, ws), eq(oc.status, 'active')));
+    .set({ status: 'done', endedAt: Date.now() })
+    .where(and(eq(oc.workspaceId, ws), eq(oc.status, 'active')));
 
   const created = await db
     .insert(oc)
-    .values({ workspace_id: ws, harness_slug: null, started_at: Date.now() })
+    .values({ workspaceId: ws, harnessSlug: null, startedAt: Date.now() })
     .returning({ id: oc.id });
   const id = created[0].id;
   return NextResponse.json({ conversation: { id }, turns: [] });

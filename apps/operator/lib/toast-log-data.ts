@@ -10,7 +10,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { and, desc, eq, gte } from 'drizzle-orm';
 import { ensureToastLogTable } from './ensure-schema';
 
-const t = generated.toast_logInHarness_shared;
+const t = generated.toastLogInHarnessShared;
 
 export interface ToastRow {
   id: number;
@@ -50,22 +50,22 @@ export async function listToasts(input: ListToastsInput = {}): Promise<{ toasts:
   await ensureToastLogTable();
   const { db } = getOrgPg();
   const where = slugClause
-    ? and(gte(t.created_at, since), eq(t.harness_slug, slugClause))
-    : gte(t.created_at, since);
+    ? and(gte(t.createdAt, since), eq(t.harnessSlug, slugClause))
+    : gte(t.createdAt, since);
   const rows = (await db
     .select({
       id: t.id,
       level: t.level,
       message: t.message,
       description: t.description,
-      harness_slug: t.harness_slug,
-      created_at: t.created_at,
-      action_label: t.action_label,
-      action_href: t.action_href,
+      harness_slug: t.harnessSlug,
+      created_at: t.createdAt,
+      action_label: t.actionLabel,
+      action_href: t.actionHref,
     })
     .from(t)
     .where(where)
-    .orderBy(desc(t.created_at))
+    .orderBy(desc(t.createdAt))
     .limit(limit)) as unknown as DbRow[];
 
   return {

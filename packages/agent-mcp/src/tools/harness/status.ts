@@ -11,13 +11,8 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-// generated.ts uses snake_case names (...InHarness_shared, not
-// ...InHarnessShared) — fixed 2026-05-11 when prompt agent's
-// Phase 1a started eagerly iterating the projected-tool catalog,
-// which loaded this file at startup and surfaced `schemaOf(undefined)`
-// crashes that the lazy-eval path had hidden until now.
-const projects = generated.projectsInHarness_shared;
-const audit = generated.audit_logInHarness_shared;
+const projects = generated.projectsInHarnessShared;
+const audit = generated.auditLogInHarnessShared;
 const ProjectSelect = schemaOf(projects).select;
 const AuditSelect = schemaOf(audit).select;
 type ProjectRow = z.infer<typeof ProjectSelect>;

@@ -62,18 +62,18 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, desc, eq, sql as dsql } from 'drizzle-orm';
 
-const hsum = generated.harness_summariesInHarness_shared;
-const prev = generated.pending_reviewsInHarness_shared;
-const hps = generated.harness_proposals_sharedInHarness_shared;
-const hph = generated.harness_phasesInHarness_shared;
-const hgl = generated.harness_git_logInHarness_shared;
-const hh = generated.harness_healthInHarness_shared;
-const hba = generated.harness_branch_actionsInHarness_shared;
-const ocharter = generated.org_charterInHarness_shared;
-const odept = generated.org_departmentsInHarness_shared;
-const oproj = generated.org_projectsInHarness_shared;
-const oinbox = generated.org_inboxInHarness_shared;
-const ooutbox = generated.org_outboxInHarness_shared;
+const hsum = generated.harnessSummariesInHarnessShared;
+const prev = generated.pendingReviewsInHarnessShared;
+const hps = generated.harnessProposalsSharedInHarnessShared;
+const hph = generated.harnessPhasesInHarnessShared;
+const hgl = generated.harnessGitLogInHarnessShared;
+const hh = generated.harnessHealthInHarnessShared;
+const hba = generated.harnessBranchActionsInHarnessShared;
+const ocharter = generated.orgCharterInHarnessShared;
+const odept = generated.orgDepartmentsInHarnessShared;
+const oproj = generated.orgProjectsInHarnessShared;
+const oinbox = generated.orgInboxInHarnessShared;
+const ooutbox = generated.orgOutboxInHarnessShared;
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { activeWorkspaceId } from './workspace-registry';
 import { ALL_PHASES, phasePath, type Phase } from './harness-phases';
@@ -251,27 +251,27 @@ async function upsertSummary(slug: string, phase: Phase, path: string): Promise<
   await db
     .insert(hsum)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       phase,
       content,
-      mtime_ms: Math.floor(mtimeMs),
-      updated_at: Date.now(),
-      workspace_id: ws,
+      mtimeMs: Math.floor(mtimeMs),
+      updatedAt: Date.now(),
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [hsum.harness_slug, hsum.phase],
+      target: [hsum.harnessSlug, hsum.phase],
       set: {
         content: dsql`EXCLUDED.content`,
-        mtime_ms: dsql`EXCLUDED.mtime_ms`,
-        updated_at: dsql`EXCLUDED.updated_at`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        mtimeMs: dsql`EXCLUDED.mtime_ms`,
+        updatedAt: dsql`EXCLUDED.updated_at`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
 }
 
 async function deleteSummary(slug: string, phase: Phase): Promise<void> {
   const { db } = getOrgPg();
-  await db.delete(hsum).where(and(eq(hsum.harness_slug, slug), eq(hsum.phase, phase)));
+  await db.delete(hsum).where(and(eq(hsum.harnessSlug, slug), eq(hsum.phase, phase)));
 }
 
 interface ReviewPayload {
@@ -302,27 +302,27 @@ async function upsertReview(slug: string, phase: Phase, path: string): Promise<v
   await db
     .insert(prev)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       phase,
-      review_id: reviewId,
-      feature_id: featureId,
+      reviewId: reviewId,
+      featureId: featureId,
       kind,
       payload: payload as any,
       ts: Number.isFinite(payload.ts) ? Number(payload.ts) : Math.floor(mtimeMs),
       resolved: !!payload.resolved,
-      mtime_ms: Math.floor(mtimeMs),
-      workspace_id: ws,
+      mtimeMs: Math.floor(mtimeMs),
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [prev.harness_slug, prev.phase, prev.review_id],
+      target: [prev.harnessSlug, prev.phase, prev.reviewId],
       set: {
-        feature_id: dsql`EXCLUDED.feature_id`,
+        featureId: dsql`EXCLUDED.feature_id`,
         kind: dsql`EXCLUDED.kind`,
         payload: dsql`EXCLUDED.payload`,
         ts: dsql`EXCLUDED.ts`,
         resolved: dsql`EXCLUDED.resolved`,
-        mtime_ms: dsql`EXCLUDED.mtime_ms`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        mtimeMs: dsql`EXCLUDED.mtime_ms`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
 }
@@ -333,7 +333,7 @@ async function deleteReview(slug: string, phase: Phase, path: string): Promise<v
   const { db } = getOrgPg();
   await db
     .delete(prev)
-    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, reviewId)));
+    .where(and(eq(prev.harnessSlug, slug), eq(prev.phase, phase), eq(prev.reviewId, reviewId)));
 }
 
 // Proposals are markdown (.md), not JSON. The accept/reject endpoints
@@ -401,35 +401,35 @@ async function upsertProposal(slug: string, phase: Phase, path: string): Promise
   await db
     .insert(hps)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       phase,
-      proposal_id: proposalId,
+      proposalId: proposalId,
       status,
-      review_verdict: reviewVerdict,
-      review_summary: reviewSummary,
-      reviewed_at: reviewedAt,
-      applied_at: appliedAt,
-      rejected_at: rejectedAt,
-      size_bytes: sizeBytes,
+      reviewVerdict: reviewVerdict,
+      reviewSummary: reviewSummary,
+      reviewedAt: reviewedAt,
+      appliedAt: appliedAt,
+      rejectedAt: rejectedAt,
+      sizeBytes: sizeBytes,
       payload: { body } as any,
       ts,
-      mtime_ms: Math.floor(mtimeMs),
-      workspace_id: ws,
+      mtimeMs: Math.floor(mtimeMs),
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [hps.harness_slug, hps.phase, hps.proposal_id],
+      target: [hps.harnessSlug, hps.phase, hps.proposalId],
       set: {
         status: dsql`EXCLUDED.status`,
-        review_verdict: dsql`EXCLUDED.review_verdict`,
-        review_summary: dsql`EXCLUDED.review_summary`,
-        reviewed_at: dsql`EXCLUDED.reviewed_at`,
-        applied_at: dsql`EXCLUDED.applied_at`,
-        rejected_at: dsql`EXCLUDED.rejected_at`,
-        size_bytes: dsql`EXCLUDED.size_bytes`,
+        reviewVerdict: dsql`EXCLUDED.review_verdict`,
+        reviewSummary: dsql`EXCLUDED.review_summary`,
+        reviewedAt: dsql`EXCLUDED.reviewed_at`,
+        appliedAt: dsql`EXCLUDED.applied_at`,
+        rejectedAt: dsql`EXCLUDED.rejected_at`,
+        sizeBytes: dsql`EXCLUDED.size_bytes`,
         payload: dsql`EXCLUDED.payload`,
         ts: dsql`EXCLUDED.ts`,
-        mtime_ms: dsql`EXCLUDED.mtime_ms`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        mtimeMs: dsql`EXCLUDED.mtime_ms`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
 }
@@ -441,7 +441,7 @@ async function deleteProposal(slug: string, phase: Phase, path: string): Promise
   const { db } = getOrgPg();
   await db
     .delete(hps)
-    .where(and(eq(hps.harness_slug, slug), eq(hps.phase, phase), eq(hps.proposal_id, proposalId)));
+    .where(and(eq(hps.harnessSlug, slug), eq(hps.phase, phase), eq(hps.proposalId, proposalId)));
 }
 
 // ── Mirror 4 retired: harness_pending_issues is now written at producer
@@ -479,32 +479,32 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
     await db
       .insert(hph)
       .values({
-        harness_slug: project.slug,
+        harnessSlug: project.slug,
         phase,
-        phase_path: phasePathStr,
+        phasePath: phasePathStr,
         branch,
         port,
-        public_url: publicUrl,
-        exists_on_disk: exists,
+        publicUrl: publicUrl,
+        existsOnDisk: exists,
         alive: false,
-        passed_count: 0,
-        total_count: 0,
-        cost_usd: 0,
+        passedCount: 0,
+        totalCount: 0,
+        costUsd: 0,
         iteration: 0,
-        promotion_in_flight: false,
-        mtime_ms: Math.floor(mtimeMs),
-        workspace_id: ws,
+        promotionInFlight: false,
+        mtimeMs: Math.floor(mtimeMs),
+        workspaceId: ws,
       })
       .onConflictDoUpdate({
-        target: [hph.harness_slug, hph.phase],
+        target: [hph.harnessSlug, hph.phase],
         set: {
-          phase_path: dsql`EXCLUDED.phase_path`,
+          phasePath: dsql`EXCLUDED.phase_path`,
           branch: dsql`EXCLUDED.branch`,
           port: dsql`EXCLUDED.port`,
-          public_url: dsql`EXCLUDED.public_url`,
-          exists_on_disk: dsql`EXCLUDED.exists_on_disk`,
-          mtime_ms: dsql`EXCLUDED.mtime_ms`,
-          workspace_id: dsql`EXCLUDED.workspace_id`,
+          publicUrl: dsql`EXCLUDED.public_url`,
+          existsOnDisk: dsql`EXCLUDED.exists_on_disk`,
+          mtimeMs: dsql`EXCLUDED.mtime_ms`,
+          workspaceId: dsql`EXCLUDED.workspace_id`,
         },
       });
   }
@@ -609,8 +609,8 @@ async function replaceGitLog(slug: string, projectPath: string): Promise<void> {
   const topSha = commits[0]?.sha ?? '';
   const { count, notInArray } = await import('drizzle-orm');
   const [topRow, cntRow] = await Promise.all([
-    db.select({ sha: hgl.sha }).from(hgl).where(eq(hgl.harness_slug, slug)).orderBy(desc(hgl.ts)).limit(1),
-    db.select({ n: count() }).from(hgl).where(eq(hgl.harness_slug, slug)),
+    db.select({ sha: hgl.sha }).from(hgl).where(eq(hgl.harnessSlug, slug)).orderBy(desc(hgl.ts)).limit(1),
+    db.select({ n: count() }).from(hgl).where(eq(hgl.harnessSlug, slug)),
   ]);
   const before = [{
     top_sha: topRow[0]?.sha ?? '',
@@ -620,31 +620,31 @@ async function replaceGitLog(slug: string, projectPath: string): Promise<void> {
     await db
       .insert(hgl)
       .values({
-        harness_slug: slug,
+        harnessSlug: slug,
         sha: c.sha,
         parents: c.parents as any,
         subject: c.subject,
         author: c.author,
         ts: c.ts,
         refs: c.refs as any,
-        workspace_id: ws,
+        workspaceId: ws,
       })
       .onConflictDoUpdate({
-        target: [hgl.harness_slug, hgl.sha],
+        target: [hgl.harnessSlug, hgl.sha],
         set: {
           parents: dsql`EXCLUDED.parents`,
           subject: dsql`EXCLUDED.subject`,
           author: dsql`EXCLUDED.author`,
           ts: dsql`EXCLUDED.ts`,
           refs: dsql`EXCLUDED.refs`,
-          workspace_id: dsql`EXCLUDED.workspace_id`,
+          workspaceId: dsql`EXCLUDED.workspace_id`,
         },
       });
   }
   // Drop commits that fell off the recency cap.
   await db
     .delete(hgl)
-    .where(and(eq(hgl.harness_slug, slug), notInArray(hgl.sha, Array.from(seen))));
+    .where(and(eq(hgl.harnessSlug, slug), notInArray(hgl.sha, Array.from(seen))));
   const prev = before[0];
   const changed = !prev || prev.top_sha !== topSha || prev.cnt !== String(commits.length);
   if (changed) {
@@ -654,7 +654,7 @@ async function replaceGitLog(slug: string, projectPath: string): Promise<void> {
 
 async function deleteGitLogAll(slug: string): Promise<void> {
   const { db } = getOrgPg();
-  const result = await db.delete(hgl).where(eq(hgl.harness_slug, slug)).returning({ sha: hgl.sha });
+  const result = await db.delete(hgl).where(eq(hgl.harnessSlug, slug)).returning({ sha: hgl.sha });
   if (result.length > 0) {
     await notifySyncInvalidate('harnessGitLog.byHarness', { harnessSlug: slug });
   }
@@ -674,26 +674,26 @@ async function upsertHarnessHealth(slug: string, projectPath: string): Promise<v
   const ws = activeWorkspaceId();
   const nowMs = Date.now();
   const before = await db
-    .select({ spec_present: hh.spec_present, contract_present: hh.contract_present })
+    .select({ spec_present: hh.specPresent, contract_present: hh.contractPresent })
     .from(hh)
-    .where(eq(hh.harness_slug, slug))
+    .where(eq(hh.harnessSlug, slug))
     .limit(1);
   await db
     .insert(hh)
     .values({
-      harness_slug: slug,
-      spec_present: specPresent,
-      contract_present: contractPresent,
-      last_check_ms: nowMs,
-      workspace_id: ws,
+      harnessSlug: slug,
+      specPresent: specPresent,
+      contractPresent: contractPresent,
+      lastCheckMs: nowMs,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: hh.harness_slug,
+      target: hh.harnessSlug,
       set: {
-        spec_present: dsql`EXCLUDED.spec_present`,
-        contract_present: dsql`EXCLUDED.contract_present`,
-        last_check_ms: dsql`EXCLUDED.last_check_ms`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        specPresent: dsql`EXCLUDED.spec_present`,
+        contractPresent: dsql`EXCLUDED.contract_present`,
+        lastCheckMs: dsql`EXCLUDED.last_check_ms`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   const prev = before[0];
@@ -798,18 +798,18 @@ async function replaceBranchActions(
   await db
     .insert(hba)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       branch,
       payload: payload as any,
-      last_check_ms: Date.now(),
-      workspace_id: ws,
+      lastCheckMs: Date.now(),
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [hba.harness_slug, hba.branch],
+      target: [hba.harnessSlug, hba.branch],
       set: {
         payload: dsql`EXCLUDED.payload`,
-        last_check_ms: dsql`EXCLUDED.last_check_ms`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        lastCheckMs: dsql`EXCLUDED.last_check_ms`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   if (diff[0]?.changed) {
@@ -829,20 +829,20 @@ async function upsertOrgCharter(orgRootPath: string): Promise<void> {
   } catch {
     // File gone — drop the row.
     const { db } = getOrgPg();
-    await db.delete(ocharter).where(eq(ocharter.org_id, DEFAULT_ORG_ID));
+    await db.delete(ocharter).where(eq(ocharter.orgId, DEFAULT_ORG_ID));
     return;
   }
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   await db
     .insert(ocharter)
-    .values({ org_id: DEFAULT_ORG_ID, content, mtime_ms: Math.floor(mtimeMs), workspace_id: ws })
+    .values({ orgId: DEFAULT_ORG_ID, content, mtimeMs: Math.floor(mtimeMs), workspaceId: ws })
     .onConflictDoUpdate({
-      target: ocharter.org_id,
+      target: ocharter.orgId,
       set: {
         content: dsql`EXCLUDED.content`,
-        mtime_ms: dsql`EXCLUDED.mtime_ms`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        mtimeMs: dsql`EXCLUDED.mtime_ms`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
 }
@@ -858,7 +858,7 @@ async function replaceOrgDepartments(orgRootPath: string): Promise<void> {
     mtimeMs = statSync(path).mtimeMs;
   } catch {
     const { db } = getOrgPg();
-    await db.delete(odept).where(eq(odept.org_id, DEFAULT_ORG_ID));
+    await db.delete(odept).where(eq(odept.orgId, DEFAULT_ORG_ID));
     return;
   }
   let parsed: { departments?: Array<Record<string, unknown>> } = {};
@@ -873,7 +873,7 @@ async function replaceOrgDepartments(orgRootPath: string): Promise<void> {
     if (!deptSlug) continue;
     seenSlugs.add(deptSlug);
     const harnessSlug = typeof d.harnessSlug === 'string' ? d.harnessSlug
-      : typeof d.harness_slug === 'string' ? d.harness_slug : '';
+      : typeof d.harness_slug === 'string' ? (d.harness_slug as string) : '';
     const name = typeof d.name === 'string' ? d.name : deptSlug;
     const mandate = typeof d.mandate === 'string' ? d.mandate : '';
     const inboxKinds = Array.isArray(d.inboxKinds) ? d.inboxKinds : Array.isArray(d.inbox_kinds) ? d.inbox_kinds : [];
@@ -881,35 +881,35 @@ async function replaceOrgDepartments(orgRootPath: string): Promise<void> {
     await db
       .insert(odept)
       .values({
-        org_id: DEFAULT_ORG_ID,
-        dept_slug: deptSlug,
-        harness_slug: harnessSlug,
+        orgId: DEFAULT_ORG_ID,
+        deptSlug: deptSlug,
+        harnessSlug: harnessSlug,
         name,
         mandate,
-        inbox_kinds: inboxKinds as any,
-        outbox_kinds: outboxKinds as any,
+        inboxKinds: inboxKinds as any,
+        outboxKinds: outboxKinds as any,
         payload: d as any,
-        mtime_ms: Math.floor(mtimeMs),
-        workspace_id: ws,
+        mtimeMs: Math.floor(mtimeMs),
+        workspaceId: ws,
       })
       .onConflictDoUpdate({
-        target: [odept.org_id, odept.dept_slug],
+        target: [odept.orgId, odept.deptSlug],
         set: {
-          harness_slug: dsql`EXCLUDED.harness_slug`,
+          harnessSlug: dsql`EXCLUDED.harness_slug`,
           name: dsql`EXCLUDED.name`,
           mandate: dsql`EXCLUDED.mandate`,
-          inbox_kinds: dsql`EXCLUDED.inbox_kinds`,
-          outbox_kinds: dsql`EXCLUDED.outbox_kinds`,
+          inboxKinds: dsql`EXCLUDED.inbox_kinds`,
+          outboxKinds: dsql`EXCLUDED.outbox_kinds`,
           payload: dsql`EXCLUDED.payload`,
-          mtime_ms: dsql`EXCLUDED.mtime_ms`,
-          workspace_id: dsql`EXCLUDED.workspace_id`,
+          mtimeMs: dsql`EXCLUDED.mtime_ms`,
+          workspaceId: dsql`EXCLUDED.workspace_id`,
         },
       });
   }
   if (seenSlugs.size > 0) {
     await db
       .delete(odept)
-      .where(and(eq(odept.org_id, DEFAULT_ORG_ID), notInArray(odept.dept_slug, Array.from(seenSlugs))));
+      .where(and(eq(odept.orgId, DEFAULT_ORG_ID), notInArray(odept.deptSlug, Array.from(seenSlugs))));
   }
 }
 
@@ -924,7 +924,7 @@ async function replaceOrgProjects(orgRootPath: string): Promise<void> {
     mtimeMs = statSync(path).mtimeMs;
   } catch {
     const { db } = getOrgPg();
-    await db.delete(oproj).where(eq(oproj.org_id, DEFAULT_ORG_ID));
+    await db.delete(oproj).where(eq(oproj.orgId, DEFAULT_ORG_ID));
     return;
   }
   let parsed: { projects?: Array<Record<string, unknown>> } | Array<Record<string, unknown>> = [];
@@ -948,33 +948,33 @@ async function replaceOrgProjects(orgRootPath: string): Promise<void> {
     await db
       .insert(oproj)
       .values({
-        org_id: DEFAULT_ORG_ID,
-        project_id: projectId,
+        orgId: DEFAULT_ORG_ID,
+        projectId: projectId,
         slug,
         name,
         vertical,
         status,
         payload: p as any,
-        mtime_ms: Math.floor(mtimeMs),
-        workspace_id: ws,
+        mtimeMs: Math.floor(mtimeMs),
+        workspaceId: ws,
       })
       .onConflictDoUpdate({
-        target: [oproj.org_id, oproj.project_id],
+        target: [oproj.orgId, oproj.projectId],
         set: {
           slug: dsql`EXCLUDED.slug`,
           name: dsql`EXCLUDED.name`,
           vertical: dsql`EXCLUDED.vertical`,
           status: dsql`EXCLUDED.status`,
           payload: dsql`EXCLUDED.payload`,
-          mtime_ms: dsql`EXCLUDED.mtime_ms`,
-          workspace_id: dsql`EXCLUDED.workspace_id`,
+          mtimeMs: dsql`EXCLUDED.mtime_ms`,
+          workspaceId: dsql`EXCLUDED.workspace_id`,
         },
       });
   }
   if (seenIds.size > 0) {
     await db
       .delete(oproj)
-      .where(and(eq(oproj.org_id, DEFAULT_ORG_ID), notInArray(oproj.project_id, Array.from(seenIds))));
+      .where(and(eq(oproj.orgId, DEFAULT_ORG_ID), notInArray(oproj.projectId, Array.from(seenIds))));
   }
 }
 
@@ -1498,9 +1498,9 @@ async function reconcileAll(state: WatcherState): Promise<void> {
           const fsMtime = Math.floor(statSync(summaryPath).mtimeMs);
           const { db } = getOrgPg();
           const rows = await db
-            .select({ mtime_ms: hsum.mtime_ms })
+            .select({ mtime_ms: hsum.mtimeMs })
             .from(hsum)
-            .where(and(eq(hsum.harness_slug, proj.slug), eq(hsum.phase, phase)));
+            .where(and(eq(hsum.harnessSlug, proj.slug), eq(hsum.phase, phase)));
           if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
             await upsertSummary(proj.slug, phase, summaryPath);
           }
@@ -1526,18 +1526,18 @@ async function reconcileAll(state: WatcherState): Promise<void> {
               if (sub === 'pending-reviews') {
                 const { db } = getOrgPg();
                 const rows = await db
-                  .select({ mtime_ms: prev.mtime_ms })
+                  .select({ mtime_ms: prev.mtimeMs })
                   .from(prev)
-                  .where(and(eq(prev.harness_slug, proj.slug), eq(prev.phase, phase), eq(prev.review_id, id)));
+                  .where(and(eq(prev.harnessSlug, proj.slug), eq(prev.phase, phase), eq(prev.reviewId, id)));
                 if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
                   await upsertReview(proj.slug, phase, path);
                 }
               } else {
                 const { db } = getOrgPg();
                 const rows = await db
-                  .select({ mtime_ms: hps.mtime_ms })
+                  .select({ mtime_ms: hps.mtimeMs })
                   .from(hps)
-                  .where(and(eq(hps.harness_slug, proj.slug), eq(hps.phase, phase), eq(hps.proposal_id, id)));
+                  .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
                 if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
                   await upsertProposal(proj.slug, phase, path);
                 }
@@ -1551,26 +1551,26 @@ async function reconcileAll(state: WatcherState): Promise<void> {
           const { db } = getOrgPg();
           if (sub === 'pending-reviews') {
             const pgIds = await db
-              .select({ id: prev.review_id })
+              .select({ id: prev.reviewId })
               .from(prev)
-              .where(and(eq(prev.harness_slug, proj.slug), eq(prev.phase, phase)));
+              .where(and(eq(prev.harnessSlug, proj.slug), eq(prev.phase, phase)));
             for (const { id } of pgIds) {
               if (!fsIds.has(id)) {
                 await db
                   .delete(prev)
-                  .where(and(eq(prev.harness_slug, proj.slug), eq(prev.phase, phase), eq(prev.review_id, id)));
+                  .where(and(eq(prev.harnessSlug, proj.slug), eq(prev.phase, phase), eq(prev.reviewId, id)));
               }
             }
           } else {
             const pgIds = await db
-              .select({ id: hps.proposal_id })
+              .select({ id: hps.proposalId })
               .from(hps)
-              .where(and(eq(hps.harness_slug, proj.slug), eq(hps.phase, phase)));
+              .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase)));
             for (const { id } of pgIds) {
               if (!fsIds.has(id)) {
                 await db
                   .delete(hps)
-                  .where(and(eq(hps.harness_slug, proj.slug), eq(hps.phase, phase), eq(hps.proposal_id, id)));
+                  .where(and(eq(hps.harnessSlug, proj.slug), eq(hps.phase, phase), eq(hps.proposalId, id)));
               }
             }
           }

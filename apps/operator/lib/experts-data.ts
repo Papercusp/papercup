@@ -11,8 +11,8 @@ import { join } from 'node:path';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, asc, eq } from 'drizzle-orm';
 
-const he = generated.harness_expertsInHarness_shared;
-const hef = generated.harness_expert_feedbackInHarness_shared;
+const he = generated.harnessExpertsInHarnessShared;
+const hef = generated.harnessExpertFeedbackInHarnessShared;
 import {
   EXPERT_ID_RE,
   aggregateExpertSpendCents,
@@ -124,9 +124,9 @@ export async function getExpert(
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const rows = await db
-    .select({ spec_content: he.spec_content })
+    .select({ spec_content: he.specContent })
     .from(he)
-    .where(and(eq(he.workspace_id, ws), eq(he.harness_slug, slug), eq(he.expert_id, expertId)))
+    .where(and(eq(he.workspaceId, ws), eq(he.harnessSlug, slug), eq(he.expertId, expertId)))
     .limit(1);
   if (rows.length > 0) spec = rows[0].spec_content ?? '';
   const spentCents = await aggregateExpertSpendCents(projectDir, expertId);
@@ -146,9 +146,9 @@ export async function getExpertSpec(
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const rows = await db
-    .select({ spec_content: he.spec_content })
+    .select({ spec_content: he.specContent })
     .from(he)
-    .where(and(eq(he.workspace_id, ws), eq(he.harness_slug, slug), eq(he.expert_id, expertId)))
+    .where(and(eq(he.workspaceId, ws), eq(he.harnessSlug, slug), eq(he.expertId, expertId)))
     .limit(1);
   if (rows.length === 0) return { ok: false, status: 404, error: 'expert not found' };
   return { ok: true, data: { content: rows[0].spec_content ?? '' } };
@@ -166,10 +166,10 @@ export async function listExpertFeedback(
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const rows = await db
-    .select({ feedback_id: hef.feedback_id, persona: hef.persona, verdict: hef.verdict })
+    .select({ feedback_id: hef.feedbackId, persona: hef.persona, verdict: hef.verdict })
     .from(hef)
-    .where(and(eq(hef.workspace_id, ws), eq(hef.harness_slug, slug), eq(hef.expert_id, expertId)))
-    .orderBy(asc(hef.feedback_id));
+    .where(and(eq(hef.workspaceId, ws), eq(hef.harnessSlug, slug), eq(hef.expertId, expertId)))
+    .orderBy(asc(hef.feedbackId));
   const out: ExpertFeedback[] = rows.map((r) => ({
     id: r.feedback_id,
     persona: r.persona,

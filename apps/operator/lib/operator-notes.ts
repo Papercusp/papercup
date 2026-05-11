@@ -41,7 +41,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
-const t = generated.harness_feature_notesInHarness_shared;
+const t = generated.harnessFeatureNotesInHarnessShared;
 
 export interface OperatorNoteBlock {
   /** Author identifier — typically 'user' but could be a tool slug. */
@@ -79,7 +79,7 @@ async function readNotesContent(slug: string, featureId: string): Promise<string
   const rows = await db
     .select({ content: t.content })
     .from(t)
-    .where(and(eq(t.workspace_id, ws), eq(t.harness_slug, slug), eq(t.feature_id, featureId)))
+    .where(and(eq(t.workspaceId, ws), eq(t.harnessSlug, slug), eq(t.featureId, featureId)))
     .limit(1);
   return rows[0]?.content ?? null;
 }
@@ -90,10 +90,10 @@ async function writeNotesContent(slug: string, featureId: string, content: strin
   const now = Date.now();
   await db
     .insert(t)
-    .values({ workspace_id: ws, harness_slug: slug, feature_id: featureId, content, updated_at: now })
+    .values({ workspaceId: ws, harnessSlug: slug, featureId: featureId, content, updatedAt: now })
     .onConflictDoUpdate({
-      target: [t.workspace_id, t.harness_slug, t.feature_id],
-      set: { content: sql`EXCLUDED.content`, updated_at: sql`EXCLUDED.updated_at` },
+      target: [t.workspaceId, t.harnessSlug, t.featureId],
+      set: { content: sql`EXCLUDED.content`, updatedAt: sql`EXCLUDED.updated_at` },
     });
 }
 

@@ -17,8 +17,8 @@ import { and, eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const fdn = generated.harness_feature_debug_notesInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const fdn = generated.harnessFeatureDebugNotesInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -37,7 +37,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -62,14 +62,14 @@ export async function POST(req: Request): Promise<Response> {
   if (content === '') {
     await db
       .delete(fdn)
-      .where(and(eq(fdn.workspace_id, ws), eq(fdn.harness_slug, slug), eq(fdn.feature_id, featureId)));
+      .where(and(eq(fdn.workspaceId, ws), eq(fdn.harnessSlug, slug), eq(fdn.featureId, featureId)));
   } else {
     await db
       .insert(fdn)
-      .values({ workspace_id: ws, harness_slug: slug, feature_id: featureId, content, mtime_ms: mtimeMs })
+      .values({ workspaceId: ws, harnessSlug: slug, featureId: featureId, content, mtimeMs: mtimeMs })
       .onConflictDoUpdate({
-        target: [fdn.workspace_id, fdn.harness_slug, fdn.feature_id],
-        set: { content: dsql`EXCLUDED.content`, mtime_ms: dsql`EXCLUDED.mtime_ms` },
+        target: [fdn.workspaceId, fdn.harnessSlug, fdn.featureId],
+        set: { content: dsql`EXCLUDED.content`, mtimeMs: dsql`EXCLUDED.mtime_ms` },
       });
   }
   void notifySyncInvalidate('featureDebugNotes.byHarness', { harnessSlug: slug }).catch(() => {});

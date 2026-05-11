@@ -16,7 +16,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { and, eq, gt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 
-const sl = generated.operator_scan_locksInHarness_shared;
+const sl = generated.operatorScanLocksInHarnessShared;
 
 const LOCK_TTL_MS = 60_000;
 
@@ -42,9 +42,9 @@ export async function acquireScanLock(): Promise<AcquireResult> {
   return withWorkspace(workspaceId, async (tx) => {
     const txDb = drizzle(tx);
     const rows = await txDb
-      .select({ holder_id: sl.holder_id, expires_at: sl.expires_at })
+      .select({ holder_id: sl.holderId, expires_at: sl.expiresAt })
       .from(sl)
-      .where(and(eq(sl.workspace_id, workspaceId), gt(sl.expires_at, dsql`now()`)))
+      .where(and(eq(sl.workspaceId, workspaceId), gt(sl.expiresAt, dsql`now()`)))
       .limit(1);
     if (rows.length > 0) {
       const expiresMs = new Date(rows[0].expires_at as unknown as string).getTime();
@@ -54,17 +54,17 @@ export async function acquireScanLock(): Promise<AcquireResult> {
     await txDb
       .insert(sl)
       .values({
-        workspace_id: workspaceId,
-        started_at: dsql`now()` as any,
-        holder_id: holderId,
-        expires_at: dsql`${expiresAt}::timestamptz` as any,
+        workspaceId: workspaceId,
+        startedAt: dsql`now()` as any,
+        holderId: holderId,
+        expiresAt: dsql`${expiresAt}::timestamptz` as any,
       })
       .onConflictDoUpdate({
-        target: sl.workspace_id,
+        target: sl.workspaceId,
         set: {
-          started_at: dsql`now()`,
-          holder_id: dsql`EXCLUDED.holder_id`,
-          expires_at: dsql`EXCLUDED.expires_at`,
+          startedAt: dsql`now()`,
+          holderId: dsql`EXCLUDED.holder_id`,
+          expiresAt: dsql`EXCLUDED.expires_at`,
         },
       });
     return { acquired: true, holderId };
@@ -79,7 +79,7 @@ export async function releaseScanLock(holderId: string): Promise<void> {
       const txDb = drizzle(tx);
       await txDb
         .delete(sl)
-        .where(and(eq(sl.workspace_id, workspaceId), eq(sl.holder_id, holderId)));
+        .where(and(eq(sl.workspaceId, workspaceId), eq(sl.holderId, holderId)));
     });
   } catch {
     // Best-effort: if PG is down or the migration hasn't been applied,

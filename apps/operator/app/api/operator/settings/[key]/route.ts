@@ -10,7 +10,7 @@ import { NextResponse } from 'next/server';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 
-const os = generated.operator_settingsInHarness_shared;
+const os = generated.operatorSettingsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';

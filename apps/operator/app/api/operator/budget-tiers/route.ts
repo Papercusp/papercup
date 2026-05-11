@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { getOrgPg, generated } from '@restart/db-org';
 import { asc } from 'drizzle-orm';
 
-const bt = generated.operator_budget_tiersInHarness_shared;
+const bt = generated.operatorBudgetTiersInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,7 +34,7 @@ export async function GET() {
       )
     `);
     const rows = await db
-      .select({ ord: bt.ord, label: bt.label, cap_usd: bt.cap_usd, blurb: bt.blurb })
+      .select({ ord: bt.ord, label: bt.label, cap_usd: bt.capUsd, blurb: bt.blurb })
       .from(bt)
       .orderBy(asc(bt.ord));
     const tiers = rows.map((r) => ({

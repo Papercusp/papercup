@@ -33,7 +33,7 @@ import { existsSync } from 'node:fs';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq } from 'drizzle-orm';
 
-const hl = generated.harness_lanesInHarness_shared;
+const hl = generated.harnessLanesInHarnessShared;
 import { loadHarnessRegistry } from './harness-registry';
 import {
   ensureHarnessStatusTable,
@@ -124,11 +124,11 @@ async function sweepHarnessLanes(): Promise<void> {
     const { db } = getOrgPg();
     const rows = await db
       .select({
-        harness_slug: hl.harness_slug,
+        harness_slug: hl.harnessSlug,
         phase: hl.phase,
         role: hl.role,
         pid: hl.pid,
-        started_at: hl.started_at,
+        started_at: hl.startedAt,
       })
       .from(hl);
     for (const r of rows) {
@@ -143,7 +143,7 @@ async function sweepHarnessLanes(): Promise<void> {
       if (!pidGone && !ageStale) continue;
       await db
         .delete(hl)
-        .where(and(eq(hl.harness_slug, r.harness_slug), eq(hl.phase, r.phase), eq(hl.role, r.role)));
+        .where(and(eq(hl.harnessSlug, r.harness_slug), eq(hl.phase, r.phase), eq(hl.role, r.role)));
     }
   } catch (e) {
     console.warn('[harness-status-sweep] lane sweep failed:', (e as Error)?.message ?? e);

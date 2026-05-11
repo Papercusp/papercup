@@ -18,31 +18,31 @@ import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 
-const oc = generated.operator_conversationsInHarness_shared;
-const ot = generated.operator_turnsInHarness_shared;
+const oc = generated.operatorConversationsInHarnessShared;
+const ot = generated.operatorTurnsInHarnessShared;
 
 const conversationCols = {
   id: oc.id,
-  workspace_id: oc.workspace_id,
-  harness_slug: oc.harness_slug,
+  workspace_id: oc.workspaceId,
+  harness_slug: oc.harnessSlug,
   title: oc.title,
   status: oc.status,
-  started_at: oc.started_at,
-  ended_at: oc.ended_at,
-  el_conversation_ids: oc.el_conversation_ids,
-  has_audio: oc.has_audio,
+  started_at: oc.startedAt,
+  ended_at: oc.endedAt,
+  el_conversation_ids: oc.elConversationIds,
+  has_audio: oc.hasAudio,
 } as const;
 
 const turnCols = {
   id: ot.id,
-  conversation_id: ot.conversation_id,
+  conversation_id: ot.conversationId,
   seq: ot.seq,
   role: ot.role,
   text: ot.text,
   source: ot.source,
-  el_conv_id: ot.el_conv_id,
-  audio_url: ot.audio_url,
-  created_at: ot.created_at,
+  el_conv_id: ot.elConvId,
+  audio_url: ot.audioUrl,
+  created_at: ot.createdAt,
   tools: ot.tools,
 } as const;
 
@@ -107,15 +107,15 @@ export async function getOrCreateActiveConversation(): Promise<ConversationRow> 
   const existing = await db
     .select(conversationCols)
     .from(oc)
-    .where(and(eq(oc.workspace_id, ws), eq(oc.status, 'active')))
-    .orderBy(desc(oc.started_at))
+    .where(and(eq(oc.workspaceId, ws), eq(oc.status, 'active')))
+    .orderBy(desc(oc.startedAt))
     .limit(1);
 
   if (existing.length > 0) return rowToConversation(existing[0] as Record<string, unknown>);
 
   const created = await db
     .insert(oc)
-    .values({ workspace_id: ws, harness_slug: null, started_at: Date.now() })
+    .values({ workspaceId: ws, harnessSlug: null, startedAt: Date.now() })
     .returning(conversationCols);
 
   return rowToConversation(created[0] as Record<string, unknown>);
@@ -127,7 +127,7 @@ export async function listTurns(conversationId: string): Promise<TurnRow[]> {
   const rows = await db
     .select(turnCols)
     .from(ot)
-    .where(eq(ot.conversation_id, conversationId))
+    .where(eq(ot.conversationId, conversationId))
     .orderBy(ot.seq);
   return (rows as Array<Record<string, unknown>>).map(rowToTurn);
 }
@@ -160,8 +160,8 @@ export async function listTurnsRecent(args: {
 
   // Fetch newest N below the cursor, then sort ASC for the UI.
   const where = beforeSeq === null
-    ? eq(ot.conversation_id, args.conversationId)
-    : and(eq(ot.conversation_id, args.conversationId), dlt(ot.seq, beforeSeq));
+    ? eq(ot.conversationId, args.conversationId)
+    : and(eq(ot.conversationId, args.conversationId), dlt(ot.seq, beforeSeq));
   const rows = await db
     .select(turnCols)
     .from(ot)
@@ -177,7 +177,7 @@ export async function listTurnsRecent(args: {
     const probe = await db
       .select({ id: ot.id })
       .from(ot)
-      .where(and(eq(ot.conversation_id, args.conversationId), dlt(ot.seq, minSeq)))
+      .where(and(eq(ot.conversationId, args.conversationId), dlt(ot.seq, minSeq)))
       .limit(1);
     hasMoreEarlier = probe.length > 0;
   }
@@ -208,7 +208,7 @@ export async function appendTurn(input: {
     const next = await db
       .select({ s: dsql<number>`COALESCE(MAX(${ot.seq}), -1) + 1` })
       .from(ot)
-      .where(eq(ot.conversation_id, input.conversationId));
+      .where(eq(ot.conversationId, input.conversationId));
     const seq = Number(next[0].s);
     try {
       // Drizzle has a known jsonb auto-conversion bug
@@ -263,7 +263,7 @@ export async function correctLastAssistantTurn(
   const subq = db
     .select({ id: ot.id })
     .from(ot)
-    .where(and(eq(ot.conversation_id, conversationId), eq(ot.role, 'assistant')))
+    .where(and(eq(ot.conversationId, conversationId), eq(ot.role, 'assistant')))
     .orderBy(desc(ot.seq))
     .limit(1);
   const rows = await db

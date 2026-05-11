@@ -19,7 +19,7 @@
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql } from 'drizzle-orm';
 
-const t = generated.operator_rate_limitInHarness_shared;
+const t = generated.operatorRateLimitInHarnessShared;
 
 const RATE_WINDOW_MS = 60_000;
 const DEFAULT_RATE_LIMIT = 2;
@@ -39,7 +39,7 @@ async function readState(workspaceId: string): Promise<WorkspaceRate> {
   const rows = await db
     .select({ payload: t.payload })
     .from(t)
-    .where(eq(t.workspace_id, workspaceId))
+    .where(eq(t.workspaceId, workspaceId))
     .limit(1);
   if (rows.length === 0) return { ...EMPTY };
   const p = rows[0].payload as Partial<WorkspaceRate> | null;
@@ -54,10 +54,10 @@ async function writeState(workspaceId: string, s: WorkspaceRate): Promise<void> 
   const { db } = getOrgPg();
   await db
     .insert(t)
-    .values({ workspace_id: workspaceId, payload: s, updated_at: Date.now() })
+    .values({ workspaceId: workspaceId, payload: s, updatedAt: Date.now() })
     .onConflictDoUpdate({
-      target: t.workspace_id,
-      set: { payload: sql`EXCLUDED.payload`, updated_at: sql`EXCLUDED.updated_at` },
+      target: t.workspaceId,
+      set: { payload: sql`EXCLUDED.payload`, updatedAt: sql`EXCLUDED.updated_at` },
     });
 }
 

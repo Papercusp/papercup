@@ -17,7 +17,7 @@ import { hostname } from 'node:os';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 
-const oc = generated.operator_claimsInHarness_shared;
+const oc = generated.operatorClaimsInHarnessShared;
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 const CLAIM_TTL_SEC = 90;
@@ -163,15 +163,15 @@ export async function heartbeatClaim(harness: string, plugin: string, runId: str
   const { db } = getOrgPg();
   await db
     .update(oc)
-    .set({ expires_at: dsql`now() + (${CLAIM_TTL_SEC} || ' seconds')::interval` as any })
-    .where(and(eq(oc.harness_slug, harness), eq(oc.plugin_slug, plugin), eq(oc.run_id, runId)));
+    .set({ expiresAt: dsql`now() + (${CLAIM_TTL_SEC} || ' seconds')::interval` as any })
+    .where(and(eq(oc.harnessSlug, harness), eq(oc.pluginSlug, plugin), eq(oc.runId, runId)));
 }
 
 export async function releaseClaim(harness: string, plugin: string, runId: string): Promise<void> {
   const { db } = getOrgPg();
   await db
     .delete(oc)
-    .where(and(eq(oc.harness_slug, harness), eq(oc.plugin_slug, plugin), eq(oc.run_id, runId)));
+    .where(and(eq(oc.harnessSlug, harness), eq(oc.pluginSlug, plugin), eq(oc.runId, runId)));
 }
 
 /**

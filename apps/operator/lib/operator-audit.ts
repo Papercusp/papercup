@@ -20,7 +20,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
 
-const al = generated.audit_logInHarness_shared;
+const al = generated.auditLogInHarnessShared;
 
 export type OperatorAuditKind =
   // New (post-card-lifecycle-collapse, e46ba9c):
@@ -88,7 +88,7 @@ export async function writeOperatorAudit(ev: OperatorAuditEvent): Promise<void> 
         action: `operator.${ev.kind}`,
         subject: ev.cardId,
         details: details as any,
-        workspace_id: workspaceId,
+        workspaceId: workspaceId,
       });
     });
     // Mobile sync: phone refetches /api/mobile/actions/recent.

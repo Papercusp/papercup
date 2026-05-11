@@ -23,8 +23,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const hc = generated.harness_checkpointsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const hc = generated.harnessCheckpointsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -45,7 +45,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -75,20 +75,20 @@ export async function POST(req: Request): Promise<Response> {
   await db
     .insert(hc)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       name,
       content,
-      waiting_since_ms: waitingSinceMs,
+      waitingSinceMs: waitingSinceMs,
       granted: false,
-      workspace_id: ws,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [hc.harness_slug, hc.name],
+      target: [hc.harnessSlug, hc.name],
       set: {
         content: dsql`EXCLUDED.content`,
-        waiting_since_ms: dsql`EXCLUDED.waiting_since_ms`,
+        waitingSinceMs: dsql`EXCLUDED.waiting_since_ms`,
         granted: dsql`EXCLUDED.granted`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   void notifySyncInvalidate('harnessCheckpoints.byHarness', { harnessSlug: slug }).catch(() => {});
