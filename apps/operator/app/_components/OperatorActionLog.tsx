@@ -20,7 +20,7 @@
  * table lands, swap useUserActions() for the Zero query — same row shape.
  */
 
-import { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { Clock, DollarSign } from 'lucide-react';
 import { useSyncQuery } from '@restart/sync';
@@ -44,14 +44,39 @@ type Listener = (a: UserAction) => void;
 /**
  * Globally-pinned cache of the last fetched action list per slug.
  * Survives Next.js dev module re-evaluation, OperatorActionLog mount/
- * unmount cycles, and popover open/close. Lets the popover paint
- * instantly with the previous fetch's rows while the next poll loads
- * fresh data in the background.
+ * unmount cycles, and popover open/close. Reactive: writes notify
+ * subscribed components so the popover paints the moment the REST
+ * prefetch lands, without waiting on the live-sync transport (which
+ * can take seconds to establish a WS or first poll).
  */
 type RecentActionsCache = Map<string, { ts: number; actions: UserAction[] }>;
-const _g = globalThis as unknown as { __recentActionsCache?: RecentActionsCache };
+type CacheListener = () => void;
+const _g = globalThis as unknown as {
+  __recentActionsCache?: RecentActionsCache;
+  __recentActionsListeners?: Set<CacheListener>;
+};
 const recentActionsCache: RecentActionsCache =
   _g.__recentActionsCache ?? (_g.__recentActionsCache = new Map());
+const recentActionsListeners: Set<CacheListener> =
+  _g.__recentActionsListeners ?? (_g.__recentActionsListeners = new Set());
+
+function setRecentActionsCache(slug: string, actions: UserAction[]) {
+  recentActionsCache.set(slug, { ts: Date.now(), actions });
+  for (const l of recentActionsListeners) {
+    try { l(); } catch { /* ignore */ }
+  }
+}
+
+function useRecentActionsSeed(slug: string | null): UserAction[] | null {
+  return useSyncExternalStore(
+    (cb) => {
+      recentActionsListeners.add(cb);
+      return () => recentActionsListeners.delete(cb);
+    },
+    () => (slug ? (recentActionsCache.get(slug)?.actions ?? null) : null),
+    () => null,
+  );
+}
 
 /** Force-prime the cache outside the component (called from chrome on
  *  app boot, see RecentActionsCenter / ChromeShell). Safe to call
@@ -62,7 +87,7 @@ export async function prefetchRecentActions(slug: string): Promise<void> {
     const r = await fetch(`/api/user-actions/${encodeURIComponent(slug)}?limit=100`);
     if (!r.ok) return;
     const j = (await r.json()) as { actions: UserAction[] };
-    recentActionsCache.set(slug, { ts: Date.now(), actions: j.actions ?? [] });
+    setRecentActionsCache(slug, j.actions ?? []);
   } catch {
     /* best-effort prefetch; failure is silent */
   }
@@ -79,8 +104,11 @@ function useUserActions(slug: string | null, opts?: { onTransition?: Listener })
   const lastRef = useRef<Map<number, UserAction>>(new Map());
 
   // Seed from the global prefetch cache so a popover open paints
-  // instantly while Zero's first-load completes.
-  const seed = slug ? (recentActionsCache.get(slug)?.actions ?? null) : null;
+  // instantly while Zero's first-load completes. Reactive — any
+  // prefetch write (REST fetch landing in ~50 ms) immediately
+  // re-renders this component, regardless of whether useSyncQuery
+  // has connected yet.
+  const seed = useRecentActionsSeed(slug);
 
   // HarnessZeroProvider is hoisted to root layout — useSyncQuery works
   // on every route now (was blocked by a Turbopack chunking bug;
@@ -104,8 +132,8 @@ function useUserActions(slug: string | null, opts?: { onTransition?: Listener })
   // Persist the current rows into the prefetch cache so other mounts
   // can paint instantly. Also fire onTransition callbacks on status flips.
   useEffect(() => {
-    if (!slug || !Array.isArray(liveRows)) return;
-    recentActionsCache.set(slug, { ts: Date.now(), actions: liveRows });
+    if (!slug || !Array.isArray(liveRows) || liveRows.length === 0) return;
+    setRecentActionsCache(slug, liveRows);
     const next = new Map<number, UserAction>();
     for (const a of liveRows) next.set(a.id, a);
     const cb = onTransitionRef.current;

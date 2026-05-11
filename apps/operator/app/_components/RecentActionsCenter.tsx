@@ -53,23 +53,12 @@ export function RecentActionsCenter() {
   useEffect(() => {
     const next = readActiveSlug();
     setSlug(next);
-    // Prefetch the action log on chrome mount so the first popover
-    // open paints instantly from cache instead of running a fresh
-    // request through Next.js dev (which always pays a ~1s framework
-    // overhead on first cold compile of the route). `requestIdleCallback`
-    // ensures we don't fight foreground rendering for resources.
-    if (next) {
-      const ric = (window as any).requestIdleCallback as
-        | ((cb: () => void, opts?: { timeout?: number }) => number)
-        | undefined;
-      if (typeof ric === 'function') {
-        ric(() => { void prefetchRecentActions(next); }, { timeout: 2000 });
-      } else {
-        // Safari / older browsers: fall back to a short timeout so we
-        // still let LCP/initial paint finish before fetching.
-        window.setTimeout(() => { void prefetchRecentActions(next); }, 800);
-      }
-    }
+    // Prime the cache immediately on chrome mount so the first popover
+    // open paints instantly from cache instead of waiting for the
+    // live-sync transport (POLLING/WS) to establish — that path can
+    // take several seconds on a cold load. REST endpoint is ~50 ms and
+    // can race the rest of init without blocking anything visible.
+    if (next) void prefetchRecentActions(next);
     const onPop = () => {
       const fresh = readActiveSlug();
       setSlug(fresh);
