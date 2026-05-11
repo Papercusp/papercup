@@ -99,6 +99,24 @@ Static-analyzes your plugin source against `capabilities[]`. Reports:
 
 Run both `lint` and `doctor` pre-commit. Together they catch ~80% of "works in dev, breaks on first prod load" issues without an AST walker.
 
+## `ctx.kv` — plugin-private key/value store
+
+For small structured state (counts, timestamps, last-seen markers) use `ctx.kv` instead of writing JSON files under `pluginDataDir`:
+
+```ts
+const last = await ctx.kv?.get<number>('lastSync');
+await ctx.kv?.set('lastSync', Date.now());
+await ctx.kv?.delete('lastSync');
+const keys = await ctx.kv?.list({ prefix: 'sync:', limit: 50 });
+```
+
+- **Quota** — default 10 KiB per key, 1 MiB total per plugin. Override via `kvQuota: { maxBytesPerKey, maxBytesPerPlugin }` in the manifest.
+- **Isolation** — each plugin sees only its own keys; cross-plugin reads are impossible.
+- **Backend** — Postgres in the operator (state survives reload, observable in the operator UI). Optional: missing in `fire-hook` CLI invocations (`ctx.kv?.` guard required).
+- **Errors** — quota violations throw `KvQuotaError` from `@papercusp/plugin-sdk`.
+
+Use `pluginDataDir` for blobs > 10 KiB, code, or anything that doesn't need to be scanned/aggregated.
+
 ## 4. Test locally
 
 ```bash
