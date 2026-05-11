@@ -25,6 +25,10 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'harness:plan_reviews',
   description: 'Load all harness plan-review entries (slug, verdict, summary, mtimeMs) across the workspace.',
+  guidance: {
+    when: 'Cross-harness plan-review status — "what plans have been reviewed", "any verdicts?". Single-harness lookups use `harness:pending_reviews`.',
+    notWhen: 'For one harness\'s pending reviews, use `harness:pending_reviews`. For all-harness LIVE health, use `harness:list` then `harness:status` per slug.',
+  },
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],

@@ -6,34 +6,33 @@
  * `/` work.
  *
  * Emits one event per stdout/stderr chunk ('output' or 'stderr'),
- * terminal markers (`action-started`, `action-completed`,
- * `action-failed`), a `done` event on terminal, and a periodic
- * `: heartbeat`.
+ * terminal markers (action-started, action-completed, action-failed),
+ * a `done` event on terminal, and 15s heartbeats.
  *
- * Backed by the in-process branch-action-bus: lib/branch-actions.ts
- * runAction()'s writeLine() publishes each chunk via publish(); this
- * handler subscribes via subscribe(). Sub-millisecond live channel,
- * no 250ms polling, no fs.watch.
- *
- * Backfill on connect: read the log file once + emit any historical
- * markers (so reconnects after a server restart still replay the
- * recent run state). After backfill, live updates come from the bus.
- *
- * Spec: per-branch action registry (substrate piece 3 of 3).
+ * Backed by the in-process branch-action-bus (which itself sits on
+ * @restart/sse's getChannel). Backfill on connect reads the log file
+ * for history; live updates come from the bus.
  */
 import { promises as fs } from 'node:fs';
+import { sseResponse, ACTION_MAX_DURATION_SEC } from '@restart/sse';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { isBranch, runLogPath } from '@/lib/branch-actions';
 import { subscribe as subscribeAction } from '@/lib/branch-action-bus';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 1800;
+export const maxDuration = ACTION_MAX_DURATION_SEC;
 
 interface Params { params: Promise<{ slug: string; branch: string }> }
 
-function sse(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+interface Events {
+  attached: { runId: string; slug: string; branch: string; name: string };
+  'action-started': Record<string, unknown>;
+  'action-completed': Record<string, unknown>;
+  'action-failed': Record<string, unknown>;
+  output: { line: string };
+  stderr: { line: string };
+  done: { reason: string; kind: string };
 }
 
 export async function GET(req: Request, { params }: Params) {
@@ -54,117 +53,71 @@ export async function GET(req: Request, { params }: Params) {
 
   const logPath = runLogPath(project.path, branch, name, runId);
 
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const enc = new TextEncoder();
-      let closed = false;
-      let pending = '';
+  return sseResponse<Events>({
+    signal: req.signal,
+    heartbeatMs: 15_000,
+    initialHeartbeat: false,
+    setup: async (sink) => {
+      sink.event('attached', { runId, slug, branch, name });
 
-      const send = (event: string, data: unknown) => {
-        if (closed) return;
-        try { controller.enqueue(enc.encode(sse(event, data))); }
-        catch { closed = true; }
-      };
-      const close = () => {
-        if (closed) return;
-        closed = true;
-        try { controller.close(); } catch { /* already */ }
-      };
-
-      // Classify a single log-file line into the right SSE event.
-      // Used only for backfill; live events arrive pre-classified
-      // through the bus envelope's `kind` field.
-      const emitLineFromLog = (line: string): boolean => {
+      // 1. Backfill from disk. The log file is authoritative for history;
+      //    the bus only carries recent events.
+      let terminalFromBackfill = false;
+      const emitLineFromLog = (line: string): void => {
         if (line.startsWith('::papercusp::action-started\t')) {
-          send('action-started', JSON.parse(line.slice('::papercusp::action-started\t'.length)));
+          sink.event('action-started', JSON.parse(line.slice('::papercusp::action-started\t'.length)));
         } else if (line.startsWith('::papercusp::action-completed\t')) {
-          send('action-completed', JSON.parse(line.slice('::papercusp::action-completed\t'.length)));
-          send('done', { reason: 'terminal-during-backfill', kind: 'completed' });
-          close();
-          return true;
+          sink.event('action-completed', JSON.parse(line.slice('::papercusp::action-completed\t'.length)));
+          sink.event('done', { reason: 'terminal-during-backfill', kind: 'completed' });
+          terminalFromBackfill = true;
         } else if (line.startsWith('::papercusp::action-failed\t')) {
-          send('action-failed', JSON.parse(line.slice('::papercusp::action-failed\t'.length)));
-          send('done', { reason: 'terminal-during-backfill', kind: 'failed' });
-          close();
-          return true;
+          sink.event('action-failed', JSON.parse(line.slice('::papercusp::action-failed\t'.length)));
+          sink.event('done', { reason: 'terminal-during-backfill', kind: 'failed' });
+          terminalFromBackfill = true;
         } else if (line.startsWith('::papercusp::stderr\t')) {
-          send('stderr', { line: line.slice('::papercusp::stderr\t'.length) });
+          sink.event('stderr', { line: line.slice('::papercusp::stderr\t'.length) });
         } else {
-          send('output', { line });
+          sink.event('output', { line });
         }
-        return false;
       };
 
-      send('attached', { runId, slug, branch, name });
-
-      // 1. Backfill from disk once. The log file is authoritative for
-      //    history; the bus only carries recent events.
       try {
         const raw = await fs.readFile(logPath, 'utf8');
-        pending = raw;
-        let idx;
-        while ((idx = pending.indexOf('\n')) !== -1) {
-          const line = pending.slice(0, idx);
-          pending = pending.slice(idx + 1);
-          if (emitLineFromLog(line)) return;
+        for (const line of raw.split('\n')) {
+          if (line.length === 0) continue;
+          emitLineFromLog(line);
+          if (terminalFromBackfill) {
+            sink.close();
+            return;
+          }
         }
-      } catch { /* file not present yet — first event will arrive via bus */ }
+      } catch { /* file not present yet — first event arrives via bus */ }
 
-      // 2. Subscribe to the in-process bus for live updates.
+      // 2. Subscribe to the bus for live updates.
       const channelKey = `${slug}:${runId}`;
       const sub = subscribeAction(channelKey, (env) => {
-        if (closed) return;
+        if (sink.closed) return;
         if (env.kind === 'started') {
-          send('action-started', env.meta ?? {});
+          sink.event('action-started', env.meta ?? {});
         } else if (env.kind === 'completed') {
-          send('action-completed', env.meta ?? {});
-          send('done', { reason: 'terminal', kind: 'completed' });
-          close();
+          sink.event('action-completed', env.meta ?? {});
+          sink.event('done', { reason: 'terminal', kind: 'completed' });
+          sink.close();
         } else if (env.kind === 'failed') {
-          send('action-failed', env.meta ?? {});
-          send('done', { reason: 'terminal', kind: 'failed' });
-          close();
+          sink.event('action-failed', env.meta ?? {});
+          sink.event('done', { reason: 'terminal', kind: 'failed' });
+          sink.close();
         } else if (env.kind === 'stderr') {
-          // Bus payload is the raw text chunk; emit lines individually
-          // so the client mirrors the legacy line-oriented surface.
           for (const line of env.text.split('\n')) {
-            if (line.length > 0) send('stderr', { line });
+            if (line.length > 0) sink.event('stderr', { line });
           }
         } else if (env.kind === 'output') {
           for (const line of env.text.split('\n')) {
-            if (line.length > 0) send('output', { line });
+            if (line.length > 0) sink.event('output', { line });
           }
         }
       });
-
-      // If the run already terminated (we joined late), the bus's
-      // recent ring buffer may carry the terminal event — sub.done
-      // tells us up front.
-      if (sub.done && !closed) {
-        send('done', { reason: 'late-join-terminal', kind: 'unknown' });
-        close();
-      }
-
-      const heartbeat = setInterval(() => {
-        if (closed) return;
-        try { controller.enqueue(enc.encode(': heartbeat\n\n')); }
-        catch { closed = true; }
-      }, 15_000);
-
-      req.signal.addEventListener('abort', () => {
-        sub.unsubscribe();
-        clearInterval(heartbeat);
-        close();
-      });
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache, no-transform',
-      'connection': 'keep-alive',
-      'x-accel-buffering': 'no',
+      sink.onClose(sub.unsubscribe);
     },
   });
 }

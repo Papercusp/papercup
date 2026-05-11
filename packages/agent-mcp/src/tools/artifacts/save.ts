@@ -31,6 +31,10 @@ export default defineTool({
   name: 'artifacts:save',
   description: 'Upsert a PG-canonical text artifact (harness_text_artifacts) by (harness_slug, rel_path). Replaces existing content.',
   capability: 'artifacts:write',
+  guidance: {
+    when: 'Persist a generated text artifact for later reads by other agents or future turns. Replaces existing content at the same (harness_slug, rel_path).',
+    notWhen: 'For appending to an existing file, use `artifacts:append` — save fully replaces. For source code, write to the repo via filesystem tools, not artifacts.',
+  },
   requirePrincipal: false,
   roles: [...WRITE_ROLES],
   rolesQuota: {

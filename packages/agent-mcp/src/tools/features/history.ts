@@ -26,6 +26,10 @@ interface AuditRow {
 export default defineTool({
   name: 'features:history',
   capability: 'features:read',
+  guidance: {
+    when: 'User asks "what changed on feature X?", "who edited the spec?", or you need a timeline of edits.',
+    notWhen: 'For the CURRENT body, use `features:get`. For cross-feature audit, use `audit:list`.',
+  },
   args: z.object({
     slug: z.string().min(1),
     feature_id: z.string().min(1),

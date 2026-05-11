@@ -30,6 +30,11 @@ interface RelatedRow {
 export default defineTool({
   name: 'features:list_related',
   capability: 'features:read',
+  guidance: {
+    when: 'You have a feature and need to find related ones — tag overlap, shared chunks, dependency neighbors.',
+    notWhen: 'For free-text "find features about X", use `features:search`. For ALL features in a harness, use `harness:list_features`.',
+    chaining: 'After `features:get`, use this to discover the neighborhood.',
+  },
   args: z.object({
     slug: z.string().min(1),
     feature_id: z.string().min(1),

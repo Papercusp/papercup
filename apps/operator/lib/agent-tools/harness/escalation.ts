@@ -26,6 +26,10 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'harness:escalation',
   description: 'Read escalation.md + supervisor-notes.md for a harness slug.',
+  guidance: {
+    when: 'User asks "what\'s flagged?", "what got escalated to the supervisor?", or you need to see the supervisor\'s notes on a harness.',
+    notWhen: 'For general "what\'s wrong with X" (open issues), use `issues:list`. Escalation files are a specific, narrower view than the issue list.',
+  },
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],

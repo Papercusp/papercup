@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-const features = generated.harness_features_consolidatedInHarness_shared;
+const features = generated.harnessFeaturesConsolidatedInHarnessShared;
 const FeatureSelect = schemaOf(features).select;
 type FeatureRow = z.infer<typeof FeatureSelect>;
 
@@ -23,6 +23,11 @@ const SLUG_RE = /^[a-z0-9._-]+$/i;
 export default defineTool({
   name: 'features:get',
   capability: 'features:read',
+  guidance: {
+    when: 'User names a specific feature ("the auth one", "F-AUTH-001") and you need its body / acceptance criteria.',
+    notWhen: 'For a list of features in a harness, use `harness:list_features`. For changes over time, use `features:history`.',
+    chaining: 'Follow `harness:list_features` or `features:search` to find the id.',
+  },
   args: z.object({
     slug: z.string().min(1),
     feature_id: z.string().min(1),

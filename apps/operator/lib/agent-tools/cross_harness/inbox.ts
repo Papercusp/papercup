@@ -25,6 +25,10 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'cross_harness:inbox',
   description: 'Read messages addressed to a harness (status pending|all|other; optional role filter).',
+  guidance: {
+    when: 'You need to see messages addressed TO a specific harness across senders. The cross-harness analog of `messages:inbox`.',
+    notWhen: 'For YOUR (the calling principal\'s) inbox, use `messages:inbox`. For sent items, use `cross_harness:outbox`.',
+  },
   capability: 'cross_harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],

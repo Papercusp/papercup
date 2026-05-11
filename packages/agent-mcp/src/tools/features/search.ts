@@ -27,6 +27,10 @@ interface FeatureRow {
 export default defineTool({
   name: 'features:search',
   capability: 'features:read',
+  guidance: {
+    when: 'Free-text query for features matching a topic ("auth", "error handling") — use when the user names a concept, not a specific feature id.',
+    notWhen: 'For specific feature id, use `features:get`. For ALL features in a harness, use `harness:list_features`. For cross-resource search, use `search:query`.',
+  },
   args: z.object({
     slug: z.string().min(1),
     /** FTS query string. Optional — omit for tag/status-only filtering. */

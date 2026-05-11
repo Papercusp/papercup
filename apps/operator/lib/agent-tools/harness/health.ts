@@ -26,6 +26,10 @@ export default defineTool({
   description:
     'Read consolidated health verdict for a harness (alive, escalated, feature counts, ghost rate, checks).',
   capability: 'harness:read',
+  guidance: {
+    when: 'User asks "is sheets healthy?", "is the harness running?". Single fast snapshot — alive, escalated flag, feature-status counts.',
+    notWhen: 'For LIVE phase + activity (recent audit events), use `harness:status`. For open issues, use `issues:list`.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

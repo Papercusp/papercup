@@ -23,6 +23,10 @@ export default defineTool({
   name: 'artifacts:delete',
   description: 'Delete a PG-canonical text artifact row by (harness_slug, rel_path). Restricted to architect/operator/curator roles.',
   capability: 'artifacts:write',
+  guidance: {
+    when: 'Remove an artifact that\'s no longer relevant. Restricted to architect/operator/curator roles by `roles` allowlist.',
+    notWhen: 'Don\'t delete to "clean up" speculatively — artifacts cost nothing to keep, and other agents may rely on them.',
+  },
   requirePrincipal: false,
   roles: ['architect', 'operator', 'curator'],
   rolesQuota: {

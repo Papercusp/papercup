@@ -36,6 +36,11 @@ export default defineTool({
   name: 'artifacts:load',
   description: 'Read a PG-canonical text artifact (harness_text_artifacts) by (harness_slug, rel_path).',
   capability: 'artifacts:read',
+  guidance: {
+    when: 'You need to read a file the harness wrote earlier (notes, intermediate outputs, plans) by its harness_slug + rel_path.',
+    notWhen: 'For SOURCE CODE in the user\'s repo, use the filesystem tools / gitnexus. Artifacts are harness-scoped PG-canonical text only.',
+    chaining: 'Pair with `artifacts:save` to round-trip, `artifacts:append` to add to an existing one.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

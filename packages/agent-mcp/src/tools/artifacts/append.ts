@@ -30,6 +30,10 @@ export default defineTool({
   name: 'artifacts:append',
   description: 'Append to a PG-canonical text artifact (harness_text_artifacts). Creates the row if absent.',
   capability: 'artifacts:write',
+  guidance: {
+    when: 'Add to an existing artifact without losing prior content — running notes, ongoing log, accumulating findings.',
+    notWhen: 'For replacing the whole file, use `artifacts:save`. For ephemeral within-turn notes, just hold them in your reply.',
+  },
   requirePrincipal: false,
   roles: [...WRITE_ROLES],
   rolesQuota: {

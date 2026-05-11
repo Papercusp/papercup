@@ -25,6 +25,10 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'harness:phase_path',
   description: 'Resolve the on-disk path for a (harness_slug, phase) pair. Phase = staging|testing|production.',
+  guidance: {
+    when: 'You need the absolute filesystem path for a harness phase before reading files inside it.',
+    notWhen: 'For listing files INSIDE the phase dir, use `harness:markdown_index` or `harness:list_features`. This tool only resolves the dir path.',
+  },
   capability: 'harness:read',
   requirePrincipal: false,
   roles: [...ALL_ROLES],

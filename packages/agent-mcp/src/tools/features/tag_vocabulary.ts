@@ -22,6 +22,10 @@ interface TagCount {
 export default defineTool({
   name: 'features:tag_vocabulary',
   capability: 'features:read',
+  guidance: {
+    when: 'You need the set of known feature tags before tagging a new one — keeps tags consistent across the harness.',
+    notWhen: 'For finding features BY a tag, use `features:search` (free-text) or `features:list_related`.',
+  },
   args: z.object({
     slug: z.string().min(1),
     /** Hard cap on the returned list. Default 100. */
