@@ -16,6 +16,10 @@ import { defineTool } from '../../define-tool';
 export default defineTool({
   name: 'audit:list',
   capability: 'audit:read',
+  guidance: {
+    when: 'User asks "what happened recently?", "who did X?", or you need a forensic timeline of agent + user actions.',
+    notWhen: 'For ACTIVE / in-flight work, use `harness:status` or `actions:recent`. Audit is a write-log, not a live view.',
+  },
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),
     actor: z.string().optional(),

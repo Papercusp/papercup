@@ -28,8 +28,12 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'agent_tools:list',
   description:
-    'List MCP-exposed tools with permission status for the caller. Each entry includes name, description, capability, roles allowlist, and an `allowed` flag with `reason` when blocked. Use to discover what you can call without trial-and-error.',
+    'List MCP-exposed tools with permission status for the caller. Each entry includes name, description, capability, roles allowlist, an `allowed` flag with `reason` when blocked, AND per-tool `guidance` (when/notWhen/chaining resolved for the queried role). Use to discover what you can call without trial-and-error.',
   capability: 'agent_tools:read',
+  guidance: {
+    when: 'Your tools playbook didn\'t cover a user request and you need to discover what\'s callable. Returns the full catalog filtered by your role, with each tool\'s guidance — treat this as the runtime fallback playbook.',
+    notWhen: 'Don\'t use as a fishing expedition. If your playbook covers it, just call the tool. `agent_tools:list` costs a tool call.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

@@ -18,6 +18,10 @@ type PERow = z.infer<typeof PESelect>;
 export default defineTool({
   name: 'pending_events:list',
   capability: 'pending_events:read',
+  guidance: {
+    when: 'User asks "what\'s queued up?", "what events are pending?", or you need to inspect the hook-event backlog.',
+    notWhen: 'For approvals (plan reviews, escalations awaiting user yes/no), use `pending_reviews_list`. Pending EVENTS are hook plumbing; pending REVIEWS are user-facing decisions.',
+  },
   args: z.object({
     detail: z.enum(['summary']).default('summary'),
     kind: z.string().optional(),

@@ -25,6 +25,10 @@ function newActionId(): string {
 export default defineTool({
   name: 'messages:send',
   capability: 'messages:write',
+  guidance: {
+    when: 'Operator forwarding a directive to another agent ("tell the worker to retry", "send this brief to the architect"). Always paraphrase + confirm out loud first; sends are durable.',
+    notWhen: 'For dispatching work via spawn, use `<spawn>` tag — messages are notes, spawns are work. For replying in the user\'s chat, just speak — don\'t message yourself.',
+  },
   args: z.object({
     to: z.array(z.string().min(1)).min(1),
     kind: z.string().default('Directive'),

@@ -80,6 +80,10 @@ export default defineTool({
   description:
     'Present the user with a structured set of clickable choices (e.g. "Do you want me to go into passive mode?" → [Yes, go passive] [No, stay active]). The chat dock renders the question + buttons; the user clicks one (or more, if multi:true) and their pick(s) become the next user message. After calling this tool, end your turn — do not also write the question as text. Use for yes/no, accept/reject, or pick-one-of questions with up to 6 options. Set multi:true for "select all that apply" — adds a Submit button. For open-ended prompts ("describe what you want", "paste the error"), keep using plain text.',
   capability: 'chat:write',
+  guidance: {
+    when: 'You would otherwise end a turn with a yes/no, accept/reject, or pick-one-of question. Renders clickable buttons in the chat; the user clicks one and their choice becomes the next user message. End your turn after the tool call — do NOT follow up with "let me know!", the buttons ARE the prompt.',
+    notWhen: 'For OPEN-ENDED questions ("describe what you want", "paste the error"), keep using plain text. Use 2-3 options; 4+ only when genuinely distinct (6 hard max). Mark one as `style: "primary"` if you have a recommended pick; `style: "danger"` for irreversible.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },

@@ -25,6 +25,10 @@ interface SearchHit {
 export default defineTool({
   name: 'search:query',
   capability: 'search:read',
+  guidance: {
+    when: 'User asks an open-ended question that could match anything in the workspace ("anything about auth?", "find references to budget guard"). Cross-resource full-text search over tasks, goals, projects, audit, messages.',
+    notWhen: 'For a SPECIFIC resource type, use the dedicated list/get tool — search is broader but ranked less precisely. For code-graph queries, use `gitnexus:query`.',
+  },
   args: z.object({
     query: z.string().min(1),
     kinds: z.array(z.enum(KINDS)).optional(),

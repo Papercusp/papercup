@@ -19,6 +19,10 @@ type AuditRow = z.infer<typeof AuditSelect>;
 export default defineTool({
   name: 'messages:outbox',
   capability: 'messages:read',
+  guidance: {
+    when: 'User asks "what did I send?", "did the message go through?", or you need to confirm a recent send.',
+    notWhen: 'For incoming, use `messages:inbox`.',
+  },
   args: z.object({
     slug: z.string().min(1),
     detail: z.enum(['summary', 'full']).default('summary'),
