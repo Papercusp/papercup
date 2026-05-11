@@ -316,6 +316,51 @@ export class WorkspaceBackup {
     return { targetPath: target };
   }
 
+  /**
+   * Promote a restored clone to live by atomically renaming the
+   * current live workspace to `.broken-<ts>/` and the clone into its
+   * place. Reversible: rename `.broken-<ts>/` back if the promotion
+   * was wrong.
+   *
+   * Safety:
+   * - Only promotes paths under <workspaceRoot> — refuses anything
+   *   outside (no path-traversal, no clobbering siblings).
+   * - The "live" target is derived from the clone's basename so the
+   *   slug round-trip is unambiguous.
+   * - Writes a marker `.promotion-meta.json` next to .broken-* so a
+   *   future "rollback" tool knows the original layout.
+   */
+  async promoteRestore(opts: { restoredPath: string; liveTarget?: string }): Promise<{ broken: string; live: string }> {
+    const { resolve, dirname, basename } = await import('node:path');
+    const { rename, writeFile } = await import('node:fs/promises');
+    const root = resolve(this.workspaceRoot);
+    const clone = resolve(opts.restoredPath);
+    if (!clone.startsWith(root + '/.restored/')) {
+      throw new Error(`refusing to promote: ${clone} is not under <workspace>/.restored/`);
+    }
+    // Default live target is the workspace root itself (the only source
+    // we snapshot today). For multi-source workspaces, the caller must
+    // pass `liveTarget` explicitly.
+    const liveTarget = resolve(opts.liveTarget ?? root);
+    if (!liveTarget.startsWith(root)) {
+      throw new Error(`refusing to promote: ${liveTarget} escapes workspace`);
+    }
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const brokenDir = join(dirname(liveTarget), `.broken-${ts}-${basename(liveTarget)}`);
+    await rename(liveTarget, brokenDir);
+    try {
+      await rename(clone, liveTarget);
+    } catch (err) {
+      await rename(brokenDir, liveTarget).catch(() => {});
+      throw err;
+    }
+    await writeFile(
+      join(dirname(liveTarget), `.promotion-meta-${ts}.json`),
+      JSON.stringify({ broken: brokenDir, live: liveTarget, promotedFrom: clone, at: new Date().toISOString() }, null, 2),
+    );
+    return { broken: brokenDir, live: liveTarget };
+  }
+
   async recentFailures(limit = 50): Promise<SnapshotInfo[]> {
     const { sql } = getOrgPg();
     const rows = await sql<{

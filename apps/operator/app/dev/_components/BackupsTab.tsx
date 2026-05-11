@@ -12,6 +12,15 @@ import { toast } from 'sonner';
 import type { RepoStats, SnapshotInfo } from '@/lib/backup';
 
 interface ServerInfo { workspaceId: string; port: number; url: string; startedAt: string; }
+interface HealthInfo {
+  state: 'ok' | 'stale' | 'failing' | 'disabled' | 'never_run';
+  ageSeconds: number | null;
+  lastOkAt: string | null;
+  lastFailureAt: string | null;
+  freeDiskBytes: number | null;
+  staleThresholdSec: number;
+  kopia: { ok: boolean; version?: string; reason?: string };
+}
 
 function fmtBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return '0 B';
@@ -34,20 +43,23 @@ export default function BackupsTab() {
   const [snapshots, setSnapshots] = useState<SnapshotInfo[]>([]);
   const [failures, setFailures] = useState<SnapshotInfo[]>([]);
   const [server, setServer] = useState<ServerInfo | null>(null);
+  const [health, setHealth] = useState<HealthInfo | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [restorePick, setRestorePick] = useState<string>('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const load = useCallback(async () => {
     try {
-      const [a, b, c] = await Promise.all([
+      const [a, b, c, h] = await Promise.all([
         fetch('/api/backups').then((r) => r.json()),
         fetch('/api/backups/snapshots?limit=200').then((r) => r.json()),
         fetch('/api/backups/failures?limit=50').then((r) => r.json()),
+        fetch('/api/backups/healthcheck').then((r) => r.json()),
       ]);
       setStats(a.stats);
       setSnapshots(b.snapshots ?? []);
       setFailures(c.failures ?? []);
+      setHealth(h.error ? null : h as HealthInfo);
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
     }
@@ -93,6 +105,8 @@ export default function BackupsTab() {
   const verify = () => fire('verify',
     () => fetch('/api/backups/verify', { method: 'POST' }));
 
+  const [lastRestoredPath, setLastRestoredPath] = useState<string | null>(null);
+
   const doRestore = useCallback(async () => {
     if (!restorePick) return;
     setBusy('restore');
@@ -104,6 +118,7 @@ export default function BackupsTab() {
       });
       if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
       const d = await r.json() as { result: { targetPath: string } };
+      setLastRestoredPath(d.result.targetPath);
       toast.success(`restored to ${d.result.targetPath}`);
     } catch (err) {
       toast.error(`restore failed: ${(err as Error).message}`);
@@ -112,13 +127,58 @@ export default function BackupsTab() {
     }
   }, [restorePick]);
 
+  const doPromote = useCallback(async () => {
+    if (!lastRestoredPath) return;
+    if (!confirm(
+      'Promote this restored clone to live?\n\n'
+      + 'Live workspace becomes ".broken-<ts>/" alongside.\n'
+      + 'Reversible: rename the .broken-* dir back if this was wrong.\n\n'
+      + `Restored: ${lastRestoredPath}`,
+    )) return;
+    setBusy('promote');
+    try {
+      const r = await fetch('/api/backups/promote', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ restoredPath: lastRestoredPath }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+      const d = await r.json() as { result: { broken: string; live: string } };
+      toast.success(`promoted; old live moved to ${d.result.broken}`);
+      setLastRestoredPath(null);
+    } catch (err) {
+      toast.error(`promote failed: ${(err as Error).message}`);
+    } finally {
+      setBusy(null);
+    }
+  }, [lastRestoredPath]);
+
   const restoreOptions = useMemo(
     () => snapshots.filter((s) => s.kopiaSnapshotId && s.status === 'ok'),
     [snapshots],
   );
 
+  const healthBanner = health && health.state !== 'ok' && (
+    <div className={`pc-dev-backups-banner pc-dev-backups-banner-${health.state}`}>
+      {!health.kopia.ok && (
+        <span>
+          kopia binary not found ({health.kopia.reason ?? 'unknown'}). Install kopia or set <code>KOPIA_BIN</code>.
+        </span>
+      )}
+      {health.kopia.ok && health.state === 'disabled' && 'Backups are disabled for this workspace.'}
+      {health.kopia.ok && health.state === 'never_run' && 'No snapshots have run yet for this workspace.'}
+      {health.kopia.ok && health.state === 'stale' && health.ageSeconds != null && `Last snapshot was ${Math.round(health.ageSeconds / 60)} min ago — stale.`}
+      {health.kopia.ok && health.state === 'failing' && 'The most recent snapshot failed. Check the failure log below.'}
+      {' '}
+      {health.freeDiskBytes != null && health.freeDiskBytes < 20 * 1024 ** 3 && (
+        <span>· Free disk on backup destination: {fmtBytes(health.freeDiskBytes)}</span>
+      )}
+    </div>
+  );
+
   return (
     <div className="pc-dev-backups">
+      {healthBanner}
       <div className="pc-dev-backups-metrics">
         <Metric label="Snapshots" value={stats?.totalSnapshots.toLocaleString() ?? '—'} />
         <Metric label="On disk" value={stats ? fmtBytes(stats.bytesOnDisk) : '—'} />
@@ -155,12 +215,26 @@ export default function BackupsTab() {
             </option>
           ))}
         </select>
-        <button type="button" disabled={!restorePick || busy === 'restore'} onClick={doRestore}>
-          {busy === 'restore' ? 'Restoring…' : 'Restore to clone'}
-        </button>
+        <div className="pc-dev-backups-actions">
+          <button type="button" disabled={!restorePick || busy === 'restore'} onClick={doRestore}>
+            {busy === 'restore' ? 'Restoring…' : 'Restore to clone'}
+          </button>
+          {lastRestoredPath && (
+            <button type="button" disabled={busy === 'promote'} onClick={doPromote}>
+              {busy === 'promote' ? 'Promoting…' : `Promote → live`}
+            </button>
+          )}
+        </div>
+        {lastRestoredPath && (
+          <p className="pc-dev-backups-note">
+            Last restored: <code>{lastRestoredPath}</code>
+          </p>
+        )}
         <p className="pc-dev-backups-note">
           Restores into <code>&lt;workspace&gt;/.restored/&lt;snapshot-id&gt;/</code>.
-          Live workspace is untouched until you explicitly promote.
+          Live workspace is untouched until you explicitly promote — at which
+          point the current live becomes <code>.broken-&lt;ts&gt;/</code>, reversible
+          by renaming back.
         </p>
       </section>
 

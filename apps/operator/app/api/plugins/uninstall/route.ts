@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { spawn } from 'node:child_process';
+import { triggerSnapshotEvent } from '@/lib/backup';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -27,6 +29,13 @@ export async function POST(req: Request) {
   try { body = await req.json(); } catch { return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400 }); }
   const slug = String(body.slug ?? '').trim();
   if (!isValidSlug(slug)) return NextResponse.json({ ok: false, error: `invalid slug "${slug}"` }, { status: 400 });
+
+  // Snapshot before uninstall — plugin removal is destructive (deletes
+  // plugin code + optionally grants), and "I didn't mean to" recovery
+  // is much faster from a kopia snapshot than reinstalling. Failure to
+  // snapshot is non-fatal — we still proceed with the uninstall.
+  await triggerSnapshotEvent(activeWorkspaceId(), 'plugin_install', { op: 'uninstall', slug, purgeGrants: !!body.purgeGrants })
+    .catch(() => { /* ignore */ });
 
   const args = ['plugin', 'uninstall', slug];
   if (body.purgeGrants) args.push('--purge-grants');

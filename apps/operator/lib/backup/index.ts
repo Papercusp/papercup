@@ -15,4 +15,4 @@ export {
 export { deriveRepoPassword } from './password';
 export { workspaceBackupFor } from './singleton';
 export { startKopiaServer, stopKopiaServer, kopiaServerStatus, type KopiaServerInfo } from './server';
-export { startBackupScheduler, stopBackupScheduler, triggerSnapshotEvent } from './scheduler';
+export { startBackupScheduler, stopBackupScheduler, triggerSnapshotEvent, getKopiaDetection } from './scheduler';

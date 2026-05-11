@@ -609,3 +609,22 @@
   white-space: pre-wrap;
   overflow-x: auto;
 }
+
+.pc-dev-backups-banner {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid;
+  font-size: 13px;
+}
+.pc-dev-backups-banner-stale,
+.pc-dev-backups-banner-never_run,
+.pc-dev-backups-banner-disabled {
+  background: rgba(255, 200, 80, 0.08);
+  border-color: rgba(255, 200, 80, 0.4);
+  color: rgba(255, 220, 150, 0.95);
+}
+.pc-dev-backups-banner-failing {
+  background: rgba(255, 80, 80, 0.10);
+  border-color: rgba(255, 80, 80, 0.45);
+  color: rgba(255, 200, 200, 0.95);
+}
