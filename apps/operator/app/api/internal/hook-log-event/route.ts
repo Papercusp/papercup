@@ -12,6 +12,7 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, desc, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -26,12 +27,12 @@ export const runtime = 'nodejs';
 const MAX_CONTENT_BYTES = 280 * 1024; // 256KB cap + slack for the truncation marker
 const HOOK_KEEP = 50;
 
-interface RequestBody {
-  name?: string;
-  ts?: number;
-  sizeBytes?: number;
-  content?: string;
-}
+const BodySchema = z.object({
+  name: z.string().min(1),
+  ts: z.number().int().positive(),
+  sizeBytes: z.number().int().nonnegative().optional().default(0),
+  content: z.string().optional().default(''),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -50,17 +51,19 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const name = typeof body.name === 'string' ? body.name : '';
-  const tsSec = typeof body.ts === 'number' ? Math.floor(body.ts) : 0;
-  if (!name || tsSec <= 0) {
-    return NextResponse.json({ error: 'name + ts required' }, { status: 400 });
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
-  const sizeBytes = typeof body.sizeBytes === 'number' ? Math.floor(body.sizeBytes) : 0;
-  let content = typeof body.content === 'string' ? body.content : '';
+  const { name, sizeBytes } = parsed.data;
+  const tsSec = Math.floor(parsed.data.ts);
+  let content = parsed.data.content;
   if (Buffer.byteLength(content) > MAX_CONTENT_BYTES) {
     content = content.slice(0, MAX_CONTENT_BYTES) + '\n...[truncated]\n';
   }

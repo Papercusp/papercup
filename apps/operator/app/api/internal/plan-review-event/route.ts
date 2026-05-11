@@ -9,6 +9,7 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -20,9 +21,9 @@ const pr = generated.harness_plan_reviewInHarness_shared;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  content?: string;
-}
+const BodySchema = z.object({
+  content: z.string().min(1),
+});
 
 const MAX_BODY = 256 * 1024;
 
@@ -43,12 +44,17 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  let content = typeof body.content === 'string' ? body.content : '';
-  if (!content) return NextResponse.json({ error: 'content required' }, { status: 400 });
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
+  }
+  let content = parsed.data.content;
   if (Buffer.byteLength(content) > MAX_BODY) {
     content = content.slice(0, MAX_BODY) + '\n...[truncated]\n';
   }
