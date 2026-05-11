@@ -43,6 +43,12 @@ import {
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
+import {
+  resolveProjectDir,
+  resolveStateDir,
+  resolveSpawnCwd,
+  resolveContextEnv,
+} from '@/lib/spawn-config';
 /**
  * Attach pty endpoints to an existing Hono router (typically the harness
  * router mounted at /api/harness). We register handlers directly rather
@@ -74,16 +80,11 @@ interface SpawnBody {
 }
 
 /** Resolve the harness's project directory by reading its registry. */
-async function projectDirForSlug(slug: string): Promise<string | null> {
-  return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
-}
-
-/** Resolve the harness's state directory. */
-async function stateDirForSlug(slug: string): Promise<string | null> {
-  const projectDir = await projectDirForSlug(slug);
-  if (!projectDir) return null;
-  return join(projectDir, '.harness');
-}
+// `projectDirForSlug` / `stateDirForSlug` moved to `@/lib/spawn-config`
+// so the native-console launcher can share them. Local aliases below
+// preserve call-site signatures inside this file.
+const projectDirForSlug = resolveProjectDir;
+const stateDirForSlug = resolveStateDir;
 
 /**
  * Build a markdown system-prompt fragment describing the feature pi is being
@@ -430,23 +431,12 @@ function resolvePiBinary(): string {
     const { slug, body, requestUrl } = opts;
     const command = body.command ?? resolvePiBinary();
 
-    const projectDir = await projectDirForSlug(slug);
+    const projectDir = await resolveProjectDir(slug);
     if (!projectDir) return { kind: 'unknown-slug' };
 
-    let cwd = projectDir;
-    const sd = await stateDirForSlug(slug);
-    if (body.laneId && sd) {
-      const wt = join(sd, 'worktrees', body.laneId);
-      if (existsSync(wt)) cwd = wt;
-    }
-
-    const env: Record<string, string> = {};
-    if (sd) env.PI_CODING_AGENT_DIR = join(sd, 'pi-sessions');
-    env.PAPERCUSP_HARNESS_SLUG = slug;
-    try {
-      const u = new URL(requestUrl);
-      env.PAPERCUSP_API_BASE = `${u.protocol}//${u.host}`;
-    } catch { /* non-URL request */ }
+    const sd = await resolveStateDir(slug);
+    const cwd = resolveSpawnCwd({ projectDir, stateDir: sd, laneId: body.laneId });
+    const env = resolveContextEnv({ slug, stateDir: sd, requestUrl });
 
     const piExtensionPath = papercuspPath('global-plugins', 'pi', 'extension.ts');
     const piExtensionAvailable = existsSync(piExtensionPath);
