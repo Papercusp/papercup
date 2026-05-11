@@ -88,6 +88,7 @@
     "@restart/git-graph": "file:../../libs/git-graph",
     "@restart/grid-core": "file:../../libs/papergrid/grid-core",
     "@restart/papercup-shared": "file:../../libs/papercup-shared",
+    "@restart/sse": "file:../../libs/sse",
     "@restart/sync": "file:../../libs/sync",
     "@restart/ui-primitives": "file:../../libs/ui-primitives",
     "@restart/zero-harness": "file:../../libs/zero-harness",
