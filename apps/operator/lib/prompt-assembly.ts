@@ -45,8 +45,20 @@ import {
 // "Encountered unexpected file in NFT list" → "Invalid segment
 // configuration export detected" → build fails (caught 2026-05-11).
 // Lazy resolution side-steps the tracer entirely.
+//
+// Path handling: process.cwd() is monorepo-root when the dev server is
+// launched via `bin/overmind-all start` from the workspace root, but
+// `apps/operator/` when next-server is launched directly from there
+// (the common dev-server case). Try the longer path first; fall back
+// to cwd-relative if the prompts dir is right next to cwd.
 function promptsDir(): string {
-  return join(process.cwd(), 'apps/operator/prompts');
+  const fromRoot = join(process.cwd(), 'apps/operator/prompts');
+  if (existsSync(fromRoot)) return fromRoot;
+  const fromOperator = join(process.cwd(), 'prompts');
+  if (existsSync(fromOperator)) return fromOperator;
+  // Default to the monorepo-root form so loaders that throw point at
+  // the canonical path (less confusing in the error message).
+  return fromRoot;
 }
 
 /** Roles supported. Mirrors AGENT_ROLES in the plugin SDK; kept local
