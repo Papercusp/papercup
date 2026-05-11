@@ -13,9 +13,12 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { sql as dsql } from 'drizzle-orm';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiClientsTable } from '@/lib/ensure-schema';
+
+const uc = generated.ui_clientsInHarness_shared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,16 +44,26 @@ export async function POST(req: Request) {
   const { client_id, url, title, workspace_id, viewport } = parsed.data;
 
   await ensureUiClientsTable();
-  const { sql } = getOrgPg();
-  await sql`
-    INSERT INTO harness_shared.ui_clients (client_id, workspace_id, url, title, viewport, last_seen_at)
-    VALUES (${client_id}, ${workspace_id ?? null}, ${url}, ${title ?? null}, ${viewport ? JSON.stringify(viewport) : null}::jsonb, now())
-    ON CONFLICT (client_id) DO UPDATE
-      SET workspace_id = EXCLUDED.workspace_id,
-          url          = EXCLUDED.url,
-          title        = EXCLUDED.title,
-          viewport     = EXCLUDED.viewport,
-          last_seen_at = now()
-  `;
+  const { db } = getOrgPg();
+  await db
+    .insert(uc)
+    .values({
+      client_id,
+      workspace_id: workspace_id ?? null,
+      url,
+      title: title ?? null,
+      viewport: (viewport ?? null) as any,
+      last_seen_at: dsql`now()` as any,
+    })
+    .onConflictDoUpdate({
+      target: uc.client_id,
+      set: {
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+        url: dsql`EXCLUDED.url`,
+        title: dsql`EXCLUDED.title`,
+        viewport: dsql`EXCLUDED.viewport`,
+        last_seen_at: dsql`now()`,
+      },
+    });
   return NextResponse.json({ ok: true });
 }

@@ -14,8 +14,11 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq } from 'drizzle-orm';
 import { loadHarnessRegistry } from './harness-registry';
+
+const sa = generated.spawned_agentsInHarness_shared;
 
 const SESSIONS_ROOT = join(homedir(), '.omp', 'agent', 'sessions');
 
@@ -92,15 +95,14 @@ function listAllSessionFiles(): string[] {
 async function lookupSpawnHints(
   spawnId: string,
 ): Promise<{ startedAtMs: number; harnessSlug: string | null; projectPath: string | null } | null> {
-  const { sql } = getOrgPg();
-  const rows = (await sql`
-    SELECT harness_slug, started_at
-      FROM harness_shared.spawned_agents
-     WHERE spawn_id = ${spawnId}
-     LIMIT 1
-  `) as Array<{ harness_slug: string | null; started_at: string | null }>;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: sa.harness_slug, started_at: sa.started_at })
+    .from(sa)
+    .where(eq(sa.spawn_id, spawnId))
+    .limit(1);
   if (rows.length === 0) return null;
-  const startedAtMs = rows[0].started_at ? new Date(rows[0].started_at).getTime() : 0;
+  const startedAtMs = rows[0].started_at ? new Date(rows[0].started_at as any).getTime() : 0;
   let projectPath: string | null = null;
   if (rows[0].harness_slug) {
     try {

@@ -10,9 +10,12 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, sql as dsql } from 'drizzle-orm';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
+
+const ui = generated.ui_intentsInHarness_shared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,18 +46,19 @@ export async function POST(
   const { result, error } = parsed.data;
 
   await ensureUiIntentsTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
 
   const status = error ? 'error' : 'done';
-  const rows = await sql`
-    UPDATE harness_shared.ui_intents
-    SET status = ${status},
-        result = ${result === undefined ? null : JSON.stringify(result)}::jsonb,
-        error_message = ${error ?? null},
-        completed_at = now()
-    WHERE id = ${id} AND status = 'pending'
-    RETURNING id
-  `;
+  const rows = await db
+    .update(ui)
+    .set({
+      status,
+      result: (result === undefined ? null : result) as any,
+      error_message: error ?? null,
+      completed_at: dsql`now()` as any,
+    })
+    .where(and(eq(ui.id, BigInt(id)), eq(ui.status, 'pending')))
+    .returning({ id: ui.id });
   if (rows.length === 0) {
     return NextResponse.json({ error: 'not_pending_or_missing' }, { status: 404 });
   }

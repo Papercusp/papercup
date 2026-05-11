@@ -8,7 +8,7 @@
  */
 
 import { getOrgPg, generated } from '@restart/db-org';
-import { and, desc, eq, sql as dsql } from 'drizzle-orm';
+import { and, desc, eq, lt as dlt, sql as dsql } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -106,6 +106,58 @@ export async function listTurns(conversationId: string): Promise<TurnRow[]> {
     .where(eq(ot.conversation_id, conversationId))
     .orderBy(ot.seq);
   return (rows as Array<Record<string, unknown>>).map(rowToTurn);
+}
+
+export interface TurnsPage {
+  /** Turns in this page, in seq ASC order (oldest first within the page). */
+  turns: TurnRow[];
+  /** True when at least one turn exists earlier than the lowest seq in `turns`. */
+  hasMoreEarlier: boolean;
+}
+
+/**
+ * Cursor-paginated read for chat infinite scroll. Returns the newest
+ * `limit` turns whose `seq < beforeSeq` (or the newest `limit` overall
+ * when `beforeSeq` is null).
+ *
+ * The list is returned in ASC order so the UI can simply prepend it.
+ * `hasMoreEarlier` enables the chat client to suppress its load-earlier
+ * sentinel once the tail is reached.
+ */
+export async function listTurnsRecent(args: {
+  conversationId: string;
+  beforeSeq?: number | null;
+  limit?: number;
+}): Promise<TurnsPage> {
+  await ensureOperatorConversationsTable();
+  const { db } = getOrgPg();
+  const limit = Math.max(1, Math.min(args.limit ?? 50, 500));
+  const beforeSeq = args.beforeSeq ?? null;
+
+  // Fetch newest N below the cursor, then sort ASC for the UI.
+  const where = beforeSeq === null
+    ? eq(ot.conversation_id, args.conversationId)
+    : and(eq(ot.conversation_id, args.conversationId), dlt(ot.seq, beforeSeq));
+  const rows = await db
+    .select(turnCols)
+    .from(ot)
+    .where(where)
+    .orderBy(desc(ot.seq))
+    .limit(limit);
+  const turns = (rows as Array<Record<string, unknown>>).map(rowToTurn).reverse();
+
+  // hasMoreEarlier: is there at least one row with seq < min(turns.seq)?
+  let hasMoreEarlier = false;
+  if (turns.length > 0) {
+    const minSeq = turns[0].seq;
+    const probe = await db
+      .select({ id: ot.id })
+      .from(ot)
+      .where(and(eq(ot.conversation_id, args.conversationId), dlt(ot.seq, minSeq)))
+      .limit(1);
+    hasMoreEarlier = probe.length > 0;
+  }
+  return { turns, hasMoreEarlier };
 }
 
 export async function appendTurn(input: {

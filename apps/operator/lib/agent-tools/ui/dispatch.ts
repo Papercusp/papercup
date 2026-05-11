@@ -23,8 +23,11 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, sql as dsql } from 'drizzle-orm';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
+
+const ui = generated.ui_intentsInHarness_shared;
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator', 'reviewer',
@@ -67,25 +70,28 @@ export default defineTool({
     const intentArgs = args.args ?? {};
 
     await ensureUiIntentsTable();
-    const { sql } = getOrgPg();
+    const { db } = getOrgPg();
 
     const principalSlug = ctx.principal?.slug ?? (ctx.isSuperuser ? 'system:operator' : `agent:${ctx.role ?? 'unknown'}`);
 
-    const inserted = await sql<Array<{ id: number }>>`
-      INSERT INTO harness_shared.ui_intents (client_id, intent, args, requested_by)
-      VALUES (${clientId}, ${args.intent}, ${JSON.stringify(intentArgs)}::jsonb, ${principalSlug})
-      RETURNING id
-    `;
+    const inserted = await db
+      .insert(ui)
+      .values({
+        client_id: clientId,
+        intent: args.intent,
+        args: intentArgs as any,
+        requested_by: principalSlug,
+      })
+      .returning({ id: ui.id });
     const id = Number(inserted[0]!.id);
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const rows = await sql<Array<{ status: string; result: unknown; error_message: string | null }>>`
-        SELECT status, result, error_message
-        FROM harness_shared.ui_intents
-        WHERE id = ${id}
-        LIMIT 1
-      `;
+      const rows = await db
+        .select({ status: ui.status, result: ui.result, error_message: ui.error_message })
+        .from(ui)
+        .where(eq(ui.id, BigInt(id)))
+        .limit(1);
       const row = rows[0];
       if (row && row.status !== 'pending') {
         return {
@@ -105,12 +111,14 @@ export default defineTool({
     }
     // Timeout: mark the row so the browser tab won't act on it
     // even if it comes back online later.
-    await sql`
-      UPDATE harness_shared.ui_intents
-      SET status = 'timeout', completed_at = now(),
-          error_message = 'dispatch_timeout'
-      WHERE id = ${id} AND status = 'pending'
-    `;
+    await db
+      .update(ui)
+      .set({
+        status: 'timeout',
+        completed_at: dsql`now()` as any,
+        error_message: 'dispatch_timeout',
+      })
+      .where(and(eq(ui.id, BigInt(id)), eq(ui.status, 'pending')));
     return {
       isError: true,
       content: [{
