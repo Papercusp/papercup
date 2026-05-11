@@ -63,13 +63,22 @@ export async function POST(req: Request): Promise<Response> {
   try {
     const projectDir = process.cwd();
     const stateDir = join(papercuspRoot(), 'harnesses', body.installSlug);
+    // JS plugin actions take JSON params, not raw bytes. We attempt to
+    // decode the payload as JSON; if it isn't (e.g., the iframe SDK
+    // sent an opaque blob targeting a WASM action that we already
+    // ruled out above), pass the bytes through wrapped in {payloadB64}.
+    const rawBytes = Buffer.from(body.payloadB64 ?? '', 'base64');
+    const text = rawBytes.toString('utf8');
+    let params: unknown;
+    try { params = text ? JSON.parse(text) : null; }
+    catch { params = { payloadB64: body.payloadB64 ?? '' }; }
     const result = await invokePluginAction({
       pluginName: body.pluginName,
       actionName: body.actionName,
       installSlug: body.installSlug,
       projectDir,
       stateDir,
-      params: JSON.parse(Buffer.from(body.payloadB64 ?? '', 'base64').toString('utf8') || 'null'),
+      params,
     });
     if (result.ok) {
       const payloadJson = JSON.stringify(result.result ?? null);

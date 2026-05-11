@@ -16,6 +16,11 @@
       "import": "./src/manifest-validate.ts",
       "default": "./src/manifest-validate.ts"
     },
+    "./manifest-lint": {
+      "types": "./src/manifest-lint.ts",
+      "import": "./src/manifest-lint.ts",
+      "default": "./src/manifest-lint.ts"
+    },
     "./wasm": {
       "types": "./src/wasm/index.ts",
       "import": "./src/wasm/index.ts",

@@ -51,6 +51,13 @@ export async function GET(req: Request, ctx: RouteParams): Promise<Response> {
 
   // Templated wrapper. Body inserts the plugin's HTML inline. CSP +
   // nonce make script-src strict.
+  //
+  // Authoring contract: plugin authors write `<script nonce="__PAPERCUP_NONCE__">`
+  // (literal placeholder) on every inline `<script>` they want allowed.
+  // The wrapper substitutes the per-mount nonce here. Scripts without
+  // the placeholder will be blocked by CSP — that's the point of the
+  // strict policy.
+  const innerWithNonce = inner.replace(/__PAPERCUP_NONCE__/g, nonce);
   const html = `<!doctype html>
 <html>
   <head>
@@ -61,7 +68,7 @@ export async function GET(req: Request, ctx: RouteParams): Promise<Response> {
     <meta name="papercup-plugin" content="${slug}">
   </head>
   <body>
-${inner}
+${innerWithNonce}
   </body>
 </html>
 `;

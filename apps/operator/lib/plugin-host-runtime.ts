@@ -727,12 +727,19 @@ async function initializeWasmPlugin(
   // installs don't pay the jco / wasm-plugin-host startup cost.
   const wasm = await import('@papercusp/plugin-loader/wasm');
 
-  // Per-plugin secrets sourced from PG via the existing secrets adapter.
+  // Per-plugin secrets sourced from the existing PG-mirrored
+  // plugin-config store. Capability gating (secrets:read:<NAME>) is
+  // applied by the WASM host's secrets impl; the host just needs the
+  // raw map. Non-string values are silently skipped (not secrets).
   const secrets = new Map<string, string>();
   try {
-    const { getPluginSecrets } = await import('@/lib/plugin-secrets-pg');
-    const rows = await getPluginSecrets(lp.plugin.name, ctx.installSlug);
-    for (const r of rows) secrets.set(r.name, r.value);
+    const { loadPluginConfig } = await import('@/lib/plugin-configs-pg');
+    const cfg = await loadPluginConfig(ctx.installSlug, lp.plugin.name);
+    if (cfg) {
+      for (const [k, v] of Object.entries(cfg)) {
+        if (typeof v === 'string') secrets.set(k, v);
+      }
+    }
   } catch {
     // PG layer optional in tests; empty secrets is the dev default.
   }
@@ -746,21 +753,33 @@ async function initializeWasmPlugin(
     granted: granted as string[],
   } as unknown as Parameters<typeof wasm.loadWasmPlugin>[2]['capCtx'];
 
-  // Audit sink → harness operator audit writer (same target as JS plugins).
+  // Audit sink → operator audit writer. The plugin-loader AuditRow
+  // shape is task-action-shaped (actionName/triggerSource/triggerId/...);
+  // for WASM host-import calls (logging/http/secrets/events/compute) we
+  // synthesize a row whose actionName encodes the WIT method and whose
+  // params carry the structured detail. Outcome maps to the AuditWriter
+  // enum.
   const auditWriter = getOperatorAuditWriter();
+  const wasmOutcome = (o: string): 'ok' | 'error' | 'capability-denied' => {
+    if (o === 'ok' || o === 'success') return 'ok';
+    if (o === 'capability-denied' || o === 'denied') return 'capability-denied';
+    return 'error';
+  };
   const auditSink = {
     record: (row: { interface: string; method: string; cap: string; outcome: string; detail: string }) => {
       try {
-        auditWriter.write({
-          ts: new Date().toISOString(),
-          plugin: lp.plugin.name,
-          harness: ctx.installSlug,
-          surface: 'wasm',
-          method: `${row.interface}.${row.method}`,
-          cap: row.cap,
-          outcome: row.outcome,
-          detail: row.detail,
-        } as unknown as Parameters<typeof auditWriter.write>[0]);
+        void auditWriter.write({
+          ts: Date.now(),
+          pluginName: lp.plugin.name,
+          installSlug: ctx.installSlug,
+          actionName: `wasm:${row.interface}.${row.method}`,
+          triggerSource: 'api',
+          triggerId: `${lp.plugin.name}/${ctx.installSlug}`,
+          params: { cap: row.cap, detail: row.detail, surface: 'wasm' },
+          outcome: wasmOutcome(row.outcome),
+          durationMs: 0,
+          capabilitiesUsed: row.cap ? [row.cap] : [],
+        });
       } catch { /* never throw from audit */ }
     },
   };
@@ -770,12 +789,9 @@ async function initializeWasmPlugin(
   const eventSink = {
     emit: (namespace: string, event: string, payloadJson: string) => {
       const topic = `${namespace}.${event}`;
-      try {
-        const payload = payloadJson ? JSON.parse(payloadJson) : null;
-        void state.bus.fire(topic, payload);
-      } catch {
-        void state.bus.fire(topic, payloadJson);
-      }
+      let payload: unknown = payloadJson;
+      try { payload = payloadJson ? JSON.parse(payloadJson) : null; } catch { /* keep raw */ }
+      void state.bus.runAction(topic, payload, ctx.log);
     },
   };
 
