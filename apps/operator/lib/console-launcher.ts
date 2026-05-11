@@ -17,7 +17,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve as resolvePath } from 'node:path';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import {
@@ -50,6 +50,26 @@ export interface BuildEnvelopeOpts {
 }
 
 const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
+
+/**
+ * Where the bundled `papercup` shim + `papercup-status.mjs` live so the
+ * Tauri launcher can prepend it to PATH. In standalone builds the
+ * sidecar bundler should copy these into `sidecar/bin/`; in dev we
+ * resolve relative to this module.
+ */
+function resolveScriptsDir(): string {
+  // Standalone build: SIDECAR root contains apps/operator/scripts/.
+  // The lib/ file lives at <root>/apps/operator/lib/console-launcher.js
+  // post-build, so scripts is a sibling. We resolve via __dirname when
+  // available (Node) and fall back to a known relative path.
+  try {
+    // @ts-ignore — __dirname is a Node global in CJS modules
+    if (typeof __dirname === 'string') return resolvePath(__dirname, '..', 'scripts');
+  } catch { /* fall through */ }
+  // Last resort: use the operator app root via papercuspPath. This is
+  // brittle in non-standard layouts but covers the dev-server case.
+  return resolvePath(papercuspPath('..', 'apps', 'operator', 'scripts'));
+}
 
 /** Read the superuser bearer token. Returns null if not yet installed. */
 function readSuperuserToken(): string | null {
@@ -93,6 +113,15 @@ export async function buildConsoleEnvelope(
   // If no slug, resolveContextEnv set PAPERCUSP_HARNESS_SLUG=''; drop
   // that — empty value is worse than absent for "is this harness-scoped?".
   if (!opts.slug) delete env.PAPERCUSP_HARNESS_SLUG;
+
+  // 2b. Pass the operator's scripts dir so the launcher one-liner can
+  //     run `papercup status` without the user having anything on PATH
+  //     yet. The Tauri spawner prepends this to PATH when invoking the
+  //     terminal one-liner.
+  // __dirname-equivalent in CommonJS-compiled Next.js routes resolves
+  // here; if the file is bundled differently in standalone build we
+  // fall back to the repo-relative scripts path.
+  env.PAPERCUSP_SCRIPTS_DIR = resolveScriptsDir();
 
   // 3. Build the .mcp.json that the user's claude/codex agent will
   //    auto-discover when they cd here. Points at the superuser door.
