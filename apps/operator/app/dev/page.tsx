@@ -19,8 +19,9 @@ const SessionsTab = dynamic(() => import('./_components/SessionsTab'), { ssr: fa
 const TelemetryTab = dynamic(() => import('./_components/TelemetryTab'), { ssr: false });
 const AuditTab = dynamic(() => import('./_components/AuditTab'), { ssr: false });
 const PgTab = dynamic(() => import('./_components/PgTab'), { ssr: false });
+const ProcessesTab = dynamic(() => import('./_components/ProcessesTab'), { ssr: false });
 
-type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg';
+type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'harnesses', label: 'Harnesses' },
@@ -29,6 +30,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'telemetry', label: 'Telemetry' },
   { id: 'audit', label: 'Audit' },
   { id: 'pg', label: 'PG' },
+  { id: 'processes', label: 'Processes' },
 ];
 
 export default function DevPage() {
@@ -65,6 +67,7 @@ export default function DevPage() {
           {tab === 'telemetry' && <TelemetryTab workspaceIds={workspaceIds} />}
           {tab === 'audit' && <AuditTab workspaceIds={workspaceIds} />}
           {tab === 'pg' && <PgTab />}
+          {tab === 'processes' && <ProcessesTab />}
         </Suspense>
       </main>
       <aside className="pc-dev-right">

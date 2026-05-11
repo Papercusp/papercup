@@ -561,3 +561,123 @@ export async function buildStatus(): Promise<BuildStatus> {
     prod3070Reachable: prod3070,
   };
 }
+
+// ── Process inventory (proc walk) ──────────────────────────────────
+
+export interface ProcessEntry {
+  pid: number;
+  kind: 'run.sh' | 'omp' | 'claude' | 'paperclip' | 'pty' | 'next' | 'other';
+  cmdline: string;
+  cwd: string | null;
+  started_seconds_ago: number;
+  harness_slug: string | null;
+  workspace_id: string | null;
+}
+
+const KIND_PATTERNS: Array<{ kind: ProcessEntry['kind']; needles: RegExp }> = [
+  { kind: 'run.sh', needles: /autonomous-harness\/run\.sh|\/harness\/run\.sh|orchestrator-run/ },
+  { kind: 'omp', needles: /\b(omp|oh-my-pi)\b|\.omp\/agent/ },
+  { kind: 'claude', needles: /\.local\/bin\/claude\b|\/claude --output-format|claude-code/ },
+  { kind: 'paperclip', needles: /paperclipai/ },
+  { kind: 'pty', needles: /\bpty-ws\b|pty-host/ },
+  { kind: 'next', needles: /next-server|\.next\/server/ },
+];
+
+function classifyKind(cmdline: string): ProcessEntry['kind'] {
+  for (const p of KIND_PATTERNS) {
+    if (p.needles.test(cmdline)) return p.kind;
+  }
+  return 'other';
+}
+
+export interface ListProcessesInput {
+  kinds?: Array<ProcessEntry['kind']>;
+}
+
+export async function listProcesses(
+  input: ListProcessesInput = {},
+): Promise<{ processes: ProcessEntry[] }> {
+  const fs = await import('node:fs');
+  const want = input.kinds && input.kinds.length > 0 ? new Set(input.kinds) : null;
+
+  // Build path→slug map across all workspaces so we can attribute each
+  // proc's cwd to a harness when possible.
+  const wsReg = readWorkspaceRegistry();
+  const pathToHarness = new Map<string, { slug: string; workspaceId: string }>();
+  for (const w of wsReg.workspaces) {
+    try {
+      const hreg = await loadHarnessRegistry(w.id);
+      for (const p of hreg.projects) {
+        pathToHarness.set(p.path, { slug: p.slug, workspaceId: w.id });
+      }
+    } catch {
+      /* skip unreadable registry */
+    }
+  }
+
+  let pids: string[];
+  try {
+    pids = fs.readdirSync('/proc');
+  } catch {
+    return { processes: [] };
+  }
+
+  const now = Date.now();
+  const out: ProcessEntry[] = [];
+
+  for (const pid of pids) {
+    if (!/^\d+$/.test(pid)) continue;
+    let cmdline = '';
+    try {
+      // /proc/<pid>/cmdline separates argv with NUL bytes; convert to spaces.
+      const raw = fs.readFileSync(`/proc/${pid}/cmdline`);
+      cmdline = raw.toString('utf8').replace(/\0/g, ' ').trim();
+    } catch {
+      continue;
+    }
+    if (!cmdline) continue;
+    const kind = classifyKind(cmdline);
+    if (kind === 'other') continue;
+    if (want && !want.has(kind)) continue;
+
+    let cwd: string | null = null;
+    try {
+      cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+    } catch {
+      /* perm-denied */
+    }
+
+    let startedMs = 0;
+    try {
+      startedMs = fs.statSync(`/proc/${pid}`).mtimeMs;
+    } catch {
+      /* no stat */
+    }
+    const started_seconds_ago = startedMs > 0 ? Math.floor((now - startedMs) / 1000) : 0;
+
+    let harness_slug: string | null = null;
+    let workspace_id: string | null = null;
+    if (cwd) {
+      for (const [hpath, ref] of pathToHarness) {
+        if (cwd === hpath || cwd.startsWith(hpath + '/')) {
+          harness_slug = ref.slug;
+          workspace_id = ref.workspaceId;
+          break;
+        }
+      }
+    }
+
+    out.push({
+      pid: Number(pid),
+      kind,
+      cmdline: cmdline.slice(0, 240),
+      cwd,
+      started_seconds_ago,
+      harness_slug,
+      workspace_id,
+    });
+  }
+
+  out.sort((a, b) => a.started_seconds_ago - b.started_seconds_ago);
+  return { processes: out };
+}
