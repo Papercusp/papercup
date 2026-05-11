@@ -113,3 +113,4 @@ import './backup/snapshot_list';
 import './backup/restore';
 import './backup/diff';
 import './backup/promote';
+import './backup/rollback';

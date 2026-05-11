@@ -34,8 +34,15 @@ export async function GET() {
   try {
     const ws = activeWorkspaceId();
     const wb = workspaceBackupFor(ws);
-    const [settings, stats] = await Promise.all([wb.getSettings(), wb.stats()]);
-    return NextResponse.json({ workspaceId: ws, settings, stats });
+    const [settings, stats, kopiaStats] = await Promise.all([
+      wb.getSettings(),
+      wb.stats(),
+      wb.kopiaContentStats().catch(() => null),
+    ]);
+    // If kopia gave us a real packed size, prefer it over the PG-computed
+    // bytes_added sum (which doesn't reflect maintenance/prune compaction).
+    const merged = kopiaStats ? { ...stats, bytesOnDisk: kopiaStats.totalSize } : stats;
+    return NextResponse.json({ workspaceId: ws, settings, stats: merged });
   } catch (err) {
     return NextResponse.json({ error: String(err instanceof Error ? err.message : err) }, { status: 500 });
   }

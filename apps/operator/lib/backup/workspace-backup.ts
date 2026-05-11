@@ -401,6 +401,62 @@ export class WorkspaceBackup {
     return { broken: brokenDir, live: liveTarget };
   }
 
+  /**
+   * Undo a promotion. Symmetric with `promoteRestore`: finds the
+   * `.broken-<ts>-<name>/` dir and the current live, swaps them.
+   *
+   * `brokenPath` must be inside the workspace root and start with
+   * `.broken-`. The current live target is inferred from `brokenPath`
+   * (strip the `.broken-<ts>-` prefix from basename, prepend dirname).
+   */
+  async rollbackPromote(opts: { brokenPath: string }): Promise<{ liveBefore: string; liveAfter: string }> {
+    const { resolve, basename, dirname } = await import('node:path');
+    const { rename } = await import('node:fs/promises');
+    const root = resolve(this.workspaceRoot);
+    const broken = resolve(opts.brokenPath);
+    if (!broken.startsWith(root)) {
+      throw new Error(`refusing to rollback: ${broken} is outside workspace`);
+    }
+    const brokenBase = basename(broken);
+    const m = /^\.broken-([0-9T:.\-Z]+)-(.+)$/.exec(brokenBase);
+    if (!m) throw new Error(`refusing to rollback: ${brokenBase} doesn't match .broken-<ts>-<name>`);
+    const liveBaseName = m[2];
+    const liveTarget = join(dirname(broken), liveBaseName!);
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    // Move current live (the promoted clone) aside, then bring broken back.
+    const stash = join(dirname(broken), `.rolled-back-${ts}-${liveBaseName}`);
+    await rename(liveTarget, stash);
+    try {
+      await rename(broken, liveTarget);
+    } catch (err) {
+      await rename(stash, liveTarget).catch(() => {});
+      throw err;
+    }
+    await this.detachedEvent('rollback', { broken, liveTarget, stash });
+    return { liveBefore: stash, liveAfter: liveTarget };
+  }
+
+  async kopiaContentStats(): Promise<{ totalSize: number; objectCount: number } | null> {
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+    try {
+      const out = await this.kopia(['content', 'stats', '--raw'], { env });
+      // `--raw` prints stats in `key=value` lines. We pull packed size + count.
+      const lines = out.split('\n');
+      const get = (k: string) => {
+        const m = lines.find((l) => l.startsWith(`${k}=`) || l.includes(` ${k}=`));
+        if (!m) return null;
+        const v = Number(m.split('=')[1]?.trim());
+        return Number.isFinite(v) ? v : null;
+      };
+      const totalSize = get('total-packed') ?? get('packed') ?? get('size') ?? 0;
+      const objectCount = get('count') ?? get('total-count') ?? 0;
+      return { totalSize, objectCount };
+    } catch {
+      return null;
+    }
+  }
+
   async recentFailures(limit = 50): Promise<SnapshotInfo[]> {
     const { sql } = getOrgPg();
     const rows = await sql<{

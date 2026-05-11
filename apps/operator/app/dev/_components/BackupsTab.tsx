@@ -46,24 +46,27 @@ export default function BackupsTab() {
   const [server, setServer] = useState<ServerInfo | null>(null);
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
+  const [brokenDirs, setBrokenDirs] = useState<{ path: string; createdAt: string }[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [restorePick, setRestorePick] = useState<string>('');
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const load = useCallback(async () => {
     try {
-      const [a, b, c, h, e] = await Promise.all([
+      const [a, b, c, h, e, br] = await Promise.all([
         fetch('/api/backups').then((r) => r.json()),
         fetch('/api/backups/snapshots?limit=200').then((r) => r.json()),
         fetch('/api/backups/failures?limit=50').then((r) => r.json()),
         fetch('/api/backups/healthcheck').then((r) => r.json()),
         fetch('/api/backups/events?limit=100').then((r) => r.json()),
+        fetch('/api/backups/broken-list').then((r) => r.json()),
       ]);
       setStats(a.stats);
       setSnapshots(b.snapshots ?? []);
       setFailures(c.failures ?? []);
       setHealth(h.error ? null : h as HealthInfo);
       setEvents(e.events ?? []);
+      setBrokenDirs(br.broken ?? []);
     } catch (err) {
       toast.error(`load failed: ${(err as Error).message}`);
     }
@@ -255,6 +258,39 @@ export default function BackupsTab() {
               </li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {brokenDirs.length > 0 && (
+        <section className="pc-dev-backups-restore">
+          <h3>Rollback recent promotions</h3>
+          {brokenDirs.map((b) => (
+            <div key={b.path} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+              <code style={{ flex: 1, fontSize: 12 }}>{b.path}</code>
+              <button
+                type="button"
+                disabled={busy === `rollback:${b.path}`}
+                onClick={async () => {
+                  if (!confirm(`Rollback this promotion?\n\nCurrent live becomes .rolled-back-<ts>-<name>/.\nReversible.\n\n${b.path}`)) return;
+                  setBusy(`rollback:${b.path}`);
+                  try {
+                    const r = await fetch('/api/backups/rollback', {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({ brokenPath: b.path }),
+                    });
+                    if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+                    toast.success('rolled back');
+                    await load();
+                  } catch (err) {
+                    toast.error(`rollback failed: ${(err as Error).message}`);
+                  } finally {
+                    setBusy(null);
+                  }
+                }}
+              >Rollback</button>
+            </div>
+          ))}
         </section>
       )}
 
