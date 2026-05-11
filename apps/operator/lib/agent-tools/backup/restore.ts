@@ -14,8 +14,9 @@ const RESTORE_ROLES = ['operator', 'debugger', 'reviewer'] as const;
 export default defineTool({
   name: 'backup:restore',
   description:
-    'Restore a kopia snapshot to a sibling clone path (never overwrites). ' +
-    'Returns the absolute restore path; caller diffs + promotes manually.',
+    'Restore a kopia snapshot. mode="clone" (default) writes to .restored/<id>/ ' +
+    'and never overwrites live state; mode="in_place" overwrites the target ' +
+    'after taking a safety snapshot first.',
   capability: 'backup:write',
   requirePrincipal: false,
   roles: [...RESTORE_ROLES],
@@ -23,9 +24,17 @@ export default defineTool({
     kopiaSnapshotId: z.string().min(1),
     source: z.string().min(1).optional(),
     target: z.string().min(1).optional(),
+    mode: z.enum(['clone', 'in_place']).default('clone'),
   }),
   async handler(args) {
     const wb = workspaceBackupFor(activeWorkspaceId());
+    if (args.mode === 'in_place') {
+      const result = await wb.restoreInPlace({
+        kopiaSnapshotId: args.kopiaSnapshotId,
+        target: args.target,
+      });
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
     const result = await wb.restoreToClone(args);
     return {
       content: [{ type: 'text', text: JSON.stringify(result) }],

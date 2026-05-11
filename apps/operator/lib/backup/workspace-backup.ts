@@ -442,6 +442,39 @@ export class WorkspaceBackup {
     return { targetPath: target };
   }
 
+  /**
+   * Restore-in-place: snapshot live first (so the user can undo), then
+   * overwrite the target with the snapshot. The plan called for this
+   * as an "advanced" alternative to restore-to-clone — it's destructive
+   * but faster.
+   *
+   * Always takes a fresh `pre_destructive` snapshot first; the user can
+   * find the path to recover from in the resulting `prevSnapshotId`.
+   */
+  async restoreInPlace(opts: {
+    kopiaSnapshotId: string;
+    target?: string;
+    skipSafetySnapshot?: boolean;
+  }): Promise<{ targetPath: string; prevSnapshotId: string | null }> {
+    const target = opts.target ?? this.workspaceRoot;
+    let prevSnapshotId: string | null = null;
+    if (!opts.skipSafetySnapshot) {
+      const safety = await this.snapshot('pre_destructive', { op: 'restore_in_place_safety' });
+      prevSnapshotId = safety.kopiaSnapshotId;
+    }
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+    await this.detachedEvent('restore', { phase: 'started', mode: 'in_place', kopiaSnapshotId: opts.kopiaSnapshotId, target, prevSnapshotId });
+    try {
+      await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
+      await this.detachedEvent('restore', { phase: 'done', mode: 'in_place', target });
+    } catch (err) {
+      await this.detachedEvent('restore', { phase: 'failed', mode: 'in_place', error: String(err) });
+      throw err;
+    }
+    return { targetPath: target, prevSnapshotId };
+  }
+
   private async detachedEvent(kind: string, payload: Record<string, unknown>): Promise<void> {
     const { sql } = getOrgPg();
     try {

@@ -95,5 +95,14 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
   // than just leaving the dir as garbage.
   try { await fs.rm(dir, { recursive: true, force: true }); } catch { /* leak ok */ }
 
+  // Cleanup orphaned PG rows for this workspace's backup tables. CASCADE
+  // on backup_events.snapshot_id handles backup_events automatically.
+  try {
+    const { getOrgPg } = await import('@restart/db-org');
+    const { sql } = getOrgPg();
+    await sql`DELETE FROM harness_shared.backup_snapshots WHERE workspace_id = ${id}`;
+    await sql`DELETE FROM harness_shared.workspace_backup_settings WHERE workspace_id = ${id}`;
+  } catch { /* PG cleanup best-effort */ }
+
   return NextResponse.json({ ok: true, id, archived, archiveError });
 }
