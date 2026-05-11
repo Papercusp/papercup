@@ -10,6 +10,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
  * a paginated row grid. Powered entirely by runtime introspection, no
  * codegen.
  *
+ * FK-walk: any cell in an FK source column is rendered as a clickable
+ * link that navigates to the referenced table filtered to the
+ * referenced row (single-row view). "← back to all rows" clears the
+ * filter and restores pagination.
+ *
  * Sibling of the embedded Drizzle Studio tab; this one knows our app
  * conventions (workspace scoping, RLS bypass via role toggle), Studio
  * doesn't.
@@ -35,6 +40,12 @@ interface ColumnSummary {
   generated: boolean;
 }
 
+interface ForeignKey {
+  columns: string[];
+  foreignColumns: string[];
+  foreignTable: string;
+}
+
 interface TableDetail {
   exportName: string;
   schema: string;
@@ -43,7 +54,7 @@ interface TableDetail {
   columns: ColumnSummary[];
   primaryKey: string[];
   indexes: Array<{ name: string; columns: string[] }>;
-  foreignKeys: Array<{ columns: string[]; foreignColumns: string[]; foreignTable: string }>;
+  foreignKeys: ForeignKey[];
 }
 
 interface RowsPayload {
@@ -53,10 +64,16 @@ interface RowsPayload {
   offset: number;
   role: 'admin' | 'app';
   qualifiedName: string;
+  filtered?: boolean;
   error?: string;
 }
 
 const PAGE_SIZE = 50;
+
+interface ActiveFilter {
+  where: Record<string, unknown>;
+  label: string;
+}
 
 export default function TablesTab() {
   const [tables, setTables] = useState<TableEntry[]>([]);
@@ -66,6 +83,7 @@ export default function TablesTab() {
   const [filter, setFilter] = useState('');
   const [role, setRole] = useState<'admin' | 'app'>('admin');
   const [offset, setOffset] = useState(0);
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -73,6 +91,33 @@ export default function TablesTab() {
       .then((r) => r.json())
       .then((d: { tables: TableEntry[] }) => setTables(d.tables));
   }, []);
+
+  /** qualified-name → exportName, for FK target lookup. */
+  const qualifiedToExport = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const t of tables) {
+      const q = t.schema ? `${t.schema}.${t.name}` : t.name;
+      m.set(q, t.exportName);
+    }
+    return m;
+  }, [tables]);
+
+  /** Per-column FK lookup for the selected table. */
+  const fkBySourceColumn = useMemo(() => {
+    const m = new Map<string, { foreignTable: string; foreignColumn: string }>();
+    if (!detail) return m;
+    for (const fk of detail.foreignKeys) {
+      // Most FKs are single-column; for composite FKs, navigation works
+      // on a per-column basis (filter target by that one column's value).
+      for (let i = 0; i < fk.columns.length; i++) {
+        m.set(fk.columns[i], {
+          foreignTable: fk.foreignTable,
+          foreignColumn: fk.foreignColumns[i] ?? fk.foreignColumns[0],
+        });
+      }
+    }
+    return m;
+  }, [detail]);
 
   const fetchDetail = useCallback(async (exportName: string) => {
     setLoading(true);
@@ -84,17 +129,22 @@ export default function TablesTab() {
     }
   }, []);
 
-  const fetchRows = useCallback(async (exportName: string, ofs: number, r: 'admin' | 'app') => {
-    setLoading(true);
-    try {
-      const d = await fetch(
-        `/api/dev/tables/${encodeURIComponent(exportName)}/rows?limit=${PAGE_SIZE}&offset=${ofs}&role=${r}`,
-      ).then((res) => res.json());
-      setRows(d);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const fetchRows = useCallback(
+    async (exportName: string, ofs: number, r: 'admin' | 'app', flt: ActiveFilter | null) => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(ofs), role: r });
+        if (flt) params.set('where', JSON.stringify(flt.where));
+        const d = await fetch(
+          `/api/dev/tables/${encodeURIComponent(exportName)}/rows?${params}`,
+        ).then((res) => res.json());
+        setRows(d);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!selected) {
@@ -104,8 +154,8 @@ export default function TablesTab() {
     }
     setOffset(0);
     void fetchDetail(selected);
-    void fetchRows(selected, 0, role);
-  }, [selected, role, fetchDetail, fetchRows]);
+    void fetchRows(selected, 0, role, activeFilter);
+  }, [selected, role, activeFilter, fetchDetail, fetchRows]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -135,6 +185,20 @@ export default function TablesTab() {
     return [...detail.columns].sort((a, b) => (order.get(a.name) ?? 99) - (order.get(b.name) ?? 99));
   }, [detail, rows]);
 
+  /** Click handler for FK cells — switch table + apply where filter. */
+  const navigateFK = useCallback(
+    (foreignTable: string, foreignColumn: string, value: unknown) => {
+      const target = qualifiedToExport.get(foreignTable);
+      if (!target) return;
+      setActiveFilter({
+        where: { [foreignColumn]: value },
+        label: `${foreignColumn} = ${valueToLabel(value)}`,
+      });
+      setSelected(target);
+    },
+    [qualifiedToExport],
+  );
+
   return (
     <div className="pc-tables-shell">
       <aside className="pc-tables-sidebar">
@@ -157,7 +221,10 @@ export default function TablesTab() {
                   key={t.exportName}
                   type="button"
                   className={`pc-tables-row ${selected === t.exportName ? 'is-active' : ''}`}
-                  onClick={() => setSelected(t.exportName)}
+                  onClick={() => {
+                    if (selected !== t.exportName) setActiveFilter(null);
+                    setSelected(t.exportName);
+                  }}
                   title={t.exportName}
                 >
                   <span className="pc-tables-row-name">{t.name}</span>
@@ -177,6 +244,7 @@ export default function TablesTab() {
               {tables.length} tables across{' '}
               {new Set(tables.map((t) => t.schema ?? '')).size} schemas. All shapes are
               derived from <code>generated.ts</code> at runtime — no codegen, no drift.
+              Click any FK column value to navigate to the referenced row.
             </p>
           </div>
         )}
@@ -205,6 +273,17 @@ export default function TablesTab() {
               </div>
             </div>
 
+            {activeFilter && (
+              <div className="pc-tables-filter-bar">
+                <span className="pc-tables-filter-label">
+                  Filtered: <code>{activeFilter.label}</code>
+                </span>
+                <button className="pc-tables-filter-clear" onClick={() => setActiveFilter(null)}>
+                  ← back to all rows
+                </button>
+              </div>
+            )}
+
             <section className="pc-tables-columns">
               <h3>Columns</h3>
               <table className="pc-tables-coltable">
@@ -214,29 +293,36 @@ export default function TablesTab() {
                     <th>Type</th>
                     <th>Null?</th>
                     <th>PK</th>
+                    <th>FK</th>
                     <th>Default</th>
                     <th>Flags</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {orderedColumns.map((c) => (
-                    <tr key={c.name} className={c.primary ? 'is-pk' : ''}>
-                      <td className="pc-tables-colname">{c.name}</td>
-                      <td>
-                        <code>{c.dataType}</code>
-                        <span className="pc-tables-coltype-mute"> · {c.columnType.replace(/^Pg/, '')}</span>
-                      </td>
-                      <td>{c.notNull ? '' : 'null'}</td>
-                      <td>{c.primary ? 'PK' : ''}</td>
-                      <td className="pc-tables-coldefault">
-                        {c.hasDefault ? (c.default !== null && c.default !== undefined ? String(c.default) : '<sql>') : ''}
-                      </td>
-                      <td>
-                        {c.isUnique && <span className="pc-tables-flag">unique</span>}
-                        {c.generated && <span className="pc-tables-flag">generated</span>}
-                      </td>
-                    </tr>
-                  ))}
+                  {orderedColumns.map((c) => {
+                    const fk = fkBySourceColumn.get(c.name);
+                    return (
+                      <tr key={c.name} className={c.primary ? 'is-pk' : ''}>
+                        <td className="pc-tables-colname">{c.name}</td>
+                        <td>
+                          <code>{c.dataType}</code>
+                          <span className="pc-tables-coltype-mute"> · {c.columnType.replace(/^Pg/, '')}</span>
+                        </td>
+                        <td>{c.notNull ? '' : 'null'}</td>
+                        <td>{c.primary ? 'PK' : ''}</td>
+                        <td className="pc-tables-fkcell">
+                          {fk && <code>{fk.foreignTable}.{fk.foreignColumn}</code>}
+                        </td>
+                        <td className="pc-tables-coldefault">
+                          {c.hasDefault ? (c.default !== null && c.default !== undefined ? String(c.default) : '<sql>') : ''}
+                        </td>
+                        <td>
+                          {c.isUnique && <span className="pc-tables-flag">unique</span>}
+                          {c.generated && <span className="pc-tables-flag">generated</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               {detail.primaryKey.length > 1 && (
@@ -273,14 +359,14 @@ export default function TablesTab() {
             <section className="pc-tables-rows">
               <div className="pc-tables-rows-header">
                 <h3>Rows</h3>
-                {rows && (
+                {rows && !activeFilter && (
                   <div className="pc-tables-paginate">
                     <button
                       disabled={offset === 0 || loading}
                       onClick={() => {
                         const o = Math.max(offset - PAGE_SIZE, 0);
                         setOffset(o);
-                        void fetchRows(selected, o, role);
+                        void fetchRows(selected, o, role, activeFilter);
                       }}
                     >
                       ‹ Prev
@@ -293,7 +379,7 @@ export default function TablesTab() {
                       onClick={() => {
                         const o = offset + PAGE_SIZE;
                         setOffset(o);
-                        void fetchRows(selected, o, role);
+                        void fetchRows(selected, o, role, activeFilter);
                       }}
                     >
                       Next ›
@@ -308,16 +394,36 @@ export default function TablesTab() {
                     <thead>
                       <tr>
                         {Object.keys(rows.rows[0]).map((k) => (
-                          <th key={k}>{k}</th>
+                          <th key={k}>
+                            {k}
+                            {fkBySourceColumn.has(k) && <span className="pc-tables-fkmark"> →</span>}
+                          </th>
                         ))}
                       </tr>
                     </thead>
                     <tbody>
                       {rows.rows.map((r, i) => (
                         <tr key={i}>
-                          {Object.keys(rows.rows[0]).map((k) => (
-                            <td key={k}>{renderCell(r[k])}</td>
-                          ))}
+                          {Object.keys(rows.rows[0]).map((k) => {
+                            const fk = fkBySourceColumn.get(k);
+                            const value = r[k];
+                            return (
+                              <td key={k}>
+                                {fk && value !== null && value !== undefined ? (
+                                  <button
+                                    type="button"
+                                    className="pc-tables-fklink"
+                                    onClick={() => navigateFK(fk.foreignTable, fk.foreignColumn, value)}
+                                    title={`Open ${fk.foreignTable} where ${fk.foreignColumn} = ${valueToLabel(value)}`}
+                                  >
+                                    {renderCell(value)}
+                                  </button>
+                                ) : (
+                                  renderCell(value)
+                                )}
+                              </td>
+                            );
+                          })}
                         </tr>
                       ))}
                     </tbody>
@@ -325,7 +431,7 @@ export default function TablesTab() {
                 </div>
               )}
               {rows && rows.rows.length === 0 && !rows.error && (
-                <p className="pc-tables-empty-rows">No rows.</p>
+                <p className="pc-tables-empty-rows">No rows{activeFilter ? ' matching filter' : ''}.</p>
               )}
             </section>
           </>
@@ -333,6 +439,13 @@ export default function TablesTab() {
       </main>
     </div>
   );
+}
+
+function valueToLabel(v: unknown): string {
+  if (v === null || v === undefined) return '∅';
+  if (typeof v === 'string') return v.length > 40 ? v.slice(0, 37) + '…' : v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return JSON.stringify(v).slice(0, 40);
 }
 
 function renderCell(v: unknown): string {

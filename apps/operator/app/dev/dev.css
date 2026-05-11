@@ -1126,3 +1126,71 @@
   font-size: 11px;
   white-space: pre-wrap;
 }
+
+/* ── FK-walk (Tables tab) ──────────────────────────── */
+
+.pc-tables-fkcell code {
+  background: transparent;
+  padding: 0;
+  font-size: inherit;
+  color: rgba(125, 211, 252, 0.85);
+}
+.pc-tables-fkmark {
+  color: #7dd3fc;
+  margin-left: 3px;
+  font-weight: 400;
+}
+.pc-tables-fklink {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-tables-fklink:hover {
+  color: #bae6fd;
+  text-decoration-style: solid;
+}
+.pc-tables-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  background: rgba(125, 211, 252, 0.08);
+  border: 1px solid rgba(125, 211, 252, 0.25);
+  border-radius: 6px;
+  margin-bottom: 2px;
+  font-size: 12px;
+}
+.pc-tables-filter-label {
+  color: var(--fg, #e2e8f0);
+}
+.pc-tables-filter-label code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.pc-tables-filter-clear {
+  background: transparent;
+  border: 1px solid rgba(125, 211, 252, 0.30);
+  color: #7dd3fc;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+}
+.pc-tables-filter-clear:hover {
+  background: rgba(125, 211, 252, 0.10);
+}

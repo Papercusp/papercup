@@ -10,12 +10,15 @@
  *   limit  — page size, default 50, max 500
  *   offset — pagination offset, default 0
  *   role   — 'admin' | 'app' (default 'admin')
+ *   where  — JSON object of column → value equality filters (FK-walk
+ *            uses this to jump to a referenced row). Unknown columns
+ *            are silently dropped to make the URL composable.
  */
 import { NextResponse } from 'next/server';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { is, Table } from 'drizzle-orm';
+import { and, eq, is, Table } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { getOrgPg, getOrgPgApp, generated, withWorkspaceQuery } from '@restart/db-org';
+import { getOrgPg, generated, withWorkspaceQuery } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export const runtime = 'nodejs';
@@ -26,6 +29,32 @@ function tableByExportName(exportName: string): PgTable | null {
   if (!value || typeof value !== 'object') return null;
   if (!is(value as object, Table)) return null;
   return value as PgTable;
+}
+
+function parseWhere(raw: string | null): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
+function buildWherePredicate(table: PgTable, where: Record<string, unknown>) {
+  const cfg = getTableConfig(table);
+  const preds = [];
+  for (const [name, value] of Object.entries(where)) {
+    const col = cfg.columns.find((c) => c.name === name);
+    if (!col) continue;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    preds.push(eq(col as any, value));
+  }
+  if (preds.length === 0) return undefined;
+  return preds.length === 1 ? preds[0] : and(...preds);
 }
 
 export async function GET(
@@ -39,6 +68,8 @@ export async function GET(
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? '50'), 1), 500);
   const offset = Math.max(Number(url.searchParams.get('offset') ?? '0'), 0);
   const role = url.searchParams.get('role') === 'app' ? 'app' : 'admin';
+  const whereObj = parseWhere(url.searchParams.get('where'));
+  const wherePred = whereObj ? buildWherePredicate(table, whereObj) : undefined;
 
   const cfg = getTableConfig(table);
   const qualified = cfg.schema ? `${cfg.schema}.${cfg.name}` : cfg.name;
@@ -50,7 +81,12 @@ export async function GET(
       const ws = activeWorkspaceId();
       const result = await withWorkspaceQuery(ws, async (tx) => {
         const txDb = drizzle(tx);
-        const r = await txDb.select().from(table).limit(limit).offset(offset);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const q = txDb.select().from(table as any);
+        const r = await (wherePred ? q.where(wherePred as any).limit(limit).offset(offset) : q.limit(limit).offset(offset));
+        // For filtered queries the total is the filter's result count;
+        // skip the unfiltered count query to keep this fast.
+        if (wherePred) return { rows: r, n: r.length };
         const c = await tx<{ n: string }[]>`SELECT count(*)::text AS n FROM ${tx.unsafe(qualified)}`;
         return { rows: r, n: Number(c[0]?.n ?? '0') };
       });
@@ -58,9 +94,15 @@ export async function GET(
       total = result.n;
     } else {
       const { db, sql } = getOrgPg();
-      rows = await db.select().from(table).limit(limit).offset(offset);
-      const c = await sql<{ n: string }[]>`SELECT count(*)::text AS n FROM ${sql.unsafe(qualified)}`;
-      total = Number(c[0]?.n ?? '0');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const q = db.select().from(table as any);
+      rows = await (wherePred ? q.where(wherePred as any).limit(limit).offset(offset) : q.limit(limit).offset(offset));
+      if (wherePred) {
+        total = (rows as unknown[]).length;
+      } else {
+        const c = await sql<{ n: string }[]>`SELECT count(*)::text AS n FROM ${sql.unsafe(qualified)}`;
+        total = Number(c[0]?.n ?? '0');
+      }
     }
 
     // Best-effort serialization: bigints come back as numbers (mode:number),
@@ -83,6 +125,7 @@ export async function GET(
       offset,
       role,
       qualifiedName: qualified,
+      filtered: !!wherePred,
     });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

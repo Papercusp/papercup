@@ -67,10 +67,13 @@ export async function GET(_req: Request, { params }: { params: Promise<{ exportN
     })),
     foreignKeys: cfg.foreignKeys.map((fk) => {
       const ref = fk.reference();
+      const ft = ref.foreignTable as unknown as { [k: symbol]: string };
+      const ftName = ft[Symbol.for('drizzle:Name')];
+      const ftSchema = ft[Symbol.for('drizzle:Schema')];
       return {
         columns: ref.columns.map((c) => c.name),
         foreignColumns: ref.foreignColumns.map((c) => c.name),
-        foreignTable: (ref.foreignTable as unknown as { [k: symbol]: string })[Symbol.for('drizzle:Name')],
+        foreignTable: ftSchema ? `${ftSchema}.${ftName}` : ftName,
       };
     }),
   });
