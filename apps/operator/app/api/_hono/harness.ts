@@ -778,6 +778,71 @@ harness.delete('/projects/:slug', async (c) => {
 
 // ─── per-project status ──────────────────────────────────────────────
 
+/**
+ * Compute the rich harness status payload (project + features + cost +
+ * liveness + checkpoints + escalation). Shared between the desktop
+ * /api/harness/:slug/status route and the mobile-JWT-authed
+ * /api/mobile/harnesses/:slug route so both surfaces see the same
+ * shape (no schema drift to keep in sync). Returns null when the slug
+ * resolves to nothing.
+ */
+export async function getHarnessStatusFull(
+  slug: string,
+  phaseOverride?: Phase,
+): Promise<Record<string, unknown> | null> {
+  const project = await resolvePhasedProject(slug, phaseOverride);
+  if (!project) return null;
+
+  const features = await parseFeatures(project);
+  const counts = features.reduce((acc, f) => {
+    acc[f.status] = (acc[f.status] ?? 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const runLogPath = join(harnessDir(project), 'logs', 'run.log');
+  const runLog = tailFile(runLogPath, 16 * 1024);
+  const decisionMatch = [...runLog.matchAll(/ORCH decision: (\S[^\n]*)/g)];
+  const lastDecision = decisionMatch.length ? decisionMatch[decisionMatch.length - 1][1] : null;
+  const iteration = countPulsesFromRunLog(runLogPath);
+  const escalation = safeRead(join(harnessDir(project), 'escalation.md'));
+  const __agg = aggregateCostFromLogDir(join(harnessDir(project), 'logs'));
+  const alive = isProjectAlive(project.path);
+
+  let pendingCheckpoints = 0;
+  let activeCompetitions = 0;
+  let smokeFail = false;
+  try {
+    const hd = harnessDir(project);
+    if (existsSync(hd)) {
+      for (const f of readdirSync(hd)) {
+        if (/^checkpoint-[A-Za-z0-9_.-]+\.md$/.test(f) && !existsSync(join(hd, `${f}.granted`))) {
+          pendingCheckpoints += 1;
+        }
+        if (/^competition-[A-Za-z0-9_.-]+\.json$/.test(f)) {
+          activeCompetitions += 1;
+        }
+      }
+      smokeFail = existsSync(join(hd, 'smoke-failure.md'));
+    }
+  } catch {}
+
+  return {
+    project: { slug: project.slug, path: project.path },
+    features,
+    counts,
+    iteration,
+    lastDecision,
+    alive,
+    escalated: escalation != null,
+    pendingCheckpoints,
+    activeCompetitions,
+    smokeFail,
+    missionCostUsd: __agg.cost,
+    missionInputTokens: __agg.inputTokens,
+    missionOutputTokens: __agg.outputTokens,
+  };
+}
+
 harness.get('/:slug/status', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);

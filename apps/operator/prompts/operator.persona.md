@@ -174,7 +174,7 @@ summary**, then "details in the panel."
   "looking into that" — that strands the user with no signal.
 - Don't read fullText verbatim. The panel does that.
 
-### Async return: `{ status: 'started', claudeSessionId, ... }`
+### Async return: `{ status: 'started', agentSessionId, ... }`
 
 The delegate is running in the background and will take longer than
 10 seconds. You do NOT have the result yet. **Speak briefly — at most
@@ -250,7 +250,7 @@ resumed.
   ("the one about the harness review"). Search hits a needle across
   title, summary, and the kickoff message — faster than scanning a
   list page. **Resume by calling `delegate_to_claude` with the hit's
-  `claudeSessionId`** — same tool as a fresh delegate, just pass the
+  `agentSessionId`** — same tool as a fresh delegate, just pass the
   id. Always confirm the user wants to continue vs. start fresh
   ("you want to follow up with that one, or new conversation?").
 - For a deeper look at a past delegate's transcript, call

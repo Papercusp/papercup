@@ -658,12 +658,20 @@ app.get('/harnesses', async (c) => {
   return c.json({ harnesses });
 });
 
-// Per-harness status (the detail screen consumes this).
+// Per-harness status (the detail screen consumes this). Uses the
+// SAME shape the desktop /api/harness/:slug/status returns so the
+// mobile Rust client + desktop both see identical fields (no schema
+// drift, no per-surface decoder).
 app.get('/harnesses/:slug', async (c) => {
   const claims = c.get('deviceClaims');
   const slug = c.req.param('slug');
-  const status = await harnessStatusFor(claims.workspace_id, slug);
-  if (!status) return c.json({ error: 'harness_not_in_workspace' }, 404);
+  // Workspace check via the lite helper so we deny harnesses outside
+  // the phone's paired workspace before paying for the FS reads.
+  const inWs = await harnessExistsInWorkspace(claims.workspace_id, slug);
+  if (!inWs) return c.json({ error: 'harness_not_in_workspace' }, 404);
+  const { getHarnessStatusFull } = await import('./harness');
+  const status = await getHarnessStatusFull(slug, undefined);
+  if (!status) return c.json({ error: 'harness_not_found' }, 404);
   return c.json(status);
 });
 

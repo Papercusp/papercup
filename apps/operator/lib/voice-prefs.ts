@@ -140,6 +140,21 @@ export interface VoicePrefs {
    * cheap (just say the wake word again). Default 20s.
    */
   wakeGatedIdleTimeoutSec: number;
+  /**
+   * BCP-47 language code passed to ElevenLabs Conv AI as the agent's
+   * `language` override at session start. Pinning the language stops
+   * EL's STT auto-detect from flipping to e.g. Spanish when background
+   * music or ambient noise has speech-like spectral features.
+   *
+   * Default 'en'. Users who want the agent to handle multiple languages
+   * can set it empty (`''`) to let EL auto-detect — at the cost of the
+   * noise-mishear failure mode.
+   *
+   * Supported codes match EL's Conv AI language list (en, es, fr, de,
+   * pt, it, pl, nl, hi, ja, ko, zh, ar, …). See:
+   * https://elevenlabs.io/docs/conversational-ai/customization/language
+   */
+  agentLanguage: string;
 
   // One-time consents
   webSpeechLeakAcked: boolean;
@@ -183,6 +198,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   fullAgentMonthlyMinuteCap: 600,
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,
+  agentLanguage: 'en',
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

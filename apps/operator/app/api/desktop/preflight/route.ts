@@ -26,6 +26,25 @@ async function checkBinary(bin: string, args: string[] = ['--version']): Promise
     return { name: bin, status: 'ok', detail: out };
   } catch (err: any) {
     if (err?.code === 'ENOENT') {
+      // claude ships as a bundled npm dep of meridian-host (stripped at
+      // build time, npm-installed at first launch by Rust). Probe the
+      // sidecar's meridian-host/node_modules/.bin too so we don't
+      // surface MISSING after the install completes.
+      if (bin === 'claude') {
+        const candidates = [
+          `${process.cwd()}/meridian-host/node_modules/.bin/claude`,
+          `${process.cwd()}/../meridian-host/node_modules/.bin/claude`,
+        ];
+        for (const path of candidates) {
+          if (existsSync(path)) {
+            try {
+              const probe = await exec(path, args, { timeout: 5000 });
+              const out = (probe.stdout || probe.stderr).trim().split(/\r?\n/)[0] ?? '';
+              return { name: bin, status: 'ok', detail: `${out} (bundled)` };
+            } catch {/* fall through */}
+          }
+        }
+      }
       return { name: bin, status: 'missing', detail: `${bin} not on PATH` };
     }
     return { name: bin, status: 'error', detail: String(err?.message ?? err) };
@@ -138,6 +157,40 @@ async function checkPostgres(): Promise<Check> {
  * calls (which require ANTHROPIC_API_KEY) or fail.
  */
 async function checkMeridian(): Promise<Check> {
+  // Desktop builds bundle meridian and have the Rust startup spawn it.
+  // If claude-code (closed-source, stripped at build time) isn't yet
+  // installed, Rust writes a state file we surface to the splash as
+  // "installing" so users see a first-launch progress message instead
+  // of a hard MISSING.
+  const workspaceHome = process.env.HOME || process.env.USERPROFILE;
+  if (workspaceHome) {
+    try {
+      const fs = await import('node:fs/promises');
+      const path = `${workspaceHome}/.papercusp/meridian-state.json`;
+      const raw = await fs.readFile(path, 'utf8');
+      const json = JSON.parse(raw) as { state?: string; detail?: string };
+      if (json.state === 'installing') {
+        return {
+          name: 'meridian',
+          status: 'error',
+          detail: `installing claude-code… ${json.detail ?? ''}`.trim(),
+          hint: 'First-launch dependency install — this page will refresh automatically once meridian is ready (~30s on a fast connection).',
+        };
+      }
+      if (json.state === 'error') {
+        return {
+          name: 'meridian',
+          status: 'missing',
+          detail: `install failed: ${json.detail ?? 'unknown'}`,
+          hint: 'meridian failed to install its claude-code dependency. Check your internet connection and restart the app.',
+        };
+      }
+      // state === 'ready' falls through to the live port probe below
+    } catch {
+      // No state file yet — either pre-Rust-meridian build, or the
+      // background thread hasn't written it. Fall through to probe.
+    }
+  }
   return new Promise((resolve) => {
     const url = new URL(MERIDIAN_BASE);
     const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
@@ -151,12 +204,8 @@ async function checkMeridian(): Promise<Check> {
     };
     socket.setTimeout(2000);
     socket.once('connect', () => finish('ok', `${url.hostname}:${port} reachable`));
-    socket.once('timeout', () => finish('missing', `${url.hostname}:${port} timeout`, {
-      hint: 'Start meridian: `meridian` (or `npm install -g @rynfar/meridian` if not installed). meridian routes omp through your Claude Max subscription.',
-    }));
-    socket.once('error', (e: any) => finish('missing', `${url.hostname}:${port} ${e?.code ?? 'unreachable'}`, {
-      hint: 'Start meridian: `meridian` (or `npm install -g @rynfar/meridian` if not installed). meridian routes omp through your Claude Max subscription.',
-    }));
+    socket.once('timeout', () => finish('missing', `${url.hostname}:${port} timeout`));
+    socket.once('error', (e: any) => finish('missing', `${url.hostname}:${port} ${e?.code ?? 'unreachable'}`));
     socket.connect(port, url.hostname);
   });
 }

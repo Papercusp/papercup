@@ -39,6 +39,21 @@ export interface CommandContext {
   workspace: string;        // every handler gets this; never an arg (§3.2)
   sessionId?: string;       // browser session for browser='required' commands
   requestId: string;        // for audit correlation
+  /**
+   * Origin surface — set when the call came from somewhere other than
+   * the desktop browser. Populated by /api/elevenlabs/webhook from
+   * the conversation's `dynamic_variables.surface` (set on session-
+   * init by the phone). Used by the audit pipeline to distinguish
+   * "user said this on the phone" from "user did this in a tab".
+   * Optional; absent for desktop-originated commands.
+   */
+  surface?: 'browser' | 'mobile-android' | 'mobile-ios' | 'mobile-unknown';
+  /**
+   * Stable identifier for the originating device. For mobile this is
+   * the deviceId from the JWT (matches /devices.device_id); for
+   * desktop it's the tabId. Useful for audit + per-device rate limits.
+   */
+  deviceId?: string;
 }
 
 export interface CommandDef<Args = unknown, Result = unknown> {

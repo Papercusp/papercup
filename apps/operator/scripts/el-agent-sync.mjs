@@ -804,7 +804,12 @@ const patch = {
             tool_ids: false,
           },
           first_message: false,
-          language: false,
+          // Allow runtime per-session language pin. With this enabled,
+          // lib/voice-engines/elevenlabs-conv.ts passes `language: <code>`
+          // (from VoicePrefs.agentLanguage, default 'en') in the session
+          // overrides — stops EL's STT auto-detect from flipping when
+          // background music or ambient noise has speech-like timbre.
+          language: true,
         },
         conversation: { text_only: true },
         tts: { voice_id: false, stability: false, speed: false, similarity_boost: false },

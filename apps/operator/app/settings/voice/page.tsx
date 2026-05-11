@@ -661,6 +661,38 @@ export default function VoiceSettingsPage() {
                 set above (Porcupine or openWakeWord).
               </p>
             </div>
+            <div>
+              <label style={lbl}>Agent language</label>
+              <select
+                value={prefs.agentLanguage ?? 'en'}
+                onChange={(e) => savePrefsPatch({ agentLanguage: e.target.value })}
+                style={sel}
+                disabled={savingPrefs}
+              >
+                <option value="en">English (en)</option>
+                <option value="es">Spanish (es)</option>
+                <option value="fr">French (fr)</option>
+                <option value="de">German (de)</option>
+                <option value="pt">Portuguese (pt)</option>
+                <option value="it">Italian (it)</option>
+                <option value="nl">Dutch (nl)</option>
+                <option value="pl">Polish (pl)</option>
+                <option value="ja">Japanese (ja)</option>
+                <option value="ko">Korean (ko)</option>
+                <option value="zh">Chinese (zh)</option>
+                <option value="hi">Hindi (hi)</option>
+                <option value="ar">Arabic (ar)</option>
+                <option value="">— Auto-detect (no pin)</option>
+              </select>
+              <p style={hint}>
+                Pinning a language stops ElevenLabs&apos; speech-to-text auto-detect from flipping when
+                background music or ambient noise has speech-like timbre — the cause of the &quot;operator
+                started speaking Spanish while music was on&quot; failure mode. Default <strong>en</strong>.
+                Set to <strong>Auto-detect</strong> only if you need the operator to understand
+                multiple languages in one session; expect occasional mis-classifications with background
+                audio.
+              </p>
+            </div>
             {prefs.voicePrivacyMode === 'wake-word-gated' && (
               <div>
                 <label style={lbl}>Gated-mode idle timeout (seconds)</label>

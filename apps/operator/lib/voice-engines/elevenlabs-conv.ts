@@ -217,9 +217,36 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
     onError: (msg: string) => { args.onError?.(new Error(msg)); },
   };
 
-  const overridePayload = sessionsContext.length
-    ? { agent: { prompt: { prompt: sessionsContext } } }
-    : undefined;
+  // Read the agent-language pin from voice prefs. Default 'en' stops
+  // EL's STT auto-detect from flipping when background music or
+  // ambient noise has speech-like spectral features (the user-reported
+  // "operator switched to Spanish while music was playing" failure).
+  // Users who want auto-detect can clear the pref via /settings/voice.
+  let agentLanguage = '';
+  try {
+    const prefsRes = await fetch('/api/agent-mcp/operator-voice-prefs');
+    if (prefsRes.ok) {
+      const prefs = await prefsRes.json() as { agentLanguage?: string };
+      if (typeof prefs?.agentLanguage === 'string') {
+        agentLanguage = prefs.agentLanguage.trim();
+      }
+    }
+  } catch { /* default to empty → no pin */ }
+
+  // Build the overrides payload. Prompt + language merge into one
+  // `agent` object; null branches stay absent so EL doesn't see
+  // unintended overrides.
+  let overridePayload: { agent: Record<string, unknown> } | undefined;
+  const agentOverride: Record<string, unknown> = {};
+  if (sessionsContext.length) {
+    agentOverride.prompt = { prompt: sessionsContext };
+  }
+  if (agentLanguage) {
+    agentOverride.language = agentLanguage;
+  }
+  if (Object.keys(agentOverride).length > 0) {
+    overridePayload = { agent: agentOverride };
+  }
 
   let conv: VoiceConversation;
   // Diagnostic toggle: ?elBare=1 in the URL strips clientTools + overrides
