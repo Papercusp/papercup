@@ -17,6 +17,7 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -28,13 +29,13 @@ const hc = generated.harness_checkpointsInHarness_shared;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  name?: string;
-  content?: string;
-}
-
 const NAME_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 const MAX_CONTENT = 64 * 1024;
+
+const BodySchema = z.object({
+  name: z.string().regex(NAME_RE),
+  content: z.string().optional().default(''),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -53,15 +54,18 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const name = typeof body.name === 'string' ? body.name : '';
-  if (!NAME_RE.test(name)) {
-    return NextResponse.json({ error: 'invalid name' }, { status: 400 });
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
-  let content = typeof body.content === 'string' ? body.content : '';
+  const { name } = parsed.data;
+  let content = parsed.data.content;
   if (Buffer.byteLength(content) > MAX_CONTENT) {
     content = content.slice(0, MAX_CONTENT) + '\n...[truncated]\n';
   }

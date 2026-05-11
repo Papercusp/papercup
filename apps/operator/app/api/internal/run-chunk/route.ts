@@ -18,6 +18,7 @@
  * No DB, no filesystem.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { publish, closeChannel } from '@/lib/run-chunk-bus';
@@ -30,12 +31,12 @@ export const runtime = 'nodejs';
 const RUN_ID_RE = /^[A-Za-z0-9_.-]{1,128}$/;
 const MAX_CHUNK_BYTES = 256 * 1024; // 256 KB; one stdout chunk shouldn't exceed this
 
-interface RequestBody {
-  runId?: string;
-  seq?: number;
-  chunk?: string;
-  done?: boolean;
-}
+const BodySchema = z.object({
+  runId: z.string().regex(RUN_ID_RE),
+  seq: z.number().int().nonnegative(),
+  chunk: z.string(),
+  done: z.boolean().optional().default(false),
+});
 
 export async function POST(req: Request): Promise<Response> {
   // 1. Auth.
@@ -56,26 +57,18 @@ export async function POST(req: Request): Promise<Response> {
   const harnessSlug = rows[0].harness_slug;
 
   // 2. Body.
-  let body: RequestBody;
-  try {
-    body = (await req.json()) as RequestBody;
-  } catch {
-    return NextResponse.json({ error: 'invalid json' }, { status: 400 });
+  let raw: unknown;
+  try { raw = await req.json(); }
+  catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
-  const runId = body.runId ?? '';
-  const seq = body.seq;
-  const chunk = body.chunk ?? '';
-  const done = body.done === true;
+  const { runId, seq, chunk, done } = parsed.data;
 
-  if (!RUN_ID_RE.test(runId)) {
-    return NextResponse.json({ error: 'invalid runId' }, { status: 400 });
-  }
-  if (typeof seq !== 'number' || !Number.isFinite(seq) || seq < 0) {
-    return NextResponse.json({ error: 'invalid seq' }, { status: 400 });
-  }
-  if (typeof chunk !== 'string') {
-    return NextResponse.json({ error: 'invalid chunk' }, { status: 400 });
-  }
   if (Buffer.byteLength(chunk) > MAX_CHUNK_BYTES) {
     return NextResponse.json({ error: 'chunk too large' }, { status: 413 });
   }
