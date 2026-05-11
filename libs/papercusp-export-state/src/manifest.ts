@@ -418,3 +418,83 @@ export function readCapturePluginExtras(
 
   return runtime ? { runtime, versionPin, pluginVersionPinned } : { versionPin, pluginVersionPinned };
 }
+
+/* ───── Migration divergence reconciliation (rev3 plan G+6) ────────── */
+
+/**
+ * Outcome of comparing a snapshot's captured migration history against
+ * the locally-installed plugin's current migration set. Three of the
+ * four variants are restore-blockers; only `identical` and `extends`
+ * permit restoring the snapshot's data into the installed schema.
+ *
+ * Per rev3 plan G+6 / audit A4: divergence is detected by
+ * (filename, sha256) match — content matters, not just filenames.
+ * A migration that was renamed but kept the same filename, or
+ * rewritten in-place after publishing, surfaces as `diverged`.
+ */
+export type MigrationReconciliation =
+  /** No migrations to apply; both lists match exactly. Safe restore. */
+  | { kind: 'identical' }
+  /**
+   * Installed plugin has all of snapshot's migrations PLUS additional
+   * ones at the tail. Restore-side runs `toRun` (the trailing
+   * migrations) against the freshly-imported snapshot data. Safe.
+   */
+  | { kind: 'extends'; toRun: SnapshotMigrationEntry[] }
+  /**
+   * Same filename, different content hash. Restore is REFUSED — the
+   * migration history was rewritten between capture and now, so we
+   * can't reason about whether the snapshot's data is still valid
+   * under the installed schema.
+   */
+  | { kind: 'diverged'; conflictingFiles: string[] }
+  /**
+   * Snapshot references migration filenames the installed plugin
+   * doesn't know about. Refuse restore — snapshot was captured
+   * against a NEWER version of the plugin than is installed locally
+   * (downgrade scenario).
+   */
+  | { kind: 'snapshot-ahead'; missing: string[] };
+
+/**
+ * Reconcile migration histories. Both lists are filename+sha256
+ * pairs in apply-order (oldest first). Pure function — no I/O.
+ */
+export function reconcileMigrations(
+  snapshot: SnapshotMigrationEntry[],
+  installed: SnapshotMigrationEntry[],
+): MigrationReconciliation {
+  // Build name→sha256 lookups from each side for the divergence check.
+  const installedByName = new Map(installed.map((m) => [m.filename, m.sha256]));
+  const snapshotByName = new Map(snapshot.map((m) => [m.filename, m.sha256]));
+
+  // Conflict check: same filename, different sha256.
+  const conflicts: string[] = [];
+  for (const [name, sha] of snapshotByName) {
+    const local = installedByName.get(name);
+    if (local !== undefined && local !== sha) conflicts.push(name);
+  }
+  if (conflicts.length > 0) {
+    return { kind: 'diverged', conflictingFiles: conflicts.sort() };
+  }
+
+  // Snapshot-ahead check: snapshot has filenames installed doesn't.
+  const missing: string[] = [];
+  for (const name of snapshotByName.keys()) {
+    if (!installedByName.has(name)) missing.push(name);
+  }
+  if (missing.length > 0) {
+    return { kind: 'snapshot-ahead', missing: missing.sort() };
+  }
+
+  // All snapshot entries match installed by name+sha. Either lists
+  // are identical OR installed has additional trailing entries.
+  if (snapshot.length === installed.length) {
+    return { kind: 'identical' };
+  }
+
+  // Installed extends snapshot. Trailing entries are what the
+  // restore-side runs. Order matters; preserve installed's order.
+  const trailing = installed.filter((m) => !snapshotByName.has(m.filename));
+  return { kind: 'extends', toRun: trailing };
+}
