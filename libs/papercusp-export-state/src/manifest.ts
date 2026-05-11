@@ -338,6 +338,87 @@ export function readSnapshotIncludeRules(
   return out;
 }
 
+/* ───── Capture-time write helpers (rev3 plan G+, capture migration) ─ */
+
+export interface CapturePluginManifest {
+  runtime?: unknown;
+  versionPin?: unknown;
+  pluginVersionPinned?: unknown;
+}
+
+export interface CapturePluginExtras {
+  /** Set when the installed plugin's manifest declared a runtime. */
+  runtime?: SnapshotPluginRuntime;
+  /** v2 canonical pin shape. Always set (translated from legacy if needed). */
+  versionPin: SnapshotVersionPin;
+  /** Legacy boolean form kept for one cycle of reader back-compat. */
+  pluginVersionPinned: boolean;
+}
+
+/**
+ * Capture-side: read v1 + v2 manifest fields from an installed plugin's
+ * papercusp.json and emit the SnapshotPlugin extras. Always returns
+ * canonical v2 `versionPin` PLUS legacy `pluginVersionPinned` so older
+ * readers (rev3-plan-pre-G+) still understand the snapshot.
+ *
+ * Translation rules (matches the v1→v2 reader fallbacks):
+ *   - Manifest has v2 versionPin              → use as-is
+ *   - Manifest has v1 pluginVersionPinned:true → versionPin = { mode: 'exact' }
+ *   - Manifest has v1 pluginVersionPinned:false → versionPin = { mode: 'semver' }
+ *   - Neither field present                    → versionPin = { mode: 'semver' }
+ *
+ * `runtime` is read straight through (validated against the enum);
+ * unrecognized values are dropped.
+ */
+export function readCapturePluginExtras(
+  manifest: CapturePluginManifest,
+): CapturePluginExtras {
+  // versionPin: prefer v2 explicit field, fall back to legacy translation.
+  let versionPin: SnapshotVersionPin;
+  let pluginVersionPinned: boolean;
+  const vp = manifest.versionPin;
+  if (vp != null && typeof vp === 'object') {
+    const mode = (vp as Record<string, unknown>).mode;
+    const allowOverride = (vp as Record<string, unknown>).allowOverride;
+    if (mode === 'semver' || mode === 'exact' || mode === 'hash') {
+      versionPin = { mode };
+      if (
+        allowOverride === 'security-patch' ||
+        allowOverride === 'always' ||
+        allowOverride === 'never'
+      ) {
+        versionPin.allowOverride = allowOverride;
+      }
+      // Derive legacy boolean: 'exact' → true, anything else → false.
+      pluginVersionPinned = mode === 'exact';
+    } else {
+      versionPin = { mode: 'semver' };
+      pluginVersionPinned = false;
+    }
+  } else if (manifest.pluginVersionPinned === true) {
+    versionPin = { mode: 'exact' };
+    pluginVersionPinned = true;
+  } else if (manifest.pluginVersionPinned === false) {
+    versionPin = { mode: 'semver' };
+    pluginVersionPinned = false;
+  } else {
+    versionPin = { mode: 'semver' };
+    pluginVersionPinned = false;
+  }
+
+  // runtime: pass through if valid.
+  let runtime: SnapshotPluginRuntime | undefined;
+  if (
+    manifest.runtime === 'js' ||
+    manifest.runtime === 'wasm' ||
+    manifest.runtime === 'daemon'
+  ) {
+    runtime = manifest.runtime;
+  }
+
+  return runtime ? { runtime, versionPin, pluginVersionPinned } : { versionPin, pluginVersionPinned };
+}
+
 /* ───── Migration divergence reconciliation (rev3 plan G+6) ────────── */
 
 /**
