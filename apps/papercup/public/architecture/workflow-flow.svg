@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="1040" viewBox="0 0 880 1040" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" role="img" aria-labelledby="workflow-flow-title">
-  <title id="workflow-flow-title">Feature lifecycle in a Papercusp coding harness — from SPEC.md to DONE</title>
+  <title id="workflow-flow-title">Feature lifecycle in a Papercusp coding harness — from SPEC.md to DONE (worker → synthesizer → validator)</title>
 
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -121,28 +121,35 @@
     <rect x="65" y="500" width="140" height="42" rx="8" fill="rgba(245,158,11,0.16)" stroke="#f59e0b" stroke-width="1.5"/>
     <text x="135" y="528" text-anchor="middle" class="role-mini">worker</text>
 
-    <line x1="135" y1="542" x2="135" y2="570" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <line x1="135" y1="542" x2="135" y2="560" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
 
-    <rect x="65" y="570" width="140" height="42" rx="8" fill="rgba(245,158,11,0.16)" stroke="#f59e0b" stroke-width="1.5"/>
-    <text x="135" y="598" text-anchor="middle" class="role-mini">validator</text>
+    <!-- synthesizer (always runs, merges lanes / polishes single worker) -->
+    <rect x="65" y="560" width="140" height="36" rx="6" fill="rgba(245,158,11,0.10)" stroke="#f59e0b" stroke-width="1.2"/>
+    <text x="135" y="576" text-anchor="middle" class="role-mini">synthesizer</text>
+    <text x="135" y="588" text-anchor="middle" class="desc">merges lanes / polishes</text>
+
+    <line x1="135" y1="596" x2="135" y2="620" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <rect x="65" y="620" width="140" height="42" rx="8" fill="rgba(245,158,11,0.16)" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="135" y="648" text-anchor="middle" class="role-mini">validator</text>
 
     <!-- if passed → post-pass chain (crosscheck → ui-qa → documenter → PM) -->
-    <line x1="135" y1="612" x2="135" y2="638" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
-    <text x="200" y="630" class="desc">if passed</text>
+    <line x1="135" y1="662" x2="135" y2="688" stroke="#888" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <text x="200" y="680" class="desc">if passed</text>
 
-    <rect x="65" y="638" width="140" height="36" rx="6" fill="rgba(168,85,247,0.10)" stroke="rgba(168,85,247,0.5)" stroke-width="1" stroke-dasharray="4 3"/>
-    <text x="135" y="660" text-anchor="middle" class="role-mini">crosscheck</text>
+    <rect x="65" y="688" width="140" height="36" rx="6" fill="rgba(168,85,247,0.10)" stroke="rgba(168,85,247,0.5)" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="135" y="710" text-anchor="middle" class="role-mini">crosscheck</text>
 
-    <line x1="135" y1="674" x2="135" y2="694" stroke="#666" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arrow)"/>
+    <line x1="135" y1="724" x2="135" y2="744" stroke="#666" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arrow)"/>
 
-    <rect x="65" y="694" width="140" height="36" rx="6" fill="rgba(168,85,247,0.10)" stroke="rgba(168,85,247,0.5)" stroke-width="1" stroke-dasharray="4 3"/>
-    <text x="135" y="710" text-anchor="middle" class="role-mini">ui-qa</text>
-    <text x="135" y="722" text-anchor="middle" class="desc">UI features only</text>
+    <rect x="65" y="744" width="140" height="36" rx="6" fill="rgba(168,85,247,0.10)" stroke="rgba(168,85,247,0.5)" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="135" y="760" text-anchor="middle" class="role-mini">ui-qa</text>
+    <text x="135" y="772" text-anchor="middle" class="desc">UI features only</text>
 
-    <line x1="135" y1="730" x2="135" y2="750" stroke="#666" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arrow)"/>
+    <line x1="135" y1="780" x2="135" y2="800" stroke="#666" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arrow)"/>
 
-    <rect x="65" y="750" width="140" height="36" rx="6" fill="rgba(16,185,129,0.16)" stroke="#10b981" stroke-width="1.2"/>
-    <text x="135" y="772" text-anchor="middle" class="role-mini">documenter</text>
+    <rect x="65" y="800" width="140" height="36" rx="6" fill="rgba(16,185,129,0.16)" stroke="#10b981" stroke-width="1.2"/>
+    <text x="135" y="822" text-anchor="middle" class="role-mini">documenter</text>
   </g>
 
   <!-- (2) Architect path -->
