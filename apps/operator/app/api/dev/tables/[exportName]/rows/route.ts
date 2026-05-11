@@ -13,16 +13,42 @@
  *   where  — JSON object of column → value equality filters (FK-walk
  *            uses this to jump to a referenced row). Unknown columns
  *            are silently dropped to make the URL composable.
+ *   filters — JSON array of `[col, op, value?]` triples for non-equality
+ *             operators. Supported ops: 'eq', 'ne', 'gt', 'lt', 'gte',
+ *             'lte', 'like', 'ilike', 'isnull', 'notnull'. `isnull` and
+ *             `notnull` ignore the value. Combined with `?where=` via
+ *             AND. Unknown columns / operators are silently dropped.
  */
 import { NextResponse } from 'next/server';
 import { getTableConfig, type PgTable } from 'drizzle-orm/pg-core';
-import { and, eq, is, Table } from 'drizzle-orm';
+import {
+  and,
+  eq,
+  ne,
+  gt,
+  lt,
+  gte,
+  lte,
+  like,
+  ilike,
+  isNull,
+  isNotNull,
+  is,
+  Table,
+  type SQL,
+} from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { getOrgPg, generated, withWorkspaceQuery } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+type Op = 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte' | 'like' | 'ilike' | 'isnull' | 'notnull';
+const VALUELESS_OPS: ReadonlySet<Op> = new Set(['isnull', 'notnull']);
+const SUPPORTED_OPS: ReadonlySet<Op> = new Set([
+  'eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'like', 'ilike', 'isnull', 'notnull',
+]);
 
 function tableByExportName(exportName: string): PgTable | null {
   const value = (generated as Record<string, unknown>)[exportName];
@@ -31,27 +57,63 @@ function tableByExportName(exportName: string): PgTable | null {
   return value as PgTable;
 }
 
-function parseWhere(raw: string | null): Record<string, unknown> | null {
+function parseJsonParam<T>(raw: string | null, guard: (v: unknown) => v is T): T | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed as Record<string, unknown>;
-    }
+    return guard(parsed) ? parsed : null;
   } catch {
-    // fall through
+    return null;
   }
-  return null;
 }
 
-function buildWherePredicate(table: PgTable, where: Record<string, unknown>) {
+function applyOp(col: unknown, op: Op, value: unknown): SQL | null {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c = col as any;
+  switch (op) {
+    case 'eq': return eq(c, value);
+    case 'ne': return ne(c, value);
+    case 'gt': return gt(c, value);
+    case 'lt': return lt(c, value);
+    case 'gte': return gte(c, value);
+    case 'lte': return lte(c, value);
+    case 'like': return like(c, String(value));
+    case 'ilike': return ilike(c, String(value));
+    case 'isnull': return isNull(c);
+    case 'notnull': return isNotNull(c);
+    default: return null;
+  }
+}
+
+function buildPredicate(
+  table: PgTable,
+  where: Record<string, unknown> | null,
+  filters: Array<[string, string, unknown]> | null,
+): SQL | undefined {
   const cfg = getTableConfig(table);
-  const preds = [];
-  for (const [name, value] of Object.entries(where)) {
-    const col = cfg.columns.find((c) => c.name === name);
-    if (!col) continue;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    preds.push(eq(col as any, value));
+  const colByName = new Map(cfg.columns.map((c) => [c.name, c]));
+  const preds: SQL[] = [];
+
+  if (where) {
+    for (const [name, value] of Object.entries(where)) {
+      const col = colByName.get(name);
+      if (!col) continue;
+      const p = applyOp(col, 'eq', value);
+      if (p) preds.push(p);
+    }
+  }
+  if (filters) {
+    for (const triple of filters) {
+      if (!Array.isArray(triple) || triple.length < 2) continue;
+      const [name, opRaw, value] = triple;
+      if (typeof name !== 'string' || typeof opRaw !== 'string') continue;
+      const op = opRaw as Op;
+      if (!SUPPORTED_OPS.has(op)) continue;
+      const col = colByName.get(name);
+      if (!col) continue;
+      const p = applyOp(col, op, VALUELESS_OPS.has(op) ? null : value);
+      if (p) preds.push(p);
+    }
   }
   if (preds.length === 0) return undefined;
   return preds.length === 1 ? preds[0] : and(...preds);
@@ -68,8 +130,15 @@ export async function GET(
   const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? '50'), 1), 500);
   const offset = Math.max(Number(url.searchParams.get('offset') ?? '0'), 0);
   const role = url.searchParams.get('role') === 'app' ? 'app' : 'admin';
-  const whereObj = parseWhere(url.searchParams.get('where'));
-  const wherePred = whereObj ? buildWherePredicate(table, whereObj) : undefined;
+  const whereObj = parseJsonParam<Record<string, unknown>>(
+    url.searchParams.get('where'),
+    (v): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v),
+  );
+  const filtersArr = parseJsonParam<Array<[string, string, unknown]>>(
+    url.searchParams.get('filters'),
+    (v): v is Array<[string, string, unknown]> => Array.isArray(v),
+  );
+  const wherePred = buildPredicate(table, whereObj, filtersArr);
 
   const cfg = getTableConfig(table);
   const qualified = cfg.schema ? `${cfg.schema}.${cfg.name}` : cfg.name;
@@ -84,8 +153,6 @@ export async function GET(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const q = txDb.select().from(table as any);
         const r = await (wherePred ? q.where(wherePred as any).limit(limit).offset(offset) : q.limit(limit).offset(offset));
-        // For filtered queries the total is the filter's result count;
-        // skip the unfiltered count query to keep this fast.
         if (wherePred) return { rows: r, n: r.length };
         const c = await tx<{ n: string }[]>`SELECT count(*)::text AS n FROM ${tx.unsafe(qualified)}`;
         return { rows: r, n: Number(c[0]?.n ?? '0') };
@@ -105,8 +172,6 @@ export async function GET(
       }
     }
 
-    // Best-effort serialization: bigints come back as numbers (mode:number),
-    // jsonb already parsed, dates → ISO strings.
     const safeRows = rows.map((r) => {
       const obj = r as Record<string, unknown>;
       const out: Record<string, unknown> = {};

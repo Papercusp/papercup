@@ -73,6 +73,24 @@ interface RowsPayload {
 
 const PAGE_SIZE = 50;
 
+type Op = 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte' | 'like' | 'ilike' | 'isnull' | 'notnull';
+const OPS: Array<{ op: Op; label: string; needsValue: boolean }> = [
+  { op: 'eq', label: '=', needsValue: true },
+  { op: 'ne', label: '≠', needsValue: true },
+  { op: 'gt', label: '>', needsValue: true },
+  { op: 'gte', label: '≥', needsValue: true },
+  { op: 'lt', label: '<', needsValue: true },
+  { op: 'lte', label: '≤', needsValue: true },
+  { op: 'like', label: 'LIKE', needsValue: true },
+  { op: 'ilike', label: 'ILIKE', needsValue: true },
+  { op: 'isnull', label: 'IS NULL', needsValue: false },
+  { op: 'notnull', label: 'NOT NULL', needsValue: false },
+];
+const OP_LABEL = new Map(OPS.map((o) => [o.op, o.label]));
+const VALUELESS_OPS = new Set<Op>(['isnull', 'notnull']);
+
+interface Filter { col: string; op: Op; value: unknown }
+
 export default function TablesTab() {
   const [tables, setTables] = useState<TableEntry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -81,8 +99,8 @@ export default function TablesTab() {
   const [filter, setFilter] = useState('');
   const [role, setRole] = useState<'admin' | 'app'>('admin');
   const [offset, setOffset] = useState(0);
-  /** Active where-filter — column → coerced JS value. Empty = unfiltered. */
-  const [whereFilter, setWhereFilter] = useState<Record<string, unknown>>({});
+  /** Active filters — `[col, op, value]` triples. Empty = unfiltered. */
+  const [filters, setFilters] = useState<Filter[]>([]);
   const [composerOpen, setComposerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -135,11 +153,16 @@ export default function TablesTab() {
   }, []);
 
   const fetchRows = useCallback(
-    async (exportName: string, ofs: number, r: 'admin' | 'app', where: Record<string, unknown>) => {
+    async (exportName: string, ofs: number, r: 'admin' | 'app', fs: Filter[]) => {
       setLoading(true);
       try {
         const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(ofs), role: r });
-        if (Object.keys(where).length > 0) params.set('where', JSON.stringify(where));
+        if (fs.length > 0) {
+          const triples = fs.map((f) =>
+            VALUELESS_OPS.has(f.op) ? [f.col, f.op] : [f.col, f.op, f.value],
+          );
+          params.set('filters', JSON.stringify(triples));
+        }
         const d = await fetch(
           `/api/dev/tables/${encodeURIComponent(exportName)}/rows?${params}`,
         ).then((res) => res.json());
@@ -159,8 +182,8 @@ export default function TablesTab() {
     }
     setOffset(0);
     void fetchDetail(selected);
-    void fetchRows(selected, 0, role, whereFilter);
-  }, [selected, role, whereFilter, fetchDetail, fetchRows]);
+    void fetchRows(selected, 0, role, filters);
+  }, [selected, role, filters, fetchDetail, fetchRows]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -190,34 +213,37 @@ export default function TablesTab() {
     return [...detail.columns].sort((a, b) => (order.get(a.name) ?? 99) - (order.get(b.name) ?? 99));
   }, [detail, rows]);
 
-  /** Click handler for FK cells — switch table + apply where filter. */
+  /** Click handler for FK cells — switch table + apply eq filter. */
   const navigateFK = useCallback(
     (foreignTable: string, foreignColumn: string, value: unknown) => {
       const target = qualifiedToExport.get(foreignTable);
       if (!target) return;
-      setWhereFilter({ [foreignColumn]: value });
+      setFilters([{ col: foreignColumn, op: 'eq', value }]);
       setSelected(target);
     },
     [qualifiedToExport],
   );
 
   const filterChips = useMemo(() => {
-    return Object.entries(whereFilter).map(([col, val]) => ({ col, val, label: `${col} = ${valueToLabel(val)}` }));
-  }, [whereFilter]);
+    return filters.map((f, i) => ({
+      key: i,
+      col: f.col,
+      op: f.op,
+      label: VALUELESS_OPS.has(f.op)
+        ? `${f.col} ${OP_LABEL.get(f.op)}`
+        : `${f.col} ${OP_LABEL.get(f.op)} ${valueToLabel(f.value)}`,
+    }));
+  }, [filters]);
 
-  const removeFilter = (col: string) => {
-    setWhereFilter((s) => {
-      const next = { ...s };
-      delete next[col];
-      return next;
-    });
+  const removeFilter = (idx: number) => {
+    setFilters((s) => s.filter((_, i) => i !== idx));
   };
-  const clearAllFilters = () => setWhereFilter({});
+  const clearAllFilters = () => setFilters([]);
 
-  const addFilter = (col: string, raw: string) => {
+  const addFilter = (col: string, op: Op, raw: string) => {
     const c = columnByName.get(col);
-    const value = coerceFilterValue(c, raw);
-    setWhereFilter((s) => ({ ...s, [col]: value }));
+    const value = VALUELESS_OPS.has(op) ? null : coerceFilterValue(c, raw);
+    setFilters((s) => [...s, { col, op, value }]);
     setComposerOpen(false);
   };
 
@@ -246,7 +272,7 @@ export default function TablesTab() {
                   type="button"
                   className={`pc-tables-row ${selected === t.exportName ? 'is-active' : ''}`}
                   onClick={() => {
-                    if (selected !== t.exportName) setWhereFilter({});
+                    if (selected !== t.exportName) setFilters([]);
                     setSelected(t.exportName);
                   }}
                   title={t.exportName}
@@ -308,13 +334,13 @@ export default function TablesTab() {
             {hasFilters && (
               <div className="pc-tables-filter-bar">
                 {filterChips.map((chip) => (
-                  <span key={chip.col} className="pc-tables-filter-chip">
+                  <span key={chip.key} className="pc-tables-filter-chip">
                     <code>{chip.label}</code>
                     <button
                       type="button"
                       className="pc-tables-filter-chip-x"
-                      onClick={() => removeFilter(chip.col)}
-                      title={`Remove ${chip.col} filter`}
+                      onClick={() => removeFilter(chip.key)}
+                      title={`Remove ${chip.col} ${chip.op} filter`}
                     >
                       ×
                     </button>
@@ -416,7 +442,7 @@ export default function TablesTab() {
                       onClick={() => {
                         const o = Math.max(offset - PAGE_SIZE, 0);
                         setOffset(o);
-                        void fetchRows(selected, o, role, whereFilter);
+                        void fetchRows(selected, o, role, filters);
                       }}
                     >
                       ‹ Prev
@@ -429,7 +455,7 @@ export default function TablesTab() {
                       onClick={() => {
                         const o = offset + PAGE_SIZE;
                         setOffset(o);
-                        void fetchRows(selected, o, role, whereFilter);
+                        void fetchRows(selected, o, role, filters);
                       }}
                     >
                       Next ›
@@ -498,13 +524,15 @@ function FilterComposer({
 }: {
   columns: ColumnSummary[];
   onCancel: () => void;
-  onApply: (col: string, value: string) => void;
+  onApply: (col: string, op: Op, value: string) => void;
 }) {
   const [col, setCol] = useState(columns[0]?.name ?? '');
+  const [op, setOp] = useState<Op>('eq');
   const [value, setValue] = useState('');
   const selectedCol = columns.find((c) => c.name === col);
+  const needsValue = !VALUELESS_OPS.has(op);
   const submit = () => {
-    if (col) onApply(col, value);
+    if (col) onApply(col, op, value);
   };
   return (
     <div className="pc-tables-composer">
@@ -516,22 +544,35 @@ function FilterComposer({
           </option>
         ))}
       </select>
-      <span className="pc-tables-composer-op">=</span>
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder={
-          selectedCol
-            ? coerceHint(selectedCol)
-            : 'value'
-        }
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') submit();
-          if (e.key === 'Escape') onCancel();
-        }}
-        autoFocus
-      />
+      <select
+        className="pc-tables-composer-opsel"
+        value={op}
+        onChange={(e) => setOp(e.target.value as Op)}
+        title="Comparison operator"
+      >
+        {OPS.map((o) => (
+          <option key={o.op} value={o.op}>{o.label}</option>
+        ))}
+      </select>
+      {needsValue && (
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder={
+            op === 'like' || op === 'ilike'
+              ? 'pattern (% wildcards)'
+              : selectedCol
+                ? coerceHint(selectedCol)
+                : 'value'
+          }
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') submit();
+            if (e.key === 'Escape') onCancel();
+          }}
+          autoFocus
+        />
+      )}
       <button className="pc-tables-composer-apply" onClick={submit}>
         Apply
       </button>
