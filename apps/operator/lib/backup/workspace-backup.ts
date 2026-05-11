@@ -380,7 +380,9 @@ export class WorkspaceBackup {
   async maintenance(level: 'quick' | 'full' = 'quick'): Promise<void> {
     const password = await deriveRepoPassword(this.workspaceId);
     const env = this.envWithPassword(password);
-    await this.kopia(['maintenance', 'run', `--${level}`], { env });
+    // kopia uses bool --full for full; no flag = quick.
+    const args = level === 'full' ? ['maintenance', 'run', '--full'] : ['maintenance', 'run'];
+    await this.kopia(args, { env });
   }
 
   async updateSettings(partial: Partial<Omit<BackupSettings, 'workspaceId'>>): Promise<BackupSettings> {
