@@ -14,6 +14,8 @@ export {
   effectiveRuntime,
   effectiveVersionPin,
   effectiveMigrationManifest,
+  isBundledPlugin,
+  readCapturePluginExtras,
   type SnapshotManifest,
   type SnapshotKind,
   type SnapshotPlugin,
