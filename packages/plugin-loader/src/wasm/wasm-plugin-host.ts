@@ -195,9 +195,13 @@ export async function loadWasmPlugin(
 
   // Dynamic-import the transpiled ESM. URL fragment forces fresh
   // import each load (avoids module-cache reuse if the same wasm is
-  // re-instantiated under different ctx).
+  // re-instantiated under different ctx). Multiple bundler ignore
+  // hints — turbopack (Next 16) parses statically and errors on
+  // unresolvable dynamic specifiers without these.
   const url = `file://${transpiled.entryPath}#load=${Date.now()}`;
-  const mod = (await import(/* @vite-ignore */ url)) as TranspiledModule;
+  const mod = (await import(
+    /* @vite-ignore */ /* webpackIgnore: true */ /* turbopackIgnore: true */ url
+  )) as TranspiledModule;
 
   // Core wasm provider: jco's instantiate signature requires a function
   // that resolves a relative path (e.g. "transpiled.core.wasm") to a

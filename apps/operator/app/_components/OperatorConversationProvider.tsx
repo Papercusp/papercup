@@ -57,6 +57,7 @@ import {
   writeSleepUntilMs,
   type OperatorMode,
 } from '@/lib/operator-converse-tags';
+import { getVoiceState, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@restart/sync';
 import type { ChatMessage } from './chat/ChatConversation';
 
@@ -628,8 +629,23 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // Active mode only. When `sub === 'ready'` and 10s elapsed → nudge.
   // When 'silence_nudge' and 30s more → silence_check. When
   // 'silence_check' and 30s more → quiet_wait.
+  //
+  // Voice gate: when a voice session owns the mic, the user IS speaking
+  // (or being spoken to) — the chat sidebar must NOT also fire silence
+  // nudges. Otherwise the voice agent says "X" while the chat
+  // independently writes "Still with me?" / "Want me to go passive?",
+  // and the unified-conversation log fills with two parallel monologues
+  // ("Bug B" of the voice/text divergence audit).
+  const [voiceActive, setVoiceActive] = useState(() => {
+    try { return getVoiceState().mode !== 'off'; } catch { return false; }
+  });
+  useEffect(() => {
+    return subscribeVoiceState((s) => setVoiceActive(s.mode !== 'off'));
+  }, []);
+
   useEffect(() => {
     if (state.mode !== 'active') return;
+    if (voiceActive) return; // voice owns the conversation; no nudge filler
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (state.sub === 'ready') {
       timer = setTimeout(() => void runGeneration('silence_nudge'), SILENCE_NUDGE_MS);
@@ -639,7 +655,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       timer = setTimeout(() => dispatch({ type: 'set_sub', sub: 'quiet_wait' }), SILENCE_QUIET_WAIT_MS);
     }
     return () => { if (timer) clearTimeout(timer); };
-  }, [state.mode, state.sub, runGeneration]);
+  }, [state.mode, state.sub, runGeneration, voiceActive]);
 
   // ── Public actions ──────────────────────────────────────────────────
 
