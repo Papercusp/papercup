@@ -751,10 +751,10 @@ async function doPauseProject(
 ): Promise<ExecuteActionResult> {
   if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
   const { db } = getOrgPg();
-  const p = generated.projectsInHarness_shared;
+  const p = generated.projectsInHarnessShared;
   const rows = await db
     .update(p)
-    .set({ status: 'paused', updated_ts: Date.now() })
+    .set({ status: 'paused', updatedTs: Date.now() })
     .where(eq(p.slug, action.projectSlug))
     .returning({ id: p.id, slug: p.slug, status: p.status });
   if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };
@@ -768,10 +768,10 @@ async function doResumeProject(
   if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
   const target = action.status ?? 'in_progress';
   const { db } = getOrgPg();
-  const p = generated.projectsInHarness_shared;
+  const p = generated.projectsInHarnessShared;
   const rows = await db
     .update(p)
-    .set({ status: target, updated_ts: Date.now() })
+    .set({ status: target, updatedTs: Date.now() })
     .where(eq(p.slug, action.projectSlug))
     .returning({ id: p.id, slug: p.slug, status: p.status });
   if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };

@@ -19,8 +19,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const idf = generated.identity_filesInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const idf = generated.identityFilesInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,7 +44,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const tokenRows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -84,18 +84,18 @@ export async function POST(req: Request): Promise<Response> {
           role: f.role,
           content,
           bytes,
-          mtime_ms: now,
-          updated_at: now,
-          workspace_id: ws,
+          mtimeMs: now,
+          updatedAt: now,
+          workspaceId: ws,
         })
         .onConflictDoUpdate({
           target: idf.role,
           set: {
             content: dsql`EXCLUDED.content`,
             bytes: dsql`EXCLUDED.bytes`,
-            mtime_ms: dsql`EXCLUDED.mtime_ms`,
-            updated_at: dsql`EXCLUDED.updated_at`,
-            workspace_id: dsql`EXCLUDED.workspace_id`,
+            mtimeMs: dsql`EXCLUDED.mtime_ms`,
+            updatedAt: dsql`EXCLUDED.updated_at`,
+            workspaceId: dsql`EXCLUDED.workspace_id`,
           },
         });
       upserts++;

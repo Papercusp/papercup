@@ -45,8 +45,8 @@ import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 
-const os = generated.operator_secretsInHarness_shared;
-const sf = generated.spawn_sig_verification_failuresInHarness_shared;
+const os = generated.operatorSecretsInHarnessShared;
+const sf = generated.spawnSigVerificationFailuresInHarnessShared;
 import {
   ensureOperatorSecretsTable,
   ensureSpawnSigVerificationFailuresTable,
@@ -100,7 +100,7 @@ async function loadOrCreateKey(): Promise<Buffer> {
   await ensureOperatorSecretsTable();
   const { db } = getOrgPg();
   const rows = await db
-    .select({ value_b64: os.value_b64, rotated_at: os.rotated_at })
+    .select({ value_b64: os.valueB64, rotated_at: os.rotatedAt })
     .from(os)
     .where(eq(os.name, KEY_NAME))
     .limit(1);
@@ -123,15 +123,15 @@ async function loadOrCreateKey(): Promise<Buffer> {
   // (which can race if two operator processes start simultaneously).
   const fresh = randomBytes(32);
   const fresh_b64 = fresh.toString('base64');
-  await db.insert(os).values({ name: KEY_NAME, value_b64: fresh_b64 }).onConflictDoNothing();
+  await db.insert(os).values({ name: KEY_NAME, valueB64: fresh_b64 }).onConflictDoNothing();
   // Re-read to win-or-lose deterministically.
   const after = await db
-    .select({ value_b64: os.value_b64, rotated_at: os.rotated_at })
+    .select({ valueB64: os.valueB64, rotated_at: os.rotatedAt })
     .from(os)
     .where(eq(os.name, KEY_NAME))
     .limit(1);
   const rotatedAt = new Date(after[0]!.rotated_at as never).getTime();
-  const buf = Buffer.from(after[0]!.value_b64, 'base64');
+  const buf = Buffer.from(after[0]!.valueB64, 'base64');
   __g.__papercuspSpawnSigningKey = { buf, rotatedAt, loadedAt: Date.now() };
   return buf;
 }
@@ -252,13 +252,13 @@ export async function logVerificationFailure(rec: VerificationFailureRecord): Pr
     const { db } = getOrgPg();
     await db.insert(sf).values({
       reason: rec.reason,
-      claimed_role: rec.claimedRole ?? null,
-      claimed_harness: rec.claimedHarness ?? null,
-      claimed_workspace: rec.claimedWorkspace ?? null,
-      claimed_spawn: rec.claimedSpawn ?? null,
-      exp_claim: rec.expClaim ?? null,
-      remote_addr: rec.remoteAddr ?? null,
-      user_agent: rec.userAgent ?? null,
+      claimedRole: rec.claimedRole ?? null,
+      claimedHarness: rec.claimedHarness ?? null,
+      claimedWorkspace: rec.claimedWorkspace ?? null,
+      claimedSpawn: rec.claimedSpawn ?? null,
+      expClaim: rec.expClaim ?? null,
+      remoteAddr: rec.remoteAddr ?? null,
+      userAgent: rec.userAgent ?? null,
     });
   } catch (err) {
     // Never fail the request because of audit-write failure; but log loud.
@@ -278,10 +278,10 @@ export async function rotateSpawnSigningKey(): Promise<void> {
   const fresh_b64 = randomBytes(32).toString('base64');
   await db
     .insert(os)
-    .values({ name: KEY_NAME, value_b64: fresh_b64, rotated_at: dsql`now()` as any })
+    .values({ name: KEY_NAME, valueB64: fresh_b64, rotatedAt: dsql`now()` as any })
     .onConflictDoUpdate({
       target: os.name,
-      set: { value_b64: dsql`EXCLUDED.value_b64`, rotated_at: dsql`now()` },
+      set: { valueB64: dsql`EXCLUDED.value_b64`, rotatedAt: dsql`now()` },
     });
   _resetSpawnSigningKeyCache();
 }

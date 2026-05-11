@@ -19,8 +19,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const hs = generated.harness_smoke_testInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const hs = generated.harnessSmokeTestInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -42,7 +42,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -72,25 +72,25 @@ export async function POST(req: Request): Promise<Response> {
   await db
     .insert(hs)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       status,
-      pass_content: passContent,
-      failure_content: failureContent,
+      passContent: passContent,
+      failureContent: failureContent,
       results: resultsJson ? (JSON.parse(resultsJson) as any) : null,
-      startup_log: startupLog,
-      mtime_ms: mtimeMs,
-      workspace_id: ws,
+      startupLog: startupLog,
+      mtimeMs: mtimeMs,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: hs.harness_slug,
+      target: hs.harnessSlug,
       set: {
         status: dsql`EXCLUDED.status`,
-        pass_content: dsql`EXCLUDED.pass_content`,
-        failure_content: dsql`EXCLUDED.failure_content`,
+        passContent: dsql`EXCLUDED.pass_content`,
+        failureContent: dsql`EXCLUDED.failure_content`,
         results: dsql`EXCLUDED.results`,
-        startup_log: dsql`EXCLUDED.startup_log`,
-        mtime_ms: dsql`EXCLUDED.mtime_ms`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        startupLog: dsql`EXCLUDED.startup_log`,
+        mtimeMs: dsql`EXCLUDED.mtime_ms`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   void notifySyncInvalidate('harnessSmokeTest.byHarness', { harnessSlug: slug }).catch(() => {});

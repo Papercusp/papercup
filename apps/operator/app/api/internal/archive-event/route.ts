@@ -19,8 +19,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const ha = generated.harness_archivesInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const ha = generated.harnessArchivesInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -49,7 +49,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -74,19 +74,19 @@ export async function POST(req: Request): Promise<Response> {
   await db
     .insert(ha)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       phase,
       id,
-      size_bytes: sizeBytes,
+      sizeBytes: sizeBytes,
       ts,
-      workspace_id: ws,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [ha.harness_slug, ha.phase, ha.id],
+      target: [ha.harnessSlug, ha.phase, ha.id],
       set: {
-        size_bytes: dsql`EXCLUDED.size_bytes`,
+        sizeBytes: dsql`EXCLUDED.size_bytes`,
         ts: dsql`EXCLUDED.ts`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   void notifySyncInvalidate('harnessArchives.byHarness', { harnessSlug: slug, phase }).catch(() => {});

@@ -14,7 +14,7 @@
 import { getOrgPg, generated } from '@restart/db-org';
 import { ensureHarnessPlanReviewTable } from './ensure-schema';
 
-const hpr = generated.harness_plan_reviewInHarness_shared;
+const hpr = generated.harnessPlanReviewInHarnessShared;
 
 const MAX_BODY_BYTES = 32 * 1024;
 const SUMMARY_CHARS = 200;
@@ -41,7 +41,7 @@ export async function loadHarnessPlanReviews(): Promise<PlanReviewEntry[]> {
   await ensureHarnessPlanReviewTable();
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: hpr.harness_slug, content: hpr.content, mtime_ms: hpr.mtime_ms })
+    .select({ harness_slug: hpr.harnessSlug, content: hpr.content, mtime_ms: hpr.mtimeMs })
     .from(hpr);
   const out: PlanReviewEntry[] = [];
   for (const r of rows) {

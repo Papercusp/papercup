@@ -24,7 +24,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 import { notifySyncInvalidate } from './sync-sse';
 
-const vl = generated.voice_leaseInHarness_shared;
+const vl = generated.voiceLeaseInHarnessShared;
 
 const LEASE_MS = 12_000;
 
@@ -83,17 +83,17 @@ export async function claimVoiceLease(opts: {
     await db
       .insert(vl)
       .values({
-        workspace_id: opts.workspaceId,
-        owner_id: opts.ownerId,
-        owner_kind: opts.ownerKind,
-        expires_at_ms: expiresAtMs,
+        workspaceId: opts.workspaceId,
+        ownerId: opts.ownerId,
+        ownerKind: opts.ownerKind,
+        expiresAtMs: expiresAtMs,
       })
       .onConflictDoUpdate({
-        target: vl.workspace_id,
+        target: vl.workspaceId,
         set: {
-          owner_id: dsql`EXCLUDED.owner_id`,
-          owner_kind: dsql`EXCLUDED.owner_kind`,
-          expires_at_ms: dsql`EXCLUDED.expires_at_ms`,
+          ownerId: dsql`EXCLUDED.owner_id`,
+          ownerKind: dsql`EXCLUDED.owner_kind`,
+          expiresAtMs: dsql`EXCLUDED.expires_at_ms`,
         },
       });
     void notifySyncInvalidate('voiceLease.current', { workspaceId: opts.workspaceId });
@@ -110,34 +110,34 @@ export async function claimVoiceLease(opts: {
 
   const rows = await db
     .select({
-      owner_id: vl.owner_id,
-      owner_kind: vl.owner_kind,
-      expires_at_ms: vl.expires_at_ms,
+      ownerId: vl.ownerId,
+      ownerKind: vl.ownerKind,
+      expiresAtMs: vl.expiresAtMs,
     })
     .from(vl)
-    .where(eq(vl.workspace_id, opts.workspaceId));
-  const current = rows[0] as { owner_id: string; owner_kind: VoiceLeaseKind; expires_at_ms: number } | undefined;
-  const expired = !current || Number(current.expires_at_ms) < now;
-  const same = current && current.owner_id === opts.ownerId;
+    .where(eq(vl.workspaceId, opts.workspaceId));
+  const current = rows[0] as { ownerId: string; ownerKind: VoiceLeaseKind; expiresAtMs: number } | undefined;
+  const expired = !current || Number(current.expiresAtMs) < now;
+  const same = current && current.ownerId === opts.ownerId;
 
   if (expired || same) {
     await db
       .insert(vl)
       .values({
-        workspace_id: opts.workspaceId,
-        owner_id: opts.ownerId,
-        owner_kind: opts.ownerKind,
-        expires_at_ms: expiresAtMs,
+        workspaceId: opts.workspaceId,
+        ownerId: opts.ownerId,
+        ownerKind: opts.ownerKind,
+        expiresAtMs: expiresAtMs,
       })
       .onConflictDoUpdate({
-        target: vl.workspace_id,
+        target: vl.workspaceId,
         set: {
-          owner_id: dsql`EXCLUDED.owner_id`,
-          owner_kind: dsql`EXCLUDED.owner_kind`,
-          expires_at_ms: dsql`EXCLUDED.expires_at_ms`,
+          ownerId: dsql`EXCLUDED.owner_id`,
+          ownerKind: dsql`EXCLUDED.owner_kind`,
+          expiresAtMs: dsql`EXCLUDED.expires_at_ms`,
         },
       });
-    if (expired || (current && current.owner_id !== opts.ownerId)) {
+    if (expired || (current && current.ownerId !== opts.ownerId)) {
       void notifySyncInvalidate('voiceLease.current', { workspaceId: opts.workspaceId });
     }
     return {
@@ -155,9 +155,9 @@ export async function claimVoiceLease(opts: {
     granted: false,
     lease: {
       workspaceId: opts.workspaceId,
-      ownerId: current.owner_id,
-      ownerKind: current.owner_kind,
-      expiresAtMs: Number(current.expires_at_ms),
+      ownerId: current.ownerId,
+      ownerKind: current.ownerKind,
+      expiresAtMs: Number(current.expiresAtMs),
     },
   };
 }
@@ -168,7 +168,7 @@ export async function releaseVoiceLease(opts: {
 }): Promise<void> {
   await ensureLeaseTable();
   const { db } = getOrgPg();
-  await db.delete(vl).where(and(eq(vl.workspace_id, opts.workspaceId), eq(vl.owner_id, opts.ownerId)));
+  await db.delete(vl).where(and(eq(vl.workspaceId, opts.workspaceId), eq(vl.ownerId, opts.ownerId)));
   void notifySyncInvalidate('voiceLease.current', { workspaceId: opts.workspaceId });
 }
 
@@ -177,18 +177,18 @@ export async function readVoiceLease(workspaceId: string): Promise<VoiceLease | 
   const { db } = getOrgPg();
   const rows = await db
     .select({
-      owner_id: vl.owner_id,
-      owner_kind: vl.owner_kind,
-      expires_at_ms: vl.expires_at_ms,
+      ownerId: vl.ownerId,
+      ownerKind: vl.ownerKind,
+      expiresAtMs: vl.expiresAtMs,
     })
     .from(vl)
-    .where(and(eq(vl.workspace_id, workspaceId), dsql`${vl.expires_at_ms} >= ${Date.now()}`));
+    .where(and(eq(vl.workspaceId, workspaceId), dsql`${vl.expiresAtMs} >= ${Date.now()}`));
   if (rows.length === 0) return null;
-  const r = rows[0] as { owner_id: string; owner_kind: VoiceLeaseKind; expires_at_ms: number };
+  const r = rows[0] as { ownerId: string; ownerKind: VoiceLeaseKind; expiresAtMs: number };
   return {
     workspaceId,
-    ownerId: r.owner_id,
-    ownerKind: r.owner_kind,
-    expiresAtMs: Number(r.expires_at_ms),
+    ownerId: r.ownerId,
+    ownerKind: r.ownerKind,
+    expiresAtMs: Number(r.expiresAtMs),
   };
 }

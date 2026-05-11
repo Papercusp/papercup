@@ -62,7 +62,7 @@ vi.mock('@restart/db-org', () => {
   };
   return {
     getOrgPg: () => ({ sql: tagged, db: dbStub }),
-    generated: { operator_rate_limitInHarness_shared: { workspace_id: {}, payload: {}, updated_at: {} } },
+    generated: { operatorRateLimitInHarnessShared: { workspace_id: {}, payload: {}, updated_at: {} } },
   };
 });
 

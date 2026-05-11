@@ -10,7 +10,7 @@
 import { getOrgPg, withWorkspace, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 
-const hr = generated.harness_registryInHarness_shared;
+const hr = generated.harnessRegistryInHarnessShared;
 
 interface ProjectEntry {
   slug: string;
@@ -38,7 +38,7 @@ async function readHarnessRegistryFor(workspaceId: string): Promise<ProjectEntry
   const rows = await db
     .select({ payload: hr.payload })
     .from(hr)
-    .where(eq(hr.workspace_id, workspaceId))
+    .where(eq(hr.workspaceId, workspaceId))
     .limit(1);
   return (rows[0]?.payload as { projects?: ProjectEntry[] } | null)?.projects ?? [];
 }

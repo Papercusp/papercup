@@ -2,7 +2,7 @@
  * Get a single goal by id. Returns lineage (children + descendant tasks)
  * when detail='full'.
  *
- * Uses `schemaOf(generated.goalsInHarness_shared).select` so the response
+ * Uses `schemaOf(generated.goalsInHarnessShared).select` so the response
  * row shape is the same Zod schema you'd use in a form or a CRUD admin
  * page — no hand-typed `Record<string, unknown>`.
  */
@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-const goals = generated.goalsInHarness_shared;
+const goals = generated.goalsInHarnessShared;
 const GoalSelect = schemaOf(goals).select;
 type GoalRow = z.infer<typeof GoalSelect>;
 

@@ -23,8 +23,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const hd = generated.harness_decisionsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const hd = generated.harnessDecisionsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -45,7 +45,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -72,26 +72,26 @@ export async function POST(req: Request): Promise<Response> {
   await db
     .insert(hd)
     .values({
-      harness_slug: slug,
-      line_hash: lineHash,
+      harnessSlug: slug,
+      lineHash: lineHash,
       ts: Number.isNaN(ts) ? 0 : ts,
       iso,
       verb,
       args,
       iteration,
-      is_ghost: isGhost,
-      workspace_id: ws,
+      isGhost: isGhost,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [hd.harness_slug, hd.line_hash],
+      target: [hd.harnessSlug, hd.lineHash],
       set: {
         ts: dsql`EXCLUDED.ts`,
         iso: dsql`EXCLUDED.iso`,
         verb: dsql`EXCLUDED.verb`,
         args: dsql`EXCLUDED.args`,
         iteration: dsql`EXCLUDED.iteration`,
-        is_ghost: dsql`EXCLUDED.is_ghost`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        isGhost: dsql`EXCLUDED.is_ghost`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   void notifySyncInvalidate('harnessDecisions.byHarness', { harnessSlug: slug }).catch(() => {});

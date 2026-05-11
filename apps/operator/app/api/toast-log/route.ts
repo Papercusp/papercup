@@ -18,7 +18,7 @@ import { ensureToastLogTable } from '../../../lib/ensure-schema';
 import { notifySyncInvalidate } from '../../../lib/sync-sse';
 import { listToasts } from '../../../lib/toast-log-data';
 
-const tl = generated.toast_logInHarness_shared;
+const tl = generated.toastLogInHarnessShared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,10 +75,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       level,
       message,
       description,
-      harness_slug: harnessSlug,
-      created_at: createdAt,
-      action_label: actionLabel,
-      action_href: actionHref,
+      harnessSlug: harnessSlug,
+      createdAt: createdAt,
+      actionLabel: actionLabel,
+      actionHref: actionHref,
     })
     .returning({ id: tl.id });
 
@@ -87,7 +87,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     const stale = await db
       .select({ id: tl.id })
       .from(tl)
-      .orderBy(desc(tl.created_at))
+      .orderBy(desc(tl.createdAt))
       .offset(RING_BUFFER_SIZE);
     if (stale.length > 0) {
       await db.delete(tl).where(inArray(tl.id, stale.map((r) => r.id)));

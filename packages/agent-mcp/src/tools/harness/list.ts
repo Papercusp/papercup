@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-const projects = generated.projectsInHarness_shared;
+const projects = generated.projectsInHarnessShared;
 const ProjectSelect = schemaOf(projects).select;
 type ProjectRow = z.infer<typeof ProjectSelect>;
 

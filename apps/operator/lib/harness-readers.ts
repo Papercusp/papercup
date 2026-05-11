@@ -82,11 +82,11 @@ export interface ReviewsListData {
 
 export async function listPendingReviews(slug: string, phase: Phase): Promise<ReviewsListData> {
   const { db } = getOrgPg();
-  const t = generated.pending_reviewsInHarness_shared;
+  const t = generated.pendingReviewsInHarnessShared;
   const rows = await db
-    .select({ payload: t.payload, review_id: t.review_id, resolved: t.resolved, ts: t.ts })
+    .select({ payload: t.payload, review_id: t.reviewId, resolved: t.resolved, ts: t.ts })
     .from(t)
-    .where(and(eq(t.harness_slug, slug), eq(t.phase, phase), eq(t.resolved, false)))
+    .where(and(eq(t.harnessSlug, slug), eq(t.phase, phase), eq(t.resolved, false)))
     .orderBy(desc(t.ts));
   return {
     reviews: (rows as PendingReviewRow[]).map((r) => ({ ...r.payload, id: r.review_id, resolved: r.resolved, ts: r.ts })),

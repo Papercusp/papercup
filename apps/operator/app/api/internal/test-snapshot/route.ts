@@ -18,8 +18,8 @@ import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const ht = generated.harness_testsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const ht = generated.harnessTestsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,7 +38,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const tokenRows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -80,37 +80,37 @@ export async function POST(req: Request): Promise<Response> {
 
   // Replace-all: orphan-delete any test_id not in the snapshot.
   if (keep.length === 0) {
-    await db.delete(ht).where(and(eq(ht.harness_slug, slug), eq(ht.phase, phase)));
+    await db.delete(ht).where(and(eq(ht.harnessSlug, slug), eq(ht.phase, phase)));
   } else {
     const ids = keep.map((k) => k.testId);
     await db
       .delete(ht)
-      .where(and(eq(ht.harness_slug, slug), eq(ht.phase, phase), notInArray(ht.test_id, ids)));
+      .where(and(eq(ht.harnessSlug, slug), eq(ht.phase, phase), notInArray(ht.testId, ids)));
     for (const k of keep) {
       await db
         .insert(ht)
         .values({
-          harness_slug: slug,
+          harnessSlug: slug,
           phase,
-          test_id: k.testId,
+          testId: k.testId,
           name: k.name,
           status: k.status,
-          duration_ms: k.durationMs,
-          last_run_ts: k.lastRunTs,
+          durationMs: k.durationMs,
+          lastRunTs: k.lastRunTs,
           payload: k.payload,
-          mtime_ms: now,
-          workspace_id: ws,
+          mtimeMs: now,
+          workspaceId: ws,
         })
         .onConflictDoUpdate({
-          target: [ht.harness_slug, ht.phase, ht.test_id],
+          target: [ht.harnessSlug, ht.phase, ht.testId],
           set: {
             name: dsql`EXCLUDED.name`,
             status: dsql`EXCLUDED.status`,
-            duration_ms: dsql`EXCLUDED.duration_ms`,
-            last_run_ts: dsql`EXCLUDED.last_run_ts`,
+            durationMs: dsql`EXCLUDED.duration_ms`,
+            lastRunTs: dsql`EXCLUDED.last_run_ts`,
             payload: dsql`EXCLUDED.payload`,
-            mtime_ms: dsql`EXCLUDED.mtime_ms`,
-            workspace_id: dsql`EXCLUDED.workspace_id`,
+            mtimeMs: dsql`EXCLUDED.mtime_ms`,
+            workspaceId: dsql`EXCLUDED.workspace_id`,
           },
         });
     }

@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-const features = generated.harness_features_consolidatedInHarness_shared;
+const features = generated.harnessFeaturesConsolidatedInHarnessShared;
 const FeatureSelect = schemaOf(features).select;
 type FeatureRow = z.infer<typeof FeatureSelect>;
 

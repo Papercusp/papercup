@@ -16,8 +16,8 @@ import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const fp = generated.harness_feature_prsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const fp = generated.harnessFeaturePrsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,7 +38,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -65,21 +65,21 @@ export async function POST(req: Request): Promise<Response> {
   await db
     .insert(fp)
     .values({
-      workspace_id: ws,
-      harness_slug: slug,
-      feature_id: featureId,
-      pr_url: url,
-      pr_state: state,
-      opened_ts: createdAt,
-      updated_ts: updatedAt,
+      workspaceId: ws,
+      harnessSlug: slug,
+      featureId: featureId,
+      prUrl: url,
+      prState: state,
+      openedTs: createdAt,
+      updatedTs: updatedAt,
     })
     .onConflictDoUpdate({
-      target: [fp.workspace_id, fp.harness_slug, fp.feature_id],
+      target: [fp.workspaceId, fp.harnessSlug, fp.featureId],
       set: {
-        pr_url: dsql`EXCLUDED.pr_url`,
-        pr_state: dsql`EXCLUDED.pr_state`,
-        opened_ts: dsql`EXCLUDED.opened_ts`,
-        updated_ts: dsql`EXCLUDED.updated_ts`,
+        prUrl: dsql`EXCLUDED.pr_url`,
+        prState: dsql`EXCLUDED.pr_state`,
+        openedTs: dsql`EXCLUDED.opened_ts`,
+        updatedTs: dsql`EXCLUDED.updated_ts`,
       },
     });
   void notifySyncInvalidate('featurePrs.byHarness', { harnessSlug: slug }).catch(() => {});

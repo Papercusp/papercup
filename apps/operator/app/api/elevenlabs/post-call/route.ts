@@ -25,8 +25,8 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 
-const ot = generated.operator_turnsInHarness_shared;
-const oc = generated.operator_conversationsInHarness_shared;
+const ot = generated.operatorTurnsInHarnessShared;
+const oc = generated.operatorConversationsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -109,9 +109,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const found = await db
-    .selectDistinct({ conversation_id: ot.conversation_id })
+    .selectDistinct({ conversation_id: ot.conversationId })
     .from(ot)
-    .where(eq(ot.el_conv_id, elConvId))
+    .where(eq(ot.elConvId, elConvId))
     .limit(1);
 
   if (found.length === 0) {
@@ -136,7 +136,7 @@ export async function POST(req: NextRequest): Promise<Response> {
        WHERE id = ${ourId}
     `;
   } else if (event.type === 'post_call_audio') {
-    await db.update(oc).set({ has_audio: true }).where(eq(oc.id, ourId));
+    await db.update(oc).set({ hasAudio: true }).where(eq(oc.id, ourId));
   }
   // call_initiation_failure: nothing to reconcile — the conversation
   // never produced turns. Just ack.

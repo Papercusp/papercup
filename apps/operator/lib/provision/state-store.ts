@@ -26,7 +26,7 @@ import { join } from 'node:path';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
 
-const t = generated.provision_stateInHarness_shared;
+const t = generated.provisionStateInHarnessShared;
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -80,7 +80,7 @@ async function readRow(harness: string, plugin: string): Promise<ProvisionState 
   const rows = await db
     .select({ payload: t.payload })
     .from(t)
-    .where(and(eq(t.workspace_id, ws), eq(t.harness_slug, harness), eq(t.plugin_slug, plugin)))
+    .where(and(eq(t.workspaceId, ws), eq(t.harnessSlug, harness), eq(t.pluginSlug, plugin)))
     .limit(1);
   return (rows[0]?.payload as ProvisionState | undefined) ?? null;
 }
@@ -91,10 +91,10 @@ async function upsertRow(harness: string, plugin: string, state: ProvisionState)
   const now = Date.now();
   await db
     .insert(t)
-    .values({ workspace_id: ws, harness_slug: harness, plugin_slug: plugin, payload: state, updated_at: now })
+    .values({ workspaceId: ws, harnessSlug: harness, pluginSlug: plugin, payload: state, updatedAt: now })
     .onConflictDoUpdate({
-      target: [t.workspace_id, t.harness_slug, t.plugin_slug],
-      set: { payload: dsql`EXCLUDED.payload`, updated_at: dsql`EXCLUDED.updated_at` },
+      target: [t.workspaceId, t.harnessSlug, t.pluginSlug],
+      set: { payload: dsql`EXCLUDED.payload`, updatedAt: dsql`EXCLUDED.updated_at` },
     });
 }
 
@@ -162,7 +162,7 @@ export async function clearState(harness: string, plugin: string): Promise<void>
   const ws = activeWorkspaceId();
   await db
     .delete(t)
-    .where(and(eq(t.workspace_id, ws), eq(t.harness_slug, harness), eq(t.plugin_slug, plugin)));
+    .where(and(eq(t.workspaceId, ws), eq(t.harnessSlug, harness), eq(t.pluginSlug, plugin)));
 }
 
 /**

@@ -68,7 +68,7 @@ vi.mock('drizzle-orm/postgres-js', () => ({
 
 vi.mock('@restart/db-org', () => ({
   withWorkspace: async (_ws: string, cb: (tx: unknown) => Promise<unknown>) => cb({}),
-  generated: { operator_scan_locksInHarness_shared: { workspace_id: {}, holder_id: {}, expires_at: {} } },
+  generated: { operatorScanLocksInHarnessShared: { workspace_id: {}, holder_id: {}, expires_at: {} } },
 }));
 
 import { acquireScanLock, releaseScanLock } from './operator-scan-lock';

@@ -22,7 +22,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { publish } from '@/lib/harness-log-bus';
 
-const ti = generated.token_indexInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -46,7 +46,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);

@@ -19,8 +19,8 @@ import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const hsk = generated.harness_skillsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const hsk = generated.harnessSkillsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,7 +44,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const tokenRows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -79,25 +79,25 @@ export async function POST(req: Request): Promise<Response> {
   // Replace-all semantics: orphan-delete any skill not in the snapshot,
   // then UPSERT the rest.
   if (keep.length === 0) {
-    await db.delete(hsk).where(and(eq(hsk.workspace_id, ws), eq(hsk.harness_slug, slug)));
+    await db.delete(hsk).where(and(eq(hsk.workspaceId, ws), eq(hsk.harnessSlug, slug)));
   } else {
     const names = keep.map((k) => k.name);
     await db
       .delete(hsk)
-      .where(and(eq(hsk.workspace_id, ws), eq(hsk.harness_slug, slug), notInArray(hsk.name, names)));
+      .where(and(eq(hsk.workspaceId, ws), eq(hsk.harnessSlug, slug), notInArray(hsk.name, names)));
     for (const k of keep) {
       await db
         .insert(hsk)
         .values({
-          workspace_id: ws,
-          harness_slug: slug,
+          workspaceId: ws,
+          harnessSlug: slug,
           name: k.name,
           content: k.content,
-          mtime_ms: now,
+          mtimeMs: now,
         })
         .onConflictDoUpdate({
-          target: [hsk.workspace_id, hsk.harness_slug, hsk.name],
-          set: { content: dsql`EXCLUDED.content`, mtime_ms: dsql`EXCLUDED.mtime_ms` },
+          target: [hsk.workspaceId, hsk.harnessSlug, hsk.name],
+          set: { content: dsql`EXCLUDED.content`, mtimeMs: dsql`EXCLUDED.mtime_ms` },
         });
     }
   }

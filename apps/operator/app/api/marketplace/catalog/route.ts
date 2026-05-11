@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import FALLBACK_CATALOG from './fallback-catalog.json';
 import { getOrgPg, generated } from '@restart/db-org';
 
-const hp = generated.hidden_pluginsInHarness_shared;
+const hp = generated.hiddenPluginsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 

@@ -23,7 +23,7 @@ import { ensureUserActionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
 
-const t = generated.user_actionsInHarness_shared;
+const t = generated.userActionsInHarnessShared;
 
 export type ActionKind =
   | 'replan'
@@ -72,12 +72,12 @@ export async function recordUserAction<T>(
   const inserted = await db
     .insert(t)
     .values({
-      harness_slug: slug,
+      harnessSlug: slug,
       kind,
       status: 'running',
-      started_at: now,
+      startedAt: now,
       actor: opts.actor ?? null,
-      workspace_id: activeWorkspaceId(),
+      workspaceId: activeWorkspaceId(),
     })
     .returning({ id: t.id });
   const id = Number(inserted[0].id);
@@ -90,8 +90,8 @@ export async function recordUserAction<T>(
       await db
         .update(t)
         .set({
-          invocation_id: out.invocationId ?? null,
-          detail_url: out.detailUrl ?? null,
+          invocationId: out.invocationId ?? null,
+          detailUrl: out.detailUrl ?? null,
           summary: out.summary,
         })
         .where(eq(t.id, BigInt(id)));
@@ -101,9 +101,9 @@ export async function recordUserAction<T>(
         .set({
           status: 'succeeded',
           summary: out.summary,
-          detail_url: out.detailUrl ?? null,
-          invocation_id: out.invocationId ?? null,
-          finished_at: Date.now(),
+          detailUrl: out.detailUrl ?? null,
+          invocationId: out.invocationId ?? null,
+          finishedAt: Date.now(),
         })
         .where(eq(t.id, BigInt(id)));
     }
@@ -115,8 +115,8 @@ export async function recordUserAction<T>(
       .update(t)
       .set({
         status: 'failed',
-        error_text: msg.slice(0, 1000),
-        finished_at: Date.now(),
+        errorText: msg.slice(0, 1000),
+        finishedAt: Date.now(),
       })
       .where(eq(t.id, BigInt(id)));
     void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
@@ -146,12 +146,12 @@ export async function updateUserAction(args: {
     .set({
       status: args.status,
       summary: args.summary !== undefined ? args.summary : rawSql`${t.summary}` as any,
-      detail_url: args.detailUrl !== undefined ? args.detailUrl : rawSql`${t.detail_url}` as any,
-      error_text: args.errorText ?? null,
-      finished_at: Date.now(),
+      detailUrl: args.detailUrl !== undefined ? args.detailUrl : rawSql`${t.detailUrl}` as any,
+      errorText: args.errorText ?? null,
+      finishedAt: Date.now(),
     })
     .where(eq(t.id, BigInt(args.id)))
-    .returning({ harness_slug: t.harness_slug });
-  const slug = rows[0]?.harness_slug;
+    .returning({ harnessSlug: t.harnessSlug });
+  const slug = rows[0]?.harnessSlug;
   if (slug) void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
 }

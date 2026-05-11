@@ -18,8 +18,8 @@ import { and, desc, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
-const ti = generated.token_indexInHarness_shared;
-const hl = generated.harness_hook_logsInHarness_shared;
+const ti = generated.tokenIndexInHarnessShared;
+const hl = generated.harnessHookLogsInHarnessShared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -42,7 +42,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const { db } = getOrgPg();
   const rows = await db
-    .select({ harness_slug: ti.harness_slug })
+    .select({ harness_slug: ti.harnessSlug })
     .from(ti)
     .where(eq(ti.token, token))
     .limit(1);
@@ -74,36 +74,36 @@ export async function POST(req: Request): Promise<Response> {
   await db
     .insert(hl)
     .values({
-      harness_slug: slug,
-      log_id: logId,
+      harnessSlug: slug,
+      logId: logId,
       name,
       ts: tsMs,
-      size_bytes: sizeBytes,
+      sizeBytes: sizeBytes,
       content,
-      workspace_id: ws,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
-      target: [hl.harness_slug, hl.log_id],
+      target: [hl.harnessSlug, hl.logId],
       set: {
         name: dsql`EXCLUDED.name`,
         ts: dsql`EXCLUDED.ts`,
-        size_bytes: dsql`EXCLUDED.size_bytes`,
+        sizeBytes: dsql`EXCLUDED.size_bytes`,
         content: dsql`EXCLUDED.content`,
-        workspace_id: dsql`EXCLUDED.workspace_id`,
+        workspaceId: dsql`EXCLUDED.workspace_id`,
       },
     });
   // Trim to most-recent HOOK_KEEP rows per harness — same cap the
   // chokidar mirror enforced.
   const keepers = await db
-    .select({ log_id: hl.log_id })
+    .select({ logId: hl.logId })
     .from(hl)
-    .where(eq(hl.harness_slug, slug))
+    .where(eq(hl.harnessSlug, slug))
     .orderBy(desc(hl.ts))
     .limit(HOOK_KEEP);
   if (keepers.length > 0) {
     await db
       .delete(hl)
-      .where(and(eq(hl.harness_slug, slug), notInArray(hl.log_id, keepers.map((k) => k.log_id))));
+      .where(and(eq(hl.harnessSlug, slug), notInArray(hl.logId, keepers.map((k) => k.logId))));
   }
   void notifySyncInvalidate('harnessHookLogs.byHarness', { harnessSlug: slug }).catch(() => {});
   return NextResponse.json({ ok: true });

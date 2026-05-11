@@ -47,22 +47,22 @@ export function listAdminTables(): AdminTableEntry[] {
 // one-off admin pages. New plugins call registerAdminTable from their
 // boot hook.
 registerAdminTable({
-  exportName: 'operator_budget_tiersInHarness_shared',
-  table: generated.operator_budget_tiersInHarness_shared,
+  exportName: 'operatorBudgetTiersInHarnessShared',
+  table: generated.operatorBudgetTiersInHarnessShared,
   label: 'Operator budget tiers',
   editableColumns: ['ord', 'label', 'cap_usd', 'blurb'],
 });
 
 registerAdminTable({
-  exportName: 'operator_settingsInHarness_shared',
-  table: generated.operator_settingsInHarness_shared,
+  exportName: 'operatorSettingsInHarnessShared',
+  table: generated.operatorSettingsInHarnessShared,
   label: 'Operator settings',
   editableColumns: ['key', 'value', 'description'],
 });
 
 registerAdminTable({
-  exportName: 'hidden_pluginsInHarness_shared',
-  table: generated.hidden_pluginsInHarness_shared,
+  exportName: 'hiddenPluginsInHarnessShared',
+  table: generated.hiddenPluginsInHarnessShared,
   label: 'Hidden plugins',
   editableColumns: ['basename', 'reason', 'hidden_by', 'workspace_id'],
 });

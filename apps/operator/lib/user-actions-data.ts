@@ -12,7 +12,7 @@ import { getOrgPg, generated } from '@restart/db-org';
 import { and, desc, eq, gte } from 'drizzle-orm';
 import { ensureUserActionsTable } from './ensure-schema';
 
-const t = generated.user_actionsInHarness_shared;
+const t = generated.userActionsInHarnessShared;
 
 export interface UserActionRow {
   id: number;
@@ -102,20 +102,20 @@ export async function listUserActions(input: ListUserActionsInput): Promise<List
     const rows = await db
       .select({
         id: t.id,
-        harness_slug: t.harness_slug,
+        harness_slug: t.harnessSlug,
         kind: t.kind,
         status: t.status,
         summary: t.summary,
-        detail_url: t.detail_url,
-        error_text: t.error_text,
-        invocation_id: t.invocation_id,
-        started_at: t.started_at,
-        finished_at: t.finished_at,
+        detail_url: t.detailUrl,
+        error_text: t.errorText,
+        invocation_id: t.invocationId,
+        started_at: t.startedAt,
+        finished_at: t.finishedAt,
         actor: t.actor,
       })
       .from(t)
-      .where(and(eq(t.harness_slug, input.slug), gte(t.started_at, since)))
-      .orderBy(desc(t.started_at))
+      .where(and(eq(t.harnessSlug, input.slug), gte(t.startedAt, since)))
+      .orderBy(desc(t.startedAt))
       .limit(limit);
     const actions: UserActionRow[] = rows.map((r) => ({
       id: Number(r.id),
