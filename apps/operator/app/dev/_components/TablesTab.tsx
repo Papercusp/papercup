@@ -10,10 +10,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
  * a paginated row grid. Powered entirely by runtime introspection, no
  * codegen.
  *
- * FK-walk: any cell in an FK source column is rendered as a clickable
- * link that navigates to the referenced table filtered to the
- * referenced row (single-row view). "← back to all rows" clears the
- * filter and restores pagination.
+ * Filtering:
+ *   - FK-walk: any cell in an FK source column is a clickable link that
+ *     adds `{foreign_column: value}` to the active filter and switches
+ *     to the referenced table.
+ *   - WHERE composer: "+ Filter" button opens a column-picker + value
+ *     input. Filters AND together; each is a removable chip. Clear-all
+ *     restores pagination.
  *
  * Sibling of the embedded Drizzle Studio tab; this one knows our app
  * conventions (workspace scoping, RLS bypass via role toggle), Studio
@@ -70,11 +73,6 @@ interface RowsPayload {
 
 const PAGE_SIZE = 50;
 
-interface ActiveFilter {
-  where: Record<string, unknown>;
-  label: string;
-}
-
 export default function TablesTab() {
   const [tables, setTables] = useState<TableEntry[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -83,7 +81,9 @@ export default function TablesTab() {
   const [filter, setFilter] = useState('');
   const [role, setRole] = useState<'admin' | 'app'>('admin');
   const [offset, setOffset] = useState(0);
-  const [activeFilter, setActiveFilter] = useState<ActiveFilter | null>(null);
+  /** Active where-filter — column → coerced JS value. Empty = unfiltered. */
+  const [whereFilter, setWhereFilter] = useState<Record<string, unknown>>({});
+  const [composerOpen, setComposerOpen] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -107,8 +107,6 @@ export default function TablesTab() {
     const m = new Map<string, { foreignTable: string; foreignColumn: string }>();
     if (!detail) return m;
     for (const fk of detail.foreignKeys) {
-      // Most FKs are single-column; for composite FKs, navigation works
-      // on a per-column basis (filter target by that one column's value).
       for (let i = 0; i < fk.columns.length; i++) {
         m.set(fk.columns[i], {
           foreignTable: fk.foreignTable,
@@ -116,6 +114,13 @@ export default function TablesTab() {
         });
       }
     }
+    return m;
+  }, [detail]);
+
+  const columnByName = useMemo(() => {
+    const m = new Map<string, ColumnSummary>();
+    if (!detail) return m;
+    for (const c of detail.columns) m.set(c.name, c);
     return m;
   }, [detail]);
 
@@ -130,11 +135,11 @@ export default function TablesTab() {
   }, []);
 
   const fetchRows = useCallback(
-    async (exportName: string, ofs: number, r: 'admin' | 'app', flt: ActiveFilter | null) => {
+    async (exportName: string, ofs: number, r: 'admin' | 'app', where: Record<string, unknown>) => {
       setLoading(true);
       try {
         const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(ofs), role: r });
-        if (flt) params.set('where', JSON.stringify(flt.where));
+        if (Object.keys(where).length > 0) params.set('where', JSON.stringify(where));
         const d = await fetch(
           `/api/dev/tables/${encodeURIComponent(exportName)}/rows?${params}`,
         ).then((res) => res.json());
@@ -154,8 +159,8 @@ export default function TablesTab() {
     }
     setOffset(0);
     void fetchDetail(selected);
-    void fetchRows(selected, 0, role, activeFilter);
-  }, [selected, role, activeFilter, fetchDetail, fetchRows]);
+    void fetchRows(selected, 0, role, whereFilter);
+  }, [selected, role, whereFilter, fetchDetail, fetchRows]);
 
   const filtered = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -190,14 +195,33 @@ export default function TablesTab() {
     (foreignTable: string, foreignColumn: string, value: unknown) => {
       const target = qualifiedToExport.get(foreignTable);
       if (!target) return;
-      setActiveFilter({
-        where: { [foreignColumn]: value },
-        label: `${foreignColumn} = ${valueToLabel(value)}`,
-      });
+      setWhereFilter({ [foreignColumn]: value });
       setSelected(target);
     },
     [qualifiedToExport],
   );
+
+  const filterChips = useMemo(() => {
+    return Object.entries(whereFilter).map(([col, val]) => ({ col, val, label: `${col} = ${valueToLabel(val)}` }));
+  }, [whereFilter]);
+
+  const removeFilter = (col: string) => {
+    setWhereFilter((s) => {
+      const next = { ...s };
+      delete next[col];
+      return next;
+    });
+  };
+  const clearAllFilters = () => setWhereFilter({});
+
+  const addFilter = (col: string, raw: string) => {
+    const c = columnByName.get(col);
+    const value = coerceFilterValue(c, raw);
+    setWhereFilter((s) => ({ ...s, [col]: value }));
+    setComposerOpen(false);
+  };
+
+  const hasFilters = filterChips.length > 0;
 
   return (
     <div className="pc-tables-shell">
@@ -222,7 +246,7 @@ export default function TablesTab() {
                   type="button"
                   className={`pc-tables-row ${selected === t.exportName ? 'is-active' : ''}`}
                   onClick={() => {
-                    if (selected !== t.exportName) setActiveFilter(null);
+                    if (selected !== t.exportName) setWhereFilter({});
                     setSelected(t.exportName);
                   }}
                   title={t.exportName}
@@ -244,7 +268,8 @@ export default function TablesTab() {
               {tables.length} tables across{' '}
               {new Set(tables.map((t) => t.schema ?? '')).size} schemas. All shapes are
               derived from <code>generated.ts</code> at runtime — no codegen, no drift.
-              Click any FK column value to navigate to the referenced row.
+              Click any FK column value to navigate, or use <strong>+ Filter</strong> to
+              compose a WHERE clause.
             </p>
           </div>
         )}
@@ -267,21 +292,46 @@ export default function TablesTab() {
                     <option value="app">app (workspace-scoped)</option>
                   </select>
                 </label>
+                <button
+                  type="button"
+                  className="pc-tables-add-filter"
+                  onClick={() => setComposerOpen(true)}
+                >
+                  + Filter
+                </button>
                 {rows && rows.total !== null && (
                   <span className="pc-tables-count">{rows.total.toLocaleString()} rows</span>
                 )}
               </div>
             </div>
 
-            {activeFilter && (
+            {hasFilters && (
               <div className="pc-tables-filter-bar">
-                <span className="pc-tables-filter-label">
-                  Filtered: <code>{activeFilter.label}</code>
-                </span>
-                <button className="pc-tables-filter-clear" onClick={() => setActiveFilter(null)}>
-                  ← back to all rows
+                {filterChips.map((chip) => (
+                  <span key={chip.col} className="pc-tables-filter-chip">
+                    <code>{chip.label}</code>
+                    <button
+                      type="button"
+                      className="pc-tables-filter-chip-x"
+                      onClick={() => removeFilter(chip.col)}
+                      title={`Remove ${chip.col} filter`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <button className="pc-tables-filter-clear" onClick={clearAllFilters}>
+                  clear all
                 </button>
               </div>
+            )}
+
+            {composerOpen && (
+              <FilterComposer
+                columns={orderedColumns.filter((c) => !c.generated)}
+                onCancel={() => setComposerOpen(false)}
+                onApply={addFilter}
+              />
             )}
 
             <section className="pc-tables-columns">
@@ -359,14 +409,14 @@ export default function TablesTab() {
             <section className="pc-tables-rows">
               <div className="pc-tables-rows-header">
                 <h3>Rows</h3>
-                {rows && !activeFilter && (
+                {rows && !hasFilters && (
                   <div className="pc-tables-paginate">
                     <button
                       disabled={offset === 0 || loading}
                       onClick={() => {
                         const o = Math.max(offset - PAGE_SIZE, 0);
                         setOffset(o);
-                        void fetchRows(selected, o, role, activeFilter);
+                        void fetchRows(selected, o, role, whereFilter);
                       }}
                     >
                       ‹ Prev
@@ -379,7 +429,7 @@ export default function TablesTab() {
                       onClick={() => {
                         const o = offset + PAGE_SIZE;
                         setOffset(o);
-                        void fetchRows(selected, o, role, activeFilter);
+                        void fetchRows(selected, o, role, whereFilter);
                       }}
                     >
                       Next ›
@@ -431,7 +481,7 @@ export default function TablesTab() {
                 </div>
               )}
               {rows && rows.rows.length === 0 && !rows.error && (
-                <p className="pc-tables-empty-rows">No rows{activeFilter ? ' matching filter' : ''}.</p>
+                <p className="pc-tables-empty-rows">No rows{hasFilters ? ' matching filter' : ''}.</p>
               )}
             </section>
           </>
@@ -439,6 +489,89 @@ export default function TablesTab() {
       </main>
     </div>
   );
+}
+
+function FilterComposer({
+  columns,
+  onCancel,
+  onApply,
+}: {
+  columns: ColumnSummary[];
+  onCancel: () => void;
+  onApply: (col: string, value: string) => void;
+}) {
+  const [col, setCol] = useState(columns[0]?.name ?? '');
+  const [value, setValue] = useState('');
+  const selectedCol = columns.find((c) => c.name === col);
+  const submit = () => {
+    if (col) onApply(col, value);
+  };
+  return (
+    <div className="pc-tables-composer">
+      <span className="pc-tables-composer-label">WHERE</span>
+      <select value={col} onChange={(e) => setCol(e.target.value)}>
+        {columns.map((c) => (
+          <option key={c.name} value={c.name}>
+            {c.name} ({c.columnType.replace(/^Pg/, '').toLowerCase()})
+          </option>
+        ))}
+      </select>
+      <span className="pc-tables-composer-op">=</span>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={
+          selectedCol
+            ? coerceHint(selectedCol)
+            : 'value'
+        }
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') submit();
+          if (e.key === 'Escape') onCancel();
+        }}
+        autoFocus
+      />
+      <button className="pc-tables-composer-apply" onClick={submit}>
+        Apply
+      </button>
+      <button className="pc-tables-composer-cancel" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function coerceFilterValue(col: ColumnSummary | undefined, raw: string): unknown {
+  if (!col) return raw;
+  const t = col.columnType;
+  if (raw === '' && !col.notNull) return null;
+  switch (t) {
+    case 'PgInteger':
+    case 'PgSmallInt':
+    case 'PgSerial':
+    case 'PgSmallSerial':
+    case 'PgBigInt53':
+    case 'PgBigInt64':
+    case 'PgBigSerial53':
+    case 'PgBigSerial64':
+    case 'PgReal':
+    case 'PgDoublePrecision':
+      return raw === '' ? null : Number(raw);
+    case 'PgBoolean':
+      return raw === 'true' || raw === '1' || raw === 't';
+    default:
+      return raw;
+  }
+}
+
+function coerceHint(col: ColumnSummary): string {
+  const t = col.columnType;
+  if (t.startsWith('PgInteger') || t.startsWith('PgBigInt') || t.startsWith('PgReal') || t.startsWith('PgDoublePrecision') || t === 'PgNumeric') {
+    return 'number';
+  }
+  if (t === 'PgBoolean') return 'true / false';
+  return 'text';
 }
 
 function valueToLabel(v: unknown): string {

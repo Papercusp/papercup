@@ -1194,3 +1194,118 @@
 .pc-tables-filter-clear:hover {
   background: rgba(125, 211, 252, 0.10);
 }
+
+/* ── WHERE composer + filter chips ──────────────────── */
+
+.pc-tables-add-filter {
+  padding: 4px 12px;
+  border-radius: 4px;
+  background: rgba(125, 211, 252, 0.10);
+  border: 1px solid rgba(125, 211, 252, 0.30);
+  color: #7dd3fc;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 80ms;
+}
+.pc-tables-add-filter:hover {
+  background: rgba(125, 211, 252, 0.18);
+}
+.pc-tables-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border-radius: 12px;
+  font-size: 11px;
+}
+.pc-tables-filter-chip code {
+  background: transparent;
+  padding: 0;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.pc-tables-filter-chip-x {
+  background: transparent;
+  border: none;
+  color: var(--fg-mute, #94a3b8);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.pc-tables-filter-chip-x:hover {
+  background: rgba(248, 113, 113, 0.15);
+  color: #fca5a5;
+}
+.pc-tables-composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: rgba(125, 211, 252, 0.04);
+  border: 1px solid rgba(125, 211, 252, 0.20);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.pc-tables-composer-label {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  color: var(--fg-mute, #94a3b8);
+  font-weight: 600;
+}
+.pc-tables-composer-op {
+  color: var(--fg-mute, #94a3b8);
+  padding: 0 4px;
+}
+.pc-tables-composer select,
+.pc-tables-composer input {
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border-radius: 4px;
+  color: var(--fg, #e2e8f0);
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+.pc-tables-composer input { flex: 1; min-width: 120px; }
+.pc-tables-composer select:focus,
+.pc-tables-composer input:focus {
+  border-color: #7dd3fc;
+}
+.pc-tables-composer-apply {
+  padding: 4px 14px;
+  background: linear-gradient(180deg, #7c6bff 0%, #6b5be5 100%);
+  border: none;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.pc-tables-composer-apply:hover { filter: brightness(1.10); }
+.pc-tables-composer-cancel {
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  color: var(--fg, #e2e8f0);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.pc-tables-composer-cancel:hover { background: rgba(255, 255, 255, 0.04); }
+
+/* Filter-bar now hosts wrapping chips instead of a single label */
+.pc-tables-filter-bar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
