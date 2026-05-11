@@ -479,6 +479,81 @@ app.post('/heartbeat', async (c) => {
   return c.json({ ok: true });
 });
 
+// Phone-side EL voice tools that DON'T touch the phone's UI run as a
+// server-side proxy via this endpoint. The Rust mobile client's
+// VoiceManager dispatcher falls through to here for any tool name it
+// doesn't natively handle (~30 of the 37 tools the EL agent has
+// configured — harness_status, harness_list, ask_operator, etc.).
+//
+// EL normalizes registry ids ('harness.status') to underscore form
+// ('harness_status'). We reverse the normalization to look up the def.
+// Tools that ARE browser:'required' AND map to phone UI are still
+// handled client-side on the phone (they're the navigation set).
+//
+// Body: { parameters: {...EL tool params} }
+// Returns: { ok: true, value: <json> } or { ok: false, error: {...} }
+app.post('/voice-tool/:name', async (c) => {
+  const claims = c.get('deviceClaims');
+  const elName = c.req.param('name');
+  if (!elName) return c.json({ error: 'missing tool name' }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const params = (body && typeof body === 'object' && 'parameters' in body)
+    ? (body as { parameters?: unknown }).parameters ?? {}
+    : body ?? {};
+
+  // EL normalizes registry ids by replacing dots+dashes with underscores
+  // (e.g. 'harness.list-features' → 'harness_list_features'). The reverse
+  // isn't unique, so we iterate the registry and match by normalized form.
+  // Side-effect import populates the registry — without this the route
+  // sees an empty registry because mobile.ts itself doesn't pull defs.
+  await import('../../../lib/commands/defs');
+  const { get, list, runCommand, runQuery } = await import('../../../lib/commands/registry');
+  let def: ReturnType<typeof get> | undefined;
+  let resolvedId: string | undefined;
+  // Fast paths: literal + underscore-to-dot (covers most cases).
+  for (const candidate of [elName, elName.replace(/_/g, '.')]) {
+    const d = get(candidate);
+    if (d) { def = d; resolvedId = candidate; break; }
+  }
+  // Fallback: search all registered defs by normalized form.
+  if (!def) {
+    const all = [
+      ...list({ kind: 'command', agent: 'operator' }),
+      ...list({ kind: 'query', agent: 'operator' }),
+    ];
+    for (const d of all) {
+      if (d.id.replace(/[.-]/g, '_') === elName) {
+        def = d; resolvedId = d.id; break;
+      }
+    }
+  }
+  if (!def || !resolvedId) {
+    return c.json({ ok: false, error: { code: 'unknown-tool', message: `no such registry tool: ${elName}`, retryable: false } }, 404);
+  }
+  const { randomUUID } = await import('node:crypto');
+  const ctx = {
+    agent: 'operator' as const,
+    workspace: claims.workspace_id,
+    sessionId: claims.sub,
+    requestId: `el-mobile-${randomUUID()}`,
+    surface: ((): 'mobile-android' | 'mobile-ios' | 'mobile-unknown' => {
+      const ua = c.req.header('user-agent') ?? '';
+      return ua.includes('Android') ? 'mobile-android'
+        : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
+        : 'mobile-unknown';
+    })(),
+    deviceId: claims.sub,
+  };
+  try {
+    const result = def.kind === 'query'
+      ? await runQuery(resolvedId, params, ctx)
+      : await runCommand(resolvedId, params, ctx);
+    return c.json(result);
+  } catch (e) {
+    return c.json({ ok: false, error: { code: 'tool-exec', message: (e as Error)?.message ?? String(e), retryable: true } }, 500);
+  }
+});
+
 // Mints a short-lived ElevenLabs Conv AI conversation token for this
 // device. Mirrors /api/agent-mcp/operator-elevenlabs-bootstrap for desktop
 // but adds the phone-specific dynamic variables the agent needs to route
