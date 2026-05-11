@@ -63,6 +63,12 @@ export class WorkspaceBackup {
   }
 
   async ensureRepo(): Promise<void> {
+    // Defensive: make sure the backup PG tables exist before the kopia
+    // dance, in case the operator's pre-warm didn't run them yet.
+    try {
+      const { ensureBackupTables } = await import('../ensure-schema');
+      await ensureBackupTables();
+    } catch { /* tables already exist or PG not ready; non-fatal */ }
     await mkdir(this.repoPath, { recursive: true });
     const password = await deriveRepoPassword(this.workspaceId);
 
@@ -89,6 +95,10 @@ export class WorkspaceBackup {
   }
 
   async getSettings(): Promise<BackupSettings> {
+    try {
+      const { ensureBackupTables } = await import('../ensure-schema');
+      await ensureBackupTables();
+    } catch { /* tables already exist or PG not ready; non-fatal */ }
     const { sql } = getOrgPg();
     const rows = await sql<{
       enabled: boolean;

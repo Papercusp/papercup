@@ -78,6 +78,9 @@ type _G = {
     harnessExpertFeedback: boolean;
     harnessExpertTurns: boolean;
     operatorConversations: boolean;
+    workspaceBackupSettings: boolean;
+    backupSnapshots: boolean;
+    backupEvents: boolean;
   };
 };
 const _g = globalThis as unknown as _G;
@@ -135,6 +138,9 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   harnessExpertFeedback: false,
   harnessExpertTurns: false,
   operatorConversations: false,
+  workspaceBackupSettings: false,
+  backupSnapshots: false,
+  backupEvents: false,
 });
 
 /**
@@ -1579,6 +1585,65 @@ export async function ensureUiIntentsTable(): Promise<void> {
       WHERE completed_at IS NOT NULL;
   `);
   flags.uiIntents = true;
+}
+
+/**
+ * Backup tables — per-workspace kopia repo settings + snapshot log + event stream.
+ * Canonical migration: 013_workspace_backups.sql.
+ * See: apps/operator/lib/backup/README.md
+ */
+export async function ensureBackupTables(): Promise<void> {
+  if (flags.workspaceBackupSettings && flags.backupSnapshots && flags.backupEvents) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.workspace_backup_settings (
+      workspace_id           TEXT PRIMARY KEY,
+      enabled                BOOLEAN     NOT NULL DEFAULT TRUE,
+      cadence_mode           TEXT        NOT NULL DEFAULT 'both',
+      cadence_minutes        INT         NOT NULL DEFAULT 5,
+      retention_preset       TEXT        NOT NULL DEFAULT 'default',
+      retention_custom_json  JSONB,
+      event_triggers_json    JSONB       NOT NULL DEFAULT '["pre_destructive","post_run","plugin_install","secret_change"]',
+      excluded_paths_json    JSONB       NOT NULL DEFAULT '[]',
+      destination_type             TEXT        NOT NULL DEFAULT 'local',
+      destination_config_encrypted TEXT,
+      created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ALTER TABLE harness_shared.workspace_backup_settings
+      ADD COLUMN IF NOT EXISTS destination_type             TEXT        NOT NULL DEFAULT 'local';
+    ALTER TABLE harness_shared.workspace_backup_settings
+      ADD COLUMN IF NOT EXISTS destination_config_encrypted TEXT;
+    CREATE TABLE IF NOT EXISTS harness_shared.backup_snapshots (
+      id                  BIGSERIAL    PRIMARY KEY,
+      workspace_id        TEXT         NOT NULL,
+      kopia_snapshot_id   TEXT,
+      started_at          TIMESTAMPTZ  NOT NULL DEFAULT now(),
+      finished_at         TIMESTAMPTZ,
+      status              TEXT         NOT NULL DEFAULT 'running',
+      trigger_reason      TEXT         NOT NULL,
+      trigger_context     JSONB,
+      bytes_added         BIGINT,
+      bytes_total         BIGINT,
+      sources_json        JSONB        NOT NULL DEFAULT '[]',
+      error_text          TEXT
+    );
+    CREATE INDEX IF NOT EXISTS backup_snapshots_workspace_idx
+      ON harness_shared.backup_snapshots (workspace_id, started_at DESC);
+    CREATE TABLE IF NOT EXISTS harness_shared.backup_events (
+      id            BIGSERIAL   PRIMARY KEY,
+      workspace_id  TEXT        NOT NULL,
+      snapshot_id   BIGINT      REFERENCES harness_shared.backup_snapshots(id) ON DELETE CASCADE,
+      kind          TEXT        NOT NULL,
+      payload_json  JSONB,
+      at            TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS backup_events_workspace_idx
+      ON harness_shared.backup_events (workspace_id, at DESC);
+  `);
+  flags.workspaceBackupSettings = true;
+  flags.backupSnapshots = true;
+  flags.backupEvents = true;
 }
 
 /** Test-only: clear the per-process cache so DDL re-runs. */

@@ -224,6 +224,7 @@ async function prewarmSchema(): Promise<void> {
     ['harnessProposalsShared', ensure.ensureHarnessProposalsSharedTable],
     ['harnessStatus', ensure.ensureHarnessStatusTable],
     ['harnessLanes', ensure.ensureHarnessLanesTable],
+    ['backup', ensure.ensureBackupTables],
   ];
   for (const [name, fn] of fns) {
     try {
