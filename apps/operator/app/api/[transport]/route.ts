@@ -44,6 +44,13 @@ import type { AgentRole } from '@papercusp/plugin-sdk';
 import { getOrgPg, withWorkspace } from '@restart/db-org';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
+// Side-effect: register every operator-side first-party tool into the
+// projected-tool registry. Required on dev (next dev compiles routes
+// lazily — without this import, MCP requests would arrive before any
+// other route has triggered the agent-tools/index side-effect load).
+// On the standalone production build all routes are bundled together
+// so this is a no-op there.
+import '@/lib/agent-tools/index';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
