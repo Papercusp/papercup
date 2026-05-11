@@ -33,7 +33,7 @@ export default function OperatorDelegationListener() {
 
     const onDelegation = async (evt: Event) => {
       const detail = (evt as CustomEvent).detail as
-        | { fullText?: string; claudeSessionId?: string | null; costUsd?: number }
+        | { fullText?: string; agentSessionId?: string | null; costUsd?: number }
         | undefined;
       if (!detail) return;
 
@@ -58,7 +58,7 @@ export default function OperatorDelegationListener() {
           // shared-state type is in libs/papercusp; widen later.
           lastDelegation: {
             fullText: detail.fullText ?? '',
-            claudeSessionId: detail.claudeSessionId ?? null,
+            agentSessionId: detail.agentSessionId ?? null,
             costUsd: detail.costUsd ?? 0,
             ts: Date.now(),
           },
@@ -88,10 +88,10 @@ export default function OperatorDelegationListener() {
      */
     const onAsyncDelegation = async (evt: Event) => {
       const detail = (evt as CustomEvent).detail as
-        | { status?: 'complete' | 'error'; fullText?: string; claudeSessionId?: string | null; task?: string; message?: string }
+        | { status?: 'complete' | 'error'; fullText?: string; agentSessionId?: string | null; task?: string; message?: string }
         | undefined;
       if (!detail) return;
-      const sid = detail.claudeSessionId ? detail.claudeSessionId.slice(0, 8) : '';
+      const sid = detail.agentSessionId ? detail.agentSessionId.slice(0, 8) : '';
       const headline = detail.status === 'error'
         ? `[Delegate ${sid} failed] ${detail.message ?? 'unknown error'}.`
         : `[Delegate ${sid} completed] ${(detail.fullText ?? '').slice(0, 280)}${(detail.fullText ?? '').length > 280 ? '…' : ''} Full text in the panel.`;
@@ -106,7 +106,7 @@ export default function OperatorDelegationListener() {
           await fetch('/api/agent-mcp/delegate-inbox', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ headline, claudeSessionId: detail.claudeSessionId ?? null }),
+            body: JSON.stringify({ headline, agentSessionId: detail.agentSessionId ?? null }),
           });
         } catch { /* best-effort; panel still has the result */ }
       }

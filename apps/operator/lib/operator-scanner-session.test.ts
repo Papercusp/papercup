@@ -51,13 +51,13 @@ describe('getOrCreateScannerSessionId', () => {
 
   it('persists the new session row with scanCount=0', async () => {
     const id = await getOrCreateScannerSessionId();
-    const stored = store.get('operator_scanner_session') as { claudeSessionId: string; scanCount: number };
-    expect(stored.claudeSessionId).toBe(id);
+    const stored = store.get('operator_scanner_session') as { agentSessionId: string; scanCount: number };
+    expect(stored.agentSessionId).toBe(id);
     expect(stored.scanCount).toBe(0);
   });
 
   it('regenerates if the stored id is malformed', async () => {
-    store.set('operator_scanner_session', { claudeSessionId: 'NOT_A_UUID', scanCount: 5 });
+    store.set('operator_scanner_session', { agentSessionId: 'NOT_A_UUID', scanCount: 5 });
     const id = await getOrCreateScannerSessionId();
     expect(id).not.toBe('NOT_A_UUID');
     expect(id).toMatch(/^[0-9a-f-]{36}$/i);
@@ -84,8 +84,8 @@ describe('resetScannerSession', () => {
     const a = await getOrCreateScannerSessionId();
     await bumpScannerSession();
     await resetScannerSession();
-    const stored = store.get('operator_scanner_session') as { claudeSessionId: string; scanCount: number };
-    expect(stored.claudeSessionId).not.toBe(a);
+    const stored = store.get('operator_scanner_session') as { agentSessionId: string; scanCount: number };
+    expect(stored.agentSessionId).not.toBe(a);
     expect(stored.scanCount).toBe(0);
   });
 });

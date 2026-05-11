@@ -8,7 +8,7 @@
  *   - { op: 'peek' }              → { pending } count
  *   - { op: 'drain' }             → { items } and mark delivered
  *   - { op: 'push', headline,
- *       kind?, claudeSessionId? } → push one row
+ *       kind?, agentSessionId? } → push one row
  */
 
 import { z } from 'zod';
@@ -46,7 +46,7 @@ export default defineTool({
       op: z.literal('push'),
       headline: z.string().min(1),
       kind: z.string().optional(),
-      claudeSessionId: z.string().optional(),
+      agentSessionId: z.string().optional(),
     }),
   ]),
   async handler(args) {
@@ -63,7 +63,7 @@ export default defineTool({
       workspaceId,
       headline: args.headline,
       kind: args.kind,
-      claudeSessionId: args.claudeSessionId,
+      agentSessionId: args.agentSessionId,
     });
     return { content: [{ type: 'text', text: JSON.stringify({ ok: true }) }] };
   },

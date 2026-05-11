@@ -24,7 +24,7 @@ interface DelegateTurn {
 
 interface DelegateRow {
   id: number;
-  claudeSessionId: string;
+  agentSessionId: string;
   title: string | null;
   summary: string | null;
   status: 'open' | 'archived';
@@ -38,7 +38,7 @@ interface DelegateRow {
 interface DelegateZeroRow {
   id: number;
   workspace: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   title: string | null;
   summary: string | null;
   status: string;
@@ -123,7 +123,7 @@ export default function DelegatesSection() {
       .sort((a, b) => b.lastActiveAt - a.lastActiveAt)
       .map((r) => ({
         id: r.id,
-        claudeSessionId: r.claudeSessionId,
+        agentSessionId: r.agentSessionId,
         title: r.title,
         summary: r.summary,
         status: (r.status === 'archived' ? 'archived' : 'open') as DelegateRow['status'],
@@ -139,13 +139,13 @@ export default function DelegatesSection() {
   // refresh stub stays for legacy callers in this file.
   const refresh = async (_f?: DelegateFilter) => {};
 
-  async function archive(claudeSessionId: string) {
-    await fetch(`/api/agent-mcp/delegates?id=${encodeURIComponent(claudeSessionId)}`, {
+  async function archive(agentSessionId: string) {
+    await fetch(`/api/agent-mcp/delegates?id=${encodeURIComponent(agentSessionId)}`, {
       method: 'DELETE',
     }).catch(() => {});
   }
 
-  async function sendFollowUp(claudeSessionId: string) {
+  async function sendFollowUp(agentSessionId: string) {
     const text = followText.trim();
     if (!text || streaming) return;
     abortRef.current?.abort();
@@ -153,7 +153,7 @@ export default function DelegatesSection() {
     setStreamText('');
     setStreaming(true);
     try {
-      const url = `/api/agent-mcp/delegate-chat?request=${encodeURIComponent(text)}&sessionId=${encodeURIComponent(claudeSessionId)}`;
+      const url = `/api/agent-mcp/delegate-chat?request=${encodeURIComponent(text)}&sessionId=${encodeURIComponent(agentSessionId)}`;
       const r = await fetch(url, { signal: abortRef.current.signal });
       if (!r.ok || !r.body) {
         setStreamText(`error: HTTP ${r.status}`);
@@ -195,7 +195,7 @@ export default function DelegatesSection() {
   }
 
   const expanded = useMemo(
-    () => rows.find((r) => r.claudeSessionId === expandedId) ?? null,
+    () => rows.find((r) => r.agentSessionId === expandedId) ?? null,
     [rows, expandedId],
   );
 
@@ -252,11 +252,11 @@ export default function DelegatesSection() {
       )}
       <ul role="list" className="operator-delegates__list">
         {rows.map((d) => {
-          const isOpen = d.claudeSessionId === expandedId;
+          const isOpen = d.agentSessionId === expandedId;
           const running = isLikelyRunning(d);
           return (
             <li
-              key={d.claudeSessionId}
+              key={d.agentSessionId}
               className="operator-delegates__item"
               data-open={isOpen}
               data-running={running ? 'true' : 'false'}
@@ -264,7 +264,7 @@ export default function DelegatesSection() {
               <button
                 type="button"
                 className="operator-delegates__row"
-                onClick={() => setExpandedId(isOpen ? null : d.claudeSessionId)}
+                onClick={() => setExpandedId(isOpen ? null : d.agentSessionId)}
               >
                 <span className="operator-delegates__title">
                   {running && (
@@ -316,7 +316,7 @@ export default function DelegatesSection() {
                     <div className="operator-delegates__actions">
                       <button
                         type="button"
-                        onClick={() => void sendFollowUp(d.claudeSessionId)}
+                        onClick={() => void sendFollowUp(d.agentSessionId)}
                         disabled={!followText.trim() || streaming}
                       >
                         {streaming ? 'Sending…' : 'Send'}
@@ -324,7 +324,7 @@ export default function DelegatesSection() {
                       <button
                         type="button"
                         className="operator-delegates__archive"
-                        onClick={() => void archive(d.claudeSessionId)}
+                        onClick={() => void archive(d.agentSessionId)}
                         disabled={streaming}
                       >
                         Archive

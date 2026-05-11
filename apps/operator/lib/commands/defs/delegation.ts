@@ -30,7 +30,7 @@ const claudeSessionsList: QueryDef<z.infer<typeof ListDelegatesArgs>> = {
   description: 'List Claude conversation sessions for the workspace.',
   promptDescription:
     'Returns Claude conversation sessions as ' +
-    '[{id, title, summary, lastActiveAt, turnCount, claudeSessionId, status}, ...]. ' +
+    '[{id, title, summary, lastActiveAt, turnCount, agentSessionId, status}, ...]. ' +
     "Use to pick which session to pass to delegate_to_claude — match the " +
     "user's request to a session by title/topic. " +
     "\n\nIMPORTANT: status='open' means 'available to resume' — NOT 'currently " +
@@ -61,7 +61,7 @@ const claudeSessionsList: QueryDef<z.infer<typeof ListDelegatesArgs>> = {
 };
 
 const GetSessionArgs = z.object({
-  id: z.string().min(1).describe('Session id (numeric or claude_session_id UUID).'),
+  id: z.string().min(1).describe('Session id (numeric or agent_session_id UUID).'),
 });
 
 const claudeSessionsGet: QueryDef<z.infer<typeof GetSessionArgs>> = {
@@ -103,7 +103,7 @@ const claudeSessionsSearch: QueryDef<z.infer<typeof SearchDelegatesArgs>> = {
   promptDescription:
     'Returns matching sessions as { sessions: [{id, title, summary, lastActiveAt, ...}, ...] }. ' +
     'Use when the user names a topic and you want to find a related past delegate without ' +
-    'paging through delegates.list. After picking a hit, pass its claudeSessionId to ' +
+    'paging through delegates.list. After picking a hit, pass its agentSessionId to ' +
     'delegate_to_claude to resume the conversation. Always confirm with the user before resuming.',
   schema: SearchDelegatesArgs,
   agents: ['oracle', 'operator'],
@@ -198,7 +198,7 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
       buf: '',
       fullText: '',
       cost: 0,
-      claudeSessionId: null as string | null,
+      agentSessionId: null as string | null,
       done: false,
       errored: null as string | null,
     };
@@ -212,7 +212,7 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
         const event = parseEventBlock(block);
         if (!event) continue;
         if (event.event === 'session') {
-          state.claudeSessionId = (event.data as any)?.claudeSessionId ?? null;
+          state.agentSessionId = (event.data as any)?.agentSessionId ?? null;
         } else if (event.event === 'delta') {
           state.fullText += (event.data as any)?.text ?? '';
         } else if (event.event === 'done') {
@@ -230,7 +230,7 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
       const result = {
         status: 'complete' as const,
         fullText: state.fullText,
-        claudeSessionId: state.claudeSessionId,
+        agentSessionId: state.agentSessionId,
         costUsd: state.cost,
       };
       if (typeof window !== 'undefined') {
@@ -295,7 +295,7 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
           // panel + voice listener can show "Delegate failed: <msg>".
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('operator:delegation-async-complete', {
-              detail: { status: 'error', message: state.errored, task, claudeSessionId: state.claudeSessionId },
+              detail: { status: 'error', message: state.errored, task, agentSessionId: state.agentSessionId },
             }));
           }
           return;
@@ -308,7 +308,7 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
 
     return {
       status: 'started' as const,
-      claudeSessionId: state.claudeSessionId,
+      agentSessionId: state.agentSessionId,
       // Hint for the agent's response — "I'll let you know when it's done"
       // is the right vibe; specific seconds is too precise. Persona will
       // tell it what to say.

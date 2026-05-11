@@ -533,7 +533,7 @@ const TOOLS = [
     name: 'scans_list', type: 'client', expects_response: true,
     description:
       'List recent Operator scans — summaries only. Returns { count, scans: ' +
-      "[{id, startedAt, summary, suggestionCount, costUsd, error, claudeSessionId}, ...] }. " +
+      "[{id, startedAt, summary, suggestionCount, costUsd, error, agentSessionId}, ...] }. " +
       'Does NOT include the full suggestions array (kept light to save context). Use to ' +
       "answer 'what have I been scanning?', 'what did the last scan find?', or to find " +
       'a scan id before calling scans_get for detail. Default 20 most-recent.',
@@ -579,7 +579,7 @@ const TOOLS = [
     name: 'delegates_list', type: 'client', expects_response: true,
     description:
       'List Claude conversation sessions (delegates) the user has run. ' +
-      'Returns [{id, title, summary, lastActiveAt, turnCount, claudeSessionId, status}, ...]. ' +
+      'Returns [{id, title, summary, lastActiveAt, turnCount, agentSessionId, status}, ...]. ' +
       "IMPORTANT: status='open' means 'available to resume', NOT 'currently running'. " +
       "Delegates do not run in the background — every delegate_to_claude call is synchronous and " +
       "complete by the time it returns. Use this when the user asks 'what delegates have I run?', " +
@@ -600,13 +600,13 @@ const TOOLS = [
   {
     name: 'delegates_get', type: 'client', expects_response: true,
     description:
-      'Get full metadata for a single delegate session by id (numeric or claude_session_id UUID). ' +
+      'Get full metadata for a single delegate session by id (numeric or agent_session_id UUID). ' +
       'Returns the title, summary, last-activity, and full transcript. Use when picking a delegate ' +
       'by title alone is ambiguous and you want to see the actual recent context before deciding to ' +
       'follow up. Do not read the transcript verbatim aloud — the panel renders it.',
     parameters: {
       type: 'object',
-      properties: { id: prop('string', 'Session id (numeric or claude_session_id UUID).') },
+      properties: { id: prop('string', 'Session id (numeric or agent_session_id UUID).') },
       required: ['id'],
       description: 'Session to fetch.',
     },
@@ -617,7 +617,7 @@ const TOOLS = [
       'Search past delegate sessions by free-text. Matches against title, summary, and the ' +
       "kickoff message. Use when the user names a topic and you want to find a related past " +
       "delegate without paging through delegates_list. After picking a hit, pass its " +
-      "claudeSessionId to delegate_to_claude to resume — and CONFIRM with the user before resuming.",
+      "agentSessionId to delegate_to_claude to resume — and CONFIRM with the user before resuming.",
     parameters: {
       type: 'object',
       properties: {
@@ -639,10 +639,10 @@ const TOOLS = [
       'Spawn or resume a Claude delegate for anything beyond reflexive UI: research, multi-step work, asking another agent. ' +
       'The tool returns one of two shapes:\n\n' +
       "(A) status:'complete' — the delegate finished synchronously (<10s). Returns " +
-      "{ status:'complete', fullText, claudeSessionId, costUsd }. Speak a ONE-SENTENCE " +
+      "{ status:'complete', fullText, agentSessionId, costUsd }. Speak a ONE-SENTENCE " +
       "summary of fullText, then say 'details in the panel.' Never read fullText verbatim.\n\n" +
       "(B) status:'started' — the delegate is running in the background (>10s expected). " +
-      "Returns { status:'started', claudeSessionId, message }. Speak ONE short line " +
+      "Returns { status:'started', agentSessionId, message }. Speak ONE short line " +
       "('On it, I'll let you know what comes back.' or similar) and STOP. Do NOT say " +
       "'details in the panel' yet — there are no details yet. Do NOT fabricate the result. " +
       "When the delegate finishes you'll receive a system contextual update of the form " +

@@ -37,7 +37,7 @@ interface ScanSummary {
   costUsd: number;
   cached: boolean;
   error: string | null;
-  claudeSessionId: string | null;
+  agentSessionId: string | null;
 }
 
 function toSummary(r: any): ScanSummary {
@@ -50,7 +50,7 @@ function toSummary(r: any): ScanSummary {
     costUsd: r.costUsd,
     cached: r.cached,
     error: r.error,
-    claudeSessionId: r.claudeSessionId,
+    agentSessionId: r.agentSessionId,
   };
 }
 
@@ -59,7 +59,7 @@ const scansList: QueryDef<ListArgsT, { count: number; scans: ScanSummary[] }> = 
   kind: 'query',
   description: 'List recent Operator scans (summaries only — for context-light browsing).',
   promptDescription:
-    'Returns recent operator scans as { count, scans: [{id, startedAt, endedAt, summary, suggestionCount, costUsd, cached, error, claudeSessionId}, ...] }. ' +
+    'Returns recent operator scans as { count, scans: [{id, startedAt, endedAt, summary, suggestionCount, costUsd, cached, error, agentSessionId}, ...] }. ' +
     'SUMMARIES ONLY — does NOT include the full suggestions array. Use to answer ' +
     '"what have I been scanning?", "what did the last few scans find?", or to find a ' +
     'scan id before scans.get. Default 20 most-recent.',

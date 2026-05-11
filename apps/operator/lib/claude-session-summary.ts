@@ -49,7 +49,7 @@ async function runHaiku(prompt: string, maxTokens = 200): Promise<string | null>
 
 export async function generateSessionTitle(opts: {
   workspace: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   initiatorMsg: string;
   firstResponse?: string;
 }): Promise<void> {
@@ -61,17 +61,17 @@ ${opts.firstResponse ? `\nClaude responded (excerpt): ${opts.firstResponse.slice
 Title:`;
   const title = await runHaiku(prompt, 50);
   if (title && title.length <= 80) {
-    await setClaudeSessionTitle(opts.workspace, opts.claudeSessionId, title).catch(() => {});
+    await setClaudeSessionTitle(opts.workspace, opts.agentSessionId, title).catch(() => {});
   } else if (opts.initiatorMsg) {
     // Fallback: first 8 words of the initiator message.
     const fallback = opts.initiatorMsg.split(/\s+/).slice(0, 8).join(' ');
-    await setClaudeSessionTitle(opts.workspace, opts.claudeSessionId, fallback).catch(() => {});
+    await setClaudeSessionTitle(opts.workspace, opts.agentSessionId, fallback).catch(() => {});
   }
 }
 
 export async function generateSessionSummary(opts: {
   workspace: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   transcript: Array<{ role: 'user' | 'assistant'; text: string }>;
 }): Promise<void> {
   if (opts.transcript.length === 0) return;
@@ -86,6 +86,6 @@ ${formatted}
 Summary:`;
   const summary = await runHaiku(prompt, 150);
   if (summary && summary.length <= 600) {
-    await setClaudeSessionSummary(opts.workspace, opts.claudeSessionId, summary).catch(() => {});
+    await setClaudeSessionSummary(opts.workspace, opts.agentSessionId, summary).catch(() => {});
   }
 }

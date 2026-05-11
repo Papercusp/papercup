@@ -2,7 +2,7 @@
  * GET  /api/agent-mcp/delegate-inbox          → { pending } (count of undelivered)
  * GET  /api/agent-mcp/delegate-inbox?drain=1  → { items: [...] } (drain + mark delivered)
  * POST /api/agent-mcp/delegate-inbox          → push one row
- *   body: { headline: string, kind?: string, claudeSessionId?: string }
+ *   body: { headline: string, kind?: string, agentSessionId?: string }
  *
  * The Hindsight inbox for the EL agent: notifications that arrive when
  * no live EL session is connected get stashed here so the next session
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 export async function POST(req: NextRequest): Promise<Response> {
   const workspaceId = activeWorkspaceId();
   const body = await req.json().catch(() => null) as
-    | { headline?: string; kind?: string; claudeSessionId?: string | null }
+    | { headline?: string; kind?: string; agentSessionId?: string | null }
     | null;
   if (!body?.headline) {
     return Response.json({ error: 'headline required' }, { status: 400 });
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     workspaceId,
     headline: body.headline,
     kind: body.kind,
-    claudeSessionId: body.claudeSessionId ?? null,
+    agentSessionId: body.agentSessionId ?? null,
   });
   return Response.json({ id });
 }

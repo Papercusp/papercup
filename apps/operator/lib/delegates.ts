@@ -9,7 +9,7 @@
  * operator panel.
  *
  * Server-side only. Backed by `harness_shared.delegates` PG table.
- * (The `claude_session_id` column name is kept for back-compat; it
+ * (The `agent_session_id` column name is kept for back-compat; it
  * actually stores either backend's session identifier.)
  *
  * Three layers of memory (kept small, regenerated lazily):
@@ -17,8 +17,8 @@
  *   2. Summary — 40-60 words regenerated every 5 turns or on 5min idle
  *   3. The actual `claude --resume` conversation (Claude truncates as needed)
  *
- * The DB column `claude_session_id` is the uuid passed to claude -p as
- * `--session-id`. Field is named `claudeSessionId` in the row type for
+ * The DB column `agent_session_id` is the uuid passed to claude -p as
+ * `--session-id`. Field is named `agentSessionId` in the row type for
  * the same reason — it's the key we hand back to the CLI to resume.
  */
 
@@ -33,7 +33,7 @@ export interface DelegateTurn {
 export interface DelegateRow {
   id: number;
   workspace: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   title: string | null;
   summary: string | null;
   status: 'open' | 'archived';
@@ -59,7 +59,7 @@ export async function listDelegates(args: ListDelegatesArgs): Promise<DelegateRo
   return withWorkspace(args.workspace, async (tx) => {
     const rows = status === 'all'
       ? await tx`
-          SELECT id, workspace, claude_session_id, title, summary, status,
+          SELECT id, workspace, agent_session_id, title, summary, status,
                  created_at, last_active_at, turn_count, origin, initiator_msg, transcript
           FROM harness_shared.delegates
           WHERE workspace = ${args.workspace}
@@ -67,7 +67,7 @@ export async function listDelegates(args: ListDelegatesArgs): Promise<DelegateRo
           LIMIT ${limit}
         `
       : await tx`
-          SELECT id, workspace, claude_session_id, title, summary, status,
+          SELECT id, workspace, agent_session_id, title, summary, status,
                  created_at, last_active_at, turn_count, origin, initiator_msg, transcript
           FROM harness_shared.delegates
           WHERE workspace = ${args.workspace} AND status = ${status}
@@ -89,7 +89,7 @@ export async function searchDelegates(args: SearchDelegatesArgs): Promise<Delega
   const needle = `%${args.query.replace(/[%_]/g, (c) => '\\' + c)}%`;
   return withWorkspace(args.workspace, async (tx) => {
     const rows = await tx`
-      SELECT id, workspace, claude_session_id, title, summary, status,
+      SELECT id, workspace, agent_session_id, title, summary, status,
              created_at, last_active_at, turn_count, origin, initiator_msg, transcript
       FROM harness_shared.delegates
       WHERE workspace = ${args.workspace}
@@ -108,11 +108,11 @@ export async function searchDelegates(args: SearchDelegatesArgs): Promise<Delega
 export async function getDelegate(workspace: string, sessionRef: string): Promise<DelegateRow | null> {
   return withWorkspace(workspace, async (tx) => {
     const rows = await tx`
-      SELECT id, workspace, claude_session_id, title, summary, status,
+      SELECT id, workspace, agent_session_id, title, summary, status,
              created_at, last_active_at, turn_count, origin, initiator_msg, transcript
       FROM harness_shared.delegates
       WHERE workspace = ${workspace}
-        AND (claude_session_id = ${sessionRef} OR id::text = ${sessionRef})
+        AND (agent_session_id = ${sessionRef} OR id::text = ${sessionRef})
       LIMIT 1
     `;
     return rows.length > 0 ? normalize(rows[0]) : null;
@@ -121,7 +121,7 @@ export async function getDelegate(workspace: string, sessionRef: string): Promis
 
 export async function createDelegate(args: {
   workspace: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   origin: 'voice' | 'panel' | 'oracle';
   initiatorMsg: string;
   /** Backend that handled the spawn. Defaults to current AGENT_BACKEND
@@ -138,44 +138,44 @@ export async function createDelegate(args: {
   return withWorkspace(args.workspace, async (tx) => {
     const rows = await tx`
       INSERT INTO harness_shared.delegates (
-        workspace, claude_session_id, origin, initiator_msg, turn_count, agent_backend
+        workspace, agent_session_id, origin, initiator_msg, turn_count, agent_backend
       ) VALUES (
-        ${args.workspace}, ${args.claudeSessionId}, ${args.origin}, ${args.initiatorMsg}, 1, ${backend}
+        ${args.workspace}, ${args.agentSessionId}, ${args.origin}, ${args.initiatorMsg}, 1, ${backend}
       )
-      RETURNING id, workspace, claude_session_id, title, summary, status,
+      RETURNING id, workspace, agent_session_id, title, summary, status,
                 created_at, last_active_at, turn_count, origin, initiator_msg, transcript
     `;
     return normalize(rows[0]);
   });
 }
 
-export async function bumpDelegate(workspace: string, claudeSessionId: string): Promise<void> {
+export async function bumpDelegate(workspace: string, agentSessionId: string): Promise<void> {
   await withWorkspace(workspace, async (tx) => {
     await tx`
       UPDATE harness_shared.delegates
       SET turn_count = turn_count + 1,
           last_active_at = now()
-      WHERE workspace = ${workspace} AND claude_session_id = ${claudeSessionId}
+      WHERE workspace = ${workspace} AND agent_session_id = ${agentSessionId}
     `;
   });
 }
 
-export async function setDelegateTitle(workspace: string, claudeSessionId: string, title: string): Promise<void> {
+export async function setDelegateTitle(workspace: string, agentSessionId: string, title: string): Promise<void> {
   await withWorkspace(workspace, async (tx) => {
     await tx`
       UPDATE harness_shared.delegates
       SET title = ${title}
-      WHERE workspace = ${workspace} AND claude_session_id = ${claudeSessionId}
+      WHERE workspace = ${workspace} AND agent_session_id = ${agentSessionId}
     `;
   });
 }
 
-export async function setDelegateSummary(workspace: string, claudeSessionId: string, summary: string): Promise<void> {
+export async function setDelegateSummary(workspace: string, agentSessionId: string, summary: string): Promise<void> {
   await withWorkspace(workspace, async (tx) => {
     await tx`
       UPDATE harness_shared.delegates
       SET summary = ${summary}
-      WHERE workspace = ${workspace} AND claude_session_id = ${claudeSessionId}
+      WHERE workspace = ${workspace} AND agent_session_id = ${agentSessionId}
     `;
   });
 }
@@ -186,7 +186,7 @@ export async function archiveDelegate(workspace: string, sessionRef: string): Pr
       UPDATE harness_shared.delegates
       SET status = 'archived'
       WHERE workspace = ${workspace}
-        AND (claude_session_id = ${sessionRef} OR id::text = ${sessionRef})
+        AND (agent_session_id = ${sessionRef} OR id::text = ${sessionRef})
     `;
   });
 }
@@ -213,7 +213,7 @@ function normalize(r: any): DelegateRow {
   return {
     id: Number(r.id),
     workspace: r.workspace,
-    claudeSessionId: r.claude_session_id,
+    agentSessionId: r.agent_session_id,
     title: r.title,
     summary: r.summary,
     status: r.status,
@@ -233,14 +233,14 @@ function normalize(r: any): DelegateRow {
  */
 export async function appendDelegateTurn(
   workspace: string,
-  claudeSessionId: string,
+  agentSessionId: string,
   turn: DelegateTurn,
 ): Promise<void> {
   await withWorkspace(workspace, async (tx) => {
     await tx`
       UPDATE harness_shared.delegates
       SET transcript = transcript || ${JSON.stringify([turn])}::jsonb
-      WHERE workspace = ${workspace} AND claude_session_id = ${claudeSessionId}
+      WHERE workspace = ${workspace} AND agent_session_id = ${agentSessionId}
     `;
   });
 }

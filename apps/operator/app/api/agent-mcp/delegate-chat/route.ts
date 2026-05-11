@@ -99,18 +99,18 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
 
   // Choose claude-session id.
-  let claudeSessionId: string;
+  let agentSessionId: string;
   let sessionCreated = false;
   if (newSession || !requestedSessionId) {
-    claudeSessionId = randomUUID();
+    agentSessionId = randomUUID();
     sessionCreated = true;
   } else {
     const existing = await getDelegate(workspaceId, requestedSessionId).catch(() => null);
     if (existing && existing.status === 'open') {
-      claudeSessionId = existing.claudeSessionId;
+      agentSessionId = existing.agentSessionId;
     } else {
       // Requested session unknown or archived → start fresh.
-      claudeSessionId = randomUUID();
+      agentSessionId = randomUUID();
       sessionCreated = true;
     }
   }
@@ -122,12 +122,12 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (sessionCreated) {
     await createDelegate({
       workspace: workspaceId,
-      claudeSessionId,
+      agentSessionId,
       origin: 'voice',
       initiatorMsg: requestText.slice(0, 500),
     }).catch(() => { /* table missing → degraded mode, no PG persistence */ });
   } else {
-    void bumpDelegate(workspaceId, claudeSessionId).catch(() => {});
+    void bumpDelegate(workspaceId, agentSessionId).catch(() => {});
   }
 
   // Build the conversational prompt. Single-turn shape — claude --session-id
@@ -144,13 +144,13 @@ export async function GET(req: NextRequest): Promise<Response> {
           controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
         } catch { /* writer closed */ }
       };
-      send('session', { claudeSessionId, created: sessionCreated });
+      send('session', { agentSessionId, created: sessionCreated });
 
       let assistantText = '';
       try {
         const events = runAgentChat({
           promptText,
-          sessionId: claudeSessionId,
+          sessionId: agentSessionId,
           sessionMode: 'force',
           // agentmcp: HTTP via mcp-remote bridge (covers the full operator
           // tool catalog including agent_tools:list, ui:*, autoloop:*,
@@ -211,7 +211,7 @@ export async function GET(req: NextRequest): Promise<Response> {
           } else if (ev.type === 'result') {
             const fullText = ev.finalText || assistantText;
             send('done', {
-              claudeSessionId,
+              agentSessionId,
               costUsd: ev.costUsd,
               tokensIn: ev.tokensIn,
               tokensOut: ev.tokensOut,
@@ -220,7 +220,7 @@ export async function GET(req: NextRequest): Promise<Response> {
             // Persist the turn so the Delegates panel can render history
             // when the user resumes. Best-effort — table may be missing
             // (degraded mode), failure shouldn't break the SSE stream.
-            void appendDelegateTurn(workspaceId, claudeSessionId, {
+            void appendDelegateTurn(workspaceId, agentSessionId, {
               ts: new Date().toISOString(),
               request: requestText,
               response: fullText,
@@ -229,7 +229,7 @@ export async function GET(req: NextRequest): Promise<Response> {
             if (sessionCreated) {
               void generateSessionTitle({
                 workspace: workspaceId,
-                claudeSessionId,
+                agentSessionId,
                 initiatorMsg: requestText,
                 firstResponse: fullText,
               }).catch(() => { /* best-effort */ });

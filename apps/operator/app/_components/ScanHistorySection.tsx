@@ -21,7 +21,7 @@ interface ScanRow {
   workspaceId: string;
   startedAt: string;
   endedAt: string | null;
-  claudeSessionId: string | null;
+  agentSessionId: string | null;
   requestText: string | null;
   summary: string | null;
   suggestions: Array<Record<string, unknown>>;
@@ -36,7 +36,7 @@ interface ScanZeroRow {
   workspaceId: string;
   startedAt: number;
   endedAt: number | null;
-  claudeSessionId: string | null;
+  agentSessionId: string | null;
   requestText: string | null;
   summary: string | null;
   suggestions: Array<Record<string, unknown>>;
@@ -83,7 +83,7 @@ export default function ScanHistorySection(): JSX.Element {
       workspaceId: r.workspaceId,
       startedAt: r.startedAt ? new Date(r.startedAt).toISOString() : '',
       endedAt: r.endedAt ? new Date(r.endedAt).toISOString() : null,
-      claudeSessionId: r.claudeSessionId,
+      agentSessionId: r.agentSessionId,
       requestText: r.requestText,
       summary: r.summary,
       suggestions: Array.isArray(r.suggestions) ? r.suggestions : [],

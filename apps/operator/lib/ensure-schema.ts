@@ -253,7 +253,7 @@ export async function ensureSnapshotFeaturesTable(): Promise<void> {
 /**
  * Creates harness_shared.operator_scans — one row per Operator scan.
  * Captures the summary, the suggestions emitted, the cost, and (post
- * Phase 3) the claude_session_id used to resume across scans. Read
+ * Phase 3) the agent_session_id used to resume across scans. Read
  * by the Scan History tab in the operator panel.
  *
  * `error` is populated when a scan fails (so the history view can
@@ -268,7 +268,7 @@ export async function ensureOperatorScansTable(): Promise<void> {
       workspace_id       TEXT NOT NULL,
       started_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
       ended_at           TIMESTAMPTZ,
-      claude_session_id  TEXT,
+      agent_session_id  TEXT,
       request_text       TEXT,
       summary            TEXT,
       suggestions        JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -280,8 +280,8 @@ export async function ensureOperatorScansTable(): Promise<void> {
     CREATE INDEX IF NOT EXISTS operator_scans_ws_started_idx
       ON harness_shared.operator_scans (workspace_id, started_at DESC);
     CREATE INDEX IF NOT EXISTS operator_scans_session_idx
-      ON harness_shared.operator_scans (claude_session_id)
-      WHERE claude_session_id IS NOT NULL;
+      ON harness_shared.operator_scans (agent_session_id)
+      WHERE agent_session_id IS NOT NULL;
   `);
   try {
     await sql.unsafe(`GRANT SELECT, INSERT, UPDATE ON harness_shared.operator_scans TO harness_app, harness_admin`);
@@ -310,7 +310,7 @@ export async function ensureDelegateInboxTable(): Promise<void> {
       delivered_at       TIMESTAMPTZ,
       kind               TEXT NOT NULL DEFAULT 'delegate-complete',
       headline           TEXT NOT NULL,
-      claude_session_id  TEXT
+      agent_session_id  TEXT
     );
     CREATE INDEX IF NOT EXISTS delegate_inbox_ws_pending_idx
       ON harness_shared.delegate_inbox (workspace_id, created_at)

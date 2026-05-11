@@ -20,7 +20,7 @@ import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 interface SessionFile {
   /** UUID4 passed to claude as --session-id. */
-  claudeSessionId: string;
+  agentSessionId: string;
   /** ISO timestamp of the most recent scan that used this session. */
   lastUsedAt: string;
   /** Total scans the session has accumulated (informational). */
@@ -39,12 +39,12 @@ export function isScannerResumeEnabled(): boolean {
  */
 export async function getOrCreateScannerSessionId(): Promise<string> {
   const raw = await readOperatorState<Partial<SessionFile>>('operator_scanner_session');
-  if (raw?.claudeSessionId && /^[0-9a-f-]{8,}$/i.test(raw.claudeSessionId)) {
-    return raw.claudeSessionId;
+  if (raw?.agentSessionId && /^[0-9a-f-]{8,}$/i.test(raw.agentSessionId)) {
+    return raw.agentSessionId;
   }
   const id = randomUUID();
   await writeOperatorState<SessionFile>('operator_scanner_session', {
-    claudeSessionId: id,
+    agentSessionId: id,
     lastUsedAt: new Date().toISOString(),
     scanCount: 0,
   });
@@ -54,9 +54,9 @@ export async function getOrCreateScannerSessionId(): Promise<string> {
 /** Bump the scan counter + lastUsedAt after a scan completes. */
 export async function bumpScannerSession(): Promise<void> {
   const raw = await readOperatorState<Partial<SessionFile>>('operator_scanner_session');
-  if (!raw?.claudeSessionId) return;
+  if (!raw?.agentSessionId) return;
   await writeOperatorState<SessionFile>('operator_scanner_session', {
-    claudeSessionId: raw.claudeSessionId,
+    agentSessionId: raw.agentSessionId,
     lastUsedAt: new Date().toISOString(),
     scanCount: (raw.scanCount ?? 0) + 1,
   });
@@ -71,7 +71,7 @@ export async function bumpScannerSession(): Promise<void> {
  */
 export async function resetScannerSession(): Promise<void> {
   await writeOperatorState<SessionFile>('operator_scanner_session', {
-    claudeSessionId: randomUUID(),
+    agentSessionId: randomUUID(),
     lastUsedAt: new Date().toISOString(),
     scanCount: 0,
   });

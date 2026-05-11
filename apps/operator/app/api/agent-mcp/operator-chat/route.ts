@@ -84,18 +84,18 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
 
   // Choose claude-session id.
-  let claudeSessionId: string;
+  let agentSessionId: string;
   let sessionCreated = false;
   if (newSession || !requestedSessionId) {
-    claudeSessionId = randomUUID();
+    agentSessionId = randomUUID();
     sessionCreated = true;
   } else {
     const existing = await getClaudeSession(workspaceId, requestedSessionId).catch(() => null);
     if (existing && existing.status === 'open') {
-      claudeSessionId = existing.claudeSessionId;
+      agentSessionId = existing.agentSessionId;
     } else {
       // Requested session unknown or archived → start fresh.
-      claudeSessionId = randomUUID();
+      agentSessionId = randomUUID();
       sessionCreated = true;
     }
   }
@@ -107,12 +107,12 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (sessionCreated) {
     await createClaudeSession({
       workspace: workspaceId,
-      claudeSessionId,
+      agentSessionId,
       origin: 'voice',
       initiatorMsg: requestText.slice(0, 500),
     }).catch(() => { /* table missing → degraded mode, no PG persistence */ });
   } else {
-    void bumpClaudeSession(workspaceId, claudeSessionId).catch(() => {});
+    void bumpClaudeSession(workspaceId, agentSessionId).catch(() => {});
   }
 
   // Build the conversational prompt. Single-turn shape — claude --session-id
@@ -129,13 +129,13 @@ export async function GET(req: NextRequest): Promise<Response> {
           controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
         } catch { /* writer closed */ }
       };
-      send('session', { claudeSessionId, created: sessionCreated });
+      send('session', { agentSessionId, created: sessionCreated });
 
       let assistantText = '';
       try {
         const events = runAgentChat({
           promptText,
-          sessionId: claudeSessionId,
+          sessionId: agentSessionId,
           sessionMode: 'force',
           // HTTP MCP via mcp-remote stdio bridge (same shape as
           // operator-converse). Switched from the standalone stdio
@@ -185,7 +185,7 @@ export async function GET(req: NextRequest): Promise<Response> {
             send('tool_call', { name: ev.name, input: ev.input });
           } else if (ev.type === 'result') {
             send('done', {
-              claudeSessionId,
+              agentSessionId,
               costUsd: ev.costUsd,
               tokensIn: ev.tokensIn,
               tokensOut: ev.tokensOut,
@@ -195,7 +195,7 @@ export async function GET(req: NextRequest): Promise<Response> {
             if (sessionCreated) {
               void generateSessionTitle({
                 workspace: workspaceId,
-                claudeSessionId,
+                agentSessionId,
                 initiatorMsg: requestText,
                 firstResponse: ev.finalText || assistantText,
               }).catch(() => { /* best-effort */ });

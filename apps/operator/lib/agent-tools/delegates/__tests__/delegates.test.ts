@@ -153,14 +153,14 @@ describe('delegates:inbox', () => {
     }));
     const { default: tool } = await import('@/lib/agent-tools/delegates/inbox');
     await tool.handler(
-      { op: 'push', headline: 'hi', kind: 'todo', claudeSessionId: 'cs1' },
+      { op: 'push', headline: 'hi', kind: 'todo', agentSessionId: 'cs1' },
       MAKE_CTX(),
     );
     expect(pushDelegateInbox).toHaveBeenCalledWith({
       workspaceId: 'default',
       headline: 'hi',
       kind: 'todo',
-      claudeSessionId: 'cs1',
+      agentSessionId: 'cs1',
     });
   });
 });

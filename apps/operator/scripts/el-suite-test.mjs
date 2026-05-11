@@ -196,10 +196,10 @@ function makeStubs() {
       const all = [
         { id: 1, startedAt: new Date(Date.now() - 5 * 60_000).toISOString(), endedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
           summary: 'Three suggestions surfaced: forms validator, sheets replan, billing docs.', suggestionCount: 3,
-          costUsd: 0.18, cached: false, error: null, claudeSessionId: null },
+          costUsd: 0.18, cached: false, error: null, agentSessionId: null },
         { id: 2, startedAt: new Date(Date.now() - 60 * 60_000).toISOString(), endedAt: new Date(Date.now() - 59 * 60_000).toISOString(),
           summary: 'Re-emitted prior cards; no new issues.', suggestionCount: 3,
-          costUsd: 0.17, cached: false, error: null, claudeSessionId: 'sess-aaaa' },
+          costUsd: 0.17, cached: false, error: null, agentSessionId: 'sess-aaaa' },
       ];
       const limit = args?.limit ?? 20;
       return JSON.stringify({ count: all.length, scans: all.slice(0, limit) });
@@ -208,7 +208,7 @@ function makeStubs() {
       scan: {
         id, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(),
         summary: 'Three suggestions surfaced: forms validator, sheets replan, billing docs.',
-        suggestionCount: 3, costUsd: 0.18, cached: false, error: null, claudeSessionId: null,
+        suggestionCount: 3, costUsd: 0.18, cached: false, error: null, agentSessionId: null,
         suggestions: [
           { id: 'sug-1', title: 'Forms validator failed schema check', action: 'send_directive', tier: 'high', reason: 'invalid schema', body: 'Long body…' },
           { id: 'sug-2', title: 'Replan needed for sheets', action: 'send_directive', tier: 'medium', reason: 'spec drift', body: 'Long body…' },
@@ -217,15 +217,15 @@ function makeStubs() {
     }),
     delegates_list: async (args) => {
       const all = [
-        { id: 1, claudeSessionId: 'sess-harness-aaaa', title: 'Review of harness changes',
+        { id: 1, agentSessionId: 'sess-harness-aaaa', title: 'Review of harness changes',
           summary: 'Five files changed across ProposalsPanel, FeatureList, IssuesList, and globals.css.',
           lastActiveAt: new Date(Date.now() - 5 * 60_000).toISOString(),
           turnCount: 1, status: 'open' },
-        { id: 2, claudeSessionId: 'sess-bell-bbbb', title: 'What is the Bell number?',
+        { id: 2, agentSessionId: 'sess-bell-bbbb', title: 'What is the Bell number?',
           summary: 'Combinatorial sequence counting set partitions.',
           lastActiveAt: new Date(Date.now() - 60 * 60_000).toISOString(),
           turnCount: 2, status: 'open' },
-        { id: 3, claudeSessionId: 'sess-archived-cccc', title: 'Old refactor pass',
+        { id: 3, agentSessionId: 'sess-archived-cccc', title: 'Old refactor pass',
           summary: 'Reviewed sheets harness for cleanup opportunities; superseded.',
           lastActiveAt: new Date(Date.now() - 24 * 60 * 60_000).toISOString(),
           turnCount: 4, status: 'archived' },
@@ -237,14 +237,14 @@ function makeStubs() {
       return JSON.stringify({ sessions: rows });
     },
     delegates_get: async ({ id }) => {
-      // Match by either numeric id or claudeSessionId substring.
+      // Match by either numeric id or agentSessionId substring.
       const all = [
-        { id: 1, claudeSessionId: 'sess-harness-aaaa', title: 'Review of harness changes',
+        { id: 1, agentSessionId: 'sess-harness-aaaa', title: 'Review of harness changes',
           summary: 'Five files changed across ProposalsPanel, FeatureList, IssuesList, and globals.css.',
           lastActiveAt: new Date(Date.now() - 5 * 60_000).toISOString(), turnCount: 1, status: 'open',
           transcript: [{ ts: new Date().toISOString(), request: 'Review the harness', response: 'Five files changed…' }] },
       ];
-      const hit = all.find((r) => String(r.id) === String(id) || r.claudeSessionId.includes(id));
+      const hit = all.find((r) => String(r.id) === String(id) || r.agentSessionId.includes(id));
       return JSON.stringify({ session: hit ?? null });
     },
     // Default delegate stub: returns sync-shaped result for short
@@ -257,7 +257,7 @@ function makeStubs() {
       if (typeof task === 'string' && /ASYNC_LONG_TASK/.test(task)) {
         return JSON.stringify({
           status: 'started',
-          claudeSessionId: 'test-async-1',
+          agentSessionId: 'test-async-1',
           message: 'Delegate is running; result will arrive shortly.',
         });
       }
@@ -268,7 +268,7 @@ function makeStubs() {
       // got summarized fine; the bug was the agent BAILING to "details
       // in the panel" with no summary on long responses.
       status: 'complete',
-      claudeSessionId: 'test-session-id',
+      agentSessionId: 'test-session-id',
       costUsd: 0.01,
       fullText:
         `Looking at the harness changes in this workspace, I found five files with active edits. ` +

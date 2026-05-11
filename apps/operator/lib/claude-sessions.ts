@@ -16,7 +16,7 @@ import { withWorkspace } from '@restart/db-org';
 export interface ClaudeSessionRow {
   id: number;
   workspace: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   title: string | null;
   summary: string | null;
   status: 'open' | 'archived';
@@ -39,7 +39,7 @@ export async function listClaudeSessions(args: ListSessionsArgs): Promise<Claude
   return withWorkspace(args.workspace, async (tx) => {
     const rows = status === 'all'
       ? await tx`
-          SELECT id, workspace, claude_session_id, title, summary, status,
+          SELECT id, workspace, agent_session_id, title, summary, status,
                  created_at, last_active_at, turn_count, origin, initiator_msg
           FROM harness_shared.claude_sessions
           WHERE workspace = ${args.workspace}
@@ -47,7 +47,7 @@ export async function listClaudeSessions(args: ListSessionsArgs): Promise<Claude
           LIMIT ${limit}
         `
       : await tx`
-          SELECT id, workspace, claude_session_id, title, summary, status,
+          SELECT id, workspace, agent_session_id, title, summary, status,
                  created_at, last_active_at, turn_count, origin, initiator_msg
           FROM harness_shared.claude_sessions
           WHERE workspace = ${args.workspace} AND status = ${status}
@@ -61,11 +61,11 @@ export async function listClaudeSessions(args: ListSessionsArgs): Promise<Claude
 export async function getClaudeSession(workspace: string, sessionRef: string): Promise<ClaudeSessionRow | null> {
   return withWorkspace(workspace, async (tx) => {
     const rows = await tx`
-      SELECT id, workspace, claude_session_id, title, summary, status,
+      SELECT id, workspace, agent_session_id, title, summary, status,
              created_at, last_active_at, turn_count, origin, initiator_msg
       FROM harness_shared.claude_sessions
       WHERE workspace = ${workspace}
-        AND (claude_session_id = ${sessionRef} OR id::text = ${sessionRef})
+        AND (agent_session_id = ${sessionRef} OR id::text = ${sessionRef})
       LIMIT 1
     `;
     return rows.length > 0 ? normalize(rows[0]) : null;
@@ -74,51 +74,51 @@ export async function getClaudeSession(workspace: string, sessionRef: string): P
 
 export async function createClaudeSession(args: {
   workspace: string;
-  claudeSessionId: string;
+  agentSessionId: string;
   origin: 'voice' | 'panel' | 'oracle';
   initiatorMsg: string;
 }): Promise<ClaudeSessionRow> {
   return withWorkspace(args.workspace, async (tx) => {
     const rows = await tx`
       INSERT INTO harness_shared.claude_sessions (
-        workspace, claude_session_id, origin, initiator_msg, turn_count
+        workspace, agent_session_id, origin, initiator_msg, turn_count
       ) VALUES (
-        ${args.workspace}, ${args.claudeSessionId}, ${args.origin}, ${args.initiatorMsg}, 1
+        ${args.workspace}, ${args.agentSessionId}, ${args.origin}, ${args.initiatorMsg}, 1
       )
-      RETURNING id, workspace, claude_session_id, title, summary, status,
+      RETURNING id, workspace, agent_session_id, title, summary, status,
                 created_at, last_active_at, turn_count, origin, initiator_msg
     `;
     return normalize(rows[0]);
   });
 }
 
-export async function bumpClaudeSession(workspace: string, claudeSessionId: string): Promise<void> {
+export async function bumpClaudeSession(workspace: string, agentSessionId: string): Promise<void> {
   await withWorkspace(workspace, async (tx) => {
     await tx`
       UPDATE harness_shared.claude_sessions
       SET turn_count = turn_count + 1,
           last_active_at = now()
-      WHERE workspace = ${workspace} AND claude_session_id = ${claudeSessionId}
+      WHERE workspace = ${workspace} AND agent_session_id = ${agentSessionId}
     `;
   });
 }
 
-export async function setClaudeSessionTitle(workspace: string, claudeSessionId: string, title: string): Promise<void> {
+export async function setClaudeSessionTitle(workspace: string, agentSessionId: string, title: string): Promise<void> {
   await withWorkspace(workspace, async (tx) => {
     await tx`
       UPDATE harness_shared.claude_sessions
       SET title = ${title}
-      WHERE workspace = ${workspace} AND claude_session_id = ${claudeSessionId}
+      WHERE workspace = ${workspace} AND agent_session_id = ${agentSessionId}
     `;
   });
 }
 
-export async function setClaudeSessionSummary(workspace: string, claudeSessionId: string, summary: string): Promise<void> {
+export async function setClaudeSessionSummary(workspace: string, agentSessionId: string, summary: string): Promise<void> {
   await withWorkspace(workspace, async (tx) => {
     await tx`
       UPDATE harness_shared.claude_sessions
       SET summary = ${summary}
-      WHERE workspace = ${workspace} AND claude_session_id = ${claudeSessionId}
+      WHERE workspace = ${workspace} AND agent_session_id = ${agentSessionId}
     `;
   });
 }
@@ -129,7 +129,7 @@ export async function archiveClaudeSession(workspace: string, sessionRef: string
       UPDATE harness_shared.claude_sessions
       SET status = 'archived'
       WHERE workspace = ${workspace}
-        AND (claude_session_id = ${sessionRef} OR id::text = ${sessionRef})
+        AND (agent_session_id = ${sessionRef} OR id::text = ${sessionRef})
     `;
   });
 }
@@ -157,7 +157,7 @@ function normalize(r: any): ClaudeSessionRow {
   return {
     id: Number(r.id),
     workspace: r.workspace,
-    claudeSessionId: r.claude_session_id,
+    agentSessionId: r.agent_session_id,
     title: r.title,
     summary: r.summary,
     status: r.status,

@@ -204,7 +204,7 @@ export async function GET(req: NextRequest) {
   try {
     scanHistoryId = await startOperatorScan({
       workspaceId,
-      claudeSessionId: scannerSessionId,
+      agentSessionId: scannerSessionId,
       startedAt: new Date(),
       requestText: requestText.length > 1000 ? requestText.slice(0, 1000) + '…' : requestText,
     });
@@ -361,7 +361,7 @@ export async function GET(req: NextRequest) {
               summary,
               suggestions: finalCards,
               costUsd,
-              claudeSessionId: scannerSessionId,
+              agentSessionId: scannerSessionId,
             });
           } catch (e) {
             console.warn('[operator-scan] history-complete failed:', e);

@@ -19,25 +19,25 @@ export interface DelegateInboxRow {
   deliveredAt: string | null;
   kind: string;
   headline: string;
-  claudeSessionId: string | null;
+  agentSessionId: string | null;
 }
 
 export async function pushDelegateInbox(args: {
   workspaceId: string;
   headline: string;
   kind?: string;
-  claudeSessionId?: string | null;
+  agentSessionId?: string | null;
 }): Promise<number> {
   await ensureDelegateInboxTable();
   return withWorkspace(args.workspaceId, async (tx) => {
     const rows = await tx<{ id: string }[]>`
       INSERT INTO harness_shared.delegate_inbox (
-        workspace_id, kind, headline, claude_session_id
+        workspace_id, kind, headline, agent_session_id
       ) VALUES (
         ${args.workspaceId},
         ${args.kind ?? 'delegate-complete'},
         ${args.headline},
-        ${args.claudeSessionId ?? null}
+        ${args.agentSessionId ?? null}
       )
       RETURNING id
     `;
@@ -70,7 +70,7 @@ export async function drainDelegateInbox(opts: {
         LIMIT ${limit}
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, workspace_id, created_at, delivered_at, kind, headline, claude_session_id
+      RETURNING id, workspace_id, created_at, delivered_at, kind, headline, agent_session_id
     `;
     return rows.map(toRow);
   });
@@ -97,6 +97,6 @@ function toRow(r: any): DelegateInboxRow {
     deliveredAt: r.delivered_at ? (r.delivered_at instanceof Date ? r.delivered_at.toISOString() : r.delivered_at) : null,
     kind: r.kind,
     headline: r.headline,
-    claudeSessionId: r.claude_session_id ?? null,
+    agentSessionId: r.agent_session_id ?? null,
   };
 }

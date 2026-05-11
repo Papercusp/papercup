@@ -529,7 +529,7 @@ async function fetchDelegatesBlock(workspace: string): Promise<string | null> {
     });
     if (!r.ok) return null;
     const data = await r.json() as {
-      sessions: Array<{ id: number; title: string | null; lastActiveAt: string; turnCount: number; claudeSessionId: string }>;
+      sessions: Array<{ id: number; title: string | null; lastActiveAt: string; turnCount: number; agentSessionId: string }>;
     };
     const routingPreamble = [
       'You are the Operator — the low-latency voice front-end.',
@@ -547,7 +547,7 @@ async function fetchDelegatesBlock(workspace: string): Promise<string | null> {
     const lines = data.sessions.map((s) => {
       const title = s.title ?? '(untitled)';
       const minsAgo = Math.round((Date.now() - new Date(s.lastActiveAt).getTime()) / 60000);
-      return `  - id:${s.claudeSessionId.slice(0, 8)} "${title}" (${s.turnCount} turns, ${minsAgo}m ago)`;
+      return `  - id:${s.agentSessionId.slice(0, 8)} "${title}" (${s.turnCount} turns, ${minsAgo}m ago)`;
     });
     return [
       routingPreamble,

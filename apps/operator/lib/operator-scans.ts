@@ -17,7 +17,7 @@ export interface OperatorScanRow {
   workspaceId: string;
   startedAt: string;        // ISO
   endedAt: string | null;
-  claudeSessionId: string | null;
+  agentSessionId: string | null;
   requestText: string | null;
   summary: string | null;
   suggestions: any[];
@@ -31,7 +31,7 @@ interface InsertScanArgs {
   workspaceId: string;
   startedAt: Date;
   requestText: string | null;
-  claudeSessionId?: string | null;
+  agentSessionId?: string | null;
 }
 
 interface CompleteScanArgs {
@@ -41,7 +41,7 @@ interface CompleteScanArgs {
   suggestions: any[];
   costUsd: number;
   cached?: boolean;
-  claudeSessionId?: string | null;
+  agentSessionId?: string | null;
 }
 
 interface FailScanArgs {
@@ -60,12 +60,12 @@ export async function startOperatorScan(args: InsertScanArgs): Promise<number> {
   const id = await withWorkspace(args.workspaceId, async (tx) => {
     const rows = await tx<{ id: string }[]>`
       INSERT INTO harness_shared.operator_scans (
-        workspace_id, started_at, request_text, claude_session_id
+        workspace_id, started_at, request_text, agent_session_id
       ) VALUES (
         ${args.workspaceId},
         ${args.startedAt.toISOString()},
         ${args.requestText},
-        ${args.claudeSessionId ?? null}
+        ${args.agentSessionId ?? null}
       )
       RETURNING id
     `;
@@ -88,7 +88,7 @@ export async function completeOperatorScan(args: CompleteScanArgs): Promise<void
         suggestion_count = ${args.suggestions.length},
         cost_usd         = ${args.costUsd},
         cached           = ${args.cached ?? false},
-        claude_session_id = COALESCE(${args.claudeSessionId ?? null}, claude_session_id)
+        agent_session_id = COALESCE(${args.agentSessionId ?? null}, agent_session_id)
       WHERE id = ${args.id}
     `;
   });
@@ -117,7 +117,7 @@ export async function listOperatorScans(opts: {
   return withWorkspace(opts.workspaceId, async (tx) => {
     const rows = await tx<any[]>`
       SELECT
-        id, workspace_id, started_at, ended_at, claude_session_id,
+        id, workspace_id, started_at, ended_at, agent_session_id,
         request_text, summary, suggestions, suggestion_count,
         cost_usd, cached, error
       FROM harness_shared.operator_scans
@@ -140,7 +140,7 @@ export async function searchOperatorScans(opts: {
   return withWorkspace(opts.workspaceId, async (tx) => {
     const rows = await tx<any[]>`
       SELECT
-        id, workspace_id, started_at, ended_at, claude_session_id,
+        id, workspace_id, started_at, ended_at, agent_session_id,
         request_text, summary, suggestions, suggestion_count,
         cost_usd, cached, error
       FROM harness_shared.operator_scans
@@ -165,7 +165,7 @@ export async function getOperatorScan(opts: {
   return withWorkspace(opts.workspaceId, async (tx) => {
     const rows = await tx<any[]>`
       SELECT
-        id, workspace_id, started_at, ended_at, claude_session_id,
+        id, workspace_id, started_at, ended_at, agent_session_id,
         request_text, summary, suggestions, suggestion_count,
         cost_usd, cached, error
       FROM harness_shared.operator_scans
@@ -182,7 +182,7 @@ function toRow(r: any): OperatorScanRow {
     workspaceId: r.workspace_id,
     startedAt: r.started_at instanceof Date ? r.started_at.toISOString() : r.started_at,
     endedAt: r.ended_at ? (r.ended_at instanceof Date ? r.ended_at.toISOString() : r.ended_at) : null,
-    claudeSessionId: r.claude_session_id ?? null,
+    agentSessionId: r.agent_session_id ?? null,
     requestText: r.request_text ?? null,
     summary: r.summary ?? null,
     suggestions: Array.isArray(r.suggestions) ? r.suggestions : [],
