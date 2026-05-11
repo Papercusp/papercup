@@ -397,27 +397,10 @@ app.get('/workspaces', async (c) => {
   });
 });
 
-// Phone-facing aliases for the existing /devices routes — the Rust
-// client uses '/desktop/devices' to match the openapi spec.
-app.get('/desktop/devices', async (c) => {
-  const claims = c.get('deviceClaims');
-  const rows = await listDevices(claims.workspace_id);
-  return c.json({
-    devices: rows.map((d) => ({
-      device_id: d.device_id,
-      device_label: d.device_label,
-      paired_at: d.paired_at,
-      last_seen: d.last_seen,
-      workspace_id: d.workspace_id,
-    })),
-  });
-});
-
-app.delete('/desktop/devices/:deviceId', async (c) => {
-  const claims = c.get('deviceClaims');
-  await revokeDevice(c.req.param('deviceId'), claims.workspace_id);
-  return c.json({ ok: true });
-});
+// Note: paired-devices live at the pre-existing GET /devices and
+// DELETE /devices/:deviceId (above the runtime-config block). The
+// Rust client was updated to hit those rather than /desktop/devices,
+// which is pre-empted by the desktopAuth middleware at line 110.
 
 // Voice lease — only one device listens at a time. Phone pre-empts.
 app.get('/voice-lease', async (c) => {
