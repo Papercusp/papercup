@@ -89,6 +89,15 @@ The endpoint rotates the PG row **and** bumps the operator's in-process cache, s
 
 Loopback + superuser-bearer gated. Off-loopback returns 403; missing/bad bearer returns 401.
 
+<Callout type="warn" title="Multi-instance cache coherence">
+Each operator process has its own in-process cache. Hitting `/rotate`
+on :3055 only bumps :3055's cache — :3070 still has the old key
+cached for up to 5 minutes. If you run dev (:3055) and prod (:3070)
+simultaneously, call the rotate endpoint on *each* port. Orchestrator
+subprocesses cache for 5 minutes too; they'll pick up the new key on
+their next refresh.
+</Callout>
+
 ### CLI wrapper
 
 ```bash
