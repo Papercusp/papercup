@@ -7,14 +7,16 @@
  * wraps each line in an `event` envelope and posts it back into the
  * iframe.
  *
- * v1: payload is the JSON.stringified event arg. Audit row is emitted
- * server-side for each subscribe + each delivery (low cardinality —
- * iframe consumers are user-scoped).
+ * v1: payload is either the raw string OR JSON.stringify of an object —
+ * preserved exactly for backward compatibility with PluginIframe's
+ * consumer-side parser (which has the same conditional).
  */
+import { sseResponse, SYNC_MAX_DURATION_SEC } from '@restart/sse';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = SYNC_MAX_DURATION_SEC;
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -26,45 +28,28 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   const state = await getPluginHost();
-  const encoder = new TextEncoder();
-  let unsubscribe: (() => void) | null = null;
 
-  const stream = new ReadableStream({
-    start(controller) {
-      const send = (payload: unknown): void => {
-        try {
-          const line = `data: ${typeof payload === 'string' ? payload : JSON.stringify(payload)}\n\n`;
-          controller.enqueue(encoder.encode(line));
-        } catch { /* stream closed */ }
-      };
-      // Send a comment so the client sees the connection is open.
-      controller.enqueue(encoder.encode(': ok\n\n'));
-      // HookBus.registerAction(event, pluginName, handler) — pluginName
-      // tags the registration so HookBus.unregisterPlugin can remove
-      // it on disconnect. We use a stable per-stream pseudo-plugin
-      // name so cancel() can drop just this stream's subscription.
+  return sseResponse({
+    signal: req.signal,
+    // Heartbeats every 30s; matches the prior 30s : keepalive comment.
+    heartbeatMs: 30_000,
+    // The initial heartbeat replaces the old ': ok\n\n' liveness ping.
+    initialHeartbeat: true,
+    setup: (sink) => {
+      // HookBus.registerAction tags the registration so we can unregister
+      // exactly this stream's subscription on close.
       const subKey = `__iframe_sse_${pluginName}_${installSlug}_${name}_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       let active = true;
       state.bus.registerAction(name, subKey, (arg: unknown) => {
-        if (!active) return;
-        send(arg);
+        if (!active || sink.closed) return;
+        // Preserve the prior behavior: raw string passthrough, otherwise JSON.
+        const payload = typeof arg === 'string' ? arg : JSON.stringify(arg);
+        sink.eventRaw('message', payload);
       });
-      unsubscribe = () => {
+      sink.onClose(() => {
         active = false;
         state.bus.unregisterPlugin(subKey);
-      };
-    },
-    cancel() {
-      unsubscribe?.();
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache, no-transform',
-      'x-accel-buffering': 'no',
-      connection: 'keep-alive',
+      });
     },
   });
 }

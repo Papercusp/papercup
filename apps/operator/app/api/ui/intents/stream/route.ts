@@ -15,15 +15,20 @@
  */
 
 import { NextResponse } from 'next/server';
+import { sseResponse, SYNC_MAX_DURATION_SEC } from '@restart/sse';
 import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = SYNC_MAX_DURATION_SEC;
 
 const POLL_MS = 250;
-const HEARTBEAT_MS = 15_000;
+
+interface Events {
+  message: { id: number; intent: string; args: Record<string, unknown> };
+}
 
 export async function GET(req: Request) {
   if (!isLoopbackRequest(req.headers)) {
@@ -36,26 +41,17 @@ export async function GET(req: Request) {
   await ensureUiIntentsTable();
   const { sql } = getOrgPg();
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      let closed = false;
+  return sseResponse<Events>({
+    signal: req.signal,
+    // 15s heartbeat matches the prior HEARTBEAT_MS.
+    heartbeatMs: 15_000,
+    initialHeartbeat: true,
+    setup: (sink) => {
       let lastId = 0;
       let pollTimer: NodeJS.Timeout | null = null;
-      let heartbeatTimer: NodeJS.Timeout | null = null;
-
-      const send = (data: object) => {
-        if (closed) return;
-        try { controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`)); }
-        catch { closed = true; }
-      };
-      const sendComment = (text: string) => {
-        if (closed) return;
-        try { controller.enqueue(encoder.encode(`: ${text}\n\n`)); } catch { closed = true; }
-      };
 
       const tick = async () => {
-        if (closed) return;
+        if (sink.closed) return;
         try {
           const rows = await sql<Array<{ id: number; intent: string; args: Record<string, unknown> }>>`
             SELECT id, intent, args
@@ -67,37 +63,22 @@ export async function GET(req: Request) {
             LIMIT 50
           `;
           for (const row of rows) {
-            send({ id: Number(row.id), intent: row.intent, args: row.args });
-            lastId = Math.max(lastId, Number(row.id));
+            const rid = Number(row.id);
+            sink.event('message', { id: rid, intent: row.intent, args: row.args });
+            lastId = Math.max(lastId, rid);
           }
         } catch (e) {
           // Don't kill the stream on a single PG hiccup — log + retry.
           // eslint-disable-next-line no-console
           console.warn('[ui-intents] poll error', e);
         }
-        if (!closed) pollTimer = setTimeout(tick, POLL_MS);
+        if (!sink.closed) pollTimer = setTimeout(tick, POLL_MS);
       };
 
-      sendComment('connected');
       pollTimer = setTimeout(tick, 0);
-      heartbeatTimer = setInterval(() => sendComment('ping'), HEARTBEAT_MS);
-
-      const abort = () => {
-        closed = true;
+      sink.onClose(() => {
         if (pollTimer) clearTimeout(pollTimer);
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
-        try { controller.close(); } catch { /* ignore */ }
-      };
-      req.signal.addEventListener('abort', abort);
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache, no-transform',
-      'connection': 'keep-alive',
-      'x-accel-buffering': 'no',
+      });
     },
   });
 }
