@@ -669,6 +669,14 @@ export interface Plugin {
   version: string;
   /** Required Papercusp framework semver range. */
   papercusp: string;
+  /**
+   * Plugin runtime. Defaults to `'js'` (in-process Node host).
+   * - `'js'` — JS plugin loaded into the operator's Node host (the default).
+   * - `'wasm'` — WASM component, run via `jco` in the TS host and `wasmtime`
+   *   in the Rust host. See `@papercusp/plugin-wit` for the WIT contract.
+   * - `'daemon'` — sandboxed subprocess. Reserved for Batch I.
+   */
+  runtime?: 'js' | 'wasm' | 'daemon';
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
   /**
