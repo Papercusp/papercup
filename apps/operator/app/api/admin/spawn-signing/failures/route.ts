@@ -18,9 +18,12 @@
  *   }
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, count, desc, eq, gt, sql as dsql } from 'drizzle-orm';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { ensureSpawnSigVerificationFailuresTable } from '@/lib/ensure-schema';
+
+const sf = generated.spawn_sig_verification_failuresInHarness_shared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,30 +44,41 @@ export async function GET(req: Request) {
   const reason = url.searchParams.get('reason');
 
   await ensureSpawnSigVerificationFailuresTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
 
   const sinceTs = since ? new Date(since) : null;
   if (since && (!sinceTs || Number.isNaN(sinceTs.getTime()))) {
     return NextResponse.json({ error: 'invalid_since' }, { status: 400 });
   }
 
-  const rows = await sql`
-    SELECT id, ts, reason, claimed_role, claimed_harness, claimed_workspace,
-           claimed_spawn, exp_claim, remote_addr, user_agent
-    FROM harness_shared.spawn_sig_verification_failures
-    WHERE ${sinceTs ? sql`ts > ${sinceTs}` : sql`true`}
-      AND ${reason ? sql`reason = ${reason}` : sql`true`}
-    ORDER BY ts DESC
-    LIMIT ${limit}
-  `;
+  const rowsWhere = and(
+    sinceTs ? gt(sf.ts, sinceTs as any) : undefined,
+    reason ? eq(sf.reason, reason) : undefined,
+  );
+  const rows = await db
+    .select({
+      id: sf.id,
+      ts: sf.ts,
+      reason: sf.reason,
+      claimed_role: sf.claimed_role,
+      claimed_harness: sf.claimed_harness,
+      claimed_workspace: sf.claimed_workspace,
+      claimed_spawn: sf.claimed_spawn,
+      exp_claim: sf.exp_claim,
+      remote_addr: sf.remote_addr,
+      user_agent: sf.user_agent,
+    })
+    .from(sf)
+    .where(rowsWhere)
+    .orderBy(desc(sf.ts))
+    .limit(limit);
 
-  const summary = await sql<{ reason: string; count: string }[]>`
-    SELECT reason, count(*)::text as count
-    FROM harness_shared.spawn_sig_verification_failures
-    WHERE ${sinceTs ? sql`ts > ${sinceTs}` : sql`ts > now() - interval '24 hours'`}
-    GROUP BY reason
-    ORDER BY 2 DESC
-  `;
+  const summary = await db
+    .select({ reason: sf.reason, count: count() })
+    .from(sf)
+    .where(sinceTs ? gt(sf.ts, sinceTs as any) : dsql`${sf.ts} > now() - interval '24 hours'`)
+    .groupBy(sf.reason)
+    .orderBy(desc(count()));
 
   return NextResponse.json({
     rows,
