@@ -59,7 +59,21 @@ import { join, basename, dirname } from 'node:path';
 const execFileP = promisify(execFile);
 import chokidar, { type FSWatcher } from 'chokidar';
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, desc, eq, sql as dsql } from 'drizzle-orm';
+
+const hsum = generated.harness_summariesInHarness_shared;
+const prev = generated.pending_reviewsInHarness_shared;
+const hps = generated.harness_proposals_sharedInHarness_shared;
+const hph = generated.harness_phasesInHarness_shared;
+const hgl = generated.harness_git_logInHarness_shared;
+const hh = generated.harness_healthInHarness_shared;
+const hba = generated.harness_branch_actionsInHarness_shared;
+const ocharter = generated.org_charterInHarness_shared;
+const odept = generated.org_departmentsInHarness_shared;
+const oproj = generated.org_projectsInHarness_shared;
+const oinbox = generated.org_inboxInHarness_shared;
+const ooutbox = generated.org_outboxInHarness_shared;
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { activeWorkspaceId } from './workspace-registry';
 import { ALL_PHASES, phasePath, type Phase } from './harness-phases';
@@ -223,7 +237,7 @@ function phaseForPath(state: WatcherState, p: string): PhasedMatch | null {
 }
 
 async function upsertSummary(slug: string, phase: Phase, path: string): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   let content = '';
   let mtimeMs = 0;
   try {
@@ -234,24 +248,30 @@ async function upsertSummary(slug: string, phase: Phase, path: string): Promise<
     return; // file vanished mid-debounce
   }
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_summaries
-      (harness_slug, phase, content, mtime_ms, updated_at, workspace_id)
-    VALUES (${slug}, ${phase}, ${content}, ${Math.floor(mtimeMs)}, ${Date.now()}, ${ws})
-    ON CONFLICT (harness_slug, phase) DO UPDATE
-      SET content = EXCLUDED.content,
-          mtime_ms = EXCLUDED.mtime_ms,
-          updated_at = EXCLUDED.updated_at,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hsum)
+    .values({
+      harness_slug: slug,
+      phase,
+      content,
+      mtime_ms: Math.floor(mtimeMs),
+      updated_at: Date.now(),
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [hsum.harness_slug, hsum.phase],
+      set: {
+        content: dsql`EXCLUDED.content`,
+        mtime_ms: dsql`EXCLUDED.mtime_ms`,
+        updated_at: dsql`EXCLUDED.updated_at`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
 }
 
 async function deleteSummary(slug: string, phase: Phase): Promise<void> {
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.harness_summaries
-     WHERE harness_slug = ${slug} AND phase = ${phase}
-  `;
+  const { db } = getOrgPg();
+  await db.delete(hsum).where(and(eq(hsum.harness_slug, slug), eq(hsum.phase, phase)));
 }
 
 interface ReviewPayload {
@@ -275,44 +295,45 @@ async function upsertReview(slug: string, phase: Phase, path: string): Promise<v
   } catch {
     return;
   }
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const featureId = typeof payload.featureId === 'string' ? payload.featureId : null;
   const kind = typeof payload.kind === 'string' ? payload.kind : 'unknown';
-  await sql`
-    INSERT INTO harness_shared.pending_reviews
-      (harness_slug, phase, review_id, feature_id, kind, payload, ts, resolved, mtime_ms, workspace_id)
-    VALUES (
-      ${slug},
-      ${phase},
-      ${reviewId},
-      ${featureId},
-      ${kind},
-      ${JSON.stringify(payload)}::jsonb,
-      ${Number.isFinite(payload.ts) ? Number(payload.ts) : Math.floor(mtimeMs)},
-      ${!!payload.resolved},
-      ${Math.floor(mtimeMs)},
-      ${ws}
-    )
-    ON CONFLICT (harness_slug, phase, review_id) DO UPDATE
-      SET feature_id = EXCLUDED.feature_id,
-          kind = EXCLUDED.kind,
-          payload = EXCLUDED.payload,
-          ts = EXCLUDED.ts,
-          resolved = EXCLUDED.resolved,
-          mtime_ms = EXCLUDED.mtime_ms,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(prev)
+    .values({
+      harness_slug: slug,
+      phase,
+      review_id: reviewId,
+      feature_id: featureId,
+      kind,
+      payload: payload as any,
+      ts: Number.isFinite(payload.ts) ? Number(payload.ts) : Math.floor(mtimeMs),
+      resolved: !!payload.resolved,
+      mtime_ms: Math.floor(mtimeMs),
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [prev.harness_slug, prev.phase, prev.review_id],
+      set: {
+        feature_id: dsql`EXCLUDED.feature_id`,
+        kind: dsql`EXCLUDED.kind`,
+        payload: dsql`EXCLUDED.payload`,
+        ts: dsql`EXCLUDED.ts`,
+        resolved: dsql`EXCLUDED.resolved`,
+        mtime_ms: dsql`EXCLUDED.mtime_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
 }
 
 async function deleteReview(slug: string, phase: Phase, path: string): Promise<void> {
   const reviewId = path.split('/').pop()?.replace(/\.json$/, '') ?? '';
   if (!reviewId) return;
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.pending_reviews
-     WHERE harness_slug = ${slug} AND phase = ${phase} AND review_id = ${reviewId}
-  `;
+  const { db } = getOrgPg();
+  await db
+    .delete(prev)
+    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, reviewId)));
 }
 
 // Proposals are markdown (.md), not JSON. The accept/reject endpoints
@@ -374,44 +395,53 @@ async function upsertProposal(slug: string, phase: Phase, path: string): Promise
     reviewSummary = summaryLine ? summaryLine.slice(0, 240) : null;
   } catch { /* no reviewer file */ }
 
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const ts = Math.floor(mtimeMs);
-  await sql`
-    INSERT INTO harness_shared.harness_proposals_shared
-      (harness_slug, phase, proposal_id, status, review_verdict, review_summary,
-       reviewed_at, applied_at, rejected_at, size_bytes, payload, ts, mtime_ms, workspace_id)
-    VALUES (
-      ${slug}, ${phase}, ${proposalId},
-      ${status}, ${reviewVerdict}, ${reviewSummary},
-      ${reviewedAt}, ${appliedAt}, ${rejectedAt},
-      ${sizeBytes}, ${JSON.stringify({ body })}::jsonb,
-      ${ts}, ${Math.floor(mtimeMs)}, ${ws}
-    )
-    ON CONFLICT (harness_slug, phase, proposal_id) DO UPDATE
-      SET status = EXCLUDED.status,
-          review_verdict = EXCLUDED.review_verdict,
-          review_summary = EXCLUDED.review_summary,
-          reviewed_at = EXCLUDED.reviewed_at,
-          applied_at = EXCLUDED.applied_at,
-          rejected_at = EXCLUDED.rejected_at,
-          size_bytes = EXCLUDED.size_bytes,
-          payload = EXCLUDED.payload,
-          ts = EXCLUDED.ts,
-          mtime_ms = EXCLUDED.mtime_ms,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hps)
+    .values({
+      harness_slug: slug,
+      phase,
+      proposal_id: proposalId,
+      status,
+      review_verdict: reviewVerdict,
+      review_summary: reviewSummary,
+      reviewed_at: reviewedAt,
+      applied_at: appliedAt,
+      rejected_at: rejectedAt,
+      size_bytes: sizeBytes,
+      payload: { body } as any,
+      ts,
+      mtime_ms: Math.floor(mtimeMs),
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [hps.harness_slug, hps.phase, hps.proposal_id],
+      set: {
+        status: dsql`EXCLUDED.status`,
+        review_verdict: dsql`EXCLUDED.review_verdict`,
+        review_summary: dsql`EXCLUDED.review_summary`,
+        reviewed_at: dsql`EXCLUDED.reviewed_at`,
+        applied_at: dsql`EXCLUDED.applied_at`,
+        rejected_at: dsql`EXCLUDED.rejected_at`,
+        size_bytes: dsql`EXCLUDED.size_bytes`,
+        payload: dsql`EXCLUDED.payload`,
+        ts: dsql`EXCLUDED.ts`,
+        mtime_ms: dsql`EXCLUDED.mtime_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
 }
 
 async function deleteProposal(slug: string, phase: Phase, path: string): Promise<void> {
   const filename = path.split('/').pop() ?? '';
   if (!filename.endsWith('.md') || filename.endsWith('.review.md')) return;
   const proposalId = filename;
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.harness_proposals_shared
-     WHERE harness_slug = ${slug} AND phase = ${phase} AND proposal_id = ${proposalId}
-  `;
+  const { db } = getOrgPg();
+  await db
+    .delete(hps)
+    .where(and(eq(hps.harness_slug, slug), eq(hps.phase, phase), eq(hps.proposal_id, proposalId)));
 }
 
 // ── Mirror 4 retired: harness_pending_issues is now written at producer
@@ -426,7 +456,7 @@ async function deleteProposal(slug: string, phase: Phase, path: string): Promise
 // effort: they reflect the snapshot at write time, not live process state.
 
 async function upsertPhases(project: ProjectEntry): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   for (const { phase, harnessDir } of harnessDirsForProject(project)) {
     const phasePathStr = phasePath(project, phase);
@@ -446,25 +476,37 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
         if (typeof cfg.publicUrl === 'string') publicUrl = cfg.publicUrl;
       }
     } catch {}
-    await sql`
-      INSERT INTO harness_shared.harness_phases
-        (harness_slug, phase, phase_path, branch, port, public_url,
-         exists_on_disk, alive, passed_count, total_count, cost_usd,
-         iteration, promotion_in_flight, mtime_ms, workspace_id)
-      VALUES (
-        ${project.slug}, ${phase}, ${phasePathStr}, ${branch}, ${port}, ${publicUrl},
-        ${exists}, ${false}, ${0}, ${0}, ${0},
-        ${0}, ${false}, ${Math.floor(mtimeMs)}, ${ws}
-      )
-      ON CONFLICT (harness_slug, phase) DO UPDATE
-        SET phase_path = EXCLUDED.phase_path,
-            branch = EXCLUDED.branch,
-            port = EXCLUDED.port,
-            public_url = EXCLUDED.public_url,
-            exists_on_disk = EXCLUDED.exists_on_disk,
-            mtime_ms = EXCLUDED.mtime_ms,
-            workspace_id = EXCLUDED.workspace_id
-    `;
+    await db
+      .insert(hph)
+      .values({
+        harness_slug: project.slug,
+        phase,
+        phase_path: phasePathStr,
+        branch,
+        port,
+        public_url: publicUrl,
+        exists_on_disk: exists,
+        alive: false,
+        passed_count: 0,
+        total_count: 0,
+        cost_usd: 0,
+        iteration: 0,
+        promotion_in_flight: false,
+        mtime_ms: Math.floor(mtimeMs),
+        workspace_id: ws,
+      })
+      .onConflictDoUpdate({
+        target: [hph.harness_slug, hph.phase],
+        set: {
+          phase_path: dsql`EXCLUDED.phase_path`,
+          branch: dsql`EXCLUDED.branch`,
+          port: dsql`EXCLUDED.port`,
+          public_url: dsql`EXCLUDED.public_url`,
+          exists_on_disk: dsql`EXCLUDED.exists_on_disk`,
+          mtime_ms: dsql`EXCLUDED.mtime_ms`,
+          workspace_id: dsql`EXCLUDED.workspace_id`,
+        },
+      });
   }
 }
 
@@ -561,48 +603,48 @@ async function replaceGitLog(slug: string, projectPath: string): Promise<void> {
       };
     });
   const seen = new Set(commits.map((c) => c.sha));
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  // Only fire SSE invalidate if the visible commit set changed. The 60s
-  // reconcile sweep calls this for every project (8 calls per sweep)
-  // even when git history hasn't moved; without this guard every sweep
-  // produces 8 git-log invalidations and the dashboard's CollapsedRails
-  // refetches in lockstep. Comparison is "top SHA + total count" — a
-  // new commit changes the top SHA; a force-push or branch delete
-  // changes the count.
+  // Only fire SSE invalidate if the visible commit set changed.
   const topSha = commits[0]?.sha ?? '';
-  const before = await sql<{ top_sha: string; cnt: string }[]>`
-    SELECT (SELECT sha FROM harness_shared.harness_git_log
-             WHERE harness_slug = ${slug} ORDER BY ts DESC LIMIT 1) AS top_sha,
-           (SELECT count(*)::text FROM harness_shared.harness_git_log
-             WHERE harness_slug = ${slug}) AS cnt
-  `;
+  const { count, notInArray } = await import('drizzle-orm');
+  const [topRow, cntRow] = await Promise.all([
+    db.select({ sha: hgl.sha }).from(hgl).where(eq(hgl.harness_slug, slug)).orderBy(desc(hgl.ts)).limit(1),
+    db.select({ n: count() }).from(hgl).where(eq(hgl.harness_slug, slug)),
+  ]);
+  const before = [{
+    top_sha: topRow[0]?.sha ?? '',
+    cnt: String(cntRow[0]?.n ?? 0),
+  }];
   for (const c of commits) {
-    await sql`
-      INSERT INTO harness_shared.harness_git_log
-        (harness_slug, sha, parents, subject, author, ts, refs, workspace_id)
-      VALUES (
-        ${slug}, ${c.sha},
-        ${JSON.stringify(c.parents)}::jsonb,
-        ${c.subject}, ${c.author}, ${c.ts},
-        ${JSON.stringify(c.refs)}::jsonb,
-        ${ws}
-      )
-      ON CONFLICT (harness_slug, sha) DO UPDATE
-        SET parents = EXCLUDED.parents,
-            subject = EXCLUDED.subject,
-            author = EXCLUDED.author,
-            ts = EXCLUDED.ts,
-            refs = EXCLUDED.refs,
-            workspace_id = EXCLUDED.workspace_id
-    `;
+    await db
+      .insert(hgl)
+      .values({
+        harness_slug: slug,
+        sha: c.sha,
+        parents: c.parents as any,
+        subject: c.subject,
+        author: c.author,
+        ts: c.ts,
+        refs: c.refs as any,
+        workspace_id: ws,
+      })
+      .onConflictDoUpdate({
+        target: [hgl.harness_slug, hgl.sha],
+        set: {
+          parents: dsql`EXCLUDED.parents`,
+          subject: dsql`EXCLUDED.subject`,
+          author: dsql`EXCLUDED.author`,
+          ts: dsql`EXCLUDED.ts`,
+          refs: dsql`EXCLUDED.refs`,
+          workspace_id: dsql`EXCLUDED.workspace_id`,
+        },
+      });
   }
   // Drop commits that fell off the recency cap.
-  await sql`
-    DELETE FROM harness_shared.harness_git_log
-     WHERE harness_slug = ${slug}
-       AND NOT (sha = ANY(${Array.from(seen)}::text[]))
-  `;
+  await db
+    .delete(hgl)
+    .where(and(eq(hgl.harness_slug, slug), notInArray(hgl.sha, Array.from(seen))));
   const prev = before[0];
   const changed = !prev || prev.top_sha !== topSha || prev.cnt !== String(commits.length);
   if (changed) {
@@ -611,13 +653,9 @@ async function replaceGitLog(slug: string, projectPath: string): Promise<void> {
 }
 
 async function deleteGitLogAll(slug: string): Promise<void> {
-  const { sql } = getOrgPg();
-  // Only notify if we actually deleted something. The 60s reconcile sweep
-  // calls this for every project that lacks a .git/ — at 8 projects with
-  // 7 git-less, every sweep would produce 7 notifies even on already-empty
-  // state.
-  const result = await sql`DELETE FROM harness_shared.harness_git_log WHERE harness_slug = ${slug}`;
-  if ((result as unknown as { count?: number }).count) {
+  const { db } = getOrgPg();
+  const result = await db.delete(hgl).where(eq(hgl.harness_slug, slug)).returning({ sha: hgl.sha });
+  if (result.length > 0) {
     await notifySyncInvalidate('harnessGitLog.byHarness', { harnessSlug: slug });
   }
 }
@@ -632,28 +670,32 @@ async function deleteGitLogAll(slug: string): Promise<void> {
 async function upsertHarnessHealth(slug: string, projectPath: string): Promise<void> {
   const specPresent = existsSync(join(projectPath, 'SPEC.md'));
   const contractPresent = existsSync(join(projectPath, '.harness', 'validation-contract.md'));
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const nowMs = Date.now();
-  // Only fire SSE invalidate if the data the dashboard sees actually
-  // changed. The 60s reconcile sweep + chokidar events both call this
-  // helper unconditionally; without this guard, every sweep produces
-  // 8 health invalidations even when nothing observable changed,
-  // causing dashboard panels to refetch in lockstep.
-  const before = await sql<{ spec_present: boolean; contract_present: boolean }[]>`
-    SELECT spec_present, contract_present FROM harness_shared.harness_health
-     WHERE harness_slug = ${slug} LIMIT 1
-  `;
-  await sql`
-    INSERT INTO harness_shared.harness_health
-      (harness_slug, spec_present, contract_present, last_check_ms, workspace_id)
-    VALUES (${slug}, ${specPresent}, ${contractPresent}, ${nowMs}, ${ws})
-    ON CONFLICT (harness_slug) DO UPDATE
-      SET spec_present = EXCLUDED.spec_present,
-          contract_present = EXCLUDED.contract_present,
-          last_check_ms = EXCLUDED.last_check_ms,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  const before = await db
+    .select({ spec_present: hh.spec_present, contract_present: hh.contract_present })
+    .from(hh)
+    .where(eq(hh.harness_slug, slug))
+    .limit(1);
+  await db
+    .insert(hh)
+    .values({
+      harness_slug: slug,
+      spec_present: specPresent,
+      contract_present: contractPresent,
+      last_check_ms: nowMs,
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: hh.harness_slug,
+      set: {
+        spec_present: dsql`EXCLUDED.spec_present`,
+        contract_present: dsql`EXCLUDED.contract_present`,
+        last_check_ms: dsql`EXCLUDED.last_check_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   const prev = before[0];
   const changed = !prev
     || prev.spec_present !== specPresent
@@ -734,17 +776,12 @@ async function replaceBranchActions(
     console.warn(`[harness-fs-watcher] branch-actions compute failed for ${slug}:${branch}:`, (e as Error)?.message);
     return;
   }
-  const { sql } = getOrgPg();
+  const { db, sql } = getOrgPg();
   const ws = activeWorkspaceId();
   const payloadJson = JSON.stringify(payload);
-  // Only fire SSE invalidate if the payload actually changed. The 60s
-  // reconcile sweep calls this for every (slug, branch) — 24 calls per
-  // sweep at 8 slugs — and without this guard each sweep fires 24
-  // notifies (≈ 24/sec sustained at peak load) even when nothing
-  // changed, swamping dashboard panels with refetches. PG's
-  // `IS DISTINCT FROM` compares jsonb semantically (key order /
-  // whitespace insensitive) — true on first-insert (no prior row),
-  // true when content shifts, false when re-running with same data.
+  // Diff check uses PG's `IS DISTINCT FROM` (semantic jsonb comparison).
+  // Kept as raw sql since drizzle's eq() does string-equal, not the
+  // jsonb-aware variant we need.
   const diff = await sql<{ changed: boolean }[]>`
     SELECT (
       NOT EXISTS (
@@ -758,15 +795,23 @@ async function replaceBranchActions(
       )
     ) AS changed
   `;
-  await sql`
-    INSERT INTO harness_shared.harness_branch_actions
-      (harness_slug, branch, payload, last_check_ms, workspace_id)
-    VALUES (${slug}, ${branch}, ${payloadJson}::jsonb, ${Date.now()}, ${ws})
-    ON CONFLICT (harness_slug, branch) DO UPDATE
-      SET payload = EXCLUDED.payload,
-          last_check_ms = EXCLUDED.last_check_ms,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hba)
+    .values({
+      harness_slug: slug,
+      branch,
+      payload: payload as any,
+      last_check_ms: Date.now(),
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [hba.harness_slug, hba.branch],
+      set: {
+        payload: dsql`EXCLUDED.payload`,
+        last_check_ms: dsql`EXCLUDED.last_check_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   if (diff[0]?.changed) {
     await notifySyncInvalidate('harnessBranchActions.byHarnessAndBranch', { harnessSlug: slug, branch });
   }
@@ -783,20 +828,23 @@ async function upsertOrgCharter(orgRootPath: string): Promise<void> {
     mtimeMs = statSync(path).mtimeMs;
   } catch {
     // File gone — drop the row.
-    const { sql } = getOrgPg();
-    await sql`DELETE FROM harness_shared.org_charter WHERE org_id = ${DEFAULT_ORG_ID}`;
+    const { db } = getOrgPg();
+    await db.delete(ocharter).where(eq(ocharter.org_id, DEFAULT_ORG_ID));
     return;
   }
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.org_charter (org_id, content, mtime_ms, workspace_id)
-    VALUES (${DEFAULT_ORG_ID}, ${content}, ${Math.floor(mtimeMs)}, ${ws})
-    ON CONFLICT (org_id) DO UPDATE
-      SET content = EXCLUDED.content,
-          mtime_ms = EXCLUDED.mtime_ms,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(ocharter)
+    .values({ org_id: DEFAULT_ORG_ID, content, mtime_ms: Math.floor(mtimeMs), workspace_id: ws })
+    .onConflictDoUpdate({
+      target: ocharter.org_id,
+      set: {
+        content: dsql`EXCLUDED.content`,
+        mtime_ms: dsql`EXCLUDED.mtime_ms`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
 }
 
 // ── Mirror 9: org_departments (<org-root>/departments.json) ────────────
