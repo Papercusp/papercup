@@ -6,10 +6,10 @@
  * subscribes via subscribe() so the UI sees events sub-millisecond
  * after they're recorded — no file polling, no fs.watch.
  *
- * Same shape as harness-log-bus.ts and run-chunk-bus.ts: per-channel
- * EventEmitter + 256-line ring buffer for late subscribers.
+ * Internals migrated to @restart/sse's getChannel (2026-05-11). Public
+ * surface (publish/subscribe/AuditEnvelope) preserved verbatim.
  */
-import { EventEmitter } from 'node:events';
+import { getChannel } from '@restart/sse';
 
 export interface AuditEnvelope {
   channelKey: string;
@@ -18,31 +18,17 @@ export interface AuditEnvelope {
   ts: number;
 }
 
-interface Channel {
-  emitter: EventEmitter;
-  recent: AuditEnvelope[];
-  seq: number;
-}
+const CHANNEL_PREFIX = 'provision:';
 
-const RECENT_RING_SIZE = 256;
-const channels = new Map<string, Channel>();
-
-function ensureChannel(channelKey: string): Channel {
-  let ch = channels.get(channelKey);
-  if (!ch) {
-    ch = { emitter: new EventEmitter(), recent: [], seq: 0 };
-    ch.emitter.setMaxListeners(50);
-    channels.set(channelKey, ch);
-  }
-  return ch;
+function getAuditChannel(channelKey: string) {
+  return getChannel<AuditEnvelope>(`${CHANNEL_PREFIX}${channelKey}`, { ringSize: 256 });
 }
 
 export function publish(channelKey: string, entry: unknown): AuditEnvelope {
-  const ch = ensureChannel(channelKey);
-  const env: AuditEnvelope = { channelKey, seq: ++ch.seq, entry, ts: Date.now() };
-  ch.recent.push(env);
-  if (ch.recent.length > RECENT_RING_SIZE) ch.recent.shift();
-  ch.emitter.emit('entry', env);
+  const ch = getAuditChannel(channelKey);
+  const env: AuditEnvelope = { channelKey, seq: 0, entry, ts: Date.now() };
+  const id = ch.publish(env);
+  env.seq = id;
   return env;
 }
 
@@ -55,11 +41,26 @@ export function subscribe(
   channelKey: string,
   onEntry: (env: AuditEnvelope) => void,
 ): Subscription {
-  const ch = ensureChannel(channelKey);
-  const handler = (env: AuditEnvelope) => onEntry(env);
-  ch.emitter.on('entry', handler);
+  const ch = getAuditChannel(channelKey);
+  const iter = ch.subscribe()[Symbol.asyncIterator]();
+  let unsubscribed = false;
+
+  (async () => {
+    while (!unsubscribed) {
+      const { value, done } = await iter.next();
+      if (done) break;
+      if (unsubscribed) break;
+      try { onEntry(value.event); }
+      catch { /* subscriber error doesn't tear down delivery */ }
+    }
+  })();
+
   return {
-    recent: [...ch.recent],
-    unsubscribe: () => ch.emitter.off('entry', handler),
+    recent: ch.recent.map((e) => e.event),
+    unsubscribe() {
+      if (unsubscribed) return;
+      unsubscribed = true;
+      void iter.return?.(undefined);
+    },
   };
 }

@@ -9,23 +9,19 @@
  * subscribes via subscribe(). Pure in-memory fan-out — no DB, no
  * filesystem, sub-ms latency.
  *
- * Per-run lifecycle:
- *   - First publisher creates the EventEmitter implicitly via
- *     ensureChannel(runId)
- *   - Subscribers can join before or after the first chunk; new
- *     subscribers see live chunks from that point on (catch-up of
- *     missed chunks comes from the on-disk JSONL fallback during
- *     the transition period)
- *   - When the run completes, callers should call closeChannel(runId)
- *     to release the EventEmitter + emit a 'done' event
+ * Internals migrated to @restart/sse's getChannel (2026-05-11). Public
+ * surface preserved verbatim:
+ *   - publish(runId, seq, data) — caller-supplied seq (NOT bus-assigned)
+ *   - closeChannel(runId) — fires done() + starts 5min GC
+ *   - subscribe(runId, handler) — { recent, unsubscribe, whenDone, isClosed }
+ *   - busStats(), _resetRunChunkBus() — diagnostics + tests
  *
- * Buffering: a small recent-chunks ring buffer (last 64 entries) is
- * kept per run so a subscriber that joins ~100ms after the first
- * publish doesn't miss the head of the stream. Beyond 64 chunks, the
- * fs.watch fallback in the SSE handler reads from disk for full
- * catch-up.
+ * Why caller-supplied seq: orchestrators that retry chunk delivery
+ * across HTTP errors need a stable seq identifier independent of
+ * arrival order at the bus. The previous bus passed seq through; this
+ * one does the same. The channel's auto-id (id) is discarded.
  */
-import { EventEmitter } from 'node:events';
+import { getChannel, _resetChannelsForTest, listChannels } from '@restart/sse';
 
 export interface ChunkEnvelope {
   runId: string;
@@ -34,85 +30,35 @@ export interface ChunkEnvelope {
   ts: number;
 }
 
-interface Channel {
-  emitter: EventEmitter;
-  recent: ChunkEnvelope[];
-  closed: boolean;
-  closedAt?: number;
+const CHANNEL_PREFIX = 'run-chunk:';
+const CLOSED_CHANNEL_GC_MS = 5 * 60_000;
+
+function getRunChannel(runId: string) {
+  return getChannel<ChunkEnvelope>(`${CHANNEL_PREFIX}${runId}`, {
+    ringSize: 64,
+    gcDelayMs: CLOSED_CHANNEL_GC_MS,
+  });
 }
 
-const RECENT_RING_SIZE = 64;
-const CLOSED_CHANNEL_GC_MS = 5 * 60_000; // keep closed channels 5 min for late subscribers
-
-const channels = new Map<string, Channel>();
-let lastGcAt = Date.now();
-
-function maybeGc(): void {
-  const now = Date.now();
-  if (now - lastGcAt < 60_000) return;
-  lastGcAt = now;
-  for (const [runId, ch] of channels) {
-    if (ch.closed && ch.closedAt && now - ch.closedAt > CLOSED_CHANNEL_GC_MS) {
-      ch.emitter.removeAllListeners();
-      channels.delete(runId);
-    }
-  }
-}
-
-function ensureChannel(runId: string): Channel {
-  let ch = channels.get(runId);
-  if (!ch) {
-    ch = {
-      emitter: new EventEmitter(),
-      recent: [],
-      closed: false,
-    };
-    // EventEmitter complains at 10 listeners by default — bump for
-    // the case where a user has multiple tabs open subscribing to the
-    // same run.
-    ch.emitter.setMaxListeners(50);
-    channels.set(runId, ch);
-  }
-  return ch;
-}
-
-/** Publish one chunk to the run's channel. Subscribers receive it
- *  synchronously via the EventEmitter's listener invocation. */
+/** Publish one chunk to the run's channel. Caller's seq is preserved. */
 export function publish(runId: string, seq: number, data: string): void {
-  maybeGc();
-  const ch = ensureChannel(runId);
-  if (ch.closed) {
-    // Late publish after close — silently drop. Could log if it ever
-    // happens in practice; today it's a logic error worth knowing about.
+  const ch = getRunChannel(runId);
+  if (ch.isDone) {
+    // Late publish after close — silently drop, matches prior behavior.
     return;
   }
   const env: ChunkEnvelope = { runId, seq, data, ts: Date.now() };
-  ch.recent.push(env);
-  if (ch.recent.length > RECENT_RING_SIZE) {
-    ch.recent.shift();
-  }
-  ch.emitter.emit('chunk', env);
+  ch.publish(env);
 }
 
-/** Mark the run as complete. Emits a final 'done' event and starts the
- *  GC clock — channel survives 5min for any late subscriber. */
+/** Mark the run as complete. Subscribers' whenDone resolves; 5min GC clock starts. */
 export function closeChannel(runId: string): void {
-  const ch = channels.get(runId);
-  if (!ch || ch.closed) return;
-  ch.closed = true;
-  ch.closedAt = Date.now();
-  ch.emitter.emit('done');
+  const ch = getRunChannel(runId);
+  if (ch.isDone) return;
+  ch.done();
 }
 
-/** Subscribe to a run's chunk stream. Returns:
- *   - `recent`: chunks already in the ring buffer (immediate catch-up)
- *   - `unsubscribe`: function to call when the SSE connection closes
- *   - `whenDone`: promise resolving when the run completes
- *
- *  The handler is invoked for every chunk emitted while subscribed.
- *  Subscribers that joined before the first publish see every chunk
- *  via `handler` (recent will be empty until the first publish lands).
- */
+/** Subscribe to a run's chunk stream. */
 export function subscribe(
   runId: string,
   handler: (env: ChunkEnvelope) => void,
@@ -122,35 +68,42 @@ export function subscribe(
   whenDone: Promise<void>;
   isClosed: () => boolean;
 } {
-  const ch = ensureChannel(runId);
-  const recent = [...ch.recent];
-  const onChunk = (env: ChunkEnvelope) => {
-    try { handler(env); } catch { /* never crash producer */ }
-  };
-  ch.emitter.on('chunk', onChunk);
+  const ch = getRunChannel(runId);
+  const recent = ch.recent.map((e) => e.event);
+  const iter = ch.subscribe()[Symbol.asyncIterator]();
+  let unsubscribed = false;
+  let resolveDone!: () => void;
+  const whenDone = new Promise<void>((r) => { resolveDone = r; });
 
-  const whenDone = new Promise<void>((resolve) => {
-    if (ch.closed) {
-      resolve();
-      return;
+  if (ch.isDone) {
+    resolveDone();
+  }
+
+  (async () => {
+    while (!unsubscribed) {
+      const { value, done } = await iter.next();
+      if (done) break;
+      if (unsubscribed) break;
+      try { handler(value.event); } catch { /* never crash producer */ }
     }
-    ch.emitter.once('done', () => resolve());
-  });
+    resolveDone();
+  })();
 
   return {
     recent,
     unsubscribe: () => {
-      ch.emitter.off('chunk', onChunk);
+      if (unsubscribed) return;
+      unsubscribed = true;
+      void iter.return?.(undefined);
     },
     whenDone,
-    isClosed: () => ch.closed,
+    isClosed: () => ch.isDone,
   };
 }
 
 /** Test-only: drop all channels. */
 export function _resetRunChunkBus(): void {
-  for (const ch of channels.values()) ch.emitter.removeAllListeners();
-  channels.clear();
+  _resetChannelsForTest();
 }
 
 /** Diagnostic: how many active channels + total subscribers. */
@@ -158,10 +111,11 @@ export function busStats(): { activeChannels: number; closedChannels: number; to
   let active = 0;
   let closed = 0;
   let subs = 0;
-  for (const ch of channels.values()) {
-    if (ch.closed) closed++;
+  for (const c of listChannels()) {
+    if (!c.key.startsWith(CHANNEL_PREFIX)) continue;
+    if (c.isDone) closed++;
     else active++;
-    subs += ch.emitter.listenerCount('chunk');
+    subs += c.subscribers;
   }
   return { activeChannels: active, closedChannels: closed, totalSubscribers: subs };
 }

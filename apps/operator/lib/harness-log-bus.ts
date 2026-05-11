@@ -4,9 +4,7 @@
  * Producer: bash run.sh's log() function (and any other bash-side
  * logger) POSTs each line to /api/internal/log-event. The endpoint
  * calls publish() here. The operator's /:slug/log/stream and
- * /:slug/stream SSE handlers subscribe via subscribe(). Same shape as
- * lib/run-chunk-bus.ts but keyed by harness slug + log channel name
- * instead of runId.
+ * /:slug/stream SSE handlers subscribe via subscribe().
  *
  * Channels:
  *   - "<slug>:log"  — structured JSONL events (run.log.jsonl)
@@ -15,13 +13,10 @@
  * Both surfaces are typically written together by the same log() call,
  * so both publish from a single POST.
  *
- * Buffering: a recent-lines ring buffer (last 256 entries) is kept per
- * channel so a subscriber that joins ~100ms after the first publish
- * doesn't miss the head of the stream. Beyond that, the SSE handler
- * falls back to the on-disk file for full backfill on connect (read
- * once, no fs.watch).
+ * Internals migrated to @restart/sse's getChannel (2026-05-11). Public
+ * surface (publish/subscribe/LogEnvelope) preserved verbatim.
  */
-import { EventEmitter } from 'node:events';
+import { getChannel, _resetChannelsForTest } from '@restart/sse';
 
 export interface LogEnvelope {
   channelKey: string;
@@ -30,32 +25,18 @@ export interface LogEnvelope {
   ts: number;
 }
 
-interface Channel {
-  emitter: EventEmitter;
-  recent: LogEnvelope[];
-  seq: number;
-}
+const CHANNEL_PREFIX = 'harness-log:';
 
-const RECENT_RING_SIZE = 256;
-const channels = new Map<string, Channel>();
-
-function ensureChannel(channelKey: string): Channel {
-  let ch = channels.get(channelKey);
-  if (!ch) {
-    ch = { emitter: new EventEmitter(), recent: [], seq: 0 };
-    ch.emitter.setMaxListeners(50);
-    channels.set(channelKey, ch);
-  }
-  return ch;
+function getLogChannel(channelKey: string) {
+  return getChannel<LogEnvelope>(`${CHANNEL_PREFIX}${channelKey}`, { ringSize: 256 });
 }
 
 /** Publish one log line to the channel. */
 export function publish(channelKey: string, line: string): LogEnvelope {
-  const ch = ensureChannel(channelKey);
-  const env: LogEnvelope = { channelKey, seq: ++ch.seq, line, ts: Date.now() };
-  ch.recent.push(env);
-  if (ch.recent.length > RECENT_RING_SIZE) ch.recent.shift();
-  ch.emitter.emit('line', env);
+  const ch = getLogChannel(channelKey);
+  const env: LogEnvelope = { channelKey, seq: 0, line, ts: Date.now() };
+  const id = ch.publish(env);
+  env.seq = id;
   return env;
 }
 
@@ -70,17 +51,31 @@ export function subscribe(
   channelKey: string,
   onLine: (env: LogEnvelope) => void,
 ): Subscription {
-  const ch = ensureChannel(channelKey);
-  const handler = (env: LogEnvelope) => onLine(env);
-  ch.emitter.on('line', handler);
+  const ch = getLogChannel(channelKey);
+  const iter = ch.subscribe()[Symbol.asyncIterator]();
+  let unsubscribed = false;
+
+  (async () => {
+    while (!unsubscribed) {
+      const { value, done } = await iter.next();
+      if (done) break;
+      if (unsubscribed) break;
+      try { onLine(value.event); }
+      catch { /* subscriber error doesn't tear down delivery */ }
+    }
+  })();
+
   return {
-    recent: [...ch.recent],
-    unsubscribe: () => ch.emitter.off('line', handler),
+    recent: ch.recent.map((e) => e.event),
+    unsubscribe() {
+      if (unsubscribed) return;
+      unsubscribed = true;
+      void iter.return?.(undefined);
+    },
   };
 }
 
 /** Test-only: drop all channels. */
 export function _resetForTest(): void {
-  for (const ch of channels.values()) ch.emitter.removeAllListeners();
-  channels.clear();
+  _resetChannelsForTest();
 }
