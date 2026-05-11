@@ -7,20 +7,34 @@ import { useSyncQuery } from '@restart/sync';
 /**
  * Per-harness Settings panel — one tab inside the harness UI.
  *
- * Replaces the old click-to-edit popover on the "Lanes" stat card AND
- * the global /settings/orchestrator page. All controls live per-harness
- * in the spec (`config.json` → parallelWorkers.*) so each harness can
- * carry its own adaptive vocabulary and concurrency settings.
+ * All controls live per-harness in the spec (`config.json` →
+ * parallelWorkers.* / debugger.*) so each harness can carry its own
+ * worker-count vocabulary and synthesizer behavior.
  *
  * Sections:
- *   1. Parallel workers — max, mode, branchIsolation, workersPerFeature
- *   2. Adaptive tiers — only visible when mode=adaptive. Edits the
- *      `parallelWorkers.adaptive.{tiers,labels,rubric}` block on the spec.
- *   3. Adaptive telemetry — recent NEXT_WORKER decisions for this
- *      harness. Read-only, manual refresh button.
+ *   1. Workers — max, worker count (one / fixed / orchestrator-picked),
+ *      synthesizer behavior, debugger threshold, branchIsolation.
+ *   2. Worker count tiers — only visible when "orchestrator picks per
+ *      feature" is selected. Edits `parallelWorkers.adaptive.{tiers,
+ *      labels,rubric}`.
+ *   3. Worker decisions — recent NEXT_WORKER decisions for this
+ *      harness. Read-only.
  */
 
-type Mode = 'lane' | 'competition' | 'adaptive';
+/**
+ * How the per-feature worker count is decided.
+ *
+ *  - 'one'   → exactly 1 worker per feature (parallelism comes from
+ *              running many features in parallel up to `max`).
+ *  - 'fixed' → a static N≥2 workers compete on every feature.
+ *  - 'tiers' → the orchestrator LLM picks N per feature from a
+ *              configured tier set (e.g. {1,2,4}).
+ *
+ * Internal-only UI state. Persisted as a derived `parallelWorkers.mode`
+ * field for runtime back-compat (the dispatcher still keys off `mode`
+ * until step 5 of the synthesizer plan ships).
+ */
+type WorkerCountMode = 'one' | 'fixed' | 'tiers';
 
 interface AdaptiveCfg {
   tiers: number[];
@@ -30,7 +44,7 @@ interface AdaptiveCfg {
 
 interface ParallelWorkersCfg {
   max: number;
-  mode: Mode;
+  workerCountMode: WorkerCountMode;
   workersPerFeature: number | null;
   /** Cap distinct features in flight. null = no separate cap (only
    *  max-workers limits). 1 = traditional one-feature-at-a-time. */
@@ -44,6 +58,13 @@ interface ParallelWorkersCfg {
   replanStrikes: number;
   /** Agent role taken over on chunk escalation. */
   escalateToRole: string;
+  /** Run the synthesizer step before validation. Temporary flag
+   *  during the synthesizer rollout — removed in step 5. */
+  useSynthesizer: boolean;
+  /** Whether single-worker features also go through synthesis.
+   *  Default ON: synthesis acts as a code-review pass even when
+   *  there's only one candidate. Flip OFF for speed. */
+  synthesizeSingle: boolean;
   adaptive: AdaptiveCfg;
 }
 
@@ -113,19 +134,23 @@ export default function HarnessSettingsPanel({
 }) {
   const [parallel, setParallel] = useState<ParallelWorkersCfg>({
     max: 1,
-    mode: 'lane',
+    workerCountMode: 'one',
     workersPerFeature: null,
     maxFeaturesInFlight: null,
     useChunkLoop: false,
     workingStateCheck: 'pnpm typecheck',
     replanStrikes: 3,
     escalateToRole: 'debugger',
+    useSynthesizer: false,
+    synthesizeSingle: true,
     adaptive: { tiers: DEFAULT_TIERS, labels: DEFAULT_LABELS, rubric: DEFAULT_RUBRIC },
   });
   const [branchIso, setBranchIso] = useState<BranchIsoCfg>({
     enabled: false,
     useWorktrees: false,
   });
+  /** `debugger.threshold` — attempts at which the debugger role auto-fires before workers. */
+  const [debuggerThreshold, setDebuggerThreshold] = useState<number>(3);
   /**
    * AI backend rows. The first row (role='') is the harness-wide default;
    * any further rows are per-role overrides. Resolution order at runtime:
@@ -163,20 +188,35 @@ export default function HarnessSettingsPanel({
     setOriginalConfig(cfg);
     const pwRaw = (cfg.parallelWorkers ?? {}) as Record<string, unknown>;
     const biRaw = (cfg.branchIsolation ?? {}) as Record<string, unknown>;
+    const dbgRaw = (cfg.debugger ?? {}) as Record<string, unknown>;
     const adapRaw = (pwRaw.adaptive ?? {}) as Record<string, unknown>;
     const rawTiers = Array.isArray(adapRaw.tiers) ? adapRaw.tiers as number[] : DEFAULT_TIERS;
     const rawLabels = Array.isArray(adapRaw.labels) ? adapRaw.labels as string[] : DEFAULT_LABELS;
+    const max = typeof pwRaw.max === 'number' ? pwRaw.max : 1;
+    const wpfRaw = typeof pwRaw.workersPerFeature === 'number' ? pwRaw.workersPerFeature : null;
+
+    // Migrate legacy `parallelWorkers.mode` → workerCountMode. Also
+    // infer when `mode` is absent but other fields indicate intent.
+    let workerCountMode: WorkerCountMode;
+    if (pwRaw.mode === 'adaptive' || (pwRaw.mode === undefined && adapRaw && Object.keys(adapRaw).length > 0)) {
+      workerCountMode = 'tiers';
+    } else if (pwRaw.mode === 'competition' || (pwRaw.mode === undefined && wpfRaw !== null && wpfRaw > 1)) {
+      workerCountMode = 'fixed';
+    } else {
+      workerCountMode = 'one';
+    }
+
     setParallel({
-      max: typeof pwRaw.max === 'number' ? pwRaw.max : 1,
-      mode: pwRaw.mode === 'competition' ? 'competition'
-        : pwRaw.mode === 'adaptive' ? 'adaptive'
-        : 'lane',
-      workersPerFeature: typeof pwRaw.workersPerFeature === 'number' ? pwRaw.workersPerFeature : null,
+      max,
+      workerCountMode,
+      workersPerFeature: wpfRaw,
       maxFeaturesInFlight: typeof pwRaw.maxFeaturesInFlight === 'number' ? pwRaw.maxFeaturesInFlight : null,
       useChunkLoop: pwRaw.useChunkLoop === true,
       workingStateCheck: typeof pwRaw.workingStateCheck === 'string' ? pwRaw.workingStateCheck : 'pnpm typecheck',
       replanStrikes: typeof pwRaw.replanStrikes === 'number' && pwRaw.replanStrikes > 0 ? pwRaw.replanStrikes : 3,
       escalateToRole: typeof pwRaw.escalateToRole === 'string' && pwRaw.escalateToRole.length > 0 ? pwRaw.escalateToRole : 'debugger',
+      useSynthesizer: pwRaw.useSynthesizer === true,
+      synthesizeSingle: pwRaw.synthesizeSingle === undefined ? true : pwRaw.synthesizeSingle === true,
       adaptive: {
         tiers: rawTiers.length >= 2 && rawTiers.length === rawLabels.length ? rawTiers : DEFAULT_TIERS,
         labels: rawTiers.length >= 2 && rawTiers.length === rawLabels.length ? rawLabels : DEFAULT_LABELS,
@@ -187,6 +227,11 @@ export default function HarnessSettingsPanel({
       enabled: biRaw.enabled === true,
       useWorktrees: biRaw.useWorktrees === true,
     });
+    setDebuggerThreshold(
+      typeof dbgRaw.threshold === 'number' && dbgRaw.threshold > 0
+        ? Math.floor(dbgRaw.threshold)
+        : 3,
+    );
     // aiBackend.{default, roles[role]} → flat row list
     const aiRaw = (cfg.aiBackend ?? {}) as Record<string, unknown>;
     const def = (aiRaw.default ?? {}) as Record<string, unknown>;
@@ -249,14 +294,14 @@ export default function HarnessSettingsPanel({
     }
   }, [slug]);
 
-  // Auto-load telemetry only when adaptive mode is active.
+  // Auto-load telemetry only when tier-based dispatch is active.
   useEffect(() => {
-    if (parallel.mode === 'adaptive') void refreshTelemetry();
-  }, [parallel.mode, refreshTelemetry]);
+    if (parallel.workerCountMode === 'tiers') void refreshTelemetry();
+  }, [parallel.workerCountMode, refreshTelemetry]);
 
-  // Validation for adaptive tier shape — mirrors the old global API.
+  // Validation for tier shape — only fires in tiers mode.
   const validation = useMemo(() => {
-    if (parallel.mode !== 'adaptive') return { ok: true, msg: '' };
+    if (parallel.workerCountMode !== 'tiers') return { ok: true, msg: '' };
     const t = parallel.adaptive.tiers;
     const l = parallel.adaptive.labels;
     if (t.length < 2 || t.length > 5) return { ok: false, msg: 'Tiers must have 2-5 entries' };
@@ -282,10 +327,26 @@ export default function HarnessSettingsPanel({
     try {
       // Merge into the existing spec config so we don't clobber unrelated keys.
       const cfg = { ...originalConfig } as Record<string, any>;
-      const pw: Record<string, any> = { max: parallel.max, mode: parallel.mode };
-      if (parallel.mode === 'competition' && parallel.workersPerFeature !== null) {
-        pw.workersPerFeature = parallel.workersPerFeature;
+
+      // Derive legacy `mode` from workerCountMode for runtime back-compat.
+      // The dispatcher still keys off `parallelWorkers.mode` until step 5
+      // of the synthesizer plan deletes the mode predicates entirely.
+      // After that lands, drop this derivation.
+      const derivedMode =
+        parallel.workerCountMode === 'one' ? 'lane'
+        : parallel.workerCountMode === 'fixed' ? 'competition'
+        : 'adaptive';
+
+      const pw: Record<string, any> = { max: parallel.max, mode: derivedMode };
+
+      if (parallel.workerCountMode === 'one') {
+        pw.workersPerFeature = 1;
+      } else if (parallel.workerCountMode === 'fixed') {
+        pw.workersPerFeature = parallel.workersPerFeature ?? parallel.max;
       }
+      // tiers mode: omit workersPerFeature so resolveWorkerCount uses
+      // the tier set + orchestrator's N=k decision.
+
       if (parallel.maxFeaturesInFlight !== null) {
         pw.maxFeaturesInFlight = parallel.maxFeaturesInFlight;
       }
@@ -304,7 +365,15 @@ export default function HarnessSettingsPanel({
       if (parallel.escalateToRole && parallel.escalateToRole !== 'debugger') {
         pw.escalateToRole = parallel.escalateToRole;
       }
-      if (parallel.mode === 'adaptive') {
+      if (parallel.useSynthesizer) {
+        pw.useSynthesizer = true;
+      }
+      // synthesizeSingle: default is true (synth even on N=1). Only
+      // persist when user explicitly disabled.
+      if (!parallel.synthesizeSingle) {
+        pw.synthesizeSingle = false;
+      }
+      if (parallel.workerCountMode === 'tiers') {
         pw.adaptive = {
           tiers: parallel.adaptive.tiers,
           labels: parallel.adaptive.labels,
@@ -317,13 +386,27 @@ export default function HarnessSettingsPanel({
       const bi: Record<string, any> = { ...((cfg.branchIsolation as object) ?? {}) };
       if (parallel.max > 1) {
         bi.enabled = true;
-        if (parallel.mode === 'competition' || parallel.mode === 'adaptive') {
+        if (parallel.workerCountMode === 'fixed' || parallel.workerCountMode === 'tiers') {
           bi.useWorktrees = true;
         }
       } else {
         bi.enabled = branchIso.enabled;
       }
       cfg.branchIsolation = bi;
+
+      // debugger.threshold: persist only when not the default (3).
+      const dbg: Record<string, any> = { ...((cfg.debugger as object) ?? {}) };
+      if (debuggerThreshold !== 3) {
+        dbg.threshold = debuggerThreshold;
+        cfg.debugger = dbg;
+      } else if ('threshold' in dbg) {
+        delete dbg.threshold;
+        if (Object.keys(dbg).length === 0) {
+          delete cfg.debugger;
+        } else {
+          cfg.debugger = dbg;
+        }
+      }
 
       // aiBackend: flatten rows back to {default, roles}. Empty fields
       // are dropped so unset rows don't pollute config.json.
@@ -364,7 +447,7 @@ export default function HarnessSettingsPanel({
     } finally {
       setSaving(false);
     }
-  }, [parallel, branchIso, originalConfig, slug, phase, validation.ok]);
+  }, [parallel, branchIso, debuggerThreshold, aiBackend, originalConfig, slug, phase, validation.ok]);
 
   if (!loaded) {
     return <div style={{ padding: 24, color: 'var(--pc-muted, #9a9a9a)' }}>Loading…</div>;
@@ -446,12 +529,12 @@ export default function HarnessSettingsPanel({
         </p>
       </header>
 
-      {/* ── Section 1: Parallel workers ─────────────────────── */}
+      {/* ── Section 1: Workers ──────────────────────────────── */}
       <section style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>Parallel workers</h2>
+        <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>Workers</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 80, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>max</span>
+            <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>max workers</span>
             <input
               type="number"
               min={1}
@@ -463,28 +546,30 @@ export default function HarnessSettingsPanel({
               }}
               style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
             />
-            <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>1-64</span>
+            <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>1-64 total concurrent</span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ width: 80, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>mode</span>
+            <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>workers / feature</span>
             <select
-              value={parallel.mode}
-              onChange={(e) => setParallel((p) => ({ ...p, mode: e.target.value as Mode }))}
+              value={parallel.workerCountMode}
+              onChange={(e) =>
+                setParallel((p) => ({ ...p, workerCountMode: e.target.value as WorkerCountMode }))
+              }
               style={{ fontSize: 12.5, padding: '3px 6px' }}
             >
-              <option value="lane">lane (different features)</option>
-              <option value="competition">competition (race per feature)</option>
-              <option value="adaptive">adaptive (LLM picks per feature)</option>
+              <option value="one">one</option>
+              <option value="fixed">fixed N</option>
+              <option value="tiers">orchestrator picks</option>
             </select>
           </div>
 
-          {parallel.mode === 'competition' && (
+          {parallel.workerCountMode === 'fixed' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ width: 80, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>workers/feat</span>
+              <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>N per feature</span>
               <input
                 type="number"
-                min={1}
+                min={2}
                 max={parallel.max}
                 value={parallel.workersPerFeature ?? ''}
                 placeholder={String(parallel.max)}
@@ -605,7 +690,64 @@ export default function HarnessSettingsPanel({
             )}
           </div>
 
-          <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: hasMaxAboveOne ? 'var(--pc-muted, #9a9a9a)' : 'inherit' }}>
+          {/* ── Synthesizer knobs ───────────────────────────────── */}
+          <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--pc-border, #333)' }}>
+            <div style={{ fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)', marginBottom: 6, fontStyle: 'italic' }}>
+              Synthesizer (merges/polishes worker output before validation)
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, marginBottom: 6 }}>
+              <input
+                type="checkbox"
+                checked={parallel.useSynthesizer}
+                onChange={(e) => setParallel((p) => ({ ...p, useSynthesizer: e.target.checked }))}
+              />
+              <span>run synthesizer</span>
+              <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+                (rollout flag — off by default during verification)
+              </span>
+            </label>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                fontSize: 12,
+                color: parallel.useSynthesizer ? 'inherit' : 'var(--pc-muted, #9a9a9a)',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={parallel.synthesizeSingle}
+                disabled={!parallel.useSynthesizer}
+                onChange={(e) => setParallel((p) => ({ ...p, synthesizeSingle: e.target.checked }))}
+              />
+              <span>synthesize single-worker output</span>
+              <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+                (off = skip extra LLM call when N=1)
+              </span>
+            </label>
+          </div>
+
+          {/* ── Debugger threshold ──────────────────────────────── */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 6 }}>
+            <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>debugger after</span>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={debuggerThreshold}
+              onChange={(e) => {
+                const n = parseInt(e.target.value, 10);
+                if (Number.isFinite(n) && n > 0) setDebuggerThreshold(n);
+              }}
+              style={{ width: 64, fontSize: 13, padding: '3px 6px' }}
+            />
+            <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
+              attempts (debugger auto-fires before worker)
+            </span>
+          </div>
+
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, marginTop: 6, color: hasMaxAboveOne ? 'var(--pc-muted, #9a9a9a)' : 'inherit' }}>
             <input
               type="checkbox"
               checked={hasMaxAboveOne ? true : branchIso.enabled}
@@ -617,15 +759,15 @@ export default function HarnessSettingsPanel({
 
           <div style={{ fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)', lineHeight: 1.5, marginTop: 4 }}>
             ↳{' '}
-            {parallel.mode === 'lane' ? (
+            {parallel.workerCountMode === 'one' ? (
               <>up to <strong>{parallel.max}</strong> different feature{parallel.max === 1 ? '' : 's'} in parallel, 1 worker each</>
-            ) : parallel.mode === 'competition' ? (
+            ) : parallel.workerCountMode === 'fixed' ? (
               (() => {
                 const wpf = parallel.workersPerFeature ?? parallel.max;
                 const inFlight = Math.max(1, Math.floor(parallel.max / wpf));
                 return (
                   <>
-                    <strong>{wpf}</strong> worker{wpf === 1 ? '' : 's'}/feature racing,{' '}
+                    <strong>{wpf}</strong> worker{wpf === 1 ? '' : 's'}/feature,{' '}
                     <strong>{inFlight}</strong> feature{inFlight === 1 ? '' : 's'} in flight (max {parallel.max})
                   </>
                 );
@@ -637,19 +779,19 @@ export default function HarnessSettingsPanel({
               </>
             )}
             {hasMaxAboveOne && (
-              <>; branchIso auto-on{(parallel.mode === 'competition' || parallel.mode === 'adaptive') && ' + worktrees'}</>
+              <>; branchIso auto-on{(parallel.workerCountMode === 'fixed' || parallel.workerCountMode === 'tiers') && ' + worktrees'}</>
             )}
           </div>
         </div>
       </section>
 
-      {/* ── Section 2: Adaptive tiers ───────────────────────── */}
-      {parallel.mode === 'adaptive' && (
+      {/* ── Section 2: Worker count tiers ───────────────────── */}
+      {parallel.workerCountMode === 'tiers' && (
         <section style={{ marginBottom: 24 }}>
-          <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>Adaptive worker tiers</h2>
+          <h2 style={{ fontSize: 14, margin: '0 0 8px' }}>Worker count tiers</h2>
           <p style={{ margin: '0 0 8px', color: 'var(--pc-muted, #9a9a9a)', fontSize: 11.5 }}>
-            2–5 ascending integer tiers. Lowest tier acts as the fallback when the orchestrator
-            omits <code>N=</code> from its decision. Saved to this harness's spec.
+            2–5 ascending integer tiers. Orchestrator picks one per feature based on the rubric.
+            Lowest tier is the fallback when no <code>N=</code> is emitted.
           </p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {parallel.adaptive.tiers.map((value, idx) => (
@@ -697,7 +839,7 @@ export default function HarnessSettingsPanel({
 
           <h3 style={{ fontSize: 13, margin: '16px 0 6px' }}>Difficulty rubric</h3>
           <p style={{ margin: '0 0 8px', color: 'var(--pc-muted, #9a9a9a)', fontSize: 11.5 }}>
-            Appended to the orchestrator prompt when this harness runs in adaptive mode.
+            Appended to the orchestrator prompt — guides which tier it picks per feature.
           </p>
           <textarea
             value={parallel.adaptive.rubric}
@@ -844,11 +986,11 @@ export default function HarnessSettingsPanel({
         )}
       </div>
 
-      {/* ── Section 3: Telemetry (adaptive mode only) ───────── */}
-      {parallel.mode === 'adaptive' && (
+      {/* ── Section 3: Worker decisions (tiers mode only) ───── */}
+      {parallel.workerCountMode === 'tiers' && (
         <section>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <h2 style={{ fontSize: 14, margin: 0 }}>Recent allocations</h2>
+            <h2 style={{ fontSize: 14, margin: 0 }}>Recent worker decisions</h2>
             <button
               type="button"
               onClick={() => void refreshTelemetry()}
@@ -860,7 +1002,7 @@ export default function HarnessSettingsPanel({
           </div>
           {telemetry.length === 0 ? (
             <div style={{ padding: 16, color: 'var(--pc-muted, #9a9a9a)', fontSize: 12 }}>
-              No adaptive-mode decisions recorded yet. Run the harness in adaptive mode to populate.
+              No worker decisions recorded yet. Run the harness with tier-mode worker counts to populate.
             </div>
           ) : (
             <div style={{ overflowX: 'auto', border: '1px solid var(--pc-border, #2a2a2a)', borderRadius: 4 }}>
