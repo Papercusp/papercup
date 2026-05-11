@@ -22,7 +22,7 @@ import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
-async function lookupProjectDir(slug: string): Promise<string | null> {
+export async function lookupProjectDir(slug: string): Promise<string | null> {
   return (await loadHarnessRegistry()).projects.find((p) => p.slug === slug)?.path ?? null;
 }
 
@@ -30,11 +30,11 @@ function expertsRoot(projectDir: string): string {
   return join(projectDir, '.harness', 'experts');
 }
 
-function expertDir(projectDir: string, expertId: string): string {
+export function expertDir(projectDir: string, expertId: string): string {
   return join(expertsRoot(projectDir), expertId);
 }
 
-const EXPERT_ID_RE = /^EXP-\d{3,}$/;
+export const EXPERT_ID_RE = /^EXP-\d{3,}$/;
 const FEEDBACK_ID_RE = /^FB-\d{3,}$/;
 const PERSONA_RE = /^[a-z][a-z'-]*$/i;
 
@@ -51,7 +51,7 @@ const VALID_STATUSES = new Set([
 
 const VALID_FEATURE_SIZES = new Set(['small', 'standard', 'large']);
 
-type Identity = {
+export type Identity = {
   id: string;
   title: string;
   slug: string;
@@ -73,7 +73,7 @@ type Identity = {
  * Map the project dir back to a harness slug via the registry. Used by
  * the readIdentity/writeIdentity helpers below to scope PG queries.
  */
-async function projectDirToSlug(projectDir: string): Promise<string | null> {
+export async function projectDirToSlug(projectDir: string): Promise<string | null> {
   const { loadHarnessRegistry } = await import('@/lib/harness-registry');
   const reg = await loadHarnessRegistry();
   return reg.projects.find((p) => p.path === projectDir)?.slug ?? null;
@@ -116,7 +116,7 @@ function rowToIdentity(r: ExpertRow): Identity {
   };
 }
 
-async function readIdentity(projectDir: string, expertId: string): Promise<Identity | null> {
+export async function readIdentity(projectDir: string, expertId: string): Promise<Identity | null> {
   const slug = await projectDirToSlug(projectDir);
   if (slug) {
     const { sql } = (await import('@restart/db-org')).getOrgPg();
@@ -225,7 +225,7 @@ function listExpertIdsOnDisk(projectDir: string): string[] {
   }
 }
 
-async function listExpertIdsInPg(projectDir: string): Promise<string[]> {
+export async function listExpertIdsInPg(projectDir: string): Promise<string[]> {
   const slug = await projectDirToSlug(projectDir);
   if (!slug) return [];
   try {
@@ -247,7 +247,7 @@ async function listExpertIdsInPg(projectDir: string): Promise<string[]> {
  * spawns where the disk mirror is being lazily created. Either case
  * needs to surface so the left panel renders something.
  */
-async function listExpertIds(projectDir: string): Promise<string[]> {
+export async function listExpertIds(projectDir: string): Promise<string[]> {
   const [diskIds, pgIds] = await Promise.all([
     Promise.resolve(listExpertIdsOnDisk(projectDir)),
     listExpertIdsInPg(projectDir),
@@ -340,7 +340,7 @@ async function evaluateConvergence(projectDir: string, expertId: string): Promis
  *   "wait"                      — engaged in chat, do nothing
  *   "done"                      — terminal status; scoper-phase-2 candidate
  */
-async function computeNextAction(projectDir: string, expertId: string, ident: Identity | null): Promise<string> {
+export async function computeNextAction(projectDir: string, expertId: string, ident: Identity | null): Promise<string> {
   if (!ident) return 'done';
   const terminal = ['final', 'max_rounds', 'cancelled', 'superseded', 'error'];
   if (terminal.includes(ident.status)) return 'done';
@@ -408,7 +408,7 @@ function readExpertCaps(projectDir: string, identity: Pick<Identity, 'featureSiz
  * Returns whole cents. Best-effort — invocation logs that didn't tag the id
  * (e.g. legacy sessions) won't roll up.
  */
-async function aggregateExpertSpendCents(projectDir: string, expertId: string): Promise<number> {
+export async function aggregateExpertSpendCents(projectDir: string, expertId: string): Promise<number> {
   const logDir = join(projectDir, '.harness', 'logs');
   if (!existsSync(logDir)) return 0;
   let total = 0;
@@ -462,31 +462,10 @@ async function aggregateExpertSpendCents(projectDir: string, expertId: string): 
 export function registerExperts(harness: Hono): void {
   // ── List experts ─────────────────────────────────────────────────────
   harness.get('/:slug/experts', async (c) => {
-    const projectDir = await lookupProjectDir(c.req.param('slug'));
-    if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
-    const ids = await listExpertIds(projectDir);
-    const out: Array<
-      Pick<Identity, 'id' | 'title' | 'status' | 'featureSize' | 'agentCount' | 'roundCount' | 'userEngaged' | 'forkedFrom' | 'createdAt' | 'updatedAt'>
-      & { nextAction: string }
-    > = [];
-    for (const id of ids) {
-      const ident = await readIdentity(projectDir, id);
-      if (!ident) continue;
-      out.push({
-        id: ident.id,
-        title: ident.title,
-        status: ident.status,
-        featureSize: ident.featureSize,
-        agentCount: ident.agentCount,
-        roundCount: ident.roundCount,
-        userEngaged: ident.userEngaged,
-        forkedFrom: ident.forkedFrom,
-        createdAt: ident.createdAt,
-        updatedAt: ident.updatedAt,
-        nextAction: await computeNextAction(projectDir, ident.id, ident),
-      });
-    }
-    return c.json({ experts: out });
+    const { listExperts } = await import('@/lib/experts-data');
+    const result = await listExperts(c.req.param('slug'));
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
   });
 
   // ── Create expert ────────────────────────────────────────────────────
@@ -546,19 +525,10 @@ export function registerExperts(harness: Hono): void {
   // experts are available without hardcoding their names. Source of
   // truth: prompts/<role>.role.json sidecar files.
   harness.get('/:slug/expert-roles', async (c) => {
-    const slug = c.req.param('slug');
-    const reg = await (await import('@/lib/harness-registry')).loadHarnessRegistry();
-    if (!reg.projects.find((p) => p.slug === slug)) {
-      return c.json({ error: 'unknown harness' }, 404);
-    }
-    const { listRoles, __clearRoleRegistryCache } = await import('@/lib/role-registry');
-    // Clear the per-process cache on every request — cheap (a single
-    // readdir + stat) and avoids "I added a plugin role but the API
-    // didn't pick it up until restart" footguns.
-    __clearRoleRegistryCache();
-    const roles = listRoles(slug);
-    console.log('[expert-roles]', slug, 'returned', roles.length, 'roles:', roles.map(r => r.id).join(','));
-    return c.json({ roles });
+    const { listExpertRoles } = await import('@/lib/experts-data');
+    const result = await listExpertRoles(c.req.param('slug'));
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
   });
 
   // ── Dispatch autonomous expert ────────────────────────────────────────
@@ -603,34 +573,10 @@ export function registerExperts(harness: Hono): void {
 
   // ── Get expert ───────────────────────────────────────────────────────
   harness.get('/:slug/experts/:expertId', async (c) => {
-    const projectDir = await lookupProjectDir(c.req.param('slug'));
-    if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
-    const expertId = c.req.param('expertId');
-    if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
-    const ident = await readIdentity(projectDir, expertId);
-    if (!ident) return c.json({ error: 'expert not found' }, 404);
-    const dir = expertDir(projectDir, expertId);
-    const specPath = join(dir, 'SPEC.md'); // returned for back-compat with UIs that show a path
-    // SPEC content from PG (harness_experts.spec_content). The disk path
-    // above is only displayed by the UI; the actual content comes from PG.
-    let spec = '';
-    {
-      const slug = await projectDirToSlug(projectDir);
-      if (slug) {
-        const { sql } = (await import('@restart/db-org')).getOrgPg();
-        const ws = activeWorkspaceId();
-        const rows = await sql<{ spec_content: string }[]>`
-          SELECT spec_content FROM harness_shared.harness_experts
-           WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-             AND expert_id    = ${expertId}
-           LIMIT 1
-        `;
-        if (rows.length > 0) spec = rows[0].spec_content ?? '';
-      }
-    }
-    const spentCents = await aggregateExpertSpendCents(projectDir, expertId);
-    const nextAction = await computeNextAction(projectDir, expertId, ident);
-    return c.json({ ...ident, specPath, spec, spentCents, nextAction });
+    const { getExpert } = await import('@/lib/experts-data');
+    const result = await getExpert(c.req.param('slug'), c.req.param('expertId'));
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
   });
 
   // ── Patch expert (status, userEngaged, terminationReason, agentCount, roundCount) ──
@@ -908,21 +854,10 @@ export function registerExperts(harness: Hono): void {
 
   // ── Read SPEC.md ─────────────────────────────────────────────────────
   harness.get('/:slug/experts/:expertId/spec', async (c) => {
-    const slug = c.req.param('slug');
-    const projectDir = await lookupProjectDir(slug);
-    if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
-    const expertId = c.req.param('expertId');
-    if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
-    const ws = activeWorkspaceId();
-    const rows = await sql<{ spec_content: string }[]>`
-      SELECT spec_content FROM harness_shared.harness_experts
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-         AND expert_id    = ${expertId}
-       LIMIT 1
-    `;
-    if (rows.length === 0) return c.json({ error: 'expert not found' }, 404);
-    return c.json({ content: rows[0].spec_content ?? '' });
+    const { getExpertSpec } = await import('@/lib/experts-data');
+    const result = await getExpertSpec(c.req.param('slug'), c.req.param('expertId'));
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
   });
 
   // ── Write SPEC.md (expert-only writer in normal flow; user can override) ──
@@ -951,25 +886,10 @@ export function registerExperts(harness: Hono): void {
 
   // ── List feedback conversations ──────────────────────────────────────
   harness.get('/:slug/experts/:expertId/feedback', async (c) => {
-    const slug = c.req.param('slug');
-    const projectDir = await lookupProjectDir(slug);
-    if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
-    const expertId = c.req.param('expertId');
-    if (!EXPERT_ID_RE.test(expertId)) return c.json({ error: 'invalid expert id' }, 400);
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
-    const ws = activeWorkspaceId();
-    const rows = await sql<{ feedback_id: string; persona: string; verdict: unknown | null }[]>`
-      SELECT feedback_id, persona, verdict FROM harness_shared.harness_expert_feedback
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND expert_id = ${expertId}
-       ORDER BY feedback_id ASC
-    `;
-    const out = rows.map((r) => ({
-      id: r.feedback_id,
-      persona: r.persona,
-      ended: r.verdict !== null,
-      verdict: r.verdict,
-    }));
-    return c.json({ feedback: out });
+    const { listExpertFeedback } = await import('@/lib/experts-data');
+    const result = await listExpertFeedback(c.req.param('slug'), c.req.param('expertId'));
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
   });
 
   // ── Generalized chat-agent registry (sidebar) ────────────────────────
@@ -978,25 +898,9 @@ export function registerExperts(harness: Hono): void {
   // instanced experts). Filters out non-chat roles (e.g. `feedback`).
   // Returns: [{role:"orchestrator"}, ..., {role:"expert", instanceId:"EXP-001", title:"..."}, ...]
   harness.get('/:slug/chat-agents', async (c) => {
-    const projectDir = await lookupProjectDir(c.req.param('slug'));
-    if (!projectDir) return c.json({ error: 'unknown harness' }, 404);
-
-    // Roles come from the shared on-disk source via getKnownRoles().
-    // We exclude `feedback` (ephemeral, no chat) and `expert` (handled
-    // separately as instanced agents below) to match agent-chats's chat
-    // surface.
-    const staticRoles = getKnownRoles().filter((r) => r !== 'feedback' && r !== 'expert');
-    const agents: Array<{ role: string; instanceId?: string; title?: string; status?: string }> = [];
-    for (const role of staticRoles) agents.push({ role });
-
-    // Instanced experts — one entry per non-cancelled/superseded expert.
-    for (const id of await listExpertIds(projectDir)) {
-      const ident = await readIdentity(projectDir, id);
-      if (!ident) continue;
-      if (ident.status === 'cancelled' || ident.status === 'superseded') continue;
-      agents.push({ role: 'expert', instanceId: ident.id, title: ident.title, status: ident.status });
-    }
-
-    return c.json({ agents });
+    const { listChatAgents } = await import('@/lib/experts-data');
+    const result = await listChatAgents(c.req.param('slug'));
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
   });
 }
