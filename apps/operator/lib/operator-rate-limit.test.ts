@@ -27,8 +27,42 @@ vi.mock('@restart/db-org', () => {
   // the same shape as the top-level sql tag.
   (tagged as unknown as { begin: (cb: (tx: typeof tagged) => Promise<unknown>) => Promise<unknown> }).begin =
     async (cb) => cb(tagged);
+  // The runtime resetBreaker/inspectState helpers go through a drizzle
+  // `db` handle in addition to the raw `sql` template — stub the parts
+  // they use (select/insert/onConflict). Tests in this file only call
+  // checkRate/record503/recordSuccess (which go through `sql.begin`),
+  // but module load reads `generated.X` so the export must exist.
+  // Drizzle stub backed by the same `store` Map. The chain
+  // .select({...}).from(t).where(eq(t.workspace_id, ws)).limit(N)
+  // is fluent — each method returns `this`-like proxies until the
+  // terminal `limit()` resolves to rows. We can't see the eq() target,
+  // so just return everything we know about (the test only writes one
+  // workspace).
+  const dbStub = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          limit: async () => {
+            const out: { payload: unknown }[] = [];
+            for (const v of store.values()) out.push({ payload: v });
+            return out;
+          },
+        }),
+      }),
+    }),
+    insert: () => ({
+      values: (row: { workspace_id: string; payload: unknown }) => ({
+        onConflictDoUpdate: async () => {
+          store.set(row.workspace_id, row.payload);
+          return undefined;
+        },
+      }),
+    }),
+    delete: () => ({ where: async () => undefined }),
+  };
   return {
-    getOrgPg: () => ({ sql: tagged }),
+    getOrgPg: () => ({ sql: tagged, db: dbStub }),
+    generated: { operator_rate_limitInHarness_shared: { workspace_id: {}, payload: {}, updated_at: {} } },
   };
 });
 
