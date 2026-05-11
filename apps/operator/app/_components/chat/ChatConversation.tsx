@@ -273,22 +273,12 @@ export function ChatConversation(props: ChatConversationProps) {
         {onLoadEarlier && messages.length > 0 && (
           <>
             <div ref={topSentinelRef} aria-hidden="true" style={{ height: 1 }} />
-            {hasMoreEarlier && (
+            {hasMoreEarlier && loadingEarlier && (
               <div className="oracle-load-earlier" aria-live="polite">
-                {loadingEarlier ? (
-                  <span>Loading earlier…</span>
-                ) : (
-                  <button
-                    type="button"
-                    className="oracle-load-earlier-btn"
-                    onClick={() => onLoadEarlier()}
-                  >
-                    Load earlier messages
-                  </button>
-                )}
+                <span>Loading earlier…</span>
               </div>
             )}
-            {!hasMoreEarlier && messages.length > 0 && (
+            {!hasMoreEarlier && (
               <div className="oracle-load-earlier" aria-hidden="true">
                 <span className="oracle-load-earlier-end">Beginning of conversation</span>
               </div>
