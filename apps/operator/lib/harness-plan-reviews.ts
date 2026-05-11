@@ -11,8 +11,10 @@
  * cooldown cache; nothing in this module tracks that.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
 import { ensureHarnessPlanReviewTable } from './ensure-schema';
+
+const hpr = generated.harness_plan_reviewInHarness_shared;
 
 const MAX_BODY_BYTES = 32 * 1024;
 const SUMMARY_CHARS = 200;
@@ -37,11 +39,10 @@ function parseVerdict(line: string): PlanReviewVerdict {
 
 export async function loadHarnessPlanReviews(): Promise<PlanReviewEntry[]> {
   await ensureHarnessPlanReviewTable();
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string; content: string; mtime_ms: string | number }[]>`
-    SELECT harness_slug, content, mtime_ms
-      FROM harness_shared.harness_plan_review
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: hpr.harness_slug, content: hpr.content, mtime_ms: hpr.mtime_ms })
+    .from(hpr);
   const out: PlanReviewEntry[] = [];
   for (const r of rows) {
     const body = r.content ?? '';

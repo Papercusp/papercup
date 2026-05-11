@@ -42,7 +42,11 @@
  */
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
+
+const os = generated.operator_secretsInHarness_shared;
+const sf = generated.spawn_sig_verification_failuresInHarness_shared;
 import {
   ensureOperatorSecretsTable,
   ensureSpawnSigVerificationFailuresTable,
@@ -61,11 +65,14 @@ const SIGNED_PARAM_ALLOWLIST = new Set([
   'feature',
   'chunk',
   'parent_spawn',
+  'client',
   'exp',
 ]);
 
 interface KeyCache {
   buf: Buffer;
+  /** rotated_at from PG; cache invalidates when PG's value advances. */
+  rotatedAt: number;
   loadedAt: number;
 }
 
@@ -76,19 +83,39 @@ export function _resetSpawnSigningKeyCache(): void {
   __g.__papercuspSpawnSigningKey = null;
 }
 
+/**
+ * Read the current key from PG. Honors PG's rotated_at so a rotate on
+ * any other operator process invalidates this process's cache on the
+ * next call. One extra PG row per signing/verifying call — negligible
+ * compared to the rest of the MCP-call cost, and necessary to avoid
+ * the multi-instance cache-coherence bug surfaced by the audit (any
+ * concurrent admin-rotate from a sibling process would otherwise leave
+ * this process serving a stale key for up to 5 minutes).
+ *
+ * The 5-minute TTL is kept as a safety net in case rotated_at can't be
+ * read for some reason — but the rotated_at check is the primary
+ * mechanism.
+ */
 async function loadOrCreateKey(): Promise<Buffer> {
-  const cached = __g.__papercuspSpawnSigningKey;
-  // Cache for 5 minutes so rotation propagates without restart.
-  if (cached && Date.now() - cached.loadedAt < 5 * 60 * 1000) return cached.buf;
-
   await ensureOperatorSecretsTable();
-  const { sql } = getOrgPg();
-  const rows = await sql<{ value_b64: string }[]>`
-    SELECT value_b64 FROM harness_shared.operator_secrets WHERE name = ${KEY_NAME} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ value_b64: os.value_b64, rotated_at: os.rotated_at })
+    .from(os)
+    .where(eq(os.name, KEY_NAME))
+    .limit(1);
   if (rows.length > 0) {
+    const rotatedAt = new Date(rows[0].rotated_at as never).getTime();
+    const cached = __g.__papercuspSpawnSigningKey;
+    if (
+      cached &&
+      cached.rotatedAt === rotatedAt &&
+      Date.now() - cached.loadedAt < 5 * 60 * 1000
+    ) {
+      return cached.buf;
+    }
     const buf = Buffer.from(rows[0].value_b64, 'base64');
-    __g.__papercuspSpawnSigningKey = { buf, loadedAt: Date.now() };
+    __g.__papercuspSpawnSigningKey = { buf, rotatedAt, loadedAt: Date.now() };
     return buf;
   }
 
@@ -96,17 +123,16 @@ async function loadOrCreateKey(): Promise<Buffer> {
   // (which can race if two operator processes start simultaneously).
   const fresh = randomBytes(32);
   const fresh_b64 = fresh.toString('base64');
-  await sql`
-    INSERT INTO harness_shared.operator_secrets (name, value_b64)
-    VALUES (${KEY_NAME}, ${fresh_b64})
-    ON CONFLICT (name) DO NOTHING
-  `;
+  await db.insert(os).values({ name: KEY_NAME, value_b64: fresh_b64 }).onConflictDoNothing();
   // Re-read to win-or-lose deterministically.
-  const after = await sql<{ value_b64: string }[]>`
-    SELECT value_b64 FROM harness_shared.operator_secrets WHERE name = ${KEY_NAME} LIMIT 1
-  `;
+  const after = await db
+    .select({ value_b64: os.value_b64, rotated_at: os.rotated_at })
+    .from(os)
+    .where(eq(os.name, KEY_NAME))
+    .limit(1);
+  const rotatedAt = new Date(after[0]!.rotated_at as never).getTime();
   const buf = Buffer.from(after[0]!.value_b64, 'base64');
-  __g.__papercuspSpawnSigningKey = { buf, loadedAt: Date.now() };
+  __g.__papercuspSpawnSigningKey = { buf, rotatedAt, loadedAt: Date.now() };
   return buf;
 }
 
@@ -223,14 +249,17 @@ export interface VerificationFailureRecord {
 export async function logVerificationFailure(rec: VerificationFailureRecord): Promise<void> {
   try {
     await ensureSpawnSigVerificationFailuresTable();
-    const { sql } = getOrgPg();
-    await sql`
-      INSERT INTO harness_shared.spawn_sig_verification_failures
-        (reason, claimed_role, claimed_harness, claimed_workspace, claimed_spawn, exp_claim, remote_addr, user_agent)
-      VALUES
-        (${rec.reason}, ${rec.claimedRole ?? null}, ${rec.claimedHarness ?? null}, ${rec.claimedWorkspace ?? null},
-         ${rec.claimedSpawn ?? null}, ${rec.expClaim ?? null}, ${rec.remoteAddr ?? null}, ${rec.userAgent ?? null})
-    `;
+    const { db } = getOrgPg();
+    await db.insert(sf).values({
+      reason: rec.reason,
+      claimed_role: rec.claimedRole ?? null,
+      claimed_harness: rec.claimedHarness ?? null,
+      claimed_workspace: rec.claimedWorkspace ?? null,
+      claimed_spawn: rec.claimedSpawn ?? null,
+      exp_claim: rec.expClaim ?? null,
+      remote_addr: rec.remoteAddr ?? null,
+      user_agent: rec.userAgent ?? null,
+    });
   } catch (err) {
     // Never fail the request because of audit-write failure; but log loud.
     // eslint-disable-next-line no-console
@@ -245,13 +274,14 @@ export async function logVerificationFailure(rec: VerificationFailureRecord): Pr
  */
 export async function rotateSpawnSigningKey(): Promise<void> {
   await ensureOperatorSecretsTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const fresh_b64 = randomBytes(32).toString('base64');
-  await sql`
-    INSERT INTO harness_shared.operator_secrets (name, value_b64, rotated_at)
-    VALUES (${KEY_NAME}, ${fresh_b64}, now())
-    ON CONFLICT (name) DO UPDATE
-      SET value_b64 = EXCLUDED.value_b64, rotated_at = now()
-  `;
+  await db
+    .insert(os)
+    .values({ name: KEY_NAME, value_b64: fresh_b64, rotated_at: dsql`now()` as any })
+    .onConflictDoUpdate({
+      target: os.name,
+      set: { value_b64: dsql`EXCLUDED.value_b64`, rotated_at: dsql`now()` },
+    });
   _resetSpawnSigningKeyCache();
 }

@@ -1,6 +1,7 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useState, useCallback } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 
 interface Entry {
   spawn_id: string;
@@ -81,7 +82,11 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hours, setHours] = useState(24);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  // Selected spawn for drilldown. nuqs-backed so:
+  //   (a) the URL deep-links to a specific spawn
+  //   (b) `ui:get_state` surfaces the selection to agents
+  //   (c) `ui:dispatch set_url` can drive selection from outside
+  const [expanded, setExpanded] = useQueryState('spawn', parseAsString);
   const [details, setDetails] = useState<Record<string, Detail | null>>({});
   const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({});
 
@@ -233,6 +238,16 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
   );
 }
 
+interface OmpSession {
+  id: string;
+  filePath: string;
+  cwd: string;
+  timestamp: string;
+  title: string;
+  matchKind: 'exact-cwd' | 'cwd-prefix' | 'time-only';
+  timeDriftMs: number;
+}
+
 function DetailPanel({
   detail,
   entry,
@@ -242,6 +257,39 @@ function DetailPanel({
   entry: Entry;
   onRerun: (ctx: RerunContext) => void;
 }) {
+  const [omp, setOmp] = useState<OmpSession | null | 'loading' | 'none'>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    const params = new URLSearchParams({
+      workspace: 'default',
+      role: 'architect',
+      run: 'dev-page',
+      spawn: 'dev-page',
+    });
+    fetch(`/api/agent-tools/dev/omp_session?${params}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spawnId: entry.spawn_id, mode: 'find' }),
+    })
+      .then(async (r) => {
+        if (!r.ok) {
+          if (!cancelled) setOmp('none');
+          return;
+        }
+        const d = await r.json();
+        const parsed = JSON.parse(d.content[0].text);
+        if (cancelled) return;
+        if (parsed && parsed.id && parsed.filePath) setOmp(parsed as OmpSession);
+        else setOmp('none');
+      })
+      .catch(() => {
+        if (!cancelled) setOmp('none');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.spawn_id]);
   return (
     <div className="pc-dev-session-detail">
       {detail.agent && (
@@ -398,6 +446,118 @@ function DetailPanel({
           </ul>
         </section>
       )}
+
+      <OmpSection ompState={omp} spawnId={entry.spawn_id} />
     </div>
+  );
+}
+
+function OmpSection({
+  ompState,
+  spawnId,
+}: {
+  ompState: OmpSession | null | 'loading' | 'none';
+  spawnId: string;
+}) {
+  const [transcript, setTranscript] = useState<{
+    turns: Array<Record<string, unknown>>;
+    totalLines: number;
+    truncated: boolean;
+  } | null>(null);
+  const [loadingTranscript, setLoadingTranscript] = useState(false);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
+
+  const loadTranscript = useCallback(async () => {
+    if (ompState === 'loading' || ompState === 'none' || ompState === null) return;
+    setLoadingTranscript(true);
+    setTranscriptError(null);
+    try {
+      const params = new URLSearchParams({
+        workspace: 'default',
+        role: 'architect',
+        run: 'dev-page',
+        spawn: 'dev-page',
+      });
+      const r = await fetch(`/api/agent-tools/dev/omp_session?${params}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spawnId, mode: 'read', limit: 200 }),
+      });
+      const d = await r.json();
+      const parsed = JSON.parse(d.content[0].text);
+      if (parsed?.error) {
+        setTranscriptError(parsed.error);
+      } else {
+        setTranscript({
+          turns: parsed.turns ?? [],
+          totalLines: parsed.totalLines ?? 0,
+          truncated: !!parsed.truncated,
+        });
+      }
+    } catch (err) {
+      setTranscriptError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingTranscript(false);
+    }
+  }, [ompState, spawnId]);
+
+  if (ompState === 'loading') {
+    return (
+      <section>
+        <h4 className="pc-dev-rail-h">omp transcript</h4>
+        <div className="pc-dev-muted">searching session files…</div>
+      </section>
+    );
+  }
+  if (ompState === 'none' || !ompState || typeof ompState === 'string') {
+    return (
+      <section>
+        <h4 className="pc-dev-rail-h">omp transcript</h4>
+        <div className="pc-dev-muted">no matching session file</div>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <h4 className="pc-dev-rail-h">
+        omp transcript{' '}
+        <span className="pc-dev-muted">
+          ({ompState.matchKind} match, drift {Math.round(ompState.timeDriftMs / 1000)}s)
+        </span>
+      </h4>
+      <div className="pc-dev-kv">
+        <span>id</span>
+        <span className="pc-dev-slug">{ompState.id.slice(0, 24)}…</span>
+        <span>cwd</span>
+        <span className="pc-dev-muted">{ompState.cwd}</span>
+        <span>file</span>
+        <span className="pc-dev-muted pc-dev-details" title={ompState.filePath}>
+          {ompState.filePath}
+        </span>
+        <span>title</span>
+        <span>{ompState.title.slice(0, 100) || '—'}</span>
+      </div>
+      {!transcript && !loadingTranscript && (
+        <button type="button" className="pc-dev-btn-mini" onClick={loadTranscript}>
+          load transcript
+        </button>
+      )}
+      {loadingTranscript && <div className="pc-dev-muted">loading…</div>}
+      {transcriptError && <div className="pc-dev-api-err">{transcriptError}</div>}
+      {transcript && (
+        <details className="pc-dev-transcript">
+          <summary>
+            {transcript.turns.length} turns
+            {transcript.truncated ? ` of ${transcript.totalLines} (truncated)` : ''}
+          </summary>
+          <pre className="pc-dev-pre">
+            {transcript.turns
+              .map((t) => `[${t.type}] ${JSON.stringify(t).slice(0, 200)}`)
+              .join('\n')}
+          </pre>
+        </details>
+      )}
+    </section>
   );
 }

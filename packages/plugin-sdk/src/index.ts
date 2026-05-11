@@ -117,6 +117,13 @@ export interface PapercuspContext {
   spawn?: PluginSpawn;
 
   /**
+   * Plugin-private key/value store. Optional because `fire-hook` CLI
+   * invocations don't have a backing store; the in-process operator
+   * host always provides it. See `PluginKv` for quota semantics.
+   */
+  kv?: PluginKv;
+
+  /**
    * OAuth helper — acquires a fresh access token for the named provider,
    * refreshing the stored refresh-token if the access token has expired.
    * Concurrent callers share a single in-flight refresh Promise to avoid
@@ -168,6 +175,48 @@ export type PluginSpawn = (
   args: readonly string[],
   opts?: PluginSpawnOptions,
 ) => Promise<PluginSpawnResult>;
+
+/**
+ * Plugin-private key/value store with quotas.
+ *
+ * Each plugin sees its own namespace; cross-plugin access is impossible.
+ * Values are serialised as JSON. Per-key + per-plugin byte quotas are
+ * enforced by the host (defaults: 10 KB/key, 1 MB/plugin). Quota
+ * violations throw `KvQuotaError`.
+ *
+ * Backed by Postgres in production (operator) so state survives reloads
+ * and is observable from the operator UI. Use `pluginDataDir` (file
+ * paths) for blobs > 10 KB, code, or anything that doesn't need to be
+ * scanned/aggregated.
+ *
+ * Surface deliberately small: `get / set / delete / list`. No
+ * transactions, no atomics — high contention isn't a goal; plugins that
+ * need it should use their own per-plugin PG schema.
+ */
+export interface PluginKv {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+  /**
+   * List keys with the given prefix (lexicographic). Returns at most
+   * `limit` keys (default 100, max 500). Use cursor-based pagination
+   * (`afterKey`) if more are needed.
+   */
+  list(opts?: { prefix?: string; limit?: number; afterKey?: string }): Promise<string[]>;
+}
+
+/** Thrown by `ctx.kv.set` when the per-key or per-plugin byte quota is exceeded. */
+export class KvQuotaError extends Error {
+  constructor(
+    message: string,
+    public readonly kind: 'per-key' | 'per-plugin',
+    public readonly limit: number,
+    public readonly attempted: number,
+  ) {
+    super(message);
+    this.name = 'KvQuotaError';
+  }
+}
 
 /**
  * Per-plugin handle for binding action implementations during `init()`.
@@ -257,6 +306,28 @@ export interface PluginHooks {
   contributeOperatorSuggestions?(
     ctx: PapercuspContext,
   ): Promise<PluginOperatorSuggestion[]>;
+
+  /**
+   * Hot-reload state preservation (Tier 3 from Batch F roadmap).
+   *
+   * If declared, the host calls `getStateForReload` just before the
+   * plugin is unloaded for a reload (uninstall doesn't trigger this;
+   * use `onUnload` for cleanup). The returned value must be
+   * JSON-serialisable and ≤ 64 KiB. The host stashes it keyed by
+   * (plugin_id, harness_slug); on the next `init()` for that pair,
+   * `restoreFromReload(state)` is called BEFORE any other hook.
+   *
+   * Opt-in: the plugin's manifest must declare `hotReload:
+   * { preserveState: true }`. Without that flag, the host won't call
+   * either hook (avoids surprising plugin authors who didn't
+   * design for it).
+   *
+   * Use cases: in-flight WebSocket connections that need to survive a
+   * config edit, debounce timers that shouldn't reset on every code
+   * change, accumulated counters that haven't been flushed to ctx.kv yet.
+   */
+  getStateForReload?(ctx: PapercuspContext): Promise<unknown>;
+  restoreFromReload?(ctx: PapercuspContext, state: unknown): Promise<void>;
 }
 
 /**
@@ -598,6 +669,15 @@ export interface Plugin {
   version: string;
   /** Required Papercusp framework semver range. */
   papercusp: string;
+  /**
+   * Plugin runtime descriptor. Defaults to `{ kind: 'js' }` when omitted.
+   * For Plugin literals exported from TS source, you can usually leave this
+   * unset (JS implied). For WASM and daemon plugins, the runtime descriptor
+   * is declared in `papercusp.json`, not here — Plugin literals don't exist
+   * for those runtimes. Kept on the interface so authors who DO want to be
+   * explicit can be. See {@link PluginRuntime}.
+   */
+  runtime?: PluginRuntime;
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
   /**
@@ -1120,3 +1200,67 @@ export const PAPERCUSP_RUNTIME_VERSION = '0.1.1' as const;
 
 export { lookupTier, TIER_TABLE } from './tier-table';
 export type { CapabilityTier } from './tier-table';
+
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Multi-runtime manifest descriptors (Batch G/G+/H/I — rev 3 plan).
+ *
+ * Surfaces the manifest's optional `runtime` and `ui[].type` fields as
+ * TS types so loaders, lints, and consumers all read the same shape.
+ * v1 keeps these optional + back-compat: omitting `runtime` means JS;
+ * omitting `ui[].type` means React (existing behavior).
+ * ───────────────────────────────────────────────────────────────────── */
+
+export type PluginRuntimeKind = 'js' | 'wasm' | 'daemon';
+
+export interface PluginRuntime {
+  kind: PluginRuntimeKind;
+  /** Required when kind='wasm'. Path relative to manifest dir. */
+  wasmPath?: string;
+  /** Required when kind='daemon'. argv (binary first). */
+  daemonCommand?: string[];
+  daemonRestart?: {
+    policy?: 'never' | 'on-failure' | 'always';
+    maxRestarts?: number;
+    backoffMs?: number;
+  };
+  /** WASM linear-memory cap (MiB). Default 64. (Batch G4) */
+  memoryBudgetMb?: number;
+  /**
+   * Action-invocation concurrency. WASM defaults to 'serial'
+   * (mpsc actor); daemon defaults to 'parallel'.
+   */
+  concurrency?: 'serial' | 'parallel';
+}
+
+export type UiSurfaceType = 'react' | 'iframe';
+
+export interface UiSurfaceManifestEntry {
+  /** v1 default: 'react'. 'iframe' opts into the sandboxed iframe loader (Batch H). */
+  type?: UiSurfaceType;
+  slug: string;
+  label: string;
+  icon?: string;
+  /** Required when type='iframe'. Path relative to manifest dir. */
+  iframeEntry?: string;
+  /** Origins the iframe can top-navigate to (Batch H5 — `iframe:navigate:<origin>` cap). */
+  iframeNavigateOrigins?: string[];
+}
+
+/** Default WASM memory budget in MiB when manifest omits the field. */
+export const DEFAULT_WASM_MEMORY_BUDGET_MB = 64;
+
+/** True if the entry opts into the iframe runtime. Treats omitted type as 'react'. */
+export function isIframeSurface(entry: Pick<UiSurfaceManifestEntry, 'type'>): boolean {
+  return entry.type === 'iframe';
+}
+
+/** True when the runtime is WASM. Defaults JS when descriptor missing. */
+export function isWasmRuntime(rt: Pick<PluginRuntime, 'kind'> | undefined): boolean {
+  return rt?.kind === 'wasm';
+}
+
+/** True when the runtime is a subprocess daemon. */
+export function isDaemonRuntime(rt: Pick<PluginRuntime, 'kind'> | undefined): boolean {
+  return rt?.kind === 'daemon';
+}

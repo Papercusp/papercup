@@ -24,6 +24,36 @@ export async function register(): Promise<void> {
   // the boot-time DDL warming.
   await maybeStartPtyWsServer();
 
+  // Boot-time self-repair: drizzle-kit pull periodically truncates the
+  // PG default `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint`
+  // at the type-cast colon, producing unbalanced parens that crash
+  // esbuild on every route compile. Detect-and-repair here so a stale
+  // generated.ts doesn't silently 500 every API call until someone
+  // notices. See pull-schema.mjs Fix 7.
+  try {
+    const { createRequire } = await import('node:module');
+    const req = createRequire(import.meta.url);
+    const fs = req('node:fs') as typeof import('node:fs');
+    const path = req('node:path') as typeof import('node:path');
+    const generatedPath = path.resolve(
+      process.cwd(),
+      'libs/papercusp/libs/db/src/schema/generated.ts',
+    );
+    if (fs.existsSync(generatedPath)) {
+      const broken = '.default(sql`((EXTRACT(epoch FROM now()) * (1000)`)';
+      const balanced = '.default(sql`(EXTRACT(epoch FROM now()) * 1000)::bigint`)';
+      const txt = fs.readFileSync(generatedPath, 'utf8');
+      if (txt.includes(broken)) {
+        const repaired = txt.split(broken).join(balanced);
+        fs.writeFileSync(generatedPath, repaired);
+        const n = txt.split(broken).length - 1;
+        console.warn(`[generated-self-repair] fixed ${n} truncated EXTRACT defaults in ${generatedPath}`);
+      }
+    }
+  } catch (err) {
+    console.warn('[generated-self-repair] non-fatal failure:', (err as Error)?.message ?? err);
+  }
+
   // Pre-warm lazy schema-ensure tables so the first user request doesn't
   // pay for DDL + the first PG connection (~1.1s on a cold pool).
   // Diagnostic 2026-05-06: desktop's first /api/user-actions/<slug> hit

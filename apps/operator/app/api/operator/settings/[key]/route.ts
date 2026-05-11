@@ -7,7 +7,10 @@
  * with SQL or a future admin UI; no code edit needed.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq } from 'drizzle-orm';
+
+const os = generated.operator_settingsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -20,7 +23,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ key: st
     return NextResponse.json({ error: 'invalid key' }, { status: 400 });
   }
   try {
-    const { sql } = getOrgPg();
+    const { db, sql } = getOrgPg();
     await sql.unsafe(`
       CREATE TABLE IF NOT EXISTS harness_shared.operator_settings (
         key TEXT PRIMARY KEY,
@@ -29,9 +32,11 @@ export async function GET(_req: Request, { params }: { params: Promise<{ key: st
         updated_at BIGINT NOT NULL DEFAULT 0
       )
     `);
-    const rows = await sql<SettingRow[]>`
-      SELECT key, value, description FROM harness_shared.operator_settings WHERE key = ${key} LIMIT 1
-    `;
+    const rows = await db
+      .select({ key: os.key, value: os.value, description: os.description })
+      .from(os)
+      .where(eq(os.key, key))
+      .limit(1);
     if (rows.length === 0) return NextResponse.json({ error: 'not found' }, { status: 404 });
     return NextResponse.json(rows[0]);
   } catch (e: any) {

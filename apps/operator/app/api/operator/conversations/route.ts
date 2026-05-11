@@ -1,58 +1,70 @@
 /**
- * GET  /api/operator/conversations?slug=<slug>
- *   Returns the active conversation for the current workspace + (optional)
- *   harness slug, with all turns inlined. The sidebar calls this on mount
- *   to hydrate from PG instead of sessionStorage.
+ * GET  /api/operator/conversations?limit=N
+ *   Returns the workspace's active operator conversation with the most
+ *   recent N turns inlined (default 50, max 500; pass `limit=all` for
+ *   the full history shape used by snapshot/export). The chat is
+ *   workspace-scoped — switching harnesses does NOT change which
+ *   conversation surfaces.
  *
- * POST /api/operator/conversations  { harnessSlug?: string }
- *   Force-create a fresh active conversation (marks any existing active row
- *   as 'done' first). Used by a future "new chat" button. Not wired into
- *   the sidebar yet — included so step-2 (voice wiring) can use it.
+ * POST /api/operator/conversations
+ *   Force-create a fresh active conversation for the workspace (marks
+ *   any existing active row as 'done' first). Used by a future "new
+ *   chat" button.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq } from 'drizzle-orm';
 import {
   getOrCreateActiveConversation,
   listTurns,
+  listTurnsRecent,
 } from '@/lib/operator-conversations';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+
+const oc = generated.operator_conversationsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const slug = req.nextUrl.searchParams.get('slug');
-  const conv = await getOrCreateActiveConversation(slug ?? null);
-  const turns = await listTurns(conv.id);
-  return NextResponse.json({ conversation: conv, turns });
+  const limitParam = req.nextUrl.searchParams.get('limit');
+  const conv = await getOrCreateActiveConversation();
+
+  // Default to a windowed initial load so a long conversation doesn't
+  // hammer the chat sidebar with thousands of turns. Callers that need
+  // the full history can pass `limit=all` (back-compat for any callers
+  // that still expect the old shape — primarily snapshot/export jobs).
+  if (limitParam === 'all') {
+    const turns = await listTurns(conv.id);
+    return NextResponse.json({ conversation: conv, turns, hasMoreEarlier: false });
+  }
+  const limit = Math.max(1, Math.min(Number(limitParam) || 50, 500));
+  const page = await listTurnsRecent({ conversationId: conv.id, limit });
+  return NextResponse.json({
+    conversation: conv,
+    turns: page.turns,
+    hasMoreEarlier: page.hasMoreEarlier,
+  });
 }
 
-export async function POST(req: NextRequest): Promise<Response> {
+export async function POST(_req: NextRequest): Promise<Response> {
   await ensureOperatorConversationsTable();
-  const body = (await req.json().catch(() => ({}))) as {
-    harnessSlug?: string | null;
-  };
-  const slug = body.harnessSlug ?? null;
   const ws = activeWorkspaceId();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
 
-  // Close any existing active conversation in the same scope.
-  await sql`
-    UPDATE harness_shared.operator_conversations
-       SET status = 'done', ended_at = ${Date.now()}
-     WHERE workspace_id = ${ws}
-       AND COALESCE(harness_slug, '') = ${slug ?? ''}
-       AND status = 'active'
-  `;
+  // Close any existing active conversation for this workspace.
+  // Workspace-scoped: harness slug is intentionally ignored.
+  await db
+    .update(oc)
+    .set({ status: 'done', ended_at: Date.now() })
+    .where(and(eq(oc.workspace_id, ws), eq(oc.status, 'active')));
 
-  const created = (await sql`
-    INSERT INTO harness_shared.operator_conversations
-      (workspace_id, harness_slug, started_at)
-    VALUES (${ws}, ${slug}, ${Date.now()})
-    RETURNING id
-  `) as Array<{ id: string }>;
+  const created = await db
+    .insert(oc)
+    .values({ workspace_id: ws, harness_slug: null, started_at: Date.now() })
+    .returning({ id: oc.id });
   const id = created[0].id;
   return NextResponse.json({ conversation: { id }, turns: [] });
 }

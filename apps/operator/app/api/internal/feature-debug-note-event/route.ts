@@ -11,7 +11,11 @@
  *   - content === '' → DELETE the row (file was unlinked)
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, sql as dsql } from 'drizzle-orm';
+
+const ti = generated.token_indexInHarness_shared;
+const fdn = generated.harness_feature_debug_notesInHarness_shared;
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
@@ -30,10 +34,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -50,18 +56,17 @@ export async function POST(req: Request): Promise<Response> {
 
   const ws = activeWorkspaceId();
   if (content === '') {
-    await sql`
-      DELETE FROM harness_shared.harness_feature_debug_notes
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${featureId}
-    `;
+    await db
+      .delete(fdn)
+      .where(and(eq(fdn.workspace_id, ws), eq(fdn.harness_slug, slug), eq(fdn.feature_id, featureId)));
   } else {
-    await sql`
-      INSERT INTO harness_shared.harness_feature_debug_notes
-        (workspace_id, harness_slug, feature_id, content, mtime_ms)
-      VALUES (${ws}, ${slug}, ${featureId}, ${content}, ${mtimeMs})
-      ON CONFLICT (workspace_id, harness_slug, feature_id) DO UPDATE
-        SET content = EXCLUDED.content, mtime_ms = EXCLUDED.mtime_ms
-    `;
+    await db
+      .insert(fdn)
+      .values({ workspace_id: ws, harness_slug: slug, feature_id: featureId, content, mtime_ms: mtimeMs })
+      .onConflictDoUpdate({
+        target: [fdn.workspace_id, fdn.harness_slug, fdn.feature_id],
+        set: { content: dsql`EXCLUDED.content`, mtime_ms: dsql`EXCLUDED.mtime_ms` },
+      });
   }
   void notifySyncInvalidate('featureDebugNotes.byHarness', { harnessSlug: slug }).catch(() => {});
   return NextResponse.json({ ok: true });

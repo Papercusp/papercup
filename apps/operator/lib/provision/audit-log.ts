@@ -14,9 +14,12 @@
  * Spec: /docs/snapshots/build-scripts#audit-log.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, asc, eq, gt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { publish as publishAudit } from '@/lib/provision-audit-bus';
+
+const t = generated.provision_audit_logInHarness_shared;
 
 export type AuditKind =
   | 'consent-granted'
@@ -56,13 +59,18 @@ export async function appendAudit(
   entry: Omit<AuditEntry, 'ts'> & { ts?: string },
   _capMb?: number, // ignored — kept for source compatibility
 ): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const ts = entry.ts ?? new Date().toISOString();
-  await sql`
-    INSERT INTO harness_shared.provision_audit_log (workspace_id, harness_slug, plugin_slug, ts, kind, run_id, data)
-    VALUES (${ws}, ${harness}, ${plugin}, ${ts}::timestamptz, ${entry.kind}, ${entry.runId ?? null}, ${entry.data ? sql.json(entry.data as Record<string, never>) : null})
-  `;
+  await db.insert(t).values({
+    workspace_id: ws,
+    harness_slug: harness,
+    plugin_slug: plugin,
+    ts: new Date(ts) as any,
+    kind: entry.kind,
+    run_id: entry.runId ?? null,
+    data: entry.data ?? null,
+  });
   // Fan out to in-process subscribers (provision/stream SSE) so the UI
   // updates sub-millisecond after the row commits — no file polling.
   publishAudit(`${harness}:${plugin}`, { ts, ...entry });
@@ -73,21 +81,23 @@ export async function readAudit(
   plugin: string,
   opts: { limit?: number; sinceTs?: string } = {},
 ): Promise<AuditEntry[]> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const limit = opts.limit ?? 1_000;
   const since = opts.sinceTs ?? null;
 
-  const rows = await sql<
-    { ts: Date; kind: AuditKind; run_id: string | null; data: Record<string, unknown> | null }[]
-  >`
-    SELECT ts, kind, run_id, data
-    FROM harness_shared.provision_audit_log
-    WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND plugin_slug = ${plugin}
-      ${since ? sql`AND ts > ${since}::timestamptz` : sql``}
-    ORDER BY ts ASC, id ASC
-    LIMIT ${limit}
-  `;
+  const baseWhere = and(
+    eq(t.workspace_id, ws),
+    eq(t.harness_slug, harness),
+    eq(t.plugin_slug, plugin),
+  );
+  const where = since ? and(baseWhere, gt(t.ts, new Date(since) as any)) : baseWhere;
+  const rows = (await db
+    .select({ ts: t.ts, kind: t.kind, run_id: t.run_id, data: t.data })
+    .from(t)
+    .where(where)
+    .orderBy(asc(t.ts), asc(t.id))
+    .limit(limit)) as unknown as Array<{ ts: Date; kind: AuditKind; run_id: string | null; data: Record<string, unknown> | null }>;
 
   return rows.map((r) => ({
     ts: r.ts.toISOString(),

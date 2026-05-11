@@ -35,9 +35,17 @@ interface Props {
   banner?: React.ReactNode;
   /** Optional error string to render in the .oracle-error row. */
   error?: string | null;
+
+  /** Infinite-scroll plumbing (forwarded to ChatConversation). */
+  onLoadEarlier?: () => void;
+  hasMoreEarlier?: boolean;
+  loadingEarlier?: boolean;
 }
 
-export function OperatorChat({ messages, busy, passive, onSend, banner, error }: Props) {
+export function OperatorChat({
+  messages, busy, passive, onSend, banner, error,
+  onLoadEarlier, hasMoreEarlier, loadingEarlier,
+}: Props) {
   const [input, setInput] = useState('');
 
   const submit = useCallback(() => {
@@ -65,6 +73,9 @@ export function OperatorChat({ messages, busy, passive, onSend, banner, error }:
       onInputChange={setInput}
       onSubmit={submit}
       renderToolChip={renderOperatorToolChip}
+      onLoadEarlier={onLoadEarlier}
+      hasMoreEarlier={hasMoreEarlier}
+      loadingEarlier={loadingEarlier}
     />
   );
 }

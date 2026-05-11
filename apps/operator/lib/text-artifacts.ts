@@ -22,8 +22,11 @@
  */
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated, typedSql } from '@restart/db-org';
+import { and, eq, sql } from 'drizzle-orm';
 import { ensureTextArtifactsTable } from './ensure-schema';
+
+const t = generated.harness_text_artifactsInHarness_shared;
 import { loadHarnessRegistry } from './harness-registry';
 import { notifySyncInvalidate } from './sync-sse';
 
@@ -70,12 +73,12 @@ async function mirrorToDisk(slug: string, key: string, content: string): Promise
 export async function loadTextArtifact(slug: string, relPath: string): Promise<string | null> {
   await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
-  const { sql } = getOrgPg();
-  const rows = await sql<{ content: string }[]>`
-    SELECT content FROM harness_shared.harness_text_artifacts
-     WHERE harness_slug = ${slug} AND rel_path = ${key}
-     LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ content: t.content })
+    .from(t)
+    .where(and(eq(t.harness_slug, slug), eq(t.rel_path, key)))
+    .limit(1);
   return rows[0]?.content ?? null;
 }
 
@@ -90,15 +93,15 @@ export interface SaveTextArtifactOpts {
 export async function saveTextArtifact(slug: string, relPath: string, content: string, opts: SaveTextArtifactOpts = {}): Promise<void> {
   await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const now = Date.now();
-  await sql`
-    INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
-    VALUES (${slug}, ${key}, ${content}, ${now})
-    ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
-      content    = EXCLUDED.content,
-      updated_at = EXCLUDED.updated_at
-  `;
+  await db
+    .insert(t)
+    .values({ harness_slug: slug, rel_path: key, content, updated_at: now })
+    .onConflictDoUpdate({
+      target: [t.harness_slug, t.rel_path],
+      set: { content: sql`EXCLUDED.content`, updated_at: sql`EXCLUDED.updated_at` },
+    });
   if (opts.customDiskPath) {
     try {
       await mkdir(dirname(opts.customDiskPath), { recursive: true });
@@ -113,19 +116,22 @@ export async function saveTextArtifact(slug: string, relPath: string, content: s
 export async function appendTextArtifact(slug: string, relPath: string, suffix: string): Promise<void> {
   await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const now = Date.now();
-  // The PG INSERT … DO UPDATE concatenates server-side; we need the full
-  // post-append content for the disk mirror. Returning syntax pulls the
-  // canonical post-update content out in one round trip.
-  const rows = await sql<{ content: string }[]>`
-    INSERT INTO harness_shared.harness_text_artifacts (harness_slug, rel_path, content, updated_at)
-    VALUES (${slug}, ${key}, ${suffix}, ${now})
-    ON CONFLICT (harness_slug, rel_path) DO UPDATE SET
-      content    = harness_text_artifacts.content || EXCLUDED.content,
-      updated_at = EXCLUDED.updated_at
-    RETURNING content
-  `;
+  // PG-side `||` concat keeps the append atomic. Drizzle's `set` accepts
+  // raw sql snippets for cases the query-builder can't express cleanly.
+  // RETURNING comes back typed via .returning({ content }).
+  const rows = await db
+    .insert(t)
+    .values({ harness_slug: slug, rel_path: key, content: suffix, updated_at: now })
+    .onConflictDoUpdate({
+      target: [t.harness_slug, t.rel_path],
+      set: {
+        content: sql`${t.content} || EXCLUDED.content`,
+        updated_at: sql`EXCLUDED.updated_at`,
+      },
+    })
+    .returning({ content: t.content });
   const merged = rows[0]?.content ?? suffix;
   await mirrorToDisk(slug, key, merged);
   await notifyTextArtifactChange(slug, key);
@@ -134,11 +140,8 @@ export async function appendTextArtifact(slug: string, relPath: string, suffix: 
 export async function deleteTextArtifact(slug: string, relPath: string): Promise<void> {
   await ensureTextArtifactsTable();
   const key = normalizeRelPath(relPath);
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.harness_text_artifacts
-     WHERE harness_slug = ${slug} AND rel_path = ${key}
-  `;
+  const { db } = getOrgPg();
+  await db.delete(t).where(and(eq(t.harness_slug, slug), eq(t.rel_path, key)));
   // Don't unlink the file — the harness contract may have a different
   // process (orchestrator, harness-CLI) treating the file as primary. A
   // PG delete from the operator UI just stops mirroring; the file stays

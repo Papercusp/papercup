@@ -64,6 +64,8 @@ type _G = {
     mobileDevices: boolean;
     operatorSecrets: boolean;
     spawnSigVerificationFailures: boolean;
+    uiClients: boolean;
+    uiIntents: boolean;
     identityFiles: boolean;
     adaptiveTelemetry: boolean;
     harnessMissionState: boolean;
@@ -119,6 +121,8 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   mobileDevices: false,
   operatorSecrets: false,
   spawnSigVerificationFailures: false,
+  uiClients: false,
+  uiIntents: false,
   identityFiles: false,
   adaptiveTelemetry: false,
   harnessMissionState: false,
@@ -1511,6 +1515,70 @@ export async function ensureSpawnSigVerificationFailuresTable(): Promise<void> {
       ON harness_shared.spawn_sig_verification_failures (reason, ts DESC);
   `);
   flags.spawnSigVerificationFailures = true;
+}
+
+/**
+ * Creates harness_shared.ui_clients — presence table for the agent → UI
+ * control surface. One row per open browser tab; rows older than 60s
+ * (last_seen_at) are stale and filtered out at query time.
+ *
+ * Canonical migration: 012_ui_control.sql.
+ *
+ * See: apps/operator/docs/ui-control-plan.md
+ */
+export async function ensureUiClientsTable(): Promise<void> {
+  if (flags.uiClients) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.ui_clients (
+      client_id     TEXT PRIMARY KEY,
+      workspace_id  TEXT,
+      url           TEXT NOT NULL,
+      title         TEXT,
+      viewport      JSONB,
+      opened_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+      last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS ui_clients_last_seen_idx
+      ON harness_shared.ui_clients (last_seen_at DESC);
+  `);
+  flags.uiClients = true;
+}
+
+/**
+ * Creates harness_shared.ui_intents — command channel for the
+ * agent → UI control surface. The dispatch tool inserts a row with
+ * status='pending'; the browser-side dispatcher SSE-subscribes,
+ * executes the named handler, posts back result/error which sets
+ * status='done'|'error'. The dispatch tool long-polls until status
+ * leaves 'pending' (or timeout).
+ *
+ * Canonical migration: 012_ui_control.sql.
+ */
+export async function ensureUiIntentsTable(): Promise<void> {
+  if (flags.uiIntents) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.ui_intents (
+      id              BIGSERIAL PRIMARY KEY,
+      client_id       TEXT NOT NULL,
+      intent          TEXT NOT NULL,
+      args            JSONB NOT NULL DEFAULT '{}'::jsonb,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      result          JSONB,
+      error_message   TEXT,
+      requested_by    TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+      completed_at    TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS ui_intents_pending_idx
+      ON harness_shared.ui_intents (client_id, id)
+      WHERE status = 'pending';
+    CREATE INDEX IF NOT EXISTS ui_intents_completed_idx
+      ON harness_shared.ui_intents (completed_at)
+      WHERE completed_at IS NOT NULL;
+  `);
+  flags.uiIntents = true;
 }
 
 /** Test-only: clear the per-process cache so DDL re-runs. */

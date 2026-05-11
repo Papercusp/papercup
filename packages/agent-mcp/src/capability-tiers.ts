@@ -50,6 +50,11 @@ const EXACT: Record<string, CapabilityTier> = {
   'workspaces:read': 'low',
   'harness:dispatch': 'high',
   'hindsight:retain': 'high',
+  // /dev page process kill — Tier 1 sensitive. Requires bearer; agents
+  // (URL spawn ctx, no bearer) cannot call. Dashboard hits it via the
+  // operator's superuser-token. Defense-in-depth: handler enforces a
+  // kind allowlist + writes audit_log on every call.
+  'processes:kill': 'high',
 };
 
 const PREFIX_HIGH = ['secrets:', 'http:fetch:', 'data:read:'];

@@ -126,6 +126,9 @@ export function OperatorChatSidebar() {
           onSend={conv.sendUserMessage}
           banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
           error={conv.error}
+          onLoadEarlier={conv.loadEarlier}
+          hasMoreEarlier={conv.hasMoreEarlier}
+          loadingEarlier={conv.loadingEarlier}
         />
         <div
           className="op-chat-resize-handle"

@@ -70,15 +70,20 @@ async function loadGrantedCapsSafe(
   pluginName: string,
   pluginVersion: string,
   harnessSlug: string,
-): Promise<string[]> {
+): Promise<string[] | undefined> {
   try {
-    return await getGrantsForPluginInHarness(pluginName, pluginVersion, harnessSlug);
+    const rows = await getGrantsForPluginInHarness(pluginName, pluginVersion, harnessSlug);
+    // Empty result → no grant info on file (PG unreachable + no legacy
+    // file, OR no consent flow has run for this plugin yet). Fall back
+    // to legacy single-tier (manifest-only) semantics rather than denying
+    // every cap. Operator's install flow backfills grants at enable time,
+    // so a real user-revoke path is expressed by deleting only specific
+    // caps — never as an empty array. Returning `undefined` (vs `[]`)
+    // signals hasCapability to skip the tier-2 check.
+    return rows.length === 0 ? undefined : rows;
   } catch (e) {
-    // Don't spam the log every init — sample at warn level once per
-    // harness; a real outage will surface via the audit fail-closed path
-    // (Batch C5).
     console.warn(`[plugin-grants] read failed for ${pluginName}@${pluginVersion} in ${harnessSlug}:`, (e as Error)?.message);
-    return [];
+    return undefined;
   }
 }
 
@@ -103,7 +108,15 @@ interface HostState {
    * re-querying PG. Invalidated alongside `initialized` on plugin reload.
    * Tier 2 of the two-tier capability check (Batch B).
    */
-  grants: Map<string, string[]>;
+  grants: Map<string, string[] | undefined>;
+  /**
+   * (pluginName, installSlug) → live WASM plugin handle (Batch G3).
+   * Populated when manifest.runtime.kind === 'wasm'. JS plugins have no
+   * entry here. Consumed by callWasmAction() and by the host's
+   * uninstall/disable paths.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wasmHandles: Map<string, any>;
 }
 
 const __key = '__papercuspPluginHostRuntime';
@@ -203,7 +216,7 @@ async function discover(): Promise<HostState> {
     }
   }
 
-  return { loaded, loadErrors, bus, initialized: new Set(), registries: new Map(), grants: new Map() };
+  return { loaded, loadErrors, bus, initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map() };
 }
 
 function regKey(pluginName: string, installSlug: string): string {
@@ -469,6 +482,27 @@ function attachPluginCtxExtras(
     defaultCwd: ctx.pluginDataDir,
   });
 
+  // ctx.kv: plugin-private K/V store backed by harness_shared.plugin_kv
+  // (Migration 054). Quotas configurable per-plugin via manifest.kvQuota.
+  // Lazy require so test contexts without PG don't crash on context build.
+  try {
+    const { makePluginKv } = require('@/lib/plugin-kv');
+    const { getOrgPg } = require('@restart/db-org');
+    const { sql } = getOrgPg();
+    const manifestQuota = (lp.plugin as unknown as {
+      kvQuota?: { maxBytesPerKey?: number; maxBytesPerPlugin?: number };
+    }).kvQuota;
+    ctx.kv = makePluginKv({
+      pluginId: lp.plugin.name,
+      harnessSlug: ctx.installSlug,
+      sql,
+      quota: manifestQuota,
+    });
+  } catch {
+    // PG unavailable or test stub — leave ctx.kv undefined; plugins must
+    // tolerate this (sdk doc says optional like ctx.spawn).
+  }
+
   // ctx.oauth.token(field): plugins that declare oauth in their manifest
   // can call this to acquire a fresh access token. Resolution of which
   // provider backs `field` comes from the plugin's manifest oauth[] entries.
@@ -549,6 +583,31 @@ async function ensureInitialized(
   if (state.initialized.has(key)) return;
   state.initialized.add(key);
 
+  // Batch G3 dispatch: WASM plugins skip the JS init/hooks/registry
+  // path entirely. Their actions are dispatched via callWasmAction()
+  // below, which routes through the WasmPlugin handle stored in
+  // state.wasmHandles. JS-style hook subscriptions are NOT supported
+  // for WASM plugins in v1; only manifest-declared `actions` are
+  // reachable.
+  if (lp.runtime?.kind === 'wasm') {
+    try {
+      await initializeWasmPlugin(state, lp, ctx);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.log(`wasm plugin init threw: ${msg}`);
+    }
+    return;
+  }
+  if (lp.runtime?.kind === 'daemon') {
+    try {
+      await initializeDaemonPlugin(state, lp, ctx);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.log(`daemon plugin init threw: ${msg}`);
+    }
+    return;
+  }
+
   // Register the plugin's free-form hook subscriptions first so an init()
   // that fires its own events can reach its own filters/actions.
   // Tier 2 of the capability check: load the user-granted set for this
@@ -600,6 +659,31 @@ async function ensureInitialized(
       if (typeof onLoad === 'function') {
         await onLoad(ctx);
       }
+      // Hot-reload state restore: if the plugin opted in via
+      // manifest.hotReload.preserveState AND a row exists in
+      // harness_shared.plugin_reload_state for this (plugin, harness),
+      // pop it and feed it to restoreFromReload. One-shot — failure
+      // discards the state, host moves on.
+      if (
+        (lp.plugin as unknown as { hotReload?: { preserveState?: boolean } }).hotReload?.preserveState &&
+        typeof lp.plugin.hooks?.restoreFromReload === 'function'
+      ) {
+        try {
+          const { popPluginReloadState } = require('@/lib/plugin-reload-state');
+          const { getOrgPg } = require('@restart/db-org');
+          const { sql } = getOrgPg();
+          const state = await popPluginReloadState({
+            pluginId: lp.plugin.name,
+            harnessSlug: ctx.installSlug,
+            sql,
+          });
+          if (state !== undefined) {
+            await lp.plugin.hooks.restoreFromReload(ctx, state);
+          }
+        } catch (e: any) {
+          ctx.log(`restoreFromReload threw (state discarded): ${e?.message ?? e}`);
+        }
+      }
     });
   } catch (e: any) {
     // Roll back partial state so a retry re-runs init() cleanly (Batch
@@ -615,6 +699,171 @@ async function ensureInitialized(
   } finally {
     registry.seal();
   }
+}
+
+/**
+ * Batch G3 — instantiate a manifest-declared WASM plugin via
+ * @papercusp/plugin-loader/wasm. Capability granter, audit sink, event
+ * sink, and secrets store are all derived from the same operator
+ * infrastructure JS plugins use, so the WASM plugin sees consistent
+ * security + observability semantics.
+ *
+ * Stores the live handle in state.wasmHandles[regKey]. Subsequent
+ * action calls go through callWasmAction(); disable/uninstall paths
+ * call wasm.shutdown() and drop the handle.
+ */
+async function initializeWasmPlugin(
+  state: HostState,
+  lp: LoadedPlugin,
+  ctx: PapercuspContext,
+): Promise<void> {
+  const key = regKey(lp.plugin.name, ctx.installSlug);
+  const wasmAbsPath = lp.runtime?.wasmPath;
+  if (!wasmAbsPath) {
+    throw new Error(`wasm runtime requested but runtime.wasmPath missing on ${lp.plugin.name}`);
+  }
+
+  // Hot import to keep the WASM dependency optional; JS-only operator
+  // installs don't pay the jco / wasm-plugin-host startup cost.
+  const wasm = await import('@papercusp/plugin-loader/wasm');
+
+  // Per-plugin secrets sourced from the existing PG-mirrored
+  // plugin-config store. Capability gating (secrets:read:<NAME>) is
+  // applied by the WASM host's secrets impl; the host just needs the
+  // raw map. Non-string values are silently skipped (not secrets).
+  const secrets = new Map<string, string>();
+  try {
+    const { loadPluginConfig } = await import('@/lib/plugin-configs-pg');
+    const cfg = await loadPluginConfig(ctx.installSlug, lp.plugin.name);
+    if (cfg) {
+      for (const [k, v] of Object.entries(cfg)) {
+        if (typeof v === 'string') secrets.set(k, v);
+      }
+    }
+  } catch {
+    // PG layer optional in tests; empty secrets is the dev default.
+  }
+
+  // Capability granter: ANDed manifest ∩ user-granted caps.
+  const granted = state.grants.get(key) ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const capCtx = {
+    pluginName: lp.plugin.name,
+    capabilities: (lp.plugin.capabilities ?? []) as string[],
+    granted: granted as string[],
+  } as unknown as Parameters<typeof wasm.loadWasmPlugin>[2]['capCtx'];
+
+  // Audit sink → operator audit writer. The plugin-loader AuditRow
+  // shape is task-action-shaped (actionName/triggerSource/triggerId/...);
+  // for WASM host-import calls (logging/http/secrets/events/compute) we
+  // synthesize a row whose actionName encodes the WIT method and whose
+  // params carry the structured detail. Outcome maps to the AuditWriter
+  // enum.
+  const auditWriter = getOperatorAuditWriter();
+  const wasmOutcome = (o: string): 'ok' | 'error' | 'capability-denied' => {
+    if (o === 'ok' || o === 'success') return 'ok';
+    if (o === 'capability-denied' || o === 'denied') return 'capability-denied';
+    return 'error';
+  };
+  const auditSink = {
+    record: (row: { interface: string; method: string; cap: string; outcome: string; detail: string }) => {
+      try {
+        void auditWriter.write({
+          ts: Date.now(),
+          pluginName: lp.plugin.name,
+          installSlug: ctx.installSlug,
+          actionName: `wasm:${row.interface}.${row.method}`,
+          triggerSource: 'api',
+          triggerId: `${lp.plugin.name}/${ctx.installSlug}`,
+          params: { cap: row.cap, detail: row.detail, surface: 'wasm' },
+          outcome: wasmOutcome(row.outcome),
+          durationMs: 0,
+          capabilitiesUsed: row.cap ? [row.cap] : [],
+        });
+      } catch { /* never throw from audit */ }
+    },
+  };
+
+  // Event sink → fire on the existing HookBus so JS plugins can listen
+  // to WASM-emitted events. `event` becomes the bus topic.
+  const eventSink = {
+    emit: (namespace: string, event: string, payloadJson: string) => {
+      const topic = `${namespace}.${event}`;
+      let payload: unknown = payloadJson;
+      try { payload = payloadJson ? JSON.parse(payloadJson) : null; } catch { /* keep raw */ }
+      void state.bus.runAction(topic, payload, ctx.log);
+    },
+  };
+
+  // Memory budget from manifest, default 64 MiB.
+  const budget = lp.runtime?.memoryBudgetMb;
+
+  const handle = await wasm.loadWasmPlugin(lp.plugin.name, wasmAbsPath, {
+    cacheRoot: join(papercuspRoot(), 'plugins', '_wasm-cache'),
+    transpiler: wasm.realJcoTranspiler,
+    capCtx,
+    secrets,
+    eventSink: eventSink as unknown as Parameters<typeof wasm.loadWasmPlugin>[2]['eventSink'],
+    auditSink: auditSink as unknown as Parameters<typeof wasm.loadWasmPlugin>[2]['auditSink'],
+    memoryBudgetMb: budget,
+  });
+
+  state.wasmHandles.set(key, handle);
+  ctx.log(`wasm plugin loaded: ${lp.plugin.name} (budget=${budget ?? 64} MiB)`);
+}
+
+/**
+ * Batch I — daemon plugin initialization. Hands off to the daemon
+ * supervisor which manages the long-running subprocess + JSON-RPC
+ * bridge. See packages/plugin-loader/src/daemon/.
+ *
+ * The supervisor stores its handle in state.wasmHandles under the same
+ * key (the map name is historical — it holds non-JS runtime handles
+ * generally). callDaemonAction() routes to the supervisor.
+ */
+async function initializeDaemonPlugin(
+  state: HostState,
+  lp: LoadedPlugin,
+  ctx: PapercuspContext,
+): Promise<void> {
+  const key = regKey(lp.plugin.name, ctx.installSlug);
+  const cmd = lp.runtime?.daemonCommand;
+  if (!cmd || cmd.length === 0) {
+    throw new Error(`daemon runtime requested but runtime.daemonCommand empty on ${lp.plugin.name}`);
+  }
+  const daemon = await import('@papercusp/plugin-loader/daemon');
+  const handle = await daemon.startDaemonPlugin({
+    pluginName: lp.plugin.name,
+    cmd,
+    cwd: lp.path,
+    restart: lp.runtime?.daemonRestart,
+    onLog: (line: string) => ctx.log(`[daemon ${lp.plugin.name}] ${line}`),
+  });
+  state.wasmHandles.set(key, handle);
+  ctx.log(`daemon plugin started: ${lp.plugin.name} (cmd=${cmd[0]})`);
+}
+
+/**
+ * Invoke a manifest-declared WASM action via the live WasmPlugin handle.
+ * Returns the plugin's response bytes. Throws if no WASM plugin is
+ * registered for (pluginName, installSlug) — caller should ensureInitialized
+ * first via the standard action-invoke path.
+ */
+export async function callWasmAction(args: {
+  pluginName: string;
+  installSlug: string;
+  actionName: string;
+  payload: Uint8Array;
+  origin?: 'core' | 'ui';
+}): Promise<{ ok: true; payload: Uint8Array } | { ok: false; error: string }> {
+  const state = await getPluginHost();
+  const handle = state.wasmHandles.get(regKey(args.pluginName, args.installSlug));
+  if (!handle) {
+    return { ok: false, error: `no WASM plugin loaded for (${args.pluginName}, ${args.installSlug})` };
+  }
+  const result = await handle.callAction(args.actionName, args.payload);
+  if (result.ok) return { ok: true, payload: result.payload as Uint8Array };
+  return { ok: false, error: result.error?.message ?? 'unknown error' };
 }
 
 /**
@@ -835,6 +1084,77 @@ export async function pluginHostStatus(): Promise<PluginHostStatus & {
 }
 
 /** Tests-only: drop the cached host so the next call re-discovers. */
+/**
+ * Before resetting the host, walk each initialized (plugin, harness)
+ * pair, call `getStateForReload` on plugins that opted in via
+ * `manifest.hotReload.preserveState`, and stash the result in PG.
+ * On the next init() for that pair the host will call
+ * `restoreFromReload(state)`.
+ *
+ * Errors per-plugin are swallowed with a log — a misbehaving plugin
+ * mustn't block the rest of the reset.
+ */
+export async function captureReloadStates(): Promise<void> {
+  const state = __cache.state;
+  if (!state) return;
+  let sql: any;
+  let savePluginReloadState: any;
+  try {
+    const dep = await import('@restart/db-org');
+    sql = dep.getOrgPg().sql;
+    ({ savePluginReloadState } = await import('./plugin-reload-state'));
+  } catch {
+    return;
+  }
+  for (const key of state.initialized) {
+    const [pluginName, harnessSlug] = splitRegKey(key);
+    const lp = state.plugins.find((p) => p.plugin.name === pluginName);
+    if (!lp) continue;
+    const manifest = lp.plugin as unknown as { hotReload?: { preserveState?: boolean } };
+    if (!manifest.hotReload?.preserveState) continue;
+    const getStateForReload = lp.plugin.hooks?.getStateForReload;
+    if (typeof getStateForReload !== 'function') continue;
+    try {
+      const ctx = await buildContextFor(lp, harnessSlug);
+      if (!ctx) continue;
+      const stash = await getStateForReload(ctx);
+      await savePluginReloadState({ pluginId: pluginName, harnessSlug, sql }, stash);
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.warn(`[plugin-host] getStateForReload(${pluginName}, ${harnessSlug}) threw — state discarded: ${e?.message ?? e}`);
+    }
+  }
+}
+
+function splitRegKey(key: string): [string, string] {
+  const idx = key.lastIndexOf('::');
+  if (idx < 0) return [key, ''];
+  return [key.slice(0, idx), key.slice(idx + 2)];
+}
+
+async function buildContextFor(lp: LoadedPlugin, harnessSlug: string): Promise<PapercuspContext | null> {
+  // Mirror the minimal ctx shape ensureInitialized uses: discovery
+  // already gave us the dataDir + projectDir for the harness.
+  // Reuses the same project-resolution path as enable/handler dispatch.
+  try {
+    const { resolveHarnessPaths } = await import('@/lib/resolve-harness-paths');
+    const paths = await resolveHarnessPaths(harnessSlug, lp.plugin.name);
+    if (!paths) return null;
+    return {
+      projectDir: paths.projectDir,
+      stateDir: paths.stateDir,
+      pluginDataDir: paths.pluginDataDir,
+      installSlug: harnessSlug,
+      log: (msg: string) => {
+        // eslint-disable-next-line no-console
+        console.log(`[${lp.plugin.name}/${harnessSlug}] ${msg}`);
+      },
+    } as PapercuspContext;
+  } catch {
+    return null;
+  }
+}
+
 export function _resetPluginHostForTests(): void {
   __cache.promise = null;
   __cache.state = null;
@@ -935,6 +1255,7 @@ export function _injectPluginHostForTests(loaded: LoadedPlugin[]): void {
     initialized: new Set(),
     registries: new Map(),
     grants: new Map(),
+    wasmHandles: new Map(),
   };
   __cache.state = state;
   __cache.promise = Promise.resolve(state);

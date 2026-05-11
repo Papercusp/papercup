@@ -28,6 +28,11 @@ to escalate its gates can `cat` the token file. Same way it can
 Superuser is for *honest* user shells, not for *enforced* isolation.
 For real isolation, run shell-omp under a different OS user with file
 ACLs that prevent the orchestrator user from reading the token.
+
+(The orchestrator-spawned path has a separate envelope — see
+[Spawn-URL signing](/docs/endpoint-system/spawn-signing). Forging a
+worker URL into operator-tier fails the HMAC verifier; pasting the
+superuser token into your own shell does not, by design.)
 </Callout>
 
 ## One-time setup
@@ -111,14 +116,22 @@ ignore the missing `workspace` arg — they're path-driven or URL-driven.
 
 ## What's NOT bypassed
 
-Three things still apply to superuser:
+These still apply to superuser:
 
-1. **Capability gate** — when a principal is attached (rare in
-   superuser mode), capabilities still gate.
-2. **Per-tool input validation** — invalid args still return
+1. **Per-tool input validation** — invalid args still return
    `invalid_input` 400.
-3. **Per-tool timeout** — long-running tools still get killed at the
+2. **Per-tool timeout** — long-running tools still get killed at the
    tool's `timeoutSec`.
+3. **Workspace requirement on first-party tools.** Most first-party
+   tools (`harness:*`, `tasks:*`, `messages:*`, …) need a concrete
+   workspace to open a PG transaction. Pass `?superuser=1&workspace=<slug>`
+   in the URL — the default `workspaceId='*'` doesn't satisfy them and
+   you'll get `handler_error: built-in tool "..." requires authenticated
+   request (bearer + workspace tx)`.
+
+What **is** bypassed: role allowlist, capability gate (the dispatcher's
+`isSuperuser` short-circuits in both), per-window quota, and the
+spawn-URL signature check (superuser has its own bearer envelope).
 
 ## Troubleshooting
 

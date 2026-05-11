@@ -13,9 +13,13 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const idf = generated.identity_filesInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,10 +36,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const tokenRows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const tokenRows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (tokenRows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -57,21 +63,30 @@ export async function POST(req: Request): Promise<Response> {
       content = content.slice(0, MAX_BODY) + '\n...[truncated]\n';
     }
     if (content === '') {
-      await sql`DELETE FROM harness_shared.identity_files WHERE role = ${f.role}`;
+      await db.delete(idf).where(eq(idf.role, f.role));
       deletes++;
     } else {
       const bytes = Buffer.byteLength(content);
-      await sql`
-        INSERT INTO harness_shared.identity_files
-          (role, content, bytes, mtime_ms, updated_at, workspace_id)
-        VALUES (${f.role}, ${content}, ${bytes}, ${now}, ${now}, ${ws})
-        ON CONFLICT (role) DO UPDATE SET
-          content = EXCLUDED.content,
-          bytes = EXCLUDED.bytes,
-          mtime_ms = EXCLUDED.mtime_ms,
-          updated_at = EXCLUDED.updated_at,
-          workspace_id = EXCLUDED.workspace_id
-      `;
+      await db
+        .insert(idf)
+        .values({
+          role: f.role,
+          content,
+          bytes,
+          mtime_ms: now,
+          updated_at: now,
+          workspace_id: ws,
+        })
+        .onConflictDoUpdate({
+          target: idf.role,
+          set: {
+            content: dsql`EXCLUDED.content`,
+            bytes: dsql`EXCLUDED.bytes`,
+            mtime_ms: dsql`EXCLUDED.mtime_ms`,
+            updated_at: dsql`EXCLUDED.updated_at`,
+            workspace_id: dsql`EXCLUDED.workspace_id`,
+          },
+        });
       upserts++;
     }
   }

@@ -17,10 +17,13 @@
  * handler updates status when it finishes (see updateUserAction).
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq } from 'drizzle-orm';
 import { ensureUserActionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
+
+const t = generated.user_actionsInHarness_shared;
 
 export type ActionKind =
   | 'replan'
@@ -64,14 +67,19 @@ export async function recordUserAction<T>(
   opts: RecordOpts = {},
 ): Promise<T> {
   await ensureUserActionsTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const now = Date.now();
-  const inserted = (await sql`
-    INSERT INTO harness_shared.user_actions
-      (harness_slug, kind, status, started_at, actor, workspace_id)
-    VALUES (${slug}, ${kind}, 'running', ${now}, ${opts.actor ?? null}, ${activeWorkspaceId()})
-    RETURNING id
-  `) as Array<{ id: string }>;
+  const inserted = await db
+    .insert(t)
+    .values({
+      harness_slug: slug,
+      kind,
+      status: 'running',
+      started_at: now,
+      actor: opts.actor ?? null,
+      workspace_id: activeWorkspaceId(),
+    })
+    .returning({ id: t.id });
   const id = Number(inserted[0].id);
 
   try {
@@ -79,35 +87,38 @@ export async function recordUserAction<T>(
     if (opts.async) {
       // Caller will finalize via updateUserAction; just stamp invocationId
       // and any detailUrl now so the running row is fully linked.
-      await sql`
-        UPDATE harness_shared.user_actions
-        SET invocation_id = ${out.invocationId ?? null},
-            detail_url    = ${out.detailUrl ?? null},
-            summary       = ${out.summary}
-        WHERE id = ${id}
-      `;
+      await db
+        .update(t)
+        .set({
+          invocation_id: out.invocationId ?? null,
+          detail_url: out.detailUrl ?? null,
+          summary: out.summary,
+        })
+        .where(eq(t.id, BigInt(id)));
     } else {
-      await sql`
-        UPDATE harness_shared.user_actions
-        SET status        = 'succeeded',
-            summary       = ${out.summary},
-            detail_url    = ${out.detailUrl ?? null},
-            invocation_id = ${out.invocationId ?? null},
-            finished_at   = ${Date.now()}
-        WHERE id = ${id}
-      `;
+      await db
+        .update(t)
+        .set({
+          status: 'succeeded',
+          summary: out.summary,
+          detail_url: out.detailUrl ?? null,
+          invocation_id: out.invocationId ?? null,
+          finished_at: Date.now(),
+        })
+        .where(eq(t.id, BigInt(id)));
     }
     void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
     return out.result;
   } catch (err) {
     const msg = (err as Error)?.message ?? String(err);
-    await sql`
-      UPDATE harness_shared.user_actions
-      SET status      = 'failed',
-          error_text  = ${msg.slice(0, 1000)},
-          finished_at = ${Date.now()}
-      WHERE id = ${id}
-    `;
+    await db
+      .update(t)
+      .set({
+        status: 'failed',
+        error_text: msg.slice(0, 1000),
+        finished_at: Date.now(),
+      })
+      .where(eq(t.id, BigInt(id)));
     void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
     throw err;
   }
@@ -126,17 +137,21 @@ export async function updateUserAction(args: {
   errorText?: string;
 }): Promise<void> {
   await ensureUserActionsTable();
-  const { sql } = getOrgPg();
-  const rows = await sql<Array<{ harness_slug: string }>>`
-    UPDATE harness_shared.user_actions
-    SET status      = ${args.status},
-        summary     = COALESCE(${args.summary ?? null}, summary),
-        detail_url  = COALESCE(${args.detailUrl ?? null}, detail_url),
-        error_text  = ${args.errorText ?? null},
-        finished_at = ${Date.now()}
-    WHERE id = ${args.id}
-    RETURNING harness_slug
-  `;
+  const { db, sql: rawSql } = getOrgPg();
+  // COALESCE on the existing column requires either a raw sql snippet or
+  // a conditional set; drizzle's set object doesn't have a built-in
+  // COALESCE primitive. Use sql.raw for the COALESCE merges.
+  const rows = await db
+    .update(t)
+    .set({
+      status: args.status,
+      summary: args.summary !== undefined ? args.summary : rawSql`${t.summary}` as any,
+      detail_url: args.detailUrl !== undefined ? args.detailUrl : rawSql`${t.detail_url}` as any,
+      error_text: args.errorText ?? null,
+      finished_at: Date.now(),
+    })
+    .where(eq(t.id, BigInt(args.id)))
+    .returning({ harness_slug: t.harness_slug });
   const slug = rows[0]?.harness_slug;
   if (slug) void notifySyncInvalidate('userActions.byHarness', { harnessSlug: slug }).catch(() => {});
 }

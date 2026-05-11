@@ -18,8 +18,12 @@
  * different lookup model entirely. Tracked as future work.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
+
+const ti = generated.token_indexInHarness_shared;
+const sp = generated.system_principalsInHarness_shared;
 
 export interface SystemPrincipal {
   bearer: string;
@@ -34,26 +38,20 @@ export interface SystemPrincipal {
  * "POST /api/agent-mcp/provision first" error per established route convention).
  */
 export async function readSystemPrincipal(name: string): Promise<SystemPrincipal | null> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const slug = `system:${name}`;
-  const rows = await sql<
-    { token: string; capabilities: string[] }[]
-  >`
-    SELECT ti.token AS token, sp.capabilities AS capabilities
-      FROM harness_shared.token_index ti
-      JOIN harness_shared.system_principals sp
-        ON sp.workspace_id = ti.workspace_id AND sp.name = ${name}
-     WHERE ti.kind = 'system'
-       AND ti.harness_slug = ${slug}
-       AND ti.workspace_id = ${ws}
-     LIMIT 1
-  `;
+  const rows = await db
+    .select({ token: ti.token, capabilities: sp.capabilities })
+    .from(ti)
+    .innerJoin(sp, and(eq(sp.workspace_id, ti.workspace_id), eq(sp.name, name)))
+    .where(and(eq(ti.kind, 'system'), eq(ti.harness_slug, slug), eq(ti.workspace_id, ws)))
+    .limit(1);
   if (rows.length === 0) return null;
   return {
     bearer: rows[0].token,
     name,
     workspaceId: ws,
-    capabilities: rows[0].capabilities ?? [],
+    capabilities: (rows[0].capabilities as string[] | null) ?? [],
   };
 }

@@ -12,7 +12,7 @@
  * Project Manager role synchronously and updates the spec inline.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import {
   ArrowLeft, Loader2, AlertTriangle, RefreshCw, Save, X, Pencil,
   Coins, Clock, Hammer, History as HistoryIcon, FileText,
@@ -84,7 +84,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
   const [draftSpec, setDraftSpec] = useState('');
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | { error: string }>('idle');
   const [regenState, setRegenState] = useState<'idle' | 'running' | { error: string; detail?: string } | { ok: true; summary: string }>('idle');
-  const [showRevisions, setShowRevisions] = useState(false);
+  const [showRevisions, setShowRevisions] = useQueryState('revisions', parseAsBoolean.withDefault(false));
   const [activeRevision, setActiveRevision] = useState<{ id: number; spec: string } | null>(null);
 
   const loadProject = useCallback(async () => {

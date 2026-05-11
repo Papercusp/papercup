@@ -406,14 +406,24 @@ export function readCapturePluginExtras(
     pluginVersionPinned = false;
   }
 
-  // runtime: pass through if valid.
+  // runtime: accept both
+  //   - v2.1 object form (per @plugin's plugin/v1-completion):
+  //       { kind: 'js' | 'wasm' | 'daemon', wasmPath?, daemonCommand?, ... }
+  //   - legacy v2.0 string form (pre-v1-completion authors who followed
+  //     the earlier doc): "js" | "wasm" | "daemon"
+  // Only `kind` round-trips into the captured snapshot manifest today;
+  // the rest (wasmPath, memoryBudgetMb, etc.) is host-config, not
+  // snapshot-content, so it gets re-resolved from the manifest at
+  // restore time.
   let runtime: SnapshotPluginRuntime | undefined;
-  if (
-    manifest.runtime === 'js' ||
-    manifest.runtime === 'wasm' ||
-    manifest.runtime === 'daemon'
-  ) {
-    runtime = manifest.runtime;
+  const rt = manifest.runtime;
+  if (typeof rt === 'string' && (rt === 'js' || rt === 'wasm' || rt === 'daemon')) {
+    runtime = rt;
+  } else if (rt != null && typeof rt === 'object') {
+    const kind = (rt as Record<string, unknown>).kind;
+    if (kind === 'js' || kind === 'wasm' || kind === 'daemon') {
+      runtime = kind;
+    }
   }
 
   return runtime ? { runtime, versionPin, pluginVersionPinned } : { versionPin, pluginVersionPinned };

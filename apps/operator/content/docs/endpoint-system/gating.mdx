@@ -3,12 +3,14 @@ title: Gating
 description: Auth, capabilities, roles, quotas. The four checks every tool call goes through, and the order they run in.
 ---
 
-## The four checks, in order
+## The five checks, in order
 
-Every projected tool call runs through `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code.
+Every projected tool call runs through `tryBuildSpawnContext` → `dispatchProjectedTool` and faces these gates in order. The first one that fails short-circuits with the matching error code.
 
 ```
 ┌─────────────────────────────────────────┐
+│ 0. Signature verification (per-spawn)   │  → request_rejected: spawn_sig_<reason>
+├─────────────────────────────────────────┤
 │ 1. Role allowlist (plugin tools)        │  → role_not_allowed (403)
 ├─────────────────────────────────────────┤
 │ 2. Capability check (built-in tools)    │  → unauthorized (401) | missing_capability (403)
@@ -19,7 +21,17 @@ Every projected tool call runs through `dispatchProjectedTool` and faces these g
 └─────────────────────────────────────────┘
 ```
 
-If all four pass, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
+If all five pass, the function runs. Whatever it returns or throws is recorded with one of the post-execution statuses (`ok`, `error`, `timeout`).
+
+## Check 0 — Signature verification
+
+Before any other gate fires, the dispatcher verifies the per-spawn URL's HMAC signature. A worker that rewrites `?role=worker` → `?role=operator` produces an `invalid_signature` and is rejected with `request_rejected: spawn_sig_invalid_signature`. The attempt is persisted to `harness_shared.spawn_sig_verification_failures` for on-call review.
+
+This check is **not** wired into `tools/list` — listing returns what the *claimed* role would see, so an agent can introspect what tools exist before invoking. Verification happens at `tools/call`.
+
+The `?superuser=1` door bypasses this check entirely; it has its own loopback + bearer envelope. See [Superuser mode](/docs/endpoint-system/superuser-mode).
+
+Full scheme, reason codes, rotation, and observability live in [Spawn-URL signing](/docs/endpoint-system/spawn-signing).
 
 ## Check 1 — Role allowlist (plugin tools)
 

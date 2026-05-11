@@ -35,10 +35,13 @@
 
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, sql } from 'drizzle-orm';
 
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+
+const t = generated.harness_feature_notesInHarness_shared;
 
 export interface OperatorNoteBlock {
   /** Author identifier — typically 'user' but could be a tool slug. */
@@ -71,27 +74,27 @@ export function notesPathFor(projectDir: string, featureId: string): string {
 }
 
 async function readNotesContent(slug: string, featureId: string): Promise<string | null> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  const rows = await sql<{ content: string }[]>`
-    SELECT content
-    FROM harness_shared.harness_feature_notes
-    WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND feature_id = ${featureId}
-    LIMIT 1
-  `;
+  const rows = await db
+    .select({ content: t.content })
+    .from(t)
+    .where(and(eq(t.workspace_id, ws), eq(t.harness_slug, slug), eq(t.feature_id, featureId)))
+    .limit(1);
   return rows[0]?.content ?? null;
 }
 
 async function writeNotesContent(slug: string, featureId: string, content: string): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const now = Date.now();
-  await sql`
-    INSERT INTO harness_shared.harness_feature_notes (workspace_id, harness_slug, feature_id, content, updated_at)
-    VALUES (${ws}, ${slug}, ${featureId}, ${content}, ${now})
-    ON CONFLICT (workspace_id, harness_slug, feature_id)
-    DO UPDATE SET content = EXCLUDED.content, updated_at = EXCLUDED.updated_at
-  `;
+  await db
+    .insert(t)
+    .values({ workspace_id: ws, harness_slug: slug, feature_id: featureId, content, updated_at: now })
+    .onConflictDoUpdate({
+      target: [t.workspace_id, t.harness_slug, t.feature_id],
+      set: { content: sql`EXCLUDED.content`, updated_at: sql`EXCLUDED.updated_at` },
+    });
 }
 
 /**

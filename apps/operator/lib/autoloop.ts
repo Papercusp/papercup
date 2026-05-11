@@ -16,7 +16,10 @@
  *
  * Operator startup wires the ticker via `startAutoLoopOnce()`. Idempotent.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, sql as dsql } from 'drizzle-orm';
+
+const at = generated.autoloop_stateInHarness_shared;
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { promises as fs, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -83,39 +86,59 @@ async function readDirectorConfig(harnessPath: string): Promise<DirectorConfig |
 }
 
 async function shouldFire(slug: string, role: string, intervalSeconds: number): Promise<boolean> {
-  const { sql } = getOrgPg();
-  const rows = await sql<{ last_fired_at: Date }[]>`
-    SELECT last_fired_at FROM harness_shared.autoloop_state
-    WHERE harness_slug = ${slug} AND role = ${role}
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ last_fired_at: at.last_fired_at })
+    .from(at)
+    .where(and(eq(at.harness_slug, slug), eq(at.role, role)));
   if (rows.length === 0) return true; // never fired for this role
   const elapsed = (Date.now() - new Date(rows[0].last_fired_at).getTime()) / 1000;
   return elapsed >= intervalSeconds;
 }
 
 async function recordFire(slug: string, role: string, status: string, errorBumped: boolean): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   if (errorBumped) {
-    await sql`
-      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id)
-      VALUES (${slug}, ${role}, now(), ${status}, 1, ${ws})
-      ON CONFLICT (harness_slug, role) DO UPDATE
-        SET last_fired_at = now(),
-            last_status = EXCLUDED.last_status,
-            consecutive_errors = harness_shared.autoloop_state.consecutive_errors + 1,
-            workspace_id = EXCLUDED.workspace_id
-    `;
+    await db
+      .insert(at)
+      .values({
+        harness_slug: slug,
+        role,
+        last_fired_at: dsql`now()` as any,
+        last_status: status,
+        consecutive_errors: 1,
+        workspace_id: ws,
+      })
+      .onConflictDoUpdate({
+        target: [at.harness_slug, at.role],
+        set: {
+          last_fired_at: dsql`now()`,
+          last_status: dsql`EXCLUDED.last_status`,
+          consecutive_errors: dsql`${at.consecutive_errors} + 1`,
+          workspace_id: dsql`EXCLUDED.workspace_id`,
+        },
+      });
   } else {
-    await sql`
-      INSERT INTO harness_shared.autoloop_state (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id)
-      VALUES (${slug}, ${role}, now(), ${status}, 0, ${ws})
-      ON CONFLICT (harness_slug, role) DO UPDATE
-        SET last_fired_at = now(),
-            last_status = EXCLUDED.last_status,
-            consecutive_errors = 0,
-            workspace_id = EXCLUDED.workspace_id
-    `;
+    await db
+      .insert(at)
+      .values({
+        harness_slug: slug,
+        role,
+        last_fired_at: dsql`now()` as any,
+        last_status: status,
+        consecutive_errors: 0,
+        workspace_id: ws,
+      })
+      .onConflictDoUpdate({
+        target: [at.harness_slug, at.role],
+        set: {
+          last_fired_at: dsql`now()`,
+          last_status: dsql`EXCLUDED.last_status`,
+          consecutive_errors: 0,
+          workspace_id: dsql`EXCLUDED.workspace_id`,
+        },
+      });
   }
 }
 
@@ -258,11 +281,17 @@ export function stopAutoLoop(): void {
 
 /** Test/diagnostic: read current state for a harness (all roles). */
 export async function getAutoLoopState(slug: string): Promise<any[] | null> {
-  const { sql } = getOrgPg();
-  const rows = await sql`
-    SELECT harness_slug, role, last_fired_at, last_status, consecutive_errors
-    FROM harness_shared.autoloop_state WHERE harness_slug = ${slug}
-    ORDER BY role
-  `;
-  return rows.length > 0 ? Array.from(rows) : null;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({
+      harness_slug: at.harness_slug,
+      role: at.role,
+      last_fired_at: at.last_fired_at,
+      last_status: at.last_status,
+      consecutive_errors: at.consecutive_errors,
+    })
+    .from(at)
+    .where(eq(at.harness_slug, slug))
+    .orderBy(at.role);
+  return rows.length > 0 ? rows : null;
 }

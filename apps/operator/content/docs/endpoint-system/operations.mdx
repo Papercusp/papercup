@@ -119,6 +119,32 @@ The orchestrator's CLI runner (`bin/run.ts`) decrypts search-provider keys from 
 
 The expert-dispatcher path in `apps/operator/lib/expert-dispatcher.ts` does this independently via `apps/operator/lib/search-provider-credentials.ts:buildSpawnEnv`. Both paths are wired; if a worker doesn't see `TAVILY_API_KEY` etc., the keys aren't in PG (check `harness_shared.operator_search_provider_credentials`) or the encryption key is missing (`~/.papercusp/db-encryption-key`).
 
+## Spawn-signing admin endpoints
+
+The HMAC signing scheme (see [Spawn-URL signing](/docs/endpoint-system/spawn-signing)) ships with two loopback + superuser-bearer-gated admin routes for incident response and observability.
+
+### Rotate the signing key
+
+```bash
+TOKEN=$(cat ~/.papercusp/superuser-token)
+curl -X POST http://localhost:3070/api/admin/spawn-signing/rotate \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Rotates the PG row **and** bumps the operator's in-process cache. Every in-flight signed URL fails its next call with `invalid_signature`. The orchestrator must re-spawn affected workers. Wrapper script: `bun run rotate:spawn-key`.
+
+### Read the verification audit log
+
+```bash
+TOKEN=$(cat ~/.papercusp/superuser-token)
+curl "http://localhost:3070/api/admin/spawn-signing/failures?limit=20" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Query params: `limit` (max 1000, default 100), `since` (ISO timestamp), `reason` (filter). Returns `{ rows, summary: { byReason, window } }`.
+
+A non-zero rate of `invalid_signature` outside explicit test runs is a real signal. Correlate `claimed_spawn` with orchestrator spawn IDs to identify the culprit.
+
 ## When to stop and ask
 
 You should stop and ask before doing any of these:

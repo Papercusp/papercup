@@ -6,9 +6,12 @@
  * NOT in the zero_harness publication — credentials must not be broadcast
  * over WS. Read via authenticated REST only.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
+
+const t = generated.operator_publish_credentialsInHarness_shared;
 
 export interface PublishCredentials {
   tenantId: string;
@@ -30,12 +33,9 @@ export async function writePublishCredentials(c: PublishCredentials): Promise<vo
 }
 
 export async function deletePublishCredentials(): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  await sql`
-    DELETE FROM harness_shared.operator_publish_credentials
-     WHERE workspace_id = ${ws}
-  `;
+  await db.delete(t).where(eq(t.workspace_id, ws));
 }
 
 export interface MaskedPublishCredentials {

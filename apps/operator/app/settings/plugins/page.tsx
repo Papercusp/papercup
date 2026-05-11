@@ -14,6 +14,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { makeAjvResolver } from '@/lib/forms';
@@ -65,8 +66,9 @@ export default function PluginSettingsPage() {
   const [plugins, setPlugins] = useState<InstalledPlugin[] | null>(null);
   const [harnesses, setHarnesses] = useState<HarnessRow[]>([]);
   const [enabledByHarness, setEnabledByHarness] = useState<Record<string, string[]>>({});
-  const [activeHarness, setActiveHarness] = useState<string>('');
-  const [activePlugin, setActivePlugin] = useState<string>('');
+  // Drilldown selection — URL-backed for deep-links + agent visibility.
+  const [activeHarness, setActiveHarness] = useQueryState('ph', parseAsString.withDefault(''));
+  const [activePlugin, setActivePlugin] = useQueryState('pp', parseAsString.withDefault(''));
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -414,7 +416,7 @@ interface OAuthFieldEditorProps {
 }
 
 function OAuthFieldEditor({ plugin, harness, field, provider, scopes, currentValue }: OAuthFieldEditorProps) {
-  const [advanced, setAdvanced] = useState(false);
+  const [advanced, setAdvanced] = useQueryState('advanced', parseAsBoolean.withDefault(false));
   const [pastedToken, setPastedToken] = useState('');
   const [verifying, setVerifying] = useState(false);
   const connected = currentValue.length > 0;

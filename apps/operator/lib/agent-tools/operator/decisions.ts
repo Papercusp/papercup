@@ -5,8 +5,12 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace, generated } from '@restart/db-org';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { desc } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+
+const v = generated.operator_decisionsInHarness_shared;
 
 const ALL_ROLES = [
   'scoper',
@@ -33,14 +37,19 @@ export default defineTool({
     const limit = args.limit ?? 50;
     const workspaceId = activeWorkspaceId();
     const rows = await withWorkspace(workspaceId, async (tx) => {
-      return await tx<
-        Array<{ id: string; ts: number; actor: string; action: string; target: string; details: unknown }>
-      >`
-        SELECT id, ts, actor, action, target, details
-          FROM harness_shared.operator_decisions
-         ORDER BY ts DESC
-         LIMIT ${limit}
-      `;
+      const txDb = drizzle(tx);
+      return await txDb
+        .select({
+          id: v.id,
+          ts: v.ts,
+          actor: v.actor,
+          action: v.action,
+          target: v.target,
+          details: v.details,
+        })
+        .from(v)
+        .orderBy(desc(v.ts))
+        .limit(limit);
     });
     return { content: [{ type: 'text', text: JSON.stringify({ decisions: rows }) }] };
   },

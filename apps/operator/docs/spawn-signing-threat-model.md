@@ -1,4 +1,4 @@
-# Per-spawn URL signing — threat model + minting patch
+# Per-spawn URL signing — threat model + operations
 
 ## Why
 
@@ -8,10 +8,24 @@ the dispatcher trusted those params verbatim — a worker that wanted
 operator-tier tools just rewrote `?role=worker` → `?role=operator` and
 called. One line, no auth, no audit.
 
-This document covers:
-1. The verification end (already shipped — `apps/operator/lib/spawn-signing.ts`).
-2. The minting end (this is the patch to land in `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts`).
-3. What the system protects against and — importantly — what it doesn't.
+Today (post-2026-05-11) every per-spawn URL carries an HMAC-SHA256
+`sig` + `exp`. The dispatcher's `tryBuildSpawnContext()` calls
+`verifySpawnParams()` before honoring any role claim. Forged URLs fail
+with `invalid_signature` and the attempt is persisted to
+`harness_shared.spawn_sig_verification_failures` for on-call review.
+
+## What shipped
+
+| Component | Location |
+|---|---|
+| Signing module | `apps/operator/lib/spawn-signing.ts` — `signSpawnParams`, `verifySpawnParams`, `rotateSpawnSigningKey` |
+| HMAC key (32 bytes, PG-stored) | `harness_shared.operator_secrets` row, `name = 'spawn-signing-key'` |
+| Audit log | `harness_shared.spawn_sig_verification_failures` |
+| Orchestrator minting | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` → `writeSignedSpawnMcp()` |
+| `.mcp.json` perms | mode 0600 |
+| Per-spawn worktree perms | mode 0700 |
+| Admin rotation endpoint | `POST /api/admin/spawn-signing/rotate` |
+| CLI rotation tool | `apps/operator/scripts/rotate-spawn-signing-key.mjs` |
 
 ## Threat model
 
@@ -29,11 +43,11 @@ This document covers:
   *friction*, not enforcement.
 - **Reading another spawn's `.mcp.json` and replaying it.** Every
   signed URL is a valid bearer for its `exp` window (24h default).
-  Worktrees are per-spawn but same UID. **Mitigation**: chmod 0700 on
-  each worktree dir (follow-up).
-- **The `papercusp-su` path.** Separate door with its own
-  (file-ACL) bouncer at `~/.papercusp/superuser-token`. The doc is
-  explicit: "friction, not enforcement." HMAC doesn't change that.
+  Worktrees are 0700 + files 0600, but same UID means same OS user
+  can read across them.
+- **The `?superuser=1` path.** Separate door with its own (file-ACL)
+  bouncer at `~/.papercusp/superuser-token`. The doc is explicit:
+  "friction, not enforcement." HMAC doesn't change that.
 - **Editing `~/.papercusp/granted-capabilities.json`.** Plain JSON,
   same UID, writable. The capability gate trusts what it finds there.
 - **Operator memory dump** (`gcore <pid>`). Key is in the operator's
@@ -48,112 +62,40 @@ with file ACLs). Worker only sees its own worktree + the MCP socket.
 Key file unreadable, sibling `.mcp.json`s unreadable, superuser-token
 unreadable. Real fix; bigger lift. Eventual landing spot.
 
-## Minting patch
+## Operating modes
 
-Apply in `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts`.
-The operator side (verification + audit) is already live and runs in
-**soft-warning mode** by default — unsigned URLs are accepted with a
-console warning until `PAPERCUSP_REQUIRE_SPAWN_SIG=1` is set.
+### Soft-warn (default)
 
-### Minimal change
+`PAPERCUSP_REQUIRE_SPAWN_SIG` unset or `!= '1'`. Unsigned URLs are
+accepted with a console warning. Use during rollout so legacy
+in-flight spawns don't get killed.
 
-Add `sig` + `exp` URL params to the URL emitted by `buildSpawnMcpConfig`.
-The signing key lives in `harness_shared.operator_secrets` (auto-minted
-on first use). The orchestrator subprocess has PG credentials inherited
-from the operator's env, so it can read the key directly.
+### Strict
 
-### Diff sketch
+`PAPERCUSP_REQUIRE_SPAWN_SIG=1`. Unsigned URLs hard-reject with
+`request_rejected: spawn_sig_missing_sig_required_mode`. Flip this
+once the audit table shows no legitimate unsigned-URL traffic for a
+clean week.
 
-```typescript
-// libs/papercusp/packages/orchestrator/src/spawn-mcp.ts
+### Rollout sequence (already done as of 2026-05-11)
 
-import { createHmac } from 'node:crypto';
-import postgres from 'postgres';
+1. ✅ Operator-side verification with soft-warn (2026-05-11).
+2. ✅ Orchestrator-side signing via `writeSignedSpawnMcp` (2026-05-11).
+3. ✅ Audit table seeded, no legitimate failures observed.
+4. **Pending**: flip `PAPERCUSP_REQUIRE_SPAWN_SIG=1` after a clean week.
 
-const SIGNED_PARAM_ALLOWLIST = new Set([
-  'harness', 'workspace', 'role', 'run', 'spawn',
-  'feature', 'chunk', 'parent_spawn', 'exp',
-]);
+## Coarse revocation
 
-let _keyCache: { buf: Buffer; loadedAt: number } | null = null;
+If a key may be compromised, or a bad batch of prompts shipped and
+you want every in-flight spawn to fail closed:
 
-async function loadSigningKey(): Promise<Buffer> {
-  if (_keyCache && Date.now() - _keyCache.loadedAt < 5 * 60 * 1000) {
-    return _keyCache.buf;
-  }
-  // DSN comes from the operator-set env. Bail to unsigned if missing.
-  const dsn = process.env.DATABASE_URL ?? process.env.PAPERCUSP_PG_DSN;
-  if (!dsn) throw new Error('spawn-signing: no PG DSN in env');
-  const sql = postgres(dsn);
-  try {
-    const rows = await sql<{ value_b64: string }[]>`
-      SELECT value_b64 FROM harness_shared.operator_secrets
-      WHERE name = 'spawn-signing-key' LIMIT 1
-    `;
-    if (rows.length === 0) {
-      throw new Error('spawn-signing: key row missing — operator should mint on first call');
-    }
-    const buf = Buffer.from(rows[0].value_b64, 'base64');
-    _keyCache = { buf, loadedAt: Date.now() };
-    return buf;
-  } finally {
-    await sql.end({ timeout: 1 });
-  }
-}
-
-function canonicalize(params: URLSearchParams): string {
-  const pairs: Array<[string, string]> = [];
-  const seen = new Set<string>();
-  for (const [k, v] of params.entries()) {
-    if (k === 'sig') continue;
-    if (!SIGNED_PARAM_ALLOWLIST.has(k)) continue;
-    if (seen.has(k)) throw new Error(`spawn-signing: duplicate param ${k}`);
-    seen.add(k);
-    pairs.push([k, v]);
-  }
-  pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return pairs.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
-}
-
-async function signParams(params: URLSearchParams, ttlSec = 24 * 60 * 60): Promise<void> {
-  const exp = Math.floor(Date.now() / 1000) + ttlSec;
-  params.set('exp', String(exp));
-  params.delete('sig');
-  const key = await loadSigningKey();
-  const sig = createHmac('sha256', key).update(canonicalize(params)).digest('base64url');
-  params.set('sig', sig);
-}
-
-// In buildSpawnMcpConfig (or a new async version):
-//
-//   params.set('harness', input.harnessSlug);
-//   params.set('workspace', input.workspaceId);
-//   // ... existing sets ...
-//   if (input.parentSpawnId) params.set('parent_spawn', input.parentSpawnId);
-//   try {
-//     await signParams(params, input.ttlSec);
-//   } catch (err) {
-//     // Soft fail in MVP: emit unsigned URL + warn. Operator-side will
-//     // also warn. Flip to hard fail once stable.
-//     console.warn(`[spawn-mcp] signing failed, emitting unsigned URL: ${err}`);
-//   }
-//
-//   return { mcpServers: { papercusp: { url: `${base}?${params.toString()}` } } };
+```bash
+# Loopback + superuser-bearer gated — bumps the in-process cache too,
+# so revocation is immediate (not 5-min lazy-cache lag).
+bun apps/operator/scripts/rotate-spawn-signing-key.mjs
 ```
 
-### Migration plan
-
-1. Land the operator-side verification (this commit). Soft-warn unsigned
-   URLs in `console`, audit-log signature failures.
-2. Land the minting patch in `libs/papercusp` per above.
-3. Bump `libs/papercusp` in papercup. Verify orchestrator emits signed
-   URLs (look for `sig=` in `.mcp.json` of any in-flight spawn).
-4. Watch `harness_shared.spawn_sig_verification_failures` for legitimate
-   verification failures (any non-zero rate = bug to investigate).
-5. After ~1 week of clean operation: set `PAPERCUSP_REQUIRE_SPAWN_SIG=1`
-   in operator env. Unsigned URLs now reject too.
-
-### Coarse revocation
+Or with the operator down, direct PG:
 
 ```sql
 UPDATE harness_shared.operator_secrets
@@ -162,7 +104,37 @@ SET value_b64 = encode(gen_random_bytes(32), 'base64'),
 WHERE name = 'spawn-signing-key';
 ```
 
-Or via the `rotateSpawnSigningKey()` export in `apps/operator/lib/spawn-signing.ts`.
-Every in-flight signed URL fails its next call after the key cache TTL
-expires (≤5min). Use sparingly — the orchestrator must re-spawn anything
-that was mid-flight.
+(Direct-PG rotation only takes effect after the operator's 5-minute
+cache TTL or a process restart.)
+
+## Observability
+
+```sql
+-- Recent verification failures by reason
+SELECT reason, count(*) FROM harness_shared.spawn_sig_verification_failures
+WHERE created_at > now() - interval '24 hours'
+GROUP BY reason
+ORDER BY 2 DESC;
+
+-- Most-recently failed spawns
+SELECT created_at, reason, claimed_role, claimed_harness, claimed_spawn
+FROM harness_shared.spawn_sig_verification_failures
+ORDER BY created_at DESC LIMIT 20;
+```
+
+A non-zero rate of `invalid_signature` outside of explicit test runs
+is a real signal — investigate which spawn it came from
+(`claimed_spawn` correlates with the orchestrator's spawn IDs).
+
+## Tests
+
+Three integration suites live under `apps/operator/__tests__/integration/`:
+
+| Suite | Command | What it proves |
+|---|---|---|
+| `spawn-signing-e2e.mjs` | `bun run test:spawn-signing` | 12 cases through the live HTTP boundary on :3070 |
+| `spawn-signing-e2e.mjs` (dev) | `bun run test:spawn-signing:dev` | Same suite against :3055 (dev) |
+| `mint-roundtrip.mjs` | `bun run test:mint-roundtrip` | Orchestrator's `writeSignedSpawnMcp` ↔ operator's verifier agree on HMAC |
+| `admin-rotate.mjs` | `bun run test:admin-rotate` | Rotation endpoint auth + revocation semantics |
+
+Run all four before promoting any change to the signing pipeline.

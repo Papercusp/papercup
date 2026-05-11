@@ -17,11 +17,24 @@ import { readOperatorState, writeOperatorState } from './operator-state-pg';
 
 const TTL_MS = 30 * 60 * 1000;
 
+export interface IdleSnapshotHarnessLine {
+  slug: string;
+  status: string;
+  lastTouched: string | null;
+}
+
 export interface IdleSnapshot {
   fingerprint: string;
   computedAt: string;
   ttlMs: number;
   cards: Record<string, unknown>[];
+  /**
+   * Per-harness one-liner status (Phase 5 polish). Surfaced alongside the
+   * cached cards on idle short-circuit so the user sees current per-harness
+   * state even when nothing changed since the last real scan. Excluded
+   * from the fingerprint (cosmetic).
+   */
+  perHarness?: IdleSnapshotHarnessLine[];
 }
 
 export async function readSnapshot(): Promise<IdleSnapshot | null> {
@@ -32,15 +45,27 @@ export async function readSnapshot(): Promise<IdleSnapshot | null> {
     computedAt: typeof raw.computedAt === 'string' ? raw.computedAt : new Date(0).toISOString(),
     ttlMs: typeof raw.ttlMs === 'number' ? raw.ttlMs : TTL_MS,
     cards: Array.isArray(raw.cards) ? raw.cards.filter((c): c is Record<string, unknown> => !!c && typeof c === 'object') : [],
+    perHarness: Array.isArray(raw.perHarness)
+      ? raw.perHarness
+          .filter((h): h is IdleSnapshotHarnessLine =>
+            !!h && typeof h === 'object'
+            && typeof (h as IdleSnapshotHarnessLine).slug === 'string'
+            && typeof (h as IdleSnapshotHarnessLine).status === 'string')
+      : undefined,
   };
 }
 
-export async function writeSnapshot(fingerprint: string, cards: Record<string, unknown>[]): Promise<void> {
+export async function writeSnapshot(
+  fingerprint: string,
+  cards: Record<string, unknown>[],
+  perHarness?: IdleSnapshotHarnessLine[],
+): Promise<void> {
   const snap: IdleSnapshot = {
     fingerprint,
     computedAt: new Date().toISOString(),
     ttlMs: TTL_MS,
     cards,
+    ...(perHarness !== undefined ? { perHarness } : {}),
   };
   await writeOperatorState('operator_idle_snapshot', snap);
 }

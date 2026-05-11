@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -72,7 +73,8 @@ export default function ExpertsPanel({ harnessSlug, onClose }: { harnessSlug: st
   const [error, setError] = useState<string | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [showSpawn, setShowSpawn] = useState(false);
+  // Modal-open is URL-backed so agents can open/close it via `set_url`.
+  const [showSpawn, setShowSpawn] = useQueryState('spawnExpert', parseAsBoolean.withDefault(false));
   const selectedId = selection?.kind === 'expert' ? selection.id : null;
 
   // Eager subscription — harness_shared.harness_experts is mirrored

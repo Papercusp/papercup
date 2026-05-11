@@ -87,6 +87,13 @@ export interface UnifiedToolContext {
   spawnId?: string;
   parentSpawnId?: string | null;
 
+  /**
+   * When the agent was spawned from a browser tab (chat surfaces), the
+   * tab's UI client_id is passed through here so `ui:*` tools default
+   * to it. Null/undefined for headless spawns and CLI callers.
+   */
+  uiClientId?: string | null;
+
   /* ── Capability-gated helpers ─────────────────────────────────────── */
   spawn?: PluginSpawn;
   secret?: (name: string) => Promise<string | null>;

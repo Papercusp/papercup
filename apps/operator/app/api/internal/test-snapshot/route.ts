@@ -13,9 +13,13 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const ht = generated.harness_testsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,10 +36,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const tokenRows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const tokenRows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (tokenRows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -74,36 +80,39 @@ export async function POST(req: Request): Promise<Response> {
 
   // Replace-all: orphan-delete any test_id not in the snapshot.
   if (keep.length === 0) {
-    await sql`
-      DELETE FROM harness_shared.harness_tests
-       WHERE harness_slug = ${slug} AND phase = ${phase}
-    `;
+    await db.delete(ht).where(and(eq(ht.harness_slug, slug), eq(ht.phase, phase)));
   } else {
     const ids = keep.map((k) => k.testId);
-    await sql`
-      DELETE FROM harness_shared.harness_tests
-       WHERE harness_slug = ${slug} AND phase = ${phase}
-         AND test_id NOT IN ${sql(ids)}
-    `;
+    await db
+      .delete(ht)
+      .where(and(eq(ht.harness_slug, slug), eq(ht.phase, phase), notInArray(ht.test_id, ids)));
     for (const k of keep) {
-      await sql`
-        INSERT INTO harness_shared.harness_tests
-          (harness_slug, phase, test_id, name, status, duration_ms, last_run_ts,
-           payload, mtime_ms, workspace_id)
-        VALUES (
-          ${slug}, ${phase}, ${k.testId}, ${k.name}, ${k.status},
-          ${k.durationMs}, ${k.lastRunTs},
-          ${JSON.stringify(k.payload)}::jsonb, ${now}, ${ws}
-        )
-        ON CONFLICT (harness_slug, phase, test_id) DO UPDATE
-          SET name = EXCLUDED.name,
-              status = EXCLUDED.status,
-              duration_ms = EXCLUDED.duration_ms,
-              last_run_ts = EXCLUDED.last_run_ts,
-              payload = EXCLUDED.payload,
-              mtime_ms = EXCLUDED.mtime_ms,
-              workspace_id = EXCLUDED.workspace_id
-      `;
+      await db
+        .insert(ht)
+        .values({
+          harness_slug: slug,
+          phase,
+          test_id: k.testId,
+          name: k.name,
+          status: k.status,
+          duration_ms: k.durationMs,
+          last_run_ts: k.lastRunTs,
+          payload: k.payload,
+          mtime_ms: now,
+          workspace_id: ws,
+        })
+        .onConflictDoUpdate({
+          target: [ht.harness_slug, ht.phase, ht.test_id],
+          set: {
+            name: dsql`EXCLUDED.name`,
+            status: dsql`EXCLUDED.status`,
+            duration_ms: dsql`EXCLUDED.duration_ms`,
+            last_run_ts: dsql`EXCLUDED.last_run_ts`,
+            payload: dsql`EXCLUDED.payload`,
+            mtime_ms: dsql`EXCLUDED.mtime_ms`,
+            workspace_id: dsql`EXCLUDED.workspace_id`,
+          },
+        });
     }
   }
   void notifySyncInvalidate('harnessTests.byHarness', { harnessSlug: slug, phase }).catch(() => {});

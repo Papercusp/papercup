@@ -8,7 +8,11 @@
  */
 
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, asc, eq } from 'drizzle-orm';
+
+const he = generated.harness_expertsInHarness_shared;
+const hef = generated.harness_expert_feedbackInHarness_shared;
 import {
   EXPERT_ID_RE,
   aggregateExpertSpendCents,
@@ -117,14 +121,13 @@ export async function getExpert(
   const dir = expertDir(projectDir, expertId);
   const specPath = join(dir, 'SPEC.md');
   let spec = '';
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  const rows = await sql<{ spec_content: string }[]>`
-    SELECT spec_content FROM harness_shared.harness_experts
-     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-       AND expert_id    = ${expertId}
-     LIMIT 1
-  `;
+  const rows = await db
+    .select({ spec_content: he.spec_content })
+    .from(he)
+    .where(and(eq(he.workspace_id, ws), eq(he.harness_slug, slug), eq(he.expert_id, expertId)))
+    .limit(1);
   if (rows.length > 0) spec = rows[0].spec_content ?? '';
   const spentCents = await aggregateExpertSpendCents(projectDir, expertId);
   const nextAction = await computeNextAction(projectDir, expertId, ident);
@@ -140,14 +143,13 @@ export async function getExpertSpec(
   const projectDir = await lookupProjectDir(slug);
   if (!projectDir) return { ok: false, status: 404, error: 'unknown harness' };
   if (!EXPERT_ID_RE.test(expertId)) return { ok: false, status: 400, error: 'invalid expert id' };
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  const rows = await sql<{ spec_content: string }[]>`
-    SELECT spec_content FROM harness_shared.harness_experts
-     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-       AND expert_id    = ${expertId}
-     LIMIT 1
-  `;
+  const rows = await db
+    .select({ spec_content: he.spec_content })
+    .from(he)
+    .where(and(eq(he.workspace_id, ws), eq(he.harness_slug, slug), eq(he.expert_id, expertId)))
+    .limit(1);
   if (rows.length === 0) return { ok: false, status: 404, error: 'expert not found' };
   return { ok: true, data: { content: rows[0].spec_content ?? '' } };
 }
@@ -161,13 +163,13 @@ export async function listExpertFeedback(
   const projectDir = await lookupProjectDir(slug);
   if (!projectDir) return { ok: false, status: 404, error: 'unknown harness' };
   if (!EXPERT_ID_RE.test(expertId)) return { ok: false, status: 400, error: 'invalid expert id' };
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  const rows = await sql<{ feedback_id: string; persona: string; verdict: unknown | null }[]>`
-    SELECT feedback_id, persona, verdict FROM harness_shared.harness_expert_feedback
-     WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND expert_id = ${expertId}
-     ORDER BY feedback_id ASC
-  `;
+  const rows = await db
+    .select({ feedback_id: hef.feedback_id, persona: hef.persona, verdict: hef.verdict })
+    .from(hef)
+    .where(and(eq(hef.workspace_id, ws), eq(hef.harness_slug, slug), eq(hef.expert_id, expertId)))
+    .orderBy(asc(hef.feedback_id));
   const out: ExpertFeedback[] = rows.map((r) => ({
     id: r.feedback_id,
     persona: r.persona,

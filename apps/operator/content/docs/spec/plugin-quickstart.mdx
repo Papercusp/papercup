@@ -70,6 +70,51 @@ Reserved namespaces:
 - `events:emit:<name>` / `events:listen:<name>` — must be prefixed with your plugin id (`my-tool.foo`); substrate names (`mission.*`, `task.*`, `feature.*`, `proposal.*`, `worker.*`, `validator.*`, `orchestrator.*`, `pending_event.*`) are reserved.
 - `ui:dashboard-tab` / `ui:sidebar-item` / `ui:harness-route` — UI surface claims.
 
+**Wildcards** only work in the leaf segment, and only with non-empty heads:
+- `*.foo.com` matches subdomains (subdomain form)
+- `MY_*` matches prefixes (head must be non-empty)
+- Bare `:*` (e.g. `compute:exec:*`) is **not** a wildcard — it only matches the literal cap string. Enumerate or use a non-empty prefix.
+
+### Snapshot version pinning
+
+Plugins can declare how aggressively a snapshot-fork should preserve the installed version:
+
+```json
+"versionPin": { "mode": "exact" }
+```
+
+- `"mode": "semver"` (default) — fork accepts compatible upgrades.
+- `"mode": "exact"` — fork pins to the snapshot's exact version.
+- `"mode": "hash"` — fork pins to the snapshot's content hash.
+
+Optional `"allowOverride": "security-patch" | "always" | "never"` controls whether the operator can override the pin (e.g. force a security update). The capture path writes `versionPin` into the snapshot manifest; legacy `pluginVersionPinned: true` is translated to `{ mode: "exact" }` for back-compat.
+
+### Plugin runtime
+
+The optional `"runtime"` field declares which host runtime your plugin needs. It's an **object** with a required `kind` plus kind-specific config:
+
+```json
+// WASM plugin
+"runtime": {
+  "kind": "wasm",
+  "wasmPath": "pkg/my-plugin.wasm",
+  "memoryBudgetMb": 64,
+  "concurrency": "serial"
+}
+
+// Daemon plugin
+"runtime": {
+  "kind": "daemon",
+  "daemonCommand": ["/usr/bin/my-daemon", "--stdio"],
+  "daemonRestart": { "policy": "on-failure", "maxRestarts": 3 }
+}
+```
+
+`kind` is one of:
+- `"js"` (default) — in-process Node host. Plugin literals exported from `index.cjs`. Omit `runtime` entirely.
+- `"wasm"` — WASM component, run via `jco` (TS host) or `wasmtime` (Rust host). See `@papercusp/plugin-wit` for the WIT contract. Requires `wasmPath` relative to the manifest dir. Default `memoryBudgetMb: 64`.
+- `"daemon"` — sandboxed subprocess. Requires `daemonCommand`. Reserved for the upcoming subprocess host.
+
 ## 3. Lint
 
 ```bash
@@ -79,6 +124,65 @@ papercusp plugin lint
 Catches manifest schema errors, missing entry point, malformed capability strings — every check the loader runs at runtime, run at build time. Exits non-zero on any issue.
 
 If you don't run lint, the operator will reject loading at install time with the same error, just later.
+
+### `doctor` — declared vs used capability check
+
+```bash
+papercusp plugin doctor
+```
+
+Static-analyzes your plugin source against `capabilities[]`. Reports:
+
+- **Missing** caps — `ctx.spawn('git', ...)` in source, no `compute:exec:git` in manifest. Fatal — the loader will deny it at runtime.
+- **Unused** caps — declared but no matching call site detected. Warning — review for cap pollution or note false positives (e.g. caps gated through code paths the scanner misses, or `events:listen:` declared as a manifest hook rather than via `ctx.hookBus.on`).
+- **Dynamic** lookups — `ctx.spawn(varname, ...)` etc. that can't be statically verified. Informational only.
+
+Run both `lint` and `doctor` pre-commit. Together they catch ~80% of "works in dev, breaks on first prod load" issues without an AST walker.
+
+## `ctx.kv` — plugin-private key/value store
+
+For small structured state (counts, timestamps, last-seen markers) use `ctx.kv` instead of writing JSON files under `pluginDataDir`:
+
+```ts
+const last = await ctx.kv?.get<number>('lastSync');
+await ctx.kv?.set('lastSync', Date.now());
+await ctx.kv?.delete('lastSync');
+const keys = await ctx.kv?.list({ prefix: 'sync:', limit: 50 });
+```
+
+- **Quota** — default 10 KiB per key, 1 MiB total per plugin. Override via `kvQuota: { maxBytesPerKey, maxBytesPerPlugin }` in the manifest.
+- **Isolation** — each plugin sees only its own keys; cross-plugin reads are impossible.
+- **Backend** — Postgres in the operator (state survives reload, observable in the operator UI). Optional: missing in `fire-hook` CLI invocations (`ctx.kv?.` guard required).
+- **Errors** — quota violations throw `KvQuotaError` from `@papercusp/plugin-sdk`.
+
+Use `pluginDataDir` for blobs > 10 KiB, code, or anything that doesn't need to be scanned/aggregated.
+
+## Hot-reload state preservation (optional)
+
+Plugins with in-flight state that shouldn't reset on every reload (debounce timers, accumulated counters, live connections) can opt in via the manifest:
+
+```json
+{ "hotReload": { "preserveState": true } }
+```
+
+Then implement two hooks:
+
+```ts
+hooks: {
+  async getStateForReload(ctx) {
+    return { queue: this.queue, debouncer: this.debouncer.flush() };
+  },
+  async restoreFromReload(ctx, state) {
+    this.queue = (state as Saved).queue;
+    this.debouncer.resumeFrom((state as Saved).debouncer);
+  },
+}
+```
+
+- **Lifecycle.** Reload begins → `getStateForReload(ctx)` → host stashes the returned value → reload completes → new module instance's `init()` runs → `restoreFromReload(ctx, state)` runs before any other hook.
+- **One-shot.** Restore is destructive. If `restoreFromReload` throws, the host logs + discards; the plugin starts fresh on the next reload.
+- **Size cap.** State must be JSON-serialisable and ≤ 64 KiB. Bigger state belongs in `ctx.kv` or `pluginDataDir`.
+- **Uninstall.** Doesn't trigger these hooks — use `onUnload` for cleanup. Uninstalled plugins have their stashed state cleared.
 
 ## 4. Test locally
 

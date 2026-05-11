@@ -41,9 +41,16 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, withWorkspace } from '@restart/db-org';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
+// Side-effect: register every operator-side first-party tool into the
+// projected-tool registry. Required on dev (next dev compiles routes
+// lazily — without this import, MCP requests would arrive before any
+// other route has triggered the agent-tools/index side-effect load).
+// On the standalone production build all routes are bundled together
+// so this is a no-op there.
+import '@/lib/agent-tools/index';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -91,6 +98,7 @@ export interface BuiltSpawnContext {
   runId: string;
   spawnId: string;
   parentSpawnId: string | null;
+  uiClientId: string | null;
   isSuperuser?: boolean;
 }
 
@@ -133,6 +141,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     if (!isValidSuperuserBearer(bearer)) return { kind: 'failed', reason: 'superuser_invalid_bearer' };
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
     const harnessParam = (url.searchParams.get('harness') ?? '').trim();
+    const clientParam = (url.searchParams.get('client') ?? '').trim();
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
@@ -146,6 +155,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         runId: 'standalone',
         spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
         parentSpawnId: null,
+        uiClientId: clientParam.length > 0 ? clientParam : null,
         isSuperuser: true,
       },
     };
@@ -216,6 +226,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         runId: parsed.runId,
         spawnId: parsed.spawnId,
         parentSpawnId: parsed.parentSpawnId,
+        uiClientId: parsed.uiClientId,
       },
     };
   } catch (err) {
@@ -402,6 +413,7 @@ async function buildMcpToolContext(
     runId: spawn.runId,
     spawnId: spawn.spawnId,
     parentSpawnId: spawn.parentSpawnId,
+    uiClientId: spawn.uiClientId,
     isSuperuser: spawn.isSuperuser ?? false,
     log: (msg) => {
       // eslint-disable-next-line no-console
@@ -497,15 +509,44 @@ const handler = createMcpHandler(
         }
 
         if (projected && spawnRes.kind === 'ok') {
-          const ctx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification);
-          const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
-          if (!r.ok) {
-            return {
-              isError: true,
-              content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
-            };
+          const baseCtx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification);
+          // Legacy first-party tools (defineTool with default
+          // requirePrincipal=true) hard-require ctx.principal + ctx.tx
+          // in their projected wrapper (see registerLegacyAsProjected
+          // in packages/agent-mcp/src/define-tool.ts:198). For
+          // ?superuser=1 calls with a concrete workspace, synthesize a
+          // system principal and open a workspace tx so those tools
+          // run. workspaceId='*' (no workspace chosen) still fails
+          // those tools — caller must pass ?workspace=X.
+          const needsTx =
+            spawnRes.ctx.isSuperuser &&
+            spawnRes.ctx.workspaceId &&
+            spawnRes.ctx.workspaceId !== '*';
+          const runDispatch = async (ctx: UnifiedToolContext) => {
+            const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
+            if (!r.ok) {
+              return {
+                isError: true,
+                content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
+              };
+            }
+            return { content: r.result!.content as never };
+          };
+          if (needsTx) {
+            return await withWorkspace(spawnRes.ctx.workspaceId, async (tx) => {
+              const ctx: UnifiedToolContext = {
+                ...baseCtx,
+                tx,
+                principal: {
+                  slug: 'system:operator',
+                  workspaceId: spawnRes.ctx.workspaceId,
+                  capabilities: new Set<string>(),
+                },
+              };
+              return await runDispatch(ctx);
+            });
           }
-          return { content: r.result!.content as never };
+          return await runDispatch(baseCtx);
         }
 
         // Legacy bearer-only fallback (no spawn ctx supplied).

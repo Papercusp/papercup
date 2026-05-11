@@ -122,13 +122,19 @@ export async function GET(req: NextRequest) {
       const fp = fingerprint(state);
       const snap = await canShortCircuit(fp);
       if (snap) {
-        // Stream the cached cards as a degenerate scan response.
+        // Stream the cached cards as a degenerate scan response. Phase 5
+        // polish: also stream `idle_status` with per-harness one-liners
+        // so the panel can render a useful summary instead of just
+        // showing N cached cards.
         const enc = new TextEncoder();
         const stream = new ReadableStream({
           start(controller) {
             const send = (event: string, data: Record<string, unknown>) => {
               controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
             };
+            if (snap.perHarness && snap.perHarness.length > 0) {
+              send('idle_status', { perHarness: snap.perHarness, computedAt: snap.computedAt });
+            }
             for (const card of snap.cards) send('suggestion', card);
             send('done', { costUsd: 0, suggestions: snap.cards.length, cached: true });
             controller.close();
@@ -319,10 +325,11 @@ export async function GET(req: NextRequest) {
               console.warn('[operator-scan] writeLastScan failed:', e);
             }
             // Refresh idle snapshot so a stable workspace can short-circuit
-            // the next background scan.
+            // the next background scan. Persist per-harness one-liners
+            // alongside so the cached path can stream them.
             try {
               const state = await readTriggerState();
-              await writeSnapshot(fingerprint(state), cards);
+              await writeSnapshot(fingerprint(state), cards, state.perHarness);
             } catch (e) {
               console.warn('[operator-scan] writeSnapshot failed:', e);
             }

@@ -13,9 +13,13 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const hsk = generated.harness_skillsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -32,10 +36,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const tokenRows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const tokenRows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (tokenRows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -63,25 +69,26 @@ export async function POST(req: Request): Promise<Response> {
   // Replace-all semantics: orphan-delete any skill not in the snapshot,
   // then UPSERT the rest.
   if (keep.length === 0) {
-    await sql`
-      DELETE FROM harness_shared.harness_skills
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-    `;
+    await db.delete(hsk).where(and(eq(hsk.workspace_id, ws), eq(hsk.harness_slug, slug)));
   } else {
     const names = keep.map((k) => k.name);
-    await sql`
-      DELETE FROM harness_shared.harness_skills
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-         AND name NOT IN ${sql(names)}
-    `;
+    await db
+      .delete(hsk)
+      .where(and(eq(hsk.workspace_id, ws), eq(hsk.harness_slug, slug), notInArray(hsk.name, names)));
     for (const k of keep) {
-      await sql`
-        INSERT INTO harness_shared.harness_skills
-          (workspace_id, harness_slug, name, content, mtime_ms)
-        VALUES (${ws}, ${slug}, ${k.name}, ${k.content}, ${now})
-        ON CONFLICT (workspace_id, harness_slug, name) DO UPDATE
-          SET content = EXCLUDED.content, mtime_ms = EXCLUDED.mtime_ms
-      `;
+      await db
+        .insert(hsk)
+        .values({
+          workspace_id: ws,
+          harness_slug: slug,
+          name: k.name,
+          content: k.content,
+          mtime_ms: now,
+        })
+        .onConflictDoUpdate({
+          target: [hsk.workspace_id, hsk.harness_slug, hsk.name],
+          set: { content: dsql`EXCLUDED.content`, mtime_ms: dsql`EXCLUDED.mtime_ms` },
+        });
     }
   }
   void notifySyncInvalidate('harnessSkills.byHarness', { harnessSlug: slug }).catch(() => {});

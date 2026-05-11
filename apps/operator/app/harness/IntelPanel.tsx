@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { Modal } from './Modal';
 
 /**
@@ -494,14 +495,15 @@ function parseGraphResult(text: string): GraphResult | null {
 }
 
 function GraphTab({ slug }: { slug: string }) {
-  const [query, setQuery] = useState('');
-  const [taskContext, setTaskContext] = useState('');
+  // Deep-linkable + agent-visible.
+  const [query, setQuery] = useQueryState('intelQuery', parseAsString.withDefault(''));
+  const [taskContext, setTaskContext] = useQueryState('intelContext', parseAsString.withDefault(''));
   const [limit, setLimit] = useState(5);
   const [result, setResult] = useState<GraphResult | null>(null);
   const [rawText, setRawText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useQueryState('intelAdvanced', parseAsBoolean.withDefault(false));
 
   const submit = useCallback(async (e?: React.FormEvent) => {
     e?.preventDefault();

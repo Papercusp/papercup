@@ -44,6 +44,9 @@ export function defineVitestConfig(opts: DefineVitestConfigOptions): UserConfig 
           : []),
       ],
       pool: layer === 'integration' ? 'forks' : 'threads',
+      // Integration tests share real PG schemas (e.g. harness_shared) — running
+      // files in parallel races their `DROP SCHEMA CASCADE` teardown. Serialise.
+      fileParallelism: layer === 'integration' ? false : undefined,
       testTimeout: layer === 'unit' ? 5_000 : layer === 'integration' ? 30_000 : 60_000,
       hookTimeout: layer === 'integration' ? 60_000 : 10_000,
       setupFiles: finalSetup,

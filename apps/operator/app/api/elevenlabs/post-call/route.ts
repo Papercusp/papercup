@@ -21,8 +21,12 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
+
+const ot = generated.operator_turnsInHarness_shared;
+const oc = generated.operator_conversationsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -94,7 +98,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   await ensureOperatorConversationsTable();
-  const { sql } = getOrgPg();
+  const { db, sql } = getOrgPg();
 
   // Locate our conversation row via any operator_turn carrying this el_conv_id.
   const elConvId =
@@ -104,12 +108,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     return NextResponse.json({ received: true, note: 'no conversation_id' });
   }
 
-  const found = (await sql`
-    SELECT DISTINCT conversation_id
-      FROM harness_shared.operator_turns
-     WHERE el_conv_id = ${elConvId}
-     LIMIT 1
-  `) as Array<{ conversation_id: string }>;
+  const found = await db
+    .selectDistinct({ conversation_id: ot.conversation_id })
+    .from(ot)
+    .where(eq(ot.el_conv_id, elConvId))
+    .limit(1);
 
   if (found.length === 0) {
     // Not ours, or no turns landed (call ended before any utterance).
@@ -119,6 +122,8 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   if (event.type === 'post_call_transcription') {
     const data = (event as TranscriptionPayload).data;
+    // Array-append-if-missing + COALESCE merge — kept raw because drizzle's
+    // .set() can't cleanly express array_append + ANY() + CASE in one go.
     await sql`
       UPDATE harness_shared.operator_conversations
          SET ended_at = COALESCE(ended_at, ${Date.now()}),
@@ -131,11 +136,7 @@ export async function POST(req: NextRequest): Promise<Response> {
        WHERE id = ${ourId}
     `;
   } else if (event.type === 'post_call_audio') {
-    await sql`
-      UPDATE harness_shared.operator_conversations
-         SET has_audio = true
-       WHERE id = ${ourId}
-    `;
+    await db.update(oc).set({ has_audio: true }).where(eq(oc.id, ourId));
   }
   // call_initiation_failure: nothing to reconcile — the conversation
   // never produced turns. Just ack.

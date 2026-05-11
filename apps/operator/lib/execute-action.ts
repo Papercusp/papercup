@@ -14,7 +14,8 @@
  * scaffold_harness) are implemented in this module. spinup_project recurses
  * in-process to fire follow-up send_messages within a single transaction.
  */
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -749,12 +750,13 @@ async function doPauseProject(
   action: PauseProjectAction,
 ): Promise<ExecuteActionResult> {
   if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
-  const { sql } = getOrgPg();
-  const rows = await sql`
-    UPDATE harness_shared.projects SET status = 'paused', updated_ts = ${Date.now()}
-    WHERE slug = ${action.projectSlug}
-    RETURNING id, slug, status
-  `;
+  const { db } = getOrgPg();
+  const p = generated.projectsInHarness_shared;
+  const rows = await db
+    .update(p)
+    .set({ status: 'paused', updated_ts: Date.now() })
+    .where(eq(p.slug, action.projectSlug))
+    .returning({ id: p.id, slug: p.slug, status: p.status });
   if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };
   return { ok: true, actionId: '', result: { project: rows[0], reason: action.reason ?? null } };
 }
@@ -765,12 +767,13 @@ async function doResumeProject(
 ): Promise<ExecuteActionResult> {
   if (!action.projectSlug) return { ok: false, actionId: '', error: 'validation_error', detail: 'projectSlug required' };
   const target = action.status ?? 'in_progress';
-  const { sql } = getOrgPg();
-  const rows = await sql`
-    UPDATE harness_shared.projects SET status = ${target}, updated_ts = ${Date.now()}
-    WHERE slug = ${action.projectSlug}
-    RETURNING id, slug, status
-  `;
+  const { db } = getOrgPg();
+  const p = generated.projectsInHarness_shared;
+  const rows = await db
+    .update(p)
+    .set({ status: target, updated_ts: Date.now() })
+    .where(eq(p.slug, action.projectSlug))
+    .returning({ id: p.id, slug: p.slug, status: p.status });
   if (rows.length === 0) return { ok: false, actionId: '', error: 'not_found', detail: `project ${action.projectSlug} not found` };
   return { ok: true, actionId: '', result: { project: rows[0] } };
 }

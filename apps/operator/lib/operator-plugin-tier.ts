@@ -14,6 +14,7 @@
 
 import { lookupTier as substrateLookup, type CapabilityTier } from '@papercusp/plugin-sdk';
 import { getPluginHost } from './plugin-host-runtime';
+import { heuristicTier } from './operator-cap-tier-heuristic';
 
 const TIER_RANK: Record<CapabilityTier, number> = { low: 0, medium: 1, high: 2 };
 
@@ -45,26 +46,41 @@ async function buildPluginTierMap(): Promise<Map<string, CapabilityTier>> {
 }
 
 /**
- * Plugin-aware tier resolution. Substrate first; then plugin tierMaps;
- * then `null` so the Operator pipeline can apply its fail-safe.
+ * Tier resolution priority (Phase 5 polish):
+ *   1. Substrate `tier-table.json` (authoritative for substrate caps)
+ *   2. Plugin-declared `tierMap` (plugin manifest)
+ *   3. Capability-string heuristic (`secrets:*` → high, `*:read` → low, …)
+ *   4. null — caller (suggestion parser) applies fail-safe `high`
+ *
+ * Heuristic rationale: the live tool catalog has 84 unique capabilities
+ * (most plugin-defined); without a heuristic, every plugin-cap suggestion
+ * would force the operator to ask the user, which makes the auto-dispatch
+ * UX useless on workspaces that lean on plugin tools. The heuristic
+ * mirrors the catalog's naming conventions documented at
+ * /docs/endpoint-system/tool-catalog.
  */
 export async function resolvePluginAwareTier(capability: string): Promise<CapabilityTier | null> {
   const sub = substrateLookup(capability);
   if (sub !== null) return sub;
   const map = await buildPluginTierMap();
-  return map.get(capability) ?? null;
+  const fromManifest = map.get(capability);
+  if (fromManifest) return fromManifest;
+  const fromHeuristic = heuristicTier(capability);
+  return fromHeuristic ? fromHeuristic.tier : null;
 }
 
 /**
- * Convenience: when the suggestion processor needs a tier *now* and
- * can't await (sync-classifier path), this returns the cached map's
- * answer. Returns null if cache is cold — caller falls back to high.
+ * Sync version for the suggestion parser hot path. Same priority chain;
+ * the plugin-tierMap lookup falls back to "cold cache → empty" since we
+ * can't await the host. Heuristic always available (pure function).
  */
 export function resolvePluginAwareTierSync(capability: string): CapabilityTier | null {
   const sub = substrateLookup(capability);
   if (sub !== null) return sub;
-  if (!cache) return null;
-  return cache.map.get(capability) ?? null;
+  const fromManifest = cache?.map.get(capability);
+  if (fromManifest) return fromManifest;
+  const fromHeuristic = heuristicTier(capability);
+  return fromHeuristic ? fromHeuristic.tier : null;
 }
 
 export function _resetPluginTierCacheForTests(): void {

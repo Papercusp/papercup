@@ -1,0 +1,88 @@
+'use client';
+
+/**
+ * Subscribes to /api/ui/intents/stream for this tab's client_id and
+ * runs registered intent handlers as rows arrive.
+ *
+ * Lifecycle:
+ *   1. On mount, register built-in intents + open EventSource.
+ *   2. Each message is { id, intent, args } — look up handler in the
+ *      registry, run it, POST back result or error.
+ *   3. On unmount / page hide, close the source. Browser-managed
+ *      auto-reconnect rebinds when the tab is visible again.
+ *
+ * The result/error round-trip is what unblocks the agent's
+ * `ui:dispatch` long-poll on the server.
+ */
+
+import { useEffect } from 'react';
+import { getOrCreateClientId } from './client-id';
+import { lookupIntent } from './intent-registry';
+import { registerBuiltInIntents } from './built-in-intents';
+
+interface IntentMessage {
+  id: number;
+  intent: string;
+  args: Record<string, unknown>;
+}
+
+async function executeIntent(msg: IntentMessage): Promise<void> {
+  let result: unknown = null;
+  let error: string | null = null;
+  try {
+    const entry = lookupIntent(msg.intent);
+    if (!entry) {
+      error = `unknown_intent: ${msg.intent}`;
+    } else {
+      result = await entry.handler(msg.args ?? {});
+    }
+  } catch (e) {
+    error = e instanceof Error ? e.message : String(e);
+  }
+  try {
+    await fetch(`/api/ui/intents/${msg.id}/result`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ result: result ?? null, error }),
+    });
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[ui-intent] failed to post result', msg.id, e);
+  }
+}
+
+export function UiIntentDispatcher(): null {
+  useEffect(() => {
+    registerBuiltInIntents();
+    const clientId = getOrCreateClientId();
+    if (!clientId) return;
+
+    let es: EventSource | null = null;
+    let cancelled = false;
+
+    const open = () => {
+      if (cancelled) return;
+      es = new EventSource(`/api/ui/intents/stream?client_id=${encodeURIComponent(clientId)}`);
+      es.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data) as IntentMessage;
+          if (!msg?.id || !msg.intent) return;
+          void executeIntent(msg);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('[ui-intent] bad message', e);
+        }
+      };
+      es.onerror = () => {
+        // EventSource auto-reconnects with backoff; nothing to do here.
+      };
+    };
+
+    open();
+    return () => {
+      cancelled = true;
+      es?.close();
+    };
+  }, []);
+  return null;
+}

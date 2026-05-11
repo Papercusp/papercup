@@ -106,12 +106,15 @@ export function OperatorBackgroundScanner() {
         try {
           const s = JSON.parse(ev.data) as SuggestionEvent;
           suggestionsCount++;
-          if (s.auto_dispatch) autoDispatchedCount++;
-          if (!s.auto_dispatch) return; // ask-first → wait for the user to open the panel
-          // Threshold gate: only auto-fire if the user's autoAccept level
-          // permits this card's tier. Otherwise treat as ask-first — the
-          // card will surface in the panel for manual review.
-          if (!isAutoAcceptedByThreshold(s.actualTier, autoAcceptRef.current)) return;
+          // Decide auto-fire from (server signal, user threshold).
+          // Server is conservative: it never marks tier=high cards as
+          // auto_dispatch=true. The user threshold can OPT IN to that
+          // by setting autoAccept='high' — same upgrade-or-downgrade
+          // logic the panel applies on its suggestion handler.
+          const tierAllowed = isAutoAcceptedByThreshold(s.actualTier, autoAcceptRef.current);
+          const shouldAutoFire = tierAllowed; // unifies upgrade + ask-first→auto
+          if (s.auto_dispatch || shouldAutoFire) autoDispatchedCount++;
+          if (!shouldAutoFire) return; // ask-first → wait for the user to open the panel
           armAutoFireToast(s);
         } catch {
           /* ignore */

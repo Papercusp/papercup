@@ -57,6 +57,7 @@ import {
   writeSleepUntilMs,
   type OperatorMode,
 } from '@/lib/operator-converse-tags';
+import { getVoiceState, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@restart/sync';
 import type { ChatMessage } from './chat/ChatConversation';
 
@@ -119,7 +120,9 @@ type Action =
   | { type: 'append_assistant_delta'; text: string }
   | { type: 'set_error'; error: string | null }
   | { type: 'record_turn_ts'; tsMs: number }
-  | { type: 'reset_messages' };
+  | { type: 'reset_messages' }
+  | { type: 'replace_messages'; messages: ChatMessage[] }
+  | { type: 'prepend_messages'; messages: ChatMessage[] };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -157,6 +160,10 @@ function reducer(state: State, action: Action): State {
     }
     case 'reset_messages':
       return { ...state, messages: [], error: null };
+    case 'replace_messages':
+      return { ...state, messages: action.messages, error: null };
+    case 'prepend_messages':
+      return { ...state, messages: [...action.messages, ...state.messages] };
   }
 }
 
@@ -231,6 +238,10 @@ export type GenerationFn = (req: GenerationRequest) => Promise<GenerationStream>
  * the realtime-session's turn output the same way.
  */
 const defaultGenerationFn: GenerationFn = async (req) => {
+  // Lazy import — avoids dragging the sessionStorage path into SSR.
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getOrCreateClientId } = require('@/lib/ui/client-id') as typeof import('@/lib/ui/client-id');
+  const uiClientId = getOrCreateClientId();
   const res = await fetch('/api/agent-mcp/operator-converse', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -238,6 +249,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
       messages: req.messages,
       trigger: req.trigger,
       mayAskActive: req.mayAskActive,
+      uiClientId: uiClientId || undefined,
     }),
     signal: req.signal,
   });
@@ -309,6 +321,16 @@ interface OperatorConversationContextValue {
 
   /** Banner text for the chat surface (e.g. silence-check status). */
   bannerText: string | null;
+
+  /** True when at least one earlier turn exists below the oldest currently-loaded one. */
+  hasMoreEarlier: boolean;
+  /** True while a loadEarlier() fetch is in flight. */
+  loadingEarlier: boolean;
+  /**
+   * Fetch and prepend the next batch of older turns. Idempotent while
+   * a prior fetch is in flight; no-op when hasMoreEarlier is false.
+   */
+  loadEarlier: () => Promise<void>;
 }
 
 const OperatorConversationContext = createContext<OperatorConversationContextValue | null>(null);
@@ -340,33 +362,69 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // hook gate needs reactive state.
   const [convId, setConvId] = useState<string | null>(null);
 
+  // Infinite-scroll cursors. We track the oldest + newest turn `seq`
+  // we've materialized into `state.messages` so we can:
+  //   - fetch the next batch of older turns starting just below
+  //     `oldestLoadedSeqRef`,
+  //   - and let the live-tail Zero subscription only append turns whose
+  //     `seq > newestLoadedSeqRef` (so prepending older history doesn't
+  //     trigger the optimistic-write dedup heuristic).
+  // The ref pair is the source of truth for the loadEarlier fetcher;
+  // `hasMoreEarlier` mirrors it into reactive state for the chat UI.
+  //
+  // `hydratedRef` gates the live-tail reconciler until the initial
+  // windowed fetch has set the cursors — otherwise a Zero subscription
+  // that returns 100 turns before our REST hydrate lands would flood
+  // the chat with the entire tail before the windowed view replaces it.
+  const oldestLoadedSeqRef = useRef<number | null>(null);
+  const newestLoadedSeqRef = useRef<number | null>(null);
+  const hydratedRef = useRef(false);
+  const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+
+  // Desktop-tuned: PG fetch is loopback, so the bottleneck is React
+  // reconciliation on prepend, not bandwidth. 200/page keeps the
+  // sidebar feeling close to "all in memory" while still bounding the
+  // worst-case render burst on initial mount.
+  const INITIAL_PAGE = 200;
+  const PAGE_SIZE = 200;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch('/api/operator/conversations');
+        const res = await fetch(`/api/operator/conversations?limit=${INITIAL_PAGE}`);
         if (!res.ok) return;
         const json = (await res.json()) as {
           conversation: { id: string };
-          turns: Array<{ role: 'user' | 'assistant' | 'system'; text: string }>;
+          turns: Array<{ seq: number; role: 'user' | 'assistant' | 'system'; text: string }>;
+          hasMoreEarlier: boolean;
         };
         if (cancelled) return;
         conversationIdRef.current = json.conversation.id;
         setConvId(json.conversation.id);
-        // Replace cached messages with PG truth. Only do this if PG actually
-        // has turns — otherwise keep the sessionStorage seed so a brand-new
-        // conversation row doesn't blow away an in-progress unsaved chat.
         if (json.turns.length > 0) {
-          dispatch({ type: 'reset_messages' });
-          for (const t of json.turns) {
-            dispatch({
-              type: 'append_message',
-              message: { role: t.role, content: t.text },
-            });
-          }
+          oldestLoadedSeqRef.current = json.turns[0].seq;
+          newestLoadedSeqRef.current = json.turns[json.turns.length - 1].seq;
+          setHasMoreEarlier(json.hasMoreEarlier);
+          dispatch({
+            type: 'replace_messages',
+            messages: json.turns.map((t) => ({ role: t.role, content: t.text })),
+          });
+        } else {
+          // Brand-new conversation — keep the sessionStorage seed for
+          // any in-progress unsaved input but reset cursors.
+          oldestLoadedSeqRef.current = null;
+          newestLoadedSeqRef.current = null;
+          setHasMoreEarlier(false);
+          // Replace any sessionStorage seed with empty so the live tail
+          // doesn't see "messages.length>0 but cursors null" as a flood.
+          dispatch({ type: 'replace_messages', messages: [] });
         }
+        hydratedRef.current = true;
       } catch {
         /* offline / dev startup — fall back to sessionStorage seed */
+        hydratedRef.current = true;
       }
     })();
     return () => {
@@ -374,35 +432,68 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     };
   }, []);
 
-  // Cross-tab sync. Subscribe to operatorTurns.byConversation via Zero
-  // once we have a conversation id. When another tab appends a turn,
-  // PG-NOTIFY → SSE → useSyncQuery rows update; we mirror any rows the
-  // local state hasn't seen yet by appending them in seq order.
+  const loadEarlier = useCallback(async (): Promise<void> => {
+    const id = conversationIdRef.current;
+    if (!id) return;
+    if (loadingEarlier) return;
+    if (oldestLoadedSeqRef.current === null) return;
+    if (!hasMoreEarlier) return;
+    setLoadingEarlier(true);
+    try {
+      const beforeSeq = oldestLoadedSeqRef.current;
+      const res = await fetch(
+        `/api/operator/conversations/${id}/turns?beforeSeq=${beforeSeq}&limit=${PAGE_SIZE}`,
+      );
+      if (!res.ok) return;
+      const page = (await res.json()) as {
+        turns: Array<{ seq: number; role: 'user' | 'assistant' | 'system'; text: string }>;
+        hasMoreEarlier: boolean;
+      };
+      if (page.turns.length === 0) {
+        setHasMoreEarlier(false);
+        return;
+      }
+      oldestLoadedSeqRef.current = page.turns[0].seq;
+      setHasMoreEarlier(page.hasMoreEarlier);
+      dispatch({
+        type: 'prepend_messages',
+        messages: page.turns.map((t) => ({ role: t.role, content: t.text })),
+      });
+    } catch {
+      /* swallow — chat is still functional with the rows already loaded */
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [hasMoreEarlier, loadingEarlier]);
+
+  // Cross-tab live tail. Subscribe to the most-recent N turns; the
+  // reconciler appends only those whose seq is strictly greater than
+  // `newestLoadedSeqRef`. The previous "count > local.length" heuristic
+  // doesn't survive infinite-scroll: prepending older history would
+  // make the heuristic always think the remote is behind.
   //
-  // Optimistic-write dedupe: the local tab dispatches append_message
-  // before the POST returns, so this tab's own writes echo back via
-  // Zero. We only act when the remote rows have *more* turns than our
-  // optimistic state — same-count means "we've already shown it." This
-  // is conservative; pathological cases (race between two tabs both
-  // sending) get reconciled on next message rather than instantly.
+  // Limit 200 mirrors INITIAL_PAGE: the live tail is a window, not the
+  // conversation depth — the user-facing depth is bounded only by how
+  // far they scroll back. Older turns land via loadEarlier() against PG.
   const turnsSync = useSyncQuery<OperatorTurnRow>({
     queryName: 'operatorTurns.byConversation',
-    args: { conversationId: convId ?? '', limit: 500 },
+    args: { conversationId: convId ?? '', limit: 200 },
     enabled: !!convId,
   });
   const remoteTurns = (turnsSync.data as OperatorTurnRow[] | undefined) ?? [];
   useEffect(() => {
+    if (!hydratedRef.current) return;
     if (!Array.isArray(remoteTurns) || remoteTurns.length === 0) return;
-    if (remoteTurns.length <= state.messages.length) return;
-    // Append turns beyond what we've already optimistically rendered.
-    // Sort by seq for safety even though the query is ordered.
     const sorted = [...remoteTurns].sort((a, b) => a.seq - b.seq);
-    for (let i = state.messages.length; i < sorted.length; i++) {
-      const t = sorted[i];
+    const since = newestLoadedSeqRef.current;
+    for (const t of sorted) {
+      if (since !== null && t.seq <= since) continue;
       dispatch({ type: 'append_message', message: { role: t.role, content: t.text } });
+      newestLoadedSeqRef.current = t.seq;
+      if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = t.seq;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remoteTurns.length, state.messages.length]);
+  }, [remoteTurns.length, convId]);
 
   // Persist messages on every change. SessionStorage is per-tab and
   // resets on app reopen, matching the mode + sleep semantics. The
@@ -418,11 +509,28 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     (role: 'user' | 'assistant', text: string, source: 'text_typed' | 'voice_stt' | 'voice_tts' = 'text_typed') => {
       const id = conversationIdRef.current;
       if (!id) return;
+      // Bump newestLoadedSeqRef to the inserted seq so the live-tail
+      // reconciler doesn't double-render our optimistic message when
+      // it echoes back via Zero. Best-effort: if the POST fails we just
+      // never bump and the live tail will treat the next remote row as
+      // new (which still self-heals because the optimistic React row
+      // already has the same content).
       void fetch(`/api/operator/conversations/${id}/turns`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ role, text, source }),
-      }).catch(() => { /* swallow — sessionStorage cache covers refresh */ });
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j: { turn?: { seq?: number } } | null) => {
+          const seq = j?.turn?.seq;
+          if (typeof seq === 'number') {
+            if (newestLoadedSeqRef.current === null || seq > newestLoadedSeqRef.current) {
+              newestLoadedSeqRef.current = seq;
+            }
+            if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = seq;
+          }
+        })
+        .catch(() => { /* swallow — sessionStorage cache covers refresh */ });
     },
     [],
   );
@@ -628,8 +736,23 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // Active mode only. When `sub === 'ready'` and 10s elapsed → nudge.
   // When 'silence_nudge' and 30s more → silence_check. When
   // 'silence_check' and 30s more → quiet_wait.
+  //
+  // Voice gate: when a voice session owns the mic, the user IS speaking
+  // (or being spoken to) — the chat sidebar must NOT also fire silence
+  // nudges. Otherwise the voice agent says "X" while the chat
+  // independently writes "Still with me?" / "Want me to go passive?",
+  // and the unified-conversation log fills with two parallel monologues
+  // ("Bug B" of the voice/text divergence audit).
+  const [voiceActive, setVoiceActive] = useState(() => {
+    try { return getVoiceState().mode !== 'off'; } catch { return false; }
+  });
+  useEffect(() => {
+    return subscribeVoiceState((s) => setVoiceActive(s.mode !== 'off'));
+  }, []);
+
   useEffect(() => {
     if (state.mode !== 'active') return;
+    if (voiceActive) return; // voice owns the conversation; no nudge filler
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (state.sub === 'ready') {
       timer = setTimeout(() => void runGeneration('silence_nudge'), SILENCE_NUDGE_MS);
@@ -639,7 +762,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       timer = setTimeout(() => dispatch({ type: 'set_sub', sub: 'quiet_wait' }), SILENCE_QUIET_WAIT_MS);
     }
     return () => { if (timer) clearTimeout(timer); };
-  }, [state.mode, state.sub, runGeneration]);
+  }, [state.mode, state.sub, runGeneration, voiceActive]);
 
   // ── Public actions ──────────────────────────────────────────────────
 
@@ -689,8 +812,15 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       sendUserMessage,
       flipMode,
       bannerText,
+      hasMoreEarlier,
+      loadingEarlier,
+      loadEarlier,
     }),
-    [state.mode, state.sub, state.messages, state.error, sendUserMessage, flipMode, bannerText],
+    [
+      state.mode, state.sub, state.messages, state.error,
+      sendUserMessage, flipMode, bannerText,
+      hasMoreEarlier, loadingEarlier, loadEarlier,
+    ],
   );
 
   return (

@@ -11,8 +11,12 @@
  * the panel surfaces this to the user as "another tab is scanning."
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace, generated } from '@restart/db-org';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { and, eq, gt, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from './workspace-registry';
+
+const sl = generated.operator_scan_locksInHarness_shared;
 
 const LOCK_TTL_MS = 60_000;
 
@@ -36,24 +40,33 @@ export async function acquireScanLock(): Promise<AcquireResult> {
   const expiresAt = new Date(Date.now() + LOCK_TTL_MS).toISOString();
 
   return withWorkspace(workspaceId, async (tx) => {
-    const rows = await tx<{ holder_id: string; expires_at: string }[]>`
-      SELECT holder_id, expires_at
-        FROM harness_shared.operator_scan_locks
-       WHERE workspace_id = ${workspaceId}
-         AND expires_at > now()
-       LIMIT 1
-    `;
+    const txDb = drizzle(tx);
+    const rows = await txDb
+      .select({ holder_id: sl.holder_id, expires_at: sl.expires_at })
+      .from(sl)
+      .where(and(eq(sl.workspace_id, workspaceId), gt(sl.expires_at, dsql`now()`)))
+      .limit(1);
     if (rows.length > 0) {
-      const expiresMs = new Date(rows[0].expires_at).getTime();
+      const expiresMs = new Date(rows[0].expires_at as unknown as string).getTime();
       const retryAfterSec = Math.max(1, Math.ceil((expiresMs - Date.now()) / 1000));
       return { acquired: false, retryAfterSec };
     }
-    await tx`
-      INSERT INTO harness_shared.operator_scan_locks (workspace_id, started_at, holder_id, expires_at)
-      VALUES (${workspaceId}, now(), ${holderId}, ${expiresAt})
-      ON CONFLICT (workspace_id) DO UPDATE
-        SET started_at = now(), holder_id = EXCLUDED.holder_id, expires_at = EXCLUDED.expires_at
-    `;
+    await txDb
+      .insert(sl)
+      .values({
+        workspace_id: workspaceId,
+        started_at: dsql`now()` as any,
+        holder_id: holderId,
+        expires_at: dsql`${expiresAt}::timestamptz` as any,
+      })
+      .onConflictDoUpdate({
+        target: sl.workspace_id,
+        set: {
+          started_at: dsql`now()`,
+          holder_id: dsql`EXCLUDED.holder_id`,
+          expires_at: dsql`EXCLUDED.expires_at`,
+        },
+      });
     return { acquired: true, holderId };
   });
 }
@@ -63,11 +76,10 @@ export async function releaseScanLock(holderId: string): Promise<void> {
   const workspaceId = activeWorkspaceId();
   try {
     await withWorkspace(workspaceId, async (tx) => {
-      await tx`
-        DELETE FROM harness_shared.operator_scan_locks
-         WHERE workspace_id = ${workspaceId}
-           AND holder_id    = ${holderId}
-      `;
+      const txDb = drizzle(tx);
+      await txDb
+        .delete(sl)
+        .where(and(eq(sl.workspace_id, workspaceId), eq(sl.holder_id, holderId)));
     });
   } catch {
     // Best-effort: if PG is down or the migration hasn't been applied,

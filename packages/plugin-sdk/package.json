@@ -9,6 +9,11 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./iframe": {
+      "types": "./src/iframe.ts",
+      "import": "./src/iframe.ts",
+      "default": "./src/iframe.ts"
     }
   }
 }

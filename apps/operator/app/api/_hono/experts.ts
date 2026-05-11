@@ -170,36 +170,45 @@ async function writeIdentity(projectDir: string, identity: Identity): Promise<vo
   const ws = activeWorkspaceId();
   const createdAtMs = identity.createdAt ? Date.parse(identity.createdAt) : Date.now();
   const updatedAtMs = Date.parse(identity.updatedAt);
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  await sql`
-    INSERT INTO harness_shared.harness_experts
-      (workspace_id, harness_slug, expert_id, title, status, budget_cents,
-       feature_size, high_level_spec, agent_count, round_count,
-       personas_used, user_engaged, created_at, updated_at,
-       termination_reason)
-    VALUES (
-      ${ws}, ${slug}, ${identity.id}, ${identity.title ?? ''}, ${identity.status},
-      ${identity.budgetCents ?? 0}, ${identity.featureSize ?? null},
-      ${identity.highLevelSpec ?? ''},
-      ${identity.agentCount ?? 0}, ${identity.roundCount ?? 0},
-      ${JSON.stringify(identity.personasUsed ?? [])},
-      ${identity.userEngaged === true},
-      ${createdAtMs}, ${updatedAtMs},
-      ${identity.terminationReason ?? null}
-    )
-    ON CONFLICT (workspace_id, harness_slug, expert_id) DO UPDATE SET
-      title              = EXCLUDED.title,
-      status             = EXCLUDED.status,
-      budget_cents       = EXCLUDED.budget_cents,
-      feature_size       = EXCLUDED.feature_size,
-      high_level_spec    = EXCLUDED.high_level_spec,
-      agent_count        = EXCLUDED.agent_count,
-      round_count        = EXCLUDED.round_count,
-      personas_used      = EXCLUDED.personas_used,
-      user_engaged       = EXCLUDED.user_engaged,
-      updated_at         = EXCLUDED.updated_at,
-      termination_reason = EXCLUDED.termination_reason
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { sql: dsql } = await import('drizzle-orm');
+  const he = generated.harness_expertsInHarness_shared;
+  await db
+    .insert(he)
+    .values({
+      workspace_id: ws,
+      harness_slug: slug,
+      expert_id: identity.id,
+      title: identity.title ?? '',
+      status: identity.status,
+      budget_cents: identity.budgetCents ?? 0,
+      feature_size: identity.featureSize ?? null,
+      high_level_spec: identity.highLevelSpec ?? '',
+      agent_count: identity.agentCount ?? 0,
+      round_count: identity.roundCount ?? 0,
+      personas_used: identity.personasUsed ?? [],
+      user_engaged: identity.userEngaged === true,
+      created_at: createdAtMs,
+      updated_at: updatedAtMs,
+      termination_reason: identity.terminationReason ?? null,
+    })
+    .onConflictDoUpdate({
+      target: [he.workspace_id, he.harness_slug, he.expert_id],
+      set: {
+        title: dsql`EXCLUDED.title`,
+        status: dsql`EXCLUDED.status`,
+        budget_cents: dsql`EXCLUDED.budget_cents`,
+        feature_size: dsql`EXCLUDED.feature_size`,
+        high_level_spec: dsql`EXCLUDED.high_level_spec`,
+        agent_count: dsql`EXCLUDED.agent_count`,
+        round_count: dsql`EXCLUDED.round_count`,
+        personas_used: dsql`EXCLUDED.personas_used`,
+        user_engaged: dsql`EXCLUDED.user_engaged`,
+        updated_at: dsql`EXCLUDED.updated_at`,
+        termination_reason: dsql`EXCLUDED.termination_reason`,
+      },
+    });
   // File mirror: keep <expertDir>/identity.json in sync. The legacy on-
   // disk layout is what listExpertIdsOnDisk + readIdentity-fallback walk;
   // mirroring here means newly-spawned experts surface in the panel even
@@ -622,13 +631,17 @@ export function registerExperts(harness: Hono): void {
     {
       const slug = await projectDirToSlug(projectDir);
       if (!slug) return c.json({ error: 'unknown harness' }, 404);
-      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const { db } = (await import('@restart/db-org')).getOrgPg();
+      const { generated } = await import('@restart/db-org');
       const ws = activeWorkspaceId();
-      await sql`
-        INSERT INTO harness_shared.harness_expert_feedback
-          (workspace_id, harness_slug, expert_id, feedback_id, persona, created_at)
-        VALUES (${ws}, ${slug}, ${expertId}, ${fbId}, ${body.persona}, ${Date.now()})
-      `;
+      await db.insert(generated.harness_expert_feedbackInHarness_shared).values({
+        workspace_id: ws,
+        harness_slug: slug,
+        expert_id: expertId,
+        feedback_id: fbId,
+        persona: body.persona,
+        created_at: Date.now(),
+      });
     }
 
     ident.agentCount += 1;
@@ -657,14 +670,17 @@ export function registerExperts(harness: Hono): void {
 
     const slug = await projectDirToSlug(projectDir);
     if (!slug) return c.json({ error: 'unknown harness' }, 404);
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, eq, sql: dsql } = await import('drizzle-orm');
+    const hef = generated.harness_expert_feedbackInHarness_shared;
+    const het = generated.harness_expert_turnsInHarness_shared;
     const ws = activeWorkspaceId();
-    const fbExists = await sql<{ ok: number }[]>`
-      SELECT 1 AS ok FROM harness_shared.harness_expert_feedback
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-         AND expert_id = ${expertId} AND feedback_id = ${fbId}
-       LIMIT 1
-    `;
+    const fbExists = await db
+      .select({ ok: dsql<number>`1` })
+      .from(hef)
+      .where(and(eq(hef.workspace_id, ws), eq(hef.harness_slug, slug), eq(hef.expert_id, expertId), eq(hef.feedback_id, fbId)))
+      .limit(1);
     if (fbExists.length === 0) return c.json({ error: 'feedback conversation not found' }, 404);
 
     const body = await c.req.json().catch(() => ({})) as { from?: string; body?: string };
@@ -675,17 +691,22 @@ export function registerExperts(harness: Hono): void {
       return c.json({ error: 'body required' }, 400);
     }
 
-    const countRows = await sql<{ n: number | string }[]>`
-      SELECT COUNT(*)::int AS n FROM harness_shared.harness_expert_turns
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-         AND expert_id = ${expertId} AND feedback_id = ${fbId}
-    `;
+    const { count } = await import('drizzle-orm');
+    const countRows = await db
+      .select({ n: count() })
+      .from(het)
+      .where(and(eq(het.workspace_id, ws), eq(het.harness_slug, slug), eq(het.expert_id, expertId), eq(het.feedback_id, fbId)));
     const nextIdx = Number(countRows[0]?.n ?? 0) + 1;
-    await sql`
-      INSERT INTO harness_shared.harness_expert_turns
-        (workspace_id, harness_slug, expert_id, feedback_id, turn_idx, speaker, body, created_at)
-      VALUES (${ws}, ${slug}, ${expertId}, ${fbId}, ${nextIdx}, ${body.from}, ${body.body}, ${Date.now()})
-    `;
+    await db.insert(het).values({
+      workspace_id: ws,
+      harness_slug: slug,
+      expert_id: expertId,
+      feedback_id: fbId,
+      turn_idx: nextIdx,
+      speaker: body.from,
+      body: body.body,
+      created_at: Date.now(),
+    });
     const fname = `turn-${String(nextIdx).padStart(3, '0')}-${body.from}.md`;
     return c.json({ ok: true, turn: fname });
   });
@@ -701,14 +722,17 @@ export function registerExperts(harness: Hono): void {
 
     const slug = await projectDirToSlug(projectDir);
     if (!slug) return c.json({ error: 'unknown harness' }, 404);
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, eq, sql: dsql } = await import('drizzle-orm');
+    const hef = generated.harness_expert_feedbackInHarness_shared;
+    const he = generated.harness_expertsInHarness_shared;
     const ws = activeWorkspaceId();
-    const fbExists = await sql<{ ok: number }[]>`
-      SELECT 1 AS ok FROM harness_shared.harness_expert_feedback
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-         AND expert_id = ${expertId} AND feedback_id = ${fbId}
-       LIMIT 1
-    `;
+    const fbExists = await db
+      .select({ ok: dsql<number>`1` })
+      .from(hef)
+      .where(and(eq(hef.workspace_id, ws), eq(hef.harness_slug, slug), eq(hef.expert_id, expertId), eq(hef.feedback_id, fbId)))
+      .limit(1);
     if (fbExists.length === 0) return c.json({ error: 'feedback conversation not found' }, 404);
 
     const body = await c.req.json().catch(() => ({})) as {
@@ -720,23 +744,21 @@ export function registerExperts(harness: Hono): void {
     const newIssues = Array.isArray(body.verdict.newIssues) ? body.verdict.newIssues : [];
     const coversPriorIssues = Array.isArray(body.verdict.coversPriorIssues) ? body.verdict.coversPriorIssues : [];
     const verdict = { newIssues, coversPriorIssues };
-    await sql`
-      UPDATE harness_shared.harness_expert_feedback
-         SET verdict = ${sql.json(verdict)}, ended_at = ${Date.now()}
-       WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-         AND expert_id = ${expertId} AND feedback_id = ${fbId}
-    `;
+    await db
+      .update(hef)
+      .set({ verdict: verdict as any, ended_at: Date.now() })
+      .where(and(eq(hef.workspace_id, ws), eq(hef.harness_slug, slug), eq(hef.expert_id, expertId), eq(hef.feedback_id, fbId)));
 
     // Audit snapshot of SPEC content after this agent ended (write-only log
     // of round history; never read back, so kept on disk).
     const ident = await readIdentity(projectDir, expertId);
     if (!ident) return c.json({ error: 'expert not found' }, 404);
     {
-      const specRows = await sql<{ spec_content: string }[]>`
-        SELECT spec_content FROM harness_shared.harness_experts
-         WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND expert_id = ${expertId}
-         LIMIT 1
-      `;
+      const specRows = await db
+        .select({ spec_content: he.spec_content })
+        .from(he)
+        .where(and(eq(he.workspace_id, ws), eq(he.harness_slug, slug), eq(he.expert_id, expertId)))
+        .limit(1);
       const specBody = specRows[0]?.spec_content ?? '';
       if (specBody) {
         ident.roundCount += 1;
@@ -814,19 +836,26 @@ export function registerExperts(harness: Hono): void {
     {
       const slug = await projectDirToSlug(projectDir);
       if (slug) {
-        const { sql } = (await import('@restart/db-org')).getOrgPg();
+        const { db } = (await import('@restart/db-org')).getOrgPg();
+        const { generated } = await import('@restart/db-org');
+        const { and, eq } = await import('drizzle-orm');
+        const he = generated.harness_expertsInHarness_shared;
         const ws = activeWorkspaceId();
-        await sql`
-          UPDATE harness_shared.harness_experts AS dst
-             SET spec_content = src.spec_content
-            FROM harness_shared.harness_experts AS src
-           WHERE dst.workspace_id = ${ws}
-             AND dst.harness_slug = ${slug}
-             AND dst.expert_id    = ${newId}
-             AND src.workspace_id = ${ws}
-             AND src.harness_slug = ${slug}
-             AND src.expert_id    = ${oldId}
-        `;
+        // Two-step: read src.spec_content, then UPDATE dst. Drizzle's
+        // update doesn't support a FROM clause; correlated copy lifted
+        // into TS keeps the operation atomic-enough (worst case is a
+        // racing writer to src in the millisecond between).
+        const srcRows = await db
+          .select({ spec_content: he.spec_content })
+          .from(he)
+          .where(and(eq(he.workspace_id, ws), eq(he.harness_slug, slug), eq(he.expert_id, oldId)))
+          .limit(1);
+        if (srcRows.length > 0) {
+          await db
+            .update(he)
+            .set({ spec_content: srcRows[0].spec_content })
+            .where(and(eq(he.workspace_id, ws), eq(he.harness_slug, slug), eq(he.expert_id, newId)));
+        }
       }
     }
 

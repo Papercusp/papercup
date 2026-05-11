@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Modal } from './Modal';
 import { Select } from './Select';
 import { useSyncQuery } from '@restart/sync';
@@ -106,7 +107,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
   // Audit history — eager via the cross-harness audit subscription.
   // Replaces the lazy /audit fetch when the History section was expanded.
   type AuditEntry = { ts: number; field: string; old: unknown; new: unknown; actor: string };
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useQueryState('history', parseAsBoolean.withDefault(false));
   const [historyError, _setHistoryError] = useState<string | null>(null);
   const { data: auditRows } = useSyncQuery<{
     harnessSlug: string;

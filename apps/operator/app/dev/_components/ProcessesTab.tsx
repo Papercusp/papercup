@@ -12,6 +12,14 @@ interface Process {
   workspace_id: string | null;
 }
 
+const KILLABLE_KINDS = new Set(['run.sh', 'omp', 'claude']);
+const PROTECTED_REASONS: Record<string, string> = {
+  paperclip: 'killing paperclip would break the auto-run loop',
+  next: 'killing the dev/prod server would break this very page',
+  pty: 'pty processes back interactive sessions; kill from the terminal',
+  other: 'unknown kind — not killable from /dev',
+};
+
 function fmtAge(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
@@ -30,11 +38,20 @@ const KIND_ORDER: Record<string, number> = {
 
 const ALL_KINDS = ['run.sh', 'omp', 'claude', 'paperclip', 'pty', 'next'] as const;
 
+interface KillModalState {
+  process: Process;
+  confirmText: string;
+  signal: 'SIGTERM' | 'SIGKILL';
+  busy: boolean;
+  result: string | null;
+}
+
 export default function ProcessesTab() {
   const [processes, setProcesses] = useState<Process[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [kinds, setKinds] = useState<Set<string>>(new Set(ALL_KINDS));
+  const [killModal, setKillModal] = useState<KillModalState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -126,6 +143,7 @@ export default function ProcessesTab() {
               <th>Workspace</th>
               <th>CWD</th>
               <th>Cmdline</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -135,24 +153,171 @@ export default function ProcessesTab() {
                   (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99) ||
                   a.started_seconds_ago - b.started_seconds_ago,
               )
-              .map((p) => (
-                <tr key={p.pid}>
-                  <td className="pc-dev-muted">{p.pid}</td>
-                  <td className="pc-dev-slug">{p.kind}</td>
-                  <td className="pc-dev-muted">{fmtAge(p.started_seconds_ago)}</td>
-                  <td>{p.harness_slug ?? '—'}</td>
-                  <td className="pc-dev-muted">{p.workspace_id ?? '—'}</td>
-                  <td className="pc-dev-muted pc-dev-details" title={p.cwd ?? ''}>
-                    {p.cwd ?? '—'}
-                  </td>
-                  <td className="pc-dev-query" title={p.cmdline}>
-                    {p.cmdline}
-                  </td>
-                </tr>
-              ))}
+              .map((p) => {
+                const killable = KILLABLE_KINDS.has(p.kind);
+                const protectedReason = !killable
+                  ? PROTECTED_REASONS[p.kind] ?? 'kind not in killable allowlist'
+                  : null;
+                return (
+                  <tr key={p.pid}>
+                    <td className="pc-dev-muted">{p.pid}</td>
+                    <td className="pc-dev-slug">{p.kind}</td>
+                    <td className="pc-dev-muted">{fmtAge(p.started_seconds_ago)}</td>
+                    <td>{p.harness_slug ?? '—'}</td>
+                    <td className="pc-dev-muted">{p.workspace_id ?? '—'}</td>
+                    <td className="pc-dev-muted pc-dev-details" title={p.cwd ?? ''}>
+                      {p.cwd ?? '—'}
+                    </td>
+                    <td className="pc-dev-query" title={p.cmdline}>
+                      {p.cmdline}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="pc-dev-btn-mini pc-dev-btn-danger"
+                        disabled={!killable}
+                        title={
+                          killable
+                            ? `Send SIGTERM to pid ${p.pid}`
+                            : `Protected: ${protectedReason}`
+                        }
+                        onClick={() =>
+                          setKillModal({
+                            process: p,
+                            confirmText: '',
+                            signal: 'SIGTERM',
+                            busy: false,
+                            result: null,
+                          })
+                        }
+                      >
+                        kill
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
           </tbody>
         </table>
       )}
+      {killModal && <KillModal state={killModal} setState={setKillModal} />}
+    </div>
+  );
+}
+
+function KillModal({
+  state,
+  setState,
+}: {
+  state: KillModalState;
+  setState: (s: KillModalState | null) => void;
+}) {
+  const { process: p } = state;
+  const pidStr = String(p.pid);
+  const canKill = state.confirmText === pidStr && !state.busy;
+
+  async function doKill() {
+    setState({ ...state, busy: true, result: null });
+    try {
+      const r = await fetch('/api/dev/processes/kill', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid: p.pid, signal: state.signal }),
+      });
+      const body = await r.json();
+      if (body?.ok) {
+        setState({
+          ...state,
+          busy: false,
+          result: `✓ ${state.signal} sent to pid ${p.pid}`,
+        });
+      } else {
+        setState({
+          ...state,
+          busy: false,
+          result: `failed: ${body?.error ?? `HTTP ${r.status}`}${body?.detail ? ` (${body.detail})` : ''}`,
+        });
+      }
+    } catch (err) {
+      setState({
+        ...state,
+        busy: false,
+        result: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return (
+    <div className="pc-dev-modal-backdrop" onClick={() => setState(null)}>
+      <div className="pc-dev-modal" onClick={(e) => e.stopPropagation()}>
+        <h3>Kill process {p.pid}?</h3>
+        <div className="pc-dev-kv">
+          <span>kind</span>
+          <span className="pc-dev-slug">{p.kind}</span>
+          <span>cwd</span>
+          <span className="pc-dev-muted">{p.cwd ?? '—'}</span>
+          <span>harness</span>
+          <span>{p.harness_slug ?? '—'}</span>
+          <span>cmdline</span>
+          <span className="pc-dev-query">{p.cmdline.slice(0, 200)}</span>
+        </div>
+
+        <div className="pc-dev-modal-row">
+          <label className="pc-dev-muted">signal</label>
+          <select
+            value={state.signal}
+            onChange={(e) =>
+              setState({ ...state, signal: e.target.value as 'SIGTERM' | 'SIGKILL' })
+            }
+            className="pc-dev-input pc-dev-input-inline"
+          >
+            <option value="SIGTERM">SIGTERM (graceful)</option>
+            <option value="SIGKILL">SIGKILL (force)</option>
+          </select>
+        </div>
+
+        <div className="pc-dev-modal-row">
+          <label className="pc-dev-muted">
+            type <strong>{pidStr}</strong> to confirm
+          </label>
+          <input
+            type="text"
+            value={state.confirmText}
+            onChange={(e) => setState({ ...state, confirmText: e.target.value })}
+            className="pc-dev-input"
+            placeholder={pidStr}
+            autoFocus
+          />
+        </div>
+
+        {state.result && (
+          <div
+            className={
+              state.result.startsWith('✓') ? 'pc-dev-ok' : 'pc-dev-api-err'
+            }
+          >
+            {state.result}
+          </div>
+        )}
+
+        <div className="pc-dev-modal-actions">
+          <button
+            type="button"
+            className="pc-dev-btn-mini"
+            onClick={() => setState(null)}
+          >
+            cancel
+          </button>
+          <button
+            type="button"
+            className="pc-dev-btn-primary pc-dev-btn-danger"
+            disabled={!canKill}
+            onClick={doKill}
+          >
+            {state.busy ? 'sending…' : `send ${state.signal}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

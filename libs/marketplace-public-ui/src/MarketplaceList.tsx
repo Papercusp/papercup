@@ -19,9 +19,11 @@ export interface CatalogEntry {
   subprojects?: Array<{ suffix: string; kind: string; department_slug?: string }>;
   publishedAt?: string | null;
   publishedBy?: string | null;
+  /** Downloads in the last 30 days. Operator passes this through from `/v1/popular`. */
+  popularity30d?: number;
 }
 
-export type CatalogSortKey = 'newest' | 'name' | 'author';
+export type CatalogSortKey = 'newest' | 'popular' | 'name' | 'author';
 
 export interface InstalledHarness {
   slug: string;
@@ -123,6 +125,12 @@ export function MarketplaceList({
         return cmp !== 0 ? cmp : (a.name ?? a.slug).localeCompare(b.name ?? b.slug);
       });
     }
+    if (sort === 'popular') {
+      return [...queried].sort((a, b) => {
+        const cmp = (b.popularity30d ?? 0) - (a.popularity30d ?? 0);
+        return cmp !== 0 ? cmp : (a.name ?? a.slug).localeCompare(b.name ?? b.slug);
+      });
+    }
     return [...queried].sort((a, b) => {
       const aTs = a.publishedAt ? Date.parse(a.publishedAt) : 0;
       const bTs = b.publishedAt ? Date.parse(b.publishedAt) : 0;
@@ -220,6 +228,7 @@ export function MarketplaceList({
             }}
           >
             <option value="newest">Newest published</option>
+            <option value="popular">Most installed (30d)</option>
             <option value="name">Name (A→Z)</option>
             <option value="author">Author (A→Z)</option>
           </select>

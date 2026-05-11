@@ -504,7 +504,7 @@ const AUTO_ACCEPT_TOOLTIP: Record<AutoAcceptLevel, string> = {
   off: 'Auto-accept: OFF. Every suggestion waits for your decision. Background scans still run; cards just queue up. Click to cycle: Off → Low → Medium → High.',
   low: 'Auto-accept: LOW. Only low-risk cards auto-accept after a 5s undo window. Medium and high still wait for you. Click to cycle.',
   medium: 'Auto-accept: MEDIUM. Low and medium-risk cards auto-accept after the undo window. High-risk still waits for you. Click to cycle.',
-  high: 'Auto-accept: HIGH. Every card the operator marks as auto_dispatch fires automatically — including high-risk ones. Use with care. Click to cycle.',
+  high: 'Auto-accept: HIGH. Every card auto-fires after the 5s undo countdown — INCLUDING high-risk ones (secrets, dispatches, code execution). Use with care. Click to cycle.',
 };
 
 export function OperatorAutoScanToggle(): JSX.Element {
@@ -743,16 +743,42 @@ export function OperatorPanel(): JSX.Element | null {
     es.addEventListener('tool_call', () => {
       setState((s) => ({ ...s, iconState: 'scanning' }));
     });
+    es.addEventListener('idle_status', (ev: MessageEvent) => {
+      // Cached short-circuit path emits this in lieu of a full LLM scan
+      // (Phase 5 polish). Refresh the per-harness one-liners so a stable
+      // workspace still sees current status.
+      try {
+        const data = JSON.parse(ev.data) as { perHarness?: HarnessOneLiner[] };
+        if (Array.isArray(data.perHarness)) setHarnessRows(data.perHarness);
+      } catch {
+        /* ignore */
+      }
+    });
     es.addEventListener('suggestion', (ev: MessageEvent) => {
       try {
         const raw = JSON.parse(ev.data) as ParsedSuggestion;
-        // Convert auto→ask before render when:
-        //   - the operator is paused, OR
-        //   - the user's auto-accept threshold doesn't permit this tier.
+        // Auto-accept reconciliation between server (conservative) and
+        // client (user-toggleable threshold):
+        //
+        //   - Server emits auto_dispatch=true only when the suggestion's
+        //     actualTier is low (or medium with a standing approval).
+        //     It NEVER emits auto_dispatch=true for tier=high — the
+        //     server has no view into the user's session-scoped
+        //     autoAccept threshold.
+        //   - Client downgrades auto→ask when paused or when the tier
+        //     exceeds the user's threshold.
+        //   - Client UPGRADES ask→auto when the user has explicitly set
+        //     autoAccept='high' (or 'medium' for a medium card the
+        //     server didn't standing-approve). This is how the user
+        //     opts into auto-dispatch for high-risk cards: they cycle
+        //     the navbar auto button to HIGH, accepting that everything
+        //     auto-fires after the 5s undo countdown.
         const tierAllowed = isAutoAcceptedByThreshold(raw.actualTier, sharedState.autoAccept);
-        const shouldDowngrade = raw.auto_dispatch && (sharedState.paused || !tierAllowed);
-        const s: ParsedSuggestion = shouldDowngrade
-          ? { ...raw, auto_dispatch: false }
+        let nextAuto = raw.auto_dispatch;
+        if (nextAuto && (sharedState.paused || !tierAllowed)) nextAuto = false;
+        else if (!nextAuto && tierAllowed && !sharedState.paused) nextAuto = true;
+        const s: ParsedSuggestion = nextAuto !== raw.auto_dispatch
+          ? { ...raw, auto_dispatch: nextAuto }
           : raw;
         setSuggestions((prev) => {
           const autoDispatchAt = s.auto_dispatch ? Date.now() + 5_000 : undefined;

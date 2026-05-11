@@ -8,8 +8,11 @@
  * stay in the route handler.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, desc, eq, gte } from 'drizzle-orm';
 import { ensureUserActionsTable } from './ensure-schema';
+
+const t = generated.user_actionsInHarness_shared;
 
 export interface UserActionRow {
   id: number;
@@ -95,16 +98,25 @@ export async function listUserActions(input: ListUserActionsInput): Promise<List
 
   const queryPromise = (async (): Promise<UserActionRow[]> => {
     await ensureUserActionsTable();
-    const { sql } = getOrgPg();
-    const rows = (await sql`
-      SELECT id, harness_slug, kind, status, summary, detail_url,
-             error_text, invocation_id, started_at, finished_at, actor
-      FROM harness_shared.user_actions
-      WHERE harness_slug = ${input.slug}
-        AND started_at >= ${since}
-      ORDER BY started_at DESC
-      LIMIT ${limit}
-    `) as DbRow[];
+    const { db } = getOrgPg();
+    const rows = await db
+      .select({
+        id: t.id,
+        harness_slug: t.harness_slug,
+        kind: t.kind,
+        status: t.status,
+        summary: t.summary,
+        detail_url: t.detail_url,
+        error_text: t.error_text,
+        invocation_id: t.invocation_id,
+        started_at: t.started_at,
+        finished_at: t.finished_at,
+        actor: t.actor,
+      })
+      .from(t)
+      .where(and(eq(t.harness_slug, input.slug), gte(t.started_at, since)))
+      .orderBy(desc(t.started_at))
+      .limit(limit);
     const actions: UserActionRow[] = rows.map((r) => ({
       id: Number(r.id),
       kind: r.kind,

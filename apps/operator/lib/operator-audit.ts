@@ -15,9 +15,12 @@
  * Path-a escalation criterion needs.
  */
 
-import { withWorkspace } from '@restart/db-org';
+import { withWorkspace, generated } from '@restart/db-org';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
+
+const al = generated.audit_logInHarness_shared;
 
 export type OperatorAuditKind =
   // New (post-card-lifecycle-collapse, e46ba9c):
@@ -77,18 +80,16 @@ export async function writeOperatorAudit(ev: OperatorAuditEvent): Promise<void> 
   };
   try {
     await withWorkspace(workspaceId, async (tx) => {
-      await tx`
-        INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
-        VALUES (
-          ${id},
-          ${Date.now()},
-          'system:operator',
-          ${`operator.${ev.kind}`},
-          ${ev.cardId},
-          ${tx.json(details)},
-          ${workspaceId}
-        )
-      `;
+      const txDb = drizzle(tx);
+      await txDb.insert(al).values({
+        id,
+        ts: Date.now(),
+        actor: 'system:operator',
+        action: `operator.${ev.kind}`,
+        subject: ev.cardId,
+        details: details as any,
+        workspace_id: workspaceId,
+      });
     });
     // Mobile sync: phone refetches /api/mobile/actions/recent.
     void notifySyncInvalidate('auditLog.recent').catch(() => {});

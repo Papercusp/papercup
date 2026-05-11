@@ -28,6 +28,7 @@
 
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 
 export interface ChatToolCall {
   /** Display name of the tool the model called. */
@@ -93,6 +94,20 @@ export interface ChatConversationProps {
   bodyClassName?: string;
   /** Inline style for the `.oracle-body` div (e.g. display: none on tab swap). */
   bodyStyle?: React.CSSProperties;
+
+  /**
+   * Infinite scroll for older history. When provided, the chat renders
+   * a sentinel at the top of the list; an IntersectionObserver fires
+   * `onLoadEarlier()` whenever the sentinel becomes visible AND
+   * `hasMoreEarlier` is true AND `loadingEarlier` is false.
+   *
+   * Scroll position is preserved across the prepend by capturing
+   * `scrollHeight` before and adjusting `scrollTop` after — same
+   * pattern every chat surface uses (Slack, Linear, etc.).
+   */
+  onLoadEarlier?: () => void;
+  hasMoreEarlier?: boolean;
+  loadingEarlier?: boolean;
 }
 
 export function ChatConversation(props: ChatConversationProps) {
@@ -116,14 +131,99 @@ export function ChatConversation(props: ChatConversationProps) {
     hideInput,
     bodyClassName,
     bodyStyle,
+    onLoadEarlier,
+    hasMoreEarlier,
+    loadingEarlier,
   } = props;
 
   const endRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const topSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Track the FIRST message identity to detect prepends (older history)
+  // vs appends (new turn). On a prepend we preserve scroll position
+  // instead of scrolling to bottom; on an append (or busy flip) we
+  // scroll to bottom as before.
+  const lastFirstKeyRef = useRef<string | null>(null);
+  const lastLastKeyRef = useRef<string | null>(null);
+  const preserveScrollHeightRef = useRef<number | null>(null);
+  const firstKey = messages.length > 0 ? `${messages[0].role}:${messages[0].content.slice(0, 32)}` : null;
+  const lastKey = messages.length > 0
+    ? `${messages[messages.length - 1].role}:${messages[messages.length - 1].content.slice(0, 32)}`
+    : null;
+
+  // Capture scrollHeight just BEFORE a prepend lands. The hook below
+  // detects firstKey changing and pins the prior scrollHeight; the
+  // post-render layout effect then restores scrollTop = newH - priorH.
+  if (
+    typeof window !== 'undefined'
+    && lastFirstKeyRef.current !== null
+    && firstKey !== null
+    && firstKey !== lastFirstKeyRef.current
+    && scrollerRef.current
+  ) {
+    preserveScrollHeightRef.current = scrollerRef.current.scrollHeight;
+  }
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, busy]);
+    const el = scrollerRef.current;
+    if (!el) {
+      lastFirstKeyRef.current = firstKey;
+      lastLastKeyRef.current = lastKey;
+      return;
+    }
+    const isPrepend = preserveScrollHeightRef.current !== null;
+    if (isPrepend) {
+      const delta = el.scrollHeight - preserveScrollHeightRef.current!;
+      el.scrollTop = el.scrollTop + delta;
+      preserveScrollHeightRef.current = null;
+    } else if (lastLastKeyRef.current !== lastKey || busy) {
+      // Append (new turn at bottom) OR busy flip → scroll to bottom.
+      endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+    lastFirstKeyRef.current = firstKey;
+    lastLastKeyRef.current = lastKey;
+  }, [messages.length, busy, firstKey, lastKey]);
+
+  // Auto-load older turns when the top sentinel scrolls into view.
+  // Gated on user-initiated scroll: a freshly-mounted chat scrolls to
+  // bottom on its first paint, but the IntersectionObserver fires for
+  // any element on screen during layout, including the top sentinel
+  // before the auto-scroll happens. Without the gate we'd auto-fetch
+  // the next page on every mount.
+  //
+  // Synchronous reentry lock (`fetchInFlightRef`) backstops the prop-
+  // based `loadingEarlier` gate — setLoadingEarlier(true) is async, so
+  // two observer ticks within one frame can both pass the prop guard
+  // and fire onLoadEarlier twice for the same intersection.
+  const userScrolledRef = useRef(false);
+  const fetchInFlightRef = useRef(false);
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => { userScrolledRef.current = true; };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+  useEffect(() => { fetchInFlightRef.current = !!loadingEarlier; }, [loadingEarlier]);
+  useEffect(() => {
+    if (!onLoadEarlier) return;
+    const el = topSentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        if (!userScrolledRef.current) continue;
+        if (!hasMoreEarlier) continue;
+        if (fetchInFlightRef.current) continue;
+        fetchInFlightRef.current = true;
+        onLoadEarlier();
+      }
+    }, { root: scrollerRef.current ?? null, rootMargin: '120px 0px 0px 0px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [onLoadEarlier, hasMoreEarlier]);
 
   const InputIconComp = inputIcon ?? emptyState.icon;
   const EmptyIconComp = emptyState.icon;
@@ -136,40 +236,54 @@ export function ChatConversation(props: ChatConversationProps) {
     requestAnimationFrame(() => inputRef.current?.focus());
   };
 
-  const renderedMessages = useMemo(
-    () =>
-      messages.map((m, i) => {
-        const Icon = iconForRole ? iconForRole(m.role) : emptyState.icon;
-        const label =
-          labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
-        return (
-          <div
-            key={i}
-            data-message-index={i}
-            className={`oracle-msg oracle-msg-${m.role}`}
-          >
-            <span className="oracle-msg-avatar" aria-hidden="true">
-              <Icon className="oracle-msg-icon" />
-            </span>
-            <div className="oracle-msg-stack">
-              <div className="oracle-msg-role">{label}</div>
-              {renderToolChip && m.tools?.map((t, ti) => renderToolChip(t, ti))}
-              {m.content && <div className="oracle-msg-content">{m.content}</div>}
-            </div>
-          </div>
-        );
-      }),
-    [messages, iconForRole, labelForRole, renderToolChip, emptyState.icon, emptyState.title],
-  );
+  // Virtualization. Renders only the messages currently in (or near)
+  // the viewport. Bounded DOM cost regardless of how deep the scrollback
+  // grows. Variable-height messages are measured via the IntersectionObserver-
+  // backed `measureElement` so estimates self-correct on first paint.
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollerRef.current,
+    estimateSize: () => 64, // typical bubble height; corrected by measureElement
+    overscan: 8,
+    // Key by stable message identity when possible. Today ChatMessage is
+    // {role, content, tools?} with no id; fall back to (role|content-prefix|index)
+    // — index alone breaks cache on prepend (every item shifts), but combining
+    // it with role + a content prefix keeps the cache hot for items the
+    // user is actually looking at across a prepend.
+    getItemKey: (i) => {
+      const m = messages[i];
+      if (!m) return i;
+      return `${m.role}::${m.content.slice(0, 40)}::${i}`;
+    },
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
 
   return (
     <>
       {banner}
 
       <div
+        ref={scrollerRef}
         className={bodyClassName ? `oracle-body ${bodyClassName}` : 'oracle-body'}
         style={bodyStyle}
       >
+        {onLoadEarlier && messages.length > 0 && (
+          <>
+            <div ref={topSentinelRef} aria-hidden="true" style={{ height: 1 }} />
+            {hasMoreEarlier && loadingEarlier && (
+              <div className="oracle-load-earlier" aria-live="polite">
+                <span>Loading earlier…</span>
+              </div>
+            )}
+            {!hasMoreEarlier && (
+              <div className="oracle-load-earlier" aria-hidden="true">
+                <span className="oracle-load-earlier-end">Beginning of conversation</span>
+              </div>
+            )}
+          </>
+        )}
         {messages.length === 0 ? (
           <div className="oracle-empty-state">
             <span className="oracle-empty-state-icon">
@@ -179,7 +293,48 @@ export function ChatConversation(props: ChatConversationProps) {
             <span className="oracle-empty-state-text">{emptyState.body}</span>
           </div>
         ) : (
-          renderedMessages
+          <div
+            className="oracle-virtual-container"
+            style={{
+              height: totalSize,
+              minHeight: totalSize,
+              position: 'relative',
+              width: '100%',
+              flex: '0 0 auto',
+            }}
+          >
+            {virtualItems.map((vi) => {
+              const m = messages[vi.index];
+              if (!m) return null;
+              const Icon = iconForRole ? iconForRole(m.role) : emptyState.icon;
+              const label =
+                labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
+              return (
+                <div
+                  key={vi.key}
+                  data-message-index={vi.index}
+                  ref={virtualizer.measureElement}
+                  className={`oracle-msg oracle-msg-${m.role}`}
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
+                  <span className="oracle-msg-avatar" aria-hidden="true">
+                    <Icon className="oracle-msg-icon" />
+                  </span>
+                  <div className="oracle-msg-stack">
+                    <div className="oracle-msg-role">{label}</div>
+                    {renderToolChip && m.tools?.map((t, ti) => renderToolChip(t, ti))}
+                    {m.content && <div className="oracle-msg-content">{m.content}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         )}
         {busy && (
           <div className="oracle-thinking-row" aria-live="polite">

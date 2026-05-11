@@ -1,10 +1,21 @@
 /**
  * Get a single goal by id. Returns lineage (children + descendant tasks)
  * when detail='full'.
+ *
+ * Uses `schemaOf(generated.goalsInHarness_shared).select` so the response
+ * row shape is the same Zod schema you'd use in a form or a CRUD admin
+ * page — no hand-typed `Record<string, unknown>`.
  */
 
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
+
+const goals = generated.goalsInHarness_shared;
+const GoalSelect = schemaOf(goals).select;
+type GoalRow = z.infer<typeof GoalSelect>;
 
 export default defineTool({
   name: 'goals:get',
@@ -14,9 +25,12 @@ export default defineTool({
     detail: z.enum(['summary', 'full']).default('summary'),
   }),
   async handler(args, ctx) {
-    const rows = await ctx.tx<Array<Record<string, unknown>>>`
-      SELECT * FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
-    `;
+    const txDb = drizzle(ctx.tx);
+    const rows = (await txDb
+      .select()
+      .from(goals)
+      .where(eq(goals.id, args.id))
+      .limit(1)) as GoalRow[];
     if (!rows.length) {
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
     }
@@ -24,9 +38,10 @@ export default defineTool({
     if (args.detail === 'summary') {
       return { data: { id: goal.id, title: goal.title } };
     }
-    const children = await ctx.tx<Array<Record<string, unknown>>>`
-      SELECT id, title FROM harness_shared.goals WHERE parent_id = ${args.id}
-    `;
+    const children = (await txDb
+      .select({ id: goals.id, title: goals.title })
+      .from(goals)
+      .where(eq(goals.parent_id, args.id))) as Array<Pick<GoalRow, 'id' | 'title'>>;
     return { data: { ...goal, children } };
   },
 });

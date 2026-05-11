@@ -430,19 +430,20 @@ function rowToFeature(r: any): any {
 function auditFeatureChange(harnessSlug: string, featureId: string, field: string, oldValue: any, newValue: any, actor: string): void {
   (async () => {
     try {
-      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const { db } = (await import('@restart/db-org')).getOrgPg();
+      const { generated } = await import('@restart/db-org');
       const { activeWorkspaceId } = await import('@/lib/workspace-registry');
       const ws = activeWorkspaceId();
-      await sql`
-        INSERT INTO harness_shared.feature_audit_consolidated
-          (workspace_id, harness_slug, feature_id, ts, field, old_value, new_value, actor)
-        VALUES (
-          ${ws}, ${harnessSlug}, ${featureId}, ${Date.now()}, ${field},
-          ${oldValue === undefined ? null : JSON.stringify(oldValue)},
-          ${newValue === undefined ? null : JSON.stringify(newValue)},
-          ${actor}
-        )
-      `;
+      await db.insert(generated.feature_audit_consolidatedInHarness_shared).values({
+        workspace_id: ws,
+        harness_slug: harnessSlug,
+        feature_id: featureId,
+        ts: Date.now(),
+        field,
+        old_value: oldValue === undefined ? null : JSON.stringify(oldValue),
+        new_value: newValue === undefined ? null : JSON.stringify(newValue),
+        actor,
+      });
       const { notifySyncInvalidate } = await import('@/lib/sync-sse');
       await notifySyncInvalidate('featureAudit.byHarness', { harnessSlug });
       // Keep the legacy per-harness table happy for any read paths we
@@ -866,33 +867,46 @@ harness.get('/:slug/status', async (c) => {
 async function loadProjectFiles(slug: string): Promise<{ spec: string | null; agents: string | null; contract: string | null; config: string | null }> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ spec: string | null; agents: string | null; contract: string | null; config: string | null }[]>`
-    SELECT spec, agents, contract, config FROM harness_shared.harness_project_files
-     WHERE harness_slug = ${slug} LIMIT 1
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { eq } = await import('drizzle-orm');
+  const pf = generated.harness_project_filesInHarness_shared;
+  const rows = await db
+    .select({ spec: pf.spec, agents: pf.agents, contract: pf.contract, config: pf.config })
+    .from(pf)
+    .where(eq(pf.harness_slug, slug))
+    .limit(1);
   return rows[0] ?? { spec: null, agents: null, contract: null, config: null };
 }
 
 async function saveProjectFiles(slug: string, patch: { spec?: string; agents?: string; contract?: string; config?: string }): Promise<void> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { sql: dsql } = await import('drizzle-orm');
+  const pf = generated.harness_project_filesInHarness_shared;
   const now = Date.now();
-  await sql`
-    INSERT INTO harness_shared.harness_project_files (harness_slug, spec, agents, contract, config, updated_at)
-    VALUES (
-      ${slug},
-      ${patch.spec ?? null}, ${patch.agents ?? null}, ${patch.contract ?? null}, ${patch.config ?? null},
-      ${now}
-    )
-    ON CONFLICT (harness_slug) DO UPDATE SET
-      spec     = COALESCE(${patch.spec ?? null}, harness_project_files.spec),
-      agents   = COALESCE(${patch.agents ?? null}, harness_project_files.agents),
-      contract = COALESCE(${patch.contract ?? null}, harness_project_files.contract),
-      config   = COALESCE(${patch.config ?? null}, harness_project_files.config),
-      updated_at = ${now}
-  `;
+  await db
+    .insert(pf)
+    .values({
+      harness_slug: slug,
+      spec: patch.spec ?? null,
+      agents: patch.agents ?? null,
+      contract: patch.contract ?? null,
+      config: patch.config ?? null,
+      updated_at: now,
+    })
+    .onConflictDoUpdate({
+      target: pf.harness_slug,
+      set: {
+        spec: dsql`COALESCE(${patch.spec ?? null}, ${pf.spec})`,
+        agents: dsql`COALESCE(${patch.agents ?? null}, ${pf.agents})`,
+        contract: dsql`COALESCE(${patch.contract ?? null}, ${pf.contract})`,
+        config: dsql`COALESCE(${patch.config ?? null}, ${pf.config})`,
+        updated_at: now,
+      },
+    });
   const { notifySyncInvalidate } = await import('@/lib/sync-sse');
   await notifySyncInvalidate('harnessProjectFiles.byHarness', { harnessSlug: slug });
 }
@@ -2758,45 +2772,47 @@ harness.post('/:slug/orchestrator/status', async (c) => {
     return c.json({ error: 'status must be one of idle/running/stalled/paused/error' }, 400);
   }
   await ensureHarnessStatusTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { sql: dsql } = await import('drizzle-orm');
+  const hs = generated.harness_statusInHarness_shared;
   const ws = activeWorkspaceId();
-  // Server-computed lease: writer doesn't pass expiresAt — we know what
-  // "stale" means here, and clock skew is the writer's, not ours.
-  // expirable-registry flips status='running' rows to 'stalled' when this
-  // passes. Writers refresh on every iteration.
   const STATUS_LEASE_MS = 5 * 60_000;
   const now = Date.now();
   const expiresAt = now + STATUS_LEASE_MS;
-  await sql`
-    INSERT INTO harness_shared.harness_status
-      (harness_slug, phase, status, iteration, total_features, passed_count,
-       todo_count, blocked_count, last_active_ts, cost_usd, workspace_id, updated_at, expires_at)
-    VALUES (
-      ${project.slug}, ${phase}, ${body.status},
-      ${Number(body.iteration) || 0},
-      ${Number(body.totalFeatures) || 0},
-      ${Number(body.passedCount) || 0},
-      ${Number(body.todoCount) || 0},
-      ${Number(body.blockedCount) || 0},
-      ${body.lastActiveTs ?? null},
-      ${body.costUsd ?? null},
-      ${ws},
-      ${now},
-      ${expiresAt}
-    )
-    ON CONFLICT (harness_slug, phase) DO UPDATE
-      SET status = EXCLUDED.status,
-          iteration = EXCLUDED.iteration,
-          total_features = EXCLUDED.total_features,
-          passed_count = EXCLUDED.passed_count,
-          todo_count = EXCLUDED.todo_count,
-          blocked_count = EXCLUDED.blocked_count,
-          last_active_ts = EXCLUDED.last_active_ts,
-          cost_usd = EXCLUDED.cost_usd,
-          workspace_id = EXCLUDED.workspace_id,
-          updated_at = EXCLUDED.updated_at,
-          expires_at = EXCLUDED.expires_at
-  `;
+  await db
+    .insert(hs)
+    .values({
+      harness_slug: project.slug,
+      phase,
+      status: body.status,
+      iteration: Number(body.iteration) || 0,
+      total_features: Number(body.totalFeatures) || 0,
+      passed_count: Number(body.passedCount) || 0,
+      todo_count: Number(body.todoCount) || 0,
+      blocked_count: Number(body.blockedCount) || 0,
+      last_active_ts: body.lastActiveTs ?? null,
+      cost_usd: body.costUsd ?? null,
+      workspace_id: ws,
+      updated_at: now,
+      expires_at: new Date(expiresAt) as any,
+    })
+    .onConflictDoUpdate({
+      target: [hs.harness_slug, hs.phase],
+      set: {
+        status: dsql`EXCLUDED.status`,
+        iteration: dsql`EXCLUDED.iteration`,
+        total_features: dsql`EXCLUDED.total_features`,
+        passed_count: dsql`EXCLUDED.passed_count`,
+        todo_count: dsql`EXCLUDED.todo_count`,
+        blocked_count: dsql`EXCLUDED.blocked_count`,
+        last_active_ts: dsql`EXCLUDED.last_active_ts`,
+        cost_usd: dsql`EXCLUDED.cost_usd`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+        updated_at: dsql`EXCLUDED.updated_at`,
+        expires_at: dsql`EXCLUDED.expires_at`,
+      },
+    });
   const { notifySyncInvalidate } = await import('@/lib/sync-sse');
   await notifySyncInvalidate('harnessStatus.byHarness', { harnessSlug: project.slug });
   return c.json({ ok: true });
@@ -2817,21 +2833,31 @@ harness.post('/:slug/orchestrator/lane', async (c) => {
     return c.json({ error: 'role required' }, 400);
   }
   await ensureHarnessLanesTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq, sql: dsql } = await import('drizzle-orm');
+  const hl = generated.harness_lanesInHarness_shared;
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_lanes
-      (harness_slug, phase, role, feature_id, pid, started_at, workspace_id)
-    VALUES (
-      ${project.slug}, ${phase}, ${body.role},
-      ${body.featureId ?? null}, ${body.pid ?? null}, ${Date.now()}, ${ws}
-    )
-    ON CONFLICT (harness_slug, phase, role) DO UPDATE
-      SET feature_id = EXCLUDED.feature_id,
-          pid = EXCLUDED.pid,
-          started_at = EXCLUDED.started_at,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hl)
+    .values({
+      harness_slug: project.slug,
+      phase,
+      role: body.role,
+      feature_id: body.featureId ?? null,
+      pid: body.pid ?? null,
+      started_at: Date.now(),
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [hl.harness_slug, hl.phase, hl.role],
+      set: {
+        feature_id: dsql`EXCLUDED.feature_id`,
+        pid: dsql`EXCLUDED.pid`,
+        started_at: dsql`EXCLUDED.started_at`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   return c.json({ ok: true });
 });
 
@@ -2841,11 +2867,11 @@ harness.delete('/:slug/orchestrator/lanes', async (c) => {
   const phase = c.req.query('phase') === 'testing' || c.req.query('phase') === 'production'
     ? c.req.query('phase') : 'staging';
   await ensureHarnessLanesTable();
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.harness_lanes
-     WHERE harness_slug = ${project.slug} AND phase = ${phase}
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const hl = generated.harness_lanesInHarness_shared;
+  await db.delete(hl).where(and(eq(hl.harness_slug, project.slug), eq(hl.phase, phase)));
   return c.json({ ok: true });
 });
 
@@ -2870,16 +2896,28 @@ harness.get('/:slug/orchestrator/adaptive-telemetry', async (c) => {
   const limitRaw = Number(c.req.query('limit') ?? 200);
   const limit = Math.max(1, Math.min(1000, Number.isFinite(limitRaw) ? limitRaw : 200));
   await ensureAdaptiveTelemetryTable();
-  const { sql } = getOrgPg();
-  const rows = await sql`
-    SELECT id, ts, feature_id, requested_n, actual_n,
-           tier_label, available_at_decision, max_slots,
-           outcome, outcome_ts, duration_ms
-      FROM harness_shared.adaptive_telemetry
-     WHERE harness_slug = ${project.slug}
-     ORDER BY ts DESC
-     LIMIT ${limit}
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { desc, eq } = await import('drizzle-orm');
+  const at = generated.adaptive_telemetryInHarness_shared;
+  const rows = await db
+    .select({
+      id: at.id,
+      ts: at.ts,
+      feature_id: at.feature_id,
+      requested_n: at.requested_n,
+      actual_n: at.actual_n,
+      tier_label: at.tier_label,
+      available_at_decision: at.available_at_decision,
+      max_slots: at.max_slots,
+      outcome: at.outcome,
+      outcome_ts: at.outcome_ts,
+      duration_ms: at.duration_ms,
+    })
+    .from(at)
+    .where(eq(at.harness_slug, project.slug))
+    .orderBy(desc(at.ts))
+    .limit(limit);
   return c.json({ rows });
 });
 
@@ -2908,20 +2946,24 @@ harness.post('/:slug/orchestrator/adaptive-telemetry', async (c) => {
     return c.json({ error: 'requestedN/actualN must be positive integers' }, 400);
   }
   await ensureAdaptiveTelemetryTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const at = generated.adaptive_telemetryInHarness_shared;
   const ws = activeWorkspaceId();
-  const rows = await sql<{ id: number }[]>`
-    INSERT INTO harness_shared.adaptive_telemetry
-      (harness_slug, ts, feature_id, requested_n, actual_n,
-       tier_label, available_at_decision, max_slots, workspace_id)
-    VALUES (
-      ${project.slug}, ${Date.now()}, ${body.featureId},
-      ${requestedN}, ${actualN},
-      ${body.tierLabel ?? null}, ${body.availableAtDecision ?? null},
-      ${body.maxSlots ?? null}, ${ws}
-    )
-    RETURNING id
-  `;
+  const rows = await db
+    .insert(at)
+    .values({
+      harness_slug: project.slug,
+      ts: Date.now(),
+      feature_id: body.featureId,
+      requested_n: requestedN,
+      actual_n: actualN,
+      tier_label: body.tierLabel ?? null,
+      available_at_decision: body.availableAtDecision ?? null,
+      max_slots: body.maxSlots ?? null,
+      workspace_id: ws,
+    })
+    .returning({ id: at.id });
   return c.json({ ok: true, id: rows[0]?.id ?? null });
 });
 
@@ -2940,14 +2982,18 @@ harness.patch('/:slug/orchestrator/adaptive-telemetry/:id', async (c) => {
     return c.json({ error: "outcome must be one of 'pass'|'fail'|'cancelled'" }, 400);
   }
   await ensureAdaptiveTelemetryTable();
-  const { sql } = getOrgPg();
-  await sql`
-    UPDATE harness_shared.adaptive_telemetry
-       SET outcome = ${body.outcome},
-           outcome_ts = ${Date.now()},
-           duration_ms = ${body.durationMs ?? null}
-     WHERE id = ${id} AND harness_slug = ${project.slug}
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const at = generated.adaptive_telemetryInHarness_shared;
+  await db
+    .update(at)
+    .set({
+      outcome: body.outcome,
+      outcome_ts: Date.now(),
+      duration_ms: body.durationMs ?? null,
+    })
+    .where(and(eq(at.id, BigInt(id)), eq(at.harness_slug, project.slug)));
   return c.json({ ok: true });
 });
 
@@ -2970,12 +3016,14 @@ harness.get('/identity', async (c) => {
   // per request and Zero subscribers wake up on changes.
   const { ensureIdentityFilesTable } = await import('@/lib/ensure-schema');
   await ensureIdentityFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ role: string; content: string; bytes: number; mtime_ms: string | number }[]>`
-    SELECT role, content, bytes, mtime_ms
-      FROM harness_shared.identity_files
-     ORDER BY role ASC
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { asc } = await import('drizzle-orm');
+  const idf = generated.identity_filesInHarness_shared;
+  const rows = await db
+    .select({ role: idf.role, content: idf.content, bytes: idf.bytes, mtime_ms: idf.mtime_ms })
+    .from(idf)
+    .orderBy(asc(idf.role));
   // FS fallback for the brief window before the watcher's initialSync
   // populates PG on a fresh install.
   if (rows.length === 0) {
@@ -3051,20 +3099,26 @@ harness.post('/:slug/checkpoint/:name/grant', async (c) => {
   // sees the file, TS orchestrator's checkpoints-pg sees the row.
   let pgGranted = false;
   try {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, eq, sql: dsql } = await import('drizzle-orm');
+    const hc = generated.harness_checkpointsInHarness_shared;
     const ws = activeWorkspaceId();
-    const rows = await sql<{ updated: boolean }[]>`
-      UPDATE harness_shared.harness_checkpoints
-         SET granted = true
-       WHERE harness_slug = ${project.slug}
-         AND workspace_id = ${ws}
-         AND name         = ${name}
-         AND granted      = false
-         AND consumed     = false
-      RETURNING TRUE AS updated
-    `;
+    const rows = await db
+      .update(hc)
+      .set({ granted: true })
+      .where(and(
+        eq(hc.harness_slug, project.slug),
+        eq(hc.workspace_id, ws),
+        eq(hc.name, name),
+        eq(hc.granted, false),
+        eq(hc.consumed, false),
+      ))
+      .returning({ id: hc.harness_slug });
     if (rows.length > 0) {
       pgGranted = true;
+      // pg_notify stays raw — postgres-js LISTEN/NOTIFY pairing (Phase 4 cat 4).
+      const { sql } = (await import('@restart/db-org')).getOrgPg();
       await sql`
         SELECT pg_notify('sync_invalidate',
           ${JSON.stringify({
@@ -3290,13 +3344,16 @@ harness.get('/:slug/features/:id/audit', async (c) => {
   // (un-hardcode plan item #6). Falls back to per-harness table for
   // any rows that pre-date the consolidation cutover.
   try {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
-    const rows = await sql<{ ts: number; field: string; old_value: string | null; new_value: string | null; actor: string }[]>`
-      SELECT ts, field, old_value, new_value, actor
-        FROM harness_shared.feature_audit_consolidated
-       WHERE harness_slug = ${project.slug} AND feature_id = ${id}
-       ORDER BY ts DESC LIMIT 200
-    `;
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, desc, eq } = await import('drizzle-orm');
+    const fa = generated.feature_audit_consolidatedInHarness_shared;
+    const rows = await db
+      .select({ ts: fa.ts, field: fa.field, old_value: fa.old_value, new_value: fa.new_value, actor: fa.actor })
+      .from(fa)
+      .where(and(eq(fa.harness_slug, project.slug), eq(fa.feature_id, id)))
+      .orderBy(desc(fa.ts))
+      .limit(200);
     if (rows.length > 0) {
       return c.json({
         slug: project.slug, feature_id: id, count: rows.length,
@@ -4258,17 +4315,29 @@ harness.post('/:slug/screenshots', async (c) => {
   // Producer-time PG write — replaces the chokidar replace-all mirror
   // that re-scanned the dir on every fs event.
   {
-    const { sql } = getOrgPg();
+    const { db } = getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { sql: dsql } = await import('drizzle-orm');
+    const hsh = generated.harness_screenshotsInHarness_shared;
     const ws = activeWorkspaceId();
-    await sql`
-      INSERT INTO harness_shared.harness_screenshots
-        (harness_slug, phase, id, size_bytes, ts, workspace_id)
-      VALUES (${project.slug}, ${phase}, ${safeName}, ${ab.byteLength}, ${Date.now()}, ${ws})
-      ON CONFLICT (harness_slug, phase, id) DO UPDATE
-        SET size_bytes = EXCLUDED.size_bytes,
-            ts = EXCLUDED.ts,
-            workspace_id = EXCLUDED.workspace_id
-    `;
+    await db
+      .insert(hsh)
+      .values({
+        harness_slug: project.slug,
+        phase,
+        id: safeName,
+        size_bytes: ab.byteLength,
+        ts: Date.now(),
+        workspace_id: ws,
+      })
+      .onConflictDoUpdate({
+        target: [hsh.harness_slug, hsh.phase, hsh.id],
+        set: {
+          size_bytes: dsql`EXCLUDED.size_bytes`,
+          ts: dsql`EXCLUDED.ts`,
+          workspace_id: dsql`EXCLUDED.workspace_id`,
+        },
+      });
     const { notifySyncInvalidate } = await import('@/lib/sync-sse');
     void notifySyncInvalidate('harnessScreenshots.byHarness', { harnessSlug: project.slug, phase }).catch(() => {});
   }
@@ -4293,13 +4362,13 @@ harness.delete('/:slug/screenshots/:id', async (c) => {
   // Drop the PG row regardless; if the file was already gone, the row
   // may still be lingering from a previous fs.watch race.
   {
-    const { sql } = getOrgPg();
-    await sql`
-      DELETE FROM harness_shared.harness_screenshots
-       WHERE harness_slug = ${project.slug}
-         AND phase        = ${phase}
-         AND id           = ${id}
-    `;
+    const { db } = getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, eq } = await import('drizzle-orm');
+    const hsh = generated.harness_screenshotsInHarness_shared;
+    await db
+      .delete(hsh)
+      .where(and(eq(hsh.harness_slug, project.slug), eq(hsh.phase, phase), eq(hsh.id, id)));
     const { notifySyncInvalidate } = await import('@/lib/sync-sse');
     void notifySyncInvalidate('harnessScreenshots.byHarness', { harnessSlug: project.slug, phase }).catch(() => {});
   }
@@ -5142,16 +5211,18 @@ function loadIssuesOrSeed(project: ProjectEntry): IssuesFile {
 async function readPendingIssues(project: ProjectEntry): Promise<Issue[]> {
   const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
   await ensureHarnessPendingIssuesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ issue_id: string; payload: Record<string, unknown>; ts: string | number }[]>`
-    SELECT issue_id, payload, ts
-      FROM harness_shared.harness_pending_issues
-     WHERE harness_slug = ${project.slug}
-     ORDER BY ts ASC
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { asc, eq } = await import('drizzle-orm');
+  const hpi = generated.harness_pending_issuesInHarness_shared;
+  const rows = await db
+    .select({ issue_id: hpi.issue_id, payload: hpi.payload, ts: hpi.ts })
+    .from(hpi)
+    .where(eq(hpi.harness_slug, project.slug))
+    .orderBy(asc(hpi.ts));
   const out: Issue[] = [];
   for (const r of rows) {
-    const p = r.payload ?? {};
+    const p = (r.payload as Record<string, unknown>) ?? {};
     if (!p.title || !p.severity) continue;
     out.push({
       id: r.issue_id,
@@ -5262,21 +5333,27 @@ harness.post('/:slug/issues/append-pending', async (c) => {
   // upsert pattern is preserved; this just bypasses the file.
   const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
   await ensureHarnessPendingIssuesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const hpi = generated.harness_pending_issuesInHarness_shared;
   const issueId = `PENDING-${Date.now()}`;
   const ts = Date.now();
-  await sql`
-    INSERT INTO harness_shared.harness_pending_issues
-      (harness_slug, phase, issue_id, feature_id, title, severity, source,
-       payload, ts, mtime_ms, workspace_id)
-    VALUES (
-      ${project.slug}, ${project.phase ?? 'staging'}, ${issueId},
-      ${body.linkedFeatureId ?? null}, ${payload.title}, ${payload.severity},
-      'validator', ${JSON.stringify(payload)},
-      ${ts}, ${ts}, ${activeWorkspaceId()}
-    )
-    ON CONFLICT (harness_slug, phase, issue_id) DO NOTHING
-  `;
+  await db
+    .insert(hpi)
+    .values({
+      harness_slug: project.slug,
+      phase: project.phase ?? 'staging',
+      issue_id: issueId,
+      feature_id: body.linkedFeatureId ?? null,
+      title: payload.title,
+      severity: payload.severity,
+      source: 'validator',
+      payload: payload as any,
+      ts,
+      mtime_ms: ts,
+      workspace_id: activeWorkspaceId(),
+    })
+    .onConflictDoNothing();
   void notifySyncInvalidate('harnessPendingIssues.byHarness', { harnessSlug: project.slug });
   return c.json({ ok: true });
 });
@@ -5363,12 +5440,13 @@ harness.post('/:slug/triage', async (c) => {
   {
     const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
     await ensureHarnessPendingIssuesTable();
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
-    await sql`
-      DELETE FROM harness_shared.harness_pending_issues
-       WHERE harness_slug = ${project.slug}
-         AND phase        = ${project.phase ?? 'staging'}
-    `;
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, eq } = await import('drizzle-orm');
+    const hpi = generated.harness_pending_issuesInHarness_shared;
+    await db
+      .delete(hpi)
+      .where(and(eq(hpi.harness_slug, project.slug), eq(hpi.phase, project.phase ?? 'staging')));
     void notifySyncInvalidate('harnessPendingIssues.byHarness', { harnessSlug: project.slug });
   }
   const pendingPath = join(harnessDir(project), 'pending-issues.jsonl');
@@ -5474,17 +5552,18 @@ harness.get('/:slug/reviews/:id', async (c) => {
   const slug = c.req.param('slug');
   const phase = phasePhaseLabel(c.req.query('phase'));
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
-  const { sql } = getOrgPg();
-  const rows = await sql<{ payload: PendingReview; review_id: string; resolved: boolean; ts: number }[]>`
-    SELECT payload, review_id, resolved, ts
-      FROM harness_shared.pending_reviews
-     WHERE harness_slug = ${slug}
-       AND phase = ${phase}
-       AND review_id = ${id}
-     LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const prev = generated.pending_reviewsInHarness_shared;
+  const rows = await db
+    .select({ payload: prev.payload, review_id: prev.review_id, resolved: prev.resolved, ts: prev.ts })
+    .from(prev)
+    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, id)))
+    .limit(1);
   if (!rows.length) return c.json({ error: 'not found' }, 404);
-  return c.json({ ...rows[0].payload, id: rows[0].review_id, resolved: rows[0].resolved, ts: rows[0].ts });
+  const row = rows[0] as { payload: PendingReview; review_id: string; resolved: boolean; ts: number };
+  return c.json({ ...row.payload, id: row.review_id, resolved: row.resolved, ts: row.ts });
 });
 
 harness.post('/:slug/reviews/:id/resolve', async (c) => {
@@ -5496,25 +5575,26 @@ harness.post('/:slug/reviews/:id/resolve', async (c) => {
   const body = await c.req.json() as { response?: string; accept?: boolean };
 
   // PG canonical: read from the mirrored row.
-  const { sql } = getOrgPg();
-  const rows = await sql<{ payload: PendingReview }[]>`
-    SELECT payload
-      FROM harness_shared.pending_reviews
-     WHERE harness_slug = ${slug} AND phase = ${phase} AND review_id = ${id}
-     LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const prev = generated.pending_reviewsInHarness_shared;
+  const rows = await db
+    .select({ payload: prev.payload })
+    .from(prev)
+    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, id)))
+    .limit(1);
   if (!rows.length) return c.json({ error: 'not found' }, 404);
-  const review: PendingReview = { ...rows[0].payload };
+  const review: PendingReview = { ...(rows[0].payload as PendingReview) };
   review.resolved = true;
   review.userResponse = body.response ?? (body.accept ? review.recommendedAnswer : '');
 
   // Update PG immediately so GET /reviews and Zero subscriptions reflect
   // the resolution before the watcher catches the FS move.
-  await sql`
-    UPDATE harness_shared.pending_reviews
-       SET resolved = true, payload = ${JSON.stringify(review)}::jsonb
-     WHERE harness_slug = ${slug} AND phase = ${phase} AND review_id = ${id}
-  `;
+  await db
+    .update(prev)
+    .set({ resolved: true, payload: review as any })
+    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, id)));
 
   // Append the response to supervisor-notes.md (PG canonical, FS mirror).
   const notesPath = join(harnessDir(project), 'supervisor-notes.md');
@@ -5717,41 +5797,45 @@ function brainstormMindmapPath(project: ProjectEntry): string {
 async function loadBrainstorm(slug: string): Promise<{ content: string; canvas: unknown; mindmap: unknown }> {
   const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
   await ensureBrainstormTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ content: string; canvas: unknown; mindmap: unknown }[]>`
-    SELECT content, canvas, mindmap FROM harness_shared.harness_brainstorm
-     WHERE harness_slug = ${slug} AND phase = 'staging' LIMIT 1
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const hb = generated.harness_brainstormInHarness_shared;
+  const rows = await db
+    .select({ content: hb.content, canvas: hb.canvas, mindmap: hb.mindmap })
+    .from(hb)
+    .where(and(eq(hb.harness_slug, slug), eq(hb.phase, 'staging')))
+    .limit(1);
   return rows[0] ?? { content: '', canvas: null, mindmap: null };
 }
 
 async function saveBrainstorm(slug: string, patch: { content?: string; canvas?: unknown; mindmap?: unknown }): Promise<void> {
   const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
   await ensureBrainstormTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { sql: dsql } = await import('drizzle-orm');
+  const hb = generated.harness_brainstormInHarness_shared;
   const now = Date.now();
-  // Use JSON.stringify + ::jsonb cast instead of sql.json(): the latter
-  // throws 'Received an instance of Object' inside postgres-js 3.4.9 when
-  // the value contains nested objects (the React Flow tree has nodes
-  // with `measured`/`position`/`data` sub-objects). Explicit serialize +
-  // cast is unambiguous.
-  const canvasJson = patch.canvas !== undefined ? JSON.stringify(patch.canvas) : null;
-  const mindmapJson = patch.mindmap !== undefined ? JSON.stringify(patch.mindmap) : null;
-  await sql`
-    INSERT INTO harness_shared.harness_brainstorm (harness_slug, phase, content, canvas, mindmap, updated_at)
-    VALUES (
-      ${slug}, 'staging',
-      ${patch.content ?? ''},
-      ${canvasJson}::jsonb,
-      ${mindmapJson}::jsonb,
-      ${now}
-    )
-    ON CONFLICT (harness_slug, phase) DO UPDATE SET
-      content    = COALESCE(${patch.content ?? null}, harness_brainstorm.content),
-      canvas     = COALESCE(${canvasJson}::jsonb, harness_brainstorm.canvas),
-      mindmap    = COALESCE(${mindmapJson}::jsonb, harness_brainstorm.mindmap),
-      updated_at = ${now}
-  `;
+  await db
+    .insert(hb)
+    .values({
+      harness_slug: slug,
+      phase: 'staging',
+      content: patch.content ?? '',
+      canvas: (patch.canvas ?? null) as any,
+      mindmap: (patch.mindmap ?? null) as any,
+      updated_at: now,
+    })
+    .onConflictDoUpdate({
+      target: [hb.harness_slug, hb.phase],
+      set: {
+        content: dsql`COALESCE(${patch.content ?? null}, ${hb.content})`,
+        canvas: dsql`COALESCE(${patch.canvas !== undefined ? JSON.stringify(patch.canvas) : null}::jsonb, ${hb.canvas})`,
+        mindmap: dsql`COALESCE(${patch.mindmap !== undefined ? JSON.stringify(patch.mindmap) : null}::jsonb, ${hb.mindmap})`,
+        updated_at: now,
+      },
+    });
   const { notifySyncInvalidate } = await import('@/lib/sync-sse');
   await notifySyncInvalidate('harnessBrainstorm.byHarness', { harnessSlug: slug });
 }
@@ -6776,20 +6860,33 @@ harness.post('/:slug/promote', async (c) => {
   // file + watcher debounce. The file is also written below for back-
   // compat with bash run.sh's pre-loop scanner that reads pending-reviews/.
   {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { sql: dsql } = await import('drizzle-orm');
+    const prev = generated.pending_reviewsInHarness_shared;
     const tsMs = ts * 1000;
-    await sql`
-      INSERT INTO harness_shared.pending_reviews
-        (harness_slug, phase, review_id, feature_id, kind, payload, ts, mtime_ms, workspace_id, resolved)
-      VALUES (
-        ${project.slug}, ${from}, ${id}, NULL, 'promotion',
-        ${JSON.stringify(item)}, ${tsMs}, ${tsMs}, ${activeWorkspaceId()}, false
-      )
-      ON CONFLICT (harness_slug, phase, review_id) DO UPDATE
-        SET payload  = EXCLUDED.payload,
-            mtime_ms = EXCLUDED.mtime_ms,
-            resolved = false
-    `;
+    await db
+      .insert(prev)
+      .values({
+        harness_slug: project.slug,
+        phase: from,
+        review_id: id,
+        feature_id: null,
+        kind: 'promotion',
+        payload: item as any,
+        ts: tsMs,
+        mtime_ms: tsMs,
+        workspace_id: activeWorkspaceId(),
+        resolved: false,
+      })
+      .onConflictDoUpdate({
+        target: [prev.harness_slug, prev.phase, prev.review_id],
+        set: {
+          payload: dsql`EXCLUDED.payload`,
+          mtime_ms: dsql`EXCLUDED.mtime_ms`,
+          resolved: false,
+        },
+      });
     void notifySyncInvalidate('pendingReviews.byHarness', { harnessSlug: project.slug });
   }
   await writeFile(join(reviewsDir, `${id}.json`), JSON.stringify(item, null, 2), 'utf8');
@@ -6936,16 +7033,21 @@ harness.post('/:slug/promote/:id/confirm', async (c) => {
   {
     const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
     await ensureHarnessPromotionsTable();
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
-    await sql`
-      INSERT INTO harness_shared.harness_promotions
-        (workspace_id, harness_slug, promotion_id, from_phase, to_phase, sha, ts)
-      VALUES (
-        ${activeWorkspaceId()}, ${project.slug}, ${obj.id}, ${from}, ${to},
-        ${newSha || null}, ${Math.floor(Date.now() / 1000)}
-      )
-      ON CONFLICT (workspace_id, harness_slug, promotion_id) DO NOTHING
-    `;
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const hp = generated.harness_promotionsInHarness_shared;
+    await db
+      .insert(hp)
+      .values({
+        workspace_id: activeWorkspaceId(),
+        harness_slug: project.slug,
+        promotion_id: obj.id,
+        from_phase: from,
+        to_phase: to,
+        sha: newSha || null,
+        ts: Math.floor(Date.now() / 1000),
+      })
+      .onConflictDoNothing();
   }
 
   // Seed promotion-handoff.md in the dest from the source's validation-contract.md + features.
@@ -6991,15 +7093,16 @@ harness.post('/:slug/rollback', async (c) => {
   // rewinds 'production' to the previous production SHA.)
   const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
   await ensureHarnessPromotionsTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const promotions = await sql<Array<{ promotion_id: string; sha: string | null; ts: number | bigint }>>`
-    SELECT promotion_id, sha, ts FROM harness_shared.harness_promotions
-     WHERE workspace_id = ${activeWorkspaceId()}
-       AND harness_slug = ${project.slug}
-       AND to_phase     = ${phase}
-     ORDER BY ts DESC
-     LIMIT 10
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, desc, eq } = await import('drizzle-orm');
+  const hp = generated.harness_promotionsInHarness_shared;
+  const promotions = await db
+    .select({ promotion_id: hp.promotion_id, sha: hp.sha, ts: hp.ts })
+    .from(hp)
+    .where(and(eq(hp.workspace_id, activeWorkspaceId()), eq(hp.harness_slug, project.slug), eq(hp.to_phase, phase)))
+    .orderBy(desc(hp.ts))
+    .limit(10);
   if (promotions.length < 2) return c.json({ error: 'no previous promotion to roll back to' }, 400);
   const prior = promotions[1]; // [0] is the current promotion; [1] is the one we want
   if (!prior.sha) return c.json({ error: 'previous promotion has no sha' }, 400);
@@ -7013,14 +7116,15 @@ harness.post('/:slug/rollback', async (c) => {
   // Record the rollback as its own promotion row (sha = the SHA we
   // rolled back TO; from_phase == to_phase == phase). Future rollbacks
   // will see this in the history.
-  await sql`
-    INSERT INTO harness_shared.harness_promotions
-      (workspace_id, harness_slug, promotion_id, from_phase, to_phase, sha, ts)
-    VALUES (
-      ${activeWorkspaceId()}, ${project.slug}, ${`rollback-${Date.now()}`},
-      ${phase}, ${phase}, ${prior.sha}, ${Math.floor(Date.now() / 1000)}
-    )
-  `;
+  await db.insert(hp).values({
+    workspace_id: activeWorkspaceId(),
+    harness_slug: project.slug,
+    promotion_id: `rollback-${Date.now()}`,
+    from_phase: phase,
+    to_phase: phase,
+    sha: prior.sha,
+    ts: Math.floor(Date.now() / 1000),
+  });
 
   return c.json({ ok: true, rolledBackTo: prior.sha });
 });

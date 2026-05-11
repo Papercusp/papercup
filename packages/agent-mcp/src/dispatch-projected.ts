@@ -133,7 +133,13 @@ export async function dispatchProjectedTool(
   // tools called via bearer auth). Plugin tools called via spawn URL
   // params don't have a principal; their gating happens via roles+quota
   // and the orchestrator's spawn-time guarantee that the URL is sealed.
-  if (ctx.principal && tool.capabilities.length > 0) {
+  //
+  // Superuser bypass mirrors the role allowlist bypass above: when an
+  // honest user shell hits ?superuser=1 with the bearer file, we treat
+  // it as having every capability. The principal we synthesize for the
+  // superuser path has an empty capability set on purpose — easier than
+  // enumerating every cap the registry might know about.
+  if (ctx.principal && !ctx.isSuperuser && tool.capabilities.length > 0) {
     for (const cap of tool.capabilities) {
       if (!ctx.principal.capabilities.has(cap)) {
         if (deps.recordInvocation) {
