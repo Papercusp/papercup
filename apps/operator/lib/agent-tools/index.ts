@@ -112,3 +112,4 @@ import './backup/snapshot_create';
 import './backup/snapshot_list';
 import './backup/restore';
 import './backup/diff';
+import './backup/promote';

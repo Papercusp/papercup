@@ -68,11 +68,32 @@ export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string 
   reg.workspaces = reg.workspaces.filter((w) => w.id !== id);
   await writeRegistry(reg);
 
+  // Archive the kopia backup repo before wiping — the repo lives at
+  // <workspace>/backups/kopia-repo/ so a naive rm would lose it. Move
+  // it to ~/.papercusp-workspaces/.archive/<id>-<ts>/ so the user can
+  // restore from it later without keeping the whole workspace around.
+  // Best-effort: failures here log to the response but don't block the
+  // delete (the user already asked for the workspace to go).
+  const dir = join(homedir(), '.papercusp-workspaces', id);
+  let archived: string | null = null;
+  let archiveError: string | null = null;
+  try {
+    const backupsDir = join(dir, 'backups');
+    if (existsSync(backupsDir)) {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const archiveDir = join(homedir(), '.papercusp-workspaces', '.archive', `${id}-${ts}`);
+      await fs.mkdir(join(homedir(), '.papercusp-workspaces', '.archive'), { recursive: true });
+      await fs.rename(backupsDir, archiveDir);
+      archived = archiveDir;
+    }
+  } catch (err) {
+    archiveError = err instanceof Error ? err.message : String(err);
+  }
+
   // Remove the on-disk dir best-effort — leftover state is recoverable
   // and rolling back the registry on a failed unlink is more confusing
   // than just leaving the dir as garbage.
-  const dir = join(homedir(), '.papercusp-workspaces', id);
   try { await fs.rm(dir, { recursive: true, force: true }); } catch { /* leak ok */ }
 
-  return NextResponse.json({ ok: true, id });
+  return NextResponse.json({ ok: true, id, archived, archiveError });
 }
