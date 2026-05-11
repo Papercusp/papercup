@@ -31,6 +31,7 @@ import { runClaudeChat } from '@/lib/claude-chat-stream';
 import { OPERATOR_CONVERSE_PROMPT } from '@/lib/operator-converse-prompt';
 import { OPERATOR_PERSONA_PROMPT } from '@/lib/operator-persona';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
+import { parseOperatorTurn } from '@/lib/operator-converse-tags';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
@@ -224,8 +225,6 @@ export async function POST(req: NextRequest) {
         // our client-side parser. The HTTP API call here is what makes
         // the spawn actually happen for both text and voice surfaces.
         try {
-          // eslint-disable-next-line @typescript-eslint/no-require-imports
-          const { parseOperatorTurn } = require('@/lib/operator-converse-tags') as typeof import('@/lib/operator-converse-tags');
           const parsed = parseOperatorTurn(assembled);
           for (const sp of parsed.spawns) {
             const params = new URLSearchParams({
