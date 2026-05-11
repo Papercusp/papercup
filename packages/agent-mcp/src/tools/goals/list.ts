@@ -1,9 +1,21 @@
 /**
  * List goals in the current workspace.
+ *
+ * Demonstrates the drizzle-zod pattern for MCP tools: response rows are
+ * typed via `schemaOf(table).select` so the data sent back to the agent
+ * matches the column shape declared in the migration — no hand-typed
+ * `Record<string, unknown>`.
  */
 
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { desc } from 'drizzle-orm';
 import { z } from 'zod';
+import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
+
+const goals = generated.goalsInHarness_shared;
+const GoalSelect = schemaOf(goals).select;
+type GoalRow = z.infer<typeof GoalSelect>;
 
 export default defineTool({
   name: 'goals:list',
@@ -13,12 +25,19 @@ export default defineTool({
     limit: z.number().int().positive().max(200).default(50),
   }),
   async handler(args, ctx) {
-    const rows = await ctx.tx<Array<Record<string, unknown>>>`
-      SELECT id, title, body, parent_id, budget_cents, created_at
-        FROM harness_shared.goals
-       ORDER BY created_at DESC
-       LIMIT ${args.limit}
-    `;
+    const txDb = drizzle(ctx.tx);
+    const rows = (await txDb
+      .select({
+        id: goals.id,
+        title: goals.title,
+        body: goals.body,
+        parent_id: goals.parent_id,
+        budget_cents: goals.budget_cents,
+        created_at: goals.created_at,
+      })
+      .from(goals)
+      .orderBy(desc(goals.created_at))
+      .limit(args.limit)) as Pick<GoalRow, 'id' | 'title' | 'body' | 'parent_id' | 'budget_cents' | 'created_at'>[];
     if (args.detail === 'summary') {
       return { data: rows.map((r) => ({ id: r.id, title: r.title })) };
     }
