@@ -28,14 +28,17 @@
 
 import { NextRequest } from 'next/server';
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { OPERATOR_CONVERSE_PROMPT } from '@/lib/operator-converse-prompt';
-import { OPERATOR_PERSONA_PROMPT } from '@/lib/operator-persona';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
-import { renderToolsCatalog } from '@/lib/prompt-assembly';
+import {
+  loadRolePersona,
+  loadRoleToolsMd,
+  loadRoleConverse,
+  renderToolsCatalog,
+} from '@/lib/prompt-assembly';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -65,9 +68,15 @@ function buildPrompt(body: ConverseRequestBody): string {
 
   const sections: string[] = [];
 
-  // Substrate-owned + persona — shared with the voice path.
-  sections.push(OPERATOR_CONVERSE_PROMPT);
-  sections.push(OPERATOR_PERSONA_PROMPT);
+  // Phase 3 of the tool-guidance arc: the server brain reads from the
+  // .md files via prompt-assembly (single source of truth for human
+  // edits). The voice path (lib/voice-engines/*) keeps the condensed
+  // OPERATOR_PERSONA_PROMPT TS constant because EL Conv AI's shell
+  // agent runs on Haiku with a tight token budget — see comments in
+  // lib/operator-persona.ts. Two different LLMs, two different
+  // prompts.
+  sections.push(loadRoleConverse('operator'));
+  sections.push(loadRolePersona('operator'));
 
   // Tools catalog with per-tool guidance from defineTool({ guidance }).
   // Phase 1a of the tool-guidance arc — renders only the tools the
@@ -91,6 +100,11 @@ function buildPrompt(body: ConverseRequestBody): string {
   }
   const catalog = renderToolsCatalog('operator', operatorToolNames);
   if (catalog) sections.push(catalog);
+
+  // Cross-tool playbook + named workflows (Phase 1c). Loaded from
+  // operator.tools.md; falls back to empty if the file is missing.
+  const playbook = loadRoleToolsMd('operator');
+  if (playbook) sections.push(playbook);
 
   // Conversation history — minimal serialization. Roles are preserved
   // so the model can reason about who said what.

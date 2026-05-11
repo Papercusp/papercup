@@ -1,17 +1,20 @@
 /**
- * Operator system prompt — the "converse" role (active conversation mode).
+ * Operator active-mode prompt — **EL voice path** (browser-side).
  *
- * Mirrors apps/operator/prompts/operator.converse.md (which is the
- * human-readable source of truth for review). Kept in TypeScript so
- * the bundler can include it in client builds without an .md loader
- * — the voice engines (elevenlabs-conv.ts, openai-realtime.ts) are
- * client-side code and cannot import from `node:fs`.
+ * Two different consumers, two different load paths:
  *
- * If you edit the .md, mirror the change here so future humans can
- * read it without skimming TS. Used by:
- *   - apps/operator/app/api/agent-mcp/operator-converse/route.ts (text path)
- *   - apps/operator/lib/voice-engines/elevenlabs-conv.ts (active mode)
- *   - apps/operator/lib/voice-engines/openai-realtime.ts (active mode)
+ *   1. **Server brain** (`apps/operator/app/api/agent-mcp/operator-converse/route.ts`)
+ *      loads `operator.converse.md` from the filesystem via
+ *      `loadRoleConverse('operator')` in `lib/prompt-assembly.ts`.
+ *      Edits to the .md show up next request (with PAPERCUSP_RELOAD_PROMPTS=1).
+ *
+ *   2. **Voice path** (`lib/voice-engines/elevenlabs-conv.ts`,
+ *      `openai-realtime.ts`) — browser code, can't read filesystem.
+ *      Uses the constant below, embedded at build time.
+ *
+ * When editing the active-mode rules: change BOTH the .md and the
+ * constant below. They should agree. See same dual-source note in
+ * operator-persona.ts.
  *
  * Same pattern as operator-persona.ts.
  */

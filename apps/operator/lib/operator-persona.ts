@@ -1,17 +1,29 @@
 /**
- * Operator persona — the runtime-injected prompt block.
+ * Operator persona — the **EL shell agent** (browser-side voice relay)
+ * prompt block.
  *
- * Mirrors apps/operator/prompts/operator.persona.md (which is the
- * human-readable source of truth for review). Kept in TypeScript so
- * the bundler can include it in client builds without an .md loader.
+ * Two different LLMs see two different operator personas now:
+ *
+ *   1. **Server brain** (operator-converse route — runs claude-code with
+ *      the full MCP catalog) reads `apps/operator/prompts/operator.persona.md`
+ *      via `loadRolePersona('operator')` in `lib/prompt-assembly.ts`.
+ *      Rich version: the full character + behavior doc.
+ *
+ *   2. **EL shell agent** (browser-side voice relay running on Haiku
+ *      via ElevenLabs Conv AI / OpenAI Realtime) reads the constant
+ *      below. Condensed for the Haiku-class token budget. Cannot use
+ *      filesystem loads — browser code, no `node:fs`.
+ *
+ * Edit both when the persona character changes. The .md is the canonical
+ * design doc; this TS constant is the condensed version EL embeds at
+ * build time. They should agree on tone + character; they may differ in
+ * detail (the .md has more rationale; the TS has only the rules EL needs
+ * to relay correctly).
  *
  * Used by:
  *   - lib/voice-engines/elevenlabs-conv.ts → overrides.agent.prompt
  *   - lib/voice-engines/openai-realtime.ts → RealtimeAgent.instructions
  *   - lib/voice-engines/prepareForTTS.ts (legacy path) → system prompt
- *
- * If you edit this file, mirror the change in operator.persona.md so
- * future humans can read it without skimming TS.
  */
 
 export const OPERATOR_PERSONA_PROMPT = `You are the Operator voice assistant for Papercusp — a coding-harness control plane.

@@ -101,6 +101,7 @@ function shouldBypassCache(): boolean {
 
 const personaCache = new Map<Role, string>();
 const toolsMdCache = new Map<Role, string | null>();
+const converseCache = new Map<Role, string>();
 
 export function loadRolePersona(role: Role): string {
   if (!shouldBypassCache() && personaCache.has(role)) {
@@ -125,6 +126,31 @@ export function loadRoleToolsMd(role: Role): string | null {
   const path = join(promptsDir(), `${role}.tools.md`);
   const text = existsSync(path) ? readFileSync(path, 'utf8') : null;
   toolsMdCache.set(role, text);
+  return text;
+}
+
+/**
+ * Load `<role>.converse.md` — the active-mode behavioral rules (silence
+ * ladder, say/set_mode/sleep/spawn tag protocol). Required for chat-mode
+ * roles that drive a conversation loop on the server (today: operator).
+ *
+ * Throws if the file is missing; chat-mode routes that call this should
+ * already require it. If a role exists that doesn't use the converse
+ * pattern, that role's route just doesn't call this.
+ */
+export function loadRoleConverse(role: Role): string {
+  if (!shouldBypassCache() && converseCache.has(role)) {
+    return converseCache.get(role)!;
+  }
+  const path = join(promptsDir(), `${role}.converse.md`);
+  if (!existsSync(path)) {
+    throw new Error(
+      `prompt-assembly: ${role}.converse.md not found at ${path}. ` +
+      `Required for chat-mode roles.`,
+    );
+  }
+  const text = readFileSync(path, 'utf8');
+  converseCache.set(role, text);
   return text;
 }
 

@@ -479,6 +479,82 @@ app.post('/heartbeat', async (c) => {
   return c.json({ ok: true });
 });
 
+// Mints a short-lived ElevenLabs Conv AI conversation token for this
+// device. Mirrors /api/agent-mcp/operator-elevenlabs-bootstrap for desktop
+// but adds the phone-specific dynamic variables the agent needs to route
+// browser:'required' callbacks back to the right device.
+//
+// Returns:
+//   { conversationToken, agentId, dynamicVariables: {device_id, workspace_id, surface} }
+//
+// Phone uses the ElevenLabs Android/iOS SDK to start a WebRTC session
+// with this token + dynamicVariables. ElevenLabs holds the agent prompt;
+// it's the same agent the desktop uses. See docs/VOICE_V1_PLAN.md.
+app.get('/voice-session-init', async (c) => {
+  const claims = c.get('deviceClaims');
+  // Reuse the desktop's voice prefs + EL credentials. Same agent, no
+  // mobile-only agent_id.
+  const { loadVoicePrefs } = await import('../../../lib/voice-prefs');
+  const { readElevenLabsKey } = await import('../../../lib/voice-credentials');
+  const prefs = await loadVoicePrefs();
+  if (prefs.fullAgentEngine !== 'elevenlabs-conv' &&
+      prefs.fullAgentEngine !== 'elevenlabs-conversational') {
+    return c.json({ error: 'voice_not_enabled', hint: 'Set fullAgentEngine to elevenlabs-conv in /settings/voice.' }, 404);
+  }
+  const agentId = prefs.elevenLabsAgentId?.trim();
+  if (!agentId) {
+    return c.json({ error: 'no_agent_id', hint: 'Set elevenLabsAgentId in /settings/voice.' }, 404);
+  }
+  const apiKey = await readElevenLabsKey();
+  if (!apiKey) {
+    return c.json({ error: 'no_api_key', hint: 'Add ElevenLabs API key in /settings/api-keys.' }, 404);
+  }
+  // Detect platform up front — we need to pass an allowed `source` to EL
+  // (their API rejects arbitrary strings). Their enum has android_sdk +
+  // swift_sdk; default unknown.
+  const ua = c.req.header('user-agent') ?? '';
+  let surface = c.req.query('surface');
+  if (!surface) {
+    surface = ua.includes('Android') ? 'mobile-android'
+            : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
+            : 'mobile-unknown';
+  }
+  const elSource = surface === 'mobile-android' ? 'android_sdk'
+                 : surface === 'mobile-ios' ? 'swift_sdk'
+                 : 'unknown';
+  // Mint a fresh conversation token from EL.
+  let res: Response;
+  try {
+    res = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}&source=${elSource}`,
+      { method: 'GET', headers: { 'xi-api-key': apiKey, 'accept': 'application/json' }, signal: AbortSignal.timeout(8000) },
+    );
+  } catch (err) {
+    return c.json({ error: 'mint_failed', detail: (err as Error)?.message ?? String(err) }, 502);
+  }
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 400);
+    return c.json({ error: 'mint_rejected', status: res.status, detail }, res.status === 429 ? 503 : 502);
+  }
+  const raw = await res.text();
+  let parsed: { token?: string; conversation_token?: string } = {};
+  try { parsed = JSON.parse(raw); } catch { /* keep empty */ }
+  const token = parsed.token ?? parsed.conversation_token;
+  if (typeof token !== 'string' || !token) {
+    return c.json({ error: 'mint_shape', detail: `no token in EL response; raw: ${raw.slice(0, 200)}` }, 502);
+  }
+  return c.json({
+    conversationToken: token,
+    agentId,
+    dynamicVariables: {
+      device_id: claims.sub,
+      workspace_id: claims.workspace_id,
+      surface,
+      desktop_host: process.env.MOBILE_DESKTOP_HOST ?? '',
+    },
+  });
+});
+
 // ── Operator panel surface for mobile ──────────────────────────────────
 //
 // Mobile reads operator-suggestions over plain HTTP (vs Zero) because
