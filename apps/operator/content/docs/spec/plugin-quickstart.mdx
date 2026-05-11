@@ -85,6 +85,20 @@ Catches manifest schema errors, missing entry point, malformed capability string
 
 If you don't run lint, the operator will reject loading at install time with the same error, just later.
 
+### `doctor` — declared vs used capability check
+
+```bash
+papercusp plugin doctor
+```
+
+Static-analyzes your plugin source against `capabilities[]`. Reports:
+
+- **Missing** caps — `ctx.spawn('git', ...)` in source, no `compute:exec:git` in manifest. Fatal — the loader will deny it at runtime.
+- **Unused** caps — declared but no matching call site detected. Warning — review for cap pollution or note false positives (e.g. caps gated through code paths the scanner misses, or `events:listen:` declared as a manifest hook rather than via `ctx.hookBus.on`).
+- **Dynamic** lookups — `ctx.spawn(varname, ...)` etc. that can't be statically verified. Informational only.
+
+Run both `lint` and `doctor` pre-commit. Together they catch ~80% of "works in dev, breaks on first prod load" issues without an AST walker.
+
 ## 4. Test locally
 
 ```bash
