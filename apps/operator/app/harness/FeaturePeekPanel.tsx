@@ -62,7 +62,9 @@ export default function FeaturePeekPanel({
   const [copied, setCopied] = useState(false);
   const [prUrl, setPrUrl] = useState<string | null>(null);
   const [debugNote, setDebugNote] = useState<string | null>(null);
+  const [synthesisNote, setSynthesisNote] = useState<string | null>(null);
   const [showDebug, setShowDebug] = useQueryState('peekDebug', parseAsBoolean.withDefault(false));
+  const [showSynthesis, setShowSynthesis] = useQueryState('peekSynth', parseAsBoolean.withDefault(false));
   const [showTimeline, setShowTimeline] = useQueryState('peekTimeline', parseAsBoolean.withDefault(false));
   // Operator notes — what the user wrote via the inline "steer" form
   // in FeatureList. Same backing file the worker reads on next dispatch.
@@ -96,6 +98,18 @@ export default function FeaturePeekPanel({
       .then((d) => setDebugNote(d.content ?? null))
       .catch(() => setDebugNote(null));
   }, [slug, feature?.id, debugNoteForFeature]);
+
+  // Synthesis note — written by the synthesizer when it has something
+  // worth saying about what it took from which candidate. Best-effort
+  // fetch; absent file → no section.
+  useEffect(() => {
+    if (!feature) { setSynthesisNote(null); setShowSynthesis(false); return; }
+    setShowSynthesis(false);
+    fetch(`/api/harness/${slug}/synthesis-notes/${feature.id}`)
+      .then((r) => r.json())
+      .then((d) => setSynthesisNote(d.content ?? null))
+      .catch(() => setSynthesisNote(null));
+  }, [slug, feature?.id, setShowSynthesis]);
 
   // Operator notes — eager via the parent's Zero subscription. When
   // `notesForFeature` is provided we parse it client-side; the Zero
@@ -435,6 +449,40 @@ export default function FeaturePeekPanel({
                   value={debugNote}
                   className="h-debug-markdown"
                   emptyLabel="No debugger notes."
+                />
+              )}
+            </Section>
+          )}
+
+          {/* Synthesizer notes, when the synthesizer wrote one. */}
+          {synthesisNote && (
+            <Section title="Synthesis notes">
+              <div style={{ marginBottom: 6 }}>
+                <button
+                  onClick={() => setShowSynthesis((v) => !v)}
+                  title={showSynthesis ? "Hide synthesizer's notes" : "Show synthesizer's notes for this feature"}
+                  style={{
+                    background: '#221c2d',
+                    border: `1px solid ${COLORS.borderSubtle}`,
+                    color: COLORS.text,
+                    padding: '4px 10px',
+                    borderRadius: RADIUS.sm,
+                    cursor: 'pointer',
+                    fontSize: SIZES.sm,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.02)',
+                  }}>
+                  <span>{showSynthesis ? '▾' : '▸'}</span>
+                  <span>What synthesizer kept / rewrote ({synthesisNote.length.toLocaleString()} chars)</span>
+                </button>
+              </div>
+              {showSynthesis && (
+                <HarnessMarkdownView
+                  value={synthesisNote}
+                  className="h-synthesis-markdown"
+                  emptyLabel="No synthesis notes."
                 />
               )}
             </Section>

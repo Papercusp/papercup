@@ -1255,13 +1255,19 @@ export async function ensureAdaptiveTelemetryTable(): Promise<void> {
       outcome                TEXT,
       outcome_ts             BIGINT,
       duration_ms            BIGINT,
-      workspace_id           TEXT    NOT NULL DEFAULT ''
+      workspace_id           TEXT    NOT NULL DEFAULT '',
+      synthesized            BOOLEAN,
+      synthesis_error        TEXT
     );
     CREATE INDEX IF NOT EXISTS adaptive_telemetry_harness_idx
       ON harness_shared.adaptive_telemetry (harness_slug, ts DESC);
     CREATE INDEX IF NOT EXISTS adaptive_telemetry_pending_idx
       ON harness_shared.adaptive_telemetry (harness_slug, feature_id)
       WHERE outcome IS NULL;
+    -- Idempotent column adds for harnesses created before migration 056.
+    ALTER TABLE harness_shared.adaptive_telemetry
+      ADD COLUMN IF NOT EXISTS synthesized boolean,
+      ADD COLUMN IF NOT EXISTS synthesis_error text;
   `);
   try {
     await sql.unsafe(

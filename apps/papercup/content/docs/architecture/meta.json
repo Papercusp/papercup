@@ -5,7 +5,6 @@
     "memory",
     "checkpoints",
     "worktrees",
-    "competition",
     "smoke-test",
     "decisions-timeline",
     "shared-libs"

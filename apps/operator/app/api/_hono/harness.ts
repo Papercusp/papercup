@@ -2913,6 +2913,8 @@ harness.get('/:slug/orchestrator/adaptive-telemetry', async (c) => {
       outcome: at.outcome,
       outcome_ts: at.outcome_ts,
       duration_ms: at.duration_ms,
+      synthesized: at.synthesized,
+      synthesis_error: at.synthesis_error,
     })
     .from(at)
     .where(eq(at.harness_slug, project.slug))
@@ -2972,13 +2974,25 @@ harness.patch('/:slug/orchestrator/adaptive-telemetry/:id', async (c) => {
   if (!project) return c.json({ error: 'unknown project' }, 404);
   const id = Number(c.req.param('id'));
   if (!Number.isInteger(id) || id < 1) return c.json({ error: 'invalid id' }, 400);
-  let body: { outcome?: string; durationMs?: number | null };
+  let body: {
+    outcome?: string;
+    durationMs?: number | null;
+    synthesized?: boolean | null;
+    synthesisError?: string | null;
+  };
   try {
     body = (await c.req.json()) as typeof body;
   } catch {
     return c.json({ error: 'invalid JSON' }, 400);
   }
-  if (!body.outcome || !['pass', 'fail', 'cancelled'].includes(body.outcome)) {
+  // Either the validator-side outcome OR the synthesizer-side outcome
+  // (or both, but typically separate PATCHes).
+  const hasOutcome = body.outcome !== undefined;
+  const hasSynth = body.synthesized !== undefined;
+  if (!hasOutcome && !hasSynth) {
+    return c.json({ error: "expected 'outcome' and/or 'synthesized' field" }, 400);
+  }
+  if (hasOutcome && !['pass', 'fail', 'cancelled'].includes(body.outcome!)) {
     return c.json({ error: "outcome must be one of 'pass'|'fail'|'cancelled'" }, 400);
   }
   await ensureAdaptiveTelemetryTable();
@@ -2986,13 +3000,19 @@ harness.patch('/:slug/orchestrator/adaptive-telemetry/:id', async (c) => {
   const { generated } = await import('@restart/db-org');
   const { and, eq } = await import('drizzle-orm');
   const at = generated.adaptive_telemetryInHarness_shared;
+  const update: Record<string, unknown> = {};
+  if (hasOutcome) {
+    update.outcome = body.outcome;
+    update.outcome_ts = Date.now();
+    update.duration_ms = body.durationMs ?? null;
+  }
+  if (hasSynth) {
+    update.synthesized = body.synthesized;
+    update.synthesis_error = body.synthesisError ?? null;
+  }
   await db
     .update(at)
-    .set({
-      outcome: body.outcome,
-      outcome_ts: Date.now(),
-      duration_ms: body.durationMs ?? null,
-    })
+    .set(update)
     .where(and(eq(at.id, BigInt(id)), eq(at.harness_slug, project.slug)));
   return c.json({ ok: true });
 });
@@ -3841,6 +3861,17 @@ harness.get('/:slug/debug-notes/:id', async (c) => {
   const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
   if (!id) return c.json({ error: 'invalid feature id' }, 400);
   const p = join(harnessDir(project), 'debug', `${id}.md`);
+  let mtimeMs: number | null = null;
+  try { mtimeMs = statSync(p).mtimeMs; } catch {}
+  return c.json({ content: safeRead(p), mtimeMs });
+});
+
+harness.get('/:slug/synthesis-notes/:id', async (c) => {
+  const project = await resolveProject(c.req.param('slug'));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const id = c.req.param('id').replace(/[^A-Za-z0-9_-]/g, '');
+  if (!id) return c.json({ error: 'invalid feature id' }, 400);
+  const p = join(harnessDir(project), 'synthesis-notes', `${id}.md`);
   let mtimeMs: number | null = null;
   try { mtimeMs = statSync(p).mtimeMs; } catch {}
   return c.json({ content: safeRead(p), mtimeMs });

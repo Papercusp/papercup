@@ -88,6 +88,7 @@ const KNOWN_ROLES = [
   'orchestrator',
   'worker',
   'validator',
+  'synthesizer',
   'debugger',
   'scoper',
   'architect',
@@ -120,6 +121,8 @@ interface TelemetryRow {
   outcome: string | null;
   outcome_ts: number | null;
   duration_ms: number | null;
+  synthesized: boolean | null;
+  synthesis_error: string | null;
 }
 
 export default function HarnessSettingsPanel({
@@ -691,6 +694,11 @@ export default function HarnessSettingsPanel({
                 (off = skip extra LLM call when N=1)
               </span>
             </label>
+            <div style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)', marginTop: 6, lineHeight: 1.5 }}>
+              ↳ to upgrade the model the synthesizer runs on (e.g. opus), add
+              a <code>synthesizer</code> override in the <em>AI backend</em>
+              section below.
+            </div>
           </div>
 
           {/* ── Debugger threshold ──────────────────────────────── */}
@@ -979,6 +987,7 @@ export default function HarnessSettingsPanel({
                     <th style={headerStyle}>N</th>
                     <th style={headerStyle}>Tier</th>
                     <th style={headerStyle}>Slots</th>
+                    <th style={headerStyle}>Synth</th>
                     <th style={headerStyle}>Outcome</th>
                     <th style={headerStyle}>Duration</th>
                   </tr>
@@ -998,6 +1007,14 @@ export default function HarnessSettingsPanel({
                       ? 'var(--bad, #d97757)'
                       : 'var(--pc-muted, #9a9a9a)';
                     const duration = row.duration_ms != null ? `${(row.duration_ms / 1000).toFixed(1)}s` : '—';
+                    const synthDisplay = row.synthesized === true
+                      ? 'ok'
+                      : row.synthesized === false
+                      ? `failed${row.synthesis_error ? ` (${row.synthesis_error.slice(0, 40)})` : ''}`
+                      : '—';
+                    const synthColor = row.synthesized === false
+                      ? 'var(--bad, #d97757)'
+                      : 'var(--pc-muted, #9a9a9a)';
                     return (
                       <tr key={row.id}>
                         <td style={cellStyle}>{when}</td>
@@ -1005,6 +1022,7 @@ export default function HarnessSettingsPanel({
                         <td style={cellStyle}>{nDisplay}</td>
                         <td style={cellStyle}>{row.tier_label ?? '—'}</td>
                         <td style={cellStyle}>{slots}</td>
+                        <td style={{ ...cellStyle, color: synthColor }} title={row.synthesis_error ?? undefined}>{synthDisplay}</td>
                         <td style={{ ...cellStyle, color: outcomeColor }}>{row.outcome ?? 'pending'}</td>
                         <td style={cellStyle}>{duration}</td>
                       </tr>
