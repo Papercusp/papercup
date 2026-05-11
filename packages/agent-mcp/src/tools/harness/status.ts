@@ -11,6 +11,11 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
+// generated.ts uses snake_case names (...InHarness_shared, not
+// ...InHarnessShared) — fixed 2026-05-11 when prompt agent's
+// Phase 1a started eagerly iterating the projected-tool catalog,
+// which loaded this file at startup and surfaced `schemaOf(undefined)`
+// crashes that the lazy-eval path had hidden until now.
 const projects = generated.projectsInHarness_shared;
 const audit = generated.audit_logInHarness_shared;
 const ProjectSelect = schemaOf(projects).select;
@@ -34,9 +39,9 @@ export default defineTool({
       .select({
         slug: projects.slug,
         status: projects.status,
-        updated_ts: projects.updated_ts,
-        spent_cents: projects.spent_cents,
-        budget_cents: projects.budget_cents,
+        updated_ts: projects.updatedTs,
+        spent_cents: projects.spentCents,
+        budget_cents: projects.budgetCents,
       })
       .from(projects)
       .where(eq(projects.slug, args.slug))

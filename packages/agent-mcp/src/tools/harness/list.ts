@@ -38,10 +38,10 @@ export default defineTool({
         slug: projects.slug,
         name: projects.name,
         status: projects.status,
-        updated_ts: projects.updated_ts,
+        updated_ts: projects.updatedTs,
       })
       .from(projects)
-      .orderBy(desc(projects.updated_ts))
+      .orderBy(desc(projects.updatedTs))
       .limit(args.limit)) as Array<Pick<ProjectRow, 'slug' | 'name' | 'status' | 'updated_ts'>>;
     if (args.detail === 'summary') {
       return { data: rows.map((r) => ({ slug: r.slug, status: r.status })) };

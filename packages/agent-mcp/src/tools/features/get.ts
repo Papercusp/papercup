@@ -35,7 +35,7 @@ export default defineTool({
     const rows = (await txDb
       .select()
       .from(features)
-      .where(and(eq(features.harness_slug, args.slug), eq(features.feature_id, args.feature_id)))
+      .where(and(eq(features.harnessSlug, args.slug), eq(features.featureId, args.feature_id)))
       .limit(1)) as FeatureRow[];
     if (!rows.length) {
       return {

@@ -47,14 +47,14 @@ export default defineTool({
           slug: row.slug,
           name: row.name,
           status: row.status,
-          updated_ts: row.updated_ts,
+          updated_ts: row.updatedTs,
         },
       };
     }
     const counts = await txDb
       .select({ status: features.status, n: count() })
       .from(features)
-      .where(eq(features.harness_slug, args.slug))
+      .where(eq(features.harnessSlug, args.slug))
       .groupBy(features.status);
     const featureCounts: Record<string, number> = {};
     for (const c of counts) {

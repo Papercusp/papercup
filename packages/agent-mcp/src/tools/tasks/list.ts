@@ -35,28 +35,28 @@ export default defineTool({
   async handler(args, ctx) {
     const txDb = drizzle(ctx.tx);
     const preds = [
-      args.harnessSlug ? eq(features.harness_slug, args.harnessSlug) : undefined,
+      args.harnessSlug ? eq(features.harnessSlug, args.harnessSlug) : undefined,
       args.status ? eq(features.status, args.status) : undefined,
-      args.goalId ? eq(features.goal_id, args.goalId) : undefined,
+      args.goalId ? eq(features.goalId, args.goalId) : undefined,
     ].filter((p): p is NonNullable<typeof p> => p !== undefined);
 
     const rows = (await txDb
       .select({
-        harness_slug: features.harness_slug,
-        feature_id: features.feature_id,
+        harness_slug: features.harnessSlug,
+        feature_id: features.featureId,
         title: features.title,
         summary: features.summary,
         status: features.status,
-        updated_ts: features.updated_ts,
+        updated_ts: features.updatedTs,
         attempts: features.attempts,
         kind: features.kind,
-        project_id: features.project_id,
-        expected_cost_cents: features.expected_cost_cents,
-        goal_id: features.goal_id,
+        project_id: features.projectId,
+        expected_cost_cents: features.expectedCostCents,
+        goal_id: features.goalId,
       })
       .from(features)
       .where(preds.length ? and(...preds) : undefined)
-      .orderBy(desc(features.updated_ts))
+      .orderBy(desc(features.updatedTs))
       .limit(args.limit)) as Array<
       Pick<
         FeatureRow,

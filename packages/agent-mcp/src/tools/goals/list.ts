@@ -36,12 +36,12 @@ export default defineTool({
         id: goals.id,
         title: goals.title,
         body: goals.body,
-        parent_id: goals.parent_id,
-        budget_cents: goals.budget_cents,
-        created_at: goals.created_at,
+        parent_id: goals.parentId,
+        budget_cents: goals.budgetCents,
+        created_at: goals.createdAt,
       })
       .from(goals)
-      .orderBy(desc(goals.created_at))
+      .orderBy(desc(goals.createdAt))
       .limit(args.limit)) as Pick<GoalRow, 'id' | 'title' | 'body' | 'parent_id' | 'budget_cents' | 'created_at'>[];
     if (args.detail === 'summary') {
       return { data: rows.map((r) => ({ id: r.id, title: r.title })) };

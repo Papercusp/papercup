@@ -46,7 +46,7 @@ export default defineTool({
     const children = (await txDb
       .select({ id: goals.id, title: goals.title })
       .from(goals)
-      .where(eq(goals.parent_id, args.id))) as Array<Pick<GoalRow, 'id' | 'title'>>;
+      .where(eq(goals.parentId, args.id))) as Array<Pick<GoalRow, 'id' | 'title'>>;
     return { data: { ...goal, children } };
   },
 });

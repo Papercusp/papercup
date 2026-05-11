@@ -33,7 +33,7 @@ export default defineTool({
     const rows = (await txDb
       .select()
       .from(features)
-      .where(and(eq(features.harness_slug, args.harnessSlug), eq(features.feature_id, args.id)))
+      .where(and(eq(features.harnessSlug, args.harnessSlug), eq(features.featureId, args.id)))
       .limit(1)) as FeatureRow[];
     if (!rows.length) {
       return {
@@ -45,7 +45,7 @@ export default defineTool({
     if (args.detail === 'summary') {
       const r = rows[0];
       return {
-        data: { harnessSlug: r.harness_slug, id: r.feature_id, title: r.title, status: r.status },
+        data: { harnessSlug: r.harnessSlug, id: r.featureId, title: r.title, status: r.status },
       };
     }
     return { data: rows[0] };

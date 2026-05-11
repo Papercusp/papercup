@@ -32,20 +32,20 @@ export default defineTool({
     const txDb = drizzle(ctx.tx);
     const preds = [
       args.kind ? eq(pe.kind, args.kind) : undefined,
-      args.targetRole ? eq(pe.target_role, args.targetRole) : undefined,
+      args.targetRole ? eq(pe.targetRole, args.targetRole) : undefined,
     ].filter((p): p is NonNullable<typeof p> => p !== undefined);
     const rows = (await txDb
       .select({
         id: pe.id,
         kind: pe.kind,
-        target_role: pe.target_role,
-        due_at: pe.due_at,
-        created_at: pe.created_at,
-        consumed_at: pe.consumed_at,
+        target_role: pe.targetRole,
+        due_at: pe.dueAt,
+        created_at: pe.createdAt,
+        consumed_at: pe.consumedAt,
       })
       .from(pe)
       .where(preds.length ? and(...preds) : undefined)
-      .orderBy(desc(pe.created_at))
+      .orderBy(desc(pe.createdAt))
       .limit(args.limit)) as Array<
       Pick<PERow, 'id' | 'kind' | 'target_role' | 'due_at' | 'created_at' | 'consumed_at'>
     >;
