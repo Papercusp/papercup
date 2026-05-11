@@ -51,3 +51,18 @@ describe('validateManifest', () => {
     expect(r.ok).toBe(true);
   });
 });
+
+describe('$schema meta-keyword', () => {
+  it('allows $schema field for editor LSP autocomplete', () => {
+    const r = validateManifest({
+      $schema: 'https://papercupai.com/papercusp-plugin.schema.json',
+      name: '@test/with-schema',
+      version: '0.1.0',
+      kind: 'plugin',
+      papercusp: '^1.0',
+      capabilities: [],
+      actions: [],
+    });
+    expect(r.ok).toBe(true);
+  });
+});
