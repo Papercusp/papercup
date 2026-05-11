@@ -422,16 +422,29 @@ function buildClientTools(opts: {
  * the failure as a verbatim error to the user. A graceful "I had trouble
  * just then" is far better.
  */
-async function askOperatorViaSse(params: { text?: string }): Promise<string> {
+async function askOperatorViaSse(params: { text?: string; trigger?: string }): Promise<string> {
   const userText = (params?.text ?? '').toString().trim();
-  if (!userText) return '';
+  const trigger = typeof params?.trigger === 'string' ? params.trigger : null;
+  // No user text + no explicit trigger = nothing to do.
+  if (!userText && !trigger) return '';
+  // EL agent uses { trigger: 'silence_nudge' | 'open_canvas' } when EL's
+  // turn_timeout fires (active-mode silence ladder) or when the session
+  // first opens (G17 voice opening utterance). The shell prompt in
+  // prompts/operator.shell.md instructs the agent to pass these through.
+  const effectiveTrigger = trigger === 'silence_nudge' || trigger === 'silence_check'
+    || trigger === 'quiet_wait_resume' || trigger === 'open_canvas'
+    ? trigger
+    : 'user_message';
+  const messages = userText
+    ? [{ role: 'user' as const, content: userText }]
+    : [];
   try {
     const res = await fetch('/api/agent-mcp/operator-converse', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        messages: [{ role: 'user', content: userText }],
-        trigger: 'user_message',
+        messages,
+        trigger: effectiveTrigger,
         mayAskActive: false,
       }),
     });

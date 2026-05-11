@@ -230,6 +230,25 @@ const MESSAGES_MAX = 100; // bound the stored history to keep sessionStorage wel
 export function readOperatorModeFromSession(): OperatorMode | null {
   if (typeof window === 'undefined') return null;
   try {
+    // G16: F5/reload should reset mode to "active" per the plan
+    // ("Refresh = active again"). sessionStorage survives reload by
+    // design; check PerformanceNavigationTiming and clear on a
+    // reload navigation so the bootstrap re-seeds from voice prefs.
+    // Only do this once per page lifetime — subsequent reads should
+    // see the cleared value (null → bootstrap → 'active').
+    if (!reloadResetApplied) {
+      reloadResetApplied = true;
+      try {
+        const nav = performance.getEntriesByType('navigation')[0] as
+          | PerformanceNavigationTiming
+          | undefined;
+        if (nav && nav.type === 'reload') {
+          window.sessionStorage.removeItem(MODE_KEY);
+          window.sessionStorage.removeItem(SLEEP_UNTIL_KEY);
+          return null;
+        }
+      } catch { /* perf API unsupported — fall through */ }
+    }
     const v = window.sessionStorage.getItem(MODE_KEY);
     if (v === 'active' || v === 'passive') return v;
     return null;
@@ -237,6 +256,8 @@ export function readOperatorModeFromSession(): OperatorMode | null {
     return null;
   }
 }
+
+let reloadResetApplied = false;
 
 export function writeOperatorModeToSession(mode: OperatorMode): void {
   if (typeof window === 'undefined') return;

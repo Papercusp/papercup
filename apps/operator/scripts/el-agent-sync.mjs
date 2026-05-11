@@ -220,11 +220,12 @@ const PANEL_PARAM = prop('string', 'Which panel: operator or oracle.', { enum: [
 const TOOLS = [
   {
     name: 'ask_operator', type: 'client', expects_response: true,
-    description: 'Send the user\'s exact words to the local operator brain (omp + Claude Max + gitnexus). Returns the operator\'s reply as a string. Call this for every user turn that needs a substantive answer; speak the returned text VERBATIM. Do not paraphrase or generate your own response.',
+    description: 'Send the user\'s exact words to the local operator brain (omp + Claude Max + gitnexus). Returns the operator\'s reply as a string. Call this for every user turn that needs a substantive answer; speak the returned text VERBATIM. Do not paraphrase or generate your own response. For silence (the runtime fired a turn_timeout with no user input) pass trigger="silence_nudge" and an empty text — the brain will return a silence prompt to speak.',
     parameters: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: "The user's verbatim utterance — pass through unchanged." },
+        text: { type: 'string', description: "The user's verbatim utterance — pass through unchanged. Empty string when this is a silence-triggered turn." },
+        trigger: { type: 'string', description: 'Optional reason for this turn. "silence_nudge" when EL turn_timeout fires with no user input. Default: "user_message".', enum: ['user_message', 'silence_nudge', 'silence_check', 'quiet_wait_resume', 'open_canvas'] },
       },
       required: ['text'],
       description: 'Delegate input.',
@@ -745,15 +746,18 @@ const patch = {
       speed: OPERATOR_VOICE.speed,
     },
     // Disable silence-driven agent turns. Default turn_timeout=7s makes
-    // the agent take a fresh turn after 7 seconds of dead air, and the
-    // model fills that turn with "are you still there?" / "still here"
-    // — no persona instruction can suppress it because EL forces the
-    // turn at the protocol level. Setting -1 disables. turn_eagerness:
-    // 'patient' also tells the model to wait longer before deciding
-    // the user has finished speaking. Valid values: patient, normal,
-    // eager.
+    // turn_timeout=10 brings the active-mode silence ladder in line
+    // with the plan ("~10s after last operator turn → silence-nudge").
+    // EL forces a fresh agent turn after 10s of dead air; in shell
+    // mode the agent calls ask_operator with empty params, which the
+    // SSE route maps to trigger='silence_nudge' on the brain — the
+    // brain emits one of the ladder utterances ("Still with me?",
+    // etc) and TTS reads it. Subsequent timeouts escalate the brain's
+    // internal sub-state to silence_check / quiet_wait the same way
+    // the text path does. turn_eagerness 'patient' keeps the
+    // mid-utterance "I'm thinking" trip-wire long.
     turn: {
-      turn_timeout: -1,
+      turn_timeout: 10,
       turn_eagerness: 'patient',
     },
   },
