@@ -1496,11 +1496,11 @@ async function reconcileAll(state: WatcherState): Promise<void> {
       if (existsSync(summaryPath)) {
         try {
           const fsMtime = Math.floor(statSync(summaryPath).mtimeMs);
-          const { sql } = getOrgPg();
-          const rows = await sql<{ mtime_ms: string }[]>`
-            SELECT mtime_ms FROM harness_shared.harness_summaries
-             WHERE harness_slug = ${proj.slug} AND phase = ${phase}
-          `;
+          const { db } = getOrgPg();
+          const rows = await db
+            .select({ mtime_ms: hsum.mtime_ms })
+            .from(hsum)
+            .where(and(eq(hsum.harness_slug, proj.slug), eq(hsum.phase, phase)));
           if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
             await upsertSummary(proj.slug, phase, summaryPath);
           }
@@ -1524,20 +1524,20 @@ async function reconcileAll(state: WatcherState): Promise<void> {
               fsIds.add(id);
               const fsMtime = Math.floor(statSync(path).mtimeMs);
               if (sub === 'pending-reviews') {
-                const { sql } = getOrgPg();
-                const rows = await sql<{ mtime_ms: string }[]>`
-                  SELECT mtime_ms FROM harness_shared.pending_reviews
-                   WHERE harness_slug = ${proj.slug} AND phase = ${phase} AND review_id = ${id}
-                `;
+                const { db } = getOrgPg();
+                const rows = await db
+                  .select({ mtime_ms: prev.mtime_ms })
+                  .from(prev)
+                  .where(and(eq(prev.harness_slug, proj.slug), eq(prev.phase, phase), eq(prev.review_id, id)));
                 if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
                   await upsertReview(proj.slug, phase, path);
                 }
               } else {
-                const { sql } = getOrgPg();
-                const rows = await sql<{ mtime_ms: string }[]>`
-                  SELECT mtime_ms FROM harness_shared.harness_proposals_shared
-                   WHERE harness_slug = ${proj.slug} AND phase = ${phase} AND proposal_id = ${id}
-                `;
+                const { db } = getOrgPg();
+                const rows = await db
+                  .select({ mtime_ms: hps.mtime_ms })
+                  .from(hps)
+                  .where(and(eq(hps.harness_slug, proj.slug), eq(hps.phase, phase), eq(hps.proposal_id, id)));
                 if (rows.length === 0 || Number(rows[0].mtime_ms) !== fsMtime) {
                   await upsertProposal(proj.slug, phase, path);
                 }
@@ -1548,30 +1548,29 @@ async function reconcileAll(state: WatcherState): Promise<void> {
 
         // Orphan delete: rows in PG whose FS file is gone.
         try {
-          const { sql } = getOrgPg();
-          const tableCol = sub === 'pending-reviews'
-            ? { table: 'pending_reviews', col: 'review_id' }
-            : { table: 'harness_proposals_shared', col: 'proposal_id' };
-          const pgIds = await sql<{ id: string }[]>`
-            SELECT ${sql(tableCol.col)} AS id FROM ${sql(`harness_shared.${tableCol.table}`)}
-             WHERE harness_slug = ${proj.slug} AND phase = ${phase}
-          `;
-          for (const { id } of pgIds) {
-            if (!fsIds.has(id)) {
-              if (sub === 'pending-reviews') {
-                await sql`
-                  DELETE FROM harness_shared.pending_reviews
-                   WHERE harness_slug = ${proj.slug}
-                     AND phase = ${phase}
-                     AND review_id = ${id}
-                `;
-              } else {
-                await sql`
-                  DELETE FROM harness_shared.harness_proposals_shared
-                   WHERE harness_slug = ${proj.slug}
-                     AND phase = ${phase}
-                     AND proposal_id = ${id}
-                `;
+          const { db } = getOrgPg();
+          if (sub === 'pending-reviews') {
+            const pgIds = await db
+              .select({ id: prev.review_id })
+              .from(prev)
+              .where(and(eq(prev.harness_slug, proj.slug), eq(prev.phase, phase)));
+            for (const { id } of pgIds) {
+              if (!fsIds.has(id)) {
+                await db
+                  .delete(prev)
+                  .where(and(eq(prev.harness_slug, proj.slug), eq(prev.phase, phase), eq(prev.review_id, id)));
+              }
+            }
+          } else {
+            const pgIds = await db
+              .select({ id: hps.proposal_id })
+              .from(hps)
+              .where(and(eq(hps.harness_slug, proj.slug), eq(hps.phase, phase)));
+            for (const { id } of pgIds) {
+              if (!fsIds.has(id)) {
+                await db
+                  .delete(hps)
+                  .where(and(eq(hps.harness_slug, proj.slug), eq(hps.phase, phase), eq(hps.proposal_id, id)));
               }
             }
           }
