@@ -13,6 +13,7 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -27,8 +28,13 @@ export const runtime = 'nodejs';
 const ROLE_RE = /^[a-z][a-z0-9_-]{0,63}$/i;
 const MAX_BODY = 256 * 1024;
 
-interface FileEntry { role?: string; content?: string }
-interface RequestBody { files?: FileEntry[] }
+const FileEntrySchema = z.object({
+  role: z.string().regex(ROLE_RE),
+  content: z.string().optional().default(''),
+});
+const BodySchema = z.object({
+  files: z.array(FileEntrySchema).optional().default([]),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -46,19 +52,24 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const files = Array.isArray(body.files) ? body.files : [];
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
+  }
+  const { files } = parsed.data;
   const ws = activeWorkspaceId();
   const now = Date.now();
   let upserts = 0;
   let deletes = 0;
 
   for (const f of files) {
-    if (!f || typeof f.role !== 'string' || !ROLE_RE.test(f.role)) continue;
-    let content = typeof f.content === 'string' ? f.content : '';
+    let content = f.content;
     if (Buffer.byteLength(content) > MAX_BODY) {
       content = content.slice(0, MAX_BODY) + '\n...[truncated]\n';
     }

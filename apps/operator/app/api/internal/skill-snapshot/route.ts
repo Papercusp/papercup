@@ -13,6 +13,7 @@
  * Auth: Authorization: Bearer <harness_token>.
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -27,8 +28,13 @@ export const runtime = 'nodejs';
 const NAME_RE = /^[A-Za-z0-9_.-]+\.md$/;
 const MAX_BODY = 256 * 1024;
 
-interface FileEntry { name?: string; content?: string }
-interface RequestBody { files?: FileEntry[] }
+const FileEntrySchema = z.object({
+  name: z.string().regex(NAME_RE),
+  content: z.string().optional().default(''),
+});
+const BodySchema = z.object({
+  files: z.array(FileEntrySchema).optional().default([]),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -47,24 +53,28 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = tokenRows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const files = Array.isArray(body.files) ? body.files : [];
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
+  }
+  const { files } = parsed.data;
   const ws = activeWorkspaceId();
   const now = Date.now();
 
-  // Validate + filter to keepable entries.
-  const keep: { name: string; content: string }[] = [];
-  for (const f of files) {
-    if (!f || typeof f.name !== 'string' || !NAME_RE.test(f.name)) continue;
-    let content = typeof f.content === 'string' ? f.content : '';
+  // Apply MAX_BODY truncation after Zod has validated each entry's shape.
+  const keep = files.map((f) => {
+    let content = f.content;
     if (Buffer.byteLength(content) > MAX_BODY) {
       content = content.slice(0, MAX_BODY) + '\n...[truncated]\n';
     }
-    keep.push({ name: f.name, content });
-  }
+    return { name: f.name, content };
+  });
 
   // Replace-all semantics: orphan-delete any skill not in the snapshot,
   // then UPSERT the rest.
