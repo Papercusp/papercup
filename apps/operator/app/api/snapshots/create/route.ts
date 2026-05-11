@@ -1,8 +1,12 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { capture, isBundledPlugin, type SnapshotPlugin } from '@papercusp/export-state';
-import { readVersionPin } from './version-pin';
+import {
+  capture,
+  isBundledPlugin,
+  readCapturePluginExtras,
+  type SnapshotPlugin,
+} from '@papercusp/export-state';
 import { findProject } from '@/lib/snapshot-discovery';
 import { redactPluginConfig } from '@/lib/snapshot-config-redact';
 import { extractShape, type ConfigSchema } from '@/lib/snapshot-shape';
@@ -118,7 +122,10 @@ async function readEnabledPlugins(
     let caps: string[] = [];
     let uiSchema: unknown = undefined;
     let configSchema: ConfigSchema | undefined;
-    let versionPin: SnapshotPlugin['versionPin'] | undefined;
+    let pinExtras: ReturnType<typeof readCapturePluginExtras> = {
+      versionPin: { mode: 'semver' },
+      pluginVersionPinned: false,
+    };
     let isBundled = false;
     try {
       const m = JSON.parse(await fs.readFile(join(dir, 'papercusp.json'), 'utf8')) as {
@@ -127,6 +134,7 @@ async function readEnabledPlugins(
         configSchema?: unknown;
         pluginVersionPinned?: unknown;
         versionPin?: unknown;
+        runtime?: unknown;
         bundled?: unknown;
       };
       if (Array.isArray(m.capabilities)) {
@@ -136,7 +144,7 @@ async function readEnabledPlugins(
       if (m.configSchema && typeof m.configSchema === 'object') {
         configSchema = m.configSchema as ConfigSchema;
       }
-      versionPin = readVersionPin(m);
+      pinExtras = readCapturePluginExtras(m);
       isBundled = isBundledPlugin(m);
     } catch { /* empty */ }
     // Per rev3 plan G+5 / A10: bundled plugins ship with the operator
@@ -184,7 +192,12 @@ async function readEnabledPlugins(
       capabilities: caps,
       configJson: redacted.configJson,
       ...(shapeJson ? { shapeJson } : {}),
-      versionPin: versionPin ?? { mode: 'exact' as const },
+      // v2 canonical fields written first; legacy pluginVersionPinned
+      // kept for one cycle so older readers still understand. Drop
+      // legacy after one release cycle.
+      ...(pinExtras.runtime ? { runtime: pinExtras.runtime } : {}),
+      versionPin: pinExtras.versionPin,
+      pluginVersionPinned: pinExtras.pluginVersionPinned,
     } as SnapshotPlugin);
     if (redacted.redactedKeys.length > 0) {
       // eslint-disable-next-line no-console
