@@ -26,6 +26,11 @@ export default defineTool({
   description:
     'List multi-turn chat sessions for a harness slug (active by default; pass includeArchived=true to see all).',
   capability: 'agent_chats:read',
+  guidance: {
+    when: 'User asks "what chats have I had with X?", "show me the conversations on sheets", or you need a chatId before resuming via ui:dispatch.',
+    notWhen: 'For agents (who exists), use `agents:list`. For the transcript of a SPECIFIC chat, use `agent_chats:get`.',
+    chaining: 'Pair with `agent_chats:get` for detail on one chat, or `ui:dispatch` with `/harness/<slug>?chat=<chatId>` to take the user to it.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

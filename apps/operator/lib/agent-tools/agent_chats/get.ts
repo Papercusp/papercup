@@ -26,6 +26,11 @@ export default defineTool({
   name: 'agent_chats:get',
   description: 'Read one chat by id (transcript, totals, feature_lock state).',
   capability: 'agent_chats:read',
+  guidance: {
+    when: 'User names a specific chat ("the architect conversation about auth") and wants the full transcript or feature_lock state.',
+    notWhen: 'For a list of chats in a harness, use `agent_chats:list` first to find the id. Don\'t fetch full transcripts speculatively.',
+    chaining: 'Follow `agent_chats:list` to find the id.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

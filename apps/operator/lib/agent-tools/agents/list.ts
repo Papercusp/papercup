@@ -24,6 +24,11 @@ export default defineTool({
   name: 'agents:list',
   description: 'List agents across the workspace (optionally filtered by harness slug). Limit clamped 1..100, default 40.',
   capability: 'agents:read',
+  guidance: {
+    when: 'User asks "which agents are working on X?", "what crew does sheets have?", or you need to pick the most-active matching role before calling agent_chats:create.',
+    notWhen: 'For active CHAT sessions, use `agent_chats:list`. agents:list is who-exists; agent_chats:list is what-conversations.',
+    chaining: 'Pair with `agent_chats:create` once you\'ve picked the role to dispatch to.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

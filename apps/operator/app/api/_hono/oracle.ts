@@ -27,6 +27,11 @@ import { runAgentChat } from '@/lib/agent-chat-stream';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import {
+  loadRolePersona,
+  loadRoleToolsMd,
+  renderToolsCatalog,
+} from '@/lib/prompt-assembly';
 // Oracle prompt + memory now PG-backed (migration 024). Display paths kept
 // for legacy callers that surfaced them in the settings UI.
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
@@ -43,25 +48,58 @@ const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
 // every deployed dock build is on the new path, that listener can
 // also be deleted.
 
-const DEFAULT_PROMPT = `You are the Oracle — Papercusp's built-in concierge assistant.
+// Phase 4a of the tool-guidance arc: the seed prompt comes from
+// apps/operator/prompts/oracle.persona.md (single source of truth for
+// human edits). Loaded once at module init via prompt-assembly. The
+// per-turn toolBlock that used to live here has moved to renderToolsCatalog
+// + loadRoleToolsMd('oracle') in the chat handler below.
+//
+// User customization still works: ensureDefaults() seeds the PG row
+// with the .md content on a fresh install; the user can edit their
+// oracle prompt via the settings panel and PUT /oracle/config to
+// override the seed. Changes to oracle.persona.md flow into NEW
+// installs / wipes, not existing customized prompts.
+const DEFAULT_PROMPT = loadRolePersona('oracle');
 
-You know everything about how this app works (operator at :3055: harnesses,
-agents, snapshots, plugins, marketplace, settings) and you help the user
-get things done. Be concise, friendly, and direct.
-
-You have access to tools that let you act on the user's behalf:
-  - mcp__agentmcp__ui:dispatch with intent='set_url': take the user to a
-    path within the app. Use it when the user asks you to go somewhere,
-    or when an action requires being on a specific page.
-
-When the user asks you to take them to a page, call ui:dispatch immediately
-with the path, then briefly tell them where you went. If the user asks for
-something that needs a tool you don't yet have, describe what you'd do and
-which agent or page is involved.
-
-If the user asks about their own setup, don't fabricate state — say "I'd
-need to check" if you don't know.
-`;
+// Oracle's allowedTools list, hoisted to module scope so the catalog
+// render in promptText assembly can share it with the runAgentChat
+// call below. Strip the mcp__agentmcp__ prefix for the renderer; the
+// allowedTools string array keeps the full prefix because claude-code's
+// `--allowed-tools` expects it that way.
+const ORACLE_ALLOWED_TOOLS = [
+  // Browser navigation + UI state introspection.
+  'mcp__agentmcp__ui:dispatch',
+  'mcp__agentmcp__ui:get_state',
+  'mcp__agentmcp__ui:list_clients',
+  // Model-driven choice cards.
+  'mcp__agentmcp__chat:ask_choice',
+  // Harness reads.
+  'mcp__agentmcp__harness:list',
+  'mcp__agentmcp__harness:get',
+  'mcp__agentmcp__harness:status',
+  // Agent dispatch.
+  'mcp__agentmcp__agents:list',
+  'mcp__agentmcp__agent_chats:list',
+  'mcp__agentmcp__agent_chats:get',
+  'mcp__agentmcp__agent_chats:create',
+  'mcp__agentmcp__agent_chats:send_message',
+  // Workspace bookkeeping.
+  'mcp__agentmcp__tasks:list',
+  'mcp__agentmcp__tasks:get',
+  'mcp__agentmcp__goals:list',
+  'mcp__agentmcp__goals:get',
+  'mcp__agentmcp__messages:inbox',
+  'mcp__agentmcp__messages:outbox',
+  'mcp__agentmcp__audit:list',
+  // Memory + search.
+  'mcp__agentmcp__hindsight:recall',
+  'mcp__agentmcp__search:query',
+  // Tool introspection.
+  'mcp__agentmcp__agent_tools:list',
+];
+const ORACLE_TOOL_NAMES = ORACLE_ALLOWED_TOOLS.map((n) =>
+  n.replace(/^mcp__agentmcp__/, ''),
+);
 
 interface TutorialStep {
   id: string;
@@ -277,21 +315,13 @@ export function registerOracle(app: Hono) {
     const last = messages[messages.length - 1];
     const userContent = typeof last?.content === 'string' ? last.content : '';
 
-    // The Oracle now uses the unified agent_tools surface (HTTP MCP via
-    // mcp-remote, bearer=superuser-token). Replaces the seven legacy
-    // mcp__oracle__* stdio tools that lived in lib/oracle-mcp-server.mjs.
-    // The legacy server is deleted; everything below maps to a
-    // first-party agent_tool registered via defineTool() and exposed
-    // through the projected dispatcher at /api/mcp.
-    const toolBlock = `\n\n## Tools available\n\n` +
-      `  - mcp__agentmcp__ui:dispatch({ intent: 'set_url', params: { url: '/...' } }): navigate the user's browser. Don't ask permission — just dispatch and tell them where you went. Use for nav requests ("show me X", "go to Y"). For chat resume: dispatch set_url to /harness/<slug>?chat=<chatId>.\n` +
-      `  - mcp__agentmcp__harness:list(): all registered harnesses (slug, path, hasState, hasSpec). Use to answer "what harnesses do I have" or to look up a slug.\n` +
-      `  - mcp__agentmcp__harness:status({ slug }): a feature-status snapshot for a harness (counts by status, recent features, summary excerpt). Use for "what's the state of <slug>", "is X done", "what is X working on".\n` +
-      `  - mcp__agentmcp__agent_chats:create({ slug, role, feature_id? }) + mcp__agentmcp__agent_chats:send_message({ slug, chatId, content }): the two-step dispatch flow. Create the chat for the role, then send the first user message. After both succeed, navigate the user to the chat with ui:dispatch(set_url, { url: '/harness/<slug>?chat=<chatId>' }). Use when the user says "ask the architect to ...", "have the orchestrator do ...", etc. Roles: architect, scoper, worker, validator, reviewer, documenter, debugger, operator, curator.\n` +
-      `  - mcp__agentmcp__agent_chats:list({ slug }): recent chats in a harness (id, role, title, message_count, updated_at). Use before resuming to find a chatId, or to answer "what chats have I had with X".\n` +
-      `  - mcp__agentmcp__agents:list({ slug? }): role-scoped agents with recent activity, optionally scoped to one harness. Returns [{slug, role, chat_count, last_active}]. Use to answer "which agents are working on X" or to pick the most-active matching role before agent_chats:create.\n` +
-      `  - mcp__agentmcp__agent_tools:list({ asRole? }): the full tool catalog visible to a given role. Use to honestly answer "what can you do" — these are your actual capabilities, not the prompt summary above.\n` +
-      `  - mcp__agentmcp__chat:ask_choice({ question, options, multi? }): present the user with clickable choice buttons (yes/no, accept/reject, pick-one-of, or "select all that apply" if multi:true) INSTEAD of asking the question as plain text. Options: \`[{id, label, hint?, style?: 'default'|'primary'|'danger'}]\`. Max 6. Set \`multi:true\` for select-all-that-apply (shows a Submit button). Use for finite choices ("Do you want me to go to /harness?"); keep plain text for open-ended questions ("describe what you're looking for"). After calling, end your turn — the user's click becomes the next user message.\n`;
+    // Phase 4a of the tool-guidance arc: the toolBlock used to be ~9
+    // hand-rolled prose entries that drifted from the catalog any time
+    // a tool changed. Now it's rendered from each tool's `defineTool({ guidance })`
+    // — single source of truth, kept in sync by tools-md-sync.mjs CI.
+    // Cross-tool patterns + dispatch workflows live in oracle.tools.md.
+    const toolBlock = renderToolsCatalog('oracle', ORACLE_TOOL_NAMES);
+    const playbook = loadRoleToolsMd('oracle') ?? '';
 
     // Auto-context: cheap workspace inventory the Oracle would
     // otherwise have to round-trip an MCP tool to get. Refreshed every
@@ -315,7 +345,8 @@ export function registerOracle(app: Hono) {
 
     const promptText = [
       prompt.trim(),
-      toolBlock,
+      toolBlock ? `\n\n${toolBlock}` : '',
+      playbook ? `\n\n${playbook}` : '',
       inventoryBlock,
       ctxBlock,
       tutorialBlock,
@@ -392,43 +423,10 @@ export function registerOracle(app: Hono) {
             ],
           },
         };
-        const allowedTools = [
-          // Browser navigation + UI state introspection (replaces the
-          // legacy navigate / resumeChat tools).
-          'mcp__agentmcp__ui:dispatch',
-          'mcp__agentmcp__ui:get_state',
-          'mcp__agentmcp__ui:list_clients',
-          // Model-driven choice cards (yes/no, accept/reject, pick-one).
-          'mcp__agentmcp__chat:ask_choice',
-          // Harness reads (replaces listHarnesses / getHarnessStatus).
-          'mcp__agentmcp__harness:list',
-          'mcp__agentmcp__harness:get',
-          'mcp__agentmcp__harness:status',
-          // Agent dispatch (replaces dispatchToAgent / listAgents / listChats).
-          'mcp__agentmcp__agents:list',
-          'mcp__agentmcp__agent_chats:list',
-          'mcp__agentmcp__agent_chats:get',
-          'mcp__agentmcp__agent_chats:create',
-          'mcp__agentmcp__agent_chats:send_message',
-          // Workspace bookkeeping (tasks/goals/messages/audit).
-          'mcp__agentmcp__tasks:list',
-          'mcp__agentmcp__tasks:get',
-          'mcp__agentmcp__goals:list',
-          'mcp__agentmcp__goals:get',
-          'mcp__agentmcp__messages:inbox',
-          'mcp__agentmcp__messages:outbox',
-          'mcp__agentmcp__audit:list',
-          // Memory + search.
-          'mcp__agentmcp__hindsight:recall',
-          'mcp__agentmcp__search:query',
-          // Tool introspection — so the Oracle can answer "what can I
-          // call?" by enumerating, not by parroting its prompt.
-          'mcp__agentmcp__agent_tools:list',
-        ];
         const stream = runAgentChat({
           promptText,
           mcpConfig: { mcpServers },
-          allowedTools,
+          allowedTools: ORACLE_ALLOWED_TOOLS,
           // Strip the mcp__<server>__ prefix when surfacing tool_call events,
           // so the dock shows "navigate" / "harness:list" rather than the
           // full MCP-mangled name.

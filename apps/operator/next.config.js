@@ -10,20 +10,33 @@ const WEB_UPSTREAM      = process.env.PAPERCUSP_WEB_UPSTREAM      ?? 'http://loc
 // AND the path appears in papercup-rust-server/openapi.yaml. This makes
 // Rust opt-in for both dev (3055) and production (3070) until parity.
 const RUST_UPSTREAM       = process.env.PAPERCUSP_RUST_UPSTREAM     ?? 'http://127.0.0.1:3060';
+// The path.join + __dirname combo is read at build time by Turbopack's
+// NFT tracer; without `turbopackIgnore` the tracer interprets the
+// dynamic path as "the build wants to trace the whole project" and
+// fails page-data collection with "Invalid segment configuration
+// export detected" (caught 2026-05-11). Putting the ignore comment
+// on the `__dirname` arg specifically tells Turbopack not to follow.
 const RUST_OPENAPI_PATH   = process.env.PAPERCUSP_RUST_OPENAPI
-  ?? path.join(__dirname, '../../../papercup-rust-server/openapi.yaml');
+  ?? path.join(/*turbopackIgnore: true*/ __dirname, '../../../papercup-rust-server/openapi.yaml');
 
 /** Parse the `paths:` block of openapi.yaml without pulling in a YAML dep.
- *  Returns Next-style path templates (`/foo/{id}` -> `/foo/:id`). */
+ *  Returns Next-style path templates (`/foo/{id}` -> `/foo/:id`).
+ *
+ *  GATED behind PAPERCUSP_ENABLE_RUST_REWRITES=1. Default is to return
+ *  an empty list WITHOUT reading the openapi file. Turbopack's NFT
+ *  tracer treats any module-load FS read in this file as "trace the
+ *  whole project" and fails page-data collection (the bug we hit
+ *  2026-05-11 across 6 consecutive build attempts). Rust routing is
+ *  opt-in for both dev (:3055) and prod (:3070); when nobody's setting
+ *  the env flag, the rewrites array stays empty and Turbopack stays
+ *  happy. Enabling it requires accepting the build-tracer fallout
+ *  (and possibly running with `next build --turbopack=false`). */
 function loadRustPaths() {
+  if (process.env.PAPERCUSP_ENABLE_RUST_REWRITES !== '1') {
+    return [];
+  }
   let text;
   try {
-    // turbopackIgnore: this FS read produces routing config consumed
-    // by `rewrites()`; the file's contents do NOT need to be in the
-    // route's NFT trace. Without the ignore comment, Turbopack treats
-    // this dynamic path read as "tracing the whole project" and fails
-    // page-data collection with "Invalid segment configuration export
-    // detected" (seen 2026-05-11).
     text = fs.readFileSync(/*turbopackIgnore: true*/ RUST_OPENAPI_PATH, 'utf8');
   } catch (e) {
     console.warn(`[next.config] rust openapi not readable at ${RUST_OPENAPI_PATH}: ${e.message}`);

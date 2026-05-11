@@ -34,6 +34,11 @@ export default defineTool({
   description:
     'Append a user message to an existing agent chat. The harness streams the assistant reply via SSE; this tool returns as soon as the message is accepted. Pair with agent_chats:create to start a new conversation.',
   capability: 'agent_chats:write',
+  guidance: {
+    when: 'Step 2 of the dispatch flow — you just called `agent_chats:create` and need to post the user\'s first message to kick off the conversation. Also for follow-up messages on an existing chat the user named.',
+    notWhen: 'For broadcasting to multiple recipients (inbox-style), use `messages:send`. For the user\'s own chat with you, just speak.',
+    chaining: 'Follow `agent_chats:create` (or `agent_chats:list` if resuming). Then `ui:dispatch` to take the user to the chat.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
