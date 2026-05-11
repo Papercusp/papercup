@@ -1,0 +1,336 @@
+/**
+ * Per-workspace kopia repo. One instance per workspace; constructor is
+ * cheap (paths only), real work happens in `ensureRepo` and `snapshot`.
+ *
+ * The class is a thin wrapper around the kopia CLI — every method shells
+ * out, parses --json output, and writes a PG row in the same transaction
+ * as the kopia side-effect. Kopia is the source of truth for snapshot
+ * contents; PG is the source of truth for settings + metadata + UI state.
+ *
+ * Phase 1 implements: ensureRepo, snapshot, list, stats, verify, settings
+ * read/write. Restore + maintenance + mount + stream are stubbed for
+ * Phase 2/3/5.
+ */
+
+import { spawn } from 'node:child_process';
+import { mkdir, access } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { getOrgPg } from '@restart/db-org';
+import { deriveRepoPassword } from './password';
+import {
+  type BackupSettings,
+  type RepoStats,
+  type RetentionPolicy,
+  type SnapshotInfo,
+  type SnapshotResult,
+  type SnapshotTriggerReason,
+  type VerifyResult,
+  RETENTION_PRESETS,
+} from './types';
+
+const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
+
+const IGNORE_PATTERNS = [
+  'node_modules', '.next', 'out', 'target', 'dist', 'build', '.turbo', '.cache',
+  '.svelte-kit', '.nuxt', '.angular', '.vite', '.parcel-cache',
+  '.yarn/cache', '.pnpm-store', '.bun',
+  'coverage', '.nyc_output',
+  '__pycache__', '*.pyc', '.venv', 'venv', '.pytest_cache', '.mypy_cache', '.ruff_cache',
+  '.gradle', '.terraform',
+  'tmp', '.tmp', '*.swp', '*.swo', '.DS_Store', 'Thumbs.db',
+  'proc-macro-srv*', '*.log',
+];
+
+export interface WorkspaceBackupOpts {
+  workspaceId: string;
+  /** Override workspace root; defaults to ~/.papercusp-workspaces/<id>. */
+  workspaceRoot?: string;
+}
+
+export class WorkspaceBackup {
+  readonly workspaceId: string;
+  readonly workspaceRoot: string;
+  readonly repoPath: string;
+
+  constructor(opts: WorkspaceBackupOpts) {
+    this.workspaceId = opts.workspaceId;
+    this.workspaceRoot = opts.workspaceRoot
+      ?? join(homedir(), '.papercusp-workspaces', opts.workspaceId);
+    this.repoPath = join(this.workspaceRoot, 'backups', 'kopia-repo');
+  }
+
+  async ensureRepo(): Promise<void> {
+    await mkdir(this.repoPath, { recursive: true });
+    const password = await deriveRepoPassword(this.workspaceId);
+
+    const env = this.envWithPassword(password);
+    const connected = await this.kopiaTry(['repository', 'status'], { env });
+    if (connected.ok) return;
+
+    // Not connected. Try to connect (existing repo) before creating one.
+    const connect = await this.kopiaTry(
+      ['repository', 'connect', 'filesystem', '--path', this.repoPath],
+      { env },
+    );
+    if (connect.ok) {
+      await this.applyGlobalPolicy(env);
+      return;
+    }
+
+    // Doesn't exist yet — create it.
+    await this.kopia(
+      ['repository', 'create', 'filesystem', '--path', this.repoPath],
+      { env },
+    );
+    await this.applyGlobalPolicy(env);
+  }
+
+  async getSettings(): Promise<BackupSettings> {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      enabled: boolean;
+      cadence_mode: string;
+      cadence_minutes: number;
+      retention_preset: string;
+      retention_custom_json: unknown;
+      event_triggers_json: unknown;
+      excluded_paths_json: unknown;
+    }[]>`
+      SELECT enabled, cadence_mode, cadence_minutes, retention_preset,
+             retention_custom_json, event_triggers_json, excluded_paths_json
+      FROM harness_shared.workspace_backup_settings
+      WHERE workspace_id = ${this.workspaceId}
+      LIMIT 1
+    `;
+    if (rows.length === 0) {
+      await sql`
+        INSERT INTO harness_shared.workspace_backup_settings (workspace_id)
+        VALUES (${this.workspaceId})
+        ON CONFLICT (workspace_id) DO NOTHING
+      `;
+      return this.getSettings();
+    }
+    const r = rows[0]!;
+    return {
+      workspaceId: this.workspaceId,
+      enabled: r.enabled,
+      cadenceMode: r.cadence_mode as BackupSettings['cadenceMode'],
+      cadenceMinutes: r.cadence_minutes,
+      retentionPreset: r.retention_preset as BackupSettings['retentionPreset'],
+      retentionCustom: r.retention_custom_json as RetentionPolicy | null,
+      eventTriggers: (r.event_triggers_json as SnapshotTriggerReason[]) ?? [],
+      excludedPaths: (r.excluded_paths_json as string[]) ?? [],
+    };
+  }
+
+  async snapshot(reason: SnapshotTriggerReason, context?: Record<string, unknown>): Promise<SnapshotResult> {
+    const { sql } = getOrgPg();
+    await this.ensureRepo();
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+
+    const sources = [this.workspaceRoot];
+    const insertRows = await sql<{ id: number }[]>`
+      INSERT INTO harness_shared.backup_snapshots
+        (workspace_id, trigger_reason, trigger_context, sources_json)
+      VALUES
+        (${this.workspaceId}, ${reason}, ${context ?? null}, ${JSON.stringify(sources)}::jsonb)
+      RETURNING id
+    `;
+    const snapshotRowId = insertRows[0]!.id;
+    const start = Date.now();
+
+    try {
+      const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
+      const parsed = parseKopiaSnapshotJson(out);
+      const durationMs = Date.now() - start;
+      await sql`
+        UPDATE harness_shared.backup_snapshots
+        SET kopia_snapshot_id = ${parsed.snapshotId},
+            finished_at       = now(),
+            status            = 'ok',
+            bytes_added       = ${parsed.bytesAdded},
+            bytes_total       = ${parsed.bytesTotal}
+        WHERE id = ${snapshotRowId}
+      `;
+      return {
+        snapshotId: snapshotRowId,
+        kopiaSnapshotId: parsed.snapshotId,
+        bytesAdded: parsed.bytesAdded,
+        durationMs,
+      };
+    } catch (err) {
+      await sql`
+        UPDATE harness_shared.backup_snapshots
+        SET finished_at = now(),
+            status      = 'failed',
+            error_text  = ${String(err instanceof Error ? err.message : err)}
+        WHERE id = ${snapshotRowId}
+      `;
+      throw err;
+    }
+  }
+
+  async list(limit = 100): Promise<SnapshotInfo[]> {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      id: number;
+      kopia_snapshot_id: string | null;
+      started_at: Date;
+      finished_at: Date | null;
+      status: string;
+      trigger_reason: string;
+      trigger_context: unknown;
+      bytes_added: string | null;   // BIGINT comes back as string in some drivers
+      bytes_total: string | null;
+      sources_json: unknown;
+      error_text: string | null;
+    }[]>`
+      SELECT id, kopia_snapshot_id, started_at, finished_at, status,
+             trigger_reason, trigger_context, bytes_added, bytes_total,
+             sources_json, error_text
+      FROM harness_shared.backup_snapshots
+      WHERE workspace_id = ${this.workspaceId}
+      ORDER BY started_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: r.id,
+      kopiaSnapshotId: r.kopia_snapshot_id,
+      workspaceId: this.workspaceId,
+      startedAt: r.started_at.toISOString(),
+      finishedAt: r.finished_at?.toISOString() ?? null,
+      status: r.status as SnapshotInfo['status'],
+      triggerReason: r.trigger_reason as SnapshotTriggerReason,
+      triggerContext: (r.trigger_context as Record<string, unknown> | null),
+      bytesAdded: r.bytes_added == null ? null : Number(r.bytes_added),
+      bytesTotal: r.bytes_total == null ? null : Number(r.bytes_total),
+      sources: (r.sources_json as string[]) ?? [],
+      error: r.error_text,
+    }));
+  }
+
+  async stats(): Promise<RepoStats> {
+    const { sql } = getOrgPg();
+    const [agg] = await sql<{
+      total: string;
+      bytes_added_sum: string | null;
+      bytes_total_sum: string | null;
+      last_ok: Date | null;
+      last_fail: Date | null;
+    }[]>`
+      SELECT
+        COUNT(*) FILTER (WHERE status = 'ok')::TEXT      AS total,
+        SUM(bytes_added) FILTER (WHERE status = 'ok')::TEXT AS bytes_added_sum,
+        SUM(bytes_total) FILTER (WHERE status = 'ok')::TEXT AS bytes_total_sum,
+        MAX(finished_at) FILTER (WHERE status = 'ok')    AS last_ok,
+        MAX(finished_at) FILTER (WHERE status = 'failed') AS last_fail
+      FROM harness_shared.backup_snapshots
+      WHERE workspace_id = ${this.workspaceId}
+    `;
+    const bytesOnDisk = agg.bytes_added_sum == null ? 0 : Number(agg.bytes_added_sum);
+    const bytesRaw   = agg.bytes_total_sum == null ? 0 : Number(agg.bytes_total_sum);
+    return {
+      totalSnapshots: Number(agg.total),
+      bytesOnDisk,
+      bytesRaw,
+      dedupRatio: bytesRaw === 0 ? 0 : 1 - bytesOnDisk / bytesRaw,
+      lastSnapshotAt: agg.last_ok?.toISOString() ?? null,
+      lastFailureAt:  agg.last_fail?.toISOString() ?? null,
+    };
+  }
+
+  async verify(): Promise<VerifyResult> {
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+    const res = await this.kopiaTry(['snapshot', 'verify'], { env });
+    return { ok: res.ok, errors: res.ok ? [] : [res.stderr] };
+  }
+
+  // ---------- internals ----------
+
+  private envWithPassword(password: string): NodeJS.ProcessEnv {
+    return {
+      ...process.env,
+      KOPIA_PASSWORD: password,
+      KOPIA_CONFIG_PATH: join(this.workspaceRoot, 'backups', 'repository.config'),
+      KOPIA_LOG_DIR: join(this.workspaceRoot, 'backups', 'logs'),
+      KOPIA_CACHE_DIRECTORY: join(this.workspaceRoot, 'backups', 'cache'),
+    };
+  }
+
+  private async applyGlobalPolicy(env: NodeJS.ProcessEnv): Promise<void> {
+    const settings = await this.getSettings();
+    const retention =
+      settings.retentionPreset === 'custom' && settings.retentionCustom
+        ? settings.retentionCustom
+        : RETENTION_PRESETS[settings.retentionPreset === 'custom' ? 'default' : settings.retentionPreset];
+    const ignores = [...IGNORE_PATTERNS, ...settings.excludedPaths];
+    const args = [
+      'policy', 'set', '--global',
+      `--keep-latest=${retention.keepLatest}`,
+      `--keep-hourly=${retention.keepHourly}`,
+      `--keep-daily=${retention.keepDaily}`,
+      `--keep-weekly=${retention.keepWeekly}`,
+      `--keep-monthly=${retention.keepMonthly}`,
+      ...ignores.map((p) => `--add-ignore=${p}`),
+    ];
+    await this.kopia(args, { env });
+  }
+
+  private kopia(args: string[], opts: { env: NodeJS.ProcessEnv }): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(KOPIA_BIN, args, { env: opts.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      const out: Buffer[] = [];
+      const err: Buffer[] = [];
+      child.stdout.on('data', (d) => out.push(d));
+      child.stderr.on('data', (d) => err.push(d));
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve(Buffer.concat(out).toString('utf8'));
+        else reject(new Error(`kopia ${args.join(' ')} exited ${code}: ${Buffer.concat(err).toString('utf8')}`));
+      });
+    });
+  }
+
+  private async kopiaTry(
+    args: string[],
+    opts: { env: NodeJS.ProcessEnv },
+  ): Promise<{ ok: true; stdout: string } | { ok: false; stderr: string }> {
+    try {
+      const stdout = await this.kopia(args, opts);
+      return { ok: true, stdout };
+    } catch (e) {
+      return { ok: false, stderr: e instanceof Error ? e.message : String(e) };
+    }
+  }
+}
+
+/**
+ * Kopia's `snapshot create --json` emits one JSON object per source on
+ * success. We back up one source per call, so we expect one object.
+ */
+function parseKopiaSnapshotJson(stdout: string): {
+  snapshotId: string;
+  bytesAdded: number;
+  bytesTotal: number;
+} {
+  const lines = stdout.split('\n').filter((l) => l.trim().startsWith('{'));
+  if (lines.length === 0) {
+    throw new Error(`kopia snapshot create returned no JSON: ${stdout.slice(0, 200)}`);
+  }
+  const obj = JSON.parse(lines[lines.length - 1]!) as {
+    id?: string;
+    rootEntry?: { summ?: { size?: number; numFailedEntries?: number } };
+    stats?: { totalBytes?: number; uploadedBytes?: number };
+  };
+  if (!obj.id) {
+    throw new Error(`kopia snapshot create missing id: ${JSON.stringify(obj).slice(0, 200)}`);
+  }
+  return {
+    snapshotId: obj.id,
+    bytesAdded: obj.stats?.uploadedBytes ?? 0,
+    bytesTotal: obj.stats?.totalBytes ?? obj.rootEntry?.summ?.size ?? 0,
+  };
+}
