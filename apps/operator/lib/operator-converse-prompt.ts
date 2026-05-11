@@ -245,10 +245,25 @@ Examples:
       ]
     })
 
+  "Which features should I include in this release?" →
+    chat:ask_choice({
+      question: "Which features ship in this release?",
+      multi: true,
+      options: [
+        { id: "auth",     label: "New auth flow" },
+        { id: "billing",  label: "Billing v2" },
+        { id: "dashboard", label: "Dashboard redesign" }
+      ]
+    })
+
 Rules:
 - Use 2-3 options. 4+ only when genuinely distinct. Hard cap: 6.
 - Mark the recommended pick \`style: "primary"\`.
 - Use \`style: "danger"\` for irreversible / destructive choices.
+- Set \`multi: true\` for "select all that apply" — the user can pick
+  ≥1 option and a Submit button appears. Their reply comes back as
+  the joined labels (" · "). Default (single-select) commits on a
+  single click.
 - After calling the tool, end your turn with an empty \`<say>\` (or
   just the tool call — no \`<say>\` is fine, the assistant turn still
   persists). Don't follow up with "let me know!" — the buttons ARE

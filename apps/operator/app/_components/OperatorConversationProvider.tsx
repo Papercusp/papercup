@@ -514,19 +514,20 @@ interface OperatorConversationContextValue {
   loadEarlier: () => Promise<void>;
 
   /**
-   * Resolve a chat:ask_choice card by POSTing the picked option to
-   * /api/operator/conversations/:id/turn-answer. The endpoint
+   * Resolve a chat:ask_choice card by POSTing the picked option(s)
+   * to /api/operator/conversations/:id/turn-answer. The endpoint
    * atomically marks the assistant's tool as answered AND inserts
-   * the user turn (text=label, source='card_pick'). On success, the
-   * live-tail will pick up both rows automatically — no local
-   * mutation needed here. Throws on already-answered (409) or
-   * validation failures (400).
+   * the user turn (text=joined-labels, source='card_pick'). On
+   * success, the live-tail picks up both rows — no local mutation
+   * needed. Throws on already-answered (409) or validation (400).
+   *
+   * picks is always an array — length 1 for single-select cards,
+   * ≥1 for multi-select (args.multi=true).
    */
   answerChoice: (input: {
     assistantSeq: number;
     toolIndex: number;
-    option_id: string;
-    label: string;
+    picks: Array<{ option_id: string; label: string }>;
   }) => Promise<void>;
 }
 
@@ -1245,8 +1246,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     async (input: {
       assistantSeq: number;
       toolIndex: number;
-      option_id: string;
-      label: string;
+      picks: Array<{ option_id: string; label: string }>;
     }): Promise<void> => {
       const id = conversationIdRef.current;
       if (!id) throw new Error('answerChoice: no active conversation');

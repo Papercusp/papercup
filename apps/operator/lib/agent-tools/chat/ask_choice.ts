@@ -63,12 +63,22 @@ const optionSchema = z.object({
 const argsSchema = z.object({
   question: z.string().min(1).max(MAX_QUESTION_LEN),
   options: z.array(optionSchema).min(1).max(MAX_OPTIONS),
+  /**
+   * Multi-select mode: when true, the user picks one OR MORE options
+   * and confirms with a "Submit" button. The user-turn text becomes
+   * the joined labels (" · "). Default false (radio behavior: one
+   * click commits the choice).
+   *
+   * Use for "select all that apply" questions. Single-pick yes/no /
+   * accept/reject / pick-one-of should use multi: false (default).
+   */
+  multi: z.boolean().optional(),
 });
 
 export default defineTool({
   name: 'chat:ask_choice',
   description:
-    'Present the user with a structured set of clickable choices (e.g. "Do you want me to go into passive mode?" → [Yes, go passive] [No, stay active]). The chat dock renders the question + buttons; the user clicks one and their pick becomes the next user message. After calling this tool, end your turn — do not also write the question as text. Use for yes/no, accept/reject, or pick-one-of questions with up to 6 options. For open-ended prompts ("describe what you want", "paste the error"), keep using plain text.',
+    'Present the user with a structured set of clickable choices (e.g. "Do you want me to go into passive mode?" → [Yes, go passive] [No, stay active]). The chat dock renders the question + buttons; the user clicks one (or more, if multi:true) and their pick(s) become the next user message. After calling this tool, end your turn — do not also write the question as text. Use for yes/no, accept/reject, or pick-one-of questions with up to 6 options. Set multi:true for "select all that apply" — adds a Submit button. For open-ended prompts ("describe what you want", "paste the error"), keep using plain text.',
   capability: 'chat:write',
   requirePrincipal: false,
   roles: [...ALL_ROLES],
@@ -114,6 +124,7 @@ export default defineTool({
           rendered: true,
           question: normalized.question,
           options: normalized.options,
+          multi: normalized.multi ?? false,
           ...(warnings.length > 0 ? { warnings } : {}),
         }),
       }],

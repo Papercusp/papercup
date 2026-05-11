@@ -39,10 +39,13 @@ export interface ChatToolCall {
    * For interactive tools (e.g. chat:ask_choice), the user's response.
    * When set, `renderToolCard` should render the answered state.
    * Persisted into operator_turns.tools jsonb (migration 015).
+   *
+   * Always an array of picks (length 1 for single-select cards,
+   * length ≥1 for multi-select). Pre-alpha unified shape — no
+   * legacy {option_id, label} variant.
    */
   answered?: {
-    option_id: string;
-    label: string;
+    picks: Array<{ option_id: string; label: string }>;
     at: number;
   };
 }

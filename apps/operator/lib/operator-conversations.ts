@@ -70,9 +70,13 @@ export interface ConversationRow {
 export interface TurnToolCall {
   name: string;
   input?: unknown;
+  /**
+   * Picks array — length 1 for single-select cards, ≥1 for multi.
+   * Unified shape across single + multi (pre-alpha policy, no
+   * legacy single-select variant carried).
+   */
   answered?: {
-    option_id: string;
-    label: string;
+    picks: Array<{ option_id: string; label: string }>;
     at: number;
   };
 }

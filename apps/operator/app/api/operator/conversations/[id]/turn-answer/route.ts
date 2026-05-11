@@ -33,10 +33,13 @@ interface Body {
   assistantSeq: number;
   /** Index into that turn's `tools` array. */
   toolIndex: number;
-  /** id of the option the user picked. */
-  option_id: string;
-  /** label of the picked option — becomes the new user turn's text. */
-  label: string;
+  /**
+   * Picks the user committed. Length 1 for single-select cards;
+   * ≥1 for multi-select (args.multi=true). All ids must appear in
+   * the tool's args.options. The new user turn's text is the joined
+   * labels (" · ").
+   */
+  picks: Array<{ option_id: string; label: string }>;
 }
 
 export async function POST(
@@ -50,13 +53,23 @@ export async function POST(
     typeof body.assistantSeq !== 'number' ||
     typeof body.toolIndex !== 'number' ||
     body.toolIndex < 0 ||
-    typeof body.option_id !== 'string' ||
-    body.option_id.length === 0 ||
-    typeof body.label !== 'string' ||
-    body.label.length === 0
+    !Array.isArray(body.picks) ||
+    body.picks.length === 0 ||
+    body.picks.length > 6 ||
+    !body.picks.every(
+      (p) =>
+        p &&
+        typeof p.option_id === 'string' &&
+        p.option_id.length > 0 &&
+        typeof p.label === 'string' &&
+        p.label.length > 0,
+    )
   ) {
     return NextResponse.json(
-      { error: 'assistantSeq:number, toolIndex:number, option_id:string, label:string required' },
+      {
+        error:
+          'assistantSeq:number, toolIndex:number, picks:[{option_id, label}, ...] (1..6) required',
+      },
       { status: 400 },
     );
   }
@@ -65,10 +78,15 @@ export async function POST(
   const { sql } = getOrgPg();
   const now = Date.now();
   const answeredJson = JSON.stringify({
-    option_id: body.option_id,
-    label: body.label,
+    picks: body.picks,
     at: now,
   });
+  // Joined labels for the new user turn's text. " · " separator
+  // (middle dot) is visually compact and unambiguous; the operator
+  // model parses the joined string by reading each comma-or-dot
+  // chunk as a discrete user pick. For single-select, this is just
+  // the single label (no separator).
+  const joinedLabels = body.picks.map((p) => p.label).join(' · ');
 
   try {
     const result = await sql.begin(async (tx) => {
@@ -95,11 +113,16 @@ export async function POST(
       if (tool.answered) {
         return { kind: 'already_answered' as const, answered: tool.answered };
       }
-      // Sanity: verify option_id exists in the args.
+      // Sanity: verify every picked option_id exists in the args.
       const args = (tool.input ?? tool.args) as { options?: Array<{ id?: string }> } | undefined;
-      const knownIds = new Set((args?.options ?? []).map((o) => o?.id).filter((s): s is string => !!s));
-      if (knownIds.size > 0 && !knownIds.has(body.option_id)) {
-        return { kind: 'unknown_option' as const, validIds: [...knownIds] };
+      const knownIds = new Set(
+        (args?.options ?? []).map((o) => o?.id).filter((s): s is string => !!s),
+      );
+      if (knownIds.size > 0) {
+        const unknown = body.picks.filter((p) => !knownIds.has(p.option_id)).map((p) => p.option_id);
+        if (unknown.length > 0) {
+          return { kind: 'unknown_option' as const, validIds: [...knownIds], unknownIds: unknown };
+        }
       }
 
       // 2. Update the assistant row's tools[toolIndex].answered via jsonb_set.
@@ -128,7 +151,7 @@ export async function POST(
            (conversation_id, seq, role, text, source, created_at)
          VALUES ($1, $2, 'user', $3, 'card_pick', $4)
          RETURNING id, seq`,
-        [conversationId, userSeq, body.label, now],
+        [conversationId, userSeq, joinedLabels, now],
       )) as Array<{ id: string; seq: number }>;
 
       return {
@@ -158,7 +181,11 @@ export async function POST(
     }
     if (result.kind === 'unknown_option') {
       return NextResponse.json(
-        { error: 'option_id not in args', validIds: result.validIds },
+        {
+          error: 'unknown option_id(s) — not present in args.options',
+          unknownIds: result.unknownIds,
+          validIds: result.validIds,
+        },
         { status: 400 },
       );
     }

@@ -1349,25 +1349,24 @@ export function OracleDock() {
                     <AskChoiceCard
                       args={args as AskChoiceArgs}
                       answered={t.answered}
-                      onAnswer={(option) => {
+                      onAnswer={({ picks }) => {
                         // Oracle is ephemeral (no transcript table) —
                         // local state mutation in-component, then send
-                        // the option's label as a normal user message.
-                        // We mark the local tool entry's `answered` so
+                        // the joined labels as a normal user message.
+                        // Mark the local tool entry's `answered` so
                         // re-renders show the disabled/picked state.
                         const tab = active;
-                        if (!tab) return;
+                        if (!tab || picks.length === 0) return;
                         // eslint-disable-next-line @typescript-eslint/no-explicit-any
                         const tools = (tab.messages.find((m) => m.tools)?.tools ?? []) as any[];
                         if (tools[ti]) {
                           tools[ti].answered = {
-                            option_id: option.id,
-                            label: option.label,
+                            picks,
                             at: Date.now(),
                           };
                         }
-                        // Fire next user message via the standard send path.
-                        setInput(option.label);
+                        const joined = picks.map((p) => p.label).join(' · ');
+                        setInput(joined);
                         void send(tab.id);
                       }}
                     />

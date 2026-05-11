@@ -21,7 +21,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Bot, Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
-import { AskChoiceCard, type AskChoiceArgs, type AskChoiceOption } from './chat/AskChoiceCard';
+import { AskChoiceCard, type AskChoiceArgs } from './chat/AskChoiceCard';
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -43,16 +43,16 @@ interface Props {
   loadingEarlier?: boolean;
 
   /**
-   * chat:ask_choice resolution. Called when the user clicks a card
-   * button. Parent does the I/O — typically the OperatorConversation
-   * context's answerChoice() which POSTs to turn-answer. Required
-   * for cards to be interactive; if omitted, cards render disabled.
+   * chat:ask_choice resolution. Called when the user commits a
+   * selection (one click for single-select, Submit for multi-select).
+   * Parent does the I/O — typically the OperatorConversation context's
+   * answerChoice() which POSTs to turn-answer. Required for cards to
+   * be interactive; if omitted, cards render disabled.
    */
   onAnswerChoice?: (input: {
     assistantSeq: number;
     toolIndex: number;
-    option_id: string;
-    label: string;
+    picks: Array<{ option_id: string; label: string }>;
   }) => Promise<void> | void;
 }
 
@@ -82,7 +82,7 @@ export function OperatorChat({
         <AskChoiceCard
           args={args as AskChoiceArgs}
           answered={t.answered}
-          onAnswer={(option: AskChoiceOption) => {
+          onAnswer={({ picks }) => {
             if (typeof msg.seq !== 'number' || !onAnswerChoice) return;
             // Fire-and-forget — server-side atomicity guarantees the
             // assistant-answered + user-turn rows land together. The
@@ -91,8 +91,7 @@ export function OperatorChat({
               onAnswerChoice({
                 assistantSeq: msg.seq,
                 toolIndex: ti,
-                option_id: option.id,
-                label: option.label,
+                picks,
               }),
             ).catch((err) => {
               // eslint-disable-next-line no-console
