@@ -31,6 +31,8 @@ import {
   lte,
   like,
   ilike,
+  inArray,
+  notInArray,
   isNull,
   isNotNull,
   is,
@@ -44,10 +46,16 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-type Op = 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte' | 'like' | 'ilike' | 'isnull' | 'notnull';
+type Op =
+  | 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte'
+  | 'like' | 'ilike'
+  | 'in' | 'notin'
+  | 'isnull' | 'notnull';
 const VALUELESS_OPS: ReadonlySet<Op> = new Set(['isnull', 'notnull']);
+const ARRAY_OPS: ReadonlySet<Op> = new Set(['in', 'notin']);
 const SUPPORTED_OPS: ReadonlySet<Op> = new Set([
-  'eq', 'ne', 'gt', 'lt', 'gte', 'lte', 'like', 'ilike', 'isnull', 'notnull',
+  'eq', 'ne', 'gt', 'lt', 'gte', 'lte',
+  'like', 'ilike', 'in', 'notin', 'isnull', 'notnull',
 ]);
 
 function tableByExportName(exportName: string): PgTable | null {
@@ -79,6 +87,10 @@ function applyOp(col: unknown, op: Op, value: unknown): SQL | null {
     case 'lte': return lte(c, value);
     case 'like': return like(c, String(value));
     case 'ilike': return ilike(c, String(value));
+    case 'in':
+      return Array.isArray(value) && value.length > 0 ? inArray(c, value) : null;
+    case 'notin':
+      return Array.isArray(value) && value.length > 0 ? notInArray(c, value) : null;
     case 'isnull': return isNull(c);
     case 'notnull': return isNotNull(c);
     default: return null;

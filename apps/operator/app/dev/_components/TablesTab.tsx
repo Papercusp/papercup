@@ -73,7 +73,11 @@ interface RowsPayload {
 
 const PAGE_SIZE = 50;
 
-type Op = 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte' | 'like' | 'ilike' | 'isnull' | 'notnull';
+type Op =
+  | 'eq' | 'ne' | 'gt' | 'lt' | 'gte' | 'lte'
+  | 'like' | 'ilike'
+  | 'in' | 'notin'
+  | 'isnull' | 'notnull';
 const OPS: Array<{ op: Op; label: string; needsValue: boolean }> = [
   { op: 'eq', label: '=', needsValue: true },
   { op: 'ne', label: '≠', needsValue: true },
@@ -83,11 +87,14 @@ const OPS: Array<{ op: Op; label: string; needsValue: boolean }> = [
   { op: 'lte', label: '≤', needsValue: true },
   { op: 'like', label: 'LIKE', needsValue: true },
   { op: 'ilike', label: 'ILIKE', needsValue: true },
+  { op: 'in', label: 'IN', needsValue: true },
+  { op: 'notin', label: 'NOT IN', needsValue: true },
   { op: 'isnull', label: 'IS NULL', needsValue: false },
   { op: 'notnull', label: 'NOT NULL', needsValue: false },
 ];
 const OP_LABEL = new Map(OPS.map((o) => [o.op, o.label]));
 const VALUELESS_OPS = new Set<Op>(['isnull', 'notnull']);
+const ARRAY_OPS = new Set<Op>(['in', 'notin']);
 
 interface Filter { col: string; op: Op; value: unknown }
 
@@ -225,14 +232,21 @@ export default function TablesTab() {
   );
 
   const filterChips = useMemo(() => {
-    return filters.map((f, i) => ({
-      key: i,
-      col: f.col,
-      op: f.op,
-      label: VALUELESS_OPS.has(f.op)
-        ? `${f.col} ${OP_LABEL.get(f.op)}`
-        : `${f.col} ${OP_LABEL.get(f.op)} ${valueToLabel(f.value)}`,
-    }));
+    return filters.map((f, i) => {
+      let valueLabel: string;
+      if (VALUELESS_OPS.has(f.op)) valueLabel = '';
+      else if (ARRAY_OPS.has(f.op) && Array.isArray(f.value)) {
+        const items = f.value.slice(0, 4).map(valueToLabel);
+        const more = f.value.length > 4 ? `, …${f.value.length - 4} more` : '';
+        valueLabel = ` (${items.join(', ')}${more})`;
+      } else valueLabel = ` ${valueToLabel(f.value)}`;
+      return {
+        key: i,
+        col: f.col,
+        op: f.op,
+        label: `${f.col} ${OP_LABEL.get(f.op)}${valueLabel}`,
+      };
+    });
   }, [filters]);
 
   const removeFilter = (idx: number) => {
@@ -242,7 +256,19 @@ export default function TablesTab() {
 
   const addFilter = (col: string, op: Op, raw: string) => {
     const c = columnByName.get(col);
-    const value = VALUELESS_OPS.has(op) ? null : coerceFilterValue(c, raw);
+    let value: unknown;
+    if (VALUELESS_OPS.has(op)) {
+      value = null;
+    } else if (ARRAY_OPS.has(op)) {
+      // Split CSV, trim, drop empties, then coerce each element per column type.
+      value = raw
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0)
+        .map((s) => coerceFilterValue(c, s));
+    } else {
+      value = coerceFilterValue(c, raw);
+    }
     setFilters((s) => [...s, { col, op, value }]);
     setComposerOpen(false);
   };
@@ -562,9 +588,11 @@ function FilterComposer({
           placeholder={
             op === 'like' || op === 'ilike'
               ? 'pattern (% wildcards)'
-              : selectedCol
-                ? coerceHint(selectedCol)
-                : 'value'
+              : op === 'in' || op === 'notin'
+                ? 'value1, value2, value3'
+                : selectedCol
+                  ? coerceHint(selectedCol)
+                  : 'value'
           }
           onKeyDown={(e) => {
             if (e.key === 'Enter') submit();
