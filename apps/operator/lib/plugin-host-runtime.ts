@@ -70,15 +70,20 @@ async function loadGrantedCapsSafe(
   pluginName: string,
   pluginVersion: string,
   harnessSlug: string,
-): Promise<string[]> {
+): Promise<string[] | undefined> {
   try {
-    return await getGrantsForPluginInHarness(pluginName, pluginVersion, harnessSlug);
+    const rows = await getGrantsForPluginInHarness(pluginName, pluginVersion, harnessSlug);
+    // Empty result → no grant info on file (PG unreachable + no legacy
+    // file, OR no consent flow has run for this plugin yet). Fall back
+    // to legacy single-tier (manifest-only) semantics rather than denying
+    // every cap. Operator's install flow backfills grants at enable time,
+    // so a real user-revoke path is expressed by deleting only specific
+    // caps — never as an empty array. Returning `undefined` (vs `[]`)
+    // signals hasCapability to skip the tier-2 check.
+    return rows.length === 0 ? undefined : rows;
   } catch (e) {
-    // Don't spam the log every init — sample at warn level once per
-    // harness; a real outage will surface via the audit fail-closed path
-    // (Batch C5).
     console.warn(`[plugin-grants] read failed for ${pluginName}@${pluginVersion} in ${harnessSlug}:`, (e as Error)?.message);
-    return [];
+    return undefined;
   }
 }
 
@@ -103,7 +108,7 @@ interface HostState {
    * re-querying PG. Invalidated alongside `initialized` on plugin reload.
    * Tier 2 of the two-tier capability check (Batch B).
    */
-  grants: Map<string, string[]>;
+  grants: Map<string, string[] | undefined>;
 }
 
 const __key = '__papercuspPluginHostRuntime';

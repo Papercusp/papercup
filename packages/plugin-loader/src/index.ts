@@ -636,3 +636,9 @@ export {
   type InvokeRequest,
   type RegistryOptions,
 } from './actions';
+
+export {
+  InMemoryAuditWriter,
+  type AuditWriter,
+  type AuditRow,
+} from './audit';
