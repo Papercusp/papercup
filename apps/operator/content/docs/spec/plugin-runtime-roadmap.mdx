@@ -21,7 +21,7 @@ batches; A–E shipped pre-release, F is intentionally deferred.
 
 - ~~**Typed `ctx.kv` with quotas**~~ — shipped in papercup#46 + papercupai/papercusp#4 (Migration 054). Per-plugin namespace, 10 KiB/key + 1 MiB/plugin defaults, override via `kvQuota` in manifest. PG-backed.
 - ~~**Hot-reload state preservation**~~ — shipped in papercup#47 + papercupai/papercusp#5 (Migration 055). Opt-in via `hotReload: { preserveState: true }`; 64 KiB cap; one-shot restore on next init.
-- ~~**`papercusp plugin doctor`**~~ — shipped in papercupai/papercusp#3 + papercup#44. Regex scanner for `ctx.spawn` / `ctx.fetch` / `ctx.secrets.get` / `ctx.hookBus.{emit,on}` literal arguments; alias-aware (`const spawn = ctx.spawn`); cross-checks against `capabilities[]`; reports missing / unused / dynamic classifications.
+- ~~**`papercusp plugin doctor`**~~ — shipped in papercupai/papercusp#3 + papercup#44 (with the `.read` scanner fix in papercupai/papercusp#6 + papercup#49). Regex scanner for `ctx.spawn` / `ctx.fetch` / `ctx.secrets.read` / `ctx.hookBus.{emit,on}` literal arguments; alias-aware (`const spawn = ctx.spawn`); cross-checks against `capabilities[]`; reports missing / unused / dynamic classifications.
 
 ## Explicit non-goals
 
