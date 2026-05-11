@@ -48,7 +48,22 @@ function configPath(): string | null {
 }
 
 function drizzleKitBin(): string | null {
-  // Same walk for the drizzle-kit binary in node_modules/.bin.
+  // Primary: resolve the package directly. Works in dev AND in the
+  // standalone bundle where Next traces `drizzle-kit/` but doesn't
+  // recreate the `node_modules/.bin/` symlink farm.
+  try {
+    const pkgPath = require.resolve('drizzle-kit/package.json');
+    const pkg = JSON.parse(require('node:fs').readFileSync(pkgPath, 'utf8')) as { bin?: Record<string, string> | string };
+    const binRel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.['drizzle-kit'];
+    if (binRel) {
+      const abs = resolve(pkgPath, '..', binRel);
+      if (existsSync(abs)) return abs;
+    }
+  } catch {
+    // fall through to symlink walk
+  }
+  // Fallback: legacy node_modules/.bin walk for setups where the package
+  // isn't resolvable from this module (unusual workspace layouts).
   const candidates = [
     'node_modules/.bin/drizzle-kit',
     '../../node_modules/.bin/drizzle-kit',
