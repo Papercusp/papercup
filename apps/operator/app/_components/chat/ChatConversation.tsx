@@ -93,6 +93,20 @@ export interface ChatConversationProps {
   bodyClassName?: string;
   /** Inline style for the `.oracle-body` div (e.g. display: none on tab swap). */
   bodyStyle?: React.CSSProperties;
+
+  /**
+   * Infinite scroll for older history. When provided, the chat renders
+   * a sentinel at the top of the list; an IntersectionObserver fires
+   * `onLoadEarlier()` whenever the sentinel becomes visible AND
+   * `hasMoreEarlier` is true AND `loadingEarlier` is false.
+   *
+   * Scroll position is preserved across the prepend by capturing
+   * `scrollHeight` before and adjusting `scrollTop` after — same
+   * pattern every chat surface uses (Slack, Linear, etc.).
+   */
+  onLoadEarlier?: () => void;
+  hasMoreEarlier?: boolean;
+  loadingEarlier?: boolean;
 }
 
 export function ChatConversation(props: ChatConversationProps) {
@@ -116,14 +130,99 @@ export function ChatConversation(props: ChatConversationProps) {
     hideInput,
     bodyClassName,
     bodyStyle,
+    onLoadEarlier,
+    hasMoreEarlier,
+    loadingEarlier,
   } = props;
 
   const endRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const topSentinelRef = useRef<HTMLDivElement | null>(null);
+
+  // Track the FIRST message identity to detect prepends (older history)
+  // vs appends (new turn). On a prepend we preserve scroll position
+  // instead of scrolling to bottom; on an append (or busy flip) we
+  // scroll to bottom as before.
+  const lastFirstKeyRef = useRef<string | null>(null);
+  const lastLastKeyRef = useRef<string | null>(null);
+  const preserveScrollHeightRef = useRef<number | null>(null);
+  const firstKey = messages.length > 0 ? `${messages[0].role}:${messages[0].content.slice(0, 32)}` : null;
+  const lastKey = messages.length > 0
+    ? `${messages[messages.length - 1].role}:${messages[messages.length - 1].content.slice(0, 32)}`
+    : null;
+
+  // Capture scrollHeight just BEFORE a prepend lands. The hook below
+  // detects firstKey changing and pins the prior scrollHeight; the
+  // post-render layout effect then restores scrollTop = newH - priorH.
+  if (
+    typeof window !== 'undefined'
+    && lastFirstKeyRef.current !== null
+    && firstKey !== null
+    && firstKey !== lastFirstKeyRef.current
+    && scrollerRef.current
+  ) {
+    preserveScrollHeightRef.current = scrollerRef.current.scrollHeight;
+  }
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, busy]);
+    const el = scrollerRef.current;
+    if (!el) {
+      lastFirstKeyRef.current = firstKey;
+      lastLastKeyRef.current = lastKey;
+      return;
+    }
+    const isPrepend = preserveScrollHeightRef.current !== null;
+    if (isPrepend) {
+      const delta = el.scrollHeight - preserveScrollHeightRef.current!;
+      el.scrollTop = el.scrollTop + delta;
+      preserveScrollHeightRef.current = null;
+    } else if (lastLastKeyRef.current !== lastKey || busy) {
+      // Append (new turn at bottom) OR busy flip → scroll to bottom.
+      endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+    lastFirstKeyRef.current = firstKey;
+    lastLastKeyRef.current = lastKey;
+  }, [messages.length, busy, firstKey, lastKey]);
+
+  // Auto-load older turns when the top sentinel scrolls into view.
+  // Gated on user-initiated scroll: a freshly-mounted chat scrolls to
+  // bottom on its first paint, but the IntersectionObserver fires for
+  // any element on screen during layout, including the top sentinel
+  // before the auto-scroll happens. Without the gate we'd auto-fetch
+  // the next page on every mount.
+  //
+  // Synchronous reentry lock (`fetchInFlightRef`) backstops the prop-
+  // based `loadingEarlier` gate — setLoadingEarlier(true) is async, so
+  // two observer ticks within one frame can both pass the prop guard
+  // and fire onLoadEarlier twice for the same intersection.
+  const userScrolledRef = useRef(false);
+  const fetchInFlightRef = useRef(false);
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const onScroll = () => { userScrolledRef.current = true; };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+  useEffect(() => { fetchInFlightRef.current = !!loadingEarlier; }, [loadingEarlier]);
+  useEffect(() => {
+    if (!onLoadEarlier) return;
+    const el = topSentinelRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        if (!userScrolledRef.current) continue;
+        if (!hasMoreEarlier) continue;
+        if (fetchInFlightRef.current) continue;
+        fetchInFlightRef.current = true;
+        onLoadEarlier();
+      }
+    }, { root: scrollerRef.current ?? null, rootMargin: '120px 0px 0px 0px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [onLoadEarlier, hasMoreEarlier]);
 
   const InputIconComp = inputIcon ?? emptyState.icon;
   const EmptyIconComp = emptyState.icon;
@@ -167,9 +266,35 @@ export function ChatConversation(props: ChatConversationProps) {
       {banner}
 
       <div
+        ref={scrollerRef}
         className={bodyClassName ? `oracle-body ${bodyClassName}` : 'oracle-body'}
         style={bodyStyle}
       >
+        {onLoadEarlier && messages.length > 0 && (
+          <>
+            <div ref={topSentinelRef} aria-hidden="true" style={{ height: 1 }} />
+            {hasMoreEarlier && (
+              <div className="oracle-load-earlier" aria-live="polite">
+                {loadingEarlier ? (
+                  <span>Loading earlier…</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="oracle-load-earlier-btn"
+                    onClick={() => onLoadEarlier()}
+                  >
+                    Load earlier messages
+                  </button>
+                )}
+              </div>
+            )}
+            {!hasMoreEarlier && messages.length > 0 && (
+              <div className="oracle-load-earlier" aria-hidden="true">
+                <span className="oracle-load-earlier-end">Beginning of conversation</span>
+              </div>
+            )}
+          </>
+        )}
         {messages.length === 0 ? (
           <div className="oracle-empty-state">
             <span className="oracle-empty-state-icon">

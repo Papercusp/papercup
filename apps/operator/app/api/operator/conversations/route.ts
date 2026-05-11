@@ -16,6 +16,7 @@ import { and, eq, sql as dsql } from 'drizzle-orm';
 import {
   getOrCreateActiveConversation,
   listTurns,
+  listTurnsRecent,
 } from '@/lib/operator-conversations';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -27,9 +28,24 @@ export const runtime = 'nodejs';
 
 export async function GET(req: NextRequest): Promise<Response> {
   const slug = req.nextUrl.searchParams.get('slug');
+  const limitParam = req.nextUrl.searchParams.get('limit');
   const conv = await getOrCreateActiveConversation(slug ?? null);
-  const turns = await listTurns(conv.id);
-  return NextResponse.json({ conversation: conv, turns });
+
+  // Default to a windowed initial load so a long conversation doesn't
+  // hammer the chat sidebar with thousands of turns. Callers that need
+  // the full history can pass `limit=all` (back-compat for any callers
+  // that still expect the old shape — primarily snapshot/export jobs).
+  if (limitParam === 'all') {
+    const turns = await listTurns(conv.id);
+    return NextResponse.json({ conversation: conv, turns, hasMoreEarlier: false });
+  }
+  const limit = Math.max(1, Math.min(Number(limitParam) || 50, 500));
+  const page = await listTurnsRecent({ conversationId: conv.id, limit });
+  return NextResponse.json({
+    conversation: conv,
+    turns: page.turns,
+    hasMoreEarlier: page.hasMoreEarlier,
+  });
 }
 
 export async function POST(req: NextRequest): Promise<Response> {

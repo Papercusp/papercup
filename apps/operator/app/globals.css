@@ -4390,6 +4390,38 @@ body.h-harness-top-collapsed .pc-header {
   font-size: 12px;
 }
 
+.oracle-load-earlier {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0 12px;
+  font-size: 11px;
+  color: var(--fg-mute, #888);
+}
+
+.oracle-load-earlier-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle, rgba(255,255,255,0.10));
+  color: var(--fg-mute, #888);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 80ms ease;
+}
+
+.oracle-load-earlier-btn:hover {
+  background: rgba(255,255,255,0.04);
+  color: var(--fg, #ddd);
+}
+
+.oracle-load-earlier-end {
+  opacity: 0.55;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
 .oracle-thinking-dots {
   display: inline-flex;
   gap: 4px;
