@@ -69,6 +69,22 @@ for (const surface of SURFACES) {
     const found = effectiveSrc.includes(tool);
     check(`includes ${tool}`, found);
   }
+  // Surface-specific regression checks.
+  if (surface.label === 'oracle') {
+    // Oracle's legacy stdio tools (navigate / resumeChat / dispatchToAgent
+    // / listHarnesses / getHarnessStatus / listChats / listAgents) were
+    // retired 2026-05-11 — every one has a first-party agent_tool. If
+    // someone re-introduces an mcp__oracle__ prefix, the migration has
+    // partially regressed.
+    // Match QUOTED tool names (string literal) so we catch real
+    // allowedTools entries / mcpServers references and ignore
+    // historical mentions inside comments.
+    check(`oracle no longer references legacy mcp__oracle__ tools (string literals)`,
+      !/['"]mcp__oracle__[a-zA-Z]+['"]/.test(src));
+    check(`oracle wires agent_chats:create + send_message (dispatch replacement)`,
+      src.includes('mcp__agentmcp__agent_chats:create') &&
+      src.includes('mcp__agentmcp__agent_chats:send_message'));
+  }
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

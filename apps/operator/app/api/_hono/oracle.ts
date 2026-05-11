@@ -31,18 +31,17 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 // for legacy callers that surfaced them in the settings UI.
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
 const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
-const MCP_SERVER_PATH = join(process.cwd(), 'lib', 'oracle-mcp-server.mjs');
 
-/**
- * Per-chat-request bridge between the spawned MCP server (separate process)
- * and the SSE stream back to the dock. The MCP server pushes UI commands
- * via POST /oracle/sessions/:id/ui-command; that handler looks up the
- * emitter here and forwards to the browser.
- */
-type UiCommand =
-  | { type: 'navigate'; path: string }
-  | { type: 'openChat'; slug: string; chatId: string; role: string; title?: string; featureId?: string };
-const sessionEmitters = new Map<string, (cmd: UiCommand) => void>();
+// The Oracle's UI side-channel used to be a per-chat-session emitter
+// (sessionEmitters Map + POST /oracle/sessions/:id/ui-command) that
+// the legacy mcp__oracle__navigate stdio tool used to push navigation
+// commands into the dock's SSE stream. As of 2026-05-11 we route all
+// UI control through the unified ui_intents PG table (ui:dispatch tool
+// → /api/ui/intents/stream SSE → useUiIntent handlers on the page),
+// so that channel is gone. OracleDock still listens for the legacy
+// `ui_command` SSE event name as a backwards-compat scaffold; once
+// every deployed dock build is on the new path, that listener can
+// also be deleted.
 
 const DEFAULT_PROMPT = `You are the Oracle — Papercusp's built-in concierge assistant.
 
@@ -259,6 +258,15 @@ export function registerOracle(app: Hono) {
     if (messages.length === 0) return c.json({ error: 'messages required' }, 400);
     const currentPath = typeof body.currentPath === 'string' ? body.currentPath : '';
     const tutorialMode = body.tutorialMode === true;
+    // Browser-side client ID from getOrCreateClientId() in
+    // lib/ui/client-id.ts. Threaded into the agentmcp spawn URL as
+    // ?client=<id> (in SIGNED_PARAM_ALLOWLIST) so ctx.uiClientId is
+    // populated when Oracle calls ui:dispatch/ui:get_state. Without
+    // this, navigation tools would require an explicit client_id arg
+    // or a preceding ui:list_clients call.
+    const uiClientId = typeof body.uiClientId === 'string' && body.uiClientId.length > 0
+      ? body.uiClientId
+      : null;
 
     const { prompt, memory } = await readConfig();
 
@@ -324,121 +332,96 @@ export function registerOracle(app: Hono) {
         catch { /* client disconnected */ }
       };
 
-      sessionEmitters.set(sessionId, (cmd) => { void send('ui_command', cmd); });
-
       if (tutorialIsFinalStep) {
         void send('tutorial_end', {});
       }
 
       let costUsd = 0;
       try {
-        // Oracle gets two MCP servers:
-        //   1. `oracle` — UI-routing tools (navigate, resumeChat,
-        //      dispatchToAgent's UI side). Lives in lib/oracle-mcp-server.mjs.
-        //   2. `agentmcp` — workspace-state reads (tasks, goals, harness
-        //      status, audit, hindsight, search) shared with Operator and pi.
-        //      Bearer is loaded from the system:oracle config file if
-        //      provisioned; absent, agentmcp tools are simply unavailable.
-        let oracleBearer: string | null = null;
-        try {
-          const { readSystemPrincipal } = await import('@/lib/system-principal');
-          const p = await readSystemPrincipal('oracle');
-          oracleBearer = p?.bearer ?? null;
-        } catch {
-          oracleBearer = null;
-        }
-        const agentMcpPath = join(
-          process.cwd(),
-          'packages/agent-mcp/src/server-entry.ts',
-        );
-        const tsxBin = join(process.cwd(), 'node_modules/.bin/tsx');
-        const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
-          oracle: {
-            command: 'node',
-            args: [MCP_SERVER_PATH],
-            env: { ORACLE_SESSION_ID: sessionId, ORACLE_BASE: oracleBase },
-          },
-        };
-        if (oracleBearer) {
-          // HTTP MCP via mcp-remote bridge — covers the full operator
-          // tool catalog (agent_tools:list, ui:*, autoloop:*, harness:*,
-          // etc.) instead of just the standalone bootstrap.ts subset
-          // (which omits operator-side defineTool entries).
-          //
-          // Reads the superuser-token at request time (file may not
-          // exist on a fresh install — degrade to the legacy stdio
-          // server in that case so Oracle still has a partial catalog).
-          let superuserToken: string | null = null;
-          try {
-            const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
-            superuserToken = require('node:fs').readFileSync(tokenPath, 'utf8').trim();
-            if (!superuserToken || superuserToken.length < 16) superuserToken = null;
-          } catch { /* missing token → fallthrough */ }
-
-          if (superuserToken) {
-            mcpServers.agentmcp = {
-              command: 'npx',
-              args: [
-                '-y',
-                'mcp-remote@latest',
-                `${oracleBase}/api/mcp?superuser=1`,
-                '--header',
-                `Authorization:Bearer ${superuserToken}`,
-              ],
-            };
-          } else {
-            // Legacy stdio fallback — catalog is incomplete but better
-            // than no agentmcp at all.
-            mcpServers.agentmcp = {
-              command: tsxBin,
-              args: [agentMcpPath],
-              env: {
-                AGENT_MCP_BEARER: oracleBearer,
-                OPERATOR_BASE_URL: oracleBase,
-              },
-            };
-          }
-        }
-        const allowedTools = [
-          'mcp__oracle__navigate',
-          'mcp__oracle__listHarnesses',
-          'mcp__oracle__listAgents',
-          'mcp__oracle__dispatchToAgent',
-          'mcp__oracle__getHarnessStatus',
-          'mcp__oracle__listChats',
-          'mcp__oracle__resumeChat',
-        ];
-        if (oracleBearer) {
-          allowedTools.push(
-            'mcp__agentmcp__harness:list',
-            'mcp__agentmcp__harness:get',
-            'mcp__agentmcp__harness:status',
-            'mcp__agentmcp__tasks:list',
-            'mcp__agentmcp__tasks:get',
-            'mcp__agentmcp__goals:list',
-            'mcp__agentmcp__goals:get',
-            'mcp__agentmcp__messages:inbox',
-            'mcp__agentmcp__messages:outbox',
-            'mcp__agentmcp__audit:list',
-            'mcp__agentmcp__hindsight:recall',
-            'mcp__agentmcp__search:query',
-            // Tool introspection — so Oracle can answer "what can I call?"
-            // honestly. Cheap, read-only.
-            'mcp__agentmcp__agent_tools:list',
-            // Agent ↔ UI surface — Oracle can read the user's tab state
-            // and drive panels. ui:dispatch requires either ctx.uiClientId
-            // (which Oracle currently does NOT pass — see TODO below) or
-            // an explicit client_id arg from a prior ui:list_clients call.
-            'mcp__agentmcp__ui:list_clients',
-            'mcp__agentmcp__ui:get_state',
-            'mcp__agentmcp__ui:dispatch',
-            // TODO(ui-control): Oracle's MCP URL doesn't currently include
-            // &client=<id>, so ctx.uiClientId is null and ui:get_state /
-            // ui:dispatch require an explicit client_id arg. Adding it
-            // means OracleDock has to pass the browser's clientId on every
-            // chat request; planned for a follow-up.
+        // Oracle now uses ONE MCP server: `agentmcp` via mcp-remote.
+        // The legacy `oracle` stdio server (lib/oracle-mcp-server.mjs)
+        // was retired 2026-05-11 — every tool it exposed has a
+        // first-party agent_tool replacement:
+        //   navigate / resumeChat → ui:dispatch (intent=set_url)
+        //   listHarnesses → harness:list
+        //   getHarnessStatus → harness:status
+        //   listChats → agent_chats:list
+        //   listAgents → agents:list
+        //   dispatchToAgent → agent_chats:create + agent_chats:send_message + ui:dispatch
+        //
+        // Bearer is the operator-wide superuser token (loopback +
+        // file-ACL gated). The Oracle system principal still exists
+        // for capability-tracking + audit; required to be provisioned
+        // or chat fails fast (no fallback to a half-equipped Oracle).
+        const { readSystemPrincipal } = await import('@/lib/system-principal');
+        const oracleP = await readSystemPrincipal('oracle');
+        if (!oracleP?.bearer) {
+          return new Response(
+            'Oracle system principal not provisioned. POST /api/agent-mcp/provision first.',
+            { status: 503 },
           );
         }
+        let superuserToken: string | null = null;
+        try {
+          const tokenPath = join(homedir(), '.papercusp', 'superuser-token');
+          superuserToken = require('node:fs').readFileSync(tokenPath, 'utf8').trim();
+          if (!superuserToken || superuserToken.length < 16) superuserToken = null;
+        } catch { /* */ }
+        if (!superuserToken) {
+          return new Response(
+            'Superuser token missing — Oracle requires loopback bearer auth at ~/.papercusp/superuser-token.',
+            { status: 503 },
+          );
+        }
+        // ?client=<uiClientId> goes into SIGNED_PARAM_ALLOWLIST so the
+        // dispatcher exposes it as ctx.uiClientId. ui:dispatch / ui:get_state
+        // default their target tab to that value, which means the LLM
+        // doesn't need an explicit client_id arg or a preceding
+        // ui:list_clients call to drive the user's open Oracle tab.
+        const clientParam = uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '';
+        const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
+          agentmcp: {
+            command: 'npx',
+            args: [
+              '-y',
+              'mcp-remote@latest',
+              `${oracleBase}/api/mcp?superuser=1${clientParam}`,
+              '--header',
+              `Authorization:Bearer ${superuserToken}`,
+            ],
+          },
+        };
+        const allowedTools = [
+          // Browser navigation + UI state introspection (replaces the
+          // legacy navigate / resumeChat tools).
+          'mcp__agentmcp__ui:dispatch',
+          'mcp__agentmcp__ui:get_state',
+          'mcp__agentmcp__ui:list_clients',
+          // Harness reads (replaces listHarnesses / getHarnessStatus).
+          'mcp__agentmcp__harness:list',
+          'mcp__agentmcp__harness:get',
+          'mcp__agentmcp__harness:status',
+          // Agent dispatch (replaces dispatchToAgent / listAgents / listChats).
+          'mcp__agentmcp__agents:list',
+          'mcp__agentmcp__agent_chats:list',
+          'mcp__agentmcp__agent_chats:get',
+          'mcp__agentmcp__agent_chats:create',
+          'mcp__agentmcp__agent_chats:send_message',
+          // Workspace bookkeeping (tasks/goals/messages/audit).
+          'mcp__agentmcp__tasks:list',
+          'mcp__agentmcp__tasks:get',
+          'mcp__agentmcp__goals:list',
+          'mcp__agentmcp__goals:get',
+          'mcp__agentmcp__messages:inbox',
+          'mcp__agentmcp__messages:outbox',
+          'mcp__agentmcp__audit:list',
+          // Memory + search.
+          'mcp__agentmcp__hindsight:recall',
+          'mcp__agentmcp__search:query',
+          // Tool introspection — so the Oracle can answer "what can I
+          // call?" by enumerating, not by parroting its prompt.
+          'mcp__agentmcp__agent_tools:list',
+        ];
         const stream = runAgentChat({
           promptText,
           mcpConfig: { mcpServers },
@@ -447,7 +430,8 @@ export function registerOracle(app: Hono) {
           // so the dock shows "navigate" / "harness:list" rather than the
           // full MCP-mangled name.
           toolEventFilter: (raw) => {
-            if (raw.startsWith('mcp__oracle__')) return raw.replace(/^mcp__oracle__/, '');
+            // After the legacy mcp__oracle__* tools were retired
+            // (2026-05-11), the Oracle only emits mcp__agentmcp__* events.
             if (raw.startsWith('mcp__agentmcp__')) return raw.replace(/^mcp__agentmcp__/, '');
             return null;
           },
@@ -467,37 +451,8 @@ export function registerOracle(app: Hono) {
           }
         }
       } finally {
-        sessionEmitters.delete(sessionId);
         await sseStream.close();
       }
     });
-  });
-
-  app.post('/oracle/sessions/:id/ui-command', async (c) => {
-    const id = c.req.param('id');
-    const body = await c.req.json().catch(() => ({}));
-    const emit = sessionEmitters.get(id);
-    if (!emit) return c.json({ error: 'unknown or expired session' }, 404);
-    if (body?.type === 'navigate' && typeof body.path === 'string') {
-      emit({ type: 'navigate', path: body.path });
-      return c.json({ ok: true });
-    }
-    if (
-      body?.type === 'openChat' &&
-      typeof body.slug === 'string' &&
-      typeof body.chatId === 'string' &&
-      typeof body.role === 'string'
-    ) {
-      emit({
-        type: 'openChat',
-        slug: body.slug,
-        chatId: body.chatId,
-        role: body.role,
-        title: typeof body.title === 'string' ? body.title : undefined,
-        featureId: typeof body.featureId === 'string' ? body.featureId : undefined,
-      });
-      return c.json({ ok: true });
-    }
-    return c.json({ error: 'invalid ui-command' }, 400);
   });
 }

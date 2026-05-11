@@ -6,9 +6,11 @@
  * Per Plan v6 phase B: the operator routes any agent-touching work
  * through a delegate, so the delegate needs the cross-harness surface.
  *
- * Shares the listHarnesses / getHarnessStatus / listChats /
- * dispatchToAgent definitions with oracle-mcp-server via
- * lib/agent-tools-shared.mjs. Adds two delegate-specific tools:
+ * Defines the listHarnesses / getHarnessStatus / listChats /
+ * dispatchToAgent surface from lib/agent-tools-shared.mjs (which is
+ * delegate-only now — the Oracle migrated to the unified HTTP MCP
+ * via mcp-remote on 2026-05-11, and its stdio shim was deleted).
+ * Adds two delegate-specific tools:
  *   - listAgents — enumerate active roles per harness in the workspace
  *   - followUpInChat — append to an existing chat by id
  *
@@ -64,7 +66,8 @@ const server = new Server(
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
 
-// Resources — see agent-resources-shared.mjs (shared with oracle-mcp-server).
+// Resources — see agent-resources-shared.mjs (delegate-only since
+// the Oracle stdio shim was deleted on 2026-05-11).
 server.setRequestHandler(ListResourcesRequestSchema, async () => {
   const resources = await listSharedResources({ base: BASE });
   return { resources };

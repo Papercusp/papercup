@@ -56,6 +56,7 @@ import {
 } from 'lucide-react';
 import { useTransitionRouter } from 'next-transition-router';
 import { usePathname, useSearchParams } from 'next/navigation';
+import { getOrCreateClientId } from '@/lib/ui/client-id';
 
 gsap.registerPlugin(useGSAP);
 
@@ -761,6 +762,11 @@ export function OracleDock() {
           body: JSON.stringify({
             messages: next.slice(0, -1).filter((m) => m.role !== 'assistant' || m.content),
             currentPath: typeof window !== 'undefined' ? window.location.pathname : '',
+            // Pass our UI-client id so Oracle's ui:dispatch / ui:get_state
+            // calls default to driving THIS tab (the one running the dock).
+            // Threaded into the agentmcp spawn URL as ?client=<id> →
+            // ctx.uiClientId on every Oracle tool call.
+            uiClientId: typeof window !== 'undefined' ? getOrCreateClientId() : null,
             tutorialMode: opts?.tutorialMode ?? tutorialActive,
           }),
           signal: ctrl.signal,
