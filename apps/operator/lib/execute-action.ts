@@ -532,7 +532,7 @@ async function detectCycleOrTooDeep(callerSlug: string, projectSlug: string): Pr
     if (depth > MAX_SPAWN_DEPTH) {
       return { ok: false, error: 'validation_error', detail: `spawn chain exceeds depth ${MAX_SPAWN_DEPTH}; refuse to deepen` };
     }
-    const rows = await sql<{ parent_slug: string | null }[]>`
+    const rows: { parent_slug: string | null }[] = await sql`
       SELECT parent_slug FROM harness_shared.projects WHERE slug = ${cur} LIMIT 1
     `;
     cur = rows.length > 0 ? rows[0].parent_slug : null;

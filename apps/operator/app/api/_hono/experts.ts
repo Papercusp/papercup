@@ -188,10 +188,10 @@ async function writeIdentity(projectDir: string, identity: Identity): Promise<vo
       agentCount: identity.agentCount ?? 0,
       roundCount: identity.roundCount ?? 0,
       personasUsed: identity.personasUsed ?? [],
-      user_engaged: identity.userEngaged === true,
-      created_at: createdAtMs,
-      updated_at: updatedAtMs,
-      termination_reason: identity.terminationReason ?? null,
+      userEngaged: identity.userEngaged === true,
+      createdAt: createdAtMs,
+      updatedAt: updatedAtMs,
+      terminationReason: identity.terminationReason ?? null,
     })
     .onConflictDoUpdate({
       target: [he.workspaceId, he.harnessSlug, he.expertId],

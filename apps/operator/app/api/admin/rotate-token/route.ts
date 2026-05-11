@@ -15,6 +15,7 @@
 import { NextResponse } from 'next/server';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 const ti = generated.tokenIndexInHarnessShared;
 import { promises as fs, existsSync } from 'node:fs';
@@ -71,7 +72,7 @@ export async function POST(req: Request) {
     await sql.unsafe(`INSERT INTO ${schema}.config_token (token) VALUES ($1) ON CONFLICT (token) DO NOTHING`, [newToken]);
     await db
       .insert(ti)
-      .values({ token: newToken, harnessSlug: slug })
+      .values({ token: newToken, harnessSlug: slug, workspaceId: activeWorkspaceId() })
       .onConflictDoUpdate({
         target: ti.harnessSlug,
         set: { token: dsql`EXCLUDED.token`, createdAt: dsql`now()` },

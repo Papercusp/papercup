@@ -18,7 +18,7 @@
  */
 
 import { getOrgPg, generated } from '@restart/db-org';
-import { eq } from 'drizzle-orm';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { ensureUserActionsTable } from './ensure-schema';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
@@ -145,8 +145,8 @@ export async function updateUserAction(args: {
     .update(t)
     .set({
       status: args.status,
-      summary: args.summary !== undefined ? args.summary : rawSql`${t.summary}` as any,
-      detailUrl: args.detailUrl !== undefined ? args.detailUrl : rawSql`${t.detailUrl}` as any,
+      summary: args.summary !== undefined ? args.summary : dsql`${t.summary}`,
+      detailUrl: args.detailUrl !== undefined ? args.detailUrl : dsql`${t.detailUrl}`,
       errorText: args.errorText ?? null,
       finishedAt: Date.now(),
     })

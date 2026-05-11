@@ -414,7 +414,7 @@ async function upsertProposal(slug: string, phase: Phase, path: string): Promise
       payload: { body } as any,
       ts,
       mtimeMs: Math.floor(mtimeMs),
-      workspace_id: ws,
+      workspaceId: ws,
     })
     .onConflictDoUpdate({
       target: [hps.harnessSlug, hps.phase, hps.proposalId],
@@ -493,7 +493,7 @@ async function upsertPhases(project: ProjectEntry): Promise<void> {
         iteration: 0,
         promotionInFlight: false,
         mtimeMs: Math.floor(mtimeMs),
-        workspace_id: ws,
+        workspaceId: ws,
       })
       .onConflictDoUpdate({
         target: [hph.harnessSlug, hph.phase],
@@ -873,7 +873,7 @@ async function replaceOrgDepartments(orgRootPath: string): Promise<void> {
     if (!deptSlug) continue;
     seenSlugs.add(deptSlug);
     const harnessSlug = typeof d.harnessSlug === 'string' ? d.harnessSlug
-      : typeof d.harness_slug === 'string' ? d.harnessSlug : '';
+      : typeof d.harness_slug === 'string' ? (d.harness_slug as string) : '';
     const name = typeof d.name === 'string' ? d.name : deptSlug;
     const mandate = typeof d.mandate === 'string' ? d.mandate : '';
     const inboxKinds = Array.isArray(d.inboxKinds) ? d.inboxKinds : Array.isArray(d.inbox_kinds) ? d.inbox_kinds : [];
@@ -886,8 +886,8 @@ async function replaceOrgDepartments(orgRootPath: string): Promise<void> {
         harnessSlug: harnessSlug,
         name,
         mandate,
-        inbox_kinds: inboxKinds as any,
-        outbox_kinds: outboxKinds as any,
+        inboxKinds: inboxKinds as any,
+        outboxKinds: outboxKinds as any,
         payload: d as any,
         mtimeMs: Math.floor(mtimeMs),
         workspaceId: ws,

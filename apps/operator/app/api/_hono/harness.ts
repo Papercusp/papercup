@@ -2792,10 +2792,10 @@ harness.post('/:slug/orchestrator/status', async (c) => {
       todoCount: Number(body.todoCount) || 0,
       blockedCount: Number(body.blockedCount) || 0,
       lastActiveTs: body.lastActiveTs ?? null,
-      costUsd: body.costUsd ?? null,
-      workspace_id: ws,
-      updated_at: now,
-      expires_at: new Date(expiresAt) as any,
+      costUsd: body.costUsd != null ? String(body.costUsd) : null,
+      workspaceId: ws,
+      updatedAt: now,
+      expiresAt: expiresAt,
     })
     .onConflictDoUpdate({
       target: [hs.harnessSlug, hs.phase],
@@ -2864,8 +2864,8 @@ harness.post('/:slug/orchestrator/lane', async (c) => {
 harness.delete('/:slug/orchestrator/lanes', async (c) => {
   const project = await resolveProject(c.req.param('slug'));
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  const phase = c.req.query('phase') === 'testing' || c.req.query('phase') === 'production'
-    ? c.req.query('phase') : 'staging';
+  const phase: string = c.req.query('phase') === 'testing' || c.req.query('phase') === 'production'
+    ? c.req.query('phase')! : 'staging';
   await ensureHarnessLanesTable();
   const { db } = getOrgPg();
   const { generated } = await import('@restart/db-org');
