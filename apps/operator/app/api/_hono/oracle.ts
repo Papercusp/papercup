@@ -290,7 +290,8 @@ export function registerOracle(app: Hono) {
       `  - mcp__agentmcp__agent_chats:create({ slug, role, feature_id? }) + mcp__agentmcp__agent_chats:send_message({ slug, chatId, content }): the two-step dispatch flow. Create the chat for the role, then send the first user message. After both succeed, navigate the user to the chat with ui:dispatch(set_url, { url: '/harness/<slug>?chat=<chatId>' }). Use when the user says "ask the architect to ...", "have the orchestrator do ...", etc. Roles: architect, scoper, worker, validator, reviewer, documenter, debugger, operator, curator.\n` +
       `  - mcp__agentmcp__agent_chats:list({ slug }): recent chats in a harness (id, role, title, message_count, updated_at). Use before resuming to find a chatId, or to answer "what chats have I had with X".\n` +
       `  - mcp__agentmcp__agents:list({ slug? }): role-scoped agents with recent activity, optionally scoped to one harness. Returns [{slug, role, chat_count, last_active}]. Use to answer "which agents are working on X" or to pick the most-active matching role before agent_chats:create.\n` +
-      `  - mcp__agentmcp__agent_tools:list({ asRole? }): the full tool catalog visible to a given role. Use to honestly answer "what can you do" — these are your actual capabilities, not the prompt summary above.\n`;
+      `  - mcp__agentmcp__agent_tools:list({ asRole? }): the full tool catalog visible to a given role. Use to honestly answer "what can you do" — these are your actual capabilities, not the prompt summary above.\n` +
+      `  - mcp__agentmcp__chat:ask_choice({ question, options }): present the user with clickable choice buttons (yes/no, accept/reject, pick-one-of) INSTEAD of asking the question as plain text. Options: \`[{id, label, hint?, style?: 'default'|'primary'|'danger'}]\`. Max 6. Use for finite choices ("Do you want me to go to /harness?"); keep plain text for open-ended questions ("describe what you're looking for"). After calling, end your turn — the user's click becomes the next user message.\n`;
 
     // Auto-context: cheap workspace inventory the Oracle would
     // otherwise have to round-trip an MCP tool to get. Refreshed every
@@ -397,6 +398,8 @@ export function registerOracle(app: Hono) {
           'mcp__agentmcp__ui:dispatch',
           'mcp__agentmcp__ui:get_state',
           'mcp__agentmcp__ui:list_clients',
+          // Model-driven choice cards (yes/no, accept/reject, pick-one).
+          'mcp__agentmcp__chat:ask_choice',
           // Harness reads (replaces listHarnesses / getHarnessStatus).
           'mcp__agentmcp__harness:list',
           'mcp__agentmcp__harness:get',

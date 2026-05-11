@@ -512,6 +512,22 @@ interface OperatorConversationContextValue {
    * a prior fetch is in flight; no-op when hasMoreEarlier is false.
    */
   loadEarlier: () => Promise<void>;
+
+  /**
+   * Resolve a chat:ask_choice card by POSTing the picked option to
+   * /api/operator/conversations/:id/turn-answer. The endpoint
+   * atomically marks the assistant's tool as answered AND inserts
+   * the user turn (text=label, source='card_pick'). On success, the
+   * live-tail will pick up both rows automatically — no local
+   * mutation needed here. Throws on already-answered (409) or
+   * validation failures (400).
+   */
+  answerChoice: (input: {
+    assistantSeq: number;
+    toolIndex: number;
+    option_id: string;
+    label: string;
+  }) => Promise<void>;
 }
 
 const OperatorConversationContext = createContext<OperatorConversationContextValue | null>(null);
@@ -599,6 +615,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               role: t.role,
               content: t.text,
               id: typeof t.id === 'string' ? t.id : undefined,
+              seq: typeof t.seq === 'number' ? t.seq : undefined,
+              tools: Array.isArray(t.tools) ? t.tools : undefined,
             })),
             lastTurnAtMs: lastCreated,
           });
@@ -648,7 +666,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       setHasMoreEarlier(page.hasMoreEarlier);
       dispatch({
         type: 'prepend_messages',
-        messages: page.turns.map((t) => ({ role: t.role, content: t.text })),
+        messages: page.turns.map((t) => ({
+          role: t.role,
+          content: t.text,
+          id: typeof t.id === 'string' ? t.id : undefined,
+          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          tools: Array.isArray(t.tools) ? t.tools : undefined,
+        })),
       });
     } catch {
       /* swallow — chat is still functional with the rows already loaded */
@@ -711,7 +735,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       }
       dispatch({
         type: 'append_message',
-        message: { role: t.role, content: t.text, id: typeof t.id === 'string' ? t.id : undefined },
+        message: {
+          role: t.role,
+          content: t.text,
+          id: typeof t.id === 'string' ? t.id : undefined,
+          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          tools: Array.isArray(t.tools) ? t.tools : undefined,
+        },
       });
       newestLoadedSeqRef.current = t.seq;
       if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = t.seq;
@@ -1207,6 +1237,35 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     return null;
   }, [state.sub]);
 
+  // chat:ask_choice card click → POST turn-answer. The atomic endpoint
+  // updates assistant.tools[i].answered AND inserts the user turn;
+  // we don't optimistically dispatch local rows because the live-tail
+  // path will pick them up via the sync invalidate the endpoint fires.
+  const answerChoice = useCallback(
+    async (input: {
+      assistantSeq: number;
+      toolIndex: number;
+      option_id: string;
+      label: string;
+    }): Promise<void> => {
+      const id = conversationIdRef.current;
+      if (!id) throw new Error('answerChoice: no active conversation');
+      const r = await fetch(
+        `/api/operator/conversations/${id}/turn-answer`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        },
+      );
+      if (!r.ok) {
+        const detail = await r.text().catch(() => '');
+        throw new Error(`turn-answer ${r.status}: ${detail.slice(0, 200)}`);
+      }
+    },
+    [],
+  );
+
   const value: OperatorConversationContextValue = useMemo(
     () => ({
       mode: state.mode,
@@ -1220,11 +1279,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       hasMoreEarlier,
       loadingEarlier,
       loadEarlier,
+      answerChoice,
     }),
     [
       state.mode, state.sub, state.messages, state.error,
       sendUserMessage, flipMode, bannerText,
-      hasMoreEarlier, loadingEarlier, loadEarlier,
+      hasMoreEarlier, loadingEarlier, loadEarlier, answerChoice,
     ],
   );
 

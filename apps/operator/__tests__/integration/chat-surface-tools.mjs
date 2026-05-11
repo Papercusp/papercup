@@ -27,6 +27,7 @@ const REQUIRED = [
   'mcp__agentmcp__ui:list_clients',
   'mcp__agentmcp__ui:get_state',
   'mcp__agentmcp__ui:dispatch',
+  'mcp__agentmcp__chat:ask_choice',
 ];
 
 // Each surface: route file + a label.

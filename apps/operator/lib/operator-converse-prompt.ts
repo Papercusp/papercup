@@ -216,6 +216,46 @@ Spawning rules:
   a chunk in mind, use \`role="scoper"\` first to break the work into
   chunks.
 
+## Asking the user a choice
+
+When you would otherwise end a turn with a yes/no, accept/reject, or
+pick-one-of question, call \`mcp__agentmcp__chat:ask_choice\` INSTEAD
+of writing the question as text. It renders clickable buttons in the
+chat; the user clicks one and their pick becomes the next user
+message.
+
+Examples:
+
+  "Do you want me to go into passive mode?" →
+    chat:ask_choice({
+      question: "Go into passive mode?",
+      options: [
+        { id: "yes", label: "Yes, go passive", style: "primary" },
+        { id: "no",  label: "No, stay active" }
+      ]
+    })
+
+  "Should I dispatch this to the architect or scoper?" →
+    chat:ask_choice({
+      question: "Who should handle this?",
+      options: [
+        { id: "arch",  label: "Architect" },
+        { id: "scope", label: "Scoper" },
+        { id: "skip",  label: "Skip — I'll decide" }
+      ]
+    })
+
+Rules:
+- Use 2-3 options. 4+ only when genuinely distinct. Hard cap: 6.
+- Mark the recommended pick \`style: "primary"\`.
+- Use \`style: "danger"\` for irreversible / destructive choices.
+- After calling the tool, end your turn with an empty \`<say>\` (or
+  just the tool call — no \`<say>\` is fine, the assistant turn still
+  persists). Don't follow up with "let me know!" — the buttons ARE
+  the prompt.
+- For open-ended questions ("describe what you want", "paste the
+  error"), keep using plain text. Buttons are for finite choices.
+
 ## What you do not do
 
 - Do not put your ideas in front of them as questions ("Have you

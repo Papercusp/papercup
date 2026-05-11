@@ -21,6 +21,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Bot, Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
+import { AskChoiceCard, type AskChoiceArgs, type AskChoiceOption } from './chat/AskChoiceCard';
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -40,11 +41,24 @@ interface Props {
   onLoadEarlier?: () => void;
   hasMoreEarlier?: boolean;
   loadingEarlier?: boolean;
+
+  /**
+   * chat:ask_choice resolution. Called when the user clicks a card
+   * button. Parent does the I/O — typically the OperatorConversation
+   * context's answerChoice() which POSTs to turn-answer. Required
+   * for cards to be interactive; if omitted, cards render disabled.
+   */
+  onAnswerChoice?: (input: {
+    assistantSeq: number;
+    toolIndex: number;
+    option_id: string;
+    label: string;
+  }) => Promise<void> | void;
 }
 
 export function OperatorChat({
   messages, busy, passive, onSend, banner, error,
-  onLoadEarlier, hasMoreEarlier, loadingEarlier,
+  onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
 }: Props) {
   const [input, setInput] = useState('');
 
@@ -54,6 +68,42 @@ export function OperatorChat({
     setInput('');
     onSend(text);
   }, [input, onSend]);
+
+  // chat:ask_choice → AskChoiceCard. Returns null for any other tool
+  // (those fall through to renderToolChip above).
+  const renderToolCard = useCallback(
+    (t: ChatToolCall, msg: ChatMessage, ti: number): ReactNode | null => {
+      if (t.name !== 'chat:ask_choice') return null;
+      const args = (t.input ?? {}) as Partial<AskChoiceArgs>;
+      if (!args.question || !Array.isArray(args.options) || args.options.length === 0) {
+        return null; // bad payload — fall through to chip
+      }
+      return (
+        <AskChoiceCard
+          args={args as AskChoiceArgs}
+          answered={t.answered}
+          onAnswer={(option: AskChoiceOption) => {
+            if (typeof msg.seq !== 'number' || !onAnswerChoice) return;
+            // Fire-and-forget — server-side atomicity guarantees the
+            // assistant-answered + user-turn rows land together. The
+            // live-tail picks them up; we don't optimistically dispatch.
+            void Promise.resolve(
+              onAnswerChoice({
+                assistantSeq: msg.seq,
+                toolIndex: ti,
+                option_id: option.id,
+                label: option.label,
+              }),
+            ).catch((err) => {
+              // eslint-disable-next-line no-console
+              console.warn('[operator-chat] answerChoice failed:', err);
+            });
+          }}
+        />
+      );
+    },
+    [onAnswerChoice],
+  );
 
   return (
     <ChatConversation
@@ -73,6 +123,7 @@ export function OperatorChat({
       onInputChange={setInput}
       onSubmit={submit}
       renderToolChip={renderOperatorToolChip}
+      renderToolCard={renderToolCard}
       onLoadEarlier={onLoadEarlier}
       hasMoreEarlier={hasMoreEarlier}
       loadingEarlier={loadingEarlier}

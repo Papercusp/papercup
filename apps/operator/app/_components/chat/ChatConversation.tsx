@@ -52,7 +52,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   /** Visible message text. May be empty while the assistant turn is still streaming. */
   content: string;
-  /** Optional tool calls to render above the content. Oracle uses; operator doesn't. */
+  /** Optional tool calls to render above the content. Oracle uses; operator does too as of 2026-05-11 (chat:ask_choice). */
   tools?: ChatToolCall[];
   /**
    * Stable id for optimistic-write dedup. Set client-side to a uuid
@@ -64,6 +64,13 @@ export interface ChatMessage {
    * the active-mode audit.
    */
   id?: string;
+  /**
+   * Operator-side: the per-conversation sequence number from
+   * operator_turns.seq. Needed by chat:ask_choice when the user picks
+   * an option — the turn-answer endpoint addresses turns by seq. Not
+   * set for optimistic local messages before they're persisted.
+   */
+  seq?: number;
 }
 
 export interface ChatConversationProps {

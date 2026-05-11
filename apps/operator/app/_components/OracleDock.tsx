@@ -22,6 +22,7 @@ import { Tooltip } from '../harness/Tooltip';
 import RouteLink from './RouteLink';
 import { HudFrameCorners, HudReticleGlyph } from './hud/HudPrimitives';
 import { ChatConversation } from './chat/ChatConversation';
+import { AskChoiceCard, type AskChoiceArgs } from './chat/AskChoiceCard';
 import {
   Activity,
   Bot,
@@ -1334,6 +1335,42 @@ export function OracleDock() {
                       🔧 <strong>{t.name}</strong>
                       {summary && <span className="oracle-tool-args">({summary})</span>}
                     </div>
+                  );
+                }}
+                renderToolCard={(t, _msg, ti) => {
+                  // chat:ask_choice → AskChoiceCard. Other tools fall
+                  // through to renderToolChip.
+                  if (t.name !== 'chat:ask_choice') return null;
+                  const args = (t.input ?? {}) as Partial<AskChoiceArgs>;
+                  if (!args.question || !Array.isArray(args.options) || args.options.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <AskChoiceCard
+                      args={args as AskChoiceArgs}
+                      answered={t.answered}
+                      onAnswer={(option) => {
+                        // Oracle is ephemeral (no transcript table) —
+                        // local state mutation in-component, then send
+                        // the option's label as a normal user message.
+                        // We mark the local tool entry's `answered` so
+                        // re-renders show the disabled/picked state.
+                        const tab = active;
+                        if (!tab) return;
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        const tools = (tab.messages.find((m) => m.tools)?.tools ?? []) as any[];
+                        if (tools[ti]) {
+                          tools[ti].answered = {
+                            option_id: option.id,
+                            label: option.label,
+                            at: Date.now(),
+                          };
+                        }
+                        // Fire next user message via the standard send path.
+                        setInput(option.label);
+                        void send(tab.id);
+                      }}
+                    />
                   );
                 }}
                 inputValue={input}

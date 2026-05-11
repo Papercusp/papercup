@@ -73,4 +73,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__ui:list_clients',
   'mcp__agentmcp__ui:get_state',
   'mcp__agentmcp__ui:dispatch',
+  // Model-driven choice cards. Renders question + buttons in the chat
+  // instead of asking the question as free text. Fire-and-forget;
+  // the user's click becomes the next user message. See
+  // apps/operator/lib/agent-tools/chat/ask_choice.ts.
+  'mcp__agentmcp__chat:ask_choice',
 ];
