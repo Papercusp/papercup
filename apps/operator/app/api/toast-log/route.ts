@@ -13,6 +13,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getOrgPg, generated } from '@restart/db-org';
+import { desc, inArray } from 'drizzle-orm';
 import { ensureToastLogTable } from '../../../lib/ensure-schema';
 import { notifySyncInvalidate } from '../../../lib/sync-sse';
 import { listToasts } from '../../../lib/toast-log-data';
@@ -67,7 +68,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const createdAt = Date.now();
 
   await ensureToastLogTable();
-  const { db, sql } = getOrgPg();
+  const { db } = getOrgPg();
   const [row] = await db
     .insert(tl)
     .values({
@@ -81,16 +82,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     })
     .returning({ id: tl.id });
 
-  // Ring-buffer trim: DELETE WHERE id IN (SELECT id ... ORDER BY ... OFFSET N).
-  // The subquery pattern is awkward in drizzle's query builder; keep this raw.
-  void sql`
-    DELETE FROM harness_shared.toast_log
-    WHERE id IN (
-      SELECT id FROM harness_shared.toast_log
-      ORDER BY created_at DESC
-      OFFSET ${RING_BUFFER_SIZE}
-    )
-  `.catch(() => {});
+  // Ring-buffer trim: delete every id beyond the newest RING_BUFFER_SIZE rows.
+  void (async () => {
+    const stale = await db
+      .select({ id: tl.id })
+      .from(tl)
+      .orderBy(desc(tl.created_at))
+      .offset(RING_BUFFER_SIZE);
+    if (stale.length > 0) {
+      await db.delete(tl).where(inArray(tl.id, stale.map((r) => r.id)));
+    }
+  })().catch(() => {});
 
   void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
 
@@ -110,9 +112,9 @@ export async function DELETE(req: NextRequest): Promise<NextResponse> {
   const url = new URL(req.url);
   const all = url.searchParams.get('all') === '1';
   await ensureToastLogTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   if (all) {
-    await sql`DELETE FROM harness_shared.toast_log`;
+    await db.delete(tl);
     return NextResponse.json({ ok: true, cleared: 'all' });
   }
   return NextResponse.json({ error: 'pass ?all=1 to clear' }, { status: 400 });
