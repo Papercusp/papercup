@@ -119,7 +119,7 @@ const clientId = uuid();
 const browser = new FakeBrowser(clientId);
 await browser.heartbeat();
 // Give the SSE stream a moment to attach.
-await new Promise((r) => setTimeout(r, 300));
+await new Promise((r) => setTimeout(r, 500));
 
 console.log('--- 1. presence + list_clients ---');
 const list1 = JSON.parse((await callTool('ui:list_clients', {}, `?superuser=1&workspace=default`)).text);

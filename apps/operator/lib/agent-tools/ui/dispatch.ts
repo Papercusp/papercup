@@ -16,18 +16,15 @@
  * Built-in intents (always available): set_url, snapshot,
  * read_visible_text, focus, scroll_into_view, click.
  *
- * Feature-registered intents are page-mounted — call `ui:get_state`
- * first if you need to confirm the page that owns the intent is on
- * screen.
+ * NOTE: was briefly auto-migrated to drizzle by a phase-3 batch and
+ * the generated values-builder broke jsonb encoding for the `args`
+ * column. Raw sql shape is correct.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { getOrgPg, generated } from '@restart/db-org';
-import { and, eq, sql as dsql } from 'drizzle-orm';
+import { getOrgPg } from '@restart/db-org';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
-
-const ui = generated.ui_intentsInHarness_shared;
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator', 'reviewer',
@@ -70,28 +67,26 @@ export default defineTool({
     const intentArgs = args.args ?? {};
 
     await ensureUiIntentsTable();
-    const { db } = getOrgPg();
+    const { sql } = getOrgPg();
 
     const principalSlug = ctx.principal?.slug ?? (ctx.isSuperuser ? 'system:operator' : `agent:${ctx.role ?? 'unknown'}`);
+    const argsJson = JSON.stringify(intentArgs);
 
-    const inserted = await db
-      .insert(ui)
-      .values({
-        client_id: clientId,
-        intent: args.intent,
-        args: intentArgs as any,
-        requested_by: principalSlug,
-      })
-      .returning({ id: ui.id });
+    const inserted = await sql<Array<{ id: number }>>`
+      INSERT INTO harness_shared.ui_intents (client_id, intent, args, requested_by)
+      VALUES (${clientId}, ${args.intent}, ${argsJson}::jsonb, ${principalSlug})
+      RETURNING id
+    `;
     const id = Number(inserted[0]!.id);
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const rows = await db
-        .select({ status: ui.status, result: ui.result, error_message: ui.error_message })
-        .from(ui)
-        .where(eq(ui.id, BigInt(id)))
-        .limit(1);
+      const rows = await sql<Array<{ status: string; result: unknown; error_message: string | null }>>`
+        SELECT status, result, error_message
+        FROM harness_shared.ui_intents
+        WHERE id = ${id}
+        LIMIT 1
+      `;
       const row = rows[0];
       if (row && row.status !== 'pending') {
         return {
@@ -111,14 +106,12 @@ export default defineTool({
     }
     // Timeout: mark the row so the browser tab won't act on it
     // even if it comes back online later.
-    await db
-      .update(ui)
-      .set({
-        status: 'timeout',
-        completed_at: dsql`now()` as any,
-        error_message: 'dispatch_timeout',
-      })
-      .where(and(eq(ui.id, BigInt(id)), eq(ui.status, 'pending')));
+    await sql`
+      UPDATE harness_shared.ui_intents
+      SET status = 'timeout', completed_at = now(),
+          error_message = 'dispatch_timeout'
+      WHERE id = ${id} AND status = 'pending'
+    `;
     return {
       isError: true,
       content: [{

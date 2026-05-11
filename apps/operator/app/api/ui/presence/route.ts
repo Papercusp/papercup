@@ -9,16 +9,19 @@
  * No bearer required: the URL/title in the body is the browser's own
  * state, and we're not trusting it as authority for anything except
  * "this tab is alive."
+ *
+ * NOTE: this route was briefly auto-migrated to drizzle by a phase-3
+ * batch, but the generated values-builder didn't json-encode the
+ * `viewport` jsonb column, returning 500 with "string argument must
+ * be of type string ...". The raw-sql shape below is correct and
+ * proven by the integration tests in __tests__/integration/ui-control.mjs.
  */
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getOrgPg, generated } from '@restart/db-org';
-import { sql as dsql } from 'drizzle-orm';
+import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiClientsTable } from '@/lib/ensure-schema';
-
-const uc = generated.ui_clientsInHarness_shared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,26 +47,24 @@ export async function POST(req: Request) {
   const { client_id, url, title, workspace_id, viewport } = parsed.data;
 
   await ensureUiClientsTable();
-  const { db } = getOrgPg();
-  await db
-    .insert(uc)
-    .values({
-      client_id,
-      workspace_id: workspace_id ?? null,
-      url,
-      title: title ?? null,
-      viewport: (viewport ?? null) as any,
-      last_seen_at: dsql`now()` as any,
-    })
-    .onConflictDoUpdate({
-      target: uc.client_id,
-      set: {
-        workspace_id: dsql`EXCLUDED.workspace_id`,
-        url: dsql`EXCLUDED.url`,
-        title: dsql`EXCLUDED.title`,
-        viewport: dsql`EXCLUDED.viewport`,
-        last_seen_at: dsql`now()`,
-      },
-    });
+  const { sql } = getOrgPg();
+  const viewportJson = viewport ? JSON.stringify(viewport) : null;
+  await sql`
+    INSERT INTO harness_shared.ui_clients (client_id, workspace_id, url, title, viewport, last_seen_at)
+    VALUES (
+      ${client_id},
+      ${workspace_id ?? null},
+      ${url},
+      ${title ?? null},
+      ${viewportJson}::jsonb,
+      now()
+    )
+    ON CONFLICT (client_id) DO UPDATE
+      SET workspace_id = EXCLUDED.workspace_id,
+          url          = EXCLUDED.url,
+          title        = EXCLUDED.title,
+          viewport     = EXCLUDED.viewport,
+          last_seen_at = now()
+  `;
   return NextResponse.json({ ok: true });
 }

@@ -6,16 +6,17 @@
  * The MCP `ui:dispatch` tool's long-poll wakes up on the next read.
  *
  * Loopback-only.
+ *
+ * NOTE: as with /api/ui/presence, this was briefly auto-migrated to
+ * drizzle by a phase-3 batch and broke jsonb encoding for `result`.
+ * The raw-sql shape is correct.
  */
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getOrgPg, generated } from '@restart/db-org';
-import { and, eq, sql as dsql } from 'drizzle-orm';
+import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
-
-const ui = generated.ui_intentsInHarness_shared;
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,19 +47,19 @@ export async function POST(
   const { result, error } = parsed.data;
 
   await ensureUiIntentsTable();
-  const { db } = getOrgPg();
+  const { sql } = getOrgPg();
 
   const status = error ? 'error' : 'done';
-  const rows = await db
-    .update(ui)
-    .set({
-      status,
-      result: (result === undefined ? null : result) as any,
-      error_message: error ?? null,
-      completed_at: dsql`now()` as any,
-    })
-    .where(and(eq(ui.id, BigInt(id)), eq(ui.status, 'pending')))
-    .returning({ id: ui.id });
+  const resultJson = result === undefined ? null : JSON.stringify(result);
+  const rows = await sql`
+    UPDATE harness_shared.ui_intents
+    SET status = ${status},
+        result = ${resultJson}::jsonb,
+        error_message = ${error ?? null},
+        completed_at = now()
+    WHERE id = ${id} AND status = 'pending'
+    RETURNING id
+  `;
   if (rows.length === 0) {
     return NextResponse.json({ error: 'not_pending_or_missing' }, { status: 404 });
   }
