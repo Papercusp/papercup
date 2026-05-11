@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import FALLBACK_CATALOG from './fallback-catalog.json';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+
+const hp = generated.hidden_pluginsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +19,7 @@ async function getHiddenBasenames(): Promise<Set<string>> {
   const now = Date.now();
   if (_hiddenCache && _hiddenCache.expires > now) return _hiddenCache.value;
   try {
-    const { sql } = getOrgPg();
+    const { db, sql } = getOrgPg();
     // Idempotent ensure — keeps the route working even if the migration
     // hasn't been applied to a particular environment yet.
     await sql.unsafe(`
@@ -30,7 +32,7 @@ async function getHiddenBasenames(): Promise<Set<string>> {
         PRIMARY KEY (workspace_id, basename)
       )
     `);
-    const rows = await sql<{ basename: string }[]>`SELECT basename FROM harness_shared.hidden_plugins`;
+    const rows = await db.select({ basename: hp.basename }).from(hp);
     const set = new Set(rows.map((r) => r.basename));
     _hiddenCache = { value: set, expires: now + HIDDEN_TTL_MS };
     return set;

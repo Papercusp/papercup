@@ -4,7 +4,10 @@
  * (Migration 037). Edit rows to adjust caps without a code change.
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { asc } from 'drizzle-orm';
+
+const bt = generated.operator_budget_tiersInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,7 +21,7 @@ interface TierRow {
 
 export async function GET() {
   try {
-    const { sql } = getOrgPg();
+    const { db, sql } = getOrgPg();
     // Idempotent ensure — keeps the route working even if the migration
     // hasn't been applied to a particular environment yet.
     await sql.unsafe(`
@@ -30,11 +33,10 @@ export async function GET() {
         PRIMARY KEY (ord)
       )
     `);
-    const rows = await sql<TierRow[]>`
-      SELECT ord, label, cap_usd, blurb
-        FROM harness_shared.operator_budget_tiers
-       ORDER BY ord ASC
-    `;
+    const rows = await db
+      .select({ ord: bt.ord, label: bt.label, cap_usd: bt.cap_usd, blurb: bt.blurb })
+      .from(bt)
+      .orderBy(asc(bt.ord));
     const tiers = rows.map((r) => ({
       label: r.label,
       cap: Number(r.cap_usd),
