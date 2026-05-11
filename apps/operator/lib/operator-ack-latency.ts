@@ -66,6 +66,18 @@ export async function computeAckLatencyTable(): Promise<AckLatencyTable> {
     return { perHarness: {}, fallbackMs };
   }
 
+  return reduceLatency(dispatched, acked, fallbackMs);
+}
+
+/**
+ * Pure-function core of computeAckLatencyTable — exported so unit tests
+ * can exercise the bucket/median/clamp logic without a live PG.
+ */
+export function reduceLatency(
+  dispatched: DispatchedRow[],
+  acked: AckedRow[],
+  fallbackMs = DEFAULT_THRESHOLD_MS,
+): AckLatencyTable {
   // Build dispatch_ts by card_id + the card's target harness.
   const dispatchTsById = new Map<string, { ts: number; target: string }>();
   for (const r of dispatched) {
