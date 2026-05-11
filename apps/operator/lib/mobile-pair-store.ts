@@ -12,7 +12,10 @@
  * during mint when the table grows beyond ~1000 entries.
  */
 import { randomBytes, randomUUID } from 'node:crypto';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, gte, lt, count } from 'drizzle-orm';
+
+const t = generated.mobile_pair_tokensInHarness_shared;
 
 interface PendingPair {
   pairToken: string;
@@ -33,38 +36,25 @@ export async function mintPairToken(opts: {
   const expiresAt = Date.now() + TTL_MS;
   const now = Date.now();
 
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
 
-  // Invalidate any prior unconsumed tokens for this workspace. Keeps the
-  // "one valid pair code at a time" mental model — the QR/payload on
-  // screen is the only one that works, anything you copied earlier is
-  // dead the moment you mint a fresh one.
-  await sql`
-    DELETE FROM harness_shared.mobile_pair_tokens
-    WHERE workspace_id = ${opts.workspaceId}
-      AND consumed = false
-  `;
+  // Invalidate any prior unconsumed tokens for this workspace.
+  await db.delete(t).where(and(eq(t.workspace_id, opts.workspaceId), eq(t.consumed, false)));
 
-  await sql`
-    INSERT INTO harness_shared.mobile_pair_tokens
-      (pair_token, workspace_id, user_email, desktop_host, expires_at_ms, consumed, created_at_ms)
-    VALUES (
-      ${pairToken},
-      ${opts.workspaceId},
-      ${opts.userEmail ?? null},
-      ${opts.desktopHost},
-      ${expiresAt},
-      false,
-      ${now}
-    )
-  `;
+  await db.insert(t).values({
+    pair_token: pairToken,
+    workspace_id: opts.workspaceId,
+    user_email: opts.userEmail ?? null,
+    desktop_host: opts.desktopHost,
+    expires_at_ms: expiresAt,
+    consumed: false,
+    created_at_ms: now,
+  });
 
-  // Opportunistic GC: drop expired rows when the table grows.
-  const cnt = await sql<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM harness_shared.mobile_pair_tokens
-  `;
+  // Opportunistic GC.
+  const cnt = await db.select({ n: count() }).from(t);
   if ((cnt[0]?.n ?? 0) > 1000) {
-    await sql`DELETE FROM harness_shared.mobile_pair_tokens WHERE expires_at_ms < ${now}`;
+    await db.delete(t).where(lt(t.expires_at_ms, now));
   }
 
   return { pairToken, expiresAt };
@@ -77,24 +67,19 @@ export async function mintPairToken(opts: {
  * both succeed.
  */
 export async function consumePairToken(pairToken: string): Promise<PendingPair | null> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const now = Date.now();
-  const rows = await sql<
-    {
-      pair_token: string;
-      workspace_id: string;
-      user_email: string | null;
-      desktop_host: string;
-      expires_at_ms: number;
-    }[]
-  >`
-    UPDATE harness_shared.mobile_pair_tokens
-       SET consumed = true
-     WHERE pair_token = ${pairToken}
-       AND consumed = false
-       AND expires_at_ms >= ${now}
-    RETURNING pair_token, workspace_id, user_email, desktop_host, expires_at_ms
-  `;
+  const rows = await db
+    .update(t)
+    .set({ consumed: true })
+    .where(and(eq(t.pair_token, pairToken), eq(t.consumed, false), gte(t.expires_at_ms, now)))
+    .returning({
+      pair_token: t.pair_token,
+      workspace_id: t.workspace_id,
+      user_email: t.user_email,
+      desktop_host: t.desktop_host,
+      expires_at_ms: t.expires_at_ms,
+    });
   if (rows.length === 0) return null;
   const r = rows[0];
   return {

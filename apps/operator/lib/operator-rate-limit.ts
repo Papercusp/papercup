@@ -16,7 +16,10 @@
  * §4 decision 3 (the route handler simply doesn't call checkRate).
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql } from 'drizzle-orm';
+
+const t = generated.operator_rate_limitInHarness_shared;
 
 const RATE_WINDOW_MS = 60_000;
 const DEFAULT_RATE_LIMIT = 2;
@@ -32,12 +35,14 @@ interface WorkspaceRate {
 const EMPTY: WorkspaceRate = { recent: [], consecutive503: 0, breakerUntilMs: 0 };
 
 async function readState(workspaceId: string): Promise<WorkspaceRate> {
-  const { sql } = getOrgPg();
-  const rows = await sql<{ payload: WorkspaceRate }[]>`
-    SELECT payload FROM harness_shared.operator_rate_limit WHERE workspace_id = ${workspaceId}
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ payload: t.payload })
+    .from(t)
+    .where(eq(t.workspace_id, workspaceId))
+    .limit(1);
   if (rows.length === 0) return { ...EMPTY };
-  const p = rows[0].payload;
+  const p = rows[0].payload as Partial<WorkspaceRate> | null;
   return {
     recent: Array.isArray(p?.recent) ? p.recent : [],
     consecutive503: typeof p?.consecutive503 === 'number' ? p.consecutive503 : 0,
@@ -46,14 +51,14 @@ async function readState(workspaceId: string): Promise<WorkspaceRate> {
 }
 
 async function writeState(workspaceId: string, s: WorkspaceRate): Promise<void> {
-  const { sql } = getOrgPg();
-  const payload = JSON.stringify(s);
-  await sql`
-    INSERT INTO harness_shared.operator_rate_limit (workspace_id, payload, updated_at)
-    VALUES (${workspaceId}, ${payload}::jsonb, ${Date.now()})
-    ON CONFLICT (workspace_id) DO UPDATE
-      SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
-  `;
+  const { db } = getOrgPg();
+  await db
+    .insert(t)
+    .values({ workspace_id: workspaceId, payload: s, updated_at: Date.now() })
+    .onConflictDoUpdate({
+      target: t.workspace_id,
+      set: { payload: sql`EXCLUDED.payload`, updated_at: sql`EXCLUDED.updated_at` },
+    });
 }
 
 async function transact<T>(
