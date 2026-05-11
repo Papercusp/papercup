@@ -743,12 +743,34 @@ export interface Plugin {
   oauth?: PluginOAuthRequirement[];
 
   /**
-   * Default `true`. When `true`, snapshots forked from this plugin pin
-   * to the exact `version` they were published with.
+   * @deprecated v1 only. Use `versionPin` instead.
+   *
+   * Loader still reads this for back-compat:
+   *   `pluginVersionPinned: true`  → equivalent to `versionPin: { mode: 'exact' }`
+   *   `pluginVersionPinned: false` → equivalent to `versionPin: { mode: 'semver' }`
    *
    * Spec: /docs/snapshots/share-semantics#schema-evolution.
    */
   pluginVersionPinned?: boolean;
+
+  /**
+   * v2 (rev3 plan G+2): explicit per-plugin version-pinning policy.
+   *
+   * - `mode`:
+   *   - `'semver'` — accept any version satisfying captured semver range. Default for JS plugins.
+   *   - `'exact'`  — restore must use the exact version captured. Equivalent to legacy `pluginVersionPinned: true`.
+   *   - `'hash'`   — content-addressed (WASM/daemon default). Different binary = different identity.
+   * - `allowOverride`:
+   *   - `'security-patch'` — marketplace-flagged security patches can supersede pinned version (default).
+   *   - `'always'`         — any newer version supersedes (rare; user opt-in).
+   *   - `'never'`          — strict pinning even through CVE updates.
+   *
+   * When both `versionPin` and `pluginVersionPinned` are set, `versionPin` wins.
+   */
+  versionPin?: {
+    mode: 'semver' | 'exact' | 'hash';
+    allowOverride?: 'security-patch' | 'always' | 'never';
+  };
 }
 
 /* ─────────────────────────────────────────────────────────────────────

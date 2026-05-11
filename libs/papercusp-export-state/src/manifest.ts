@@ -7,9 +7,69 @@
 
 import { snapshotId, randomBase32 } from '@papercusp/publish-auth';
 
-export const SNAPSHOT_SCHEMA_VERSION = 1 as const;
+/**
+ * v2 (rev3 plan G+): adds `runtime`, `versionPin`, `migrationManifest`
+ * to SnapshotPlugin so WASM/daemon plugins capture+restore correctly
+ * + so snapshot reconciliation can detect schema-migration divergence.
+ *
+ * Reader supports both v1 and v2 manifests. Writer always emits v2.
+ * v1 fields (`pluginVersionPinned`) remain in the type as deprecated
+ * for one cycle so existing in-flight tarballs round-trip cleanly.
+ */
+export const SNAPSHOT_SCHEMA_VERSION = 2 as const;
+export const SNAPSHOT_READER_MIN_VERSION = 1 as const;
 
 export type SnapshotKind = 'snapshot';
+
+/**
+ * Which runtime the plugin's core executes in. Determines what the
+ * restore-side host needs (WASM runtime present, bwrap available, etc.)
+ * — see §runtimeRequirements derivation in plugin-reenable.
+ *
+ * Optional in the type for v1 back-compat; reader defaults to 'js'
+ * when absent.
+ */
+export type SnapshotPluginRuntime = 'js' | 'wasm' | 'daemon';
+
+/**
+ * Per-plugin version-pinning policy at capture time. Replaces the v1
+ * boolean `pluginVersionPinned` with an explicit mode + escape hatch.
+ *
+ * Modes:
+ *   - 'semver'   — accept any version satisfying the captured semver range.
+ *   - 'exact'    — restore must use the exact version string captured.
+ *                  v1's `pluginVersionPinned: true` migrates to this.
+ *   - 'hash'     — content-addressed (WASM/daemon default). Captured
+ *                  artifact's sha256 is the identity. Different binary
+ *                  built from same source = different identity.
+ *
+ * `allowOverride` lets the marketplace flag a published version as
+ * superseding-with-security-patch; restore prompts user to switch to
+ * the patched version even though the snapshot pins the old one.
+ *   - 'security-patch' — only marketplace-flagged security supersedes
+ *   - 'always'         — any newer version supersedes (rare; user opt-in)
+ *   - 'never'          — strict pinning even through CVE updates
+ */
+export type SnapshotVersionPinMode = 'semver' | 'exact' | 'hash';
+export type SnapshotVersionPinOverride = 'security-patch' | 'always' | 'never';
+
+export interface SnapshotVersionPin {
+  mode: SnapshotVersionPinMode;
+  /** Defaults to 'security-patch' (sane prod default) when absent. */
+  allowOverride?: SnapshotVersionPinOverride;
+}
+
+/**
+ * Per-migration content-hash record. Lets restore detect divergence
+ * (same filename, different content = bad) vs forward-extension
+ * (snapshot's list is a strict prefix of installed's list = ok, run
+ * the trailing migrations against restored data).
+ */
+export interface SnapshotMigrationEntry {
+  filename: string;
+  /** Lowercase hex sha256 of the migration file's contents. */
+  sha256: string;
+}
 
 export interface SnapshotPlugin {
   name: string;
@@ -30,8 +90,29 @@ export interface SnapshotPlugin {
    */
   shapeJson?: string;
   /**
-   * The plugin's `pluginVersionPinned` flag at capture time. Defaults
-   * to `true` per share-semantics spec when absent.
+   * Which runtime the plugin's core uses. Optional for v1 back-compat;
+   * absent → 'js' (the only runtime v1 supported).
+   */
+  runtime?: SnapshotPluginRuntime;
+  /**
+   * v2 replacement for `pluginVersionPinned`. When both present,
+   * `versionPin` wins (v2 capture overrides v1 reader fallback).
+   * When only `pluginVersionPinned` present: true → { mode: 'exact' };
+   * false/absent → { mode: 'semver' }.
+   */
+  versionPin?: SnapshotVersionPin;
+  /**
+   * Captured migration history. Restore-side reconciles against the
+   * installed plugin's current migration list; mismatch by name+sha256
+   * surfaces as a divergence warning. Optional; v1 snapshots had no
+   * migration concept and load with empty list.
+   */
+  migrationManifest?: SnapshotMigrationEntry[];
+
+  /**
+   * @deprecated v1 only — read by the loader for back-compat, never
+   * written by v2 capture. `versionPin` supersedes. One-cycle removal:
+   * after v2 has been the default for a release, drop this field.
    */
   pluginVersionPinned?: boolean;
 }
@@ -46,7 +127,11 @@ export interface SnapshotProvenance {
 }
 
 export interface SnapshotManifest {
-  schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
+  /**
+   * Reader accepts v1 (legacy) or v2 (current). Writer emits v2.
+   * Use the constants {@link SNAPSHOT_READER_MIN_VERSION} / {@link SNAPSHOT_SCHEMA_VERSION}.
+   */
+  schemaVersion: 1 | 2;
   kind: SnapshotKind;
   /** `snap_<12-base32>`. */
   id: string;
@@ -101,8 +186,19 @@ export function newForkSlugSuffix(): string {
 export function validateSnapshotManifest(input: unknown): asserts input is SnapshotManifest {
   if (input == null || typeof input !== 'object') throw new Error('manifest is not an object');
   const m = input as Record<string, unknown>;
-  if (m.schemaVersion !== SNAPSHOT_SCHEMA_VERSION)
-    throw new Error(`unsupported schemaVersion ${String(m.schemaVersion)}`);
+  // Accept any version in [SNAPSHOT_READER_MIN_VERSION, SNAPSHOT_SCHEMA_VERSION].
+  // Reader handles v1 and v2 manifests; writer always emits v2. Forward
+  // compat (reading a v3 manifest) is intentionally not supported —
+  // user must update the reader before the snapshot loads.
+  const sv = m.schemaVersion;
+  if (
+    typeof sv !== 'number' ||
+    sv < SNAPSHOT_READER_MIN_VERSION ||
+    sv > SNAPSHOT_SCHEMA_VERSION
+  )
+    throw new Error(
+      `unsupported schemaVersion ${String(sv)} (reader supports ${SNAPSHOT_READER_MIN_VERSION}..=${SNAPSHOT_SCHEMA_VERSION})`,
+    );
   if (m.kind !== 'snapshot') throw new Error(`kind must be "snapshot"`);
   for (const k of [
     'id',
@@ -128,4 +224,47 @@ export function validateSnapshotManifest(input: unknown): asserts input is Snaps
   if (!r) throw new Error('manifest.redactions required');
   if (typeof r.verifiedHits !== 'number' || typeof r.highRecallHits !== 'number')
     throw new Error('manifest.redactions counts must be numbers');
+}
+
+/* ───────────────────────── v1 → v2 normalization ───────────────────── */
+
+/**
+ * Resolve a SnapshotPlugin's effective `runtime` for downstream consumers.
+ * Returns the explicit field if present (v2 capture), else 'js' (v1 default).
+ */
+export function effectiveRuntime(p: SnapshotPlugin): SnapshotPluginRuntime {
+  return p.runtime ?? 'js';
+}
+
+/**
+ * Resolve a SnapshotPlugin's effective `versionPin`. Precedence:
+ *   1. Explicit `versionPin` field (v2 capture).
+ *   2. v1 `pluginVersionPinned: true`  → `{ mode: 'exact' }`.
+ *   3. v1 `pluginVersionPinned: false` → `{ mode: 'semver' }`.
+ *   4. neither field present (very old snapshots) → `{ mode: 'semver' }`.
+ *
+ * `allowOverride` defaults to 'security-patch' when unset (sane prod
+ * default — pinned snapshots can still take CVE patches).
+ */
+export function effectiveVersionPin(p: SnapshotPlugin): SnapshotVersionPin {
+  if (p.versionPin) {
+    return {
+      mode: p.versionPin.mode,
+      allowOverride: p.versionPin.allowOverride ?? 'security-patch',
+    };
+  }
+  if (p.pluginVersionPinned === true) {
+    return { mode: 'exact', allowOverride: 'security-patch' };
+  }
+  return { mode: 'semver', allowOverride: 'security-patch' };
+}
+
+/**
+ * Resolve a SnapshotPlugin's migration manifest. Returns empty array
+ * for v1 snapshots that didn't capture migration history.
+ */
+export function effectiveMigrationManifest(
+  p: SnapshotPlugin,
+): SnapshotMigrationEntry[] {
+  return p.migrationManifest ?? [];
 }
