@@ -58,9 +58,6 @@ interface ParallelWorkersCfg {
   replanStrikes: number;
   /** Agent role taken over on chunk escalation. */
   escalateToRole: string;
-  /** Run the synthesizer step before validation. Temporary flag
-   *  during the synthesizer rollout — removed in step 5. */
-  useSynthesizer: boolean;
   /** Whether single-worker features also go through synthesis.
    *  Default ON: synthesis acts as a code-review pass even when
    *  there's only one candidate. Flip OFF for speed. */
@@ -141,7 +138,6 @@ export default function HarnessSettingsPanel({
     workingStateCheck: 'pnpm typecheck',
     replanStrikes: 3,
     escalateToRole: 'debugger',
-    useSynthesizer: false,
     synthesizeSingle: true,
     adaptive: { tiers: DEFAULT_TIERS, labels: DEFAULT_LABELS, rubric: DEFAULT_RUBRIC },
   });
@@ -215,7 +211,6 @@ export default function HarnessSettingsPanel({
       workingStateCheck: typeof pwRaw.workingStateCheck === 'string' ? pwRaw.workingStateCheck : 'pnpm typecheck',
       replanStrikes: typeof pwRaw.replanStrikes === 'number' && pwRaw.replanStrikes > 0 ? pwRaw.replanStrikes : 3,
       escalateToRole: typeof pwRaw.escalateToRole === 'string' && pwRaw.escalateToRole.length > 0 ? pwRaw.escalateToRole : 'debugger',
-      useSynthesizer: pwRaw.useSynthesizer === true,
       synthesizeSingle: pwRaw.synthesizeSingle === undefined ? true : pwRaw.synthesizeSingle === true,
       adaptive: {
         tiers: rawTiers.length >= 2 && rawTiers.length === rawLabels.length ? rawTiers : DEFAULT_TIERS,
@@ -364,9 +359,6 @@ export default function HarnessSettingsPanel({
       }
       if (parallel.escalateToRole && parallel.escalateToRole !== 'debugger') {
         pw.escalateToRole = parallel.escalateToRole;
-      }
-      if (parallel.useSynthesizer) {
-        pw.useSynthesizer = true;
       }
       // synthesizeSingle: default is true (synth even on N=1). Only
       // persist when user explicitly disabled.
@@ -690,35 +682,15 @@ export default function HarnessSettingsPanel({
             )}
           </div>
 
-          {/* ── Synthesizer knobs ───────────────────────────────── */}
+          {/* ── Synthesizer knob ─────────────────────────────────── */}
           <div style={{ marginTop: 6, paddingTop: 10, borderTop: '1px dashed var(--pc-border, #333)' }}>
             <div style={{ fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)', marginBottom: 6, fontStyle: 'italic' }}>
-              Synthesizer (merges/polishes worker output before validation)
+              Synthesizer (always merges/polishes worker output before validation)
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, marginBottom: 6 }}>
-              <input
-                type="checkbox"
-                checked={parallel.useSynthesizer}
-                onChange={(e) => setParallel((p) => ({ ...p, useSynthesizer: e.target.checked }))}
-              />
-              <span>run synthesizer</span>
-              <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>
-                (rollout flag — off by default during verification)
-              </span>
-            </label>
-            <label
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-                fontSize: 12,
-                color: parallel.useSynthesizer ? 'inherit' : 'var(--pc-muted, #9a9a9a)',
-              }}
-            >
+            <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
               <input
                 type="checkbox"
                 checked={parallel.synthesizeSingle}
-                disabled={!parallel.useSynthesizer}
                 onChange={(e) => setParallel((p) => ({ ...p, synthesizeSingle: e.target.checked }))}
               />
               <span>synthesize single-worker output</span>
