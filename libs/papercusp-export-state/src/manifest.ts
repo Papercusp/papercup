@@ -289,3 +289,51 @@ export interface BundledLikeManifest {
 export function isBundledPlugin(manifest: BundledLikeManifest): boolean {
   return manifest.bundled === true;
 }
+
+/* ───── Plugin work-dir capture rules (rev3 plan G+4) ──────────────── */
+
+/**
+ * Per-file rule for what travels from a plugin's work-dir on snapshot.
+ * Mirrors the SDK's `PluginManifest.snapshot.include[]` shape — captures
+ * pulls these into a small parsed structure the capture loop walks.
+ */
+export interface PluginSnapshotInclude {
+  /** Path relative to the plugin's work-dir root. Globs supported. */
+  path: string;
+  /** When 'strip': capture the path as a zero-byte placeholder. */
+  redact?: 'strip';
+}
+
+export interface PluginSnapshotConfig {
+  include?: PluginSnapshotInclude[];
+}
+
+export interface SnapshotIncludeLikeManifest {
+  snapshot?: unknown;
+}
+
+/**
+ * Pull the `snapshot.include` rules out of a plugin manifest, with
+ * defensive validation. Unknown shapes return empty array (default
+ * behavior: nothing from the work-dir travels). When daemon-runtime
+ * capture ships in Batch I, this is the function the capture loop
+ * consults to decide which work-dir files to include.
+ */
+export function readSnapshotIncludeRules(
+  manifest: SnapshotIncludeLikeManifest,
+): PluginSnapshotInclude[] {
+  const s = manifest.snapshot;
+  if (s == null || typeof s !== 'object') return [];
+  const include = (s as Record<string, unknown>).include;
+  if (!Array.isArray(include)) return [];
+  const out: PluginSnapshotInclude[] = [];
+  for (const entry of include) {
+    if (entry == null || typeof entry !== 'object') continue;
+    const e = entry as Record<string, unknown>;
+    if (typeof e.path !== 'string' || e.path.length === 0) continue;
+    const item: PluginSnapshotInclude = { path: e.path };
+    if (e.redact === 'strip') item.redact = 'strip';
+    out.push(item);
+  }
+  return out;
+}

@@ -47,6 +47,14 @@ export const DEFAULT_DENY: DenyMatcher[] = [
   { pattern: 'lanes.json', reason: 'denylist:per-machine-ephemeral' },
   { pattern: 'runs/', reason: 'denylist:per-machine-ephemeral' },
 
+  // jco WASM transpile cache — regenerable per-plugin output (rev3 G+4).
+  // Plugin work-dirs aren't in the harness tree today, but this entry
+  // is defensive: if a plugin author accidentally puts an `_jco/` dir
+  // somewhere in the harness tree, we still skip it. Real prevention
+  // for plugin work-dirs is the default-strip rule when capture
+  // eventually walks `~/.papercusp/plugins/<id>/_work/`.
+  { pattern: '_jco/', reason: 'denylist:re-derivable' },
+
   // Snapshot-system reflexive paths — must be excluded or every capture
   // restages prior snapshots into the new one. Especially:
   //   .harness/snapshots/        previous snapshot tarballs (huge, multiplicative)

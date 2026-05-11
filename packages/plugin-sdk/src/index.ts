@@ -601,6 +601,31 @@ export interface Plugin {
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
   /**
+   * Plugin-author opt-in for files in the per-plugin work-dir
+   * (`~/.papercusp/plugins/<id>/_work/`) that should travel with
+   * snapshots. Default behavior (this field absent or empty): the
+   * entire work-dir is stripped on capture. Files explicitly listed
+   * here are included.
+   *
+   * Use cases for daemon plugins (Batch I): seeding state, pre-built
+   * indexes, model files small enough to ship inline. Anything large
+   * or sensitive should NOT be listed — daemon plugins should
+   * regenerate/refetch on first run instead.
+   *
+   * `redact: 'strip'` writes the file as a zero-byte placeholder so
+   * the restore-side knows it was intentional but excluded
+   * (vs. plain absence which means "never existed"). Default is to
+   * include the file as-is; explicit redaction needed for "include
+   * the path stub but not the content."
+   *
+   * Path is relative to the plugin's work-dir root. Globs supported
+   * (forward-slash + minimatch syntax).
+   */
+  snapshot?: {
+    include?: { path: string; redact?: 'strip' }[];
+  };
+
+  /**
    * @internal Build-pipeline only — DO NOT set this in your plugin's
    * manifest. The operator install pipeline stamps `bundled: true`
    * on plugins that ship pre-installed with the operator (e.g.

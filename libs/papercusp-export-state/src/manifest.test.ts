@@ -237,3 +237,77 @@ describe('isBundledPlugin', () => {
     expect(isBundledPlugin({ bundled: {} })).toBe(false);
   });
 });
+
+/* ───── plugin work-dir snapshot.include rules (rev3 plan G+4) ─────── */
+
+import { readSnapshotIncludeRules } from './manifest';
+
+describe('readSnapshotIncludeRules', () => {
+  it('returns empty when manifest has no snapshot field', () => {
+    expect(readSnapshotIncludeRules({})).toEqual([]);
+  });
+
+  it('returns empty when snapshot.include is missing', () => {
+    expect(readSnapshotIncludeRules({ snapshot: {} })).toEqual([]);
+  });
+
+  it('returns empty when snapshot is not an object (defensive)', () => {
+    expect(readSnapshotIncludeRules({ snapshot: 'whoops' })).toEqual([]);
+    expect(readSnapshotIncludeRules({ snapshot: null })).toEqual([]);
+  });
+
+  it('parses well-formed include rules', () => {
+    expect(
+      readSnapshotIncludeRules({
+        snapshot: {
+          include: [
+            { path: 'state.db' },
+            { path: 'cache/**', redact: 'strip' },
+          ],
+        },
+      }),
+    ).toEqual([{ path: 'state.db' }, { path: 'cache/**', redact: 'strip' }]);
+  });
+
+  it('skips entries with missing or empty path', () => {
+    expect(
+      readSnapshotIncludeRules({
+        snapshot: {
+          include: [
+            { path: 'kept' },
+            { path: '' }, // skipped
+            { redact: 'strip' }, // skipped (no path)
+            { path: 'also-kept' },
+          ],
+        },
+      }),
+    ).toEqual([{ path: 'kept' }, { path: 'also-kept' }]);
+  });
+
+  it("ignores unknown redact values (not 'strip')", () => {
+    const rules = readSnapshotIncludeRules({
+      snapshot: { include: [{ path: 'x', redact: 'mysterious' }] },
+    });
+    expect(rules).toEqual([{ path: 'x' }]); // redact field omitted
+  });
+
+  it('ignores non-object entries in include array', () => {
+    expect(
+      readSnapshotIncludeRules({
+        snapshot: { include: ['stringy', null, 42, { path: 'real' }] },
+      }),
+    ).toEqual([{ path: 'real' }]);
+  });
+});
+
+/* ───── _jco/ denylist entry (rev3 plan G+4 defensive) ─────────────── */
+
+import { DEFAULT_DENY } from './denylist';
+
+describe('DEFAULT_DENY includes _jco/', () => {
+  it('matches WASM transpile cache as re-derivable', () => {
+    const entry = DEFAULT_DENY.find((d) => d.pattern === '_jco/');
+    expect(entry).toBeDefined();
+    expect(entry?.reason).toBe('denylist:re-derivable');
+  });
+});
