@@ -71,7 +71,10 @@ export function ConsoleLauncherButton() {
 }
 
 function ConsoleIcon() {
-  // Rounded rectangle with `>_` inside — reads "terminal" at 18px.
+  // Rounded rectangle with `>_` inside (terminal) + a small `+` badge
+  // on the top-right corner so the affordance reads as "open new
+  // console" not just "console". The badge sits on a filled accent
+  // disc so it pops against the dark chrome background.
   return (
     <svg
       width="18"
@@ -84,9 +87,18 @@ function ConsoleIcon() {
       strokeLinejoin="round"
       aria-hidden="true"
     >
+      {/* Terminal body */}
       <rect x="1.6" y="3.2" width="14.8" height="11.6" rx="1.8" />
+      {/* Prompt chevron */}
       <path d="M4.6 7.2 L7.0 9.0 L4.6 10.8" />
+      {/* Cursor underscore */}
       <line x1="8.4" y1="11.6" x2="12.6" y2="11.6" />
+      {/* "+" badge on the top-right corner — disc + crossing lines.
+          stroke="none" + fill on the disc so it visually layers over
+          the terminal outline; the cross uses a contrasting stroke. */}
+      <circle cx="14.5" cy="3.5" r="3.1" fill="#0b1019" stroke="currentColor" strokeWidth="1.4" />
+      <line x1="14.5" y1="1.9" x2="14.5" y2="5.1" strokeWidth="1.5" />
+      <line x1="12.9" y1="3.5" x2="16.1" y2="3.5" strokeWidth="1.5" />
     </svg>
   );
 }
