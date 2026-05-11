@@ -562,6 +562,163 @@ export async function buildStatus(): Promise<BuildStatus> {
   };
 }
 
+// ── Session drilldown ──────────────────────────────────────────────
+
+export interface SessionAgent {
+  spawn_id: string;
+  workspace_id: string;
+  harness_slug: string | null;
+  parent_spawn_id: string | null;
+  parent_role: string | null;
+  child_role: string | null;
+  feature_id: string | null;
+  chunk_id: string | null;
+  run_id: string | null;
+  status: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  exit_code: number | null;
+  output_tail: string | null;
+  error_message: string | null;
+  cancel_requested: boolean | null;
+}
+
+export interface SessionInvocation {
+  id: string;
+  tool_name: string;
+  invoked_at: string;
+  duration_ms: number | null;
+  status: string;
+  error_message: string | null;
+}
+
+export interface SessionChildSpawn {
+  spawn_id: string;
+  child_role: string | null;
+  status: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  tool_count: number;
+  error_count: number;
+}
+
+export interface SessionDetail {
+  spawn_id: string;
+  agent: SessionAgent | null;
+  invocations: SessionInvocation[];
+  children: SessionChildSpawn[];
+  related_chats: Array<{ id: string; role: string; title: string | null; updated_at: string }>;
+}
+
+export async function getSessionDetail(spawnId: string): Promise<SessionDetail | null> {
+  const { sql } = getOrgPg();
+
+  // 1. spawned_agents row.
+  type AgentRow = {
+    spawn_id: string;
+    workspace_id: string;
+    harness_slug: string | null;
+    parent_spawn_id: string | null;
+    parent_role: string | null;
+    child_role: string | null;
+    feature_id: string | null;
+    chunk_id: string | null;
+    run_id: string | null;
+    status: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+    duration_ms: number | null;
+    exit_code: number | null;
+    output_tail: string | null;
+    error_message: string | null;
+    cancel_requested: boolean | null;
+  };
+  const agentRows = (await sql`
+    SELECT * FROM harness_shared.spawned_agents
+    WHERE spawn_id = ${spawnId}
+    LIMIT 1
+  `) as AgentRow[];
+  const agent = agentRows[0] ?? null;
+
+  // 2. tool_invocations for this spawn (timeline).
+  type InvocRow = {
+    id: string;
+    tool_name: string;
+    invoked_at: string;
+    duration_ms: number | null;
+    status: string;
+    error_message: string | null;
+  };
+  const invocations = (await sql`
+    SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message
+    FROM harness_shared.tool_invocations
+    WHERE spawn_id = ${spawnId}
+    ORDER BY invoked_at ASC
+    LIMIT 500
+  `) as InvocRow[];
+
+  // 3. Children: spawns whose parent_spawn_id = this spawn.
+  type ChildRow = {
+    spawn_id: string;
+    child_role: string | null;
+    status: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+    tool_count: number;
+    error_count: number;
+  };
+  const children = (await sql`
+    SELECT
+      sa.spawn_id,
+      sa.child_role,
+      sa.status,
+      sa.started_at,
+      sa.finished_at,
+      COALESCE(ti.cnt, 0)::int AS tool_count,
+      COALESCE(ti.err, 0)::int AS error_count
+    FROM harness_shared.spawned_agents sa
+    LEFT JOIN (
+      SELECT spawn_id,
+             count(*)::int AS cnt,
+             count(*) FILTER (WHERE status != 'ok')::int AS err
+      FROM harness_shared.tool_invocations
+      GROUP BY spawn_id
+    ) ti ON ti.spawn_id = sa.spawn_id
+    WHERE sa.parent_spawn_id = ${spawnId}
+    ORDER BY sa.started_at ASC NULLS LAST
+    LIMIT 100
+  `) as ChildRow[];
+
+  // 4. Related agent_chats — same harness + feature_id, if we have both.
+  let relatedChats: Array<{ id: string; role: string; title: string | null; updated_at: string }> = [];
+  if (agent && agent.harness_slug && agent.feature_id) {
+    try {
+      const dbc = (await import('@restart/db-org')).getLegacyClient(agent.harness_slug);
+      const rows = (await dbc
+        .prepare(
+          'SELECT id, role, title, updated_at FROM agent_chats WHERE feature_id = ? ORDER BY updated_at DESC LIMIT 20',
+        )
+        .all(agent.feature_id)) as Array<{ id: string; role: string; title: string | null; updated_at: string }>;
+      relatedChats = rows;
+    } catch {
+      /* per-harness legacy client unavailable */
+    }
+  }
+
+  if (!agent && invocations.length === 0 && children.length === 0) {
+    return null;
+  }
+
+  return {
+    spawn_id: spawnId,
+    agent,
+    invocations,
+    children,
+    related_chats: relatedChats,
+  };
+}
+
 // ── Process inventory (proc walk) ──────────────────────────────────
 
 export interface ProcessEntry {

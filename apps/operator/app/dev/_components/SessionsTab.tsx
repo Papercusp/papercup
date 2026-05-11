@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 
 interface Entry {
   spawn_id: string;
@@ -14,6 +14,37 @@ interface Entry {
   tool_count: number;
   error_count: number;
   total_duration_ms: number;
+}
+
+interface Detail {
+  spawn_id: string;
+  agent: {
+    parent_role: string | null;
+    child_role: string | null;
+    feature_id: string | null;
+    chunk_id: string | null;
+    status: string | null;
+    duration_ms: number | null;
+    exit_code: number | null;
+    output_tail: string | null;
+    error_message: string | null;
+  } | null;
+  invocations: Array<{
+    id: string;
+    tool_name: string;
+    invoked_at: string;
+    duration_ms: number | null;
+    status: string;
+    error_message: string | null;
+  }>;
+  children: Array<{
+    spawn_id: string;
+    child_role: string | null;
+    status: string | null;
+    tool_count: number;
+    error_count: number;
+  }>;
+  related_chats: Array<{ id: string; role: string; title: string | null; updated_at: string }>;
 }
 
 interface Props {
@@ -34,23 +65,27 @@ function fmtDuration(ms: number): string {
   return `${Math.floor(ms / 60_000)}m ${Math.floor((ms % 60_000) / 1000)}s`;
 }
 
+const CTX = new URLSearchParams({
+  workspace: 'default',
+  role: 'architect',
+  run: 'dev-page',
+  spawn: 'dev-page',
+});
+
 export default function SessionsTab({ workspaceIds }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hours, setHours] = useState(24);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, Detail | null>>({});
+  const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const params = new URLSearchParams({
-      workspace: 'default',
-      role: 'architect',
-      run: 'dev-page',
-      spawn: 'dev-page',
-    });
-    fetch(`/api/agent-tools/dev/sessions?${params}`, {
+    fetch(`/api/agent-tools/dev/sessions?${CTX}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ workspaceIds, hours, limit: 200 }),
@@ -72,6 +107,31 @@ export default function SessionsTab({ workspaceIds }: Props) {
       cancelled = true;
     };
   }, [workspaceIds, hours]);
+
+  async function toggleExpand(spawnId: string) {
+    if (expanded === spawnId) {
+      setExpanded(null);
+      return;
+    }
+    setExpanded(spawnId);
+    if (!(spawnId in details)) {
+      setDetailLoading((d) => ({ ...d, [spawnId]: true }));
+      try {
+        const r = await fetch(`/api/agent-tools/dev/session_detail?${CTX}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ spawnId }),
+        });
+        const d = await r.json();
+        const parsed = JSON.parse(d.content[0].text);
+        setDetails((m) => ({ ...m, [spawnId]: parsed.error ? null : parsed }));
+      } catch {
+        setDetails((m) => ({ ...m, [spawnId]: null }));
+      } finally {
+        setDetailLoading((d) => ({ ...d, [spawnId]: false }));
+      }
+    }
+  }
 
   return (
     <div className="pc-dev-tab-body">
@@ -99,6 +159,7 @@ export default function SessionsTab({ workspaceIds }: Props) {
         <table className="pc-dev-table">
           <thead>
             <tr>
+              <th></th>
               <th>Spawn</th>
               <th>Started</th>
               <th>Workspace</th>
@@ -111,29 +172,189 @@ export default function SessionsTab({ workspaceIds }: Props) {
             </tr>
           </thead>
           <tbody>
-            {entries.map((e) => (
-              <tr key={e.spawn_id}>
-                <td className="pc-dev-slug" title={e.spawn_id}>
-                  {e.spawn_id.slice(0, 12)}…
-                </td>
-                <td className="pc-dev-muted" title={e.started_at}>
-                  {fmtRelTime(e.started_at)}
-                </td>
-                <td className="pc-dev-muted">{e.workspace_id}</td>
-                <td>{e.harness_slug ?? '—'}</td>
-                <td className="pc-dev-muted">{e.role ?? '—'}</td>
-                <td>{e.tool_count}</td>
-                <td className={e.error_count ? 'pc-dev-api-err' : ''}>
-                  {e.error_count > 0 ? e.error_count : ''}
-                </td>
-                <td className="pc-dev-muted">{fmtDuration(e.total_duration_ms)}</td>
-                <td className="pc-dev-muted" title={e.parent_spawn_id ?? ''}>
-                  {e.parent_spawn_id ? `${e.parent_spawn_id.slice(0, 8)}…` : '—'}
-                </td>
-              </tr>
-            ))}
+            {entries.map((e) => {
+              const isOpen = expanded === e.spawn_id;
+              const detail = details[e.spawn_id];
+              return (
+                <Fragment key={e.spawn_id}>
+                  <tr
+                    className="pc-dev-row-expand"
+                    onClick={() => toggleExpand(e.spawn_id)}
+                  >
+                    <td className="pc-dev-muted">{isOpen ? '▾' : '▸'}</td>
+                    <td className="pc-dev-slug" title={e.spawn_id}>
+                      {e.spawn_id.slice(0, 12)}…
+                    </td>
+                    <td className="pc-dev-muted" title={e.started_at}>
+                      {fmtRelTime(e.started_at)}
+                    </td>
+                    <td className="pc-dev-muted">{e.workspace_id}</td>
+                    <td>{e.harness_slug ?? '—'}</td>
+                    <td className="pc-dev-muted">{e.role ?? '—'}</td>
+                    <td>{e.tool_count}</td>
+                    <td className={e.error_count ? 'pc-dev-api-err' : ''}>
+                      {e.error_count > 0 ? e.error_count : ''}
+                    </td>
+                    <td className="pc-dev-muted">{fmtDuration(e.total_duration_ms)}</td>
+                    <td className="pc-dev-muted" title={e.parent_spawn_id ?? ''}>
+                      {e.parent_spawn_id ? `${e.parent_spawn_id.slice(0, 8)}…` : '—'}
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="pc-dev-detail-row">
+                      <td colSpan={10}>
+                        {detailLoading[e.spawn_id] && (
+                          <div className="pc-dev-muted">loading detail…</div>
+                        )}
+                        {!detailLoading[e.spawn_id] && !detail && (
+                          <div className="pc-dev-muted">no detail available</div>
+                        )}
+                        {detail && <DetailPanel detail={detail} />}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+function DetailPanel({ detail }: { detail: Detail }) {
+  return (
+    <div className="pc-dev-session-detail">
+      {detail.agent && (
+        <section>
+          <h4 className="pc-dev-rail-h">Agent</h4>
+          <div className="pc-dev-kv">
+            <span>parent_role</span>
+            <span>{detail.agent.parent_role ?? '—'}</span>
+            <span>child_role</span>
+            <span>{detail.agent.child_role ?? '—'}</span>
+            <span>feature</span>
+            <span>{detail.agent.feature_id ?? '—'}</span>
+            <span>chunk</span>
+            <span>{detail.agent.chunk_id ?? '—'}</span>
+            <span>status</span>
+            <span
+              className={
+                detail.agent.status === 'failed' ? 'pc-dev-api-err' : 'pc-dev-ok'
+              }
+            >
+              {detail.agent.status ?? '—'}
+            </span>
+            <span>exit_code</span>
+            <span
+              className={
+                detail.agent.exit_code !== null && detail.agent.exit_code !== 0
+                  ? 'pc-dev-api-err'
+                  : ''
+              }
+            >
+              {detail.agent.exit_code ?? '—'}
+            </span>
+          </div>
+          {detail.agent.error_message && (
+            <pre className="pc-dev-pre pc-dev-api-err">
+              {detail.agent.error_message}
+            </pre>
+          )}
+          {detail.agent.output_tail && (
+            <pre className="pc-dev-pre">{detail.agent.output_tail.slice(-2000)}</pre>
+          )}
+        </section>
+      )}
+
+      <section>
+        <h4 className="pc-dev-rail-h">
+          Tool invocations <span className="pc-dev-muted">{detail.invocations.length}</span>
+        </h4>
+        {detail.invocations.length === 0 && <div className="pc-dev-muted">none</div>}
+        {detail.invocations.length > 0 && (
+          <table className="pc-dev-table pc-dev-table-inner">
+            <thead>
+              <tr>
+                <th>At</th>
+                <th>Tool</th>
+                <th>Status</th>
+                <th>Duration</th>
+                <th>Error</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.invocations.map((i) => (
+                <tr key={i.id}>
+                  <td className="pc-dev-muted">{fmtRelTime(i.invoked_at)}</td>
+                  <td className="pc-dev-slug">{i.tool_name}</td>
+                  <td className={i.status !== 'ok' ? 'pc-dev-api-err' : 'pc-dev-ok'}>
+                    {i.status}
+                  </td>
+                  <td className="pc-dev-muted">
+                    {i.duration_ms != null ? fmtDuration(i.duration_ms) : '—'}
+                  </td>
+                  <td className="pc-dev-muted pc-dev-details" title={i.error_message ?? ''}>
+                    {i.error_message ?? '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+
+      {detail.children.length > 0 && (
+        <section>
+          <h4 className="pc-dev-rail-h">
+            Child spawns <span className="pc-dev-muted">{detail.children.length}</span>
+          </h4>
+          <table className="pc-dev-table pc-dev-table-inner">
+            <thead>
+              <tr>
+                <th>Spawn</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Tools</th>
+                <th>Errors</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.children.map((c) => (
+                <tr key={c.spawn_id}>
+                  <td className="pc-dev-slug" title={c.spawn_id}>
+                    {c.spawn_id.slice(0, 12)}…
+                  </td>
+                  <td className="pc-dev-muted">{c.child_role ?? '—'}</td>
+                  <td className={c.status === 'failed' ? 'pc-dev-api-err' : 'pc-dev-ok'}>
+                    {c.status ?? '—'}
+                  </td>
+                  <td>{c.tool_count}</td>
+                  <td className={c.error_count ? 'pc-dev-api-err' : ''}>
+                    {c.error_count > 0 ? c.error_count : ''}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
+      {detail.related_chats.length > 0 && (
+        <section>
+          <h4 className="pc-dev-rail-h">
+            Related chats <span className="pc-dev-muted">{detail.related_chats.length}</span>
+          </h4>
+          <ul className="pc-dev-chats">
+            {detail.related_chats.map((c) => (
+              <li key={c.id}>
+                <span className="pc-dev-slug">{c.role}</span>{' '}
+                <span>{c.title ?? '(untitled)'}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );
