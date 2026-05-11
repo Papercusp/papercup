@@ -47,8 +47,11 @@ interface Detail {
   related_chats: Array<{ id: string; role: string; title: string | null; updated_at: string }>;
 }
 
+import type { RerunContext } from '../page';
+
 interface Props {
   workspaceIds: string[] | null;
+  onRerun: (ctx: RerunContext) => void;
 }
 
 function fmtRelTime(iso: string): string {
@@ -72,7 +75,7 @@ const CTX = new URLSearchParams({
   spawn: 'dev-page',
 });
 
-export default function SessionsTab({ workspaceIds }: Props) {
+export default function SessionsTab({ workspaceIds, onRerun }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -209,7 +212,13 @@ export default function SessionsTab({ workspaceIds }: Props) {
                         {!detailLoading[e.spawn_id] && !detail && (
                           <div className="pc-dev-muted">no detail available</div>
                         )}
-                        {detail && <DetailPanel detail={detail} />}
+                        {detail && (
+                          <DetailPanel
+                            detail={detail}
+                            entry={e}
+                            onRerun={onRerun}
+                          />
+                        )}
                       </td>
                     </tr>
                   )}
@@ -223,7 +232,15 @@ export default function SessionsTab({ workspaceIds }: Props) {
   );
 }
 
-function DetailPanel({ detail }: { detail: Detail }) {
+function DetailPanel({
+  detail,
+  entry,
+  onRerun,
+}: {
+  detail: Detail;
+  entry: Entry;
+  onRerun: (ctx: RerunContext) => void;
+}) {
   return (
     <div className="pc-dev-session-detail">
       {detail.agent && (
@@ -282,6 +299,7 @@ function DetailPanel({ detail }: { detail: Detail }) {
                 <th>Status</th>
                 <th>Duration</th>
                 <th>Error</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
@@ -297,6 +315,25 @@ function DetailPanel({ detail }: { detail: Detail }) {
                   </td>
                   <td className="pc-dev-muted pc-dev-details" title={i.error_message ?? ''}>
                     {i.error_message ?? '—'}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="pc-dev-btn-mini"
+                      title="Open in API tab with this tool + spawn context"
+                      onClick={() =>
+                        onRerun({
+                          toolName: i.tool_name,
+                          workspace: entry.workspace_id,
+                          harness: entry.harness_slug ?? '',
+                          role: entry.role ?? 'architect',
+                          run: entry.run_id ?? 'dev-page',
+                          spawn: entry.spawn_id,
+                        })
+                      }
+                    >
+                      ↗
+                    </button>
                   </td>
                 </tr>
               ))}

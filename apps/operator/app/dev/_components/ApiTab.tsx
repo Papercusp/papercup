@@ -29,8 +29,12 @@ interface Tool {
   recentErrors?: number;
 }
 
+import type { RerunContext } from '../page';
+
 interface Props {
   workspaceIds: string[] | null;
+  rerun: RerunContext | null;
+  onRerunConsumed: () => void;
 }
 
 const ALL_ROLES = [
@@ -51,7 +55,7 @@ function namespaceOf(name: string): string {
   return 'misc';
 }
 
-export default function ApiTab({ workspaceIds }: Props) {
+export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) {
   const [tools, setTools] = useState<Tool[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Tool | null>(null);
@@ -83,6 +87,22 @@ export default function ApiTab({ workspaceIds }: Props) {
       })
       .catch(() => setLoading(false));
   }, []);
+
+  // Consume incoming rerun context once tools have loaded.
+  useEffect(() => {
+    if (!rerun || tools.length === 0) return;
+    const t = tools.find((x) => x.name === rerun.toolName);
+    if (t) {
+      setSelected(t);
+      if (rerun.workspace) setCtxWorkspace(rerun.workspace);
+      if (rerun.harness !== undefined) setCtxHarness(rerun.harness);
+      if (rerun.role) setCtxRole(rerun.role as never);
+      if (rerun.run) setCtxRun(rerun.run);
+      if (rerun.spawn) setCtxSpawn(rerun.spawn);
+    }
+    onRerunConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rerun, tools.length]);
 
   // Reset args when tool changes
   useEffect(() => {

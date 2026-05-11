@@ -515,3 +515,19 @@
 .pc-dev-chats li {
   padding: 2px 0;
 }
+
+/* ── Mini rerun button ─────────────────────────────── */
+
+.pc-dev-btn-mini {
+  background: transparent;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  color: #7dd3fc;
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pc-dev-btn-mini:hover {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.50);
+}

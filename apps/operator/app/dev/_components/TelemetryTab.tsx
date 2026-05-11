@@ -11,11 +11,14 @@ interface Entry {
   workspaces: string[];
 }
 
+import type { RerunContext } from '../page';
+
 interface Props {
   workspaceIds: string[] | null;
+  onRerun: (ctx: RerunContext) => void;
 }
 
-export default function TelemetryTab({ workspaceIds }: Props) {
+export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,6 +89,7 @@ export default function TelemetryTab({ workspaceIds }: Props) {
               <th>p50</th>
               <th>p95</th>
               <th>Workspaces</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -102,6 +106,21 @@ export default function TelemetryTab({ workspaceIds }: Props) {
                   <td className="pc-dev-muted">{e.p50_ms ?? '—'}ms</td>
                   <td className="pc-dev-muted">{e.p95_ms ?? '—'}ms</td>
                   <td className="pc-dev-muted">{e.workspaces.join(', ')}</td>
+                  <td>
+                    <button
+                      type="button"
+                      className="pc-dev-btn-mini"
+                      title="Open in API tab with this tool selected"
+                      onClick={() =>
+                        onRerun({
+                          toolName: e.tool_name,
+                          workspace: e.workspaces[0],
+                        })
+                      }
+                    >
+                      ↗
+                    </button>
+                  </td>
                 </tr>
               );
             })}

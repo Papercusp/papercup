@@ -8,10 +8,19 @@
  */
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense, useCallback, useState } from 'react';
 import dynamic from 'next/dynamic';
 import WorkspacePicker from './_components/WorkspacePicker';
 import RightRail from './_components/RightRail';
+
+export interface RerunContext {
+  toolName: string;
+  workspace?: string;
+  harness?: string;
+  role?: string;
+  run?: string;
+  spawn?: string;
+}
 
 const ApiTab = dynamic(() => import('./_components/ApiTab'), { ssr: false });
 const HarnessesTab = dynamic(() => import('./_components/HarnessesTab'), { ssr: false });
@@ -37,6 +46,13 @@ export default function DevPage() {
   const [tab, setTab] = useState<TabId>('api');
   // null = all workspaces; otherwise specific ids
   const [workspaceIds, setWorkspaceIds] = useState<string[] | null>(null);
+  // Set by Sessions/Telemetry "rerun" → consumed by ApiTab on mount.
+  const [rerun, setRerun] = useState<RerunContext | null>(null);
+
+  const rerunAndSwitch = useCallback((ctx: RerunContext) => {
+    setRerun(ctx);
+    setTab('api');
+  }, []);
 
   return (
     <div className="pc-dev-shell">
@@ -61,10 +77,12 @@ export default function DevPage() {
       </aside>
       <main className="pc-dev-main">
         <Suspense fallback={<div className="pc-dev-loading">loading…</div>}>
-          {tab === 'api' && <ApiTab workspaceIds={workspaceIds} />}
+          {tab === 'api' && (
+            <ApiTab workspaceIds={workspaceIds} rerun={rerun} onRerunConsumed={() => setRerun(null)} />
+          )}
           {tab === 'harnesses' && <HarnessesTab workspaceIds={workspaceIds} />}
-          {tab === 'sessions' && <SessionsTab workspaceIds={workspaceIds} />}
-          {tab === 'telemetry' && <TelemetryTab workspaceIds={workspaceIds} />}
+          {tab === 'sessions' && <SessionsTab workspaceIds={workspaceIds} onRerun={rerunAndSwitch} />}
+          {tab === 'telemetry' && <TelemetryTab workspaceIds={workspaceIds} onRerun={rerunAndSwitch} />}
           {tab === 'audit' && <AuditTab workspaceIds={workspaceIds} />}
           {tab === 'pg' && <PgTab />}
           {tab === 'processes' && <ProcessesTab />}
