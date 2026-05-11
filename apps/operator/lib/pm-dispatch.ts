@@ -24,11 +24,21 @@ import { getLegacyClient, withWorkspaceLegacy } from '@restart/db-org';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { projectDirForSlug } from './operator-notes';
+import { resolveBackend, resolveAgentBin } from '@restart/papercup-shared/agent';
+import { applyToProcessEnv, readAgentConfig } from './agent-config';
 
 export interface RunPmOptions {
   slug: string;
   projectId: string;
-  /** Override claude command (default: `process.env.AGENT_CMD ?? process.env.CLAUDE_CMD ?? 'omp'`). */
+  /**
+   * Override the agent CLI command. When omitted, resolves via
+   * `resolveBackend()` + `resolveAgentBin()` from `@restart/papercup-shared/agent`
+   * — the same path runClaudeChat uses — so the persisted settings
+   * file's `backend` choice (claude-code vs omp) is honored. Without
+   * this routing, pm-dispatch would only read AGENT_CMD env and silently
+   * default to omp when the user picked claude-code in settings but
+   * left `cmd` blank.
+   */
   claudeCmd?: string;
   /** Force a run even if no pending pm_due events exist (manual trigger). */
   bypassDebounce?: boolean;
@@ -137,6 +147,25 @@ async function tryAcquireProjectLock(db: ReturnType<typeof getLegacyClient>, pro
   }
 }
 
+/**
+ * Resolve which agent CLI to spawn for PM dispatches. Single source of
+ * truth with chat-stream's runClaudeChat: read the persisted agent-config
+ * settings (so /settings/agent → backend selection is honored), then
+ * defer to resolveBackend + resolveAgentBin. Without this, pm-dispatch
+ * would only read AGENT_CMD env and miss the settings-file-driven
+ * AGENT_BACKEND=claude-code case (where the user picked claude-code but
+ * left cmd blank — chat-stream uses claude, pm-dispatch would have used omp).
+ */
+async function resolvePmAgentCmdAsync(override?: string): Promise<string> {
+  if (override && override.trim()) return override;
+  try { applyToProcessEnv(await readAgentConfig()); } catch { /* config absent → env defaults stand */ }
+  // Minimal options shape — neither helper reads anything but
+  // .backend / .claudeCmd from it.
+  const stub = {} as Parameters<typeof resolveBackend>[0];
+  const backend = resolveBackend(stub);
+  return resolveAgentBin(stub, backend);
+}
+
 async function releaseProjectLock(db: ReturnType<typeof getLegacyClient>, projectId: string): Promise<void> {
   try {
     await db.prepare(`SELECT pg_advisory_unlock(hashtext($1))`).run(`pm:${projectId}`);
@@ -146,7 +175,8 @@ async function releaseProjectLock(db: ReturnType<typeof getLegacyClient>, projec
 }
 
 export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult | RunPmError> {
-  const { slug, projectId, claudeCmd = process.env.AGENT_CMD ?? process.env.CLAUDE_CMD ?? 'omp', bypassDebounce = false } = opts;
+  const { slug, projectId, bypassDebounce = false } = opts;
+  const claudeCmd = await resolvePmAgentCmdAsync(opts.claudeCmd);
   // Wrap the entire PM run in a workspace-scoped tx so harness_shared.*
   // queries pass RLS predicates. Note: the advisory lock + sub-transactions
   // run within this outer transaction. claude spawn happens inside but PG
@@ -160,7 +190,10 @@ async function runProjectManagerInner(
   opts: RunPmOptions,
   db: ReturnType<typeof getLegacyClient>,
 ): Promise<RunPmResult | RunPmError> {
-  const { slug, projectId, claudeCmd = process.env.AGENT_CMD ?? process.env.CLAUDE_CMD ?? 'omp', bypassDebounce = false } = opts;
+  const { slug, projectId, bypassDebounce = false } = opts;
+  // Same resolution as runProjectManager — defaults to omp and honors
+  // AGENT_BACKEND=claude-code from /settings/agent.
+  const claudeCmd = await resolvePmAgentCmdAsync(opts.claudeCmd);
 
   // 1. Acquire the per-project advisory lock so concurrent PM runs for the
   // same project serialize.
