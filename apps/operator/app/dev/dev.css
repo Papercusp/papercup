@@ -433,3 +433,31 @@
   font-size: 10px;
   color: var(--fg-mute, #94a3b8);
 }
+
+/* ── PG tab ────────────────────────────────────────── */
+
+.pc-dev-pg-section {
+  margin: 20px 0;
+}
+.pc-dev-query {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  font-size: 11px;
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-mute, #94a3b8);
+}
+
+/* ── Build block in right rail ─────────────────────── */
+
+.pc-dev-build {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.pc-dev-build > div {
+  display: flex;
+  justify-content: space-between;
+}

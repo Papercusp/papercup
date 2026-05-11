@@ -352,3 +352,212 @@ export async function activityFeed(
 
   return { entries: rows };
 }
+
+// ── PG stats ───────────────────────────────────────────────────────
+
+export interface PgHealth {
+  version: string;
+  totalConnections: number;
+  activeConnections: number;
+  idleConnections: number;
+}
+
+export interface PgActiveQuery {
+  pid: number;
+  state: string | null;
+  query: string;
+  duration_seconds: number;
+  application_name: string | null;
+  client_addr: string | null;
+}
+
+export interface PgTableSize {
+  schema: string;
+  table: string;
+  total_bytes: number;
+  index_bytes: number;
+  rows_estimate: number | null;
+}
+
+export async function pgHealth(): Promise<PgHealth> {
+  const { sql } = getOrgPg();
+  type Row = { version: string; total: number; active: number; idle: number };
+  const rows = (await sql`
+    SELECT
+      version() AS version,
+      count(*)::int AS total,
+      count(*) FILTER (WHERE state = 'active')::int AS active,
+      count(*) FILTER (WHERE state = 'idle')::int AS idle
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+  `) as Row[];
+  const r = rows[0];
+  return {
+    version: r?.version ?? 'unknown',
+    totalConnections: r?.total ?? 0,
+    activeConnections: r?.active ?? 0,
+    idleConnections: r?.idle ?? 0,
+  };
+}
+
+export async function pgActiveQueries(limit = 50): Promise<{ queries: PgActiveQuery[] }> {
+  const { sql } = getOrgPg();
+  const lim = Math.max(1, Math.min(200, limit));
+  type Row = {
+    pid: number;
+    state: string | null;
+    query: string;
+    duration_seconds: number;
+    application_name: string | null;
+    client_addr: string | null;
+  };
+  const rows = (await sql`
+    SELECT
+      pid,
+      state,
+      query,
+      EXTRACT(EPOCH FROM (now() - query_start))::float AS duration_seconds,
+      application_name,
+      client_addr::text AS client_addr
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND query NOT ILIKE '%pg_stat_activity%'
+      AND state IS NOT NULL
+    ORDER BY query_start ASC NULLS LAST
+    LIMIT ${lim}
+  `) as Row[];
+  return { queries: rows };
+}
+
+export async function pgTableSizes(
+  schema = 'harness_shared',
+  limit = 50,
+): Promise<{ tables: PgTableSize[] }> {
+  const { sql } = getOrgPg();
+  const lim = Math.max(1, Math.min(500, limit));
+  type Row = {
+    schema: string;
+    table: string;
+    total_bytes: string;
+    index_bytes: string;
+    rows_estimate: number | null;
+  };
+  const rows = (await sql`
+    SELECT
+      n.nspname AS schema,
+      c.relname AS table,
+      pg_total_relation_size(c.oid)::bigint AS total_bytes,
+      pg_indexes_size(c.oid)::bigint AS index_bytes,
+      CASE WHEN c.reltuples > 0 THEN c.reltuples::bigint ELSE NULL END AS rows_estimate
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE c.relkind = 'r'
+      AND n.nspname = ${schema}
+    ORDER BY pg_total_relation_size(c.oid) DESC
+    LIMIT ${lim}
+  `) as Row[];
+  return {
+    tables: rows.map((r) => ({
+      schema: r.schema,
+      table: r.table,
+      total_bytes: Number(r.total_bytes),
+      index_bytes: Number(r.index_bytes),
+      rows_estimate: r.rows_estimate == null ? null : Number(r.rows_estimate),
+    })),
+  };
+}
+
+// ── Build status (filesystem inspection) ───────────────────────────
+
+export interface BuildStatus {
+  /** Has a prod .next build directory + when was it last modified */
+  prodBuild: { exists: boolean; mtimeMs: number | null };
+  /** Has a dev .next directory + when */
+  devBuild: { exists: boolean; mtimeMs: number | null };
+  /** Recent bin/prod.log tail (last 4KB) — useful for spotting build errors. */
+  prodLogTail: string | null;
+  /** Whether the dev server (3055) and prod server (3070) are reachable. */
+  dev3055Reachable: boolean | null;
+  prod3070Reachable: boolean | null;
+}
+
+export async function buildStatus(): Promise<BuildStatus> {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  // In Next dev/prod, the server runs with cwd=apps/operator. .next sits
+  // right there. For other launch shapes (tauri shell, standalone), we
+  // walk up looking for a folder that has both `.next` and `package.json`.
+  function findOperatorRoot(start: string): string {
+    let cur = start;
+    for (let i = 0; i < 5; i++) {
+      try {
+        fs.statSync(path.join(cur, '.next'));
+        return cur;
+      } catch {
+        /* not here */
+      }
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+    return start;
+  }
+  const operatorDir = findOperatorRoot(process.cwd());
+
+  function mtime(p: string): number | null {
+    try {
+      return fs.statSync(p).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+
+  const prodNext = path.join(operatorDir, '.next');
+
+  // bin/prod log paths — try a few common locations.
+  const workspaceRoot = path.resolve(operatorDir, '..', '..');
+  const candidates = [
+    path.join(workspaceRoot, 'bin-prod.log'),
+    path.join(workspaceRoot, 'papercup-rust-server.log'),
+    path.join(workspaceRoot, 'cp.log'),
+  ];
+  let prodLogTail: string | null = null;
+  for (const c of candidates) {
+    try {
+      const stat = fs.statSync(c);
+      const fd = fs.openSync(c, 'r');
+      try {
+        const tailBytes = Math.min(4096, stat.size);
+        const buf = Buffer.alloc(tailBytes);
+        fs.readSync(fd, buf, 0, tailBytes, Math.max(0, stat.size - tailBytes));
+        prodLogTail = buf.toString('utf8');
+        break;
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      /* try next */
+    }
+  }
+
+  async function reachable(url: string): Promise<boolean> {
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(500) });
+      return r.status < 500;
+    } catch {
+      return false;
+    }
+  }
+  const [dev3055, prod3070] = await Promise.all([
+    reachable('http://127.0.0.1:3055/'),
+    reachable('http://127.0.0.1:3070/'),
+  ]);
+
+  return {
+    prodBuild: { exists: !!mtime(prodNext), mtimeMs: mtime(prodNext) },
+    devBuild: { exists: !!mtime(prodNext), mtimeMs: mtime(prodNext) },
+    prodLogTail,
+    dev3055Reachable: dev3055,
+    prod3070Reachable: prod3070,
+  };
+}

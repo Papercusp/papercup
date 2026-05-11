@@ -100,3 +100,7 @@ import './dev/telemetry';
 import './dev/audit';
 import './dev/sessions';
 import './dev/activity';
+import './dev/pg_health';
+import './dev/pg_active_queries';
+import './dev/pg_table_sizes';
+import './dev/build_status';
