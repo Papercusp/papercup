@@ -342,3 +342,63 @@
 .pc-header-nav-link.is-dev:hover {
   color: #fde68a;
 }
+
+/* ── Tab bodies ───────────────────────────────────── */
+
+.pc-dev-tab-body {
+  padding: 4px;
+}
+.pc-dev-tab-header {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+.pc-dev-tab-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.pc-dev-input-inline {
+  width: auto;
+  margin-left: 6px;
+}
+
+.pc-dev-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.pc-dev-table th,
+.pc-dev-table td {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.08));
+}
+.pc-dev-table th {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-mute, #94a3b8);
+}
+.pc-dev-table tbody tr:hover {
+  background: rgba(125, 211, 252, 0.04);
+}
+.pc-dev-slug {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+  color: #7dd3fc;
+  text-decoration: none;
+}
+.pc-dev-slug:hover {
+  text-decoration: underline;
+}
+.pc-dev-ok {
+  color: #34d399;
+}
+.pc-dev-details {
+  max-width: 400px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

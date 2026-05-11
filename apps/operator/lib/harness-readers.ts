@@ -23,6 +23,7 @@ import {
   tailFile,
 } from '../app/api/_hono/harness';
 import type { Phase } from './harness-phases';
+import type { ProjectEntry } from './harness-registry';
 
 export type HarnessReadResult<T> =
   | { ok: true; data: T }
@@ -121,8 +122,11 @@ export interface HealthData {
   checks: Array<{ name: string; ok: boolean; detail?: string }>;
 }
 
-export async function getHealth(slug: string): Promise<HarnessReadResult<HealthData>> {
-  const project = await resolveProject(slug);
+export async function getHealth(
+  slug: string,
+  opts?: { project?: ProjectEntry },
+): Promise<HarnessReadResult<HealthData>> {
+  const project = opts?.project ?? (await resolveProject(slug));
   if (!project) return { ok: false, status: 404, error: 'unknown project' };
 
   const features = await parseFeatures(project);

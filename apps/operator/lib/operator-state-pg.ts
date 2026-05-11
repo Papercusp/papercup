@@ -62,9 +62,9 @@ type StateTable =
  * Callers cast the JSONB payload to their module's type. For tables in
  * ENCRYPTED_TABLES, decrypts payload_ct on the fly.
  */
-export async function readOperatorState<T>(table: StateTable): Promise<T | null> {
+export async function readOperatorState<T>(table: StateTable, wsOverride?: string): Promise<T | null> {
   const { sql } = getOrgPg();
-  const ws = activeWorkspaceId();
+  const ws = wsOverride ?? activeWorkspaceId();
 
   if (ENCRYPTED_TABLES.has(table)) {
     const key = getDbEncryptionKey();

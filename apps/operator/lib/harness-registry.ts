@@ -28,8 +28,8 @@ export interface HarnessRegistry {
   projects: ProjectEntry[];
 }
 
-export async function loadHarnessRegistry(): Promise<HarnessRegistry> {
-  const raw = await readOperatorState<HarnessRegistry>('harness_registry');
+export async function loadHarnessRegistry(workspaceId?: string): Promise<HarnessRegistry> {
+  const raw = await readOperatorState<HarnessRegistry>('harness_registry', workspaceId);
   return { projects: raw?.projects ?? [] };
 }
 

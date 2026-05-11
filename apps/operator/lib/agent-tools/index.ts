@@ -95,3 +95,6 @@ import './experts/spec_get';
 import './experts/feedback_list';
 import './experts/roles';
 import './experts/chat_agents';
+import './dev/harnesses';
+import './dev/telemetry';
+import './dev/audit';
