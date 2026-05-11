@@ -7,7 +7,10 @@
  * for the workspace it paired into (regardless of which one the desktop
  * is currently looking at).
  */
-import { getOrgPg, withWorkspace } from '@restart/db-org';
+import { getOrgPg, withWorkspace, generated } from '@restart/db-org';
+import { eq } from 'drizzle-orm';
+
+const hr = generated.harness_registryInHarness_shared;
 
 interface ProjectEntry {
   slug: string;
@@ -31,13 +34,13 @@ async function readHarnessRegistryFor(workspaceId: string): Promise<ProjectEntry
   // it was paired into. Reads `harness_shared.harness_registry` directly
   // (post-migration 020 each state lives in its own table; the legacy
   // unified `operator_state` table no longer exists).
-  const { sql } = getOrgPg();
-  const rows = await sql<{ payload: { projects?: ProjectEntry[] } | null }[]>`
-    SELECT payload FROM harness_shared.harness_registry
-    WHERE workspace_id = ${workspaceId}
-    LIMIT 1
-  `;
-  return rows[0]?.payload?.projects ?? [];
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ payload: hr.payload })
+    .from(hr)
+    .where(eq(hr.workspace_id, workspaceId))
+    .limit(1);
+  return (rows[0]?.payload as { projects?: ProjectEntry[] } | null)?.projects ?? [];
 }
 
 /** True when the slug exists in the given workspace's harness registry. */
