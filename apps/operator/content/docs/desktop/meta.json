@@ -1,0 +1,5 @@
+{
+  "title": "Desktop",
+  "description": "Desktop-specific surfaces — features that only live in the Tauri app, not the browser-served operator UI.",
+  "pages": ["native-console"]
+}
