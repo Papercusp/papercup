@@ -1191,3 +1191,67 @@ export const PAPERCUSP_RUNTIME_VERSION = '0.1.1' as const;
 
 export { lookupTier, TIER_TABLE } from './tier-table';
 export type { CapabilityTier } from './tier-table';
+
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Multi-runtime manifest descriptors (Batch G/G+/H/I — rev 3 plan).
+ *
+ * Surfaces the manifest's optional `runtime` and `ui[].type` fields as
+ * TS types so loaders, lints, and consumers all read the same shape.
+ * v1 keeps these optional + back-compat: omitting `runtime` means JS;
+ * omitting `ui[].type` means React (existing behavior).
+ * ───────────────────────────────────────────────────────────────────── */
+
+export type PluginRuntimeKind = 'js' | 'wasm' | 'daemon';
+
+export interface PluginRuntime {
+  kind: PluginRuntimeKind;
+  /** Required when kind='wasm'. Path relative to manifest dir. */
+  wasmPath?: string;
+  /** Required when kind='daemon'. argv (binary first). */
+  daemonCommand?: string[];
+  daemonRestart?: {
+    policy?: 'never' | 'on-failure' | 'always';
+    maxRestarts?: number;
+    backoffMs?: number;
+  };
+  /** WASM linear-memory cap (MiB). Default 64. (Batch G4) */
+  memoryBudgetMb?: number;
+  /**
+   * Action-invocation concurrency. WASM defaults to 'serial'
+   * (mpsc actor); daemon defaults to 'parallel'.
+   */
+  concurrency?: 'serial' | 'parallel';
+}
+
+export type UiSurfaceType = 'react' | 'iframe';
+
+export interface UiSurfaceManifestEntry {
+  /** v1 default: 'react'. 'iframe' opts into the sandboxed iframe loader (Batch H). */
+  type?: UiSurfaceType;
+  slug: string;
+  label: string;
+  icon?: string;
+  /** Required when type='iframe'. Path relative to manifest dir. */
+  iframeEntry?: string;
+  /** Origins the iframe can top-navigate to (Batch H5 — `iframe:navigate:<origin>` cap). */
+  iframeNavigateOrigins?: string[];
+}
+
+/** Default WASM memory budget in MiB when manifest omits the field. */
+export const DEFAULT_WASM_MEMORY_BUDGET_MB = 64;
+
+/** True if the entry opts into the iframe runtime. Treats omitted type as 'react'. */
+export function isIframeSurface(entry: Pick<UiSurfaceManifestEntry, 'type'>): boolean {
+  return entry.type === 'iframe';
+}
+
+/** True when the runtime is WASM. Defaults JS when descriptor missing. */
+export function isWasmRuntime(rt: Pick<PluginRuntime, 'kind'> | undefined): boolean {
+  return rt?.kind === 'wasm';
+}
+
+/** True when the runtime is a subprocess daemon. */
+export function isDaemonRuntime(rt: Pick<PluginRuntime, 'kind'> | undefined): boolean {
+  return rt?.kind === 'daemon';
+}

@@ -117,6 +117,13 @@ export interface LoadedPlugin {
   source: 'project' | 'harness' | 'global';
   /** Tool declarations parsed from the plugin's papercusp.json manifest. */
   toolDefinitions?: import('@papercusp/plugin-sdk').ToolDefinition[];
+  /**
+   * Runtime descriptor parsed from manifest. WASM/daemon plugins carry
+   * the absolute wasmPath / daemonCommand so the operator's host can
+   * dispatch at enable time without re-reading the manifest. JS plugins
+   * default to `{ kind: 'js' }`.
+   */
+  runtime?: import('@papercusp/plugin-sdk').PluginRuntime;
 }
 
 export interface LoaderOptions {
@@ -136,6 +143,17 @@ interface ManifestShape {
   papercusp?: string;
   /** MCP tool declarations. Handlers live on the plugin's `tools` export. */
   tools?: import('@papercusp/plugin-sdk').ToolDefinition[];
+  /**
+   * Optional multi-runtime descriptor. Omitted = JS plugin (existing
+   * behavior). 'wasm' / 'daemon' route through alternate loaders.
+   * See @papercusp/plugin-sdk PluginRuntime.
+   */
+  runtime?: import('@papercusp/plugin-sdk').PluginRuntime;
+  /**
+   * UI contributions parsed from the manifest. The `type` field
+   * distinguishes React (in-bundle) from iframe surfaces (Batch H).
+   */
+  ui?: import('@papercusp/plugin-sdk').UiSurfaceManifestEntry[];
 }
 
 async function readManifest(dir: string): Promise<ManifestShape | { __error: string } | null> {
@@ -332,6 +350,44 @@ export async function loadPluginFromDir(dir: string, source: LoadedPlugin['sourc
   if ('__error' in manifest) {
     return { error: manifest.__error, path };
   }
+  // G3 dispatch: if manifest opts into a non-JS runtime, route to the
+  // dedicated loader. WASM + daemon plugins don't need a JS entry; they
+  // expose actions/ui through the runtime's own host surface.
+  const runtime = manifest.runtime;
+  if (runtime?.kind === 'wasm') {
+    if (!runtime.wasmPath) {
+      return { error: 'manifest.runtime.kind = "wasm" but runtime.wasmPath missing', path };
+    }
+    const wasmAbs = resolve(path, runtime.wasmPath);
+    try {
+      // Stat-only — actual instantiation happens at enable time so a
+      // browse over installed plugins doesn't pay the wasmtime startup
+      // cost. The dispatch shim below records intent; the operator's
+      // plugin-host-runtime calls loadWasmPlugin() at enable.
+      await fs.stat(wasmAbs);
+    } catch {
+      return { error: `wasm artifact not found at ${wasmAbs}`, path };
+    }
+    return {
+      plugin: makeWasmPluginShim(manifest, wasmAbs),
+      path,
+      source,
+      toolDefinitions: manifest.tools ?? [],
+      runtime: { ...runtime, wasmPath: wasmAbs },
+    };
+  }
+  if (runtime?.kind === 'daemon') {
+    if (!runtime.daemonCommand || runtime.daemonCommand.length === 0) {
+      return { error: 'manifest.runtime.kind = "daemon" but runtime.daemonCommand missing/empty', path };
+    }
+    return {
+      plugin: makeDaemonPluginShim(manifest),
+      path,
+      source,
+      toolDefinitions: manifest.tools ?? [],
+      runtime,
+    };
+  }
   const entry = await locateEntry(path);
   if (!entry) return { error: 'no entry point found (looked for index.cjs, dist/index.cjs, index.js, index.mjs, dist/index.js, index.ts, src/index.ts)', path };
   const importResult = await importPluginEntry(entry);
@@ -340,7 +396,36 @@ export async function loadPluginFromDir(dir: string, source: LoadedPlugin['sourc
   const plugin = importResult;
   const validationError = await validate(plugin, manifest);
   if (validationError) return { error: validationError, path };
-  return { plugin, path, source, toolDefinitions: manifest.tools ?? [] };
+  return { plugin, path, source, toolDefinitions: manifest.tools ?? [], runtime: runtime ?? { kind: 'js' } };
+}
+
+/**
+ * Synthetic plugin shim for WASM-runtime manifests. Exposes the
+ * minimum surface the JS-side loader expects (no init/handlers — those
+ * live in the WASM runtime). The operator's plugin-host-runtime branches
+ * on `loaded.runtime?.kind === 'wasm'` and dispatches to
+ * @papercusp/plugin-loader/wasm.loadWasmPlugin() at enable time.
+ */
+function makeWasmPluginShim(manifest: ManifestShape, wasmAbs: string): import('@papercusp/plugin-sdk').Plugin {
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    // Marker so anyone iterating loaded plugins can tell this is a
+    // shim and reach for runtime.kind / wasmPath.
+    __runtime: 'wasm',
+    __wasmAbsPath: wasmAbs,
+  } as unknown as import('@papercusp/plugin-sdk').Plugin;
+}
+
+/** See makeWasmPluginShim. Same idea for subprocess-daemon manifests. */
+function makeDaemonPluginShim(manifest: ManifestShape): import('@papercusp/plugin-sdk').Plugin {
+  return {
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    __runtime: 'daemon',
+  } as unknown as import('@papercusp/plugin-sdk').Plugin;
 }
 
 async function listSubdirs(parent: string): Promise<string[]> {

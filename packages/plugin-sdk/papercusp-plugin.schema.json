@@ -52,7 +52,42 @@
     "roles": { "type": "array", "items": { "type": "object" } },
     "dashboardTabs": { "type": "array", "items": { "type": "object" } },
     "sidebarItems": { "type": "array", "items": { "type": "object" } },
-    "ui": { "type": "object" },
+    "ui": {
+      "type": "array",
+      "description": "UI surface contributions. Each entry is a top-level pane/tab the operator renders. v1 supports React (in-bundle component) and iframe (sandboxed; loaded from plugin dir).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["react", "iframe"], "description": "react = in-bundle component (default for back-compat). iframe = sandboxed iframe (Batch H)." },
+          "slug": { "type": "string" },
+          "label": { "type": "string" },
+          "icon": { "type": "string" },
+          "iframeEntry": { "type": "string", "description": "Relative path to the iframe HTML entry. Required when type='iframe'." },
+          "iframeNavigateOrigins": { "type": "array", "items": { "type": "string" }, "description": "Origins the iframe is allowed to top-navigate to. Honored by the iframe:navigate cap gate." }
+        },
+        "required": ["slug", "label"]
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Optional runtime descriptor. Defaults to {kind:'js'} (existing JS plugins). 'wasm' loads a wasm32-wasip2 component artifact via @papercusp/plugin-loader/wasm. 'daemon' loads a long-running stdio JSON-RPC peer via @papercusp/plugin-loader/daemon.",
+      "properties": {
+        "kind": { "type": "string", "enum": ["js", "wasm", "daemon"] },
+        "wasmPath": { "type": "string", "description": "Relative path from manifest dir to the .wasm artifact. Required when kind='wasm'." },
+        "daemonCommand": { "type": "array", "items": { "type": "string" }, "description": "argv for the daemon binary. Required when kind='daemon'." },
+        "daemonRestart": {
+          "type": "object",
+          "properties": {
+            "policy": { "type": "string", "enum": ["never", "on-failure", "always"] },
+            "maxRestarts": { "type": "integer", "minimum": 0 },
+            "backoffMs": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "memoryBudgetMb": { "type": "integer", "minimum": 1, "maximum": 4096, "description": "Hard cap for WASM linear-memory growth (MiB). Default 64 (Batch G4)." },
+        "concurrency": { "type": "string", "enum": ["serial", "parallel"], "description": "Action-invocation concurrency. WASM defaults to 'serial' (mpsc actor pattern); daemon defaults to 'parallel'." }
+      },
+      "required": ["kind"]
+    },
     "apiRoutes": {},
     "routines": { "type": "array", "items": { "type": "object" } },
     "models": { "type": "object" },
