@@ -7,7 +7,7 @@
  * checkmark before committing to the chosen backend.
  */
 import { NextResponse } from 'next/server';
-import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { runAgentChat } from '@/lib/agent-chat-stream';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +23,7 @@ export async function POST() {
     // Bound the test — this is just a liveness check, not a real chat.
     const killer = setTimeout(() => { timedOut = true; ac.abort(); }, 30_000);
     try {
-      for await (const ev of runClaudeChat({
+      for await (const ev of runAgentChat({
         promptText: 'Reply with exactly the four characters: PONG',
         signal: ac.signal,
       })) {

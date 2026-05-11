@@ -6,7 +6,7 @@
  * per-workspace (matches how credentials.json + oracle/* settings are
  * scoped). On read it falls back to env vars; on write it both updates
  * the file AND mirrors into `process.env` so subsequent in-process
- * spawns (Architect chat, delegate-summary, runClaudeChat) pick up the
+ * spawns (Architect chat, delegate-summary, runAgentChat) pick up the
  * change without a server restart.
  *
  * Notes:

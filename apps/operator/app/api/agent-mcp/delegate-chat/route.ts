@@ -22,7 +22,7 @@ import { NextRequest } from 'next/server';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { runAgentChat } from '@/lib/agent-chat-stream';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
@@ -148,7 +148,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
       let assistantText = '';
       try {
-        const events = runClaudeChat({
+        const events = runAgentChat({
           promptText,
           sessionId: claudeSessionId,
           sessionMode: 'force',

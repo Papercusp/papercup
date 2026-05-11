@@ -6,7 +6,7 @@
  * per-harness `agent_chats` table; on each user message the server
  * assembles the role's full prompt (same as autonomous dispatches via
  * `assembleRolePrompt`) plus the prior transcript, spawns the agent CLI
- * via `runClaudeChat` (backend-aware: omp -p by default, claude -p when
+ * via `runAgentChat` (backend-aware: omp -p by default, claude -p when
  * AGENT_BACKEND=claude-code), and streams the response back via SSE.
  *
  * Side-channel design: chat agents read state and may write supervisor
@@ -27,7 +27,7 @@ import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
-import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { runAgentChat } from '@/lib/agent-chat-stream';
 import {
   readFeatureLockState,
   rowToChat,
@@ -296,7 +296,7 @@ export function registerAgentChats(harness: Hono): void {
       let lastErrorStderr: string | undefined;
 
       try {
-        const stream = runClaudeChat({
+        const stream = runAgentChat({
           promptText: assembled.text,
           cwd: projectDir ?? undefined,
         });

@@ -19,7 +19,7 @@
 
 import { NextRequest } from 'next/server';
 import { existsSync, readFileSync } from 'node:fs';
-import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { runAgentChat } from '@/lib/agent-chat-stream';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
@@ -241,7 +241,7 @@ export async function GET(req: NextRequest) {
       } catch { scanSuperuserToken = null; }
 
       try {
-        const events = runClaudeChat({
+        const events = runAgentChat({
           promptText,
           mcpConfig: scanSuperuserToken
             ? {

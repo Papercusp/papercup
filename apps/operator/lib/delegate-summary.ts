@@ -10,7 +10,7 @@
  * (haiku ~$0.001 per regen, ~$0.035/day for typical use).
  */
 
-import { runClaudeChat } from './claude-chat-stream';
+import { runAgentChat } from './agent-chat-stream';
 import { setDelegateSummary, setDelegateTitle } from './delegates';
 
 const HAIKU_MODEL = process.env.PAPERCUSP_HAIKU_MODEL ?? 'claude-haiku-4-5';
@@ -30,7 +30,7 @@ async function runHaiku(prompt: string, _maxTokens = 200): Promise<string | null
   let out = '';
   let failed = false;
   try {
-    for await (const ev of runClaudeChat({
+    for await (const ev of runAgentChat({
       promptText: prompt,
       model: HAIKU_MODEL,
       signal: ac.signal,

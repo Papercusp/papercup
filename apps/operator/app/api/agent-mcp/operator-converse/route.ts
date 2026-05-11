@@ -27,7 +27,7 @@
  */
 
 import { NextRequest } from 'next/server';
-import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { runAgentChat } from '@/lib/agent-chat-stream';
 import { OPERATOR_CONVERSE_PROMPT } from '@/lib/operator-converse-prompt';
 import { OPERATOR_PERSONA_PROMPT } from '@/lib/operator-persona';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
@@ -206,7 +206,7 @@ export async function POST(req: NextRequest) {
         const allowedTools: readonly string[] =
           principalOk && superuserToken ? ALL_AGENT_MCP_TOOLS : [];
 
-        const events = runClaudeChat({
+        const events = runAgentChat({
           promptText,
           mcpConfig,
           allowedTools: [...allowedTools],

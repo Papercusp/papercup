@@ -34,7 +34,7 @@ export function isScannerResumeEnabled(): boolean {
 
 /**
  * Read the workspace's scanner session id, creating one if missing.
- * Returns the id; the caller passes it to runClaudeChat with
+ * Returns the id; the caller passes it to runAgentChat with
  * sessionMode:'force' (create-or-resume).
  */
 export async function getOrCreateScannerSessionId(): Promise<string> {

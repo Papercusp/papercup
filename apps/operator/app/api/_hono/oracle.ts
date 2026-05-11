@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
 import { papercuspPath } from '@/lib/papercusp-root';
-import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { runAgentChat } from '@/lib/agent-chat-stream';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -433,7 +433,7 @@ export function registerOracle(app: Hono) {
             // chat request; planned for a follow-up.
           );
         }
-        const stream = runClaudeChat({
+        const stream = runAgentChat({
           promptText,
           mcpConfig: { mcpServers },
           allowedTools,

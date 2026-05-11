@@ -33,13 +33,13 @@ export interface RunPmOptions {
   /**
    * Override the agent CLI command. When omitted, resolves via
    * `resolveBackend()` + `resolveAgentBin()` from `@restart/papercup-shared/agent`
-   * — the same path runClaudeChat uses — so the persisted settings
+   * — the same path runAgentChat uses — so the persisted settings
    * file's `backend` choice (claude-code vs omp) is honored. Without
    * this routing, pm-dispatch would only read AGENT_CMD env and silently
    * default to omp when the user picked claude-code in settings but
    * left `cmd` blank.
    */
-  claudeCmd?: string;
+  agentCmd?: string;
   /** Force a run even if no pending pm_due events exist (manual trigger). */
   bypassDebounce?: boolean;
 }
@@ -149,7 +149,7 @@ async function tryAcquireProjectLock(db: ReturnType<typeof getLegacyClient>, pro
 
 /**
  * Resolve which agent CLI to spawn for PM dispatches. Single source of
- * truth with chat-stream's runClaudeChat: read the persisted agent-config
+ * truth with chat-stream's runAgentChat: read the persisted agent-config
  * settings (so /settings/agent → backend selection is honored), then
  * defer to resolveBackend + resolveAgentBin. Without this, pm-dispatch
  * would only read AGENT_CMD env and miss the settings-file-driven
@@ -160,7 +160,7 @@ async function resolvePmAgentCmdAsync(override?: string): Promise<string> {
   if (override && override.trim()) return override;
   try { applyToProcessEnv(await readAgentConfig()); } catch { /* config absent → env defaults stand */ }
   // Minimal options shape — neither helper reads anything but
-  // .backend / .claudeCmd from it.
+  // .backend / .agentCmd from it.
   const stub = {} as Parameters<typeof resolveBackend>[0];
   const backend = resolveBackend(stub);
   return resolveAgentBin(stub, backend);
@@ -176,7 +176,7 @@ async function releaseProjectLock(db: ReturnType<typeof getLegacyClient>, projec
 
 export async function runProjectManager(opts: RunPmOptions): Promise<RunPmResult | RunPmError> {
   const { slug, projectId, bypassDebounce = false } = opts;
-  const claudeCmd = await resolvePmAgentCmdAsync(opts.claudeCmd);
+  const agentCmd = await resolvePmAgentCmdAsync(opts.agentCmd);
   // Wrap the entire PM run in a workspace-scoped tx so harness_shared.*
   // queries pass RLS predicates. Note: the advisory lock + sub-transactions
   // run within this outer transaction. claude spawn happens inside but PG
@@ -193,7 +193,7 @@ async function runProjectManagerInner(
   const { slug, projectId, bypassDebounce = false } = opts;
   // Same resolution as runProjectManager — defaults to omp and honors
   // AGENT_BACKEND=claude-code from /settings/agent.
-  const claudeCmd = await resolvePmAgentCmdAsync(opts.claudeCmd);
+  const agentCmd = await resolvePmAgentCmdAsync(opts.agentCmd);
 
   // 1. Acquire the per-project advisory lock so concurrent PM runs for the
   // same project serialize.
@@ -269,7 +269,7 @@ async function runProjectManagerInner(
     // dev-server's cwd and cannot read any of the inputs the PM prompt
     // tells it to look at.
     const projectDir = projectDirForSlug(slug);
-    const spawned = await spawnClaude(claudeCmd, assembled.text, projectDir ?? undefined);
+    const spawned = await spawnClaude(agentCmd, assembled.text, projectDir ?? undefined);
     if (!spawned.ok) {
       return { ok: false, error: 'claude invocation failed', detail: spawned.detail };
     }
@@ -372,9 +372,9 @@ interface SpawnFailure { ok: false; detail: string }
  * the assistant text we accumulated from text_delta events. That gives the
  * parser something useful to work with even on aborted runs.
  */
-async function spawnClaude(claudeCmd: string, promptText: string, cwd?: string): Promise<SpawnSuccess | SpawnFailure> {
+async function spawnClaude(agentCmd: string, promptText: string, cwd?: string): Promise<SpawnSuccess | SpawnFailure> {
   return await new Promise((resolve) => {
-    const argv = claudeCmd.split(/\s+/).filter(Boolean);
+    const argv = agentCmd.split(/\s+/).filter(Boolean);
     const exe = argv[0] ?? 'omp';
     const baseArgs = argv.slice(1);
 

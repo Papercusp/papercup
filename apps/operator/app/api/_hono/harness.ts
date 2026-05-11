@@ -28,7 +28,7 @@ import { homedir } from 'node:os';
 import { harnessPackageDir, harnessPath, orchestratorRunBin } from './harness-paths';
 import { firePluginLifecycle, firePluginEvent } from '../../../lib/plugin-host-runtime';
 import { spawn, execFile } from 'node:child_process';
-import { runClaudeChat } from '@/lib/claude-chat-stream';
+import { runAgentChat } from '@/lib/agent-chat-stream';
 import { promisify } from 'node:util';
 import {
   getLegacyClient,
@@ -5633,7 +5633,7 @@ harness.post('/:slug/reviews/:id/resolve', async (c) => {
   return c.json({ ok: true, review });
 });
 
-// Architect chat — streams a single turn via runClaudeChat (backend-aware:
+// Architect chat — streams a single turn via runAgentChat (backend-aware:
 // `omp -p` by default, `claude -p` when AGENT_BACKEND=claude-code).
 // Body: { history: [{role:'user'|'assistant',content:string}], message: string, reviewId?: string }
 // Response: text/event-stream; events are `delta` with a text chunk, then `done`.
@@ -5721,7 +5721,7 @@ Rules for proposals:
     'Architect:',
   ].join('\n\n');
 
-  // Stream the response via runClaudeChat (backend-aware: claude-code
+  // Stream the response via runAgentChat (backend-aware: claude-code
   // or omp). Uses Hono's streamSSE for write-time flushing — the prior
   // raw-ReadableStream approach buffered the whole response under
   // Next/Turbopack, blocking client receipt until omp finished (60s+
@@ -5731,7 +5731,7 @@ Rules for proposals:
       stream.writeSSE({ event, data: data.replace(/\n/g, '\\n') });
 
     try {
-      for await (const ev of runClaudeChat({
+      for await (const ev of runAgentChat({
         promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
         cwd: project.path,
       })) {
@@ -5972,7 +5972,7 @@ Rules:
       stream.writeSSE({ event, data: data.replace(/\n/g, '\\n') });
 
     try {
-      for await (const ev of runClaudeChat({
+      for await (const ev of runAgentChat({
         promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
         cwd: project.path,
       })) {
