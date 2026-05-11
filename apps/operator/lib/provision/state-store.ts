@@ -23,7 +23,10 @@
  */
 
 import { join } from 'node:path';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq, sql as dsql } from 'drizzle-orm';
+
+const t = generated.provision_stateInHarness_shared;
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -72,27 +75,27 @@ const EMPTY_STATE: ProvisionState = {
 };
 
 async function readRow(harness: string, plugin: string): Promise<ProvisionState | null> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  const rows = await sql<{ payload: ProvisionState }[]>`
-    SELECT payload
-    FROM harness_shared.provision_state
-    WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND plugin_slug = ${plugin}
-    LIMIT 1
-  `;
-  return rows[0]?.payload ?? null;
+  const rows = await db
+    .select({ payload: t.payload })
+    .from(t)
+    .where(and(eq(t.workspace_id, ws), eq(t.harness_slug, harness), eq(t.plugin_slug, plugin)))
+    .limit(1);
+  return (rows[0]?.payload as ProvisionState | undefined) ?? null;
 }
 
 async function upsertRow(harness: string, plugin: string, state: ProvisionState): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
   const now = Date.now();
-  await sql`
-    INSERT INTO harness_shared.provision_state (workspace_id, harness_slug, plugin_slug, payload, updated_at)
-    VALUES (${ws}, ${harness}, ${plugin}, ${sql.json(state as unknown as Record<string, never>)}, ${now})
-    ON CONFLICT (workspace_id, harness_slug, plugin_slug)
-    DO UPDATE SET payload = EXCLUDED.payload, updated_at = EXCLUDED.updated_at
-  `;
+  await db
+    .insert(t)
+    .values({ workspace_id: ws, harness_slug: harness, plugin_slug: plugin, payload: state, updated_at: now })
+    .onConflictDoUpdate({
+      target: [t.workspace_id, t.harness_slug, t.plugin_slug],
+      set: { payload: dsql`EXCLUDED.payload`, updated_at: dsql`EXCLUDED.updated_at` },
+    });
 }
 
 /**
@@ -155,12 +158,11 @@ export async function appendStateOutput(
  * Drop the row for (harness, plugin). Called after teardown completes.
  */
 export async function clearState(harness: string, plugin: string): Promise<void> {
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
   const ws = activeWorkspaceId();
-  await sql`
-    DELETE FROM harness_shared.provision_state
-    WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND plugin_slug = ${plugin}
-  `;
+  await db
+    .delete(t)
+    .where(and(eq(t.workspace_id, ws), eq(t.harness_slug, harness), eq(t.plugin_slug, plugin)));
 }
 
 /**

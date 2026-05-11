@@ -6,8 +6,11 @@
  * Keep transport concerns (NextRequest, ctx.json) in the callers.
  */
 
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, desc, eq, gte } from 'drizzle-orm';
 import { ensureToastLogTable } from './ensure-schema';
+
+const t = generated.toast_logInHarness_shared;
 
 export interface ToastRow {
   id: number;
@@ -45,23 +48,25 @@ export async function listToasts(input: ListToastsInput = {}): Promise<{ toasts:
   const slugClause = input.slug && SLUG_RE.test(input.slug) ? input.slug : null;
 
   await ensureToastLogTable();
-  const { sql } = getOrgPg();
-  const rows = slugClause
-    ? ((await sql`
-        SELECT id, level, message, description, harness_slug, created_at, action_label, action_href
-        FROM harness_shared.toast_log
-        WHERE created_at >= ${since}
-          AND harness_slug = ${slugClause}
-        ORDER BY created_at DESC
-        LIMIT ${limit}
-      `) as DbRow[])
-    : ((await sql`
-        SELECT id, level, message, description, harness_slug, created_at, action_label, action_href
-        FROM harness_shared.toast_log
-        WHERE created_at >= ${since}
-        ORDER BY created_at DESC
-        LIMIT ${limit}
-      `) as DbRow[]);
+  const { db } = getOrgPg();
+  const where = slugClause
+    ? and(gte(t.created_at, since), eq(t.harness_slug, slugClause))
+    : gte(t.created_at, since);
+  const rows = (await db
+    .select({
+      id: t.id,
+      level: t.level,
+      message: t.message,
+      description: t.description,
+      harness_slug: t.harness_slug,
+      created_at: t.created_at,
+      action_label: t.action_label,
+      action_href: t.action_href,
+    })
+    .from(t)
+    .where(where)
+    .orderBy(desc(t.created_at))
+    .limit(limit)) as unknown as DbRow[];
 
   return {
     toasts: rows.map((r) => ({
