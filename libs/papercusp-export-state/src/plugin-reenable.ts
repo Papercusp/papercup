@@ -13,7 +13,7 @@
 
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
-import type { SnapshotPlugin } from './manifest';
+import type { SnapshotPlugin, SnapshotPluginRuntime } from './manifest';
 import { papercuspPath } from './paths';
 
 export interface ConsentSummary {
@@ -26,13 +26,68 @@ export interface ConsentSummary {
    * manifest's claim. Caller surfaces these so the user notices.
    */
   capDeltas: { name: string; declaredInSnapshot: string[]; installed: string[] }[];
+  /**
+   * Plugins whose required runtime isn't available on this host.
+   *
+   * Per rev3 plan A9 fix: the runtime requirement is derived from the
+   * INSTALLED plugin's manifest at consent time (NOT from the snapshot's
+   * advisory `runtime` field), so a plugin re-published with a different
+   * runtime is always evaluated against current reality. The snapshot's
+   * own `runtime` field is informational only — it records what the
+   * source environment used.
+   *
+   * Caller surfaces these alongside `missing` so the user sees "5
+   * plugins skipped: 3 not installed, 2 require WASM runtime which
+   * isn't available in this build."
+   */
+  skipped: {
+    name: string;
+    version: string;
+    requiredRuntime: SnapshotPluginRuntime;
+    reason: 'runtime-not-available';
+  }[];
 }
 
-const GLOBAL_PLUGINS_DIR = papercuspPath('global-plugins');
+/**
+ * Which plugin runtimes this host can satisfy. Caller passes this from
+ * the operator's environment introspection (e.g. JS is always true; WASM
+ * depends on jco availability; daemon depends on bwrap on Linux).
+ */
+export interface RuntimeAvailability {
+  js: boolean;
+  wasm: boolean;
+  daemon: boolean;
+}
+
+export const ALL_RUNTIMES_AVAILABLE: RuntimeAvailability = {
+  js: true,
+  wasm: true,
+  daemon: true,
+};
+
+/**
+ * Resolved per-call so PAPERCUSP_HOME changes mid-process (e.g. in
+ * tests) take effect. Cost is negligible — it's an env-var read +
+ * a path join.
+ */
+function globalPluginsDir(): string {
+  return papercuspPath('global-plugins');
+}
 
 export async function readInstalledPluginCaps(
   pluginName: string,
-): Promise<{ found: boolean; capabilities: string[]; version?: string }> {
+): Promise<{
+  found: boolean;
+  capabilities: string[];
+  version?: string;
+  /**
+   * Runtime declared in the installed plugin's manifest. Used by
+   * `buildConsentSummary` to derive whether the host can satisfy
+   * the snapshot's plugin set. Defaults to 'js' when absent — that
+   * was the only runtime before Phase G of the rev3 plan.
+   */
+  runtime?: SnapshotPluginRuntime;
+}> {
   // Plugin can be installed as either a scoped name or a bare-dir name.
   // `apps/operator/app/api/plugins/enable/route.ts` does the same dance.
   const candidates = await resolveCandidateDirs(pluginName);
@@ -40,11 +95,15 @@ export async function readInstalledPluginCaps(
     try {
       const m = JSON.parse(
         await fs.readFile(join(dir, 'papercusp.json'), 'utf8'),
-      ) as { capabilities?: unknown; version?: string };
+      ) as { capabilities?: unknown; version?: string; runtime?: unknown };
       const caps = Array.isArray(m.capabilities)
         ? m.capabilities.filter((c): c is string => typeof c === 'string')
         : [];
-      return { found: true, capabilities: caps, version: m.version };
+      const runtime: SnapshotPluginRuntime | undefined =
+        m.runtime === 'js' || m.runtime === 'wasm' || m.runtime === 'daemon'
+          ? m.runtime
+          : undefined;
+      return { found: true, capabilities: caps, version: m.version, runtime };
     } catch {
       continue;
     }
@@ -53,19 +112,19 @@ export async function readInstalledPluginCaps(
 }
 
 async function resolveCandidateDirs(pluginName: string): Promise<string[]> {
-  const direct = join(GLOBAL_PLUGINS_DIR, pluginName);
+  const direct = join(globalPluginsDir(), pluginName);
   const out: string[] = [direct];
   // Scoped name: try the basename suffix too.
   if (pluginName.startsWith('@')) {
     const slug = pluginName.split('/').pop();
-    if (slug) out.push(join(GLOBAL_PLUGINS_DIR, slug));
+    if (slug) out.push(join(globalPluginsDir(), slug));
   }
   // And the inverse: scan all installed plugins for one whose manifest.name matches.
   try {
-    const entries = await fs.readdir(GLOBAL_PLUGINS_DIR, { withFileTypes: true });
+    const entries = await fs.readdir(globalPluginsDir(), { withFileTypes: true });
     for (const e of entries) {
       if (!e.isDirectory() && !e.isSymbolicLink()) continue;
-      const dir = join(GLOBAL_PLUGINS_DIR, e.name);
+      const dir = join(globalPluginsDir(), e.name);
       if (out.includes(dir)) continue;
       try {
         const m = JSON.parse(
@@ -84,12 +143,37 @@ async function resolveCandidateDirs(pluginName: string): Promise<string[]> {
 
 export async function buildConsentSummary(
   snapshotPlugins: SnapshotPlugin[],
+  /**
+   * Optional. When provided, plugins whose installed-manifest runtime
+   * isn't satisfied by this host go into `summary.skipped` instead of
+   * `summary.plugins`. Defaults to all-runtimes-available so existing
+   * callers (mostly tests + dev mode) are unaffected.
+   */
+  available: RuntimeAvailability = ALL_RUNTIMES_AVAILABLE,
 ): Promise<ConsentSummary> {
-  const summary: ConsentSummary = { plugins: [], missing: [], capDeltas: [] };
+  const summary: ConsentSummary = {
+    plugins: [],
+    missing: [],
+    capDeltas: [],
+    skipped: [],
+  };
   for (const sp of snapshotPlugins) {
     const installed = await readInstalledPluginCaps(sp.name);
     if (!installed.found) {
       summary.missing.push({ name: sp.name, version: sp.version });
+      continue;
+    }
+    // Per rev3 plan A9: derive runtime requirement from INSTALLED
+    // manifest, not snapshot. Default 'js' when installed manifest
+    // doesn't declare (legacy plugins predating the runtime field).
+    const requiredRuntime: SnapshotPluginRuntime = installed.runtime ?? 'js';
+    if (!available[requiredRuntime]) {
+      summary.skipped.push({
+        name: sp.name,
+        version: installed.version ?? sp.version,
+        requiredRuntime,
+        reason: 'runtime-not-available',
+      });
       continue;
     }
     const declared = new Set(sp.capabilities);
