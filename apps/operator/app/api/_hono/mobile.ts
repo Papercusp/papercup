@@ -11,7 +11,12 @@
  */
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
+import { join } from 'node:path';
+import { openSync, readSync, closeSync, statSync } from 'node:fs';
+import { resolvePhasedProject, harnessDir } from './harness';
+import { phasePhaseLabel } from '@/lib/harness-phases';
 import {
   signDeviceToken,
   verifyDeviceToken,
@@ -442,6 +447,87 @@ app.post('/harnesses/:slug/smoke-test', async (c) => {
 
 app.post('/harnesses/:slug/cleanup', async (c) => {
   return shimHarnessAction(c, '/cleanup');
+});
+
+/**
+ * Mobile-JWT-authed log stream. Mirrors the desktop
+ * /api/harness/{slug}/log/stream SSE shape (events: log/backfill-done/ping)
+ * but routes auth through deviceAuth() rather than the session cookie.
+ * Workspace check is enforced: the slug must belong to the phone's paired
+ * workspace. Phase override via ?phase= (same as desktop).
+ */
+app.get('/harnesses/:slug/log/stream', async (c) => {
+  const claims = c.get('deviceClaims');
+  const slug = c.req.param('slug');
+  if (!(await harnessExistsInWorkspace(claims.workspace_id, slug))) {
+    return c.json({ error: 'harness_not_in_workspace' }, 404);
+  }
+  const project = await resolvePhasedProject(slug, phasePhaseLabel(c.req.query('phase')));
+  if (!project) return c.json({ error: 'unknown project' }, 404);
+  const jsonlPath = join(harnessDir(project), 'logs', 'run.log.jsonl');
+  const tailSize = Math.min(Math.max(parseInt(c.req.query('tail') ?? '500', 10) || 500, 1), 5000);
+
+  return streamSSE(c, async (stream) => {
+    let aborted = false;
+    const onAbort = () => { aborted = true; };
+
+    // Backfill: read last 1 MiB of jsonl, replay up to tailSize valid lines
+    // as `event: log`, then emit `event: backfill-done` with the count.
+    let lastSize = 0;
+    try {
+      const stat = statSync(jsonlPath);
+      const tailBytes = 1024 * 1024;
+      const start = Math.max(0, stat.size - tailBytes);
+      const len = stat.size - start;
+      const buf = Buffer.alloc(len);
+      const fd = openSync(jsonlPath, 'r');
+      try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
+      lastSize = stat.size;
+      let chunk = buf.toString('utf8');
+      if (start > 0) {
+        const firstNl = chunk.indexOf('\n');
+        if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+      }
+      const allLines = chunk.split('\n').filter(Boolean);
+      const toReplay = allLines.slice(-tailSize);
+      let payload = '';
+      let count = 0;
+      for (const raw of toReplay) {
+        try { JSON.parse(raw); payload += `event: log\ndata: ${raw}\n\n`; count++; }
+        catch { /* skip malformed */ }
+      }
+      payload += `event: backfill-done\ndata: ${count}\n\n`;
+      await stream.write(payload);
+    } catch {
+      await stream.writeSSE({ event: 'backfill-done', data: '0' });
+    }
+    void lastSize;
+
+    // Live updates via the in-process log bus (run.sh log() POSTs to
+    // /api/internal/log-event → publish(); we subscribe here).
+    const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
+    const sub = logSubscribe(`${project.slug}:log`, (env) => {
+      try { JSON.parse(env.line); }
+      catch { return; }
+      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
+    });
+    for (const env of sub.recent) {
+      try { JSON.parse(env.line); }
+      catch { continue; }
+      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
+    }
+
+    try {
+      while (true) {
+        if (stream.aborted || aborted) break;
+        await stream.sleep(15_000);
+        await stream.writeSSE({ event: 'ping', data: '{}' });
+      }
+    } finally {
+      sub.unsubscribe();
+      onAbort();
+    }
+  });
 });
 
 // (Removed shim for /consolidate — the underlying operator route was
