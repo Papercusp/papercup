@@ -15,6 +15,8 @@ import type {
   SnapshotTriggerReason,
 } from '@/lib/backup';
 
+type DestinationType = BackupSettings['destinationType'];
+
 const RETENTION_PRESETS: Record<Exclude<RetentionPreset, 'custom'>, RetentionPolicy> = {
   aggressive:   { keepLatest: 100, keepHourly: 24, keepDaily: 7,   keepWeekly: 4,  keepMonthly: 3  },
   default:      { keepLatest: 200, keepHourly: 48, keepDaily: 30,  keepWeekly: 12, keepMonthly: 12 },
@@ -300,6 +302,12 @@ export default function BackupsSettingsPage() {
         )}
       </section>
 
+      <DestinationSection
+        current={settings.destinationType}
+        configured={settings.destinationConfigured}
+        onChange={(t) => set('destinationType', t)}
+      />
+
       <section className="pc-settings-section">
         <h2>Excluded paths</h2>
         <p className="pc-settings-note">
@@ -318,5 +326,107 @@ export default function BackupsSettingsPage() {
         </button>
       </footer>
     </main>
+  );
+}
+
+function DestinationSection({
+  current,
+  configured,
+  onChange,
+}: {
+  current: DestinationType;
+  configured: boolean;
+  onChange: (t: DestinationType) => void;
+}) {
+  const [type, setType] = useState<DestinationType>(current);
+  const [s3, setS3] = useState({ bucket: '', prefix: '', endpoint: '', region: '', accessKeyId: '', secretAccessKey: '', sessionToken: '' });
+  const [b2, setB2] = useState({ bucket: '', prefix: '', keyId: '', key: '' });
+  const [rclone, setRclone] = useState({ remotePath: '' });
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const pick = (t: DestinationType) => { setType(t); onChange(t); };
+
+  const save = async () => {
+    setBusy('save');
+    try {
+      const body: { type: DestinationType; config: unknown } = {
+        type,
+        config:
+          type === 'local+s3'    ? s3 :
+          type === 'local+b2'    ? b2 :
+          type === 'local+rclone' ? rclone :
+          null,
+      };
+      const r = await fetch('/api/backups/destination', {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+      toast.success('destination saved (encrypted)');
+    } catch (err) {
+      toast.error(`save failed: ${(err as Error).message}`);
+    } finally { setBusy(null); }
+  };
+
+  const test = async () => {
+    setBusy('test');
+    try {
+      const r = await fetch('/api/backups/destination/test', { method: 'POST' });
+      if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
+      const d = await r.json() as { result: { ok: boolean; error?: string } };
+      if (d.result.ok) toast.success('destination reachable');
+      else toast.error(`destination test failed: ${d.result.error}`);
+    } catch (err) {
+      toast.error(`test failed: ${(err as Error).message}`);
+    } finally { setBusy(null); }
+  };
+
+  return (
+    <section className="pc-settings-section">
+      <h2>Backup destination</h2>
+      <div className="pc-settings-radio-group">
+        {(['local', 'local+s3', 'local+b2', 'local+rclone'] as DestinationType[]).map((t) => (
+          <label key={t}>
+            <input type="radio" checked={type === t} onChange={() => pick(t)} />
+            <span>{t === 'local' ? 'Local only' : t === 'local+s3' ? 'Local + S3' : t === 'local+b2' ? 'Local + Backblaze B2' : 'Local + rclone remote'}</span>
+          </label>
+        ))}
+      </div>
+      <p className="pc-settings-note">
+        Offsite destinations are replicated AFTER each local snapshot via <code>kopia repository sync-to</code>.
+        Credentials are AES-256-GCM encrypted with your workspace key before persisting; they are never echoed back to the UI.
+        {configured && type !== 'local' && <strong> Config already saved.</strong>}
+      </p>
+
+      {type === 'local+s3' && (
+        <div className="pc-settings-retention-grid">
+          <label><span>Bucket</span><input value={s3.bucket} onChange={(e) => setS3({ ...s3, bucket: e.target.value })} /></label>
+          <label><span>Prefix (opt)</span><input value={s3.prefix} onChange={(e) => setS3({ ...s3, prefix: e.target.value })} /></label>
+          <label><span>Region</span><input value={s3.region} onChange={(e) => setS3({ ...s3, region: e.target.value })} /></label>
+          <label><span>Endpoint (opt)</span><input value={s3.endpoint} onChange={(e) => setS3({ ...s3, endpoint: e.target.value })} /></label>
+          <label><span>Access key ID</span><input value={s3.accessKeyId} onChange={(e) => setS3({ ...s3, accessKeyId: e.target.value })} /></label>
+          <label><span>Secret access key</span><input type="password" value={s3.secretAccessKey} onChange={(e) => setS3({ ...s3, secretAccessKey: e.target.value })} /></label>
+        </div>
+      )}
+      {type === 'local+b2' && (
+        <div className="pc-settings-retention-grid">
+          <label><span>Bucket</span><input value={b2.bucket} onChange={(e) => setB2({ ...b2, bucket: e.target.value })} /></label>
+          <label><span>Prefix (opt)</span><input value={b2.prefix} onChange={(e) => setB2({ ...b2, prefix: e.target.value })} /></label>
+          <label><span>Key ID</span><input value={b2.keyId} onChange={(e) => setB2({ ...b2, keyId: e.target.value })} /></label>
+          <label><span>Key</span><input type="password" value={b2.key} onChange={(e) => setB2({ ...b2, key: e.target.value })} /></label>
+        </div>
+      )}
+      {type === 'local+rclone' && (
+        <label className="pc-settings-row">
+          <span>Remote path</span>
+          <input value={rclone.remotePath} onChange={(e) => setRclone({ remotePath: e.target.value })} placeholder="my-remote:papercusp-backups" />
+        </label>
+      )}
+
+      <div className="pc-settings-actions">
+        <button type="button" disabled={!!busy} onClick={save}>{busy === 'save' ? 'Saving…' : 'Save destination'}</button>
+        <button type="button" disabled={!!busy} onClick={test}>{busy === 'test' ? 'Testing…' : 'Test connection'}</button>
+      </div>
+    </section>
   );
 }

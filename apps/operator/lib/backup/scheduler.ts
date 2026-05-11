@@ -79,22 +79,34 @@ export function stopBackupScheduler(): void {
 async function tick(): Promise<void> {
   try {
     const { sql } = getOrgPg();
+    // Join settings with most-recent snapshot start time so we use a
+    // persistent floor for cadence — restarting the operator doesn't
+    // re-fire snapshots that just ran in the previous process.
     const rows = await sql<{
-      workspace_id: string; enabled: boolean; cadence_mode: string; cadence_minutes: number;
+      workspace_id: string; cadence_minutes: number; last_started_at: Date | null;
     }[]>`
-      SELECT workspace_id, enabled, cadence_mode, cadence_minutes
-      FROM harness_shared.workspace_backup_settings
-      WHERE enabled = TRUE AND cadence_mode IN ('interval', 'both')
+      SELECT s.workspace_id,
+             s.cadence_minutes,
+             MAX(snap.started_at) AS last_started_at
+      FROM harness_shared.workspace_backup_settings s
+      LEFT JOIN harness_shared.backup_snapshots snap
+             ON snap.workspace_id = s.workspace_id
+      WHERE s.enabled = TRUE AND s.cadence_mode IN ('interval', 'both')
+      GROUP BY s.workspace_id, s.cadence_minutes
     `;
     const now = Date.now();
     for (const r of rows) {
-      const s = STATE.get(r.workspace_id) ?? { lastFiredAt: 0, inFlight: false };
-      const dueAt = s.lastFiredAt + r.cadence_minutes * 60_000;
-      if (s.inFlight) continue;
+      const mem = STATE.get(r.workspace_id) ?? { lastFiredAt: 0, inFlight: false };
+      // Use the larger of in-memory and PG — in-memory wins after a
+      // local fire (avoids extra PG round-trip), PG wins after a process
+      // restart.
+      const pgFloor = r.last_started_at ? r.last_started_at.getTime() : 0;
+      const lastFiredAt = Math.max(mem.lastFiredAt, pgFloor);
+      const dueAt = lastFiredAt + r.cadence_minutes * 60_000;
+      if (mem.inFlight) continue;
       if (now < dueAt) continue;
-      s.inFlight = true;
-      s.lastFiredAt = now;
-      STATE.set(r.workspace_id, s);
+      const next: WorkspaceTickState = { lastFiredAt: now, inFlight: true };
+      STATE.set(r.workspace_id, next);
       void runSnapshot(r.workspace_id, 'interval', undefined)
         .finally(() => {
           const cur = STATE.get(r.workspace_id);

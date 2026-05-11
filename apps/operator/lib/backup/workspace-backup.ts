@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { getOrgPg } from '@restart/db-org';
 import { deriveRepoPassword } from './password';
 import { runPreSnapshotHook } from './hook';
+import { decryptDestConfig, syncArgsFor, type DestinationType } from './destinations';
 import {
   type BackupSettings,
   type RepoStats,
@@ -97,9 +98,12 @@ export class WorkspaceBackup {
       retention_custom_json: unknown;
       event_triggers_json: unknown;
       excluded_paths_json: unknown;
+      destination_type: string;
+      destination_config_encrypted: string | null;
     }[]>`
       SELECT enabled, cadence_mode, cadence_minutes, retention_preset,
-             retention_custom_json, event_triggers_json, excluded_paths_json
+             retention_custom_json, event_triggers_json, excluded_paths_json,
+             destination_type, destination_config_encrypted
       FROM harness_shared.workspace_backup_settings
       WHERE workspace_id = ${this.workspaceId}
       LIMIT 1
@@ -122,7 +126,61 @@ export class WorkspaceBackup {
       retentionCustom: r.retention_custom_json as RetentionPolicy | null,
       eventTriggers: (r.event_triggers_json as SnapshotTriggerReason[]) ?? [],
       excludedPaths: (r.excluded_paths_json as string[]) ?? [],
+      destinationType: (r.destination_type as BackupSettings['destinationType']) ?? 'local',
+      destinationConfigured: !!r.destination_config_encrypted,
     };
+  }
+
+  /**
+   * Persist a destination config. The cleartext config never touches
+   * disk or PG in unencrypted form. Pass null to clear the destination.
+   */
+  async setDestination(
+    type: BackupSettings['destinationType'],
+    config: unknown | null,
+  ): Promise<void> {
+    const { sql } = getOrgPg();
+    let encrypted: string | null = null;
+    if (type !== 'local' && config) {
+      const { encryptDestConfig } = await import('./destinations');
+      encrypted = await encryptDestConfig(
+        this.workspaceId,
+        config as Parameters<typeof encryptDestConfig>[1],
+      );
+    }
+    await sql`
+      UPDATE harness_shared.workspace_backup_settings
+      SET destination_type             = ${type},
+          destination_config_encrypted = ${encrypted},
+          updated_at                   = now()
+      WHERE workspace_id = ${this.workspaceId}
+    `;
+  }
+
+  async testDestination(): Promise<{ ok: boolean; error?: string }> {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ destination_type: string; destination_config_encrypted: string | null }[]>`
+      SELECT destination_type, destination_config_encrypted
+      FROM harness_shared.workspace_backup_settings
+      WHERE workspace_id = ${this.workspaceId}
+      LIMIT 1
+    `;
+    const r = rows[0];
+    if (!r || r.destination_type === 'local') return { ok: true };
+    if (!r.destination_config_encrypted) return { ok: false, error: 'no config saved' };
+    try {
+      const cfg = await decryptDestConfig(this.workspaceId, r.destination_config_encrypted);
+      const sync = syncArgsFor(r.destination_type as DestinationType, cfg);
+      if (!sync) return { ok: true };
+      const password = await deriveRepoPassword(this.workspaceId);
+      const env = this.envWithPassword(password);
+      // Use kopia's `repository sync-to <type> --dry-run` to verify
+      // connectivity + credentials without writing.
+      await this.kopia([...sync.args, '--dry-run'], { env: { ...env, ...sync.env } });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err instanceof Error ? err.message : err) };
+    }
   }
 
   async snapshot(reason: SnapshotTriggerReason, context?: Record<string, unknown>): Promise<SnapshotResult> {
@@ -173,6 +231,11 @@ export class WorkspaceBackup {
         WHERE id = ${snapshotRowId}
       `;
       await this.event(snapshotRowId, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs });
+
+      // After-snapshot offsite replication (non-fatal). Local stays the
+      // source of truth; if sync fails the snapshot is still safe.
+      void this.syncToOffsite(env, snapshotRowId).catch(() => { /* logged inside */ });
+
       return {
         snapshotId: snapshotRowId,
         kopiaSnapshotId: parsed.snapshotId,
@@ -190,6 +253,29 @@ export class WorkspaceBackup {
       `;
       await this.event(snapshotRowId, 'progress', { phase: 'failed', error: msg });
       throw err;
+    }
+  }
+
+  private async syncToOffsite(baseEnv: NodeJS.ProcessEnv, snapshotRowId: number): Promise<void> {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ destination_type: string; destination_config_encrypted: string | null }[]>`
+      SELECT destination_type, destination_config_encrypted
+      FROM harness_shared.workspace_backup_settings
+      WHERE workspace_id = ${this.workspaceId}
+      LIMIT 1
+    `;
+    if (rows.length === 0) return;
+    const r = rows[0]!;
+    if (r.destination_type === 'local' || !r.destination_config_encrypted) return;
+    try {
+      const cfg = await decryptDestConfig(this.workspaceId, r.destination_config_encrypted);
+      const sync = syncArgsFor(r.destination_type as DestinationType, cfg);
+      if (!sync) return;
+      await this.event(snapshotRowId, 'sync_started', { destination: r.destination_type });
+      await this.kopia(sync.args, { env: { ...baseEnv, ...sync.env } });
+      await this.event(snapshotRowId, 'sync_done', { destination: r.destination_type });
+    } catch (err) {
+      await this.event(snapshotRowId, 'sync_failed', { destination: r.destination_type, error: String(err) });
     }
   }
 

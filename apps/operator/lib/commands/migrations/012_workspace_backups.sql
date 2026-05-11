@@ -27,9 +27,24 @@ CREATE TABLE IF NOT EXISTS harness_shared.workspace_backup_settings (
   retention_custom_json  JSONB,                                        -- {keepLatest, keepHourly, keepDaily, keepWeekly, keepMonthly}
   event_triggers_json    JSONB       NOT NULL DEFAULT '["pre_destructive","post_run","plugin_install","secret_change"]',
   excluded_paths_json    JSONB       NOT NULL DEFAULT '[]',
+  -- Offsite destination. 'local' = filesystem-only at the canonical path.
+  -- 'local+s3' / 'local+b2' / 'local+rclone' = local primary, kopia
+  --   repository sync-to <type> after every snapshot.
+  -- destination_config_encrypted: AES-GCM encrypted JSON with the
+  --   destination-specific config (bucket, region, access keys,
+  --   rclone remote name, etc.). Encrypted with workspace key so a
+  --   cross-workspace PG read doesn't reveal credentials.
+  destination_type             TEXT        NOT NULL DEFAULT 'local',
+  destination_config_encrypted TEXT,
   created_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at             TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Backfill for re-applied migrations (idempotent ALTER ADD COLUMN).
+ALTER TABLE harness_shared.workspace_backup_settings
+  ADD COLUMN IF NOT EXISTS destination_type             TEXT        NOT NULL DEFAULT 'local';
+ALTER TABLE harness_shared.workspace_backup_settings
+  ADD COLUMN IF NOT EXISTS destination_config_encrypted TEXT;
 
 CREATE TABLE IF NOT EXISTS harness_shared.backup_snapshots (
   id                  BIGSERIAL    PRIMARY KEY,

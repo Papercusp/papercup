@@ -16,3 +16,4 @@ export { deriveRepoPassword } from './password';
 export { workspaceBackupFor } from './singleton';
 export { startKopiaServer, stopKopiaServer, kopiaServerStatus, type KopiaServerInfo } from './server';
 export { startBackupScheduler, stopBackupScheduler, triggerSnapshotEvent, getKopiaDetection } from './scheduler';
+export type { DestinationType, DestinationConfig } from './destinations';

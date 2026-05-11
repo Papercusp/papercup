@@ -40,6 +40,8 @@ export interface SnapshotInfo {
   error: string | null;
 }
 
+export type DestinationType = 'local' | 'local+s3' | 'local+b2' | 'local+rclone';
+
 export interface BackupSettings {
   workspaceId: string;
   enabled: boolean;
@@ -49,6 +51,9 @@ export interface BackupSettings {
   retentionCustom: RetentionPolicy | null;
   eventTriggers: SnapshotTriggerReason[];
   excludedPaths: string[];
+  destinationType: DestinationType;
+  /** Truthy iff a destination config is stored (UI doesn't get the secrets). */
+  destinationConfigured: boolean;
 }
 
 export interface RepoStats {
