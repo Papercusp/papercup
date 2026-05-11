@@ -36,6 +36,38 @@ import {
 } from './operator-converse-tags';
 
 const FLUSH_MS = 1200;
+const MAX_DEFER_MS = 8000;
+
+/**
+ * Heuristic: does the buffer end in a tag opener that hasn't been
+ * closed yet? If so, the 1.2s flush boundary would parse a partial
+ * tag and drop it. Defer the flush until the closing `>` arrives.
+ *
+ * Detects:
+ *   - "...<sa" or "...<spawn role=" → open tag, no `>` yet
+ *   - "...<say>partial" → opening tag closed but no </say> yet
+ *
+ * We only care about the trailing chunk; earlier `<...>` pairs in
+ * the buffer are already complete. Scan from the end backward to the
+ * nearest unmatched `<`.
+ */
+function hasUnclosedTrailingTag(buf: string): boolean {
+  const lastOpen = buf.lastIndexOf('<');
+  if (lastOpen < 0) return false;
+  const tail = buf.slice(lastOpen);
+  // Opening still in flight (no `>` yet).
+  if (!tail.includes('>')) return true;
+  // Self-closing tags (<spawn ... />, <sleep ... />) are complete.
+  // Paired tags need their closer; detect by sniffing the opener.
+  const openerMatch = tail.match(/^<\s*(\w+)/);
+  if (!openerMatch) return false;
+  const tagName = openerMatch[1].toLowerCase();
+  // Self-closing / void tags in our schema.
+  if (tagName === 'spawn' || tagName === 'sleep') return false;
+  // Paired tags: <say>, <set_mode>. Check for closer.
+  const closer = `</${tagName}>`;
+  return !tail.toLowerCase().includes(closer);
+}
 
 export interface OperatorVoiceTagObserver {
   /** Feed an incremental assistant-text chunk from the engine. */
@@ -54,6 +86,10 @@ export interface OperatorVoiceTagObserver {
 export function createOperatorVoiceTagObserver(): OperatorVoiceTagObserver {
   let buf = '';
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  // First-push timestamp of the current buffered utterance. Used to
+  // bound the defer-on-unclosed-tag wait so a truly broken stream
+  // can't leave us buffering forever.
+  let bufStartTs = 0;
 
   const flush = () => {
     if (flushTimer) {
@@ -62,10 +98,21 @@ export function createOperatorVoiceTagObserver(): OperatorVoiceTagObserver {
     }
     if (!buf.trim()) {
       buf = '';
+      bufStartTs = 0;
+      return;
+    }
+    // B6: if the trailing chunk is an unclosed tag opener and we
+    // haven't exhausted our defer budget, wait for more chunks
+    // rather than parsing a fragment that would silently drop the
+    // tag. Force-flush only when dispose() is called (session end).
+    const ageMs = bufStartTs > 0 ? Date.now() - bufStartTs : 0;
+    if (hasUnclosedTrailingTag(buf) && ageMs < MAX_DEFER_MS) {
+      flushTimer = setTimeout(flush, FLUSH_MS);
       return;
     }
     const parsed = parseOperatorTurn(buf);
     buf = '';
+    bufStartTs = 0;
 
     // We do NOT honor parsed.say here — the voice agent has already
     // spoken it via TTS. Re-rendering would double-up.
@@ -88,6 +135,7 @@ export function createOperatorVoiceTagObserver(): OperatorVoiceTagObserver {
 
   const push = (text: string) => {
     if (!text) return;
+    if (buf.length === 0) bufStartTs = Date.now();
     buf += text;
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = setTimeout(flush, FLUSH_MS);
@@ -99,6 +147,7 @@ export function createOperatorVoiceTagObserver(): OperatorVoiceTagObserver {
       flushTimer = null;
     }
     buf = '';
+    bufStartTs = 0;
   };
 
   return { push, flush, dispose };

@@ -2,8 +2,40 @@ import { describe, expect, it } from 'vitest';
 import {
   mayAskActiveNow,
   sayContainsWantActive,
+  userDismissesOperator,
   userReplyDeclinesActive,
 } from '../app/_components/OperatorConversationProvider';
+
+describe('userDismissesOperator', () => {
+  it.each([
+    'shut up',
+    'leave me alone',
+    'stop talking',
+    'stop asking',
+    'ease off',
+    'be quiet',
+    'go quiet',
+    "i'm busy",
+    'I am busy',
+    'let me think',
+    'let me work',
+    'let me focus',
+    'i need quiet',
+    'i need silence',
+    "you're talking too much",
+    'too much talking',
+  ])('matches dismissal: %s', (s) => expect(userDismissesOperator(s)).toBe(true));
+
+  it.each([
+    'stop sharing that screen',
+    'busy day today',
+    'thinking about it',
+    'quiet morning',
+    'how do I focus on the right thing?',
+  ])('does NOT match conversational/incidental: %s', (s) =>
+    expect(userDismissesOperator(s)).toBe(false),
+  );
+});
 
 describe('sayContainsWantActive', () => {
   it.each([

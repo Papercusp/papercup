@@ -6,7 +6,7 @@
  * Request body:
  *   {
  *     messages: [{ role: 'user'|'assistant'|'system', content }],
- *     trigger:  'user_message' | 'silence_nudge' | 'silence_check' | 'quiet_wait_resume',
+ *     trigger:  'user_message' | 'silence_nudge' | 'silence_check' | 'quiet_wait_resume' | 'open_canvas',
  *     mayAskActive: boolean,
  *   }
  *

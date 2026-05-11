@@ -318,6 +318,28 @@ export function userReplyDeclinesActive(text: string): boolean {
   return DECLINE_RE.test(text.trim());
 }
 
+/**
+ * Plan: "Only flip yourself to passive when the user says, in plain
+ * words, that they want quiet."  Examples in the prompt:
+ *   - explicit dismissal: "stop", "shut up", "leave me alone", "I'm busy"
+ *   - redirect to silence: "let me think", "let me work", "I need quiet"
+ *   - frustration with the cadence: "you're talking too much", "ease off"
+ *
+ * The prompt asks the brain to emit <set_mode>passive</set_mode> when
+ * it detects these. The plan flagged: "no server-side enforcement —
+ * if the LLM forgets the tag, no fallback." This heuristic IS that
+ * fallback — when the user's message matches AND the model's response
+ * didn't include the tag, we force the flip.
+ *
+ * Conservative — better to miss a dismissal (chat keeps talking) than
+ * to mis-detect (user types "stop sharing that screen" and we go
+ * passive). The patterns are explicit imperatives only.
+ */
+const DISMISS_RE = /\b(shut up|leave me alone|stop talking|stop asking|ease off|be quiet|go quiet|i'?m busy|i am busy|let me (think|work|focus)|i need (quiet|silence)|you'?re talking too much|too much talking)\b/i;
+export function userDismissesOperator(text: string): boolean {
+  return DISMISS_RE.test(text.trim());
+}
+
 // ─── Silence-timer config ───────────────────────────────────────────────
 
 // 10s nudge / 30s check / 30s quiet_wait — matches operator.converse.md.
@@ -908,17 +930,29 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           });
         }
 
-        if (parsed.setMode) {
+        // Server-side disengagement enforcement: if the user's last
+        // turn (the one that triggered this generation) explicitly
+        // dismissed the operator AND the model's response didn't
+        // include <set_mode>passive</set_mode>, force the flip. Plan
+        // flagged the gap; this closes it.
+        let effectiveMode = parsed.setMode;
+        if (!effectiveMode && stateRef.current.mode === 'active') {
+          const lastUser = [...history].reverse().find((m) => m.role === 'user');
+          if (lastUser && userDismissesOperator(lastUser.content)) {
+            effectiveMode = 'passive';
+          }
+        }
+        if (effectiveMode) {
           // Persist + fanout via the same channel the navbar toggle uses,
           // so subscribers update in lockstep.
-          writeOperatorModeToSession(parsed.setMode);
+          writeOperatorModeToSession(effectiveMode);
           try {
             window.dispatchEvent(
-              new CustomEvent('papercusp:operatorMode', { detail: { mode: parsed.setMode } }),
+              new CustomEvent('papercusp:operatorMode', { detail: { mode: effectiveMode } }),
             );
           } catch { /* ignore */ }
           // Reducer also moves to the right sub-state via set_mode.
-          dispatch({ type: 'set_mode', mode: parsed.setMode });
+          dispatch({ type: 'set_mode', mode: effectiveMode });
           return;
         }
 
@@ -1101,8 +1135,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // Flipping TO active wakes the operator if it was sleeping —
     // otherwise the user-visible chip says "Active" while the silence
     // timers stay parked. Per the active-mode plan, flipping to
-    // active means "I'm here, talk to me."
-    if (mode === 'active') writeSleepUntilMs(0);
+    // active means "I'm here, talk to me." Sleep event fires so the
+    // chip's reactive sleepUntilMs state clears immediately. B5.
+    if (mode === 'active') {
+      writeSleepUntilMs(0);
+      try { window.dispatchEvent(new Event('papercusp:operatorSleep')); } catch { /* ignore */ }
+    }
     try {
       window.dispatchEvent(
         new CustomEvent('papercusp:operatorMode', { detail: { mode } }),

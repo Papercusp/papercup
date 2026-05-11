@@ -62,7 +62,13 @@ function useOperatorMode(): [OperatorMode, (next: OperatorMode) => void] {
     // Flipping TO active wakes the operator. Without this the chip
     // says "Active" but the silence-timer effect stays parked because
     // sleepUntilMs is still in the future from a prior <sleep> tag.
-    if (next === 'active') writeSleepUntilMs(0);
+    // Fire the sleep-change event so the chip + provider's reactive
+    // sleepUntilMs state both pick up the clear immediately rather
+    // than waiting for the 5s tick poll. B5 of the audit.
+    if (next === 'active') {
+      writeSleepUntilMs(0);
+      try { window.dispatchEvent(new Event(SLEEP_CHANGE_EVENT)); } catch { /* ignore */ }
+    }
     setModeLocal(next);
     try {
       window.dispatchEvent(new CustomEvent(MODE_CHANGE_EVENT, { detail: { mode: next } }));
@@ -140,6 +146,7 @@ export function OperatorActiveToggle() {
   const onClick = useCallback(() => {
     if (sleeping) {
       writeSleepUntilMs(0);
+      try { window.dispatchEvent(new Event(SLEEP_CHANGE_EVENT)); } catch { /* ignore */ }
       return;
     }
     if (quiet) {
