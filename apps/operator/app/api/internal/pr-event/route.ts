@@ -10,9 +10,13 @@
  * Body: { featureId, url, state?, createdAt?, updatedAt? }
  */
 import { NextResponse } from 'next/server';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
+
+const ti = generated.token_indexInHarness_shared;
+const fp = generated.harness_feature_prsInHarness_shared;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -31,10 +35,12 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { sql } = getOrgPg();
-  const rows = await sql<{ harness_slug: string }[]>`
-    SELECT harness_slug FROM harness_shared.token_index WHERE token = ${token} LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const rows = await db
+    .select({ harness_slug: ti.harness_slug })
+    .from(ti)
+    .where(eq(ti.token, token))
+    .limit(1);
   if (rows.length === 0) {
     return NextResponse.json({ error: 'invalid bearer' }, { status: 401 });
   }
@@ -54,16 +60,26 @@ export async function POST(req: Request): Promise<Response> {
   const updatedAt = typeof body.updatedAt === 'number' ? Math.floor(body.updatedAt) : createdAt;
 
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_feature_prs
-      (workspace_id, harness_slug, feature_id, pr_url, pr_state, opened_ts, updated_ts)
-    VALUES (${ws}, ${slug}, ${featureId}, ${url}, ${state}, ${createdAt}, ${updatedAt})
-    ON CONFLICT (workspace_id, harness_slug, feature_id) DO UPDATE SET
-      pr_url = EXCLUDED.pr_url,
-      pr_state = EXCLUDED.pr_state,
-      opened_ts = EXCLUDED.opened_ts,
-      updated_ts = EXCLUDED.updated_ts
-  `;
+  await db
+    .insert(fp)
+    .values({
+      workspace_id: ws,
+      harness_slug: slug,
+      feature_id: featureId,
+      pr_url: url,
+      pr_state: state,
+      opened_ts: createdAt,
+      updated_ts: updatedAt,
+    })
+    .onConflictDoUpdate({
+      target: [fp.workspace_id, fp.harness_slug, fp.feature_id],
+      set: {
+        pr_url: dsql`EXCLUDED.pr_url`,
+        pr_state: dsql`EXCLUDED.pr_state`,
+        opened_ts: dsql`EXCLUDED.opened_ts`,
+        updated_ts: dsql`EXCLUDED.updated_ts`,
+      },
+    });
   void notifySyncInvalidate('featurePrs.byHarness', { harnessSlug: slug }).catch(() => {});
   return NextResponse.json({ ok: true });
 }
