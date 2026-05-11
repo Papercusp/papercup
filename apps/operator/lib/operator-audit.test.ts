@@ -15,29 +15,20 @@ vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate: async () => {} }));
 vi.mock('./operator-standing-candidates', () => ({ refreshCandidates: async () => {} }));
 
-vi.mock('@restart/db-org', () => {
-  function tagged(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
-    const sqlText = strings.join('?');
-    if (/INSERT INTO harness_shared\.audit_log/.test(sqlText)) {
-      rows.push({
-        id: values[0] as string,
-        ts: values[1] as number,
-        actor: 'system:operator',
-        action: values[2] as string,
-        subject: values[3] as string,
-        details: values[4],
-        workspace_id: values[5] as string,
-      });
-      return Promise.resolve([]);
-    }
-    return Promise.resolve([]);
-  }
-  // tx.json passthrough
-  (tagged as unknown as { json: (v: unknown) => unknown }).json = (v) => v;
-  return {
-    withWorkspace: async (_ws: string, cb: (tx: typeof tagged & { json: (v: unknown) => unknown }) => Promise<unknown>) => cb(tagged as typeof tagged & { json: (v: unknown) => unknown }),
-  };
-});
+vi.mock('drizzle-orm/postgres-js', () => ({
+  drizzle: () => ({
+    insert: () => ({
+      values: async (row: AuditRow) => {
+        rows.push({ ...row, actor: 'system:operator' });
+      },
+    }),
+  }),
+}));
+
+vi.mock('@restart/db-org', () => ({
+  withWorkspace: async (_ws: string, cb: (tx: unknown) => Promise<unknown>) => cb({}),
+  generated: { audit_logInHarness_shared: { id: {}, ts: {}, actor: {}, action: {}, subject: {}, details: {}, workspace_id: {} } },
+}));
 
 import { writeOperatorAudit } from './operator-audit';
 
