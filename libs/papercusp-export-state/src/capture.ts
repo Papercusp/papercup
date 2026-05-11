@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { ensureRequiredForCapture } from './binaries';
 import {
   newSnapshotId,
+  SNAPSHOT_SCHEMA_VERSION,
   validateSnapshotManifest,
   type SnapshotManifest,
 } from './manifest';
@@ -109,7 +110,7 @@ export async function capture(req: CaptureRequest): Promise<CaptureResult> {
     const manifestFiles = await buildFileEntries(allStaged);
 
     const manifest: SnapshotManifest = {
-      schemaVersion: 1,
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION,
       kind: 'snapshot',
       id,
       name: req.name,
