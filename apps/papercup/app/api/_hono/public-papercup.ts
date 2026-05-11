@@ -11,7 +11,7 @@
 import { Hono } from 'hono';
 import { tmpdir } from 'node:os';
 import { capLog, capBody, scrub, scrubFreeText } from './public-sanitize';
-import { runClaudeChat } from '@restart/papercup-shared/agent';
+import { runAgentChat } from '@restart/papercup-shared/agent';
 
 export const publicPapercup = new Hono();
 
@@ -679,7 +679,7 @@ ${context}`;
 
       let doneSent = false;
       try {
-        for await (const ev of runClaudeChat({
+        for await (const ev of runAgentChat({
           promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
           cwd: tmpdir(),
           model: 'claude-haiku-4-5',
