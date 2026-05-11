@@ -30,7 +30,10 @@
  * release the timer.
  */
 import { existsSync } from 'node:fs';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, generated } from '@restart/db-org';
+import { and, eq } from 'drizzle-orm';
+
+const hl = generated.harness_lanesInHarness_shared;
 import { loadHarnessRegistry } from './harness-registry';
 import {
   ensureHarnessStatusTable,
@@ -118,16 +121,16 @@ async function sweepHarnessLanes(): Promise<void> {
   // Two-step: read lanes, decide which to drop, then DELETE the survivors.
   // Doing the PID check inline in SQL is impossible; we have to read.
   try {
-    const rows = await sql<{
-      harness_slug: string;
-      phase: string;
-      role: string;
-      pid: number | null;
-      started_at: string;
-    }[]>`
-      SELECT harness_slug, phase, role, pid, started_at
-        FROM harness_shared.harness_lanes
-    `;
+    const { db } = getOrgPg();
+    const rows = await db
+      .select({
+        harness_slug: hl.harness_slug,
+        phase: hl.phase,
+        role: hl.role,
+        pid: hl.pid,
+        started_at: hl.started_at,
+      })
+      .from(hl);
     for (const r of rows) {
       const startedAt = Number(r.started_at);
       const pidPresent = r.pid != null;
@@ -138,12 +141,9 @@ async function sweepHarnessLanes(): Promise<void> {
       const ageStale = !pidPresent
         && (!Number.isFinite(startedAt) || startedAt < cutoff);
       if (!pidGone && !ageStale) continue;
-      await sql`
-        DELETE FROM harness_shared.harness_lanes
-         WHERE harness_slug = ${r.harness_slug}
-           AND phase = ${r.phase}
-           AND role = ${r.role}
-      `;
+      await db
+        .delete(hl)
+        .where(and(eq(hl.harness_slug, r.harness_slug), eq(hl.phase, r.phase), eq(hl.role, r.role)));
     }
   } catch (e) {
     console.warn('[harness-status-sweep] lane sweep failed:', (e as Error)?.message ?? e);
