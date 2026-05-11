@@ -346,7 +346,40 @@ const handler = createMcpHandler(
           sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
         })?.sendNotification;
 
-        // 1. Legacy built-in tool? Use existing dispatch with bearer auth.
+        // Dispatch priority:
+        //   1. Projected dispatcher when a spawn ctx is present (per-spawn
+        //      URL OR ?superuser=1 + bearer). This is the path that
+        //      honors isSuperuser bypass + role allowlist + per-window
+        //      quota. Every defineTool() entry is in the projected
+        //      registry, so this covers all first-party tools too.
+        //   2. Legacy bearer-only dispatch ONLY when no spawn ctx — e.g.
+        //      in-process callers or one-off bearer-authed hits that
+        //      don't supply URL params.
+        //   3. Unknown.
+        //
+        // Prior to 2026-05-11 the order was reversed: the legacy bearer
+        // dispatch ran first for anything in getCatalog(), which made
+        // ?superuser=1 fail with `invalid_bearer` for ~24 first-party
+        // tools (harness:*, tasks:*, messages:*, intel:*, features:*,
+        // papercusp:list_workspaces, …) because the superuser token
+        // isn't a registered principal. See docs/endpoint-system/
+        // superuser-mode.mdx — the bypass logic lives in
+        // dispatch-projected.ts, never in dispatch().
+        const projected = lookupByMcpName(toolName);
+        const spawn = tryBuildSpawnContext(extra);
+        if (projected && spawn) {
+          const ctx = await buildMcpToolContext(spawn, progressToken, sendNotification);
+          const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
+          if (!r.ok) {
+            return {
+              isError: true,
+              content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
+            };
+          }
+          return { content: r.result!.content as never };
+        }
+
+        // Legacy bearer-only fallback (no spawn ctx supplied).
         const builtin = getCatalog().find((t) => t.name === toolName);
         if (builtin) {
           const bearer = bearerFromExtra(extra);
@@ -368,31 +401,18 @@ const handler = createMcpHandler(
           return { content };
         }
 
-        // 2. Projected tool? Dispatch via the unified registry.
-        const projected = lookupByMcpName(toolName);
-        if (projected) {
-          const spawn = tryBuildSpawnContext(extra);
-          if (!spawn) {
-            return {
-              isError: true,
-              content: [{
-                type: 'text' as const,
-                text: 'invalid_request_context: projected tool calls require harness/workspace/role/run/spawn URL query params',
-              }],
-            };
-          }
-          const ctx = await buildMcpToolContext(spawn, progressToken, sendNotification);
-          const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
-          if (!r.ok) {
-            return {
-              isError: true,
-              content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
-            };
-          }
-          return { content: r.result!.content as never };
+        // Projected tool exists but caller didn't supply a spawn ctx —
+        // tell them what's missing instead of falling through to 'unknown'.
+        if (projected && !spawn) {
+          return {
+            isError: true,
+            content: [{
+              type: 'text' as const,
+              text: 'invalid_request_context: projected tool calls require harness/workspace/role/run/spawn URL query params, or ?superuser=1 + bearer',
+            }],
+          };
         }
 
-        // 3. Unknown.
         return {
           isError: true,
           content: [{ type: 'text' as const, text: `unknown_tool: no tool named "${toolName}"` }],
