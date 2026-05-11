@@ -254,6 +254,46 @@ app.get('/rest-query', async (c) => {
     return c.json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
 });
+// ── Phone-side: redeem pair token for a long-lived device JWT ───────────
+// Unauthenticated; consumes a one-time pair_token minted by the desktop UI.
+// MUST stay above the deviceAuth() middleware below.
+app.post('/pair', async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const parsed = z.object({ pairToken: z.string().min(1) }).safeParse(body);
+  if (!parsed.success) return c.json({ error: 'invalid_body' }, 400);
+
+  const pending = await consumePairToken(parsed.data.pairToken);
+  if (!pending) return c.json({ error: 'invalid_or_expired_token' }, 401);
+
+  const deviceId = newDeviceId();
+  const deviceToken = signDeviceToken({
+    sub: deviceId,
+    workspace_id: pending.workspaceId,
+    device_kind: 'mobile',
+    user_email: pending.userEmail,
+  });
+
+  await insertDevice({
+    deviceId,
+    userEmail: pending.userEmail ?? 'unknown@local',
+    workspaceId: pending.workspaceId,
+  });
+
+  // TODO: mint a Defguard enrollment token via Defguard's gRPC/REST API
+  //       and return it; phone uses it to join the mesh. For v1 we let
+  //       the user complete Defguard enrollment manually via its own URL.
+  const defguardEnrollmentUrl =
+    process.env.DEFGUARD_ENROLLMENT_URL ?? 'https://mesh.papercuspai.com/enroll';
+
+  return c.json({
+    deviceToken,
+    deviceId,
+    desktopHost: pending.desktopHost,
+    workspaceId: pending.workspaceId,
+    defguardEnrollmentUrl,
+  });
+});
+
 // ── Anything below requires bearer token ────────────────────────────────
 app.use('/*', deviceAuth());
 
