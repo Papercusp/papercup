@@ -1,10 +1,20 @@
 /**
  * List tasks across the workspace, optionally filtered by status, goal,
  * or harness. Summary returns id + title + status; full returns the row.
+ *
+ * Typed via `schemaOf(harness_features_consolidated).select` — response
+ * row shape matches the column definition; no hand-typed Record.
  */
 
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
+
+const features = generated.harness_features_consolidatedInHarness_shared;
+const FeatureSelect = schemaOf(features).select;
+type FeatureRow = z.infer<typeof FeatureSelect>;
 
 export default defineTool({
   name: 'tasks:list',
@@ -18,24 +28,47 @@ export default defineTool({
     cursor: z.string().optional(),
   }),
   async handler(args, ctx) {
-    // Tasks live in per-harness schemas (harness_<slug>.tasks). For a
-    // workspace-wide list, query the consolidated features table which
-    // mirrors them. For a harness-specific query, use the per-harness
-    // table directly via the harness_features_consolidated table
-    // (filtered by harness_slug).
-    const tagFilter = args.harnessSlug ? args.harnessSlug : null;
-    const statusFilter = args.status ?? null;
+    const txDb = drizzle(ctx.tx);
+    const preds = [
+      args.harnessSlug ? eq(features.harness_slug, args.harnessSlug) : undefined,
+      args.status ? eq(features.status, args.status) : undefined,
+      args.goalId ? eq(features.goal_id, args.goalId) : undefined,
+    ].filter((p): p is NonNullable<typeof p> => p !== undefined);
 
-    const rows = await ctx.tx<Array<Record<string, unknown>>>`
-      SELECT harness_slug, feature_id, title, summary, status, updated_ts,
-             attempts, kind, project_id, expected_cost_cents, goal_id
-        FROM harness_shared.harness_features_consolidated
-       WHERE (${tagFilter}::text IS NULL OR harness_slug = ${tagFilter})
-         AND (${statusFilter}::text IS NULL OR status = ${statusFilter})
-         AND (${args.goalId ?? null}::text IS NULL OR goal_id = ${args.goalId ?? null})
-       ORDER BY updated_ts DESC
-       LIMIT ${args.limit}
-    `;
+    const rows = (await txDb
+      .select({
+        harness_slug: features.harness_slug,
+        feature_id: features.feature_id,
+        title: features.title,
+        summary: features.summary,
+        status: features.status,
+        updated_ts: features.updated_ts,
+        attempts: features.attempts,
+        kind: features.kind,
+        project_id: features.project_id,
+        expected_cost_cents: features.expected_cost_cents,
+        goal_id: features.goal_id,
+      })
+      .from(features)
+      .where(preds.length ? and(...preds) : undefined)
+      .orderBy(desc(features.updated_ts))
+      .limit(args.limit)) as Array<
+      Pick<
+        FeatureRow,
+        | 'harness_slug'
+        | 'feature_id'
+        | 'title'
+        | 'summary'
+        | 'status'
+        | 'updated_ts'
+        | 'attempts'
+        | 'kind'
+        | 'project_id'
+        | 'expected_cost_cents'
+        | 'goal_id'
+      >
+    >;
+
     if (args.detail === 'summary') {
       return {
         data: rows.map((r) => ({

@@ -3,10 +3,20 @@
  *
  * Summary returns slug + status + name + last activity. Full returns
  * the entire `harness_shared.projects` row plus aggregate feature counts.
+ *
+ * Typed via `schemaOf(projects).select`.
  */
 
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { count, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
+
+const projects = generated.projectsInHarness_shared;
+const features = generated.harness_features_consolidatedInHarness_shared;
+const ProjectSelect = schemaOf(projects).select;
+type ProjectRow = z.infer<typeof ProjectSelect>;
 
 export default defineTool({
   name: 'harness:get',
@@ -16,12 +26,12 @@ export default defineTool({
     detail: z.enum(['summary', 'full']).default('summary'),
   }),
   async handler(args, ctx) {
-    const rows = await ctx.tx<Array<Record<string, unknown>>>`
-      SELECT *
-        FROM harness_shared.projects
-       WHERE slug = ${args.slug}
-       LIMIT 1
-    `;
+    const txDb = drizzle(ctx.tx);
+    const rows = (await txDb
+      .select()
+      .from(projects)
+      .where(eq(projects.slug, args.slug))
+      .limit(1)) as ProjectRow[];
     if (!rows.length) {
       return { data: null, degraded: true, degradedReasons: [`harness ${args.slug} not found`] };
     }
@@ -36,15 +46,15 @@ export default defineTool({
         },
       };
     }
-    // Full: include feature counts by status.
-    const counts = await ctx.tx<Array<{ status: string; n: bigint }>>`
-      SELECT status, COUNT(*)::bigint AS n
-        FROM harness_shared.harness_features_consolidated
-       WHERE harness_slug = ${args.slug}
-       GROUP BY status
-    `;
+    const counts = await txDb
+      .select({ status: features.status, n: count() })
+      .from(features)
+      .where(eq(features.harness_slug, args.slug))
+      .groupBy(features.status);
     const featureCounts: Record<string, number> = {};
-    for (const c of counts) featureCounts[c.status] = Number(c.n);
+    for (const c of counts) {
+      if (c.status != null) featureCounts[c.status] = Number(c.n);
+    }
     return { data: { ...row, featureCounts } };
   },
 });

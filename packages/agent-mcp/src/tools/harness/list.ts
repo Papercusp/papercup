@@ -4,10 +4,19 @@
  * Returns slug, status, and last-activity timestamp for each. Use to
  * answer "what harnesses do I have?" or to find a slug before calling
  * harness:get / harness:status.
+ *
+ * Typed via `schemaOf(projects).select`.
  */
 
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { desc } from 'drizzle-orm';
 import { z } from 'zod';
+import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
+
+const projects = generated.projectsInHarness_shared;
+const ProjectSelect = schemaOf(projects).select;
+type ProjectRow = z.infer<typeof ProjectSelect>;
 
 export default defineTool({
   name: 'harness:list',
@@ -18,18 +27,19 @@ export default defineTool({
     cursor: z.string().optional(),
   }),
   async handler(args, ctx) {
-    const rows = await ctx.tx<
-      Array<{ slug: string; name: string; status: string; updated_ts: number }>
-    >`
-      SELECT slug, name, status, updated_ts
-        FROM harness_shared.projects
-       ORDER BY updated_ts DESC
-       LIMIT ${args.limit}
-    `;
+    const txDb = drizzle(ctx.tx);
+    const rows = (await txDb
+      .select({
+        slug: projects.slug,
+        name: projects.name,
+        status: projects.status,
+        updated_ts: projects.updated_ts,
+      })
+      .from(projects)
+      .orderBy(desc(projects.updated_ts))
+      .limit(args.limit)) as Array<Pick<ProjectRow, 'slug' | 'name' | 'status' | 'updated_ts'>>;
     if (args.detail === 'summary') {
-      return {
-        data: rows.map((r) => ({ slug: r.slug, status: r.status })),
-      };
+      return { data: rows.map((r) => ({ slug: r.slug, status: r.status })) };
     }
     return { data: rows };
   },

@@ -1,10 +1,19 @@
 /**
  * Get a single task by (harnessSlug, id). Summary returns id+title+status;
  * full returns the row.
+ *
+ * Typed via `schemaOf(harness_features_consolidated).select`.
  */
 
+import { drizzle } from 'drizzle-orm/postgres-js';
+import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
+
+const features = generated.harness_features_consolidatedInHarness_shared;
+const FeatureSelect = schemaOf(features).select;
+type FeatureRow = z.infer<typeof FeatureSelect>;
 
 export default defineTool({
   name: 'tasks:get',
@@ -15,12 +24,12 @@ export default defineTool({
     detail: z.enum(['summary', 'full']).default('summary'),
   }),
   async handler(args, ctx) {
-    const rows = await ctx.tx<Array<Record<string, unknown>>>`
-      SELECT *
-        FROM harness_shared.harness_features_consolidated
-       WHERE harness_slug = ${args.harnessSlug} AND feature_id = ${args.id}
-       LIMIT 1
-    `;
+    const txDb = drizzle(ctx.tx);
+    const rows = (await txDb
+      .select()
+      .from(features)
+      .where(and(eq(features.harness_slug, args.harnessSlug), eq(features.feature_id, args.id)))
+      .limit(1)) as FeatureRow[];
     if (!rows.length) {
       return {
         data: null,
