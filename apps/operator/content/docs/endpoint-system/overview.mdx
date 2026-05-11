@@ -32,7 +32,7 @@ The hard part isn't writing the MCP wrapper. The hard part is pulling a function
 ## What this is not
 
 - Not a replacement for SSE chat, WebSocket voice, or anything else that holds a long-lived bidirectional connection. Those stay on dedicated routes; the endpoint system is for request → response (with optional streamed progress).
-- Not a way to expose your dashboard to the public internet. The trust model is **loopback bind + URL-baked spawn context**, suitable for local dev + Tauri desktop. Off-loopback exposure needs HMAC-signed URL params or a real principal/auth layer first.
+- Not a way to expose your dashboard to the public internet. The trust model is **loopback bind + HMAC-signed per-spawn URL params** (see [Spawn-URL signing](/docs/endpoint-system/spawn-signing)), suitable for local dev + Tauri desktop. Off-loopback exposure needs a real principal/auth layer in front, since same-UID code can still read the signing key from PG.
 - Not a generic RPC framework. The contract is narrow on purpose: `(input, ctx) => ToolResult`. Trying to make it accommodate exotic shapes (callbacks, multi-response, file uploads >5MB) defeats the point of having one function as truth.
 
 ## Where to read next
@@ -41,6 +41,7 @@ The hard part isn't writing the MCP wrapper. The hard part is pulling a function
 - [Writing a tool](/docs/endpoint-system/writing-a-tool) — the recipe for built-ins and plugins, end to end
 - [Transports](/docs/endpoint-system/transports) — how MCP, HTTP, and in-process callers all reach the same function
 - [Gating](/docs/endpoint-system/gating) — auth, capabilities, roles, quotas — what blocks what when
+- [Spawn-URL signing](/docs/endpoint-system/spawn-signing) — HMAC verification of the seven per-spawn URL params; what it defends against and what it doesn't
 - [Telemetry](/docs/endpoint-system/telemetry) — `tool_invocations` schema and how to read it
 - [Operations](/docs/endpoint-system/operations) — host refresh, hot reload, common failure modes
 - [Reference](/docs/endpoint-system/reference) — manifest schema, error codes, file map
