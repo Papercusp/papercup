@@ -380,6 +380,119 @@ app.get('/runtime-config', async (c) => {
   });
 });
 
+// ── Backfill of /api/mobile routes mobile clients hit but Hono didn't
+// have. Added 2026-05-11 by mobile agent to unblock testing while
+// backend agent ports the same shape into their roadmap. Wire shapes
+// mirror papercup-rust-server/openapi.yaml. All gated by deviceAuth.
+
+app.get('/workspaces', async (c) => {
+  const claims = c.get('deviceClaims');
+  const reg = readRegistry();
+  return c.json({
+    workspaces: reg.workspaces.map((w) => ({
+      id: w.id,
+      label: w.name,
+      current: w.id === claims.workspace_id,
+    })),
+  });
+});
+
+// Phone-facing aliases for the existing /devices routes — the Rust
+// client uses '/desktop/devices' to match the openapi spec.
+app.get('/desktop/devices', async (c) => {
+  const claims = c.get('deviceClaims');
+  const rows = await listDevices(claims.workspace_id);
+  return c.json({
+    devices: rows.map((d) => ({
+      device_id: d.device_id,
+      device_label: d.device_label,
+      paired_at: d.paired_at,
+      last_seen: d.last_seen,
+      workspace_id: d.workspace_id,
+    })),
+  });
+});
+
+app.delete('/desktop/devices/:deviceId', async (c) => {
+  const claims = c.get('deviceClaims');
+  await revokeDevice(c.req.param('deviceId'), claims.workspace_id);
+  return c.json({ ok: true });
+});
+
+// Voice lease — only one device listens at a time. Phone pre-empts.
+app.get('/voice-lease', async (c) => {
+  const claims = c.get('deviceClaims');
+  const lease = await readVoiceLease(claims.workspace_id);
+  return c.json({ lease });
+});
+
+app.post('/voice-lease/claim', async (c) => {
+  const claims = c.get('deviceClaims');
+  await claimVoiceLease({
+    workspaceId: claims.workspace_id,
+    ownerKind: 'mobile',
+    ownerId: claims.sub,
+  });
+  return c.json({ ok: true });
+});
+
+app.post('/voice-lease/heartbeat', async (c) => {
+  const claims = c.get('deviceClaims');
+  await claimVoiceLease({
+    workspaceId: claims.workspace_id,
+    ownerKind: 'mobile',
+    ownerId: claims.sub,
+  });
+  return c.json({ ok: true });
+});
+
+app.delete('/voice-lease', async (c) => {
+  const claims = c.get('deviceClaims');
+  await releaseVoiceLease({
+    workspaceId: claims.workspace_id,
+    ownerId: claims.sub,
+  });
+  return c.json({ ok: true });
+});
+
+// Activity tab feeds.
+app.get('/notifications/recent', async (c) => {
+  const claims = c.get('deviceClaims');
+  const limit = Math.min(Number(c.req.query('limit') ?? '50') || 50, 200);
+  const rows = await recentToasts(claims.workspace_id, limit);
+  return c.json({ toasts: rows });
+});
+
+app.get('/actions/recent', async (c) => {
+  const claims = c.get('deviceClaims');
+  const limit = Math.min(Number(c.req.query('limit') ?? '50') || 50, 200);
+  const rows = await recentAuditEntries(claims.workspace_id, limit);
+  return c.json({ entries: rows });
+});
+
+// Global pause flag — get / set / clear.
+app.get('/operator/pause', async (_c) => {
+  return _c.json(await getPauseInfo());
+});
+
+app.post('/operator/pause', async (c) => {
+  const claims = c.get('deviceClaims');
+  await setPaused(claims.user_email ?? 'mobile');
+  return c.json(await getPauseInfo());
+});
+
+app.delete('/operator/pause', async (c) => {
+  await setResumed();
+  return c.json(await getPauseInfo());
+});
+
+// Heartbeat — bumps last_seen so the desktop "active 3m ago" badge stays green.
+app.post('/heartbeat', async (c) => {
+  const claims = c.get('deviceClaims');
+  await touchLastSeen(claims.sub, claims.workspace_id);
+  return c.json({ ok: true });
+});
+
 // ── Operator panel surface for mobile ──────────────────────────────────
 //
 // Mobile reads operator-suggestions over plain HTTP (vs Zero) because
