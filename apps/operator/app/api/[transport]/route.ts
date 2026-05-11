@@ -41,7 +41,7 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
-import { getOrgPg } from '@restart/db-org';
+import { getOrgPg, withWorkspace } from '@restart/db-org';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
 
@@ -497,15 +497,44 @@ const handler = createMcpHandler(
         }
 
         if (projected && spawnRes.kind === 'ok') {
-          const ctx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification);
-          const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
-          if (!r.ok) {
-            return {
-              isError: true,
-              content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
-            };
+          const baseCtx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification);
+          // Legacy first-party tools (defineTool with default
+          // requirePrincipal=true) hard-require ctx.principal + ctx.tx
+          // in their projected wrapper (see registerLegacyAsProjected
+          // in packages/agent-mcp/src/define-tool.ts:198). For
+          // ?superuser=1 calls with a concrete workspace, synthesize a
+          // system principal and open a workspace tx so those tools
+          // run. workspaceId='*' (no workspace chosen) still fails
+          // those tools — caller must pass ?workspace=X.
+          const needsTx =
+            spawnRes.ctx.isSuperuser &&
+            spawnRes.ctx.workspaceId &&
+            spawnRes.ctx.workspaceId !== '*';
+          const runDispatch = async (ctx: UnifiedToolContext) => {
+            const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
+            if (!r.ok) {
+              return {
+                isError: true,
+                content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
+              };
+            }
+            return { content: r.result!.content as never };
+          };
+          if (needsTx) {
+            return await withWorkspace(spawnRes.ctx.workspaceId, async (tx) => {
+              const ctx: UnifiedToolContext = {
+                ...baseCtx,
+                tx,
+                principal: {
+                  slug: 'system:operator',
+                  workspaceId: spawnRes.ctx.workspaceId,
+                  capabilities: new Set<string>(),
+                },
+              };
+              return await runDispatch(ctx);
+            });
           }
-          return { content: r.result!.content as never };
+          return await runDispatch(baseCtx);
         }
 
         // Legacy bearer-only fallback (no spawn ctx supplied).
