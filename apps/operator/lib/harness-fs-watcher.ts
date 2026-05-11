@@ -857,14 +857,15 @@ async function replaceOrgDepartments(orgRootPath: string): Promise<void> {
     raw = await fs.readFile(path, 'utf8');
     mtimeMs = statSync(path).mtimeMs;
   } catch {
-    const { sql } = getOrgPg();
-    await sql`DELETE FROM harness_shared.org_departments WHERE org_id = ${DEFAULT_ORG_ID}`;
+    const { db } = getOrgPg();
+    await db.delete(odept).where(eq(odept.org_id, DEFAULT_ORG_ID));
     return;
   }
   let parsed: { departments?: Array<Record<string, unknown>> } = {};
   try { parsed = JSON.parse(raw); } catch { return; }
   const depts = Array.isArray(parsed.departments) ? parsed.departments : [];
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { notInArray } = await import('drizzle-orm');
   const ws = activeWorkspaceId();
   const seenSlugs = new Set<string>();
   for (const d of depts) {
@@ -877,31 +878,38 @@ async function replaceOrgDepartments(orgRootPath: string): Promise<void> {
     const mandate = typeof d.mandate === 'string' ? d.mandate : '';
     const inboxKinds = Array.isArray(d.inboxKinds) ? d.inboxKinds : Array.isArray(d.inbox_kinds) ? d.inbox_kinds : [];
     const outboxKinds = Array.isArray(d.outboxKinds) ? d.outboxKinds : Array.isArray(d.outbox_kinds) ? d.outbox_kinds : [];
-    await sql`
-      INSERT INTO harness_shared.org_departments
-        (org_id, dept_slug, harness_slug, name, mandate, inbox_kinds, outbox_kinds, payload, mtime_ms, workspace_id)
-      VALUES (
-        ${DEFAULT_ORG_ID}, ${deptSlug}, ${harnessSlug}, ${name}, ${mandate},
-        ${JSON.stringify(inboxKinds)}::jsonb, ${JSON.stringify(outboxKinds)}::jsonb,
-        ${JSON.stringify(d)}::jsonb, ${Math.floor(mtimeMs)}, ${ws}
-      )
-      ON CONFLICT (org_id, dept_slug) DO UPDATE
-        SET harness_slug = EXCLUDED.harness_slug,
-            name = EXCLUDED.name,
-            mandate = EXCLUDED.mandate,
-            inbox_kinds = EXCLUDED.inbox_kinds,
-            outbox_kinds = EXCLUDED.outbox_kinds,
-            payload = EXCLUDED.payload,
-            mtime_ms = EXCLUDED.mtime_ms,
-            workspace_id = EXCLUDED.workspace_id
-    `;
+    await db
+      .insert(odept)
+      .values({
+        org_id: DEFAULT_ORG_ID,
+        dept_slug: deptSlug,
+        harness_slug: harnessSlug,
+        name,
+        mandate,
+        inbox_kinds: inboxKinds as any,
+        outbox_kinds: outboxKinds as any,
+        payload: d as any,
+        mtime_ms: Math.floor(mtimeMs),
+        workspace_id: ws,
+      })
+      .onConflictDoUpdate({
+        target: [odept.org_id, odept.dept_slug],
+        set: {
+          harness_slug: dsql`EXCLUDED.harness_slug`,
+          name: dsql`EXCLUDED.name`,
+          mandate: dsql`EXCLUDED.mandate`,
+          inbox_kinds: dsql`EXCLUDED.inbox_kinds`,
+          outbox_kinds: dsql`EXCLUDED.outbox_kinds`,
+          payload: dsql`EXCLUDED.payload`,
+          mtime_ms: dsql`EXCLUDED.mtime_ms`,
+          workspace_id: dsql`EXCLUDED.workspace_id`,
+        },
+      });
   }
   if (seenSlugs.size > 0) {
-    await sql`
-      DELETE FROM harness_shared.org_departments
-       WHERE org_id = ${DEFAULT_ORG_ID}
-         AND NOT (dept_slug = ANY(${Array.from(seenSlugs)}::text[]))
-    `;
+    await db
+      .delete(odept)
+      .where(and(eq(odept.org_id, DEFAULT_ORG_ID), notInArray(odept.dept_slug, Array.from(seenSlugs))));
   }
 }
 
@@ -915,8 +923,8 @@ async function replaceOrgProjects(orgRootPath: string): Promise<void> {
     raw = await fs.readFile(path, 'utf8');
     mtimeMs = statSync(path).mtimeMs;
   } catch {
-    const { sql } = getOrgPg();
-    await sql`DELETE FROM harness_shared.org_projects WHERE org_id = ${DEFAULT_ORG_ID}`;
+    const { db } = getOrgPg();
+    await db.delete(oproj).where(eq(oproj.org_id, DEFAULT_ORG_ID));
     return;
   }
   let parsed: { projects?: Array<Record<string, unknown>> } | Array<Record<string, unknown>> = [];
@@ -925,7 +933,8 @@ async function replaceOrgProjects(orgRootPath: string): Promise<void> {
     : Array.isArray((parsed as { projects?: unknown }).projects)
       ? ((parsed as { projects: Array<Record<string, unknown>> }).projects)
       : [];
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { notInArray } = await import('drizzle-orm');
   const ws = activeWorkspaceId();
   const seenIds = new Set<string>();
   for (const p of projects) {
@@ -936,29 +945,36 @@ async function replaceOrgProjects(orgRootPath: string): Promise<void> {
     const name = typeof p.name === 'string' ? p.name : projectId;
     const vertical = typeof p.vertical === 'string' ? p.vertical : '';
     const status = typeof p.status === 'string' ? p.status : '';
-    await sql`
-      INSERT INTO harness_shared.org_projects
-        (org_id, project_id, slug, name, vertical, status, payload, mtime_ms, workspace_id)
-      VALUES (
-        ${DEFAULT_ORG_ID}, ${projectId}, ${slug}, ${name}, ${vertical}, ${status},
-        ${JSON.stringify(p)}::jsonb, ${Math.floor(mtimeMs)}, ${ws}
-      )
-      ON CONFLICT (org_id, project_id) DO UPDATE
-        SET slug = EXCLUDED.slug,
-            name = EXCLUDED.name,
-            vertical = EXCLUDED.vertical,
-            status = EXCLUDED.status,
-            payload = EXCLUDED.payload,
-            mtime_ms = EXCLUDED.mtime_ms,
-            workspace_id = EXCLUDED.workspace_id
-    `;
+    await db
+      .insert(oproj)
+      .values({
+        org_id: DEFAULT_ORG_ID,
+        project_id: projectId,
+        slug,
+        name,
+        vertical,
+        status,
+        payload: p as any,
+        mtime_ms: Math.floor(mtimeMs),
+        workspace_id: ws,
+      })
+      .onConflictDoUpdate({
+        target: [oproj.org_id, oproj.project_id],
+        set: {
+          slug: dsql`EXCLUDED.slug`,
+          name: dsql`EXCLUDED.name`,
+          vertical: dsql`EXCLUDED.vertical`,
+          status: dsql`EXCLUDED.status`,
+          payload: dsql`EXCLUDED.payload`,
+          mtime_ms: dsql`EXCLUDED.mtime_ms`,
+          workspace_id: dsql`EXCLUDED.workspace_id`,
+        },
+      });
   }
   if (seenIds.size > 0) {
-    await sql`
-      DELETE FROM harness_shared.org_projects
-       WHERE org_id = ${DEFAULT_ORG_ID}
-         AND NOT (project_id = ANY(${Array.from(seenIds)}::text[]))
-    `;
+    await db
+      .delete(oproj)
+      .where(and(eq(oproj.org_id, DEFAULT_ORG_ID), notInArray(oproj.project_id, Array.from(seenIds))));
   }
 }
 
