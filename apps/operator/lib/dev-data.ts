@@ -591,6 +591,7 @@ export interface SessionInvocation {
   duration_ms: number | null;
   status: string;
   error_message: string | null;
+  args_json: unknown;
 }
 
 export interface SessionChildSpawn {
@@ -649,9 +650,10 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
     duration_ms: number | null;
     status: string;
     error_message: string | null;
+    args_json: unknown;
   };
   const invocations = (await sql`
-    SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message
+    SELECT id::text, tool_name, invoked_at, duration_ms, status, error_message, args_json
     FROM harness_shared.tool_invocations
     WHERE spawn_id = ${spawnId}
     ORDER BY invoked_at ASC

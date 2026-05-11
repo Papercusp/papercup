@@ -20,6 +20,8 @@ export interface RerunContext {
   role?: string;
   run?: string;
   spawn?: string;
+  /** Pre-fill the API tab form with these args (post-zod-parse JSON). */
+  args?: Record<string, unknown>;
 }
 
 const ApiTab = dynamic(() => import('./_components/ApiTab'), { ssr: false });

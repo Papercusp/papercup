@@ -63,8 +63,8 @@ const HOST_EXTRAS: HttpToolHostExtras = {
             `INSERT INTO harness_shared.tool_invocations
                (workspace_id, harness_slug, plugin_name, tool_name, role,
                 feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
-                window_key, duration_ms, status, output_ref, output_size, error_message)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+                window_key, duration_ms, status, output_ref, output_size, error_message, args_json)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)`,
             [
               input.ctx.workspaceId ?? '',
               input.ctx.harnessSlug ?? '',
@@ -82,6 +82,18 @@ const HOST_EXTRAS: HttpToolHostExtras = {
               input.outputRef ?? null,
               input.outputSize ?? null,
               input.errorMessage ?? null,
+              (() => {
+                if (input.args === undefined || input.args === null) return null;
+                try {
+                  const s = JSON.stringify(input.args);
+                  if (s.length > 32768) {
+                    return JSON.stringify({ _truncated: true, _size: s.length });
+                  }
+                  return s;
+                } catch {
+                  return null;
+                }
+              })(),
             ],
           );
         });

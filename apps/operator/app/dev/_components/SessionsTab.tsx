@@ -36,6 +36,7 @@ interface Detail {
     duration_ms: number | null;
     status: string;
     error_message: string | null;
+    args_json: unknown;
   }>;
   children: Array<{
     spawn_id: string;
@@ -329,6 +330,10 @@ function DetailPanel({
                           role: entry.role ?? 'architect',
                           run: entry.run_id ?? 'dev-page',
                           spawn: entry.spawn_id,
+                          args:
+                            i.args_json && typeof i.args_json === 'object' && !('_truncated' in (i.args_json as Record<string, unknown>))
+                              ? (i.args_json as Record<string, unknown>)
+                              : undefined,
                         })
                       }
                     >

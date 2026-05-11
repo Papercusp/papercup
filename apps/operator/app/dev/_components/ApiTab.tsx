@@ -99,6 +99,7 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
       if (rerun.role) setCtxRole(rerun.role as never);
       if (rerun.run) setCtxRun(rerun.run);
       if (rerun.spawn) setCtxSpawn(rerun.spawn);
+      if (rerun.args) setArgs(rerun.args);
     }
     onRerunConsumed();
     // eslint-disable-next-line react-hooks/exhaustive-deps

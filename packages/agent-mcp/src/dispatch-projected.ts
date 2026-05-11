@@ -80,6 +80,13 @@ export interface DispatchProjectedDeps {
     outputRef?: string | null;
     outputSize?: number | null;
     errorMessage?: string | null;
+    /**
+     * The validated arguments the tool was called with (post-zod parse).
+     * Used by the /dev Sessions drilldown to enable exact-replay reruns.
+     * Hosts may truncate or omit per their own policy; the dispatcher
+     * passes the parsed input verbatim.
+     */
+    args?: unknown;
   }): Promise<void>;
 }
 
@@ -109,6 +116,7 @@ export async function dispatchProjectedTool(
           durationMs: Date.now() - startedAt,
           status: 'role-not-allowed',
           errorMessage: `role "${ctx.role}" not in allowlist`,
+          args: input,
         });
       } catch { /* best-effort */ }
     }
@@ -138,6 +146,7 @@ export async function dispatchProjectedTool(
               durationMs: Date.now() - startedAt,
               status: 'role-not-allowed',
               errorMessage: `principal "${ctx.principal.slug}" lacks capability "${cap}"`,
+              args: input,
             });
           } catch { /* best-effort */ }
         }
@@ -173,6 +182,7 @@ export async function dispatchProjectedTool(
                 durationMs: Date.now() - startedAt,
                 status: 'quota-exceeded',
                 errorMessage: `quota ${state.count}/${limit} for role "${role}" in window "${windowKey}"`,
+                args: input,
               });
             } catch { /* best-effort */ }
           }
@@ -220,6 +230,7 @@ export async function dispatchProjectedTool(
           // declare the path here). Fall back to inline content size.
           outputSize: result.outputSize ?? JSON.stringify(result.content).length,
           ...(result.outputRef ? { outputRef: result.outputRef } : {}),
+          args: input,
         });
       } catch { /* best-effort */ }
     }
@@ -237,6 +248,7 @@ export async function dispatchProjectedTool(
           durationMs: Date.now() - startedAt,
           status,
           errorMessage: err instanceof Error ? err.message : String(err),
+          args: input,
         });
       } catch { /* best-effort */ }
     }
