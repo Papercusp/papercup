@@ -311,3 +311,106 @@ describe('DEFAULT_DENY includes _jco/', () => {
     expect(entry?.reason).toBe('denylist:re-derivable');
   });
 });
+
+/* ───── reconcileMigrations (rev3 plan G+6 / A4 fix) ───────────────── */
+
+import { reconcileMigrations } from './manifest';
+import type { SnapshotMigrationEntry } from './manifest';
+
+const m = (filename: string, sha: string): SnapshotMigrationEntry => ({
+  filename,
+  sha256: sha.repeat(64).slice(0, 64),
+});
+
+describe('reconcileMigrations', () => {
+  it("returns 'identical' when both lists are empty", () => {
+    expect(reconcileMigrations([], [])).toEqual({ kind: 'identical' });
+  });
+
+  it("returns 'identical' when both lists match exactly", () => {
+    const xs = [m('0001-init.sql', 'a'), m('0002-add.sql', 'b')];
+    expect(reconcileMigrations(xs, [...xs])).toEqual({ kind: 'identical' });
+  });
+
+  it("returns 'extends' when installed has trailing entries snapshot lacks", () => {
+    const snapshot = [m('0001-init.sql', 'a')];
+    const installed = [m('0001-init.sql', 'a'), m('0002-add.sql', 'b'), m('0003-idx.sql', 'c')];
+    const result = reconcileMigrations(snapshot, installed);
+    expect(result.kind).toBe('extends');
+    if (result.kind === 'extends') {
+      expect(result.toRun.map((x) => x.filename)).toEqual([
+        '0002-add.sql',
+        '0003-idx.sql',
+      ]);
+    }
+  });
+
+  it("returns 'diverged' when same filename has different sha256", () => {
+    const snapshot = [m('0001-init.sql', 'a'), m('0002-add.sql', 'b')];
+    const installed = [m('0001-init.sql', 'a'), m('0002-add.sql', 'X')]; // rewritten
+    const result = reconcileMigrations(snapshot, installed);
+    expect(result.kind).toBe('diverged');
+    if (result.kind === 'diverged') {
+      expect(result.conflictingFiles).toEqual(['0002-add.sql']);
+    }
+  });
+
+  it("'diverged' wins over 'snapshot-ahead' when both apply", () => {
+    // Snapshot has file X (rewritten) AND a missing file. Conflict
+    // is the more serious failure (data integrity); report it first.
+    const snapshot = [m('0001.sql', 'a'), m('0002.sql', 'b'), m('0003.sql', 'c')];
+    const installed = [m('0001.sql', 'a'), m('0002.sql', 'X')]; // 0002 differs, 0003 missing
+    const result = reconcileMigrations(snapshot, installed);
+    expect(result.kind).toBe('diverged');
+  });
+
+  it("returns 'snapshot-ahead' when snapshot references files installed lacks", () => {
+    const snapshot = [m('0001.sql', 'a'), m('0002.sql', 'b'), m('0003.sql', 'c')];
+    const installed = [m('0001.sql', 'a')];
+    const result = reconcileMigrations(snapshot, installed);
+    expect(result.kind).toBe('snapshot-ahead');
+    if (result.kind === 'snapshot-ahead') {
+      expect(result.missing).toEqual(['0002.sql', '0003.sql']);
+    }
+  });
+
+  it("conflictingFiles list is sorted for stable output", () => {
+    const snapshot = [m('z.sql', 'a'), m('a.sql', 'b'), m('m.sql', 'c')];
+    const installed = [m('z.sql', 'X'), m('a.sql', 'Y'), m('m.sql', 'Z')];
+    const result = reconcileMigrations(snapshot, installed);
+    expect(result.kind).toBe('diverged');
+    if (result.kind === 'diverged') {
+      expect(result.conflictingFiles).toEqual(['a.sql', 'm.sql', 'z.sql']);
+    }
+  });
+
+  it("'extends' preserves installed order in toRun", () => {
+    const snapshot = [m('0001.sql', 'a')];
+    // Order intentionally weird — installed's order is preserved.
+    const installed = [
+      m('0001.sql', 'a'),
+      m('zzz-late.sql', 'z'),
+      m('aaa-also-late.sql', 'b'),
+    ];
+    const result = reconcileMigrations(snapshot, installed);
+    if (result.kind !== 'extends') throw new Error('expected extends');
+    expect(result.toRun.map((x) => x.filename)).toEqual([
+      'zzz-late.sql',
+      'aaa-also-late.sql',
+    ]);
+  });
+
+  it('snapshot containing a duplicate filename does not crash (defensive)', () => {
+    // Snapshots shouldn't have duplicate migration filenames, but if
+    // they do (corrupt data, bad capture), the function must NOT
+    // crash. Behavior: dedup via Map collapse leaves one entry per
+    // name. With unequal lengths, falls through to 'extends' with
+    // empty toRun (no trailing migrations to apply since installed
+    // is a subset of unique-snapshot-names). This isn't a meaningful
+    // restore decision — caller should reject the snapshot upstream.
+    const snapshot = [m('0001.sql', 'a'), m('0001.sql', 'b')]; // dup
+    const installed = [m('0001.sql', 'b')];
+    const result = reconcileMigrations(snapshot, installed);
+    expect(['identical', 'extends']).toContain(result.kind);
+  });
+});
