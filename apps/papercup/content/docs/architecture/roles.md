@@ -25,13 +25,14 @@ The full role count is higher when you include phase variants and the org topolo
 
 ### Core dispatch
 
-The four roles that compose the autonomous loop. If any of these is missing, the harness can't function.
+The five roles that compose the autonomous loop. If any of these is missing, the harness can't function.
 
 | Role | When it fires | Reads | Writes |
 |---|---|---|---|
 | **orchestrator** | Every iteration of the main loop | `validation-contract.md`, `harness_features` (PG), `issues.json`, `issues.md`, `supervisor-notes.md`, `pending_events` | Nothing directly — emits one decision verb (`DONE`, `NEXT_WORKER`, `NEXT_VALIDATOR`, `NEXT_ARCHITECT`, `NEXT_PROJECT_MANAGER`, `CONVERTED`, `CHECKPOINT`, `ESCALATE`) which the dispatcher acts on |
 | **scoper** | Mission start (`MODE=initial`); whenever scope expansion is run (`MODE=proposal`); after an accepted proposal merges into SPEC.md (`MODE=replan`) | `SPEC.md`, `validation-contract.md`, `harness_features` | `validation-contract.md`, `harness_features` rows, `.harness/proposals/*.md` (in proposal mode) |
 | **worker** | When the orchestrator emits `NEXT_WORKER F-XXX` | `SPEC.md`, contract, `harness_features`, `AGENTS.md` / `CLAUDE.md`, `knowledge.md`, `.harness/notes/<F>.md`, **project spec** (auto-injected when feature has `project_id`) | Code + tests in the worker's git worktree, atomic commit, `harness_features.status = 'validating'`, `worker-log.md` |
+| **synthesizer** | After workers commit, before validator runs (invoked as part of `NEXT_VALIDATOR` dispatch). Skipped when `synthesizeSingle: false` and only one worker ran. | All worker lane diffs (`git diff base..harness/<F>-lane-N`), `SPEC.md`, contract, `AGENTS.md` / `CLAUDE.md` | A single synthesis branch (`harness/<F>-synthesis`) merging the best of each lane — verbatim, edited, or rewritten as needed. Optional `.harness/synthesis-notes/<F>.md` explaining decisions. |
 | **validator** | When the orchestrator emits `NEXT_VALIDATOR F-XXX` | Claims, code, tests, worker-log.md | `harness_features.status = 'passed' | 'failing'`, `issues.md`, `pending-issues.jsonl` |
 
 ### Quality gates
@@ -105,7 +106,7 @@ When a harness runs as part of an `org` install (a parent harness coordinating m
 
 ## How a feature flows through the roles
 
-The autonomous loop has one happy path (worker → validator → done) and several branches for stuck features, scope evolution, and post-pass curation.
+The autonomous loop has one happy path (worker → synthesizer → validator → done) and several branches for stuck features, scope evolution, and post-pass curation.
 
 ![Feature lifecycle in a Papercusp coding harness — from SPEC.md through every dispatched role and back to DONE](/architecture/workflow-flow.svg)
 
@@ -119,7 +120,7 @@ The autonomous loop has one happy path (worker → validator → done) and sever
 The orchestrator runs in a fresh context every loop tick. It reads everything (queue, issues, supervisor-notes, pending_events), then emits exactly one verb. The dispatcher handles each verb:
 
 - **`NEXT_WORKER F-XXX`** — the substrate first checks `attempts`. If `attempts ≥ debugger.threshold` AND no debug note exists yet, it invokes the `debugger` first to write a hypothesis brief; then the worker runs and reads that brief. After the worker commits, the next iteration's orchestrator emits `NEXT_VALIDATOR`.
-- **`NEXT_VALIDATOR F-XXX`** — validator runs adversarially against the claims. Sets `harness_features.status` to `passed` or `failing`. On `passed`, the post-pass chain runs: optional **crosscheck** (different-model re-validation), optional **ui-qa** (browser-based verification for UI features), then **documenter** writes the per-feature doc. If the feature has a `project_id`, this also enqueues a `pm_due` event the orchestrator picks up later.
+- **`NEXT_VALIDATOR F-XXX`** — first the **synthesizer** merges all worker lane outputs into one synthesis branch (`harness/<F>-synthesis`) — picking the best version of each file across lanes, rewriting where none got it right, optionally writing a synthesis note. Then the validator runs adversarially against the synthesized branch's claims. Sets `harness_features.status` to `passed` or `failing`. On `passed`, the post-pass chain runs: optional **crosscheck** (different-model re-validation), optional **ui-qa** (browser-based verification for UI features), then **documenter** writes the per-feature doc. If the feature has a `project_id`, this also enqueues a `pm_due` event the orchestrator picks up later.
 - **`NEXT_ARCHITECT F-XXX`** — emitted for **spec-suspect** failures (the validator's complaint is about ambiguity in the claim, not an implementation bug). The architect either writes a SPEC patch as a proposal block (auto-applicable if HIGH confidence) or writes a `pending-reviews/<id>.json` for a human to answer. Code-suspect failures don't trigger the architect — they get a debugger-then-worker pass on the next iteration.
 - **`NEXT_PROJECT_MANAGER PROJ-X`** — emitted when one or more features in PROJ-X have transitioned to `passed` since the project's last spec revision. PM coalesces all queued `pm_due` events for that project into one batch invocation. It produces a three-section output (`PROJECT_MANAGER_DECISIONS` / `_SPEC` / `_SUMMARY`) recording which features it included or excluded with reasoning. The dispatcher persists the new spec to `projects.spec` and inserts a row into `project_spec_revisions`.
 - **`CONVERTED <N>`** — the orchestrator promotes `<N>` open critical/major issues from `issues.json` into new `F-FIX-NNN` features in the queue (with corresponding `VAL-FIX-NNN` stub assertions). Self-promotion of discovered work.
