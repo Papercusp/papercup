@@ -62,6 +62,9 @@ await new Promise((r) => setTimeout(r, 200));
 const after = await get('?limit=1000&reason=invalid_signature');
 check('invalid_signature row appeared', after.json.rows.length > beforeCount);
 check('newest row has reason=invalid_signature', after.json.rows[0]?.reason === 'invalid_signature');
+check('row.id is number (BigInt coerced)', typeof after.json.rows[0]?.id === 'number');
+check('row.exp_claim is number (BigInt coerced)',
+  after.json.rows[0]?.exp_claim === null || typeof after.json.rows[0]?.exp_claim === 'number');
 check('rows are ordered ts DESC', after.json.rows.every((r, i, a) =>
   i === 0 || new Date(a[i - 1].ts).getTime() >= new Date(r.ts).getTime()));
 
