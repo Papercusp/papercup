@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { spawn } from 'node:child_process';
 import { sseResponse } from '@restart/sse';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -246,43 +246,16 @@ export async function POST(req: NextRequest) {
         ];
         const claudeFound = claudePaths.find((p) => existsSync(p));
 
-        send('done', {
+        sink.done({
           ok: true,
           claudePath: claudeFound ?? null,
           meridianRoot: installRoot,
           ompPath: ompBin,
           hint: 'AI stack installed (claude + meridian + omp). Next: run `claude login` to authenticate, then start meridian (`meridian` in a terminal). Restart the app afterward.',
         });
-        controller.close();
       } catch (e: any) {
-        send('done', { ok: false, reason: String(e?.message ?? e) });
-        controller.close();
+        sink.done({ ok: false, reason: String(e?.message ?? e) });
       }
-    },
-    cancel() {
-      // Client disconnected (closed tab, navigated away, lost network).
-      // Kill the in-flight installer process tree so we don't keep
-      // writing to ~/.claude / ~/.papercusp/runtime with no UI watching.
-      // SIGTERM the negative pid to hit the whole process group (we
-      // spawned with `detached: true` for exactly this reason).
-      aborted = true;
-      if (activeChild?.pid) {
-        try {
-          process.kill(-activeChild.pid, 'SIGTERM');
-        } catch {
-          try { activeChild.kill('SIGTERM'); } catch { /* dead already */ }
-        }
-      }
-    },
-  });
-
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      ...CORS_HEADERS,
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'X-Accel-Buffering': 'no',
     },
   });
 }
