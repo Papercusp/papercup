@@ -11,22 +11,23 @@
  *   - content === '' → DELETE the row (file was unlinked)
  */
 import { NextResponse } from 'next/server';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { and, eq, sql as dsql } from 'drizzle-orm';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { notifySyncInvalidate } from '@/lib/sync-sse';
 
 const ti = generated.token_indexInHarness_shared;
 const fdn = generated.harness_feature_debug_notesInHarness_shared;
-import { activeWorkspaceId } from '@/lib/workspace-registry';
-import { notifySyncInvalidate } from '@/lib/sync-sse';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  featureId?: string;
-  content?: string;
-  mtimeMs?: number;
-}
+const BodySchema = z.object({
+  featureId: z.string().min(1),
+  content: z.string().optional().default(''),
+  mtimeMs: z.number().int().nonnegative().optional().default(() => Date.now()),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -45,14 +46,17 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try { body = (await req.json()) as RequestBody; }
+  let raw: unknown;
+  try { raw = await req.json(); }
   catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
-
-  const featureId = typeof body.featureId === 'string' ? body.featureId : '';
-  if (!featureId) return NextResponse.json({ error: 'featureId required' }, { status: 400 });
-  const content = typeof body.content === 'string' ? body.content : '';
-  const mtimeMs = typeof body.mtimeMs === 'number' ? Math.floor(body.mtimeMs) : Date.now();
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
+  }
+  const { featureId, content, mtimeMs } = parsed.data;
 
   const ws = activeWorkspaceId();
   if (content === '') {

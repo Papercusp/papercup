@@ -17,6 +17,7 @@
  */
 import { NextResponse } from 'next/server';
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -28,13 +29,13 @@ const hd = generated.harness_decisionsInHarness_shared;
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-interface RequestBody {
-  iso?: string;
-  verb?: string;
-  args?: string;
-  iteration?: number | null;
-  isGhost?: boolean;
-}
+const BodySchema = z.object({
+  iso: z.string().min(1),
+  verb: z.string().min(1),
+  args: z.string().optional().default(''),
+  iteration: z.number().int().nullable().optional().default(null),
+  isGhost: z.boolean().optional().default(false),
+});
 
 export async function POST(req: Request): Promise<Response> {
   const authHeader = req.headers.get('authorization') ?? '';
@@ -53,21 +54,17 @@ export async function POST(req: Request): Promise<Response> {
   }
   const slug = rows[0].harness_slug;
 
-  let body: RequestBody;
-  try {
-    body = (await req.json()) as RequestBody;
-  } catch {
-    return NextResponse.json({ error: 'invalid json' }, { status: 400 });
+  let raw: unknown;
+  try { raw = await req.json(); }
+  catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }
+  const parsed = BodySchema.safeParse(raw);
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'validation failed', issues: parsed.error.issues },
+      { status: 400 },
+    );
   }
-
-  const iso = typeof body.iso === 'string' ? body.iso : '';
-  const verb = typeof body.verb === 'string' ? body.verb : '';
-  if (!iso || !verb) {
-    return NextResponse.json({ error: 'iso + verb required' }, { status: 400 });
-  }
-  const args = typeof body.args === 'string' ? body.args : '';
-  const iteration = typeof body.iteration === 'number' ? body.iteration : null;
-  const isGhost = body.isGhost === true;
+  const { iso, verb, args, iteration, isGhost } = parsed.data;
   const ts = Date.parse(iso);
   const lineHash = createHash('sha1').update(`${iso}|${verb}|${args}`).digest('hex');
 
