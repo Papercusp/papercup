@@ -39,11 +39,28 @@ export default defineTool({
     limit: z.number().int().positive().max(500).optional(),
     /** Set false to also include tools the caller cannot invoke. Default true. */
     onlyAllowed: z.boolean().optional(),
+    /**
+     * Hypothetical role to evaluate `allowed` against. Defaults to the
+     * caller's own role. Useful in superuser/operator shells: "what
+     * would a worker see?" without spawning a real worker.
+     */
+    asRole: z.string().optional(),
   }),
   async handler(args, ctx) {
-    const role = ctx.role;
-    const isSuperuser = ctx.isSuperuser === true;
-    const principalCaps = ctx.principal?.capabilities ?? new Set<string>();
+    // When asRole is supplied we evaluate the role allowlist against
+    // that hypothetical role AND drop the isSuperuser bypass — the
+    // caller is asking "what would this role see?", not "what can I
+    // bypass right now?".
+    const asRoleOverride = args.asRole && args.asRole.length > 0 ? args.asRole : null;
+    const role = asRoleOverride ?? ctx.role;
+    const isSuperuser = asRoleOverride ? false : ctx.isSuperuser === true;
+    // In asRole simulation, also drop the principal — real spawned
+    // agents at that role don't carry one, so the cap-gate would be
+    // skipped for them. Without this, simulating asRole=worker from
+    // an operator shell still triggers the cap-gate via the
+    // synthesized operator principal, diverging from real worker calls.
+    const effectivePrincipal = asRoleOverride ? null : ctx.principal ?? null;
+    const principalCaps = effectivePrincipal?.capabilities ?? new Set<string>();
 
     const filterRe = args.filter ? safeRegex(args.filter) : null;
     const onlyAllowed = args.onlyAllowed ?? true;
@@ -76,9 +93,11 @@ export default defineTool({
       }
 
       // Capability gate — only meaningful when a principal is attached
-      // (i.e., the bearer resolved). For role-tools with no principal,
-      // the dispatcher skips this gate, so we mirror that.
-      if (allowed && ctx.principal && tool.capabilities.length > 0) {
+      // (i.e., the bearer resolved) AND we're not in superuser bypass.
+      // Mirrors dispatchProjectedTool's check exactly:
+      //   if (ctx.principal && !ctx.isSuperuser && tool.capabilities.length > 0)
+      // — see packages/agent-mcp/src/dispatch-projected.ts:142.
+      if (allowed && effectivePrincipal && !isSuperuser && tool.capabilities.length > 0) {
         const missing = tool.capabilities.filter((c) => !principalCaps.has(c));
         if (missing.length > 0) {
           allowed = false;
