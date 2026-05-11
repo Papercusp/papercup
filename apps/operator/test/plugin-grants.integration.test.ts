@@ -16,6 +16,7 @@ import {
   grantCapabilities,
   revokeCapabilities,
   getGrantsForPluginInHarness,
+  backfillGrantsFromEnabledPluginsAndLegacyFile,
 } from '../lib/plugin-grants';
 
 let sql: postgres.Sql;
@@ -307,5 +308,91 @@ describe('getGrantsForPluginInHarness', () => {
     }, { sql });
     const caps = await getGrantsForPluginInHarness('plugin-b', '0.1.0', 'sheets', { sql, skipLegacy: true });
     expect(caps).toEqual([]);
+  });
+});
+
+describe('backfillGrantsFromEnabledPluginsAndLegacyFile', () => {
+  it('writes one grant per (harness, plugin, cap) tuple', async () => {
+    const r = await backfillGrantsFromEnabledPluginsAndLegacyFile(
+      [
+        {
+          harnessSlug: 'sheets',
+          plugins: [
+            { name: '@papercupai/cf-pages', version: '0.1.0', manifestCapabilities: ['http:fetch:api.cloudflare.com', 'secrets:read:CF_TOKEN'] },
+            { name: '@papercupai/pi-coding', version: '0.1.1', manifestCapabilities: ['ui:dashboard-tab'] },
+          ],
+        },
+        {
+          harnessSlug: 'docs',
+          plugins: [
+            { name: '@papercupai/cf-pages', version: '0.1.0', manifestCapabilities: ['http:fetch:api.cloudflare.com'] },
+          ],
+        },
+      ],
+      { sql, skipLegacy: true },
+    );
+    expect(r.inserted).toBe(4);
+
+    const rows = await sql<{ harness_slug: string; plugin_name: string; capability: string }[]>`
+      SELECT harness_slug, plugin_name, capability FROM harness_shared.plugin_capability_grants
+      ORDER BY harness_slug, plugin_name, capability
+    `;
+    expect(rows).toHaveLength(4);
+    expect(rows.every((r) => true)).toBe(true);
+  });
+
+  it('attributes every backfilled row to system + enabled-plugins.json backfill', async () => {
+    await backfillGrantsFromEnabledPluginsAndLegacyFile(
+      [{ harnessSlug: 'sheets', plugins: [{ name: 'p', version: '0.1.0', manifestCapabilities: ['x'] }] }],
+      { sql, skipLegacy: true },
+    );
+    const rows = await sql<{ granted_by: string; reason: string }[]>`
+      SELECT granted_by, reason FROM harness_shared.plugin_capability_grants
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].granted_by).toBe('system');
+    expect(rows[0].reason).toBe('enabled-plugins.json backfill');
+  });
+
+  it('is idempotent — running twice yields the same row count', async () => {
+    const input = [{ harnessSlug: 'sheets', plugins: [{ name: 'p', version: '0.1.0', manifestCapabilities: ['x', 'y'] }] }];
+    await backfillGrantsFromEnabledPluginsAndLegacyFile(input, { sql, skipLegacy: true });
+    await backfillGrantsFromEnabledPluginsAndLegacyFile(input, { sql, skipLegacy: true });
+    const rows = await sql`SELECT count(*)::int AS n FROM harness_shared.plugin_capability_grants`;
+    expect((rows as any)[0].n).toBe(2);
+  });
+
+  it('empty input is a no-op (inserted=0)', async () => {
+    const r = await backfillGrantsFromEnabledPluginsAndLegacyFile([], { sql, skipLegacy: true });
+    expect(r.inserted).toBe(0);
+    const rows = await sql`SELECT count(*)::int AS n FROM harness_shared.plugin_capability_grants`;
+    expect((rows as any)[0].n).toBe(0);
+  });
+
+  it('a plugin with empty manifestCapabilities[] contributes zero grants', async () => {
+    const r = await backfillGrantsFromEnabledPluginsAndLegacyFile(
+      [{ harnessSlug: 'sheets', plugins: [{ name: 'p', version: '0.1.0', manifestCapabilities: [] }] }],
+      { sql, skipLegacy: true },
+    );
+    expect(r.inserted).toBe(0);
+  });
+
+  it('different plugin versions in the same harness do not collide', async () => {
+    await backfillGrantsFromEnabledPluginsAndLegacyFile(
+      [{
+        harnessSlug: 'sheets',
+        plugins: [
+          { name: 'p', version: '0.1.0', manifestCapabilities: ['x'] },
+          { name: 'p', version: '0.2.0', manifestCapabilities: ['x'] },
+        ],
+      }],
+      { sql, skipLegacy: true },
+    );
+    const rows = await sql<{ plugin_version: string }[]>`
+      SELECT plugin_version FROM harness_shared.plugin_capability_grants
+      WHERE harness_slug = 'sheets' AND plugin_name = 'p'
+      ORDER BY plugin_version
+    `;
+    expect(rows.map((r) => r.plugin_version)).toEqual(['0.1.0', '0.2.0']);
   });
 });

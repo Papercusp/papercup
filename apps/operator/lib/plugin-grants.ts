@@ -209,14 +209,21 @@ async function ensureTable(sql: ReturnType<typeof getOrgPg>['sql']): Promise<voi
  */
 export async function backfillGrantsFromEnabledPluginsAndLegacyFile(
   enabledHarnesses: { harnessSlug: string; plugins: { name: string; version: string; manifestCapabilities: string[] }[] }[],
+  /** Optional injection for tests: sql override and a skip-legacy flag
+   * so the test doesn't pull in `~/.papercusp/granted-capabilities.json`
+   * from the dev box. Production callers omit. */
+  opts?: { sql?: ReturnType<typeof getOrgPg>['sql']; skipLegacy?: boolean },
 ): Promise<{ inserted: number }> {
   let inserted = 0;
   // 1) From the legacy file — preserve historical grants verbatim.
-  for (const g of readLegacyGrants()) {
-    const before = inserted;
-    await grantCapabilities({ ...g, grantedBy: 'system', reason: 'legacy-file backfill' });
-    inserted += g.capabilities.length;
-    if (inserted === before) {/* no-op for typescript */}
+  if (!opts?.skipLegacy) {
+    for (const g of readLegacyGrants()) {
+      await grantCapabilities(
+        { ...g, grantedBy: 'system', reason: 'legacy-file backfill' },
+        { sql: opts?.sql },
+      );
+      inserted += g.capabilities.length;
+    }
   }
   // 2) From `enabled-plugins.json` — every plugin that's enabled in a
   // harness gets its manifest-declared caps granted (silent backfill so
@@ -224,14 +231,17 @@ export async function backfillGrantsFromEnabledPluginsAndLegacyFile(
   // any of these later from the consent UI.
   for (const h of enabledHarnesses) {
     for (const p of h.plugins) {
-      await grantCapabilities({
-        pluginName: p.name,
-        pluginVersion: p.version,
-        harnessSlug: h.harnessSlug,
-        capabilities: p.manifestCapabilities,
-        grantedBy: 'system',
-        reason: 'enabled-plugins.json backfill',
-      });
+      await grantCapabilities(
+        {
+          pluginName: p.name,
+          pluginVersion: p.version,
+          harnessSlug: h.harnessSlug,
+          capabilities: p.manifestCapabilities,
+          grantedBy: 'system',
+          reason: 'enabled-plugins.json backfill',
+        },
+        { sql: opts?.sql },
+      );
       inserted += p.manifestCapabilities.length;
     }
   }
