@@ -2896,16 +2896,28 @@ harness.get('/:slug/orchestrator/adaptive-telemetry', async (c) => {
   const limitRaw = Number(c.req.query('limit') ?? 200);
   const limit = Math.max(1, Math.min(1000, Number.isFinite(limitRaw) ? limitRaw : 200));
   await ensureAdaptiveTelemetryTable();
-  const { sql } = getOrgPg();
-  const rows = await sql`
-    SELECT id, ts, feature_id, requested_n, actual_n,
-           tier_label, available_at_decision, max_slots,
-           outcome, outcome_ts, duration_ms
-      FROM harness_shared.adaptive_telemetry
-     WHERE harness_slug = ${project.slug}
-     ORDER BY ts DESC
-     LIMIT ${limit}
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { desc, eq } = await import('drizzle-orm');
+  const at = generated.adaptive_telemetryInHarness_shared;
+  const rows = await db
+    .select({
+      id: at.id,
+      ts: at.ts,
+      feature_id: at.feature_id,
+      requested_n: at.requested_n,
+      actual_n: at.actual_n,
+      tier_label: at.tier_label,
+      available_at_decision: at.available_at_decision,
+      max_slots: at.max_slots,
+      outcome: at.outcome,
+      outcome_ts: at.outcome_ts,
+      duration_ms: at.duration_ms,
+    })
+    .from(at)
+    .where(eq(at.harness_slug, project.slug))
+    .orderBy(desc(at.ts))
+    .limit(limit);
   return c.json({ rows });
 });
 
@@ -2934,20 +2946,24 @@ harness.post('/:slug/orchestrator/adaptive-telemetry', async (c) => {
     return c.json({ error: 'requestedN/actualN must be positive integers' }, 400);
   }
   await ensureAdaptiveTelemetryTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const at = generated.adaptive_telemetryInHarness_shared;
   const ws = activeWorkspaceId();
-  const rows = await sql<{ id: number }[]>`
-    INSERT INTO harness_shared.adaptive_telemetry
-      (harness_slug, ts, feature_id, requested_n, actual_n,
-       tier_label, available_at_decision, max_slots, workspace_id)
-    VALUES (
-      ${project.slug}, ${Date.now()}, ${body.featureId},
-      ${requestedN}, ${actualN},
-      ${body.tierLabel ?? null}, ${body.availableAtDecision ?? null},
-      ${body.maxSlots ?? null}, ${ws}
-    )
-    RETURNING id
-  `;
+  const rows = await db
+    .insert(at)
+    .values({
+      harness_slug: project.slug,
+      ts: Date.now(),
+      feature_id: body.featureId,
+      requested_n: requestedN,
+      actual_n: actualN,
+      tier_label: body.tierLabel ?? null,
+      available_at_decision: body.availableAtDecision ?? null,
+      max_slots: body.maxSlots ?? null,
+      workspace_id: ws,
+    })
+    .returning({ id: at.id });
   return c.json({ ok: true, id: rows[0]?.id ?? null });
 });
 
@@ -2966,14 +2982,18 @@ harness.patch('/:slug/orchestrator/adaptive-telemetry/:id', async (c) => {
     return c.json({ error: "outcome must be one of 'pass'|'fail'|'cancelled'" }, 400);
   }
   await ensureAdaptiveTelemetryTable();
-  const { sql } = getOrgPg();
-  await sql`
-    UPDATE harness_shared.adaptive_telemetry
-       SET outcome = ${body.outcome},
-           outcome_ts = ${Date.now()},
-           duration_ms = ${body.durationMs ?? null}
-     WHERE id = ${id} AND harness_slug = ${project.slug}
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const at = generated.adaptive_telemetryInHarness_shared;
+  await db
+    .update(at)
+    .set({
+      outcome: body.outcome,
+      outcome_ts: Date.now(),
+      duration_ms: body.durationMs ?? null,
+    })
+    .where(and(eq(at.id, BigInt(id)), eq(at.harness_slug, project.slug)));
   return c.json({ ok: true });
 });
 
@@ -3079,20 +3099,26 @@ harness.post('/:slug/checkpoint/:name/grant', async (c) => {
   // sees the file, TS orchestrator's checkpoints-pg sees the row.
   let pgGranted = false;
   try {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { and, eq, sql: dsql } = await import('drizzle-orm');
+    const hc = generated.harness_checkpointsInHarness_shared;
     const ws = activeWorkspaceId();
-    const rows = await sql<{ updated: boolean }[]>`
-      UPDATE harness_shared.harness_checkpoints
-         SET granted = true
-       WHERE harness_slug = ${project.slug}
-         AND workspace_id = ${ws}
-         AND name         = ${name}
-         AND granted      = false
-         AND consumed     = false
-      RETURNING TRUE AS updated
-    `;
+    const rows = await db
+      .update(hc)
+      .set({ granted: true })
+      .where(and(
+        eq(hc.harness_slug, project.slug),
+        eq(hc.workspace_id, ws),
+        eq(hc.name, name),
+        eq(hc.granted, false),
+        eq(hc.consumed, false),
+      ))
+      .returning({ id: hc.harness_slug });
     if (rows.length > 0) {
       pgGranted = true;
+      // pg_notify stays raw — postgres-js LISTEN/NOTIFY pairing (Phase 4 cat 4).
+      const { sql } = (await import('@restart/db-org')).getOrgPg();
       await sql`
         SELECT pg_notify('sync_invalidate',
           ${JSON.stringify({
