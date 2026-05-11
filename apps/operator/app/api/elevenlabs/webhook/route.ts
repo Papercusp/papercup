@@ -48,6 +48,15 @@ interface ElevenLabsWebhookPayload {
   parameters?: unknown;
   conversation_id?: string;
   agent_id?: string;
+  // EL forwards the conversation's dynamic_variables on each webhook
+  // call. We set {device_id, workspace_id, surface, desktop_host} at
+  // session-init time (see /api/mobile/voice-session-init).
+  dynamic_variables?: {
+    device_id?: string;
+    workspace_id?: string;
+    surface?: string;
+    desktop_host?: string;
+  };
   // Some webhook configurations send the agent input directly:
   type?: string;
   data?: { tool_name?: string; parameters?: unknown };
@@ -96,10 +105,27 @@ export async function POST(req: NextRequest): Promise<Response> {
     );
   }
 
+  // Surface comes from the conversation's dynamic_variables — set on
+  // session-init by the phone (see /api/mobile/voice-session-init).
+  // Desktop sessions don't populate it, so it's undefined for browser-
+  // originated calls. Workspace prefers the phone's dynamic var (so the
+  // phone's paired workspace wins) and falls back to the desktop active.
+  const dyn = payload.dynamic_variables ?? {};
+  const surfaceRaw = typeof dyn.surface === 'string' ? dyn.surface : undefined;
+  const surface: CommandContext['surface'] =
+    surfaceRaw === 'mobile-android' ? 'mobile-android'
+    : surfaceRaw === 'mobile-ios' ? 'mobile-ios'
+    : surfaceRaw === 'mobile-unknown' ? 'mobile-unknown'
+    : surfaceRaw === 'browser' ? 'browser'
+    : undefined;
+  const workspaceFromDyn = typeof dyn.workspace_id === 'string' && dyn.workspace_id
+    ? dyn.workspace_id : undefined;
   const ctx: CommandContext = {
     agent: 'operator',
-    workspace: activeWorkspaceId(),
+    workspace: workspaceFromDyn ?? activeWorkspaceId(),
     requestId: randomUUID(),
+    surface,
+    deviceId: typeof dyn.device_id === 'string' ? dyn.device_id : undefined,
   };
 
   let result: CommandResult;
