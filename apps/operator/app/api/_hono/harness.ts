@@ -430,19 +430,20 @@ function rowToFeature(r: any): any {
 function auditFeatureChange(harnessSlug: string, featureId: string, field: string, oldValue: any, newValue: any, actor: string): void {
   (async () => {
     try {
-      const { sql } = (await import('@restart/db-org')).getOrgPg();
+      const { db } = (await import('@restart/db-org')).getOrgPg();
+      const { generated } = await import('@restart/db-org');
       const { activeWorkspaceId } = await import('@/lib/workspace-registry');
       const ws = activeWorkspaceId();
-      await sql`
-        INSERT INTO harness_shared.feature_audit_consolidated
-          (workspace_id, harness_slug, feature_id, ts, field, old_value, new_value, actor)
-        VALUES (
-          ${ws}, ${harnessSlug}, ${featureId}, ${Date.now()}, ${field},
-          ${oldValue === undefined ? null : JSON.stringify(oldValue)},
-          ${newValue === undefined ? null : JSON.stringify(newValue)},
-          ${actor}
-        )
-      `;
+      await db.insert(generated.feature_audit_consolidatedInHarness_shared).values({
+        workspace_id: ws,
+        harness_slug: harnessSlug,
+        feature_id: featureId,
+        ts: Date.now(),
+        field,
+        old_value: oldValue === undefined ? null : JSON.stringify(oldValue),
+        new_value: newValue === undefined ? null : JSON.stringify(newValue),
+        actor,
+      });
       const { notifySyncInvalidate } = await import('@/lib/sync-sse');
       await notifySyncInvalidate('featureAudit.byHarness', { harnessSlug });
       // Keep the legacy per-harness table happy for any read paths we
@@ -866,33 +867,46 @@ harness.get('/:slug/status', async (c) => {
 async function loadProjectFiles(slug: string): Promise<{ spec: string | null; agents: string | null; contract: string | null; config: string | null }> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ spec: string | null; agents: string | null; contract: string | null; config: string | null }[]>`
-    SELECT spec, agents, contract, config FROM harness_shared.harness_project_files
-     WHERE harness_slug = ${slug} LIMIT 1
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { eq } = await import('drizzle-orm');
+  const pf = generated.harness_project_filesInHarness_shared;
+  const rows = await db
+    .select({ spec: pf.spec, agents: pf.agents, contract: pf.contract, config: pf.config })
+    .from(pf)
+    .where(eq(pf.harness_slug, slug))
+    .limit(1);
   return rows[0] ?? { spec: null, agents: null, contract: null, config: null };
 }
 
 async function saveProjectFiles(slug: string, patch: { spec?: string; agents?: string; contract?: string; config?: string }): Promise<void> {
   const { ensureProjectFilesTable } = await import('@/lib/ensure-schema');
   await ensureProjectFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { sql: dsql } = await import('drizzle-orm');
+  const pf = generated.harness_project_filesInHarness_shared;
   const now = Date.now();
-  await sql`
-    INSERT INTO harness_shared.harness_project_files (harness_slug, spec, agents, contract, config, updated_at)
-    VALUES (
-      ${slug},
-      ${patch.spec ?? null}, ${patch.agents ?? null}, ${patch.contract ?? null}, ${patch.config ?? null},
-      ${now}
-    )
-    ON CONFLICT (harness_slug) DO UPDATE SET
-      spec     = COALESCE(${patch.spec ?? null}, harness_project_files.spec),
-      agents   = COALESCE(${patch.agents ?? null}, harness_project_files.agents),
-      contract = COALESCE(${patch.contract ?? null}, harness_project_files.contract),
-      config   = COALESCE(${patch.config ?? null}, harness_project_files.config),
-      updated_at = ${now}
-  `;
+  await db
+    .insert(pf)
+    .values({
+      harness_slug: slug,
+      spec: patch.spec ?? null,
+      agents: patch.agents ?? null,
+      contract: patch.contract ?? null,
+      config: patch.config ?? null,
+      updated_at: now,
+    })
+    .onConflictDoUpdate({
+      target: pf.harness_slug,
+      set: {
+        spec: dsql`COALESCE(${patch.spec ?? null}, ${pf.spec})`,
+        agents: dsql`COALESCE(${patch.agents ?? null}, ${pf.agents})`,
+        contract: dsql`COALESCE(${patch.contract ?? null}, ${pf.contract})`,
+        config: dsql`COALESCE(${patch.config ?? null}, ${pf.config})`,
+        updated_at: now,
+      },
+    });
   const { notifySyncInvalidate } = await import('@/lib/sync-sse');
   await notifySyncInvalidate('harnessProjectFiles.byHarness', { harnessSlug: slug });
 }
@@ -2758,45 +2772,47 @@ harness.post('/:slug/orchestrator/status', async (c) => {
     return c.json({ error: 'status must be one of idle/running/stalled/paused/error' }, 400);
   }
   await ensureHarnessStatusTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { sql: dsql } = await import('drizzle-orm');
+  const hs = generated.harness_statusInHarness_shared;
   const ws = activeWorkspaceId();
-  // Server-computed lease: writer doesn't pass expiresAt — we know what
-  // "stale" means here, and clock skew is the writer's, not ours.
-  // expirable-registry flips status='running' rows to 'stalled' when this
-  // passes. Writers refresh on every iteration.
   const STATUS_LEASE_MS = 5 * 60_000;
   const now = Date.now();
   const expiresAt = now + STATUS_LEASE_MS;
-  await sql`
-    INSERT INTO harness_shared.harness_status
-      (harness_slug, phase, status, iteration, total_features, passed_count,
-       todo_count, blocked_count, last_active_ts, cost_usd, workspace_id, updated_at, expires_at)
-    VALUES (
-      ${project.slug}, ${phase}, ${body.status},
-      ${Number(body.iteration) || 0},
-      ${Number(body.totalFeatures) || 0},
-      ${Number(body.passedCount) || 0},
-      ${Number(body.todoCount) || 0},
-      ${Number(body.blockedCount) || 0},
-      ${body.lastActiveTs ?? null},
-      ${body.costUsd ?? null},
-      ${ws},
-      ${now},
-      ${expiresAt}
-    )
-    ON CONFLICT (harness_slug, phase) DO UPDATE
-      SET status = EXCLUDED.status,
-          iteration = EXCLUDED.iteration,
-          total_features = EXCLUDED.total_features,
-          passed_count = EXCLUDED.passed_count,
-          todo_count = EXCLUDED.todo_count,
-          blocked_count = EXCLUDED.blocked_count,
-          last_active_ts = EXCLUDED.last_active_ts,
-          cost_usd = EXCLUDED.cost_usd,
-          workspace_id = EXCLUDED.workspace_id,
-          updated_at = EXCLUDED.updated_at,
-          expires_at = EXCLUDED.expires_at
-  `;
+  await db
+    .insert(hs)
+    .values({
+      harness_slug: project.slug,
+      phase,
+      status: body.status,
+      iteration: Number(body.iteration) || 0,
+      total_features: Number(body.totalFeatures) || 0,
+      passed_count: Number(body.passedCount) || 0,
+      todo_count: Number(body.todoCount) || 0,
+      blocked_count: Number(body.blockedCount) || 0,
+      last_active_ts: body.lastActiveTs ?? null,
+      cost_usd: body.costUsd ?? null,
+      workspace_id: ws,
+      updated_at: now,
+      expires_at: new Date(expiresAt) as any,
+    })
+    .onConflictDoUpdate({
+      target: [hs.harness_slug, hs.phase],
+      set: {
+        status: dsql`EXCLUDED.status`,
+        iteration: dsql`EXCLUDED.iteration`,
+        total_features: dsql`EXCLUDED.total_features`,
+        passed_count: dsql`EXCLUDED.passed_count`,
+        todo_count: dsql`EXCLUDED.todo_count`,
+        blocked_count: dsql`EXCLUDED.blocked_count`,
+        last_active_ts: dsql`EXCLUDED.last_active_ts`,
+        cost_usd: dsql`EXCLUDED.cost_usd`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+        updated_at: dsql`EXCLUDED.updated_at`,
+        expires_at: dsql`EXCLUDED.expires_at`,
+      },
+    });
   const { notifySyncInvalidate } = await import('@/lib/sync-sse');
   await notifySyncInvalidate('harnessStatus.byHarness', { harnessSlug: project.slug });
   return c.json({ ok: true });
@@ -2817,21 +2833,31 @@ harness.post('/:slug/orchestrator/lane', async (c) => {
     return c.json({ error: 'role required' }, 400);
   }
   await ensureHarnessLanesTable();
-  const { sql } = getOrgPg();
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq, sql: dsql } = await import('drizzle-orm');
+  const hl = generated.harness_lanesInHarness_shared;
   const ws = activeWorkspaceId();
-  await sql`
-    INSERT INTO harness_shared.harness_lanes
-      (harness_slug, phase, role, feature_id, pid, started_at, workspace_id)
-    VALUES (
-      ${project.slug}, ${phase}, ${body.role},
-      ${body.featureId ?? null}, ${body.pid ?? null}, ${Date.now()}, ${ws}
-    )
-    ON CONFLICT (harness_slug, phase, role) DO UPDATE
-      SET feature_id = EXCLUDED.feature_id,
-          pid = EXCLUDED.pid,
-          started_at = EXCLUDED.started_at,
-          workspace_id = EXCLUDED.workspace_id
-  `;
+  await db
+    .insert(hl)
+    .values({
+      harness_slug: project.slug,
+      phase,
+      role: body.role,
+      feature_id: body.featureId ?? null,
+      pid: body.pid ?? null,
+      started_at: Date.now(),
+      workspace_id: ws,
+    })
+    .onConflictDoUpdate({
+      target: [hl.harness_slug, hl.phase, hl.role],
+      set: {
+        feature_id: dsql`EXCLUDED.feature_id`,
+        pid: dsql`EXCLUDED.pid`,
+        started_at: dsql`EXCLUDED.started_at`,
+        workspace_id: dsql`EXCLUDED.workspace_id`,
+      },
+    });
   return c.json({ ok: true });
 });
 
@@ -2841,11 +2867,11 @@ harness.delete('/:slug/orchestrator/lanes', async (c) => {
   const phase = c.req.query('phase') === 'testing' || c.req.query('phase') === 'production'
     ? c.req.query('phase') : 'staging';
   await ensureHarnessLanesTable();
-  const { sql } = getOrgPg();
-  await sql`
-    DELETE FROM harness_shared.harness_lanes
-     WHERE harness_slug = ${project.slug} AND phase = ${phase}
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const hl = generated.harness_lanesInHarness_shared;
+  await db.delete(hl).where(and(eq(hl.harness_slug, project.slug), eq(hl.phase, phase)));
   return c.json({ ok: true });
 });
 
