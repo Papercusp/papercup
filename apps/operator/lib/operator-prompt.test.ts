@@ -1,4 +1,22 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('./operator-state-pg', () => ({
+  readOperatorState: async () => null,
+  writeOperatorState: async () => {},
+  updateOperatorState: async () => {},
+}));
+vi.mock('./operator-preferences', () => ({
+  loadPreferences: async () => ({ raw: '', standingApprovals: [] }),
+}));
+vi.mock('./harness-markdown-index', () => ({
+  loadHarnessMarkdownIndex: () => ({}),
+  renderHarnessMarkdownIndexForPrompt: () => '',
+}));
+vi.mock('./harness-plan-reviews', () => ({
+  loadHarnessPlanReviews: async () => [],
+  renderHarnessPlanReviewsForPrompt: () => '',
+}));
+
 import { buildOperatorPrompt } from './operator-prompt';
 
 describe('buildOperatorPrompt (v5)', () => {
