@@ -123,11 +123,13 @@ export type TrySpawnContextResult =
  *   2. Per-spawn URL with `harness=&workspace=&role=&run=&spawn=&exp=&sig=`
  *      — sig is verified via HMAC against the PG-stored signing key.
  *      Failures are logged to spawn_sig_verification_failures.
- *   3. Unsigned URL (no sig, no exp) — legacy/transition path. We
- *      allow it with a console warning unless PAPERCUSP_REQUIRE_SPAWN_SIG=1,
- *      in which case it's rejected too. Flip the env var once the
- *      orchestrator (libs/papercusp spawn-mcp.ts) is shipping signed
- *      URLs everywhere.
+ *   3. Unsigned URL (no sig, no exp) — only honored when
+ *      PAPERCUSP_REQUIRE_SPAWN_SIG != '1'. As of 2026-05-11 the
+ *      operator runs with PAPERCUSP_REQUIRE_SPAWN_SIG=1 by default
+ *      (apps/operator/.env.local), so unsigned URLs hard-reject and
+ *      the soft-warn fallback below is dead code unless someone
+ *      explicitly unsets the env var. Kept for the (uncommon) case
+ *      of re-rolling out a new signing scheme.
  */
 async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResult> {
   const url = urlFromExtra(extra);

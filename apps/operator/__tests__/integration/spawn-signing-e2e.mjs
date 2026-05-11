@@ -8,6 +8,7 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { execSync } from 'node:child_process';
+import { cleanupTestFailures } from './_cleanup-test-failures.mjs';
 
 const OP_HOST = process.env.OP_HOST || 'localhost';
 const OP_PORT = process.env.OP_PORT || '3070';
@@ -163,6 +164,8 @@ async function main() {
   await new Promise(r => setTimeout(r, 500));
   const after = Number(execSync(`PGPASSWORD=harness_admin_pwd psql -h localhost -p 5432 -U harness_admin -d papercusp -tAc "SELECT count(*) FROM harness_shared.spawn_sig_verification_failures WHERE reason='invalid_signature';"`, { encoding: 'utf8' }).trim());
   check('audit row written for tampered sig', after === before + 1, `before=${before} after=${after}`);
+
+  cleanupTestFailures('s_test_%');
 
   log(`\nResult: ${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

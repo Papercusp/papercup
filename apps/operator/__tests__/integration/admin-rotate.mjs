@@ -14,6 +14,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { execSync } from 'node:child_process';
+import { cleanupTestFailures } from './_cleanup-test-failures.mjs';
 
 const OP_PORT = process.env.OP_PORT || '3070';
 const BASE = `http://localhost:${OP_PORT}`;
@@ -110,6 +111,8 @@ async function main() {
   sign(p6, newKey);
   const c6 = await callMcp(p6, { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'autoloop:control', arguments: { op: 'resume' } } });
   check(c6.text.includes('"result"'), 'new sig accepted post-rotate', c6.text.slice(0,200));
+
+  cleanupTestFailures('s_admin_%');
 
   console.log(`\n${pass} passed, ${fail} failed`);
   process.exit(fail > 0 ? 1 : 0);

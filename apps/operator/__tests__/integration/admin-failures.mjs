@@ -79,12 +79,13 @@ const lim = await get('?limit=2');
 check('rows.length <= 2', lim.json.rows.length <= 2);
 
 console.log('--- clean up the test rows ---');
-// best-effort cleanup so subsequent runs start from a known baseline
-import('node:child_process').then(({ execSync }) => {
-  try {
-    execSync(`psql postgresql://postgres@/papercup -c "DELETE FROM harness_shared.spawn_sig_verification_failures WHERE claimed_spawn LIKE 's_audit_%'" -q`, { stdio: 'pipe' });
-  } catch { /* */ }
-});
+// best-effort cleanup so subsequent runs start from a known baseline.
+// Uses the shared helper so all 4 spawn-signing test suites stay in
+// sync. The historical inline call here pointed at the wrong DB
+// (`papercup`, postgres@ peer auth) and silently failed for months,
+// which is how the audit table accumulated 452 rows of test noise.
+const { cleanupTestFailures } = await import('./_cleanup-test-failures.mjs');
+cleanupTestFailures('s_audit_%');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);

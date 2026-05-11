@@ -64,25 +64,34 @@ unreadable. Real fix; bigger lift. Eventual landing spot.
 
 ## Operating modes
 
-### Soft-warn (default)
+### Soft-warn (rollout-only)
 
 `PAPERCUSP_REQUIRE_SPAWN_SIG` unset or `!= '1'`. Unsigned URLs are
-accepted with a console warning. Use during rollout so legacy
-in-flight spawns don't get killed.
+accepted with a console warning. Was the default during the
+2026-05-11 rollout window so in-flight spawns from before signing
+landed wouldn't get killed mid-run.
 
-### Strict
+### Strict (default since 2026-05-11)
 
-`PAPERCUSP_REQUIRE_SPAWN_SIG=1`. Unsigned URLs hard-reject with
-`request_rejected: spawn_sig_missing_sig_required_mode`. Flip this
-once the audit table shows no legitimate unsigned-URL traffic for a
-clean week.
+`PAPERCUSP_REQUIRE_SPAWN_SIG=1` in `apps/operator/.env.local`.
+Unsigned URLs hard-reject with
+`request_rejected: spawn_sig_missing_sig_required_mode`. Any failure
+in `harness_shared.spawn_sig_verification_failures` is now signal,
+not noise.
 
-### Rollout sequence (already done as of 2026-05-11)
+### Rollout sequence
 
 1. ✅ Operator-side verification with soft-warn (2026-05-11).
 2. ✅ Orchestrator-side signing via `writeSignedSpawnMcp` (2026-05-11).
-3. ✅ Audit table seeded, no legitimate failures observed.
-4. **Pending**: flip `PAPERCUSP_REQUIRE_SPAWN_SIG=1` after a clean week.
+3. ✅ Test-suite cleanup wired so the audit table reflects real traffic
+   (2026-05-11). Before this, every `bun run test:spawn-signing`
+   left 20-30 deliberately-bad rows behind — the audit-table
+   "noise floor" was 100% test artifacts. Shared helper at
+   `apps/operator/__tests__/integration/_cleanup-test-failures.mjs`.
+4. ✅ Flipped `PAPERCUSP_REQUIRE_SPAWN_SIG=1` (2026-05-11).
+   Verified: 136/136 integration tests still green on both :3055
+   and :3070 in strict mode; audit table stays at zero rows after
+   a full battery run.
 
 ## Coarse revocation
 

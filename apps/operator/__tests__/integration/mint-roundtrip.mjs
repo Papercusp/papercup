@@ -12,6 +12,7 @@
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { cleanupTestFailures } from './_cleanup-test-failures.mjs';
 
 // Use bun's TS import — libs/papercusp is in the workspace
 const { writeSignedSpawnMcp } = await import(
@@ -141,6 +142,8 @@ try {
 } finally {
   try { rmSync(cwd, { recursive: true, force: true }); } catch {}
 }
+
+cleanupTestFailures('s_mint_%');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
