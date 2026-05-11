@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-const pe = generated.pendingEventsInHarnessShared;
+const pe = generated.pending_eventsInHarness_shared;
 const PESelect = schemaOf(pe).select;
 type PERow = z.infer<typeof PESelect>;
 

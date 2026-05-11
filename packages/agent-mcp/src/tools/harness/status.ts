@@ -16,8 +16,8 @@ import { defineTool } from '../../define-tool';
 // Phase 1a started eagerly iterating the projected-tool catalog,
 // which loaded this file at startup and surfaced `schemaOf(undefined)`
 // crashes that the lazy-eval path had hidden until now.
-const projects = generated.projectsInHarnessShared;
-const audit = generated.auditLogInHarnessShared;
+const projects = generated.projectsInHarness_shared;
+const audit = generated.audit_logInHarness_shared;
 const ProjectSelect = schemaOf(projects).select;
 const AuditSelect = schemaOf(audit).select;
 type ProjectRow = z.infer<typeof ProjectSelect>;

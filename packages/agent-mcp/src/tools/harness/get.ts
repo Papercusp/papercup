@@ -13,8 +13,8 @@ import { z } from 'zod';
 import { generated, schemaOf } from '@restart/db-org';
 import { defineTool } from '../../define-tool';
 
-const projects = generated.projectsInHarnessShared;
-const features = generated.harnessFeaturesConsolidatedInHarnessShared;
+const projects = generated.projectsInHarness_shared;
+const features = generated.harness_features_consolidatedInHarness_shared;
 const ProjectSelect = schemaOf(projects).select;
 type ProjectRow = z.infer<typeof ProjectSelect>;
 
