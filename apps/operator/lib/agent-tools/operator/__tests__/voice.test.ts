@@ -207,11 +207,15 @@ describe('operator:voice_spend_summary', () => {
     vi.doMock('@/lib/workspace-registry', () => ({
       activeWorkspaceId: vi.fn(() => 'default'),
     }));
-    vi.doMock('@restart/db-org', () => ({
-      withWorkspace: vi.fn(async (_w: string, fn: (tx: unknown) => Promise<unknown>) => {
-        return fn(async () => [{ total: 60 }]);
-      }),
-    }));
+    vi.doMock('@restart/db-org', async (importOriginal) => {
+      const actual = (await importOriginal()) as Record<string, unknown>;
+      return {
+        ...actual,
+        withWorkspace: vi.fn(async (_w: string, fn: (tx: unknown) => Promise<unknown>) => {
+          return fn(async () => [{ total: 60 }]);
+        }),
+      };
+    });
     const { default: tool } = await import('@/lib/agent-tools/operator/voice_spend_summary');
     const result = await tool.handler({ scope: 'all' }, MAKE_CTX());
     const payload = parsePayload(result as never);

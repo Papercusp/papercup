@@ -30,6 +30,8 @@ afterEach(() => {
   vi.doUnmock('@/lib/operator-suggestion-parser');
   vi.doUnmock('@/lib/operator-preferences');
   vi.doUnmock('@/lib/operator-prompt');
+  vi.doUnmock('drizzle-orm/postgres-js');
+  vi.doUnmock('drizzle-orm');
 });
 
 function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
@@ -37,15 +39,44 @@ function parsePayload(result: { content: Array<{ text: string }> }): Record<stri
 }
 
 describe('operator:decisions', () => {
-  it('reads operator_decisions view via withWorkspace', async () => {
-    const rows = [{ id: '1', ts: 1234, actor: 'u', action: 'a', target: 't', details: {} }];
-    const txTagged = vi.fn(async () => rows);
-    vi.doMock('@restart/db-org', () => ({
-      withWorkspace: vi.fn(async (_w: string, fn: (tx: unknown) => Promise<unknown>) => fn(txTagged)),
+  // Tool was rewritten to use drizzle's typed query builder (phase 3).
+  // Mock the drizzle builder chain + use importOriginal for @restart/db-org
+  // so other internals (schemaOf etc.) keep working when drizzle reaches
+  // into the module during select/from.
+  async function setupMocks(rowsToReturn: unknown[]) {
+    let capturedLimit: number | null = null;
+    const builder = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      orderBy: vi.fn().mockReturnThis(),
+      limit: vi.fn().mockImplementation((n: number) => {
+        capturedLimit = n;
+        return Promise.resolve(rowsToReturn);
+      }),
+    };
+    vi.doMock('drizzle-orm/postgres-js', () => ({
+      drizzle: vi.fn(() => builder),
     }));
+    vi.doMock('drizzle-orm', async (importOriginal) => {
+      const actual = (await importOriginal()) as Record<string, unknown>;
+      return { ...actual, desc: vi.fn((c) => c) };
+    });
+    vi.doMock('@restart/db-org', async (importOriginal) => {
+      const actual = (await importOriginal()) as Record<string, unknown>;
+      return {
+        ...actual,
+        withWorkspace: vi.fn(async (_w: string, fn: (tx: unknown) => Promise<unknown>) => fn({})),
+      };
+    });
     vi.doMock('@/lib/workspace-registry', () => ({
       activeWorkspaceId: vi.fn(() => 'default'),
     }));
+    return { getCapturedLimit: () => capturedLimit };
+  }
+
+  it('reads operator_decisions view via withWorkspace', async () => {
+    const rows = [{ id: '1', ts: 1234, actor: 'u', action: 'a', target: 't', details: {} }];
+    await setupMocks(rows);
     const { default: tool } = await import('@/lib/agent-tools/operator/decisions');
     const result = await tool.handler({ limit: 5 }, MAKE_CTX());
     const payload = parsePayload(result as never);
@@ -53,21 +84,10 @@ describe('operator:decisions', () => {
   });
 
   it('defaults limit to 50', async () => {
-    let capturedLimit: number | null = null;
-    const txTagged = vi.fn(async (...args: unknown[]) => {
-      // postgres.js sql template tag — args[0] is the strings, last numeric is the value
-      for (const a of args) if (typeof a === 'number') capturedLimit = a;
-      return [];
-    });
-    vi.doMock('@restart/db-org', () => ({
-      withWorkspace: vi.fn(async (_w: string, fn: (tx: unknown) => Promise<unknown>) => fn(txTagged)),
-    }));
-    vi.doMock('@/lib/workspace-registry', () => ({
-      activeWorkspaceId: vi.fn(() => 'default'),
-    }));
+    const ctl = await setupMocks([]);
     const { default: tool } = await import('@/lib/agent-tools/operator/decisions');
     await tool.handler({}, MAKE_CTX());
-    expect(capturedLimit).toBe(50);
+    expect(ctl.getCapturedLimit()).toBe(50);
   });
 });
 
