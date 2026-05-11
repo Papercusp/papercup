@@ -40,7 +40,7 @@ We landed in a third cluster: a tiny supervised loop that owns no opinion about 
 | claudecode-orchestrator | Service smoke-test | `bin/service-smoke-test.sh` + `smokeTest.onDone/onFeaturePass` |
 | Hermes | Named checkpoints | `CHECKPOINT <name>` decision verb + `triggerOn: post-planner` auto-fire |
 | Composio | Git worktree per agent | `branchIsolation.useWorktrees` + `worktree_*` fns |
-| Conductor | Two-mode parallelism | `parallelWorkers.mode: "lane"\|"competition"` |
+| Conductor | Multi-worker on same feature | `parallelWorkers.workersPerFeature > 1` + synthesizer merge |
 | Agent Swarm | Per-agent IDENTITY.md | `~/autonomous-harness/identity/<role>.md` cross-mission append-only |
 | MOLTRON | Self-evolving learnings | Worker `TRICK:` convention promoted by curator |
 | Ralph Loop | 4-layer memory | L0 runtime / L1 raw / L2 summary / L3 MEMORY / L4 identity |

@@ -83,7 +83,9 @@ Pruning thresholds.
 
 ### `parallelWorkers`
 - `max`: concurrent workers. `>1` requires `branchIsolation.enabled`.
-- `mode`: `"lane"` (different features in parallel) or `"competition"` (Conductor-inspired same-feature race).
+- `workersPerFeature`: integer (default `1`). When `>1`, dispatches that many workers on the same feature in sibling worktrees; after they commit, the synthesizer merges/polishes their candidates into one shipping branch. Requires `branchIsolation.useWorktrees: true`.
+- `adaptive`: `{tiers, labels, rubric}`. When set, the orchestrator LLM picks N per feature from `tiers` based on the rubric. Overrides `workersPerFeature` when present.
+- `synthesizeSingle`: boolean (default `true`). Run the synthesizer even on single-worker dispatches as a code-review pass. Set `false` to skip.
 
 ### `planReviewer.enabled`
 Plan-reviewer fires after planner. Reject → harness exits 7.

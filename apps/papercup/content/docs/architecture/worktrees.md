@@ -13,7 +13,7 @@ Worktrees give each lane its own HEAD on its own branch on its own files. No git
 
 ## Bonus: the validator can read both lanes
 
-In competition mode, two workers attack the same feature in two worktrees. The validator can `cd` into each worktree and read both implementations to compare. With branch-switching, the validator would need to stash or commit and switch — slow and noisy.
+When `workersPerFeature > 1`, multiple workers attack the same feature in sibling worktrees. The synthesizer then `cd`s into each worktree and reads all implementations to pick what should ship. With branch-switching, this would require constant stash-and-switch — slow and noisy.
 
 ## Lifecycle
 

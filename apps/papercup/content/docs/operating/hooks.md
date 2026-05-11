@@ -19,8 +19,8 @@ Lifecycle hooks fire at agent boundaries. Drop an executable shell script at `.h
 | `on-checkpoint-fired.sh` | When a checkpoint is created (auto or via orchestrator) | `CHECKPOINT_NAME TRIGGER PROJECT_DIR STATE_DIR` |
 | `on-smoke-pass.sh` | When the service smoke test passes | `TRIGGER=onDone\|onFeaturePass FEATURE_ID? PROJECT_DIR STATE_DIR` |
 | `on-smoke-fail.sh` | When the service smoke test fails | Same as on-smoke-pass |
-| `on-competition-start.sh` | When N workers spawn on the same feature | `FEATURE_ID LANE_COUNT PROJECT_DIR STATE_DIR` |
-| `on-competition-won.sh` | When a competition winner is merged | `FEATURE_ID WINNER PROJECT_DIR STATE_DIR` |
+| `on-competition-start.sh` | When ≥2 workers spawn on the same feature | `FEATURE_ID LANE_COUNT PROJECT_DIR STATE_DIR` |
+| `on-synthesis-won.sh` | When a synthesized branch passes validation and merges | `FEATURE_ID SYNTH_BRANCH LANE_COUNT PROJECT_DIR STATE_DIR` |
 
 ## Example: send a Slack message on escalation
 

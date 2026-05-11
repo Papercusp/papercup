@@ -37,7 +37,9 @@ description: Terms used across the harness and these docs.
 
 **Issue** · Validator-flagged problem outside the current feature's claim scope. Lives in `.harness/issues.json`. Curator dedupes; orchestrator may promote to `F-FIX-NNN` features via `CONVERTED`.
 
-**Lane** · One parallel worker slot. With `parallelWorkers.max: 3`, three lanes run concurrently. With `mode: competition`, all lanes attack the same feature.
+**Lane** · One parallel worker slot. With `parallelWorkers.max: 3`, three lanes run concurrently. With `workersPerFeature > 1` (or tiers configured), multiple lanes work on the same feature; the synthesizer merges their drafts after they commit.
+
+**Synthesizer** · Role invoked after workers commit and before the validator. Reads each lane's diff, decides what should ship — verbatim from one lane, edited, combined, or rewritten — and produces a single `<fid>-synthesis` branch the validator certifies.
 
 **Mission** · One run of `run.sh` for a project. Multiple iterations until DONE / ESCALATE / CHECKPOINT / cost-cap / max-iter.
 

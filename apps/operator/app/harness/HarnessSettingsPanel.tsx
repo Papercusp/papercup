@@ -30,9 +30,9 @@ import { useSyncQuery } from '@restart/sync';
  *  - 'tiers' → the orchestrator LLM picks N per feature from a
  *              configured tier set (e.g. {1,2,4}).
  *
- * Internal-only UI state. Persisted as a derived `parallelWorkers.mode`
- * field for runtime back-compat (the dispatcher still keys off `mode`
- * until step 5 of the synthesizer plan ships).
+ * Internal-only UI state. Not persisted directly — derived on save into
+ * `parallelWorkers.{workersPerFeature, adaptive}`. The runtime keys off
+ * those + `resolveWorkerCount`, not off a `mode` string.
  */
 type WorkerCountMode = 'one' | 'fixed' | 'tiers';
 

@@ -29,4 +29,4 @@ A bash loop (`run.sh`) that orchestrates a small fleet of role agents. Each iter
 - **It admits when it's stuck.** Named checkpoints (Hermes-inspired) and validator escalations halt the run; humans grant via UI.
 - **It writes its own scope.** A `product` role periodically diffs the SPEC.md north-star against its current scope and proposes new features. Operators triage the proposals.
 - **It learns.** The `curator` maintains a per-role identity file (`~/autonomous-harness/identity/<role>.md`) that survives across missions.
-- **It races against itself.** Optional competition mode (Conductor-inspired) spawns N workers on the same feature; a validator picks a winner.
+- **It writes against itself.** Optional `workersPerFeature > 1` spawns N workers on the same feature in sibling worktrees; a synthesizer reads all their diffs and merges/polishes them into one shipping branch before the validator certifies it.
