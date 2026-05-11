@@ -198,10 +198,12 @@ export async function POST(req: NextRequest) {
         });
 
         let totalCost = 0;
+        let assembled = '';
         for await (const ev of events) {
           if (ctrl.signal.aborted) break;
           if (ev.type === 'delta') {
             send('delta', { text: ev.text });
+            assembled += ev.text;
           } else if (ev.type === 'tool_call') {
             // Strip the mcp__agentmcp__ prefix to keep the wire format
             // identical to operator-scan's tool_call events. Sidebar can
@@ -214,6 +216,39 @@ export async function POST(req: NextRequest) {
             totalCost = ev.costUsd ?? 0;
             void recordSpend(totalCost);
           }
+        }
+        // Server-side <spawn> tag dispatch. Parsing the assembled
+        // turn here (rather than only in the client provider) ensures
+        // the voice path also triggers spawns — EL's ask_operator
+        // handler returns the say body to EL, but it never invokes
+        // our client-side parser. The HTTP API call here is what makes
+        // the spawn actually happen for both text and voice surfaces.
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { parseOperatorTurn } = require('@/lib/operator-converse-tags') as typeof import('@/lib/operator-converse-tags');
+          const parsed = parseOperatorTurn(assembled);
+          for (const sp of parsed.spawns) {
+            const params = new URLSearchParams({
+              workspace: 'default',
+              harness: 'system',
+              role: 'operator',
+              run: `op-converse-${Date.now()}`,
+              spawn: `op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+            });
+            const body: Record<string, unknown> = { role: sp.role };
+            if (sp.featureId) body.featureId = sp.featureId;
+            if (sp.chunkId) body.chunkId = sp.chunkId;
+            if (sp.extras.length > 0) body.extras = sp.extras;
+            void fetch(`http://127.0.0.1:3055/api/plugins/orchestrator/spawn?${params.toString()}`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(body),
+            }).catch((err) => {
+              console.warn('[operator-converse] spawn dispatch failed', err);
+            });
+          }
+        } catch (err) {
+          console.warn('[operator-converse] spawn parse/dispatch error', err);
         }
         send('done', { costUsd: totalCost });
       } catch (err) {

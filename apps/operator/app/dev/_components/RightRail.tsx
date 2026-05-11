@@ -11,6 +11,19 @@ interface PluginHost {
   errors?: number;
 }
 
+interface PgHealth {
+  totalConnections: number;
+  activeConnections: number;
+  idleConnections: number;
+}
+
+interface BuildInfo {
+  prodBuild: { exists: boolean; mtimeMs: number | null };
+  prodLogTail: string | null;
+  dev3055Reachable: boolean;
+  prod3070Reachable: boolean;
+}
+
 interface ActivityEntry {
   id: string;
   workspace_id: string;
@@ -30,14 +43,46 @@ function fmtRel(iso: string): string {
   return `${Math.floor(ms / 86_400_000)}d`;
 }
 
+function fmtRelMs(ms: number | null): string {
+  if (ms == null) return '—';
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return `${Math.floor(diff / 1000)}s ago`;
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+  return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+const CTX = new URLSearchParams({
+  workspace: 'default',
+  role: 'architect',
+  run: 'dev-page',
+  spawn: 'dev-page',
+});
+
+async function postTool<T>(name: string, body: unknown): Promise<T | null> {
+  try {
+    const r = await fetch(`/api/agent-tools/dev/${name}?${CTX}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) return null;
+    const d = await r.json();
+    return JSON.parse(d.content[0].text);
+  } catch {
+    return null;
+  }
+}
+
 export default function RightRail({ workspaceIds }: Props) {
   const [pluginHost, setPluginHost] = useState<PluginHost | null>(null);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [pg, setPg] = useState<PgHealth | null>(null);
+  const [build, setBuild] = useState<BuildInfo | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     function refresh() {
-      // Plugin host
       fetch('/api/plugins/host/refresh', { method: 'POST' })
         .then((r) => (r.ok ? r.json() : null))
         .then((d) => {
@@ -45,26 +90,18 @@ export default function RightRail({ workspaceIds }: Props) {
           setPluginHost(d.status ?? null);
         })
         .catch(() => {});
-      // Activity feed
-      const params = new URLSearchParams({
-        workspace: 'default',
-        role: 'architect',
-        run: 'dev-page',
-        spawn: 'dev-page',
+      postTool<{ entries: ActivityEntry[] }>('activity', { workspaceIds, limit: 30 }).then((d) => {
+        if (cancelled || !d) return;
+        setActivity(d.entries ?? []);
       });
-      fetch(`/api/agent-tools/dev/activity?${params}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ workspaceIds, limit: 30 }),
-      })
-        .then(async (r) => {
-          if (!r.ok) return;
-          const d = await r.json();
-          const parsed = JSON.parse(d.content[0].text);
-          if (cancelled) return;
-          setActivity(parsed.entries ?? []);
-        })
-        .catch(() => {});
+      postTool<PgHealth>('pg_health', {}).then((d) => {
+        if (cancelled || !d) return;
+        setPg(d);
+      });
+      postTool<BuildInfo>('build_status', {}).then((d) => {
+        if (cancelled || !d) return;
+        setBuild(d);
+      });
     }
     refresh();
     const t = setInterval(refresh, 15_000);
@@ -89,6 +126,48 @@ export default function RightRail({ workspaceIds }: Props) {
               <span className="pc-dev-muted">errors</span>
               <strong className={pluginHost.errors ? 'pc-dev-api-err' : ''}>
                 {pluginHost.errors ?? 0}
+              </strong>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="pc-dev-rail-block">
+        <h3 className="pc-dev-rail-h">Postgres</h3>
+        {!pg && <div className="pc-dev-muted">…</div>}
+        {pg && (
+          <div className="pc-dev-rail-stats">
+            <div>
+              <span className="pc-dev-muted">total</span>
+              <strong>{pg.totalConnections}</strong>
+            </div>
+            <div>
+              <span className="pc-dev-muted">active</span>
+              <strong>{pg.activeConnections}</strong>
+            </div>
+            <div>
+              <span className="pc-dev-muted">idle</span>
+              <strong className="pc-dev-muted">{pg.idleConnections}</strong>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="pc-dev-rail-block">
+        <h3 className="pc-dev-rail-h">Build</h3>
+        {!build && <div className="pc-dev-muted">…</div>}
+        {build && (
+          <div className="pc-dev-build">
+            <div>
+              <span className="pc-dev-muted">prod build</span>
+              <strong className={build.prodBuild.exists ? 'pc-dev-ok' : 'pc-dev-api-err'}>
+                {build.prodBuild.exists ? fmtRelMs(build.prodBuild.mtimeMs) : 'missing'}
+              </strong>
+            </div>
+            <div>
+              <span className="pc-dev-muted">:3070</span>
+              <strong className={build.prod3070Reachable ? 'pc-dev-ok' : 'pc-dev-api-err'}>
+                {build.prod3070Reachable ? 'up' : 'down'}
               </strong>
             </div>
           </div>

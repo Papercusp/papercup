@@ -4,12 +4,14 @@
  *   <say>{utterance}</say>
  *   <set_mode>passive|active</set_mode>
  *   <sleep duration_minutes="N" reason="…">
+ *   <spawn role="worker" feature="…" chunk="…" extras="K=V,K2=V2">
  *
  * The conversation engine parses each operator turn through this
- * module and dispatches three side-effects:
+ * module and dispatches four side-effects:
  *   1. Render the say-text (if any) into the chat transcript + TTS.
  *   2. Flip operator mode (if a set_mode tag was emitted).
  *   3. Set the sleep-until clock (if a sleep tag was emitted).
+ *   4. POST to /api/plugins/orchestrator/spawn for each spawn tag.
  *
  * Pure parsing only — no DOM, no fetch, no state writes. Callers
  * thread the parsed result into the OperatorConversation reducer.
@@ -26,6 +28,13 @@
 
 export type OperatorMode = 'active' | 'passive';
 
+export interface SpawnRequest {
+  role: string;
+  featureId: string | null;
+  chunkId: string | null;
+  extras: string[];
+}
+
 export interface ParsedOperatorTurn {
   /** The user-visible utterance, or null when the operator went silent (sleep tag only). */
   say: string | null;
@@ -33,6 +42,8 @@ export interface ParsedOperatorTurn {
   setMode: OperatorMode | null;
   /** Sleep tag the operator emitted, or null when no sleep. */
   sleep: { durationMinutes: number; reason: string } | null;
+  /** Spawn requests emitted this turn. Empty array when none. */
+  spawns: SpawnRequest[];
   /** Raw input, kept for debug/telemetry. Do NOT render this directly. */
   raw: string;
 }
@@ -43,6 +54,10 @@ const SET_MODE_RE = /<set_mode>\s*(active|passive)\s*<\/set_mode>/i;
 // match the opening tag and ignore any trailing content. `reason` is
 // optional. Both attributes accept double or single quotes.
 const SLEEP_RE = /<sleep\s+([^>]+?)\s*\/?>/i;
+// <spawn role="…" feature="…" chunk="…" extras="K=V,K2=V2"> — self-closing.
+// role required; feature/chunk/extras optional. Multiple <spawn> tags per
+// turn are allowed (parallel fan-out: "review these three plans").
+const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
 
 function parseAttrs(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -76,6 +91,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     say: null,
     setMode: null,
     sleep: null,
+    spawns: [],
     raw,
   };
 
@@ -121,6 +137,31 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
         reason: attrs['reason'] ?? '',
       };
     }
+  }
+
+  // Spawn tags — collect every <spawn …> in the turn.
+  let spawnMatch: RegExpExecArray | null;
+  // Reset regex state because g-flag is sticky.
+  SPAWN_RE.lastIndex = 0;
+  while ((spawnMatch = SPAWN_RE.exec(raw)) !== null) {
+    const attrs = parseAttrs(spawnMatch[1]);
+    const role = (attrs['role'] ?? '').trim();
+    if (!role) {
+      // eslint-disable-next-line no-console
+      console.warn('[operator-converse] dropped malformed <spawn>: missing role', { attrs });
+      continue;
+    }
+    const extrasRaw = attrs['extras'] ?? '';
+    const extras = extrasRaw
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    result.spawns.push({
+      role,
+      featureId: attrs['feature'] ? attrs['feature'] : null,
+      chunkId: attrs['chunk'] ? attrs['chunk'] : null,
+      extras,
+    });
   }
 
   // Sleep + say is contradictory per the prompt contract. Drop sleep
