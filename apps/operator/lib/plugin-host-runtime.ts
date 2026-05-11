@@ -621,6 +621,31 @@ async function ensureInitialized(
       if (typeof onLoad === 'function') {
         await onLoad(ctx);
       }
+      // Hot-reload state restore: if the plugin opted in via
+      // manifest.hotReload.preserveState AND a row exists in
+      // harness_shared.plugin_reload_state for this (plugin, harness),
+      // pop it and feed it to restoreFromReload. One-shot — failure
+      // discards the state, host moves on.
+      if (
+        (lp.plugin as unknown as { hotReload?: { preserveState?: boolean } }).hotReload?.preserveState &&
+        typeof lp.plugin.hooks?.restoreFromReload === 'function'
+      ) {
+        try {
+          const { popPluginReloadState } = require('@/lib/plugin-reload-state');
+          const { getOrgPg } = require('@restart/db-org');
+          const { sql } = getOrgPg();
+          const state = await popPluginReloadState({
+            pluginId: lp.plugin.name,
+            harnessSlug: ctx.installSlug,
+            sql,
+          });
+          if (state !== undefined) {
+            await lp.plugin.hooks.restoreFromReload(ctx, state);
+          }
+        } catch (e: any) {
+          ctx.log(`restoreFromReload threw (state discarded): ${e?.message ?? e}`);
+        }
+      }
     });
   } catch (e: any) {
     // Roll back partial state so a retry re-runs init() cleanly (Batch
@@ -856,6 +881,77 @@ export async function pluginHostStatus(): Promise<PluginHostStatus & {
 }
 
 /** Tests-only: drop the cached host so the next call re-discovers. */
+/**
+ * Before resetting the host, walk each initialized (plugin, harness)
+ * pair, call `getStateForReload` on plugins that opted in via
+ * `manifest.hotReload.preserveState`, and stash the result in PG.
+ * On the next init() for that pair the host will call
+ * `restoreFromReload(state)`.
+ *
+ * Errors per-plugin are swallowed with a log — a misbehaving plugin
+ * mustn't block the rest of the reset.
+ */
+export async function captureReloadStates(): Promise<void> {
+  const state = __cache.state;
+  if (!state) return;
+  let sql: any;
+  let savePluginReloadState: any;
+  try {
+    const dep = await import('@restart/db-org');
+    sql = dep.getOrgPg().sql;
+    ({ savePluginReloadState } = await import('./plugin-reload-state'));
+  } catch {
+    return;
+  }
+  for (const key of state.initialized) {
+    const [pluginName, harnessSlug] = splitRegKey(key);
+    const lp = state.plugins.find((p) => p.plugin.name === pluginName);
+    if (!lp) continue;
+    const manifest = lp.plugin as unknown as { hotReload?: { preserveState?: boolean } };
+    if (!manifest.hotReload?.preserveState) continue;
+    const getStateForReload = lp.plugin.hooks?.getStateForReload;
+    if (typeof getStateForReload !== 'function') continue;
+    try {
+      const ctx = await buildContextFor(lp, harnessSlug);
+      if (!ctx) continue;
+      const stash = await getStateForReload(ctx);
+      await savePluginReloadState({ pluginId: pluginName, harnessSlug, sql }, stash);
+    } catch (e: any) {
+      // eslint-disable-next-line no-console
+      console.warn(`[plugin-host] getStateForReload(${pluginName}, ${harnessSlug}) threw — state discarded: ${e?.message ?? e}`);
+    }
+  }
+}
+
+function splitRegKey(key: string): [string, string] {
+  const idx = key.lastIndexOf('::');
+  if (idx < 0) return [key, ''];
+  return [key.slice(0, idx), key.slice(idx + 2)];
+}
+
+async function buildContextFor(lp: LoadedPlugin, harnessSlug: string): Promise<PapercuspContext | null> {
+  // Mirror the minimal ctx shape ensureInitialized uses: discovery
+  // already gave us the dataDir + projectDir for the harness.
+  // Reuses the same project-resolution path as enable/handler dispatch.
+  try {
+    const { resolveHarnessPaths } = await import('@/lib/resolve-harness-paths');
+    const paths = await resolveHarnessPaths(harnessSlug, lp.plugin.name);
+    if (!paths) return null;
+    return {
+      projectDir: paths.projectDir,
+      stateDir: paths.stateDir,
+      pluginDataDir: paths.pluginDataDir,
+      installSlug: harnessSlug,
+      log: (msg: string) => {
+        // eslint-disable-next-line no-console
+        console.log(`[${lp.plugin.name}/${harnessSlug}] ${msg}`);
+      },
+    } as PapercuspContext;
+  } catch {
+    return null;
+  }
+}
+
 export function _resetPluginHostForTests(): void {
   __cache.promise = null;
   __cache.state = null;

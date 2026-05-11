@@ -306,6 +306,28 @@ export interface PluginHooks {
   contributeOperatorSuggestions?(
     ctx: PapercuspContext,
   ): Promise<PluginOperatorSuggestion[]>;
+
+  /**
+   * Hot-reload state preservation (Tier 3 from Batch F roadmap).
+   *
+   * If declared, the host calls `getStateForReload` just before the
+   * plugin is unloaded for a reload (uninstall doesn't trigger this;
+   * use `onUnload` for cleanup). The returned value must be
+   * JSON-serialisable and ≤ 64 KiB. The host stashes it keyed by
+   * (plugin_id, harness_slug); on the next `init()` for that pair,
+   * `restoreFromReload(state)` is called BEFORE any other hook.
+   *
+   * Opt-in: the plugin's manifest must declare `hotReload:
+   * { preserveState: true }`. Without that flag, the host won't call
+   * either hook (avoids surprising plugin authors who didn't
+   * design for it).
+   *
+   * Use cases: in-flight WebSocket connections that need to survive a
+   * config edit, debounce timers that shouldn't reset on every code
+   * change, accumulated counters that haven't been flushed to ctx.kv yet.
+   */
+  getStateForReload?(ctx: PapercuspContext): Promise<unknown>;
+  restoreFromReload?(ctx: PapercuspContext, state: unknown): Promise<void>;
 }
 
 /**

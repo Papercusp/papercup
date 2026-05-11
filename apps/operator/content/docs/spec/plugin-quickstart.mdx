@@ -117,6 +117,33 @@ const keys = await ctx.kv?.list({ prefix: 'sync:', limit: 50 });
 
 Use `pluginDataDir` for blobs > 10 KiB, code, or anything that doesn't need to be scanned/aggregated.
 
+## Hot-reload state preservation (optional)
+
+Plugins with in-flight state that shouldn't reset on every reload (debounce timers, accumulated counters, live connections) can opt in via the manifest:
+
+```json
+{ "hotReload": { "preserveState": true } }
+```
+
+Then implement two hooks:
+
+```ts
+hooks: {
+  async getStateForReload(ctx) {
+    return { queue: this.queue, debouncer: this.debouncer.flush() };
+  },
+  async restoreFromReload(ctx, state) {
+    this.queue = (state as Saved).queue;
+    this.debouncer.resumeFrom((state as Saved).debouncer);
+  },
+}
+```
+
+- **Lifecycle.** Reload begins → `getStateForReload(ctx)` → host stashes the returned value → reload completes → new module instance's `init()` runs → `restoreFromReload(ctx, state)` runs before any other hook.
+- **One-shot.** Restore is destructive. If `restoreFromReload` throws, the host logs + discards; the plugin starts fresh on the next reload.
+- **Size cap.** State must be JSON-serialisable and ≤ 64 KiB. Bigger state belongs in `ctx.kv` or `pluginDataDir`.
+- **Uninstall.** Doesn't trigger these hooks — use `onUnload` for cleanup. Uninstalled plugins have their stashed state cleared.
+
 ## 4. Test locally
 
 ```bash
