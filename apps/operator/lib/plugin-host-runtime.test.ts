@@ -206,7 +206,11 @@ describe('action registry via init()', () => {
 });
 
 describe('ctx.spawn capability gating', () => {
-  it('rejects path-bearing bins before checking capabilities', async () => {
+  it('rejects absolute-path bins when only basename cap is declared (D2)', async () => {
+    // Batch D2 (absolute-path policy): an absolute path requires the
+    // manifest to declare the exact path or a covering wildcard. Declaring
+    // only the basename cap (`compute:exec:echo`) does NOT cover
+    // `/bin/echo`. The host rejects with a missing-capability message.
     let captured: any = null;
     const p = makePlugin({
       name: 'spawn-tester',
@@ -217,7 +221,21 @@ describe('ctx.spawn capability gating', () => {
     });
     _injectPluginHostForTests([p]);
     await warmUpPluginsForSlug(SLUG_ARGS);
-    expect(String(captured?.message)).toMatch(/must be a basename/);
+    expect(String(captured?.message)).toMatch(/missing capability "compute:exec:\/bin\/echo"/);
+  });
+
+  it('rejects relative paths with a basename-only error', async () => {
+    let captured: any = null;
+    const p = makePlugin({
+      name: 'rel-spawn-tester',
+      capabilities: ['compute:exec:echo'],
+      async init(ctx) {
+        try { await ctx.spawn!('./echo', []); } catch (e: any) { captured = e; }
+      },
+    });
+    _injectPluginHostForTests([p]);
+    await warmUpPluginsForSlug(SLUG_ARGS);
+    expect(String(captured?.message)).toMatch(/must be either a basename or an absolute path/);
   });
 
   it('rejects when the cap is missing', async () => {
