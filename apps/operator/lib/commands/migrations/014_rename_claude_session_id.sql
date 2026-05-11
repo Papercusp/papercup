@@ -1,4 +1,4 @@
--- 013_rename_claude_session_id.sql
+-- 014_rename_claude_session_id.sql
 --
 -- Rename `claude_session_id` column → `agent_session_id` everywhere it
 -- appears. The old name dates back to when claude-code was the only
@@ -28,7 +28,7 @@ BEGIN
       AND column_name = 'claude_session_id'
   ) THEN
     EXECUTE 'ALTER TABLE harness_shared.delegates RENAME COLUMN claude_session_id TO agent_session_id';
-    RAISE NOTICE '[013] renamed delegates.claude_session_id → agent_session_id';
+    RAISE NOTICE '[014] renamed delegates.claude_session_id → agent_session_id';
   END IF;
 
   -- 2. operator_scans.claude_session_id → operator_scans.agent_session_id
@@ -39,7 +39,7 @@ BEGIN
       AND column_name = 'claude_session_id'
   ) THEN
     EXECUTE 'ALTER TABLE harness_shared.operator_scans RENAME COLUMN claude_session_id TO agent_session_id';
-    RAISE NOTICE '[013] renamed operator_scans.claude_session_id → agent_session_id';
+    RAISE NOTICE '[014] renamed operator_scans.claude_session_id → agent_session_id';
   END IF;
 
   -- 3. delegate_inbox.claude_session_id → delegate_inbox.agent_session_id
@@ -50,7 +50,7 @@ BEGIN
       AND column_name = 'claude_session_id'
   ) THEN
     EXECUTE 'ALTER TABLE harness_shared.delegate_inbox RENAME COLUMN claude_session_id TO agent_session_id';
-    RAISE NOTICE '[013] renamed delegate_inbox.claude_session_id → agent_session_id';
+    RAISE NOTICE '[014] renamed delegate_inbox.claude_session_id → agent_session_id';
   END IF;
 
   -- 4. Indexes referencing the old column name. Postgres preserves the
@@ -71,7 +71,7 @@ BEGIN
     WHERE conname = 'claude_sessions_claude_session_id_key'
   ) THEN
     EXECUTE 'ALTER TABLE harness_shared.delegates RENAME CONSTRAINT claude_sessions_claude_session_id_key TO claude_sessions_agent_session_id_key';
-    RAISE NOTICE '[013] renamed delegates unique constraint claude_session_id → agent_session_id';
+    RAISE NOTICE '[014] renamed delegates unique constraint claude_session_id → agent_session_id';
   END IF;
 END
 $migration$;

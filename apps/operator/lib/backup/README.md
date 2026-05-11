@@ -145,7 +145,7 @@ Failures log to `hook.log` and never abort the snapshot.
 
 ## Migration
 
-`apps/operator/lib/commands/migrations/012_workspace_backups.sql`
+`apps/operator/lib/commands/migrations/013_workspace_backups.sql`
 creates `workspace_backup_settings`, `backup_snapshots`, `backup_events`
 in `harness_shared`. Idempotent CREATE IF NOT EXISTS.
 
