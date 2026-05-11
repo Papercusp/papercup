@@ -69,6 +69,65 @@
 
 ---
 
+## Update — 2026-05-11 (later that day)
+
+Original 24-param batch shipped, then a deeper audit identified **22 more** candidates across 17 files. All shipped in commit `dc62eb03`:
+
+**Batch 3 — panels/dropdowns/banners (10 params, 9 files)**
+
+| File | State | URL param |
+|---|---|---|
+| `_components/RecentActionsCenter` | `open` | `?recent` |
+| `_components/NotificationCenter` | `open` | `?notifications` |
+| `_components/BacklinksPanel` | `open` (default true) | `?backlinks` |
+| `_components/WorkspaceSwitcher` | `open` | `?wsSwitch` |
+| `harness/PlanReviewBanner` | `open`/`dismissed` | `?planReview`/`?planDismissed` |
+| `harness/EscalationBanner` | `showNotes` | `?escalationNotes` |
+| `harness/FeaturePeekPanel` | `showDebug`/`showTimeline` | `?peekDebug`/`?peekTimeline` |
+| `harness/issues/IssueDetail` | `showTimeline` | `?issueTimeline` |
+| `harness/DecisionsPanel` | `hideGhosts` | `?hideGhosts` |
+
+**Batch 4 — tabs/views (9 params, 7 files)**
+
+| File | State | URL param |
+|---|---|---|
+| `harness/HarnessDashboard:1902` | `mode: 'fields'\|'json'` | `?editorMode` |
+| `harness/HarnessDashboard:4782` | `tab: 'issues'\|'report'\|'tests'` | `?validationTab` |
+| `harness/ExpertsPanel:219` | `tab: 'spec'\|'feedback'\|'chat'\|'identity'` | `?expertTab` |
+| `harness/ExpertsPanel:881` | `open` (dispatch list, default true) | `?dispatchList` |
+| `design/[slug]/RegressionPane` | `filter: 'all'\|'regressions'\|'clean'` | `?regressionFilter` |
+| `design/[slug]/SketchPane` | `tool: 'pen'\|'eraser'` | `?sketchTool` |
+| `settings/operator/page` | `statsOpen` | `?stats` |
+| `harness/SpecEditor` | `envRevealed` | `?showEnv` |
+| `harness/brainstorm/BrainstormPanel` | `chatOpen` | `?chat` |
+
+**Batch 5 — selections (3 params, 3 files)**
+
+| File | State | URL param |
+|---|---|---|
+| `harness/HarnessDashboard:2301` | `activeSlug` | `?slug` |
+| `design/[slug]/DesignDashboard` | `selectedFeatureId` | `?feature` |
+| `harness/ExpertsPanel:74` | `selection` (discriminated union) | `?expertSel` (JSON-encoded, shape-guarded) |
+
+**Skipped from batch 6 (per caller decision):** `ProposalsPanel.shortlistOnly`, `ProposalsPanel.replanOnAccept` — preferences; localStorage is a more natural fit.
+
+**Confirmed NOT migratable (still local state):**
+
+| Pattern | Where | Why |
+|---|---|---|
+| `OracleDock.activeHarnessSlug` | derived from URL via `slugFromUrl()` | already URL-bound |
+| `PiPanel.showFind` | ref-coupled to xterm search addon | sync ref reads break |
+| `ProposalsPanel.editingGoal`, `ProjectDetail.editing` | mid-edit modes | would lose drafts |
+
+**Session totals**
+
+- 46 params migrated (24 original + 22 follow-up)
+- 26 files touched (12 original + 17 follow-up, with overlap)
+- End-to-end re-verified: agent drove a real Playwright tab through `?recent=true&validationTab=report&backlinks=false&planReview=true` via MCP `ui:dispatch`
+- All 5 integration suites green on both `:3055` (64/0) and `:3070` (64/0)
+
+---
+
 ## Estimated effort to migrate the high-value set
 
 | File | New params | LOC | Notes |
