@@ -34,9 +34,10 @@ const PgTab = dynamic(() => import('./_components/PgTab'), { ssr: false });
 const ProcessesTab = dynamic(() => import('./_components/ProcessesTab'), { ssr: false });
 const StudioTab = dynamic(() => import('./_components/StudioTab'), { ssr: false });
 const TablesTab = dynamic(() => import('./_components/TablesTab'), { ssr: false });
+const SqlTab = dynamic(() => import('./_components/SqlTab'), { ssr: false });
 const BackupsTab = dynamic(() => import('./_components/BackupsTab'), { ssr: false });
 
-type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'studio' | 'backups';
+type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'sql' | 'studio' | 'backups';
 
 const TABS: { id: TabId; label: string }[] = [
   { id: 'harnesses', label: 'Harnesses' },
@@ -47,6 +48,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: 'pg', label: 'PG' },
   { id: 'processes', label: 'Processes' },
   { id: 'tables', label: 'Tables' },
+  { id: 'sql', label: 'SQL' },
   { id: 'studio', label: 'Drizzle Studio' },
   { id: 'backups', label: 'Backups' },
 ];
@@ -106,6 +108,7 @@ export default function DevPage() {
           {tab === 'pg' && <PgTab />}
           {tab === 'processes' && <ProcessesTab />}
           {tab === 'tables' && <TablesTab />}
+          {tab === 'sql' && <SqlTab />}
           {tab === 'studio' && <StudioTab />}
           {tab === 'backups' && <BackupsTab />}
         </Suspense>

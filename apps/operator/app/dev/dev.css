@@ -1348,3 +1348,126 @@
   font-size: 0.85em;
   margin-left: 1px;
 }
+
+/* ── /dev SQL tab (Monaco) ─────────────────────────── */
+
+.pc-sql-shell {
+  display: grid;
+  grid-template-rows: auto 1fr 1fr;
+  height: 100%;
+  width: 100%;
+  background: #0a0d10;
+}
+.pc-sql-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  background: rgba(255, 255, 255, 0.015);
+  font-size: 12px;
+}
+.pc-sql-run {
+  padding: 6px 18px;
+  background: linear-gradient(180deg, #7c6bff 0%, #6b5be5 100%);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  transition: filter 100ms;
+}
+.pc-sql-run:hover:not(:disabled) { filter: brightness(1.10); }
+.pc-sql-run:disabled { opacity: 0.5; cursor: progress; }
+.pc-sql-role { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.pc-sql-role select {
+  padding: 3px 6px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+  border-radius: 4px;
+  color: var(--fg, #e2e8f0);
+  font-size: 11px;
+  font-family: inherit;
+}
+.pc-sql-stats {
+  color: var(--fg-mute, #94a3b8);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.pc-sql-err-summary {
+  color: #fca5a5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.pc-sql-hint {
+  margin-left: auto;
+  color: var(--fg-mute, #94a3b8);
+  opacity: 0.6;
+  font-size: 11px;
+}
+.pc-sql-editor {
+  min-height: 0;
+  background: #1e1e1e;
+  overflow: hidden;
+}
+.pc-sql-results {
+  min-height: 0;
+  border-top: 1px solid var(--border, rgba(125, 211, 252, 0.12));
+  overflow: auto;
+  padding: 8px 14px;
+}
+.pc-sql-empty {
+  color: var(--fg-mute, #94a3b8);
+  font-style: italic;
+  font-size: 12px;
+  padding: 12px 4px;
+}
+.pc-sql-err {
+  margin: 0;
+  padding: 10px 14px;
+  background: rgba(248, 113, 113, 0.06);
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: 6px;
+  color: #fca5a5;
+  font-size: 12px;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.pc-sql-grid-scroll {
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.10));
+  border-radius: 4px;
+  overflow: auto;
+  max-height: 100%;
+}
+.pc-sql-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+.pc-sql-grid th {
+  position: sticky;
+  top: 0;
+  background: rgba(10, 13, 16, 0.96);
+  text-align: left;
+  padding: 5px 10px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fg-mute, #94a3b8);
+  border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.16));
+  white-space: nowrap;
+}
+.pc-sql-grid td {
+  padding: 4px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  vertical-align: top;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pc-sql-grid tr:hover td { background: rgba(125, 211, 252, 0.04); }
