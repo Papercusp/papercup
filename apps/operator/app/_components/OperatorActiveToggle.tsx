@@ -91,6 +91,25 @@ function useOperatorSleepUntil(): number {
 }
 
 /**
+ * Subscribe to the provider's `sub` state via window event. Lets the
+ * chip reflect quiet_wait without pulling in React context (the
+ * toggle is rendered above the provider tree in the navbar).
+ */
+const SUB_CHANGE_EVENT = 'papercusp:operatorSub';
+function useOperatorSub(): string {
+  const [sub, setSub] = useState<string>('ready');
+  useEffect(() => {
+    const onSub = (e: Event) => {
+      const detail = (e as CustomEvent<{ sub: string }>).detail;
+      if (typeof detail?.sub === 'string') setSub(detail.sub);
+    };
+    window.addEventListener(SUB_CHANGE_EVENT, onSub as EventListener);
+    return () => window.removeEventListener(SUB_CHANGE_EVENT, onSub as EventListener);
+  }, []);
+  return sub;
+}
+
+/**
  * Public hook other components (state machine, voice path, set_mode tag
  * dispatcher) use to read / write operator mode with cross-component fanout.
  */
@@ -110,39 +129,54 @@ export function setOperatorMode(next: OperatorMode): void {
 export function OperatorActiveToggle() {
   const [mode, setMode] = useOperatorMode();
   const sleepUntil = useOperatorSleepUntil();
+  const sub = useOperatorSub();
   const active = mode === 'active';
   const sleepingMs = sleepUntil > 0 ? sleepUntil - Date.now() : 0;
   const sleeping = active && sleepingMs > 0;
+  // Quiet = active mode that exhausted the silence ladder. Subordinate
+  // to sleeping (if both, sleep wins because it has a deadline).
+  const quiet = active && !sleeping && sub === 'quiet_wait';
 
   const onClick = useCallback(() => {
     if (sleeping) {
-      // Sleeping → click wakes; mode stays active.
       writeSleepUntilMs(0);
       return;
     }
+    if (quiet) {
+      // Quiet → click is a no-op for now; the user is supposed to type
+      // in the chat to resume. Surfacing the state is the value.
+      return;
+    }
     setMode(active ? 'passive' : 'active');
-  }, [active, setMode, sleeping]);
+  }, [active, setMode, sleeping, quiet]);
 
-  // Format the sleep countdown. <60s → "Ns"; otherwise "Nm".
   const sleepLabel = sleeping
     ? sleepingMs < 60_000
       ? `${Math.max(1, Math.ceil(sleepingMs / 1000))}s`
       : `${Math.ceil(sleepingMs / 60_000)}m`
     : '';
 
-  const stateClass = sleeping ? 'sleeping' : active ? 'active' : 'passive';
-  const label = sleeping ? `Sleeping ${sleepLabel}` : active ? 'Active' : 'Passive';
+  const stateClass = sleeping ? 'sleeping' : quiet ? 'quiet' : active ? 'active' : 'passive';
+  const label = sleeping
+    ? `Sleeping ${sleepLabel}`
+    : quiet
+      ? 'Quiet'
+      : active ? 'Active' : 'Passive';
   const aria = sleeping
     ? `Operator sleeping for ${sleepLabel}. Click to wake.`
-    : active
-      ? 'Operator interaction mode: active. Click to set passive.'
-      : 'Operator interaction mode: passive. Click to set active.';
+    : quiet
+      ? 'Operator is quiet — type in the chat to pick up where you left off.'
+      : active
+        ? 'Operator interaction mode: active. Click to set passive.'
+        : 'Operator interaction mode: passive. Click to set active.';
   const title = sleeping
     ? `Operator went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
-    : active
-      ? 'Operator is active — speaks proactively. Click to make passive.'
-      : 'Operator is passive — only responds when spoken to. Click to make active.';
-  const dotKind = sleeping ? 'static' : active ? 'pulsing' : 'static';
+    : quiet
+      ? 'Operator went silent after the silence ladder ran out. Type in the chat to wake them.'
+      : active
+        ? 'Operator is active — speaks proactively. Click to make passive.'
+        : 'Operator is passive — only responds when spoken to. Click to make active.';
+  const dotKind = (sleeping || quiet) ? 'static' : active ? 'pulsing' : 'static';
 
   return (
     <>
@@ -195,6 +229,12 @@ const TOGGLE_CSS = `
   border-color: rgba(148, 163, 184, 0.40);
   color: var(--fg-mute, #94a3b8);
   font-style: italic;
+}
+.op-active-toggle--quiet {
+  background: rgba(148, 163, 184, 0.06);
+  border-color: rgba(148, 163, 184, 0.30);
+  color: var(--fg-mute, #94a3b8);
+  cursor: default;
 }
 
 .op-active-toggle-dot {

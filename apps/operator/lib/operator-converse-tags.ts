@@ -59,6 +59,34 @@ const SLEEP_RE = /<sleep\s+([^>]+?)\s*\/?>/i;
 // turn are allowed (parallel fan-out: "review these three plans").
 const SPAWN_RE = /<spawn\s+([^>]+?)\s*\/?>/gi;
 
+/**
+ * Clamp a `<say>` body to TTS-safe bounds: ≤220 chars, no markdown
+ * formatting markers, no leading/trailing whitespace. Per the active-mode
+ * plan ("1–2 sentences, ≤220 chars, TTS-safe, no markdown").
+ *
+ * Markdown stripping is deliberately conservative: only the inline
+ * markers (`**`, `__`, `_`, `` ` ``, `[…](…)`) — block-level constructs
+ * (headings, lists, code fences) shouldn't appear inside a single say
+ * body and we don't want to mangle prose with literal asterisks.
+ */
+const SAY_MAX_CHARS = 220;
+export function clampSay(s: string): string {
+  let out = s.trim();
+  // Inline markdown:
+  out = out.replace(/\*\*([^*]+)\*\*/g, '$1'); // bold
+  out = out.replace(/__([^_]+)__/g, '$1');     // bold (alt)
+  out = out.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '$1'); // italic
+  out = out.replace(/`([^`]+)`/g, '$1');       // inline code
+  out = out.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1'); // links → just the text
+  if (out.length > SAY_MAX_CHARS) {
+    // Truncate at a word boundary close to the cap. Keep an ellipsis
+    // hint so the LLM (reading next-turn context) sees the truncation.
+    const cut = out.slice(0, SAY_MAX_CHARS).replace(/\s+\S*$/, '');
+    out = (cut.length > 0 ? cut : out.slice(0, SAY_MAX_CHARS)) + '…';
+  }
+  return out;
+}
+
 function parseAttrs(raw: string): Record<string, string> {
   const out: Record<string, string> = {};
   // Match `key="value"` and `key='value'`. Loose enough that small
@@ -98,7 +126,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
   const sayMatch = SAY_RE.exec(raw);
   if (sayMatch) {
     const text = sayMatch[1].trim();
-    result.say = text.length > 0 ? text : null;
+    result.say = text.length > 0 ? clampSay(text) : null;
   } else if (!SLEEP_RE.test(raw)) {
     // Defensive fallback: model emitted bare prose without <say> wrapping.
     // Treat the whole turn as the spoken content so the user actually sees
@@ -110,7 +138,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
       .replace(/<set_mode>[^<]*<\/set_mode>/gi, '')
       .trim();
     if (stripped.length > 0) {
-      result.say = stripped;
+      result.say = clampSay(stripped);
     }
   }
 
@@ -133,7 +161,11 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
       });
     } else {
       result.sleep = {
-        durationMinutes: Math.min(Math.floor(dur), 60 * 24 * 30), // cap at 30d
+        // Cap at 1 day. The plan's intent for <sleep> is "give me a
+        // minute" / "I'm busy this hour" — anything longer than a day
+        // is almost certainly a model formatting bug, and parking the
+        // operator for weeks/years on a stray "9999" would be a footgun.
+        durationMinutes: Math.min(Math.floor(dur), 60 * 24),
         reason: attrs['reason'] ?? '',
       };
     }

@@ -84,8 +84,28 @@ interface State {
   sub: SubState;
   messages: ChatMessage[];
   error: string | null;
-  /** Timestamps of the last N turns (for the 3-in-2min cadence check). */
-  recentTurnTsMs: number[];
+  /**
+   * Timestamps of the last N USER turns (assistant turns excluded).
+   * Used by the 3-in-2min engagement check that gates `mayAskActiveNow`.
+   * The plan calls this "fresh engagement" — operator's own turns
+   * obviously don't count as the user engaging.
+   */
+  recentUserTurnTsMs: number[];
+  /**
+   * When the operator last asked "Do you want me to go back into active
+   * mode?" — set when the parser detects the relevant phrase in a
+   * <say>. Paired with `wantActiveDeclinedAtMs` below to enforce the
+   * cooldown after the user says no.
+   */
+  wantActiveAskedAtMs: number;
+  /**
+   * When the user last declined the "want active?" prompt. Resets the
+   * cooldown clock; the operator must wait either 5 fresh user turns
+   * OR 10 minutes (whichever comes first) before re-asking.
+   */
+  wantActiveDeclinedAtMs: number;
+  /** User turns recorded since the most recent decline. Resets to 0 on decline. */
+  userTurnsSinceDecline: number;
 }
 
 const INITIAL: State = {
@@ -93,7 +113,10 @@ const INITIAL: State = {
   sub: 'ready',
   messages: [],
   error: null,
-  recentTurnTsMs: [],
+  recentUserTurnTsMs: [],
+  wantActiveAskedAtMs: 0,
+  wantActiveDeclinedAtMs: 0,
+  userTurnsSinceDecline: 0,
 };
 
 /** Lazy-init for the reducer — pull persisted messages from sessionStorage
@@ -119,7 +142,9 @@ type Action =
   | { type: 'append_message'; message: ChatMessage }
   | { type: 'append_assistant_delta'; text: string }
   | { type: 'set_error'; error: string | null }
-  | { type: 'record_turn_ts'; tsMs: number }
+  | { type: 'record_user_turn'; tsMs: number }
+  | { type: 'record_want_active_asked'; tsMs: number }
+  | { type: 'record_want_active_declined'; tsMs: number }
   | { type: 'reset_messages' }
   | { type: 'replace_messages'; messages: ChatMessage[] }
   | { type: 'prepend_messages'; messages: ChatMessage[] };
@@ -133,6 +158,16 @@ function reducer(state: State, action: Action): State {
       return { ...state, mode: action.mode, sub };
     }
     case 'set_sub':
+      // Fan out so the navbar chip + any other interested component
+      // can reflect quiet_wait / silence_check / etc. without taking
+      // the React-context route.
+      try {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('papercusp:operatorSub', { detail: { sub: action.sub } }),
+          );
+        }
+      } catch { /* ignore */ }
       return { ...state, sub: action.sub };
     case 'append_message':
       return { ...state, messages: [...state.messages, action.message] };
@@ -151,13 +186,25 @@ function reducer(state: State, action: Action): State {
     }
     case 'set_error':
       return { ...state, error: action.error };
-    case 'record_turn_ts': {
+    case 'record_user_turn': {
       // Trim to the last 2 min to keep the array bounded.
       const cutoff = action.tsMs - 2 * 60 * 1000;
-      const next = state.recentTurnTsMs.filter((t) => t >= cutoff);
+      const next = state.recentUserTurnTsMs.filter((t) => t >= cutoff);
       next.push(action.tsMs);
-      return { ...state, recentTurnTsMs: next };
+      return {
+        ...state,
+        recentUserTurnTsMs: next,
+        userTurnsSinceDecline: state.userTurnsSinceDecline + 1,
+      };
     }
+    case 'record_want_active_asked':
+      return { ...state, wantActiveAskedAtMs: action.tsMs };
+    case 'record_want_active_declined':
+      return {
+        ...state,
+        wantActiveDeclinedAtMs: action.tsMs,
+        userTurnsSinceDecline: 0,
+      };
     case 'reset_messages':
       return { ...state, messages: [], error: null };
     case 'replace_messages':
@@ -173,17 +220,62 @@ const TURNS_PER_WINDOW_THRESHOLD = 3;
 const WINDOW_MS = 2 * 60 * 1000;
 
 /**
+ * Decline cooldown — after the user says no to "want active?", the
+ * operator must wait either 5 fresh user turns OR 10 minutes (whichever
+ * comes first) before re-asking. Per the active-mode plan.
+ */
+const DECLINE_COOLDOWN_MS = 10 * 60 * 1000;
+const DECLINE_COOLDOWN_TURNS = 5;
+
+/**
  * Returns true when the operator may ask "want me back to active?" —
- * gated on (a) ≥3 turns in the last 2 min AND (b) sleep timer expired.
- * The route + prompt see this as the [may_ask_active] context marker;
- * here we expose it for the dispatcher to read.
+ * all of:
+ *   (a) mode === 'passive' (otherwise the question makes no sense)
+ *   (b) sleep timer expired (don't disturb during a self-quiet)
+ *   (c) ≥3 USER turns in the last 2 min (the "fresh engagement" signal)
+ *   (d) cooldown after a prior decline has elapsed (5 user turns OR 10 min)
+ *
+ * Exposed to the route as the `[may_ask_active]` prompt context marker.
  */
 export function mayAskActiveNow(state: State, nowMs: number = Date.now()): boolean {
   if (state.mode !== 'passive') return false;
   if (readSleepUntilMs() > nowMs) return false;
   const cutoff = nowMs - WINDOW_MS;
-  const inWindow = state.recentTurnTsMs.filter((t) => t >= cutoff).length;
-  return inWindow >= TURNS_PER_WINDOW_THRESHOLD;
+  const inWindow = state.recentUserTurnTsMs.filter((t) => t >= cutoff).length;
+  if (inWindow < TURNS_PER_WINDOW_THRESHOLD) return false;
+  // Cooldown gate: skip if neither the time nor the turn-count threshold
+  // has been met since the most recent decline.
+  if (state.wantActiveDeclinedAtMs > 0) {
+    const sinceDecline = nowMs - state.wantActiveDeclinedAtMs;
+    if (
+      sinceDecline < DECLINE_COOLDOWN_MS &&
+      state.userTurnsSinceDecline < DECLINE_COOLDOWN_TURNS
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Heuristic: does the assistant's `<say>` body contain the
+ * "want me back to active?" question? Used to seed the decline-detection
+ * window — when the next user turn is a "no", we know to record it.
+ */
+const WANT_ACTIVE_RE = /(want.*back.*active|back into active|go.*active.*mode)/i;
+export function sayContainsWantActive(say: string): boolean {
+  return WANT_ACTIVE_RE.test(say);
+}
+
+/**
+ * Heuristic: does the user's reply read as a "no" to a recent
+ * want-active prompt? Conservative — better to miss a decline (and
+ * have the operator re-ask sooner) than to mis-detect (and cool down
+ * when the user actually said yes).
+ */
+const DECLINE_RE = /^(no\b|nah\b|nope\b|not (yet|now|really)|keep (it )?(quiet|passive)|stay (passive|quiet)|leave it)/i;
+export function userReplyDeclinesActive(text: string): boolean {
+  return DECLINE_RE.test(text.trim());
 }
 
 // ─── Silence-timer config ───────────────────────────────────────────────
@@ -651,7 +743,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               ? { role: 'assistant', content: parsed.say, tools: collectedTools }
               : { role: 'assistant', content: parsed.say },
           });
-          dispatch({ type: 'record_turn_ts', tsMs: Date.now() });
+          // No record_turn_ts here — the engagement check tracks USER
+          // turns only. Assistant turns just need the want-active probe.
+          if (sayContainsWantActive(parsed.say)) {
+            dispatch({ type: 'record_want_active_asked', tsMs: Date.now() });
+          }
           persistTurn('assistant', parsed.say, 'text_typed');
         }
 
@@ -802,7 +898,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       if (!trimmed) return;
       const userMsg: ChatMessage = { role: 'user', content: trimmed };
       dispatch({ type: 'append_message', message: userMsg });
-      dispatch({ type: 'record_turn_ts', tsMs: Date.now() });
+      dispatch({ type: 'record_user_turn', tsMs: Date.now() });
+      // Decline detection: if the operator just asked "want active?"
+      // (within the last 60s) AND the user's reply reads as a "no",
+      // record the decline so mayAskActiveNow() applies the cooldown.
+      const askedAt = stateRef.current.wantActiveAskedAtMs;
+      if (
+        askedAt > 0
+        && Date.now() - askedAt < 60_000
+        && userReplyDeclinesActive(trimmed)
+      ) {
+        dispatch({ type: 'record_want_active_declined', tsMs: Date.now() });
+      }
       persistTurn('user', trimmed, 'text_typed');
       // quiet_wait → user re-engaged; resume from the thread.
       const trigger: GenerationRequest['trigger'] =

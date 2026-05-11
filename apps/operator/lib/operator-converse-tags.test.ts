@@ -62,9 +62,9 @@ describe('parseOperatorTurn', () => {
     expect(parseOperatorTurn('<sleep duration_minutes="-5" reason="x">').sleep).toBeNull();
   });
 
-  it('caps absurdly large sleep durations at 30 days', () => {
+  it('caps absurdly large sleep durations at 1 day (was 30d, tightened)', () => {
     const r = parseOperatorTurn('<sleep duration_minutes="9999999" reason="forever">');
-    expect(r.sleep?.durationMinutes).toBe(60 * 24 * 30);
+    expect(r.sleep?.durationMinutes).toBe(60 * 24);
   });
 
   it('accepts both " and \' quoting on attributes', () => {
@@ -143,5 +143,56 @@ describe('sleepTagToEpochMs', () => {
     expect(sleepTagToEpochMs({ durationMinutes: 5 }, 1_000_000_000)).toBe(
       1_000_000_000 + 5 * 60 * 1000,
     );
+  });
+});
+
+import { clampSay } from './operator-converse-tags';
+
+describe('clampSay', () => {
+  it('passes a short string through unchanged', () => {
+    expect(clampSay('Hi there.')).toBe('Hi there.');
+  });
+
+  it('trims surrounding whitespace', () => {
+    expect(clampSay('  hi  ')).toBe('hi');
+  });
+
+  it('strips inline markdown markers', () => {
+    expect(clampSay('this is **bold** and _italic_ and `code`')).toBe(
+      'this is bold and italic and code',
+    );
+  });
+
+  it('extracts link text from [text](url)', () => {
+    expect(clampSay('see [the docs](https://example.com)')).toBe('see the docs');
+  });
+
+  it('truncates at a word boundary near the 220-char cap', () => {
+    const long = 'word '.repeat(60).trim(); // 60 * 5 - 1 = 299 chars
+    const out = clampSay(long);
+    expect(out.length).toBeLessThanOrEqual(221); // 220 + the ellipsis
+    expect(out.endsWith('…')).toBe(true);
+    expect(/\w+…$/.test(out) || /\s…$/.test(out)).toBe(true);
+  });
+
+  it('caps even when there is no whitespace to break on', () => {
+    const long = 'x'.repeat(400);
+    const out = clampSay(long);
+    expect(out.length).toBeLessThanOrEqual(221);
+    expect(out.endsWith('…')).toBe(true);
+  });
+});
+
+describe('sleepTagToEpochMs (clamped)', () => {
+  it('caps the duration at 1 day', () => {
+    // parseOperatorTurn applies the clamp, not sleepTagToEpochMs itself.
+    // Here we verify the parse + clamp together.
+    const r = parseOperatorTurn('<sleep duration_minutes="9999999" reason="x">');
+    expect(r.sleep?.durationMinutes).toBe(60 * 24);
+  });
+
+  it('preserves a normal short duration', () => {
+    const r = parseOperatorTurn('<sleep duration_minutes="15" reason="ok">');
+    expect(r.sleep?.durationMinutes).toBe(15);
   });
 });
