@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
-import { capture, type SnapshotPlugin } from '@papercusp/export-state';
+import { capture, isBundledPlugin, type SnapshotPlugin } from '@papercusp/export-state';
 import { findProject } from '@/lib/snapshot-discovery';
 import { redactPluginConfig } from '@/lib/snapshot-config-redact';
 import { extractShape, type ConfigSchema } from '@/lib/snapshot-shape';
@@ -118,12 +118,14 @@ async function readEnabledPlugins(
     let uiSchema: unknown = undefined;
     let configSchema: ConfigSchema | undefined;
     let pluginVersionPinned: boolean | undefined;
+    let isBundled = false;
     try {
       const m = JSON.parse(await fs.readFile(join(dir, 'papercusp.json'), 'utf8')) as {
         capabilities?: unknown;
         uiSchema?: unknown;
         configSchema?: unknown;
         pluginVersionPinned?: unknown;
+        bundled?: unknown;
       };
       if (Array.isArray(m.capabilities)) {
         caps = m.capabilities.filter((c): c is string => typeof c === 'string');
@@ -135,7 +137,17 @@ async function readEnabledPlugins(
       if (typeof m.pluginVersionPinned === 'boolean') {
         pluginVersionPinned = m.pluginVersionPinned;
       }
+      isBundled = isBundledPlugin(m);
     } catch { /* empty */ }
+    // Per rev3 plan G+5 / A10: bundled plugins ship with the operator
+    // install; they're substrate, not user state. Skip from snapshot —
+    // a fork's new install will already have them via its own bundled
+    // set.
+    if (isBundled) {
+      // eslint-disable-next-line no-console
+      console.log(`[snapshot] excluding bundled plugin from snapshot.plugins[]: ${pluginSlug}`);
+      continue;
+    }
     let configJson = '{}';
     try {
       configJson = await fs.readFile(

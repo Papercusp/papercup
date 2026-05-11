@@ -69,3 +69,171 @@ describe('snapshot manifest', () => {
     expect(() => validateSnapshotManifest(m)).toThrow(/redactions/);
   });
 });
+
+/* ───── v1 → v2 reader fallback (rev3 plan G+1/G+2) ─────────────────── */
+
+import {
+  SNAPSHOT_READER_MIN_VERSION,
+  effectiveMigrationManifest,
+  effectiveRuntime,
+  effectiveVersionPin,
+  type SnapshotPlugin,
+} from './manifest';
+
+describe('schema v2 reader back-compat', () => {
+  it('accepts v1 manifests', () => {
+    const v1 = { ...valid(), schemaVersion: SNAPSHOT_READER_MIN_VERSION };
+    expect(() => validateSnapshotManifest(v1)).not.toThrow();
+  });
+
+  it('accepts v2 manifests', () => {
+    expect(() => validateSnapshotManifest(valid())).not.toThrow();
+  });
+
+  it('rejects schemaVersion 0 (below MIN)', () => {
+    expect(() => validateSnapshotManifest({ ...valid(), schemaVersion: 0 })).toThrow(
+      /unsupported schemaVersion/,
+    );
+  });
+
+  it('rejects schemaVersion 3 (above current)', () => {
+    expect(() => validateSnapshotManifest({ ...valid(), schemaVersion: 3 })).toThrow(
+      /unsupported schemaVersion/,
+    );
+  });
+
+  it('rejects non-numeric schemaVersion', () => {
+    expect(() =>
+      validateSnapshotManifest({ ...valid(), schemaVersion: '2' as unknown as number }),
+    ).toThrow(/unsupported schemaVersion/);
+  });
+});
+
+describe('effectiveRuntime', () => {
+  it("defaults to 'js' for v1 plugins (runtime field absent)", () => {
+    const p: SnapshotPlugin = {
+      name: 'foo',
+      version: '1.0.0',
+      capabilities: [],
+      configJson: '{}',
+    };
+    expect(effectiveRuntime(p)).toBe('js');
+  });
+
+  it('returns the explicit runtime field when present', () => {
+    const p: SnapshotPlugin = {
+      name: 'foo',
+      version: '1.0.0',
+      capabilities: [],
+      configJson: '{}',
+      runtime: 'wasm',
+    };
+    expect(effectiveRuntime(p)).toBe('wasm');
+  });
+});
+
+describe('effectiveVersionPin', () => {
+  const base: SnapshotPlugin = {
+    name: 'foo',
+    version: '1.0.0',
+    capabilities: [],
+    configJson: '{}',
+  };
+
+  it('explicit versionPin field wins', () => {
+    const p: SnapshotPlugin = {
+      ...base,
+      versionPin: { mode: 'hash', allowOverride: 'never' },
+      pluginVersionPinned: true, // legacy also set; should be ignored
+    };
+    expect(effectiveVersionPin(p)).toEqual({ mode: 'hash', allowOverride: 'never' });
+  });
+
+  it('versionPin without allowOverride defaults to security-patch', () => {
+    const p: SnapshotPlugin = {
+      ...base,
+      versionPin: { mode: 'semver' },
+    };
+    expect(effectiveVersionPin(p)).toEqual({
+      mode: 'semver',
+      allowOverride: 'security-patch',
+    });
+  });
+
+  it("v1 pluginVersionPinned: true → mode: 'exact'", () => {
+    const p: SnapshotPlugin = { ...base, pluginVersionPinned: true };
+    expect(effectiveVersionPin(p)).toEqual({
+      mode: 'exact',
+      allowOverride: 'security-patch',
+    });
+  });
+
+  it("v1 pluginVersionPinned: false → mode: 'semver'", () => {
+    const p: SnapshotPlugin = { ...base, pluginVersionPinned: false };
+    expect(effectiveVersionPin(p)).toEqual({
+      mode: 'semver',
+      allowOverride: 'security-patch',
+    });
+  });
+
+  it("neither field present → mode: 'semver'", () => {
+    expect(effectiveVersionPin(base)).toEqual({
+      mode: 'semver',
+      allowOverride: 'security-patch',
+    });
+  });
+});
+
+describe('effectiveMigrationManifest', () => {
+  it('returns empty array when field is absent (v1 snapshot)', () => {
+    const p: SnapshotPlugin = {
+      name: 'foo',
+      version: '1.0.0',
+      capabilities: [],
+      configJson: '{}',
+    };
+    expect(effectiveMigrationManifest(p)).toEqual([]);
+  });
+
+  it('returns the captured list when present', () => {
+    const entries = [
+      { filename: '0001-init.sql', sha256: 'a'.repeat(64) },
+      { filename: '0002-add.sql', sha256: 'b'.repeat(64) },
+    ];
+    const p: SnapshotPlugin = {
+      name: 'foo',
+      version: '1.0.0',
+      capabilities: [],
+      configJson: '{}',
+      migrationManifest: entries,
+    };
+    expect(effectiveMigrationManifest(p)).toEqual(entries);
+  });
+});
+
+/* ───── bundled-plugin filter (rev3 plan G+5 / A10) ────────────────── */
+
+import { isBundledPlugin } from './manifest';
+
+describe('isBundledPlugin', () => {
+  it('returns true for bundled: true', () => {
+    expect(isBundledPlugin({ bundled: true })).toBe(true);
+  });
+
+  it('returns false for bundled: false', () => {
+    expect(isBundledPlugin({ bundled: false })).toBe(false);
+  });
+
+  it('returns false when bundled is absent', () => {
+    expect(isBundledPlugin({})).toBe(false);
+  });
+
+  it('returns false for non-boolean values (defensive — e.g. author wrote a string)', () => {
+    // We DO NOT trust truthy non-booleans. bundled:"true" is treated
+    // as not-bundled so a confused author can't accidentally smuggle.
+    // (Real defense is the lint rule rejecting the field at publish.)
+    expect(isBundledPlugin({ bundled: 'true' })).toBe(false);
+    expect(isBundledPlugin({ bundled: 1 })).toBe(false);
+    expect(isBundledPlugin({ bundled: {} })).toBe(false);
+  });
+});

@@ -600,6 +600,21 @@ export interface Plugin {
   papercusp: string;
   /** Optional human-readable description shown in the marketplace + admin. */
   description?: string;
+  /**
+   * @internal Build-pipeline only — DO NOT set this in your plugin's
+   * manifest. The operator install pipeline stamps `bundled: true`
+   * on plugins that ship pre-installed with the operator (e.g.
+   * the bundled slack-notifier). Capture excludes bundled plugins
+   * from `snapshot.plugins[]` because they're substrate, not user
+   * state — a fork's new install will already have them via its own
+   * bundled set.
+   *
+   * Lint should reject author-set `bundled: true`. Plugin authors
+   * who try to ship `bundled: true` are either confused or trying to
+   * smuggle their plugin into "no consent needed" status; both wrong.
+   */
+  bundled?: boolean;
+
   /** When true, the plugin is hidden from the marketplace listing UI. The
    *  plugin still loads, enables, and runs — this only suppresses its
    *  appearance in the marketplace catalog cards. Use for in-development
@@ -743,12 +758,34 @@ export interface Plugin {
   oauth?: PluginOAuthRequirement[];
 
   /**
-   * Default `true`. When `true`, snapshots forked from this plugin pin
-   * to the exact `version` they were published with.
+   * @deprecated v1 only. Use `versionPin` instead.
+   *
+   * Loader still reads this for back-compat:
+   *   `pluginVersionPinned: true`  → equivalent to `versionPin: { mode: 'exact' }`
+   *   `pluginVersionPinned: false` → equivalent to `versionPin: { mode: 'semver' }`
    *
    * Spec: /docs/snapshots/share-semantics#schema-evolution.
    */
   pluginVersionPinned?: boolean;
+
+  /**
+   * v2 (rev3 plan G+2): explicit per-plugin version-pinning policy.
+   *
+   * - `mode`:
+   *   - `'semver'` — accept any version satisfying captured semver range. Default for JS plugins.
+   *   - `'exact'`  — restore must use the exact version captured. Equivalent to legacy `pluginVersionPinned: true`.
+   *   - `'hash'`   — content-addressed (WASM/daemon default). Different binary = different identity.
+   * - `allowOverride`:
+   *   - `'security-patch'` — marketplace-flagged security patches can supersede pinned version (default).
+   *   - `'always'`         — any newer version supersedes (rare; user opt-in).
+   *   - `'never'`          — strict pinning even through CVE updates.
+   *
+   * When both `versionPin` and `pluginVersionPinned` are set, `versionPin` wins.
+   */
+  versionPin?: {
+    mode: 'semver' | 'exact' | 'hash';
+    allowOverride?: 'security-patch' | 'always' | 'never';
+  };
 }
 
 /* ─────────────────────────────────────────────────────────────────────
