@@ -41,7 +41,7 @@ export async function GET(req: Request) {
         snapshotId: r.snapshot_id,
         kind: r.kind,
         payload: r.payload_json,
-        at: r.at.toISOString(),
+        at: r.at instanceof Date ? r.at.toISOString() : new Date(String(r.at)).toISOString(),
       })),
     });
   } catch (err) {

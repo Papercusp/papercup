@@ -306,8 +306,8 @@ export class WorkspaceBackup {
     const rows = await sql<{
       id: number;
       kopia_snapshot_id: string | null;
-      started_at: Date;
-      finished_at: Date | null;
+      started_at: string ;
+      finished_at: string  | null;
       status: string;
       trigger_reason: string;
       trigger_context: unknown;
@@ -328,8 +328,8 @@ export class WorkspaceBackup {
       id: r.id,
       kopiaSnapshotId: r.kopia_snapshot_id,
       workspaceId: this.workspaceId,
-      startedAt: r.started_at.toISOString(),
-      finishedAt: r.finished_at?.toISOString() ?? null,
+      startedAt: tsIso(r.started_at) ?? new Date(0).toISOString(),
+      finishedAt: tsIso(r.finished_at),
       status: r.status as SnapshotInfo['status'],
       triggerReason: r.trigger_reason as SnapshotTriggerReason,
       triggerContext: (r.trigger_context as Record<string, unknown> | null),
@@ -346,8 +346,8 @@ export class WorkspaceBackup {
       total: string;
       bytes_added_sum: string | null;
       bytes_total_sum: string | null;
-      last_ok: Date | null;
-      last_fail: Date | null;
+      last_ok: string  | null;
+      last_fail: string  | null;
     }[]>`
       SELECT
         COUNT(*) FILTER (WHERE status = 'ok')::TEXT      AS total,
@@ -365,8 +365,8 @@ export class WorkspaceBackup {
       bytesOnDisk,
       bytesRaw,
       dedupRatio: bytesRaw === 0 ? 0 : 1 - bytesOnDisk / bytesRaw,
-      lastSnapshotAt: agg.last_ok?.toISOString() ?? null,
-      lastFailureAt:  agg.last_fail?.toISOString() ?? null,
+      lastSnapshotAt: tsIso(agg.last_ok),
+      lastFailureAt:  tsIso(agg.last_fail),
     };
   }
 
@@ -556,7 +556,7 @@ export class WorkspaceBackup {
   async recentFailures(limit = 50): Promise<SnapshotInfo[]> {
     const { sql } = getOrgPg();
     const rows = await sql<{
-      id: number; kopia_snapshot_id: string | null; started_at: Date; finished_at: Date | null;
+      id: number; kopia_snapshot_id: string | null; started_at: string ; finished_at: string  | null;
       status: string; trigger_reason: string; trigger_context: unknown;
       bytes_added: string | null; bytes_total: string | null;
       sources_json: unknown; error_text: string | null;
@@ -573,8 +573,8 @@ export class WorkspaceBackup {
       id: r.id,
       kopiaSnapshotId: r.kopia_snapshot_id,
       workspaceId: this.workspaceId,
-      startedAt: r.started_at.toISOString(),
-      finishedAt: r.finished_at?.toISOString() ?? null,
+      startedAt: tsIso(r.started_at) ?? new Date(0).toISOString(),
+      finishedAt: tsIso(r.finished_at),
       status: r.status as SnapshotInfo['status'],
       triggerReason: r.trigger_reason as SnapshotTriggerReason,
       triggerContext: r.trigger_context as Record<string, unknown> | null,
@@ -642,6 +642,14 @@ export class WorkspaceBackup {
       return { ok: false, stderr: e instanceof Error ? e.message : String(e) };
     }
   }
+}
+
+
+function tsIso(v: unknown): string | null {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === 'string') return new Date(v).toISOString();
+  return null;
 }
 
 /**
