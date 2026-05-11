@@ -213,23 +213,27 @@ done
 
 # ──────────────────────────────────────────────────────────────────
 hdr "Build + bundle integrity"
-ls .next/standalone/apps/operator/server.js >/dev/null 2>&1 \
-  && ok "standalone bundle exists" \
-  || fail "no standalone bundle"
+# Prod build now lives in .next-prod (dist bifurcated 2026-05-11 so
+# dev rebuilds don't invalidate prod). Pick whichever exists.
+BUNDLE_DIR=".next-prod"
+[ -d "$BUNDLE_DIR/standalone" ] || BUNDLE_DIR=".next"
+ls "$BUNDLE_DIR/standalone/apps/operator/server.js" >/dev/null 2>&1 \
+  && ok "standalone bundle exists ($BUNDLE_DIR)" \
+  || fail "no standalone bundle (checked .next-prod and .next)"
 
 # OperatorDelegationListener + ScanHistorySection are 'use client' —
 # their compiled output goes into static/chunks, not server/chunks.
-grep -lE "delegation-async-complete|sendSystemToActiveSession" .next/static/chunks/*.js >/dev/null 2>&1 \
+grep -lE "delegation-async-complete|sendSystemToActiveSession" "$BUNDLE_DIR"/static/chunks/*.js >/dev/null 2>&1 \
   && ok "async-delegate event wired into client bundle" \
   || fail "delegation-async-complete missing from client bundle"
 
-grep -l "operator-scan-history__list" .next/static/chunks/*.css >/dev/null 2>&1 \
+grep -l "operator-scan-history__list" "$BUNDLE_DIR"/static/chunks/*.css >/dev/null 2>&1 \
   && ok "scan history CSS in static bundle" \
   || fail "scan history CSS missing"
 
 # Bundler minifies the component name; check for an unmistakable
 # CSS class the component renders instead.
-grep -l "operator-scan-history__cards-label" .next/static/chunks/*.js >/dev/null 2>&1 \
+grep -l "operator-scan-history__cards-label" "$BUNDLE_DIR"/static/chunks/*.js >/dev/null 2>&1 \
   && ok "ScanHistorySection compiled into client bundle" \
   || fail "ScanHistorySection missing from client bundle"
 

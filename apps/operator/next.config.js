@@ -56,9 +56,16 @@ function rustOptInRewrites() {
 const withMDX = createMDX();
 
 /** @type {import('next').NextConfig} */
+// Separate dist dirs for dev (:3055) and prod-standalone (:3070) so a
+// production rebuild does not invalidate the running dev server's
+// compile cache (and vice versa). Set PAPERCUSP_BUILD_TARGET=prod when
+// running `next build` for the standalone bundle.
+const DIST_DIR = process.env.PAPERCUSP_BUILD_TARGET === 'prod' ? '.next-prod' : '.next';
+
 const nextConfig = {
   reactStrictMode: true,
   output: 'standalone',
+  distDir: DIST_DIR,
   // Compress JSON/HTML/JS responses with gzip. Next 16 defaults this to
   // true, but with output:'standalone' the bundled server.js skips
   // compression entirely (Next docs: "you need to use a reverse proxy").

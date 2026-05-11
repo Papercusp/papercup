@@ -19,7 +19,12 @@ pkill -f "node .*standalone/apps/operator/server.js" 2>/dev/null
 pkill -9 -f "next build"         2>/dev/null
 fuser -k "$PORT/tcp"             2>/dev/null
 fuser -k "$PTY/tcp"              2>/dev/null
-rm -f "$REPO/apps/operator/.next/.build-lock" \
+# Prod build now lives in .next-prod (next.config.js bifurcates distDir
+# on PAPERCUSP_BUILD_TARGET) so it doesn't invalidate the running dev
+# server's .next/. Still strip locks from both dirs defensively.
+rm -f "$REPO/apps/operator/.next-prod/.build-lock" \
+      "$REPO/apps/operator/.next-prod/lock" \
+      "$REPO/apps/operator/.next/.build-lock" \
       "$REPO/apps/operator/.next/lock" \
       "$REPO/apps/operator/.next/dev/lock"
 sleep 2
@@ -30,9 +35,12 @@ tail -F "$LOG" &
 TAIL_PID=$!
 trap 'kill $TAIL_PID 2>/dev/null' EXIT INT
 
-echo "==> building @papercusp/web (worktree=$REPO)"
+echo "==> building @papercusp/web (worktree=$REPO, distDir=.next-prod)"
 cd "$REPO"
-if ! npm --workspace @papercusp/web run build >> "$LOG" 2>&1; then
+# PAPERCUSP_BUILD_TARGET=prod switches both next.config.js (distDir)
+# and postbuild-standalone.sh to .next-prod, keeping the dev server's
+# .next/ tree untouched during a prod build.
+if ! PAPERCUSP_BUILD_TARGET=prod npm --workspace @papercusp/web run build >> "$LOG" 2>&1; then
   echo "==> build failed — see $LOG"
   exit 1
 fi
@@ -44,7 +52,7 @@ echo "==> starting prod server on :$PORT (pty-ws :$PTY)"
 # Next itself recommends. The cwd MUST be .next/standalone/apps/operator
 # or every CSS/JS chunk silently 404s (see memory note
 # feedback_papercup_standalone_cwd).
-STANDALONE_DIR="$REPO/apps/operator/.next/standalone/apps/operator"
+STANDALONE_DIR="$REPO/apps/operator/.next-prod/standalone/apps/operator"
 SERVER_JS="$STANDALONE_DIR/server.js"
 if [ ! -f "$SERVER_JS" ]; then
   echo "==> standalone server.js missing at $SERVER_JS — build did not produce a standalone bundle"

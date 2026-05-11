@@ -27,8 +27,17 @@
 set -euo pipefail
 
 OPERATOR_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-STANDALONE_ROOT="$OPERATOR_DIR/.next/standalone"
-STANDALONE_NEXT="$STANDALONE_ROOT/apps/operator/.next"
+# next.config.js bifurcates distDir: dev=.next, prod=.next-prod. Honor
+# the same env var here so a prod build's postbuild fixups land in the
+# prod dist tree, not the running dev server's tree.
+DIST_DIR="${PAPERCUSP_BUILD_TARGET:-dev}"
+if [ "$DIST_DIR" = "prod" ]; then
+  DIST="$OPERATOR_DIR/.next-prod"
+else
+  DIST="$OPERATOR_DIR/.next"
+fi
+STANDALONE_ROOT="$DIST/standalone"
+STANDALONE_NEXT="$STANDALONE_ROOT/apps/operator/$(basename "$DIST")"
 
 if [ ! -d "$STANDALONE_ROOT" ]; then
   # No standalone build present — `next build` either failed or
@@ -37,7 +46,7 @@ if [ ! -d "$STANDALONE_ROOT" ]; then
 fi
 
 # ── 1. static assets ─────────────────────────────────────────────────
-SRC_STATIC="$OPERATOR_DIR/.next/static"
+SRC_STATIC="$DIST/static"
 DST_STATIC="$STANDALONE_NEXT/static"
 if [ -d "$SRC_STATIC" ]; then
   rm -rf "$DST_STATIC"
