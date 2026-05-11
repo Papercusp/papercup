@@ -2996,12 +2996,14 @@ harness.get('/identity', async (c) => {
   // per request and Zero subscribers wake up on changes.
   const { ensureIdentityFilesTable } = await import('@/lib/ensure-schema');
   await ensureIdentityFilesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ role: string; content: string; bytes: number; mtime_ms: string | number }[]>`
-    SELECT role, content, bytes, mtime_ms
-      FROM harness_shared.identity_files
-     ORDER BY role ASC
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { asc } = await import('drizzle-orm');
+  const idf = generated.identity_filesInHarness_shared;
+  const rows = await db
+    .select({ role: idf.role, content: idf.content, bytes: idf.bytes, mtime_ms: idf.mtime_ms })
+    .from(idf)
+    .orderBy(asc(idf.role));
   // FS fallback for the brief window before the watcher's initialSync
   // populates PG on a fresh install.
   if (rows.length === 0) {
@@ -5763,41 +5765,45 @@ function brainstormMindmapPath(project: ProjectEntry): string {
 async function loadBrainstorm(slug: string): Promise<{ content: string; canvas: unknown; mindmap: unknown }> {
   const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
   await ensureBrainstormTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ content: string; canvas: unknown; mindmap: unknown }[]>`
-    SELECT content, canvas, mindmap FROM harness_shared.harness_brainstorm
-     WHERE harness_slug = ${slug} AND phase = 'staging' LIMIT 1
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const hb = generated.harness_brainstormInHarness_shared;
+  const rows = await db
+    .select({ content: hb.content, canvas: hb.canvas, mindmap: hb.mindmap })
+    .from(hb)
+    .where(and(eq(hb.harness_slug, slug), eq(hb.phase, 'staging')))
+    .limit(1);
   return rows[0] ?? { content: '', canvas: null, mindmap: null };
 }
 
 async function saveBrainstorm(slug: string, patch: { content?: string; canvas?: unknown; mindmap?: unknown }): Promise<void> {
   const { ensureBrainstormTable } = await import('@/lib/ensure-schema');
   await ensureBrainstormTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { sql: dsql } = await import('drizzle-orm');
+  const hb = generated.harness_brainstormInHarness_shared;
   const now = Date.now();
-  // Use JSON.stringify + ::jsonb cast instead of sql.json(): the latter
-  // throws 'Received an instance of Object' inside postgres-js 3.4.9 when
-  // the value contains nested objects (the React Flow tree has nodes
-  // with `measured`/`position`/`data` sub-objects). Explicit serialize +
-  // cast is unambiguous.
-  const canvasJson = patch.canvas !== undefined ? JSON.stringify(patch.canvas) : null;
-  const mindmapJson = patch.mindmap !== undefined ? JSON.stringify(patch.mindmap) : null;
-  await sql`
-    INSERT INTO harness_shared.harness_brainstorm (harness_slug, phase, content, canvas, mindmap, updated_at)
-    VALUES (
-      ${slug}, 'staging',
-      ${patch.content ?? ''},
-      ${canvasJson}::jsonb,
-      ${mindmapJson}::jsonb,
-      ${now}
-    )
-    ON CONFLICT (harness_slug, phase) DO UPDATE SET
-      content    = COALESCE(${patch.content ?? null}, harness_brainstorm.content),
-      canvas     = COALESCE(${canvasJson}::jsonb, harness_brainstorm.canvas),
-      mindmap    = COALESCE(${mindmapJson}::jsonb, harness_brainstorm.mindmap),
-      updated_at = ${now}
-  `;
+  await db
+    .insert(hb)
+    .values({
+      harness_slug: slug,
+      phase: 'staging',
+      content: patch.content ?? '',
+      canvas: (patch.canvas ?? null) as any,
+      mindmap: (patch.mindmap ?? null) as any,
+      updated_at: now,
+    })
+    .onConflictDoUpdate({
+      target: [hb.harness_slug, hb.phase],
+      set: {
+        content: dsql`COALESCE(${patch.content ?? null}, ${hb.content})`,
+        canvas: dsql`COALESCE(${patch.canvas !== undefined ? JSON.stringify(patch.canvas) : null}::jsonb, ${hb.canvas})`,
+        mindmap: dsql`COALESCE(${patch.mindmap !== undefined ? JSON.stringify(patch.mindmap) : null}::jsonb, ${hb.mindmap})`,
+        updated_at: now,
+      },
+    });
   const { notifySyncInvalidate } = await import('@/lib/sync-sse');
   await notifySyncInvalidate('harnessBrainstorm.byHarness', { harnessSlug: slug });
 }
