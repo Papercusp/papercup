@@ -51,6 +51,7 @@ import {
   readOperatorMessagesFromSession,
   readOperatorModeFromSession,
   readSleepUntilMs,
+  writePendingDismissalAtMs,
   sleepTagToEpochMs,
   writeOperatorMessagesToSession,
   writeOperatorModeToSession,
@@ -829,10 +830,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // at commit-time; now wired. Also marks the silence-ladder
     // freshness clock so it stays active after a voice exchange.
     const onVoiceUserTurn = (e: Event) => {
-      const detail = (e as CustomEvent<{ tsMs?: number }>).detail;
+      const detail = (e as CustomEvent<{ tsMs?: number; text?: string }>).detail;
       const tsMs = typeof detail?.tsMs === 'number' ? detail.tsMs : Date.now();
+      const text = typeof detail?.text === 'string' ? detail.text : '';
       dispatch({ type: 'record_user_turn', tsMs });
       dispatch({ type: 'mark_turn', tsMs });
+      // E1: bridge text-path's server-side dismissal enforcement into
+      // the voice path. The voice tag observer reads this stamp on the
+      // next assistant flush and force-flips to passive if the brain
+      // forgot to emit <set_mode>passive</set_mode>.
+      if (text && stateRef.current.mode === 'active' && userDismissesOperator(text)) {
+        writePendingDismissalAtMs(tsMs);
+      }
     };
     window.addEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
 

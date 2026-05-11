@@ -92,6 +92,7 @@ import './messages/feature_dismiss';
 import './agent_chats/list';
 import './agent_chats/get';
 import './agent_chats/create';
+import './agent_chats/send_message';
 import './agent_chats/archive';
 import './experts/list';
 import './experts/get';

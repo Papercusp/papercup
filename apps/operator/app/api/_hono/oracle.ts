@@ -51,14 +51,14 @@ agents, snapshots, plugins, marketplace, settings) and you help the user
 get things done. Be concise, friendly, and direct.
 
 You have access to tools that let you act on the user's behalf:
-  - mcp__oracle__navigate(path): take the user to a path within the app.
-    Use it when the user asks you to go somewhere, or when an action
-    requires being on a specific page.
+  - mcp__agentmcp__ui:dispatch with intent='set_url': take the user to a
+    path within the app. Use it when the user asks you to go somewhere,
+    or when an action requires being on a specific page.
 
-When the user asks you to take them to a page, call navigate immediately,
-then briefly tell them where you went. If the user asks for something
-that needs a tool you don't yet have, describe what you'd do and which
-agent or page is involved.
+When the user asks you to take them to a page, call ui:dispatch immediately
+with the path, then briefly tell them where you went. If the user asks for
+something that needs a tool you don't yet have, describe what you'd do and
+which agent or page is involved.
 
 If the user asks about their own setup, don't fabricate state — say "I'd
 need to check" if you don't know.
@@ -90,7 +90,7 @@ const TUTORIAL_STEPS: TutorialStep[] = [
   {
     id: 'harness-console',
     pre:
-      'Call `mcp__oracle__listHarnesses` first. Pick the first slug from the result. If the result is empty, stay on `/harness` instead and tell them they\'ll see the per-harness console once they create one.',
+      'Call `mcp__agentmcp__harness:list` first. Pick the first slug from the result. If the result is empty, stay on `/harness` instead and tell them they\'ll see the per-harness console once they create one.',
     navigate: '/harness/<first-slug-or-/harness>',
     body:
       'Inside a harness, point out: the feature list (work the crew is doing), the agent chat dock (talk to any role on the crew), and the panel tabs (Snapshots, Decisions, Memory, Hooks, Usage, Tests).',
@@ -129,7 +129,7 @@ const TUTORIAL_STEPS: TutorialStep[] = [
     navigate: null,
     body:
       'Tell them the tour is done. Mention they can re-open it any time from the **Tutorial** button in the top nav. Offer to (a) take them back to `/harness` to start working, or (b) answer any question.',
-    closer: 'Wait for their answer. If they pick (a), call `navigate` with `/harness`.',
+    closer: 'Wait for their answer. If they pick (a), call `ui:dispatch` with intent=set_url, url=`/harness`.',
   },
 ];
 
@@ -138,7 +138,7 @@ function buildTutorialBlock(stepIndex: number, lastUser: string): string {
   const idx = stop ? TUTORIAL_STEPS.length - 1 : Math.min(stepIndex, TUTORIAL_STEPS.length - 1);
   const step = TUTORIAL_STEPS[idx];
   const navLine = step.navigate
-    ? `1. Call \`mcp__oracle__navigate\` with path \`${step.navigate}\` (skip the call if the user is already on that path).\n`
+    ? `1. Call \`mcp__agentmcp__ui:dispatch\` with { intent: 'set_url', params: { url: '${step.navigate}' } } (skip the call if the user is already on that path).\n`
     : '1. Do not navigate this turn.\n';
   const preLine = step.pre ? `0. ${step.pre}\n` : '';
   return `
@@ -269,14 +269,20 @@ export function registerOracle(app: Hono) {
     const last = messages[messages.length - 1];
     const userContent = typeof last?.content === 'string' ? last.content : '';
 
+    // The Oracle now uses the unified agent_tools surface (HTTP MCP via
+    // mcp-remote, bearer=superuser-token). Replaces the seven legacy
+    // mcp__oracle__* stdio tools that lived in lib/oracle-mcp-server.mjs.
+    // The legacy server is deleted; everything below maps to a
+    // first-party agent_tool registered via defineTool() and exposed
+    // through the projected dispatcher at /api/mcp.
     const toolBlock = `\n\n## Tools available\n\n` +
-      `  - mcp__oracle__navigate({ path }): navigate the user's browser to a path (e.g. "/harness", "/marketplace/templates"). Don't ask permission — just navigate and tell them where you went.\n` +
-      `  - mcp__oracle__listHarnesses(): list all registered harnesses (slug, path, hasState, hasSpec). Use to answer "what harnesses do I have" or to look up a slug before navigating.\n` +
-      `  - mcp__oracle__getHarnessStatus({ slug }): get the current state of a harness — feature counts by status, recent features, and a summary excerpt. Use for "what's the state of <slug>", "is X done", "what is X working on".\n` +
-      `  - mcp__oracle__dispatchToAgent({ slug, role, message, featureId? }): start a chat with a role-scoped agent in a harness and send the first message. Roles include architect, orchestrator, scoper, worker, validator, reviewer, documenter, debugger, project_manager. The user is auto-navigated to the harness and the chat opens. Use when the user says things like "ask the architect to ..." or "have the orchestrator do ...".\n` +
-      `  - mcp__oracle__listChats({ slug, role? }): list recent chats in a harness (id, role, title, message_count, updated_at), optionally filtered by role. Use before resumeChat to find a chatId, or to answer "what chats have I had with X".\n` +
-      `  - mcp__oracle__listAgents({ slug? }): enumerate role-scoped agents with recent activity, optionally scoped to one harness. Returns [{slug, role, chat_count, last_active}]. Use to answer "which agents are working on X" or to pick the most-active matching role before dispatchToAgent.\n` +
-      `  - mcp__oracle__resumeChat({ slug, chatId }): re-open an existing chat (use listChats to discover the id).\n`;
+      `  - mcp__agentmcp__ui:dispatch({ intent: 'set_url', params: { url: '/...' } }): navigate the user's browser. Don't ask permission — just dispatch and tell them where you went. Use for nav requests ("show me X", "go to Y"). For chat resume: dispatch set_url to /harness/<slug>?chat=<chatId>.\n` +
+      `  - mcp__agentmcp__harness:list(): all registered harnesses (slug, path, hasState, hasSpec). Use to answer "what harnesses do I have" or to look up a slug.\n` +
+      `  - mcp__agentmcp__harness:status({ slug }): a feature-status snapshot for a harness (counts by status, recent features, summary excerpt). Use for "what's the state of <slug>", "is X done", "what is X working on".\n` +
+      `  - mcp__agentmcp__agent_chats:create({ slug, role, feature_id? }) + mcp__agentmcp__agent_chats:send_message({ slug, chatId, content }): the two-step dispatch flow. Create the chat for the role, then send the first user message. After both succeed, navigate the user to the chat with ui:dispatch(set_url, { url: '/harness/<slug>?chat=<chatId>' }). Use when the user says "ask the architect to ...", "have the orchestrator do ...", etc. Roles: architect, scoper, worker, validator, reviewer, documenter, debugger, operator, curator.\n` +
+      `  - mcp__agentmcp__agent_chats:list({ slug }): recent chats in a harness (id, role, title, message_count, updated_at). Use before resuming to find a chatId, or to answer "what chats have I had with X".\n` +
+      `  - mcp__agentmcp__agents:list({ slug? }): role-scoped agents with recent activity, optionally scoped to one harness. Returns [{slug, role, chat_count, last_active}]. Use to answer "which agents are working on X" or to pick the most-active matching role before agent_chats:create.\n` +
+      `  - mcp__agentmcp__agent_tools:list({ asRole? }): the full tool catalog visible to a given role. Use to honestly answer "what can you do" — these are your actual capabilities, not the prompt summary above.\n`;
 
     // Auto-context: cheap workspace inventory the Oracle would
     // otherwise have to round-trip an MCP tool to get. Refreshed every

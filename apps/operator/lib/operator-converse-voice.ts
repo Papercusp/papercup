@@ -29,6 +29,7 @@
  */
 
 import {
+  consumeRecentDismissal,
   parseOperatorTurn,
   sleepTagToEpochMs,
   writeOperatorModeToSession,
@@ -121,12 +122,23 @@ export function createOperatorVoiceTagObserver(): OperatorVoiceTagObserver {
       writeSleepUntilMs(sleepTagToEpochMs(parsed.sleep));
     }
 
-    if (parsed.setMode) {
-      writeOperatorModeToSession(parsed.setMode);
+    // E1: voice-path dismissal enforcement. If a recent user
+    // utterance matched the dismissal heuristic AND the brain didn't
+    // emit <set_mode>passive</set_mode> in this turn, force the flip.
+    // Symmetric to the text-path enforcement in the chat provider's
+    // runGeneration. `consumeRecentDismissal` always clears the stamp
+    // (one-shot), so a stale flag can't fire on a later turn.
+    let effectiveMode = parsed.setMode;
+    if (!effectiveMode && consumeRecentDismissal()) {
+      effectiveMode = 'passive';
+    }
+
+    if (effectiveMode) {
+      writeOperatorModeToSession(effectiveMode);
       try {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(
-            new CustomEvent('papercusp:operatorMode', { detail: { mode: parsed.setMode } }),
+            new CustomEvent('papercusp:operatorMode', { detail: { mode: effectiveMode } }),
           );
         }
       } catch { /* ignore */ }
