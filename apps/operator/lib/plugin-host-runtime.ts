@@ -109,6 +109,14 @@ interface HostState {
    * Tier 2 of the two-tier capability check (Batch B).
    */
   grants: Map<string, string[] | undefined>;
+  /**
+   * (pluginName, installSlug) → live WASM plugin handle (Batch G3).
+   * Populated when manifest.runtime.kind === 'wasm'. JS plugins have no
+   * entry here. Consumed by callWasmAction() and by the host's
+   * uninstall/disable paths.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  wasmHandles: Map<string, any>;
 }
 
 const __key = '__papercuspPluginHostRuntime';
@@ -208,7 +216,7 @@ async function discover(): Promise<HostState> {
     }
   }
 
-  return { loaded, loadErrors, bus, initialized: new Set(), registries: new Map(), grants: new Map() };
+  return { loaded, loadErrors, bus, initialized: new Set(), registries: new Map(), grants: new Map(), wasmHandles: new Map() };
 }
 
 function regKey(pluginName: string, installSlug: string): string {
@@ -575,6 +583,31 @@ async function ensureInitialized(
   if (state.initialized.has(key)) return;
   state.initialized.add(key);
 
+  // Batch G3 dispatch: WASM plugins skip the JS init/hooks/registry
+  // path entirely. Their actions are dispatched via callWasmAction()
+  // below, which routes through the WasmPlugin handle stored in
+  // state.wasmHandles. JS-style hook subscriptions are NOT supported
+  // for WASM plugins in v1; only manifest-declared `actions` are
+  // reachable.
+  if (lp.runtime?.kind === 'wasm') {
+    try {
+      await initializeWasmPlugin(state, lp, ctx);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.log(`wasm plugin init threw: ${msg}`);
+    }
+    return;
+  }
+  if (lp.runtime?.kind === 'daemon') {
+    try {
+      await initializeDaemonPlugin(state, lp, ctx);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      ctx.log(`daemon plugin init threw: ${msg}`);
+    }
+    return;
+  }
+
   // Register the plugin's free-form hook subscriptions first so an init()
   // that fires its own events can reach its own filters/actions.
   // Tier 2 of the capability check: load the user-granted set for this
@@ -666,6 +699,155 @@ async function ensureInitialized(
   } finally {
     registry.seal();
   }
+}
+
+/**
+ * Batch G3 — instantiate a manifest-declared WASM plugin via
+ * @papercusp/plugin-loader/wasm. Capability granter, audit sink, event
+ * sink, and secrets store are all derived from the same operator
+ * infrastructure JS plugins use, so the WASM plugin sees consistent
+ * security + observability semantics.
+ *
+ * Stores the live handle in state.wasmHandles[regKey]. Subsequent
+ * action calls go through callWasmAction(); disable/uninstall paths
+ * call wasm.shutdown() and drop the handle.
+ */
+async function initializeWasmPlugin(
+  state: HostState,
+  lp: LoadedPlugin,
+  ctx: PapercuspContext,
+): Promise<void> {
+  const key = regKey(lp.plugin.name, ctx.installSlug);
+  const wasmAbsPath = lp.runtime?.wasmPath;
+  if (!wasmAbsPath) {
+    throw new Error(`wasm runtime requested but runtime.wasmPath missing on ${lp.plugin.name}`);
+  }
+
+  // Hot import to keep the WASM dependency optional; JS-only operator
+  // installs don't pay the jco / wasm-plugin-host startup cost.
+  const wasm = await import('@papercusp/plugin-loader/wasm');
+
+  // Per-plugin secrets sourced from PG via the existing secrets adapter.
+  const secrets = new Map<string, string>();
+  try {
+    const { getPluginSecrets } = await import('@/lib/plugin-secrets-pg');
+    const rows = await getPluginSecrets(lp.plugin.name, ctx.installSlug);
+    for (const r of rows) secrets.set(r.name, r.value);
+  } catch {
+    // PG layer optional in tests; empty secrets is the dev default.
+  }
+
+  // Capability granter: ANDed manifest ∩ user-granted caps.
+  const granted = state.grants.get(key) ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const capCtx = {
+    pluginName: lp.plugin.name,
+    capabilities: (lp.plugin.capabilities ?? []) as string[],
+    granted: granted as string[],
+  } as unknown as Parameters<typeof wasm.loadWasmPlugin>[2]['capCtx'];
+
+  // Audit sink → harness operator audit writer (same target as JS plugins).
+  const auditWriter = getOperatorAuditWriter();
+  const auditSink = {
+    record: (row: { interface: string; method: string; cap: string; outcome: string; detail: string }) => {
+      try {
+        auditWriter.write({
+          ts: new Date().toISOString(),
+          plugin: lp.plugin.name,
+          harness: ctx.installSlug,
+          surface: 'wasm',
+          method: `${row.interface}.${row.method}`,
+          cap: row.cap,
+          outcome: row.outcome,
+          detail: row.detail,
+        } as unknown as Parameters<typeof auditWriter.write>[0]);
+      } catch { /* never throw from audit */ }
+    },
+  };
+
+  // Event sink → fire on the existing HookBus so JS plugins can listen
+  // to WASM-emitted events. `event` becomes the bus topic.
+  const eventSink = {
+    emit: (namespace: string, event: string, payloadJson: string) => {
+      const topic = `${namespace}.${event}`;
+      try {
+        const payload = payloadJson ? JSON.parse(payloadJson) : null;
+        void state.bus.fire(topic, payload);
+      } catch {
+        void state.bus.fire(topic, payloadJson);
+      }
+    },
+  };
+
+  // Memory budget from manifest, default 64 MiB.
+  const budget = lp.runtime?.memoryBudgetMb;
+
+  const handle = await wasm.loadWasmPlugin(lp.plugin.name, wasmAbsPath, {
+    cacheRoot: join(papercuspRoot(), 'plugins', '_wasm-cache'),
+    transpiler: wasm.realJcoTranspiler,
+    capCtx,
+    secrets,
+    eventSink: eventSink as unknown as Parameters<typeof wasm.loadWasmPlugin>[2]['eventSink'],
+    auditSink: auditSink as unknown as Parameters<typeof wasm.loadWasmPlugin>[2]['auditSink'],
+    memoryBudgetMb: budget,
+  });
+
+  state.wasmHandles.set(key, handle);
+  ctx.log(`wasm plugin loaded: ${lp.plugin.name} (budget=${budget ?? 64} MiB)`);
+}
+
+/**
+ * Batch I — daemon plugin initialization. Hands off to the daemon
+ * supervisor which manages the long-running subprocess + JSON-RPC
+ * bridge. See packages/plugin-loader/src/daemon/.
+ *
+ * The supervisor stores its handle in state.wasmHandles under the same
+ * key (the map name is historical — it holds non-JS runtime handles
+ * generally). callDaemonAction() routes to the supervisor.
+ */
+async function initializeDaemonPlugin(
+  state: HostState,
+  lp: LoadedPlugin,
+  ctx: PapercuspContext,
+): Promise<void> {
+  const key = regKey(lp.plugin.name, ctx.installSlug);
+  const cmd = lp.runtime?.daemonCommand;
+  if (!cmd || cmd.length === 0) {
+    throw new Error(`daemon runtime requested but runtime.daemonCommand empty on ${lp.plugin.name}`);
+  }
+  const daemon = await import('@papercusp/plugin-loader/daemon');
+  const handle = await daemon.startDaemonPlugin({
+    pluginName: lp.plugin.name,
+    cmd,
+    cwd: lp.path,
+    restart: lp.runtime?.daemonRestart,
+    onLog: (line: string) => ctx.log(`[daemon ${lp.plugin.name}] ${line}`),
+  });
+  state.wasmHandles.set(key, handle);
+  ctx.log(`daemon plugin started: ${lp.plugin.name} (cmd=${cmd[0]})`);
+}
+
+/**
+ * Invoke a manifest-declared WASM action via the live WasmPlugin handle.
+ * Returns the plugin's response bytes. Throws if no WASM plugin is
+ * registered for (pluginName, installSlug) — caller should ensureInitialized
+ * first via the standard action-invoke path.
+ */
+export async function callWasmAction(args: {
+  pluginName: string;
+  installSlug: string;
+  actionName: string;
+  payload: Uint8Array;
+  origin?: 'core' | 'ui';
+}): Promise<{ ok: true; payload: Uint8Array } | { ok: false; error: string }> {
+  const state = await getPluginHost();
+  const handle = state.wasmHandles.get(regKey(args.pluginName, args.installSlug));
+  if (!handle) {
+    return { ok: false, error: `no WASM plugin loaded for (${args.pluginName}, ${args.installSlug})` };
+  }
+  const result = await handle.callAction(args.actionName, args.payload);
+  if (result.ok) return { ok: true, payload: result.payload as Uint8Array };
+  return { ok: false, error: result.error?.message ?? 'unknown error' };
 }
 
 /**
@@ -1057,6 +1239,7 @@ export function _injectPluginHostForTests(loaded: LoadedPlugin[]): void {
     initialized: new Set(),
     registries: new Map(),
     grants: new Map(),
+    wasmHandles: new Map(),
   };
   __cache.state = state;
   __cache.promise = Promise.resolve(state);

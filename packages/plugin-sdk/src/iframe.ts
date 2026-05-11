@@ -71,6 +71,22 @@ function nextRpcId(): string {
 }
 
 /**
+ * Per-iframe nonce read from the operator-templated wrapper's
+ * <meta name="papercup-nonce" content="..."> tag. The operator
+ * generates a fresh nonce per iframe mount; every postMessage
+ * envelope carries it so the parent can drop spoofed/cross-origin
+ * messages even if they pass the source-window check.
+ */
+let _nonce = '';
+function readNonce(): string {
+  if (_nonce) return _nonce;
+  if (typeof document === 'undefined') return '';
+  const m = document.querySelector('meta[name="papercup-nonce"]');
+  _nonce = (m as HTMLMetaElement | null)?.content ?? '';
+  return _nonce;
+}
+
+/**
  * Initialize the iframe SDK. Sets up the postMessage listener; must
  * be called before any of the use* helpers.
  */
@@ -78,13 +94,15 @@ export function initPapercupIframe(): void {
   if (typeof window === 'undefined') {
     throw new Error('initPapercupIframe() must run in a browser context');
   }
+  readNonce();
   window.addEventListener('message', (event) => {
     // Source-window check: only trust messages from our parent (the
     // operator). Origin check is a belt+suspenders since sandbox
     // attribute would zero it; both must pass.
     if (event.source !== window.parent) return;
-    const msg = event.data as RpcResponseMsg | EventMsg | undefined;
+    const msg = event.data as (RpcResponseMsg | EventMsg) & { nonce?: string } | undefined;
     if (!msg || typeof msg !== 'object' || !('kind' in msg)) return;
+    if (_nonce && msg.nonce !== _nonce) return;
     if (msg.kind === 'rpc-response') {
       const cb = _pendingRpc.get(msg.id);
       if (cb) {
@@ -134,7 +152,7 @@ export async function usePapercupAction(
         reject(err);
       }
     });
-    window.parent.postMessage(msg, '*');
+    window.parent.postMessage({ ...msg, nonce: readNonce() }, "*");
   });
 }
 
@@ -152,7 +170,7 @@ export function usePapercupEvent(
     handlers = new Set();
     _eventHandlers.set(name, handlers);
     const sub: EventSubscribeMsg = { kind: 'event-subscribe', name };
-    window.parent.postMessage(sub, '*');
+    window.parent.postMessage({ ...sub, nonce: readNonce() }, "*");
   }
   handlers.add(handler);
   return () => {
@@ -162,7 +180,7 @@ export function usePapercupEvent(
     if (set.size === 0) {
       _eventHandlers.delete(name);
       const unsub: EventUnsubscribeMsg = { kind: 'event-unsubscribe', name };
-      window.parent.postMessage(unsub, '*');
+      window.parent.postMessage({ ...unsub, nonce: readNonce() }, "*");
     }
   };
 }
@@ -192,7 +210,7 @@ export async function usePapercupQuery(query: string): Promise<unknown[]> {
         reject(new Error(`${resp.error.tag}: ${resp.error.message}`));
       }
     });
-    window.parent.postMessage(msg, '*');
+    window.parent.postMessage({ ...msg, nonce: readNonce() }, "*");
   });
 }
 
