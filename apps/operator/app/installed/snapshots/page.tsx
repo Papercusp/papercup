@@ -37,6 +37,44 @@ function formatDate(ms: number): string {
   });
 }
 
+/**
+ * Bump the patch component of a semver string. Falls back to suffixing
+ * `-r2`/`-r3`/... on values we can't parse so republish never gets stuck.
+ */
+export function bumpPatch(v: string): string {
+  const m = /^(\d+)\.(\d+)\.(\d+)(.*)$/.exec(v);
+  if (!m) {
+    const rm = /-r(\d+)$/.exec(v);
+    if (rm) return v.replace(/-r\d+$/, `-r${Number(rm[1]) + 1}`);
+    return `${v}-r2`;
+  }
+  return `${m[1]}.${m[2]}.${Number(m[3]) + 1}`;
+}
+
+/**
+ * Pick the publish whose version sorts highest (semver-ish — purely
+ * lexical with numeric components, which is good enough for the
+ * "what's the latest version I shipped" question).
+ */
+function latestPublish(publishes: PublishRecord[]): PublishRecord | null {
+  if (publishes.length === 0) return null;
+  return [...publishes].sort((a, b) => {
+    const pa = a.version.split(/[.\-+]/).map((s) => /^\d+$/.test(s) ? Number(s) : s);
+    const pb = b.version.split(/[.\-+]/).map((s) => /^\d+$/.test(s) ? Number(s) : s);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = pa[i], y = pb[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      if (typeof x === 'number' && typeof y === 'number') {
+        if (x !== y) return x - y;
+      } else if (String(x) !== String(y)) {
+        return String(x) < String(y) ? -1 : 1;
+      }
+    }
+    return 0;
+  }).pop() ?? null;
+}
+
 export default function InstalledSnapshotsPage() {
   const [rows, setRows] = useState<SnapshotRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,6 +111,39 @@ export default function InstalledSnapshotsPage() {
       await load();
     } catch (e) {
       toast.error(`delete error: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onPublish = async (s: SnapshotRow) => {
+    const prev = latestPublish(s.publishes);
+    const defaultSlug = prev?.slug ?? `${s.harnessSlug}-snapshot-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
+    const defaultVersion = prev ? bumpPatch(prev.version) : '1.0.0';
+    const isRepublish = !!prev;
+    const promptLabel = isRepublish
+      ? `Republish ${s.id} as a new version.\n\nThe last publish was ${prev.slug}@${prev.version}.\nPick a marketplace slug + version:`
+      : `Publish ${s.id} to the marketplace.\n\nPick a marketplace slug + version:`;
+    const slug = window.prompt(`${promptLabel}\n\nSlug:`, defaultSlug);
+    if (!slug) return;
+    const version = window.prompt(`Version for ${slug}:`, defaultVersion);
+    if (!version) return;
+    setBusy(`publish:${s.id}`);
+    try {
+      const r = await fetch(`/api/snapshots/${encodeURIComponent(s.id)}/publish`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ marketplaceSlug: slug, marketplaceVersion: version }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) {
+        toast.error(j.error ?? `publish failed (${r.status})`);
+        return;
+      }
+      toast.success(isRepublish ? `Republished as ${slug}@${version}` : `Published ${slug}@${version}`);
+      await load();
+    } catch (e) {
+      toast.error(`publish error: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(null);
     }
@@ -169,6 +240,25 @@ export default function InstalledSnapshotsPage() {
                 </div>
               )}
               <div className="pc-installed-snapshot-actions" style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <button
+                  onClick={() => onPublish(s)}
+                  disabled={busy === `publish:${s.id}`}
+                  className="pc-installed-snapshot-publish-btn"
+                  style={{
+                    padding: '4px 10px', background: 'transparent', color: 'var(--accent)',
+                    border: '1px solid var(--border)', borderRadius: 4, fontSize: 11,
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    cursor: busy === `publish:${s.id}` ? 'default' : 'pointer',
+                  }}
+                  title={s.publishes.length > 0
+                    ? `Last published ${latestPublish(s.publishes)?.slug}@${latestPublish(s.publishes)?.version} — bumps patch by default`
+                    : 'Publish this snapshot to the marketplace'}
+                >
+                  <Lucide.UploadCloud size={11} />
+                  {s.publishes.length > 0
+                    ? `republish v${bumpPatch(latestPublish(s.publishes)!.version)}`
+                    : 'publish'}
+                </button>
                 <button
                   onClick={() => onDelete(s)}
                   disabled={busy === s.id}
