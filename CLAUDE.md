@@ -1,5 +1,33 @@
 # Papercup — agent guide
 
+## Almost all state should be in nuqs
+
+**If a piece of state is reasonably user-meaningful, it goes in the URL via [nuqs](https://nuqs.dev), not `useState`.** This is non-negotiable. The agent → UI control surface (`ui:get_state`, `ui:dispatch`) reads/writes the URL — anything in `useState` is invisible to agents and undriveable without a per-feature intent.
+
+**What goes in nuqs:**
+- Tab / view / mode selectors (`?tab=...`, `?mode=...`)
+- Open/closed state of panels, drawers, dialogs, dropdowns, banners
+- Selection state (`?proposal=...`, `?feature=...`, `?slug=...`, `?file=...`)
+- Search/filter inputs (`?q=...`, `?filter=...`)
+- Sort/pagination (`?sort=...`, `?page=...`)
+- Expansion / show-debug / show-timeline toggles
+
+**What stays as `useState`:**
+- Loading / saving / busy / streaming / error lifecycle flags
+- Mid-edit form drafts (typing-in-progress that would lose on reload)
+- Hover / focus / drag mouse-state
+- Transient toasts, copied-indicators, animation tweens
+- Ref-coupled state where a `useRef` must read the value synchronously (e.g. xterm search-addon coupling)
+- Sub-millisecond render-only state (`mounted`, `RefreshKey`)
+
+**When in doubt, choose nuqs.** It's strictly more capable: agents can read it, users can deep-link to it, reloads survive it. Defaulting to `useState` is the legacy habit — break it.
+
+For the parser, prefer in this order: `parseAsStringEnum<T>([...allowed]).withDefault(...)` for closed enums, `parseAsBoolean.withDefault(...)` for toggles, `parseAsString.withDefault('')` or `parseAsString` (nullable) for open strings, `parseAsJson(shapeGuard)` for discriminated unions.
+
+If a state encodes a complex object (like a `{kind:'review'|'thread', id}` selection), encode it as a short scalar (`"review:<id>"`) and derive the full object via a local `useMemo` lookup. Don't put 1KB of JSON in the URL.
+
+See `apps/operator/docs/nuqs-audit-2026-05-11.md` for the rationale + the 46+ params already migrated this session.
+
 ## This app is in testing — there are no users yet
 
 There is no production. **Don't defer fixes for "let's see how it fares in production first"** — there's nothing to fare in. That gives us the luxury to break things continuously until the app is right. Pick the right fix *now*; don't ship awkward compromises to preserve compatibility with a future you haven't built yet.

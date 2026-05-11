@@ -47,7 +47,10 @@ interface Props {
 }
 
 export default function SpecEditor({ slug, projectPath, alive, onClose, inline = false }: Props) {
-  const [section, setSection] = useState<Section>('settings');
+  const [section, setSection] = useQueryState(
+    'section',
+    parseAsStringEnum<Section>(['settings', 'memory', 'prompts']).withDefault('settings'),
+  );
   const [tab, setTab] = useQueryState(
     'specTab',
     parseAsStringEnum<Tab>(['spec', 'agents', 'contract', 'config', 'knowledge', 'mcp', 'supervisor', 'claudeSettings', 'env', 'skills']).withDefault('spec'),

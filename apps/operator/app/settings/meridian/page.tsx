@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 
 const MERIDIAN_BASE = 'http://127.0.0.1:3456';
 
@@ -13,7 +14,10 @@ const TABS: Array<{ id: Tab; label: string; path: string }> = [
 ];
 
 export default function MeridianSettingsPage() {
-  const [tab, setTab] = useState<Tab>('settings');
+  const [tab, setTab] = useQueryState(
+    'meridianTab',
+    parseAsStringEnum<Tab>(['settings', 'telemetry', 'profiles']).withDefault('settings'),
+  );
   const [reachable, setReachable] = useState<boolean | null>(null);
 
   useEffect(() => {

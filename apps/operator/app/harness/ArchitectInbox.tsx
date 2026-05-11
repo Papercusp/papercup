@@ -133,12 +133,45 @@ function ArchitectInboxInner({ slug, onFeatureFocus }: Props) {
   }, [queryClient, slug]);
 
   const [threads, setThreads] = useState<Thread[]>([]);
-  const [active, setActive] = useState<
+
+  // Inbox-item selection is URL-backed. Encoded as a short scalar string
+  // so it's deep-linkable + agent-visible (ui:get_state.params.inboxItem)
+  // without needing to fit the whole {review|thread} object in the URL.
+  //   • null / absent  → nothing selected
+  //   • "new"          → "new idea" composer
+  //   • "review:<id>"  → that pending-review detail open
+  //   • "thread:<id>"  → that local thread open
+  // The full object is derived from the id by looking up `reviews` /
+  // `threads`, so call sites keep using `setActive({kind:...})` — the
+  // wrapper translates to the URL string.
+  type ActiveState =
     | { kind: 'review'; review: PendingReview }
     | { kind: 'thread'; thread: Thread }
     | { kind: 'new' }
-    | null
-  >(null);
+    | null;
+  const [activeRef, setActiveRef] = useQueryState('inboxItem', parseAsString);
+  // `reviews` is computed above via useMemo from `reviewRows` (L119);
+  // we reuse it for selection lookup.
+  const active: ActiveState = useMemo(() => {
+    if (!activeRef) return null;
+    if (activeRef === 'new') return { kind: 'new' };
+    const [kind, id] = activeRef.split(':');
+    if (kind === 'review') {
+      const review = reviews.find((r) => r.id === id);
+      return review ? { kind: 'review', review } : null;
+    }
+    if (kind === 'thread') {
+      const thread = threads.find((t) => t.id === id);
+      return thread ? { kind: 'thread', thread } : null;
+    }
+    return null;
+  }, [activeRef, reviews, threads]);
+  const setActive = useCallback((next: ActiveState) => {
+    if (next === null) void setActiveRef(null);
+    else if (next.kind === 'new') void setActiveRef('new');
+    else if (next.kind === 'review') void setActiveRef(`review:${next.review.id}`);
+    else if (next.kind === 'thread') void setActiveRef(`thread:${next.thread.id}`);
+  }, [setActiveRef]);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useQueryState(
     'inbox',

@@ -9,6 +9,7 @@
 'use client';
 
 import { Suspense, useCallback, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 import dynamic from 'next/dynamic';
 import WorkspacePicker from './_components/WorkspacePicker';
 import RightRail from './_components/RightRail';
@@ -51,7 +52,17 @@ const TABS: { id: TabId; label: string }[] = [
 ];
 
 export default function DevPage() {
-  const [tab, setTab] = useState<TabId>('api');
+  // Top-level /dev tab — URL-backed so agents can read it via ui:get_state
+  // and switch panels via set_url. nuqs keeps the deep-link working
+  // across reloads and lets agents navigate the dev console without
+  // a per-tab tool.
+  const [tab, setTab] = useQueryState(
+    'tab',
+    parseAsStringEnum<TabId>([
+      'harnesses', 'api', 'sessions', 'telemetry', 'audit',
+      'pg', 'processes', 'tables', 'studio', 'backups',
+    ]).withDefault('api'),
+  );
   // null = all workspaces; otherwise specific ids
   const [workspaceIds, setWorkspaceIds] = useState<string[] | null>(null);
   // Set by Sessions/Telemetry "rerun" → consumed by ApiTab on mount.
