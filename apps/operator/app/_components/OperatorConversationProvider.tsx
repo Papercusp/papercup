@@ -168,7 +168,16 @@ type Action =
   | { type: 'reset_error_count' }
   | { type: 'reset_messages' }
   | { type: 'replace_messages'; messages: ChatMessage[]; lastTurnAtMs?: number }
-  | { type: 'prepend_messages'; messages: ChatMessage[] };
+  | { type: 'prepend_messages'; messages: ChatMessage[] }
+  /**
+   * Surgical in-place update of a message identified by seq. Used by
+   * the live-tail when a remote row's mutable fields change after the
+   * row's already been loaded — chat:ask_choice's answered state is
+   * the load-bearing case. Without this, Tab A clicks a card button,
+   * Tab B never sees the assistant row's `tools[i].answered` set
+   * because Tab B's live-tail only appends new seqs.
+   */
+  | { type: 'update_message_tools'; seq: number; tools: ChatToolCall[] };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -197,6 +206,18 @@ function reducer(state: State, action: Action): State {
       if (idx < 0) return state;
       const next = state.messages.slice();
       next[idx] = { ...next[idx], id: action.newId };
+      return { ...state, messages: next };
+    }
+    case 'update_message_tools': {
+      const idx = state.messages.findIndex((m) => m.seq === action.seq);
+      if (idx < 0) return state;
+      // Compare structurally to avoid no-op re-renders.
+      const before = state.messages[idx].tools;
+      const beforeSerialized = before ? JSON.stringify(before) : '';
+      const afterSerialized = JSON.stringify(action.tools);
+      if (beforeSerialized === afterSerialized) return state;
+      const next = state.messages.slice();
+      next[idx] = { ...next[idx], tools: action.tools };
       return { ...state, messages: next };
     }
     case 'append_assistant_delta': {
@@ -720,8 +741,30 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       }
     }
     let lastTurnTs = 0;
+    // Build a quick seq → local-tools index so we can detect cross-tab
+    // updates to mutable fields on already-loaded rows (specifically:
+    // chat:ask_choice's answered state). Without this, Tab B never
+    // sees the assistant row's tools[i].answered after Tab A clicks
+    // the card button.
+    const localToolsBySeq = new Map<number, ChatToolCall[] | undefined>();
+    for (const m of state.messages) {
+      if (typeof m.seq === 'number') localToolsBySeq.set(m.seq, m.tools);
+    }
     for (const t of sorted) {
-      if (since !== null && t.seq <= since) continue;
+      if (since !== null && t.seq <= since) {
+        // Already-loaded row: check if its mutable fields (tools) have
+        // changed and dispatch a surgical update if so. Cross-tab
+        // chat:ask_choice answered-state lives in this branch.
+        if (Array.isArray(t.tools) && typeof t.seq === 'number') {
+          const local = localToolsBySeq.get(t.seq);
+          const remoteJson = JSON.stringify(t.tools);
+          const localJson = local ? JSON.stringify(local) : '';
+          if (remoteJson !== localJson) {
+            dispatch({ type: 'update_message_tools', seq: t.seq, tools: t.tools as ChatToolCall[] });
+          }
+        }
+        continue;
+      }
       if (typeof t.id === 'string' && localIds.has(t.id)) {
         newestLoadedSeqRef.current = t.seq;
         continue;
