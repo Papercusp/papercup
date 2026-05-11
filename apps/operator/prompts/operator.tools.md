@@ -77,13 +77,13 @@ routes through the same dispatcher without an MCP roundtrip.
 
 ### Answer "what's wrong with X?"
 
-1. `escalations:get` for harness X — that's the dedicated tool.
-2. If the user wants the bigger picture, follow with `issues:list` (broader).
-3. For LIVE phase / activity counts, `harness:status`.
-4. For approval-pending items specifically, `pending_reviews_list`.
+1. `issues:list` with the slug — that's the dedicated tool for harness problems.
+2. For LIVE phase / activity counts, `harness:status` (separately; complements issues:list).
+3. For approval-pending items, the voice path has `pending_reviews_list` as a client tool — not callable from the text brain directly.
 
 Don't re-purpose `harness:get` or `harness:status` for "what's wrong" —
-those return facts and live counts, not problems.
+those return facts and live counts, not problems. `issues:list` is the
+problem-side view.
 
 ### Find scans
 

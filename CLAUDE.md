@@ -345,3 +345,25 @@ Hono, Radix, Vercel AI SDK, etc.), call the `context7` MCP tools
 (`resolve-library-id` then `get-library-docs`) to fetch the current
 API surface. Library APIs change faster than training cutoffs; do not
 guess method names from memory.
+
+## Adding a tool — the per-role guidance discipline
+
+Every tool exposed via MCP is authored once in a `defineTool({ ... })`
+call (or plugin manifest entry). When you ship a new tool:
+
+1. **Define the tool** in `apps/operator/lib/agent-tools/<group>/<verb>.ts`
+   (or `packages/agent-mcp/src/tools/...` for read-side tools).
+2. **Add `import './<group>/<verb>';`** to `apps/operator/lib/agent-tools/index.ts`.
+3. **Add `guidance: { when, notWhen?, chaining?, byRole? }`** to the `defineTool` call. `when` is the most important field — author it first.
+4. **If exposed on a chat surface**: add `mcp__agentmcp__<group>:<verb>` to that surface's `allowedTools` array (operator-converse: `apps/operator/lib/operator-mcp-tools.ts`; oracle: `apps/operator/app/api/_hono/oracle.ts`).
+5. **Run** `node apps/operator/__tests__/integration/tools-md-sync.mjs` — must be green before commit.
+
+The CI test validates:
+- Every tool in the role's surface has `guidance.when` (warn-only through Phase 4; fail after Phase 5 backfill lands).
+- Every backtick-wrapped `tool:name` mentioned in `<role>.tools.md` is in the role's allowed surface.
+- Every `byRole.<role>` key references a known role.
+
+Per-tool when/not-when goes in the tool file. Cross-tool patterns
+(chaining, panel verbs, workflows) go in `<role>.tools.md`. Behavior
+rules ("always call", "tier-high → confirm") go in `<role>.persona.md`.
+The split is intentional — see `apps/operator/lib/prompt-assembly.ts`.

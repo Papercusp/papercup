@@ -11,8 +11,8 @@ export default defineTool({
   name: 'issues:list',
   capability: 'issues:read',
   guidance: {
-    when: 'User asks "any open issues?", "what bugs are tracked", or "what\'s outstanding?". Pass a slug to scope; omit for cross-harness.',
-    notWhen: 'For LIVE failures the operator already flagged (escalations), prefer `escalations:get`. For PENDING approvals, use `pending_reviews_list`.',
+    when: 'User asks "any open issues?", "what bugs are tracked", "what\'s wrong with X", or "what\'s outstanding?". Pass a slug to scope; omit for cross-harness. The dedicated problem-side view.',
+    notWhen: 'For LIVE phase + activity counts (not problems), use `harness:status`. For static facts about the harness, use `harness:get`.',
   },
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),

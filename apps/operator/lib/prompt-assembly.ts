@@ -39,7 +39,15 @@ import {
   type ProjectedTool,
 } from '@papercusp/agent-mcp';
 
-const PROMPTS_DIR = join(process.cwd(), 'apps/operator/prompts');
+// Resolve at first call, not at module load. process.cwd() at module
+// scope is visible to Turbopack's NFT tracer, which pulls the entire
+// CWD into the route asset trace and trips
+// "Encountered unexpected file in NFT list" → "Invalid segment
+// configuration export detected" → build fails (caught 2026-05-11).
+// Lazy resolution side-steps the tracer entirely.
+function promptsDir(): string {
+  return join(process.cwd(), 'apps/operator/prompts');
+}
 
 /** Roles supported. Mirrors AGENT_ROLES in the plugin SDK; kept local
  *  so this module doesn't drag a workspace-aware role enum into a prompt
@@ -98,7 +106,7 @@ export function loadRolePersona(role: Role): string {
   if (!shouldBypassCache() && personaCache.has(role)) {
     return personaCache.get(role)!;
   }
-  const path = join(PROMPTS_DIR, `${role}.persona.md`);
+  const path = join(promptsDir(), `${role}.persona.md`);
   if (!existsSync(path)) {
     throw new Error(
       `prompt-assembly: ${role}.persona.md not found at ${path}. ` +
@@ -114,7 +122,7 @@ export function loadRoleToolsMd(role: Role): string | null {
   if (!shouldBypassCache() && toolsMdCache.has(role)) {
     return toolsMdCache.get(role)!;
   }
-  const path = join(PROMPTS_DIR, `${role}.tools.md`);
+  const path = join(promptsDir(), `${role}.tools.md`);
   const text = existsSync(path) ? readFileSync(path, 'utf8') : null;
   toolsMdCache.set(role, text);
   return text;
