@@ -23975,3 +23975,38 @@ body:has(.operator-panel) {
   content: "Shortcut" !important;
   color: rgba(125, 211, 252, 0.88);
 }
+
+/* ---- /settings/backups ---- */
+.pc-settings-page .pc-settings-subtitle {
+  color: rgba(255,255,255,0.6);
+  font-size: 13px;
+  margin-top: 4px;
+}
+.pc-settings-status {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px 16px;
+  margin: 0 0 12px;
+}
+.pc-settings-status > div { display: flex; flex-direction: column; gap: 2px; }
+.pc-settings-status dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255,255,255,0.5);
+}
+.pc-settings-status dd { font-size: 14px; font-weight: 500; margin: 0; }
+.pc-settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-settings-radio-group { display: flex; flex-wrap: wrap; gap: 12px; }
+.pc-settings-radio-group label { display: inline-flex; gap: 6px; align-items: center; }
+.pc-settings-row { display: flex; gap: 8px; align-items: center; padding: 4px 0; }
+.pc-settings-fieldset { border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; padding: 12px 14px; }
+.pc-settings-fieldset legend { padding: 0 6px; font-size: 12px; color: rgba(255,255,255,0.6); }
+.pc-settings-retention-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.pc-settings-retention-grid label { display: flex; flex-direction: column; gap: 4px; }
+.pc-settings-note { font-size: 12px; color: rgba(255,255,255,0.55); margin: 6px 0 0; }
+.pc-settings-footer { margin-top: 24px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.08); }

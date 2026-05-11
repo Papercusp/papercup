@@ -55,6 +55,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
       { href: '/settings/omp', label: 'Oh-My-Pi (omp)', keywords: ['omp', 'oh my pi', 'web search', 'tavily', 'perplexity', 'brave', 'jina', 'kimi', 'exa', 'kagi', 'searxng', 'parallel', 'synthetic', 'hindsight', 'memory', 'thinking', 'compaction'], advanced: true },
       { href: '/settings/meridian', label: 'Meridian', keywords: ['meridian', 'telemetry', 'profiles', 'iframe'], advanced: true },
       { href: '/settings/plugin-runtime', label: 'Plugin runtime', keywords: ['plugin', 'runtime', 'hooks', 'load errors', 'cache'], advanced: true },
+      { href: '/settings/backups', label: 'Backups', keywords: ['backup', 'backups', 'kopia', 'snapshot', 'restore', 'retention', 'dedup'], advanced: true },
     ],
   },
 ];

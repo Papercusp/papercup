@@ -248,6 +248,94 @@ export class WorkspaceBackup {
     return { ok: res.ok, errors: res.ok ? [] : [res.stderr] };
   }
 
+  async maintenance(level: 'quick' | 'full' = 'quick'): Promise<void> {
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+    await this.kopia(['maintenance', 'run', `--${level}`], { env });
+  }
+
+  async updateSettings(partial: Partial<Omit<BackupSettings, 'workspaceId'>>): Promise<BackupSettings> {
+    const { sql } = getOrgPg();
+    const current = await this.getSettings();
+    const next: BackupSettings = { ...current, ...partial };
+    await sql`
+      INSERT INTO harness_shared.workspace_backup_settings (
+        workspace_id, enabled, cadence_mode, cadence_minutes,
+        retention_preset, retention_custom_json,
+        event_triggers_json, excluded_paths_json, updated_at
+      ) VALUES (
+        ${this.workspaceId}, ${next.enabled}, ${next.cadenceMode}, ${next.cadenceMinutes},
+        ${next.retentionPreset}, ${next.retentionCustom as unknown as object | null},
+        ${JSON.stringify(next.eventTriggers)}::jsonb,
+        ${JSON.stringify(next.excludedPaths)}::jsonb,
+        now()
+      )
+      ON CONFLICT (workspace_id) DO UPDATE SET
+        enabled               = EXCLUDED.enabled,
+        cadence_mode          = EXCLUDED.cadence_mode,
+        cadence_minutes       = EXCLUDED.cadence_minutes,
+        retention_preset      = EXCLUDED.retention_preset,
+        retention_custom_json = EXCLUDED.retention_custom_json,
+        event_triggers_json   = EXCLUDED.event_triggers_json,
+        excluded_paths_json   = EXCLUDED.excluded_paths_json,
+        updated_at            = now()
+    `;
+    return next;
+  }
+
+  /**
+   * Restore-to-clone — never writes over live data. Target defaults to
+   * `<workspaceRoot>/.restored/<kopiaSnapshotId>/<basename-of-source>`.
+   * Caller diffs / promotes manually.
+   */
+  async restoreToClone(opts: {
+    kopiaSnapshotId: string;
+    source?: string;
+    target?: string;
+  }): Promise<{ targetPath: string }> {
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+    const source = opts.source ?? this.workspaceRoot;
+    const slug = source.replace(/\W+/g, '_').replace(/^_+|_+$/g, '');
+    const target = opts.target
+      ?? join(this.workspaceRoot, '.restored', opts.kopiaSnapshotId, slug);
+    await mkdir(target, { recursive: true });
+    await this.kopia(['snapshot', 'restore', opts.kopiaSnapshotId, target], { env });
+    return { targetPath: target };
+  }
+
+  async recentFailures(limit = 50): Promise<SnapshotInfo[]> {
+    const { sql } = getOrgPg();
+    const rows = await sql<{
+      id: number; kopia_snapshot_id: string | null; started_at: Date; finished_at: Date | null;
+      status: string; trigger_reason: string; trigger_context: unknown;
+      bytes_added: string | null; bytes_total: string | null;
+      sources_json: unknown; error_text: string | null;
+    }[]>`
+      SELECT id, kopia_snapshot_id, started_at, finished_at, status,
+             trigger_reason, trigger_context, bytes_added, bytes_total,
+             sources_json, error_text
+      FROM harness_shared.backup_snapshots
+      WHERE workspace_id = ${this.workspaceId} AND status = 'failed'
+      ORDER BY started_at DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: r.id,
+      kopiaSnapshotId: r.kopia_snapshot_id,
+      workspaceId: this.workspaceId,
+      startedAt: r.started_at.toISOString(),
+      finishedAt: r.finished_at?.toISOString() ?? null,
+      status: r.status as SnapshotInfo['status'],
+      triggerReason: r.trigger_reason as SnapshotTriggerReason,
+      triggerContext: r.trigger_context as Record<string, unknown> | null,
+      bytesAdded: r.bytes_added == null ? null : Number(r.bytes_added),
+      bytesTotal: r.bytes_total == null ? null : Number(r.bytes_total),
+      sources: (r.sources_json as string[]) ?? [],
+      error: r.error_text,
+    }));
+  }
+
   // ---------- internals ----------
 
   private envWithPassword(password: string): NodeJS.ProcessEnv {
