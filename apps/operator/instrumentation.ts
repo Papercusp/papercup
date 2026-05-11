@@ -47,6 +47,17 @@ export async function register(): Promise<void> {
   void backfillGrantsOnce().catch((err) => {
     console.warn('[plugin-grants-backfill] non-fatal failure:', err?.message ?? err);
   });
+
+  // Backup scheduler — per-workspace kopia snapshots on cadence + event.
+  // Idempotent: noop if already started in this process. Failures
+  // surface in the operator log; backup state is non-critical for
+  // serving requests.
+  try {
+    const { startBackupScheduler } = await import('@/lib/backup');
+    startBackupScheduler();
+  } catch (err) {
+    console.warn('[backup-scheduler] failed to start:', err instanceof Error ? err.message : err);
+  }
 }
 
 let _backfillRan = false;

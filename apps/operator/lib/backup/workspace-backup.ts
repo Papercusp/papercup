@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getOrgPg } from '@restart/db-org';
 import { deriveRepoPassword } from './password';
+import { runPreSnapshotHook } from './hook';
 import {
   type BackupSettings,
   type RepoStats,
@@ -140,6 +141,17 @@ export class WorkspaceBackup {
     `;
     const snapshotRowId = insertRows[0]!.id;
     const start = Date.now();
+
+    // Pre-snapshot DB dump hook. Failures are logged inside the hook
+    // and do not abort the snapshot — the file tree is still useful
+    // even if the dump didn't land.
+    await runPreSnapshotHook({
+      workspaceId: this.workspaceId,
+      workspaceRoot: this.workspaceRoot,
+    }).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
+    });
 
     try {
       const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });

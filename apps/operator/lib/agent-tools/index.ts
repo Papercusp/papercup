@@ -107,3 +107,8 @@ import './dev/pg_table_sizes';
 import './dev/build_status';
 import './dev/processes';
 import './dev/session_detail';
+
+import './backup/snapshot_create';
+import './backup/snapshot_list';
+import './backup/restore';
+import './backup/diff';
