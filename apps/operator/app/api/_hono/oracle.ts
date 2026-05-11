@@ -25,13 +25,13 @@ import { randomUUID } from 'node:crypto';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { runAgentChat } from '@/lib/agent-chat-stream';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
-import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import {
   loadRolePersona,
   loadRoleToolsMd,
   renderToolsCatalog,
 } from '@/lib/prompt-assembly';
+import { buildWorkspaceInventoryBlock } from '@/lib/workspace-inventory';
 // Oracle prompt + memory now PG-backed (migration 024). Display paths kept
 // for legacy callers that surfaced them in the settings UI.
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
@@ -217,39 +217,6 @@ Examples:
  * still has listHarnesses / listAgents / getHarnessStatus tools for
  * deeper queries.
  */
-async function buildWorkspaceInventoryBlock(): Promise<string> {
-  const workspace = activeWorkspaceId();
-  const port = process.env.PORT ?? '3055';
-  const base = process.env.INTERNAL_API_BASE ?? `http://127.0.0.1:${port}`;
-  let projects: Array<{ slug: string; path: string }> = [];
-  try {
-    const r = await fetch(`${base}/api/harness/projects`);
-    if (r.ok) {
-      const d = await r.json();
-      projects = (d?.projects ?? []).map((p: any) => ({ slug: p.slug, path: p.path }));
-    }
-  } catch { /* degraded */ }
-
-  let agents: Array<{ slug: string; role: string; chat_count: number; last_active: string | null }> = [];
-  try { agents = await listAgentsAcrossWorkspace({ limit: 8 }); } catch { /* degraded */ }
-
-  if (!projects.length && !agents.length) return '';
-
-  const projectLines = projects.slice(0, 6).map((p) => `  - ${p.slug}`);
-  const agentLines = agents.map((a) => {
-    const ago = a.last_active ? `${Math.round((Date.now() - new Date(a.last_active).getTime()) / 60000)}m ago` : 'idle';
-    return `  - ${a.slug}/${a.role} (${a.chat_count} chats, ${ago})`;
-  });
-
-  return [
-    '\n\n## Workspace at a glance',
-    `\nWorkspace: ${workspace}`,
-    projectLines.length ? `\nHarnesses (${projects.length}${projects.length > 6 ? ', showing 6' : ''}):\n${projectLines.join('\n')}` : '',
-    agentLines.length ? `\nMost-active agents:\n${agentLines.join('\n')}` : '',
-    '\n\nThis is a snapshot. For deeper info call listHarnesses / listAgents / getHarnessStatus.',
-  ].join('');
-}
-
 async function ensureDefaults() {
   // Initialize the two PG rows with default content if missing.
   for (const [table, content] of [

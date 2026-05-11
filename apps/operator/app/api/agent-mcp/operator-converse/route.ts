@@ -40,6 +40,7 @@ import {
   loadRoleConverse,
   renderToolsCatalog,
 } from '@/lib/prompt-assembly';
+import { buildWorkspaceInventoryBlock } from '@/lib/workspace-inventory';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,7 +60,7 @@ interface ConverseRequestBody {
 const HISTORY_KEEP = 30; // last 30 messages — bounds token cost on long convos
 const MAX_USER_TURN_CHARS = 8_000; // soft guard against pasted dumps
 
-function buildPrompt(body: ConverseRequestBody): string {
+async function buildPrompt(body: ConverseRequestBody): Promise<string> {
   const messages = (body.messages ?? [])
     .filter((m) => m && typeof m.role === 'string' && typeof m.content === 'string')
     .slice(-HISTORY_KEEP);
@@ -107,6 +108,13 @@ function buildPrompt(body: ConverseRequestBody): string {
   const playbook = loadRoleToolsMd('operator');
   if (playbook) sections.push(playbook);
 
+  // Workspace-at-a-glance snapshot. Gives the brain concrete facts
+  // (harness counts, recent activity) for ladder rung 5 'open with
+  // substance' openers — the alternative is a generic 'Hi, what can
+  // I help with?' which the user explicitly rejected.
+  const inventoryBlock = await buildWorkspaceInventoryBlock().catch(() => '');
+  if (inventoryBlock) sections.push(inventoryBlock);
+
   // Conversation history — minimal serialization. Roles are preserved
   // so the model can reason about who said what.
   if (messages.length > 0) {
@@ -128,7 +136,7 @@ function buildPrompt(body: ConverseRequestBody): string {
     silence_nudge: 'Trigger: silence_nudge — the user has been silent ~10s. Say a brief silence prompt ("Still with me?", etc). Do not repeat your previous question.',
     silence_check: 'Trigger: silence_check — the user has been silent ~30s after your nudge. Ask once: "Do you want me to go into passive mode?". Do not self-flip.',
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
-    open_canvas: 'Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ask one open-ended question about what they\'re noticing, hoping for, or quietly worried about. Keep it warm and short — they just opened the panel.',
+    open_canvas: 'Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ONE concrete observed fact + ONE concrete invitation. NEVER a generic greeting like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — those are forbidden openers. Read the workspace inventory above (harness counts, recent activity, escalations, last scan) and pick the most useful concrete thing the user can act on. If the inventory shows nothing, say so concretely and offer a setup action ("Nothing set up here yet. Want to create your first harness?"). Keep it warm and short — 1-2 sentences total.',
   };
   sections.push(`## Trigger\n\n${triggerLines[trigger]}`);
 
@@ -147,7 +155,7 @@ export async function POST(req: NextRequest) {
     return new Response('invalid JSON body', { status: 400 });
   }
 
-  const promptText = buildPrompt(body);
+  const promptText = await buildPrompt(body);
 
   // Budget gate. operator-converse fires on every user turn AND on
   // silence-ladder timers AND through ask_operator from voice; without
