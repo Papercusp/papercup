@@ -80,8 +80,17 @@ export async function GET(req: Request) {
     .groupBy(sf.reason)
     .orderBy(desc(count()));
 
+  // Drizzle returns `id` (bigserial) and `exp_claim` (bigint) as JS BigInt.
+  // JSON.stringify can't serialize BigInt — coerce to Number for transport.
+  // Safe up to 2^53; row counts are nowhere near that.
+  const rowsJson = rows.map((r) => ({
+    ...r,
+    id: typeof r.id === 'bigint' ? Number(r.id) : r.id,
+    exp_claim: typeof r.exp_claim === 'bigint' ? Number(r.exp_claim) : r.exp_claim,
+  }));
+
   return NextResponse.json({
-    rows,
+    rows: rowsJson,
     summary: {
       byReason: Object.fromEntries(summary.map((r) => [r.reason, Number(r.count)])),
       window: sinceTs ? sinceTs.toISOString() : 'last 24h',
