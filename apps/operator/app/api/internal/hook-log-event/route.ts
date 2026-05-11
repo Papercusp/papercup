@@ -13,7 +13,7 @@
  */
 import { NextResponse } from 'next/server';
 import { getOrgPg, generated } from '@restart/db-org';
-import { eq, sql as dsql } from 'drizzle-orm';
+import { and, desc, eq, notInArray, sql as dsql } from 'drizzle-orm';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 
@@ -39,7 +39,7 @@ export async function POST(req: Request): Promise<Response> {
   if (!m) return NextResponse.json({ error: 'missing bearer' }, { status: 401 });
   const token = m[1];
 
-  const { db, sql } = getOrgPg();
+  const { db } = getOrgPg();
   const rows = await db
     .select({ harness_slug: ti.harness_slug })
     .from(ti)
@@ -91,16 +91,17 @@ export async function POST(req: Request): Promise<Response> {
     });
   // Trim to most-recent HOOK_KEEP rows per harness — same cap the
   // chokidar mirror enforced.
-  await sql`
-    DELETE FROM harness_shared.harness_hook_logs
-     WHERE harness_slug = ${slug}
-       AND log_id NOT IN (
-         SELECT log_id FROM harness_shared.harness_hook_logs
-          WHERE harness_slug = ${slug}
-          ORDER BY ts DESC
-          LIMIT ${HOOK_KEEP}
-       )
-  `;
+  const keepers = await db
+    .select({ log_id: hl.log_id })
+    .from(hl)
+    .where(eq(hl.harness_slug, slug))
+    .orderBy(desc(hl.ts))
+    .limit(HOOK_KEEP);
+  if (keepers.length > 0) {
+    await db
+      .delete(hl)
+      .where(and(eq(hl.harness_slug, slug), notInArray(hl.log_id, keepers.map((k) => k.log_id))));
+  }
   void notifySyncInvalidate('harnessHookLogs.byHarness', { harnessSlug: slug }).catch(() => {});
   return NextResponse.json({ ok: true });
 }
