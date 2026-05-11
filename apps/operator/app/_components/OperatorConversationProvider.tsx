@@ -61,7 +61,7 @@ import {
 import { getVoiceState, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
-import type { ChatMessage } from './chat/ChatConversation';
+import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
 
 interface OperatorTurnRow {
   id: string;
@@ -744,6 +744,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       text: string,
       source: 'text_typed' | 'voice_stt' | 'voice_tts' = 'text_typed',
       optimisticId?: string,
+      tools?: ChatToolCall[],
     ) => {
       const id = conversationIdRef.current;
       if (!id) return;
@@ -751,10 +752,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // for the real PG id (G19 id dedup). Either one alone has a race
       // window where the Zero push could double-render the optimistic
       // local message; together they're robust.
+      // `tools` (added 2026-05-11 for chat:ask_choice) is omitted when
+      // undefined so the server route can default to NULL.
+      const body: Record<string, unknown> = { role, text, source };
+      if (tools && tools.length > 0) body.tools = tools;
       void fetch(`/api/operator/conversations/${id}/turns`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, text, source }),
+        body: JSON.stringify(body),
       })
         .then((r) => (r.ok ? r.json() : null))
         .then((j: { turn?: { id?: string; seq?: number } } | null) => {
@@ -907,26 +912,39 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
 
         const parsed = parseOperatorTurn(buf);
 
-        if (parsed.say) {
-          const collectedTools = stream.tools && stream.tools.length > 0 ? stream.tools.slice() : undefined;
+        // The turn is meaningful if EITHER the model wrote `<say>` OR
+        // it called a tool. Pre-2026-05-11 we only dispatched/persisted
+        // when parsed.say was non-empty, which silently swallowed
+        // tool-call-only turns (e.g. chat:ask_choice). The card never
+        // appeared because the assistant row was never appended.
+        // Now: a non-empty tool array also qualifies.
+        const collectedTools = stream.tools && stream.tools.length > 0 ? stream.tools.slice() : undefined;
+        const turnHasContent = !!parsed.say || !!collectedTools;
+
+        if (turnHasContent) {
+          const sayContent = parsed.say ?? '';
           dispatch({
             type: 'append_message',
             message: collectedTools
-              ? { role: 'assistant', content: parsed.say, tools: collectedTools }
-              : { role: 'assistant', content: parsed.say },
+              ? { role: 'assistant', content: sayContent, tools: collectedTools }
+              : { role: 'assistant', content: sayContent },
           });
           // Engagement check tracks USER turns only. Assistant turns
           // (a) probe for the want-active phrase to seed G2's decline
           // window, AND (b) RESET that seed on subsequent non-want-active
           // turns so a "no" to a later "want passive?" check doesn't
           // get misclassified as declining active. G12 of the audit.
-          if (sayContainsWantActive(parsed.say)) {
+          if (parsed.say && sayContainsWantActive(parsed.say)) {
             dispatch({ type: 'record_want_active_asked', tsMs: Date.now() });
-          } else {
+          } else if (parsed.say) {
             dispatch({ type: 'record_want_active_asked', tsMs: 0 });
           }
           dispatch({ type: 'mark_turn', tsMs: Date.now() });
-          persistTurn('assistant', parsed.say, 'text_typed');
+          // Persist text + tools. Empty say is fine for tool-only
+          // turns; persistTurn writes whatever we send. The server-side
+          // turns route was extended to accept the tools field
+          // alongside text (POST /api/operator/conversations/:id/turns).
+          persistTurn('assistant', sayContent, 'text_typed', undefined, collectedTools);
         }
         // Successful turn → clear backoff. G14.
         dispatch({ type: 'reset_error_count' });

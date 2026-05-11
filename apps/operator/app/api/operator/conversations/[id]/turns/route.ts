@@ -26,6 +26,12 @@ interface Body {
   text: string;
   source?: TurnSource;
   elConvId?: string | null;
+  /**
+   * Optional tool-call array. Persisted into operator_turns.tools jsonb
+   * (migration 015). Used by chat:ask_choice to record the question +
+   * options + later (via PATCH .../turn-answer) the user's pick.
+   */
+  tools?: Array<{ name: string; input?: unknown; answered?: unknown }>;
 }
 
 export async function GET(
@@ -59,6 +65,7 @@ export async function POST(
     text: body.text,
     source: body.source,
     elConvId: body.elConvId ?? null,
+    tools: Array.isArray(body.tools) && body.tools.length > 0 ? body.tools : null,
   });
   void notifySyncInvalidate('operatorTurns.byConversation', { conversationId: id })
     .catch(() => { /* sync push best-effort; PG truth is authoritative */ });

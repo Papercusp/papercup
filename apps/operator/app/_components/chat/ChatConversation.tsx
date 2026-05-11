@@ -35,6 +35,16 @@ export interface ChatToolCall {
   name: string;
   /** Tool input — rendered as a short chip via `renderToolChip` if provided. */
   input?: unknown;
+  /**
+   * For interactive tools (e.g. chat:ask_choice), the user's response.
+   * When set, `renderToolCard` should render the answered state.
+   * Persisted into operator_turns.tools jsonb (migration 015).
+   */
+  answered?: {
+    option_id: string;
+    label: string;
+    at: number;
+  };
 }
 
 export interface ChatMessage {
@@ -75,8 +85,24 @@ export interface ChatConversationProps {
   /** Per-message label (default: 'You' for user, emptyState.title for the rest). */
   labelForRole?: (role: ChatMessage['role']) => string;
 
-  /** Optional tool-chip renderer. When omitted, `m.tools` is ignored. */
+  /** Optional tool-chip renderer (above content). When omitted, m.tools is ignored. */
   renderToolChip?: (tool: ChatToolCall, index: number) => ReactNode;
+  /**
+   * Optional tool-card renderer (below content). Used for interactive
+   * tools like chat:ask_choice that own significant UI. When provided,
+   * each m.tools entry is offered to renderToolCard FIRST; if it
+   * returns null/undefined, falls back to renderToolChip (above
+   * content). When it returns a ReactNode, that node is rendered
+   * below the message content.
+   *
+   * msg is passed so the renderer can use msg.id when posting back to
+   * the server (e.g. the operator-converse turn-answer endpoint).
+   */
+  renderToolCard?: (
+    tool: ChatToolCall,
+    msg: ChatMessage,
+    toolIndex: number,
+  ) => ReactNode | null | undefined;
 
   /** Input form (controlled). */
   inputValue: string;
@@ -129,6 +155,7 @@ export function ChatConversation(props: ChatConversationProps) {
     iconForRole,
     labelForRole,
     renderToolChip,
+    renderToolCard,
     inputValue,
     onInputChange,
     onSubmit,
@@ -338,8 +365,32 @@ export function ChatConversation(props: ChatConversationProps) {
                   </span>
                   <div className="oracle-msg-stack">
                     <div className="oracle-msg-role">{label}</div>
-                    {renderToolChip && m.tools?.map((t, ti) => renderToolChip(t, ti))}
-                    {m.content && <div className="oracle-msg-content">{m.content}</div>}
+                    {/*
+                      Each tool is offered to renderToolCard FIRST (below content).
+                      If it returns a card, we DON'T also render the same tool as
+                      a chip above — cards subsume chip representation. Otherwise
+                      we fall through to renderToolChip (above content).
+                    */}
+                    {(() => {
+                      const cardSlots: Array<{ index: number; node: ReactNode }> = [];
+                      const chipTools: Array<{ tool: ChatToolCall; index: number }> = [];
+                      m.tools?.forEach((t, ti) => {
+                        const card = renderToolCard?.(t, m, ti);
+                        if (card) cardSlots.push({ index: ti, node: card });
+                        else if (renderToolChip) chipTools.push({ tool: t, index: ti });
+                      });
+                      return (
+                        <>
+                          {chipTools.map(({ tool, index }) =>
+                            renderToolChip ? renderToolChip(tool, index) : null,
+                          )}
+                          {m.content && <div className="oracle-msg-content">{m.content}</div>}
+                          {cardSlots.map(({ index, node }) => (
+                            <div key={`tool-card-${index}`}>{node}</div>
+                          ))}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               );
