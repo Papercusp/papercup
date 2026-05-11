@@ -382,8 +382,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const [hasMoreEarlier, setHasMoreEarlier] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
 
-  const INITIAL_PAGE = 50;
-  const PAGE_SIZE = 50;
+  // Desktop-tuned: PG fetch is loopback, so the bottleneck is React
+  // reconciliation on prepend, not bandwidth. 200/page keeps the
+  // sidebar feeling close to "all in memory" while still bounding the
+  // worst-case render burst on initial mount.
+  const INITIAL_PAGE = 200;
+  const PAGE_SIZE = 200;
 
   useEffect(() => {
     let cancelled = false;
@@ -468,12 +472,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // doesn't survive infinite-scroll: prepending older history would
   // make the heuristic always think the remote is behind.
   //
-  // Limit 100 here is a window for the live tail, NOT the conversation
-  // depth — the user-facing depth is bounded only by how far they
-  // scroll back. Older turns land via loadEarlier() against PG.
+  // Limit 200 mirrors INITIAL_PAGE: the live tail is a window, not the
+  // conversation depth — the user-facing depth is bounded only by how
+  // far they scroll back. Older turns land via loadEarlier() against PG.
   const turnsSync = useSyncQuery<OperatorTurnRow>({
     queryName: 'operatorTurns.byConversation',
-    args: { conversationId: convId ?? '', limit: 100 },
+    args: { conversationId: convId ?? '', limit: 200 },
     enabled: !!convId,
   });
   const remoteTurns = (turnsSync.data as OperatorTurnRow[] | undefined) ?? [];
