@@ -531,3 +531,59 @@
   background: rgba(56, 189, 248, 0.16);
   border-color: rgba(56, 189, 248, 0.50);
 }
+
+/* ── Kill modal + danger buttons ───────────────────── */
+
+.pc-dev-btn-danger {
+  color: #f87171;
+  border-color: rgba(248, 113, 113, 0.30);
+}
+.pc-dev-btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.10);
+  border-color: rgba(248, 113, 113, 0.60);
+}
+.pc-dev-btn-primary.pc-dev-btn-danger {
+  background: #ef4444;
+  color: #fff;
+}
+.pc-dev-btn-mini:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pc-dev-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.pc-dev-modal {
+  background: #0f1419;
+  border: 1px solid var(--border, rgba(125, 211, 252, 0.20));
+  border-radius: 6px;
+  padding: 18px 22px;
+  min-width: 480px;
+  max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.pc-dev-modal h3 {
+  margin: 0;
+  font-size: 14px;
+}
+.pc-dev-modal-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.pc-dev-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
