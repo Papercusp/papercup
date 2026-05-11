@@ -39,6 +39,7 @@ import './roles/get';
 import './roles/firing_on';
 import './roles/known';
 import './hooks/known';
+import './agent_tools/list';
 import './autoloop/status';
 import './autoloop/control';
 import './operator/dedup_check';

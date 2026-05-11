@@ -62,6 +62,8 @@ type _G = {
     orgNotes: boolean;
     orgDecisions: boolean;
     mobileDevices: boolean;
+    operatorSecrets: boolean;
+    spawnSigVerificationFailures: boolean;
     identityFiles: boolean;
     adaptiveTelemetry: boolean;
     harnessMissionState: boolean;
@@ -115,6 +117,8 @@ const flags = _g.__ensureSchemaFlags ?? (_g.__ensureSchemaFlags = {
   orgNotes: false,
   orgDecisions: false,
   mobileDevices: false,
+  operatorSecrets: false,
+  spawnSigVerificationFailures: false,
   identityFiles: false,
   adaptiveTelemetry: false,
   harnessMissionState: false,
@@ -1453,6 +1457,60 @@ export async function ensureOperatorConversationsTable(): Promise<void> {
       ON harness_shared.operator_turns (conversation_id, seq);
   `);
   flags.operatorConversations = true;
+}
+
+/**
+ * Creates harness_shared.operator_secrets — KV for operator-process
+ * secrets that must outlive a restart without a flat-file footprint.
+ * Canonical migration: 011_operator_secrets.sql. First user is the
+ * per-spawn URL HMAC key (lib/spawn-signing.ts). PG storage stops the
+ * `cat ~/.papercusp/<file>` one-liner; same-UID access via libpq is
+ * still possible — friction, not enforcement.
+ */
+export async function ensureOperatorSecretsTable(): Promise<void> {
+  if (flags.operatorSecrets) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.operator_secrets (
+      name        TEXT PRIMARY KEY,
+      value_b64   TEXT NOT NULL,
+      created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+      rotated_at  TIMESTAMPTZ
+    );
+  `);
+  flags.operatorSecrets = true;
+}
+
+/**
+ * Creates harness_shared.spawn_sig_verification_failures — audit log of
+ * per-spawn URL HMAC mismatches. Every failed verification lands here so
+ * a dashboard / on-call can spot agents that are crafting their own URLs
+ * (the prompt-injection signature). Includes the path + reason so it's
+ * actionable without raw URL leakage. Bounded growth: prune to
+ * last 30 days via a periodic job (TODO).
+ */
+export async function ensureSpawnSigVerificationFailuresTable(): Promise<void> {
+  if (flags.spawnSigVerificationFailures) return;
+  const { sql } = getOrgPg();
+  await sql.unsafe(`
+    CREATE TABLE IF NOT EXISTS harness_shared.spawn_sig_verification_failures (
+      id           BIGSERIAL PRIMARY KEY,
+      ts           TIMESTAMPTZ NOT NULL DEFAULT now(),
+      reason       TEXT NOT NULL,
+      claimed_role TEXT,
+      claimed_harness TEXT,
+      claimed_workspace TEXT,
+      claimed_spawn TEXT,
+      exp_claim    BIGINT,
+      remote_addr  TEXT,
+      user_agent   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS spawn_sig_failures_ts_idx
+      ON harness_shared.spawn_sig_verification_failures (ts DESC);
+    CREATE INDEX IF NOT EXISTS spawn_sig_failures_reason_idx
+      ON harness_shared.spawn_sig_verification_failures (reason, ts DESC);
+  `);
+  flags.spawnSigVerificationFailures = true;
 }
 
 /** Test-only: clear the per-process cache so DDL re-runs. */

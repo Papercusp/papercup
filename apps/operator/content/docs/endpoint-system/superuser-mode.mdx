@@ -62,7 +62,8 @@ omp shell anywhere on the box
 operator
   └─ /api/mcp route detects ?superuser=1
   └─ checks: loopback origin + bearer matches superuser-token file
-  └─ on failure: 401 unauthorized (no fall-through)
+  └─ on failure: tool-shaped error from tools/call (`request_rejected: superuser_invalid_bearer`).
+  │  (initialize + tools/list remain open per MCP spec; the gate fires at dispatch.)
   └─ on success: builds spawn ctx { isSuperuser: true,
                                     workspaceId: '*',
                                     role: 'operator', ... }
@@ -87,7 +88,7 @@ mode.
 To discover what workspaces exist:
 
 ```typescript
-papercusp.list_workspaces()
+papercusp:list_workspaces()
 // → { workspaces: [
 //      { slug: "default", harnesses: ["sheets","papercup-org"], lastActiveTs: 1778... },
 //      { slug: "scratch", harnesses: [], lastActiveTs: 1778... }

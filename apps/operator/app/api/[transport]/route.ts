@@ -43,6 +43,7 @@ import {
 import type { AgentRole } from '@papercusp/plugin-sdk';
 import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
+import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -81,7 +82,7 @@ function headersFromExtra(extra: unknown): Headers {
  * missing — the caller falls back to built-in-only listing (e.g. dev
  * pings against /api/mcp without harness context).
  */
-function tryBuildSpawnContext(extra: unknown): {
+export interface BuiltSpawnContext {
   workspaceId: string;
   harnessSlug: string;
   role: AgentRole;
@@ -91,48 +92,146 @@ function tryBuildSpawnContext(extra: unknown): {
   spawnId: string;
   parentSpawnId: string | null;
   isSuperuser?: boolean;
-} | null {
+}
+
+/**
+ * Outcome of building a spawn ctx from an inbound MCP request:
+ *   - `none` — no URL params at all; legacy bearer dispatch may apply.
+ *   - `ok` — verified (or superuser-bypassed) spawn ctx.
+ *   - `failed` — URL claimed a spawn ctx but verification failed.
+ *               Caller MUST reject (do NOT fall through to bearer).
+ */
+export type TrySpawnContextResult =
+  | { kind: 'none' }
+  | { kind: 'ok'; ctx: BuiltSpawnContext }
+  | { kind: 'failed'; reason: string };
+
+/**
+ * Build the per-call spawn context from URL params + headers.
+ *
+ * Three entry shapes:
+ *   1. `?superuser=1` + loopback + valid bearer → operator-tier ctx,
+ *      no signature check (the bearer file IS the credential).
+ *   2. Per-spawn URL with `harness=&workspace=&role=&run=&spawn=&exp=&sig=`
+ *      — sig is verified via HMAC against the PG-stored signing key.
+ *      Failures are logged to spawn_sig_verification_failures.
+ *   3. Unsigned URL (no sig, no exp) — legacy/transition path. We
+ *      allow it with a console warning unless PAPERCUSP_REQUIRE_SPAWN_SIG=1,
+ *      in which case it's rejected too. Flip the env var once the
+ *      orchestrator (libs/papercusp spawn-mcp.ts) is shipping signed
+ *      URLs everywhere.
+ */
+async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResult> {
   const url = urlFromExtra(extra);
-  if (!url) return null;
-  // Superuser path: ?superuser=1 + loopback + valid bearer token. See
-  // /docs/endpoint-system/superuser-mode and apps/operator/lib/superuser-token.ts.
+  if (!url) return { kind: 'none' };
+
+  // ── (1) Superuser ───────────────────────────────────────────────
   if (url.searchParams.get('superuser') === '1') {
     const headers = headersFromExtra(extra);
-    if (!isLoopbackRequest(headers)) return null;
+    if (!isLoopbackRequest(headers)) return { kind: 'failed', reason: 'superuser_non_loopback' };
     const bearer = bearerFromExtra(extra);
-    if (!isValidSuperuserBearer(bearer)) return null;
+    if (!isValidSuperuserBearer(bearer)) return { kind: 'failed', reason: 'superuser_invalid_bearer' };
     const wsParam = (url.searchParams.get('workspace') ?? '').trim();
     const harnessParam = (url.searchParams.get('harness') ?? '').trim();
     const buf = new Uint8Array(8);
     globalThis.crypto.getRandomValues(buf);
     return {
-      workspaceId: wsParam || '*',
-      harnessSlug: harnessParam || '*',
-      role: 'operator' as AgentRole,
-      featureId: null,
-      chunkId: null,
-      runId: 'standalone',
-      spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
-      parentSpawnId: null,
-      isSuperuser: true,
+      kind: 'ok',
+      ctx: {
+        workspaceId: wsParam || '*',
+        harnessSlug: harnessParam || '*',
+        role: 'operator' as AgentRole,
+        featureId: null,
+        chunkId: null,
+        runId: 'standalone',
+        spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+        parentSpawnId: null,
+        isSuperuser: true,
+      },
     };
   }
+
+  // ── (2) / (3) Per-spawn URL — verify signature if present ───────
+  const hasSig = url.searchParams.has('sig');
+  const hasExp = url.searchParams.has('exp');
+  const requireSig = process.env.PAPERCUSP_REQUIRE_SPAWN_SIG === '1';
+  const headers = headersFromExtra(extra);
+  const remoteAddr = pickHeader(headers, 'x-forwarded-for') ?? null;
+  const userAgent = pickHeader(headers, 'user-agent') ?? null;
+
+  if (hasSig || hasExp) {
+    const v = await verifySpawnParams(url);
+    if (!v.ok) {
+      await logVerificationFailure({
+        reason: v.reason,
+        claimedRole: url.searchParams.get('role'),
+        claimedHarness: url.searchParams.get('harness'),
+        claimedWorkspace: url.searchParams.get('workspace'),
+        claimedSpawn: url.searchParams.get('spawn'),
+        expClaim: hasExp ? Number(url.searchParams.get('exp')) : null,
+        remoteAddr,
+        userAgent,
+      });
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[spawn-signing] rejected MCP request: ${v.reason} (role=${url.searchParams.get('role')}, ` +
+          `harness=${url.searchParams.get('harness')}, spawn=${url.searchParams.get('spawn')})`,
+      );
+      return { kind: 'failed', reason: `spawn_sig_${v.reason}` };
+    }
+  } else if (requireSig) {
+    await logVerificationFailure({
+      reason: 'missing_sig_required_mode',
+      claimedRole: url.searchParams.get('role'),
+      claimedHarness: url.searchParams.get('harness'),
+      claimedWorkspace: url.searchParams.get('workspace'),
+      claimedSpawn: url.searchParams.get('spawn'),
+      remoteAddr,
+      userAgent,
+    });
+    return { kind: 'failed', reason: 'spawn_sig_missing_sig_required_mode' };
+  } else {
+    // Soft-warn period: allow unsigned URLs but log so we can see the
+    // transition progress.
+    if (url.searchParams.has('role') || url.searchParams.has('spawn')) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[spawn-signing] accepting UNSIGNED spawn URL (set PAPERCUSP_REQUIRE_SPAWN_SIG=1 to reject). ' +
+          `role=${url.searchParams.get('role')} harness=${url.searchParams.get('harness')} ` +
+          `spawn=${url.searchParams.get('spawn')}`,
+      );
+    }
+  }
+
   try {
     const parsed = parseRequestContext(url);
     return {
-      workspaceId: parsed.workspaceId,
-      harnessSlug: parsed.harnessSlug,
-      role: parsed.role as AgentRole,
-      featureId: parsed.featureId,
-      chunkId: parsed.chunkId,
-      runId: parsed.runId,
-      spawnId: parsed.spawnId,
-      parentSpawnId: parsed.parentSpawnId,
+      kind: 'ok',
+      ctx: {
+        workspaceId: parsed.workspaceId,
+        harnessSlug: parsed.harnessSlug,
+        role: parsed.role as AgentRole,
+        featureId: parsed.featureId,
+        chunkId: parsed.chunkId,
+        runId: parsed.runId,
+        spawnId: parsed.spawnId,
+        parentSpawnId: parsed.parentSpawnId,
+      },
     };
   } catch (err) {
-    if (err instanceof InvalidRequestContextError) return null;
+    if (err instanceof InvalidRequestContextError) return { kind: 'none' };
     throw err;
   }
+}
+
+function pickHeader(
+  headers: Record<string, string | string[] | undefined> | null,
+  name: string,
+): string | null {
+  if (!headers) return null;
+  const v = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(v)) return v[0] ?? null;
+  return v ?? null;
 }
 
 function builtinInputSchema(tool: ReturnType<typeof getCatalog>[number]): Record<string, unknown> {
@@ -262,7 +361,7 @@ const PROJECTED_DEPS: DispatchProjectedDeps = {
  *     client supplied a progressToken in `_meta`
  */
 async function buildMcpToolContext(
-  spawn: NonNullable<ReturnType<typeof tryBuildSpawnContext>>,
+  spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sendNotification: ((notif: { method: string; params: Record<string, unknown> }) => Promise<void>) | undefined,
@@ -329,8 +428,12 @@ const handler = createMcpHandler(
         // auto-registers its result there) AND carries plugin-contributed
         // tools, so a single iteration covers both. Iterating getCatalog()
         // on top would emit each built-in twice.
-        const spawn = tryBuildSpawnContext(extra);
-        const role = spawn?.role;
+        //
+        // tools/list is intentionally lenient on bad sigs — surface what
+        // the spawn *could* do if it had valid credentials. tools/call is
+        // where the hard rejection happens.
+        const spawnRes = await tryBuildSpawnContext(extra);
+        const role = spawnRes.kind === 'ok' ? spawnRes.ctx.role : undefined;
         return { tools: listMcpProjections(role).map((t) => ({ ...t })) };
       },
     );
@@ -358,7 +461,54 @@ const handler = createMcpHandler(
           sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
         })?.sendNotification;
 
-        // 1. Legacy built-in tool? Use existing dispatch with bearer auth.
+        // Dispatch priority:
+        //   1. Projected dispatcher when a spawn ctx is present (per-spawn
+        //      URL OR ?superuser=1 + bearer). This is the path that
+        //      honors isSuperuser bypass + role allowlist + per-window
+        //      quota. Every defineTool() entry is in the projected
+        //      registry, so this covers all first-party tools too.
+        //   2. Legacy bearer-only dispatch ONLY when no spawn ctx — e.g.
+        //      in-process callers or one-off bearer-authed hits that
+        //      don't supply URL params.
+        //   3. Unknown.
+        //
+        // Prior to 2026-05-11 the order was reversed: the legacy bearer
+        // dispatch ran first for anything in getCatalog(), which made
+        // ?superuser=1 fail with `invalid_bearer` for ~24 first-party
+        // tools (harness:*, tasks:*, messages:*, intel:*, features:*,
+        // papercusp:list_workspaces, …) because the superuser token
+        // isn't a registered principal. See docs/endpoint-system/
+        // superuser-mode.mdx — the bypass logic lives in
+        // dispatch-projected.ts, never in dispatch().
+        const projected = lookupByMcpName(toolName);
+        const spawnRes = await tryBuildSpawnContext(extra);
+
+        // Hard-fail spawn ctx with invalid signature — do NOT fall through
+        // to legacy bearer dispatch. That's the whole point of the
+        // verification step.
+        if (spawnRes.kind === 'failed') {
+          return {
+            isError: true,
+            content: [{
+              type: 'text' as const,
+              text: `request_rejected: ${spawnRes.reason}`,
+            }],
+          };
+        }
+
+        if (projected && spawnRes.kind === 'ok') {
+          const ctx = await buildMcpToolContext(spawnRes.ctx, progressToken, sendNotification);
+          const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
+          if (!r.ok) {
+            return {
+              isError: true,
+              content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
+            };
+          }
+          return { content: r.result!.content as never };
+        }
+
+        // Legacy bearer-only fallback (no spawn ctx supplied).
         const builtin = getCatalog().find((t) => t.name === toolName);
         if (builtin) {
           const bearer = bearerFromExtra(extra);
@@ -380,31 +530,18 @@ const handler = createMcpHandler(
           return { content };
         }
 
-        // 2. Projected tool? Dispatch via the unified registry.
-        const projected = lookupByMcpName(toolName);
-        if (projected) {
-          const spawn = tryBuildSpawnContext(extra);
-          if (!spawn) {
-            return {
-              isError: true,
-              content: [{
-                type: 'text' as const,
-                text: 'invalid_request_context: projected tool calls require harness/workspace/role/run/spawn URL query params',
-              }],
-            };
-          }
-          const ctx = await buildMcpToolContext(spawn, progressToken, sendNotification);
-          const r = await dispatchProjectedTool(projected, toolName, args, ctx, PROJECTED_DEPS);
-          if (!r.ok) {
-            return {
-              isError: true,
-              content: [{ type: 'text' as const, text: `${r.error?.code}: ${r.error?.message}` }],
-            };
-          }
-          return { content: r.result!.content as never };
+        // Projected tool exists but caller didn't supply a spawn ctx —
+        // tell them what's missing instead of falling through to 'unknown'.
+        if (projected && spawnRes.kind === 'none') {
+          return {
+            isError: true,
+            content: [{
+              type: 'text' as const,
+              text: 'invalid_request_context: projected tool calls require harness/workspace/role/run/spawn URL query params, or ?superuser=1 + bearer',
+            }],
+          };
         }
 
-        // 3. Unknown.
         return {
           isError: true,
           content: [{ type: 'text' as const, text: `unknown_tool: no tool named "${toolName}"` }],
