@@ -98,3 +98,5 @@ import './experts/chat_agents';
 import './dev/harnesses';
 import './dev/telemetry';
 import './dev/audit';
+import './dev/sessions';
+import './dev/activity';

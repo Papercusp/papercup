@@ -1,0 +1,31 @@
+/**
+ * dev:activity — most-recent tool invocations across selected workspaces.
+ * Drives the right-rail activity feed on /dev.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { activityFeed } from '@/lib/dev-data';
+
+export default defineTool({
+  name: 'dev:activity',
+  description: 'Most-recent tool invocations across selected workspaces (live activity feed).',
+  capability: 'intel:read',
+  requirePrincipal: false,
+  roles: ['operator', 'architect', 'debugger'],
+  args: z.object({
+    workspaceIds: z.array(z.string()).nullable().optional(),
+    limit: z.number().int().positive().max(500).optional(),
+  }),
+  async handler(args) {
+    const result = await activityFeed({
+      workspaceIds: args.workspaceIds ?? null,
+      limit: args.limit,
+    });
+    return {
+      content: [
+        { type: 'text', text: JSON.stringify({ count: result.entries.length, entries: result.entries }) },
+      ],
+    };
+  },
+});
