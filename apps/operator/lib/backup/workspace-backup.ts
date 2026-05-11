@@ -204,7 +204,7 @@ export class WorkspaceBackup {
       INSERT INTO harness_shared.backup_snapshots
         (workspace_id, trigger_reason, trigger_context, sources_json)
       VALUES
-        (${this.workspaceId}, ${reason}, ${context ?? null}, ${JSON.stringify(sources)}::jsonb)
+        (${this.workspaceId}, ${reason}, ${context ? JSON.stringify(context) : null}::jsonb, ${JSON.stringify(sources)}::jsonb)
       RETURNING id
     `;
     const snapshotRowId = insertRows[0]!.id;
@@ -294,7 +294,7 @@ export class WorkspaceBackup {
     try {
       await sql`
         INSERT INTO harness_shared.backup_events (workspace_id, snapshot_id, kind, payload_json)
-        VALUES (${this.workspaceId}, ${snapshotId}, ${kind}, ${payload as unknown as object}::jsonb)
+        VALUES (${this.workspaceId}, ${snapshotId}, ${kind}, ${JSON.stringify(payload)}::jsonb)
       `;
     } catch {
       // Event log is best-effort.
@@ -394,7 +394,7 @@ export class WorkspaceBackup {
         event_triggers_json, excluded_paths_json, updated_at
       ) VALUES (
         ${this.workspaceId}, ${next.enabled}, ${next.cadenceMode}, ${next.cadenceMinutes},
-        ${next.retentionPreset}, ${next.retentionCustom as unknown as object | null},
+        ${next.retentionPreset}, ${next.retentionCustom ? JSON.stringify(next.retentionCustom) : null}::jsonb,
         ${JSON.stringify(next.eventTriggers)}::jsonb,
         ${JSON.stringify(next.excludedPaths)}::jsonb,
         now()
@@ -445,7 +445,7 @@ export class WorkspaceBackup {
     try {
       await sql`
         INSERT INTO harness_shared.backup_events (workspace_id, snapshot_id, kind, payload_json)
-        VALUES (${this.workspaceId}, NULL, ${kind}, ${payload as unknown as object}::jsonb)
+        VALUES (${this.workspaceId}, NULL, ${kind}, ${JSON.stringify(payload)}::jsonb)
       `;
     } catch {
       // best-effort
