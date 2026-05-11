@@ -750,9 +750,39 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     return subscribeVoiceState((s) => setVoiceActive(s.mode !== 'off'));
   }, []);
 
+  // Sleep gate. The LLM emits `<sleep>{minutes}</sleep>` when the user
+  // says "give me a minute" / "I'm busy" — the silence-nudge timer must
+  // respect that or the operator keeps asking "Still with me?" while
+  // the user explicitly asked for quiet. We mirror sessionStorage's
+  // sleepUntilMs into reactive state so the effect re-arms when the
+  // sleep deadline passes (or when the user wakes the operator via
+  // the navbar chip).
+  const [sleepUntilMs, setSleepUntilMsState] = useState(() => {
+    try { return readSleepUntilMs(); } catch { return 0; }
+  });
+  useEffect(() => {
+    const refresh = () => setSleepUntilMsState(readSleepUntilMs());
+    refresh();
+    window.addEventListener('papercusp:operatorSleep', refresh);
+    return () => window.removeEventListener('papercusp:operatorSleep', refresh);
+  }, []);
+  // When sleep expires in the future, schedule a wake-up so the silence
+  // timer re-arms automatically. Cleared on every effect re-run.
+  useEffect(() => {
+    if (sleepUntilMs <= 0) return;
+    const remaining = sleepUntilMs - Date.now();
+    if (remaining <= 0) {
+      setSleepUntilMsState(0);
+      return;
+    }
+    const t = setTimeout(() => setSleepUntilMsState(0), remaining + 100);
+    return () => clearTimeout(t);
+  }, [sleepUntilMs]);
+
   useEffect(() => {
     if (state.mode !== 'active') return;
     if (voiceActive) return; // voice owns the conversation; no nudge filler
+    if (sleepUntilMs > Date.now()) return; // operator self-quieted via <sleep> tag
     let timer: ReturnType<typeof setTimeout> | null = null;
     if (state.sub === 'ready') {
       timer = setTimeout(() => void runGeneration('silence_nudge'), SILENCE_NUDGE_MS);
@@ -762,7 +792,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       timer = setTimeout(() => dispatch({ type: 'set_sub', sub: 'quiet_wait' }), SILENCE_QUIET_WAIT_MS);
     }
     return () => { if (timer) clearTimeout(timer); };
-  }, [state.mode, state.sub, runGeneration, voiceActive]);
+  }, [state.mode, state.sub, runGeneration, voiceActive, sleepUntilMs]);
 
   // ── Public actions ──────────────────────────────────────────────────
 
@@ -788,6 +818,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
 
   const flipMode = useCallback((mode: OperatorMode) => {
     writeOperatorModeToSession(mode);
+    // Flipping TO active wakes the operator if it was sleeping —
+    // otherwise the user-visible chip says "Active" while the silence
+    // timers stay parked. Per the active-mode plan, flipping to
+    // active means "I'm here, talk to me."
+    if (mode === 'active') writeSleepUntilMs(0);
     try {
       window.dispatchEvent(
         new CustomEvent('papercusp:operatorMode', { detail: { mode } }),

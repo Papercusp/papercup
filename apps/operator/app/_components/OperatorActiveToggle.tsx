@@ -29,9 +29,12 @@ import {
   type OperatorMode,
   readOperatorModeFromSession,
   writeOperatorModeToSession,
+  readSleepUntilMs,
+  writeSleepUntilMs,
 } from '@/lib/operator-converse-tags';
 
 const MODE_CHANGE_EVENT = 'papercusp:operatorMode';
+const SLEEP_CHANGE_EVENT = 'papercusp:operatorSleep';
 
 /** Subscribe to mode changes (cross-component fanout via window event). */
 function useOperatorMode(): [OperatorMode, (next: OperatorMode) => void] {
@@ -56,6 +59,10 @@ function useOperatorMode(): [OperatorMode, (next: OperatorMode) => void] {
 
   const setMode = useCallback((next: OperatorMode) => {
     writeOperatorModeToSession(next);
+    // Flipping TO active wakes the operator. Without this the chip
+    // says "Active" but the silence-timer effect stays parked because
+    // sleepUntilMs is still in the future from a prior <sleep> tag.
+    if (next === 'active') writeSleepUntilMs(0);
     setModeLocal(next);
     try {
       window.dispatchEvent(new CustomEvent(MODE_CHANGE_EVENT, { detail: { mode: next } }));
@@ -63,6 +70,24 @@ function useOperatorMode(): [OperatorMode, (next: OperatorMode) => void] {
   }, []);
 
   return [mode, setMode];
+}
+
+/** Subscribe to sleep-until-ms changes. Returns the current value (0 = awake). */
+function useOperatorSleepUntil(): number {
+  const [sleepUntil, setSleepUntil] = useState(0);
+  useEffect(() => {
+    const refresh = () => setSleepUntil(readSleepUntilMs());
+    refresh();
+    window.addEventListener(SLEEP_CHANGE_EVENT, refresh);
+    // When the deadline passes, re-render so the chip drops the
+    // "(sleeping Nm)" suffix without the user having to refresh.
+    const tick = setInterval(refresh, 5000);
+    return () => {
+      window.removeEventListener(SLEEP_CHANGE_EVENT, refresh);
+      clearInterval(tick);
+    };
+  }, []);
+  return sleepUntil;
 }
 
 /**
@@ -84,11 +109,40 @@ export function setOperatorMode(next: OperatorMode): void {
 
 export function OperatorActiveToggle() {
   const [mode, setMode] = useOperatorMode();
+  const sleepUntil = useOperatorSleepUntil();
   const active = mode === 'active';
+  const sleepingMs = sleepUntil > 0 ? sleepUntil - Date.now() : 0;
+  const sleeping = active && sleepingMs > 0;
 
   const onClick = useCallback(() => {
+    if (sleeping) {
+      // Sleeping → click wakes; mode stays active.
+      writeSleepUntilMs(0);
+      return;
+    }
     setMode(active ? 'passive' : 'active');
-  }, [active, setMode]);
+  }, [active, setMode, sleeping]);
+
+  // Format the sleep countdown. <60s → "Ns"; otherwise "Nm".
+  const sleepLabel = sleeping
+    ? sleepingMs < 60_000
+      ? `${Math.max(1, Math.ceil(sleepingMs / 1000))}s`
+      : `${Math.ceil(sleepingMs / 60_000)}m`
+    : '';
+
+  const stateClass = sleeping ? 'sleeping' : active ? 'active' : 'passive';
+  const label = sleeping ? `Sleeping ${sleepLabel}` : active ? 'Active' : 'Passive';
+  const aria = sleeping
+    ? `Operator sleeping for ${sleepLabel}. Click to wake.`
+    : active
+      ? 'Operator interaction mode: active. Click to set passive.'
+      : 'Operator interaction mode: passive. Click to set active.';
+  const title = sleeping
+    ? `Operator went quiet for ${sleepLabel} (via <sleep> tag). Click to wake immediately.`
+    : active
+      ? 'Operator is active — speaks proactively. Click to make passive.'
+      : 'Operator is passive — only responds when spoken to. Click to make active.';
+  const dotKind = sleeping ? 'static' : active ? 'pulsing' : 'static';
 
   return (
     <>
@@ -96,12 +150,12 @@ export function OperatorActiveToggle() {
       <button
         type="button"
         onClick={onClick}
-        className={`pc-header-cta op-active-toggle op-active-toggle--${active ? 'active' : 'passive'}`}
-        aria-label={active ? 'Operator interaction mode: active. Click to set passive.' : 'Operator interaction mode: passive. Click to set active.'}
-        title={active ? 'Operator is active — speaks proactively. Click to make passive.' : 'Operator is passive — only responds when spoken to. Click to make active.'}
+        className={`pc-header-cta op-active-toggle op-active-toggle--${stateClass}`}
+        aria-label={aria}
+        title={title}
       >
-        <span className={`op-active-toggle-dot op-active-toggle-dot--${active ? 'pulsing' : 'static'}`} aria-hidden="true" />
-        <span className="op-active-toggle-label">{active ? 'Active' : 'Passive'}</span>
+        <span className={`op-active-toggle-dot op-active-toggle-dot--${dotKind}`} aria-hidden="true" />
+        <span className="op-active-toggle-label">{label}</span>
       </button>
     </>
   );
@@ -135,6 +189,12 @@ const TOGGLE_CSS = `
 }
 .op-active-toggle--passive {
   /* default look */
+}
+.op-active-toggle--sleeping {
+  background: rgba(148, 163, 184, 0.10);
+  border-color: rgba(148, 163, 184, 0.40);
+  color: var(--fg-mute, #94a3b8);
+  font-style: italic;
 }
 
 .op-active-toggle-dot {

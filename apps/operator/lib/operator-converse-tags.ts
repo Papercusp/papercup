@@ -237,7 +237,17 @@ export function writeSleepUntilMs(epochMs: number): void {
   try {
     if (epochMs <= 0) window.sessionStorage.removeItem(SLEEP_UNTIL_KEY);
     else window.sessionStorage.setItem(SLEEP_UNTIL_KEY, String(epochMs));
+    // Fan out so the chip + silence-timer effect re-evaluate without
+    // having to poll sessionStorage.
+    window.dispatchEvent(
+      new CustomEvent('papercusp:operatorSleep', { detail: { sleepUntilMs: epochMs } }),
+    );
   } catch { /* sandbox / quota */ }
+}
+
+/** Wake the operator immediately. No-op when no sleep is set. */
+export function clearOperatorSleep(): void {
+  writeSleepUntilMs(0);
 }
 
 /** Convenience: convert a parsed sleep tag to an absolute epoch ms. */
