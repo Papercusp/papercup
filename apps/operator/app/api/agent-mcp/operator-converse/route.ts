@@ -297,25 +297,12 @@ export async function POST(req: NextRequest) {
         } catch (err) {
           console.warn('[operator-converse] spawn parse/dispatch error', err);
         }
-        send('done', { costUsd: totalCost });
+        sink.done({ costUsd: totalCost });
       } catch (err) {
         if (!ctrl.signal.aborted) {
-          send('error', { message: err instanceof Error ? err.message : String(err) });
+          sink.event('error', { message: err instanceof Error ? err.message : String(err) });
         }
-      } finally {
-        try { controller.close(); } catch { /* already closed */ }
       }
-    },
-    cancel() {
-      ctrl.abort();
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache, no-transform',
-      'connection': 'keep-alive',
     },
   });
 }

@@ -19,6 +19,7 @@
 
 import { NextRequest } from 'next/server';
 import { existsSync, readFileSync } from 'node:fs';
+import { sseResponse } from '@restart/sse';
 import { runAgentChat } from '@/lib/agent-chat-stream';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -126,26 +127,15 @@ export async function GET(req: NextRequest) {
         // polish: also stream `idle_status` with per-harness one-liners
         // so the panel can render a useful summary instead of just
         // showing N cached cards.
-        const enc = new TextEncoder();
-        const stream = new ReadableStream({
-          start(controller) {
-            const send = (event: string, data: Record<string, unknown>) => {
-              controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-            };
+        return sseResponse({
+          signal: req.signal,
+          headers: { 'x-operator-cached': '1' },
+          setup: (sink) => {
             if (snap.perHarness && snap.perHarness.length > 0) {
-              send('idle_status', { perHarness: snap.perHarness, computedAt: snap.computedAt });
+              sink.event('idle_status', { perHarness: snap.perHarness, computedAt: snap.computedAt });
             }
-            for (const card of snap.cards) send('suggestion', card);
-            send('done', { costUsd: 0, suggestions: snap.cards.length, cached: true });
-            controller.close();
-          },
-        });
-        return new Response(stream, {
-          headers: {
-            'content-type': 'text/event-stream',
-            'cache-control': 'no-cache, no-transform',
-            'connection': 'keep-alive',
-            'x-operator-cached': '1',
+            for (const card of snap.cards) sink.event('suggestion', card);
+            sink.done({ costUsd: 0, suggestions: snap.cards.length, cached: true });
           },
         });
       }
@@ -212,12 +202,13 @@ export async function GET(req: NextRequest) {
     console.warn('[operator-scan] history-start failed:', e);
   }
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const enc = new TextEncoder();
-      const send = (event: string, data: Record<string, unknown>) => {
-        controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-      };
+  return sseResponse({
+    signal: req.signal,
+    setup: async (sink) => {
+      sink.onClose(() => {
+        if (lock.holderId) void releaseScanLock(lock.holderId);
+      });
+      const send = (event: string, data: Record<string, unknown>) => sink.event(event, data);
 
       let costUsd = 0;
       let assistantText = '';
@@ -384,23 +375,7 @@ export async function GET(req: NextRequest) {
             console.warn('[operator-scan] history-fail failed:', e2);
           }
         }
-      } finally {
-        if (lock.holderId) await releaseScanLock(lock.holderId);
-        controller.close();
       }
-    },
-    async cancel() {
-      // Client closed the SSE — release the lock so a follow-up scan
-      // doesn't block on the dead one until TTL.
-      if (lock.holderId) await releaseScanLock(lock.holderId);
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache, no-transform',
-      'connection': 'keep-alive',
     },
   });
 }
