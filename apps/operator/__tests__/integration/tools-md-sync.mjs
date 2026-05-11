@@ -157,21 +157,43 @@ for (const file of TOOL_FILES) {
 // Pass 2 — plugin manifests (papercusp.json) — guidance lives in tools[i].guidance.
 for (const file of PLUGIN_MANIFESTS) {
   const json = JSON.parse(readFileSync(file, 'utf8'));
-  if (!Array.isArray(json.tools)) continue;
-  for (const tool of json.tools) {
-    // MCP-exposed name comes from expose.mcp.name; falls back to manifest name.
-    const mcpName = tool.expose?.mcp?.name ?? `${json.name?.replace(/^@papercupai\//, '')}.${tool.name}`;
-    const roles = Array.isArray(tool.roles) ? tool.roles : [];
-    const hasGuidance = !!tool.guidance;
-    const hasWhen = !!tool.guidance?.when;
-    const byRoleKeys = tool.guidance?.byRole ? Object.keys(tool.guidance.byRole) : [];
-    CATALOG.set(mcpName, {
-      roles,
-      hasGuidance,
-      hasWhen,
-      byRoleKeys,
-      source: file.replace(REPO + '/', ''),
-    });
+  if (Array.isArray(json.tools)) {
+    for (const tool of json.tools) {
+      // MCP-exposed name comes from expose.mcp.name; falls back to manifest name.
+      const mcpName = tool.expose?.mcp?.name ?? `${json.name?.replace(/^@papercupai\//, '')}.${tool.name}`;
+      const roles = Array.isArray(tool.roles) ? tool.roles : [];
+      const hasGuidance = !!tool.guidance;
+      const hasWhen = !!tool.guidance?.when;
+      const byRoleKeys = tool.guidance?.byRole ? Object.keys(tool.guidance.byRole) : [];
+      CATALOG.set(mcpName, {
+        roles,
+        hasGuidance,
+        hasWhen,
+        byRoleKeys,
+        source: file.replace(REPO + '/', ''),
+      });
+    }
+  }
+  // Some plugins register tools dynamically at runtime (e.g.
+  // @papercupai/gitnexus-bridge — tools[] is empty in the manifest;
+  // the plugin's `getDynamicTools()` populates the registry at load).
+  // Their capabilities declaration is the static contract — extract
+  // tool names from `tools:<group>:<verb>` capability strings so
+  // playbook mentions can resolve them.
+  if (Array.isArray(json.capabilities)) {
+    for (const cap of json.capabilities) {
+      const m = /^tools:([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/.exec(cap);
+      if (!m) continue;
+      const dynName = `${m[1]}.${m[2]}`;
+      if (CATALOG.has(dynName)) continue; // already from tools[]
+      CATALOG.set(dynName, {
+        roles: [],          // dynamic — assume principal-gated by capability
+        hasGuidance: false, // can't author guidance for dynamic tools statically
+        hasWhen: false,
+        byRoleKeys: [],
+        source: file.replace(REPO + '/', '') + ' (dynamic)',
+      });
+    }
   }
 }
 
@@ -258,8 +280,18 @@ for (const { role, label, allowedToolsSource } of CHAT_SURFACES) {
 for (const role of NON_CHAT_ROLES) {
   const catalogForRole = new Set();
   for (const [name, entry] of CATALOG) {
-    if (entry.roles.length === 0) continue; // role-agnostic; not visible to a specific role
-    if (entry.roles.includes(role)) catalogForRole.add(name);
+    // Two paths to visibility for spawn-URL roles:
+    //   1. Role-gated tools (`requirePrincipal: false` + `roles: [...]`) —
+    //      explicit allowlist. Tool is visible if the role is in the list.
+    //   2. Principal-gated tools (no `roles` allowlist) — visible to
+    //      anyone whose principal has the matching capability. The
+    //      bearer + caps machinery handles enforcement; this CI test
+    //      can't model bearer caps, so we conservatively include
+    //      principal-gated tools as "potentially visible" rather than
+    //      flagging false positives.
+    if (entry.roles.length === 0 || entry.roles.includes(role)) {
+      catalogForRole.add(name);
+    }
   }
   if (catalogForRole.size === 0) {
     note(`${role}: no tools in catalog match this role's allowlist (skipping)`);
