@@ -1,0 +1,49 @@
+/**
+ * agent_chats:list — list multi-turn chat sessions for a harness slug.
+ *
+ * Calls listChats() in lib/agent-chats-data.ts directly — same function
+ * the GET /api/harness/:slug/agent-chats route projects.
+ */
+
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { listChats } from '@/lib/agent-chats-data';
+
+const ALL_ROLES = [
+  'scoper',
+  'architect',
+  'worker',
+  'validator',
+  'reviewer',
+  'debugger',
+  'operator',
+  'documenter',
+  'curator',
+] as const;
+
+export default defineTool({
+  name: 'agent_chats:list',
+  description:
+    'List multi-turn chat sessions for a harness slug (active by default; pass includeArchived=true to see all).',
+  capability: 'agent_chats:read',
+  requirePrincipal: false,
+  roles: [...ALL_ROLES],
+  args: z.object({
+    slug: z.string().min(1),
+    includeArchived: z.boolean().optional(),
+  }),
+  async handler(args) {
+    const result = await listChats(args);
+    if (!result.ok) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: result.error }) }] };
+    }
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ count: result.data.chats.length, chats: result.data.chats }),
+        },
+      ],
+    };
+  },
+});

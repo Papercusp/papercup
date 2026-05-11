@@ -22,58 +22,19 @@
  */
 import type { Hono } from 'hono';
 import { stream, streamSSE } from 'hono/streaming';
-import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { runClaudeChat } from '@/lib/claude-chat-stream';
-import { getKnownRoles } from '@/lib/known-roles';
+import {
+  readFeatureLockState,
+  rowToChat,
+  type ChatRow,
+  type TranscriptTurn,
+} from '@/lib/agent-chats-data';
 import { projectDirForSlug } from '../../../lib/operator-notes';
-
-interface TranscriptTurn {
-  role: 'user' | 'assistant';
-  content: string;
-  ts: string;
-  tokens_in?: number;
-  tokens_out?: number;
-  cost_cents?: number;
-}
-
-interface ChatRow {
-  id: string;
-  role: string;
-  feature_id: string | null;
-  title: string | null;
-  transcript: TranscriptTurn[];
-  total_input_tokens: number;
-  total_output_tokens: number;
-  total_cost_usd_cents: number;
-  created_at: string;
-  updated_at: string;
-  archived_at: string | null;
-}
-
-interface FeatureLockState {
-  /** Worker that's currently holding the feature lock, or null if free. */
-  taken_by: string | null;
-  /** When the lock was acquired. */
-  taken_at: string | null;
-  /** When the lock auto-expires (orphan recovery). */
-  expires_at: string | null;
-  /** Convenience flag: true iff an autonomous run is currently in flight. */
-  active: boolean;
-}
-
-// Roles allowed for /agent-chats: derived from the global prompts dir
-// (lib/known-roles.ts walks every subdir). `feedback` is intentionally
-// excluded — ephemeral, no chat surface. Everything else with a prompt
-// file is chat-capable; expert chats additionally require feature_id.
-function isValidChatRole(role: string): boolean {
-  if (role === 'feedback') return false;
-  return getKnownRoles().includes(role);
-}
 
 /**
  * Per-chat in-memory lock. A second message POST while a prior one is
@@ -87,64 +48,6 @@ function dbForSlug(slug: string) {
 
 /**
  * Flip the userEngaged flag (and corresponding awaiting_user / gathering_feedback
- * status) on an expert instance. Called when the chat opens (engaged=true) and
- * when the chat is archived (engaged=false).
- *
- * Reads + writes `.harness/experts/<id>/identity.json` directly. Tolerates a
- * missing file (no-op).
- */
-async function flipExpertEngaged(slug: string, expertId: string, engaged: boolean): Promise<void> {
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const { activeWorkspaceId } = await import('@/lib/workspace-registry');
-  const ws = activeWorkspaceId();
-  // Atomic UPDATE: only flip status when current state allows. Terminal
-  // statuses (final/max_rounds/cancelled/superseded/error) are preserved
-  // regardless of engaged. The previous file-based version did this same
-  // check after reading identity.json; we now do it in SQL CASE.
-  const rows = await sql<{ updated: boolean }[]>`
-    UPDATE harness_shared.harness_experts
-       SET user_engaged = ${engaged},
-           status       = CASE
-             WHEN status IN ('final','max_rounds','cancelled','superseded','error') THEN status
-             WHEN ${engaged} = true THEN 'awaiting_user'
-             WHEN status = 'awaiting_user' THEN 'gathering_feedback'
-             ELSE status
-           END,
-           updated_at   = ${Date.now()}
-     WHERE workspace_id = ${ws} AND harness_slug = ${slug}
-       AND expert_id    = ${expertId}
-    RETURNING TRUE AS updated
-  `;
-  if (rows.length > 0) {
-    void notifySyncInvalidate('harnessIdentity').catch(() => {});
-  }
-}
-
-/**
- * Read the current lock state of a feature row. Used to surface a "this
- * feature is currently being autonomously worked" hint in chat responses
- * — the UI can render a warning, the chat agent's prompt gets a preamble.
- *
- * Returns `null` if the feature row doesn't exist.
- */
-async function readFeatureLockState(slug: string, featureId: string): Promise<FeatureLockState | null> {
-  try {
-    const db = dbForSlug(slug);
-    const row = (await db
-      .prepare('SELECT taken_by, taken_at, expires_at FROM harness_features WHERE harness_slug = ? AND feature_id = ? LIMIT 1')
-      .get(slug, featureId)) as { taken_by: string | null; taken_at: string | null; expires_at: string | null } | undefined;
-    if (!row) return null;
-    return {
-      taken_by: row.taken_by,
-      taken_at: row.taken_at,
-      expires_at: row.expires_at,
-      active: row.taken_by !== null,
-    };
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Read the per-harness chat cost cap from `.harness/config.json`. Two keys
  * supported: `maxChatCostUsd` (per-chat) and `maxAggregateChatCostUsd`
@@ -201,124 +104,57 @@ async function aggregateChatCostCents(slug: string): Promise<number> {
   }
 }
 
-function rowToChat(r: any): ChatRow {
-  return {
-    id: r.id,
-    role: r.role,
-    feature_id: r.feature_id ?? null,
-    title: r.title ?? null,
-    transcript: typeof r.transcript === 'string'
-      ? JSON.parse(r.transcript)
-      : (r.transcript ?? []),
-    total_input_tokens: typeof r.total_input_tokens === 'bigint' ? Number(r.total_input_tokens) : (r.total_input_tokens ?? 0),
-    total_output_tokens: typeof r.total_output_tokens === 'bigint' ? Number(r.total_output_tokens) : (r.total_output_tokens ?? 0),
-    total_cost_usd_cents: typeof r.total_cost_usd_cents === 'bigint' ? Number(r.total_cost_usd_cents) : (r.total_cost_usd_cents ?? 0),
-    created_at: r.created_at,
-    updated_at: r.updated_at,
-    archived_at: r.archived_at ?? null,
-  };
-}
-
 export function registerAgentChats(harness: Hono): void {
   // ── List chats (active by default; ?include=archived to see all) ─────
   harness.get('/:slug/agent-chats', async (c) => {
-    const slug = c.req.param('slug');
-    const includeArchived = c.req.query('include') === 'archived';
-    try {
-      const db = dbForSlug(slug);
-      const sql = includeArchived
-        ? 'SELECT * FROM agent_chats ORDER BY updated_at DESC'
-        : 'SELECT * FROM agent_chats WHERE archived_at IS NULL ORDER BY updated_at DESC';
-      const rows = (await db.prepare(sql).all()) as any[];
-      return c.json({ chats: rows.map(rowToChat) });
-    } catch (e) {
-      return c.json({ error: `failed to list chats: ${(e as Error).message}` }, 500);
-    }
+    const { listChats } = await import('@/lib/agent-chats-data');
+    const result = await listChats({
+      slug: c.req.param('slug'),
+      includeArchived: c.req.query('include') === 'archived',
+    });
+    if (!result.ok) return c.json({ error: result.error }, result.status as 500);
+    return c.json(result.data);
   });
 
   // ── Create chat ──────────────────────────────────────────────────────
   harness.post('/:slug/agent-chats', async (c) => {
-    const slug = c.req.param('slug');
+    const { createChat } = await import('@/lib/agent-chats-data');
     let body: { role?: string; feature_id?: string; title?: string };
     try {
       body = await c.req.json();
     } catch {
       return c.json({ error: 'invalid JSON body' }, 400);
     }
-    if (!body.role || !isValidChatRole(body.role)) {
-      return c.json({ error: `role must be one of: ${getKnownRoles().filter((r) => r !== 'feedback').join(', ')}` }, 400);
-    }
-    // Accept any uppercase-prefixed alphanumeric+hyphen ID. Different
-    // harness templates use different prefixes (F-NNN for coding, BRIEF-BRF-NNN
-    // for org briefs, DIR-D-NNN for directives, INIT-NNN, etc.). The bound
-    // here is anti-injection — must look like an ID, not arbitrary text.
-    if (body.feature_id && !/^[A-Z][A-Z0-9_-]*[A-Z0-9]$/i.test(body.feature_id)) {
-      return c.json({ error: `invalid feature_id: ${body.feature_id}` }, 400);
-    }
-
-    const id = randomUUID();
-    const title = body.title ?? (body.feature_id ? `${body.role} · ${body.feature_id}` : body.role);
-
-    try {
-      const db = dbForSlug(slug);
-      await db.prepare(
-        `INSERT INTO agent_chats (id, role, feature_id, title, transcript)
-         VALUES (?, ?, ?, ?, ?::jsonb)`,
-      ).run(id, body.role, body.feature_id ?? null, title, '[]');
-      const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as any;
-      const featureLock = body.feature_id ? await readFeatureLockState(slug, body.feature_id) : null;
-
-      // Expert chat-open hook: flip userEngaged + awaiting_user so the
-      // autonomous loop pauses at the next agent boundary.
-      if (body.role === 'expert' && body.feature_id && /^EXP-\d{3,}$/.test(body.feature_id)) {
-        await flipExpertEngaged(slug, body.feature_id, true).catch((err) => {
-          console.warn(`[agent-chats] failed to flip expert engaged for ${body.feature_id}:`, err?.message ?? err);
-        });
-      }
-
-      return c.json({ ...rowToChat(row), feature_lock: featureLock }, 201);
-    } catch (e) {
-      return c.json({ error: `failed to create chat: ${(e as Error).message}` }, 500);
-    }
+    const result = await createChat({
+      slug: c.req.param('slug'),
+      role: body.role ?? '',
+      feature_id: body.feature_id,
+      title: body.title,
+    });
+    if (!result.ok) return c.json({ error: result.error }, result.status as 400);
+    return c.json(result.data, 201);
   });
 
   // ── Get chat ─────────────────────────────────────────────────────────
   harness.get('/:slug/agent-chats/:chatId', async (c) => {
-    const slug = c.req.param('slug');
-    const chatId = c.req.param('chatId');
-    try {
-      const db = dbForSlug(slug);
-      const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(chatId)) as any;
-      if (!row) return c.json({ error: 'chat not found' }, 404);
-      const chat = rowToChat(row);
-      const featureLock = chat.feature_id ? await readFeatureLockState(slug, chat.feature_id) : null;
-      return c.json({ ...chat, feature_lock: featureLock });
-    } catch (e) {
-      return c.json({ error: `failed to load chat: ${(e as Error).message}` }, 500);
-    }
+    const { getChat } = await import('@/lib/agent-chats-data');
+    const result = await getChat({
+      slug: c.req.param('slug'),
+      chatId: c.req.param('chatId'),
+    });
+    if (!result.ok) return c.json({ error: result.error }, result.status as 404);
+    return c.json(result.data);
   });
 
   // ── Archive chat ─────────────────────────────────────────────────────
   harness.delete('/:slug/agent-chats/:chatId', async (c) => {
-    const slug = c.req.param('slug');
-    const chatId = c.req.param('chatId');
-    try {
-      const db = dbForSlug(slug);
-      // Capture role + feature_id BEFORE archiving so we can resume the
-      // matching expert if this was an expert chat.
-      const pre = (await db
-        .prepare('SELECT role, feature_id FROM agent_chats WHERE id = ?')
-        .get(chatId)) as { role: string; feature_id: string | null } | undefined;
-      await db.prepare('UPDATE agent_chats SET archived_at = now(), updated_at = now() WHERE id = ?').run(chatId);
-      if (pre?.role === 'expert' && pre.feature_id && /^EXP-\d{3,}$/.test(pre.feature_id)) {
-        await flipExpertEngaged(slug, pre.feature_id, false).catch((err) => {
-          console.warn(`[agent-chats] failed to flip expert engaged off for ${pre.feature_id}:`, err?.message ?? err);
-        });
-      }
-      return c.json({ ok: true });
-    } catch (e) {
-      return c.json({ error: `failed to archive chat: ${(e as Error).message}` }, 500);
-    }
+    const { archiveChat } = await import('@/lib/agent-chats-data');
+    const result = await archiveChat({
+      slug: c.req.param('slug'),
+      chatId: c.req.param('chatId'),
+    });
+    if (!result.ok) return c.json({ error: result.error }, result.status as 500);
+    return c.json(result.data);
   });
 
   // ── Append user message + stream assistant reply via SSE ─────────────
