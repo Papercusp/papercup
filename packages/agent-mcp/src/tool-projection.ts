@@ -169,6 +169,20 @@ export interface ProjectedTool {
   expose: ToolExposure;
   /** The function. Source of truth. */
   fn: ToolFn;
+  /**
+   * Per-tool guidance for system-prompt assembly + `agent_tools:list`
+   * introspection. Plumbed from `defineTool({ guidance })` (or the
+   * plugin SDK's same slot). See `ToolGuidance` in types.ts.
+   *
+   * Shape mirrors `ToolGuidance` but without a `byRole` type-import to
+   * keep this module free of role-enum imports. Plumbed-through opaque.
+   */
+  guidance?: {
+    when?: string;
+    notWhen?: string;
+    chaining?: string;
+    byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
+  };
 }
 
 /* ─── Registry ───────────────────────────────────────────────────────── */

@@ -3,90 +3,67 @@
  *
  * GET /api/zero-harness/sse  →  text/event-stream
  *
+ * Wire format (STABILITY CONTRACT — see libs/sse/README.md):
+ *
  *   event: heartbeat       (every 15s; resets the client zombie watchdog)
  *   data: {"tsMs": <Date.now()>}
  *
  *   event: update          (push with full payload; client setQueryData)
  *   id: <monotonic>
- *   data: {"name": "...", "args": {...}, "data": [...rows...]}
+ *   data: {"name":"...","args":{...},"data":[...rows...]}
  *
  *   event: invalidate      (push without payload; client refetches via REST)
  *   id: <monotonic>
- *   data: {"name": "...", "args": {...}}
+ *   data: {"name":"...","args":{...}}
  *
- * Reconnects send `Last-Event-ID` header; we replay any events with id >
- * Last-Event-ID from the in-memory ring buffer (60s window).
+ * Reconnects send `Last-Event-ID` header; we replay events with id >
+ * Last-Event-ID from the 60s ring buffer in lib/sync-sse.
  *
- * Backed by `lib/sync-sse.ts` which holds the dedicated PG LISTEN client +
- * ring buffer + subscriber set.
+ * Migrated to @restart/sse 2026-05-11 — boilerplate (ReadableStream + heartbeat
+ * + cancel + headers) now comes from sseResponse(). The PG bridge layer in
+ * lib/sync-sse stays unchanged (60s time-based history + payload-size limit +
+ * source-side dedup are not yet generic enough to live in @restart/sse).
+ *
+ * The wire-format snapshot test in libs/sse/src/wire-format-snapshot.test.ts
+ * pins the byte-exact output against the desktop client's expectations.
  */
+import { sseResponse, parseLastEventId, SYNC_MAX_DURATION_SEC, type SyncSseEventVocabulary } from '@restart/sse';
 import { subscribe, backfillSince, type SyncEvent } from '../../../../lib/sync-sse';
-
-const HEARTBEAT_INTERVAL_MS = 15_000;
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = SYNC_MAX_DURATION_SEC;
+
+function payloadFor(ev: SyncEvent): { name: string; args?: unknown; data?: unknown[] } {
+  const out: { name: string; args?: unknown; data?: unknown[] } = { name: ev.name };
+  if (ev.args !== undefined) out.args = ev.args;
+  if (ev.data !== undefined) out.data = ev.data;
+  return out;
+}
 
 export async function GET(req: Request): Promise<Response> {
-  const lastEventIdHeader = req.headers.get('Last-Event-ID');
-  const lastEventId = lastEventIdHeader ? Number(lastEventIdHeader) : 0;
+  const lastEventId = parseLastEventId(req);
 
-  const encoder = new TextEncoder();
-
-  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-  let unsubscribe: (() => void) | null = null;
-  let cancelled = false;
-
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const send = (chunk: string) => {
-        if (cancelled) return;
-        try {
-          controller.enqueue(encoder.encode(chunk));
-        } catch {
-          /* controller closed; cleanup will handle */
-        }
-      };
-
-      const sendEvent = (ev: SyncEvent) => {
-        const eventName = ev.data !== undefined ? 'update' : 'invalidate';
-        const payload: Record<string, unknown> = { name: ev.name };
-        if (ev.args !== undefined) payload.args = ev.args;
-        if (ev.data !== undefined) payload.data = ev.data;
-        send(`id: ${ev.id}\nevent: ${eventName}\ndata: ${JSON.stringify(payload)}\n\n`);
-      };
-
-      // Backfill any events the client missed during disconnect.
-      if (lastEventId > 0) {
-        for (const ev of backfillSince(lastEventId)) {
-          sendEvent(ev);
-        }
-      }
-
-      // Open subscription.
-      const handle = await subscribe(sendEvent);
-      unsubscribe = handle.close;
-
-      // Initial heartbeat to confirm the stream is live.
-      send(`event: heartbeat\ndata: ${JSON.stringify({ tsMs: Date.now() })}\n\n`);
-
-      heartbeatTimer = setInterval(() => {
-        send(`event: heartbeat\ndata: ${JSON.stringify({ tsMs: Date.now() })}\n\n`);
-      }, HEARTBEAT_INTERVAL_MS);
+  return sseResponse<SyncSseEventVocabulary>({
+    signal: req.signal,
+    lastEventId,
+    heartbeatMs: 15_000,
+    initialHeartbeat: true,
+    replay: () => {
+      if (lastEventId == null || lastEventId <= 0) return [];
+      return backfillSince(lastEventId).map((ev) => ({
+        name: ev.data !== undefined ? ('update' as const) : ('invalidate' as const),
+        data: payloadFor(ev),
+        id: ev.id,
+      }));
     },
-    cancel() {
-      cancelled = true;
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
-      if (unsubscribe) unsubscribe();
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
+    setup: async (sink) => {
+      const handle = await subscribe((ev) => {
+        if (sink.closed) return;
+        const name = ev.data !== undefined ? 'update' : 'invalidate';
+        sink.event(name, payloadFor(ev), { id: ev.id });
+      });
+      sink.onClose(handle.close);
     },
   });
 }

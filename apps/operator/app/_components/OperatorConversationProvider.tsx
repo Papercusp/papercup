@@ -51,6 +51,7 @@ import {
   readOperatorMessagesFromSession,
   readOperatorModeFromSession,
   readSleepUntilMs,
+  writePendingDismissalAtMs,
   sleepTagToEpochMs,
   writeOperatorMessagesToSession,
   writeOperatorModeToSession,
@@ -60,7 +61,7 @@ import {
 import { getVoiceState, subscribeVoiceState } from './voice/voice-mode';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
-import type { ChatMessage } from './chat/ChatConversation';
+import type { ChatMessage, ChatToolCall } from './chat/ChatConversation';
 
 interface OperatorTurnRow {
   id: string;
@@ -333,11 +334,36 @@ export function userReplyDeclinesActive(text: string): boolean {
  *
  * Conservative — better to miss a dismissal (chat keeps talking) than
  * to mis-detect (user types "stop sharing that screen" and we go
- * passive). The patterns are explicit imperatives only.
+ * passive). Two layers of conservatism:
+ *
+ *   1. The phrase must START the message (with at most a brief
+ *      filler like "hey", "ok", "wait"), OR be the entire message
+ *      (length ≤ ~50 chars). A long sentence that incidentally
+ *      contains "i'm busy" deep in it isn't a dismissal — it's
+ *      context ("I'm busy with the worker right now, can you
+ *      check on it?").
+ *   2. Question marks anywhere → not a dismissal. Questions are
+ *      engagement, not pushback ("are you busy with that?", "let me
+ *      think — what are the options?").
  */
-const DISMISS_RE = /\b(shut up|leave me alone|stop talking|stop asking|ease off|be quiet|go quiet|i'?m busy|i am busy|let me (think|work|focus)|i need (quiet|silence)|you'?re talking too much|too much talking)\b/i;
+const DISMISS_PHRASE_RE = /(shut up|leave me alone|stop talking|stop asking|ease off|be quiet|go quiet|i'?m busy|i am busy|let me (think|work|focus)|i need (quiet|silence)|you'?re talking too much|too much talking)/i;
+const SHORT_UTTERANCE_MAX = 50;
+const PREAMBLE_RE = /^(hey|ok(ay)?|wait|listen|um|uh|so|well)[,!\s.]+/i;
 export function userDismissesOperator(text: string): boolean {
-  return DISMISS_RE.test(text.trim());
+  const trimmed = text.trim();
+  if (!trimmed) return false;
+  // Questions are engagement, not pushback.
+  if (trimmed.includes('?')) return false;
+  // Strip a brief conversational preamble so "ok, leave me alone"
+  // still matches at start.
+  const stripped = trimmed.replace(PREAMBLE_RE, '');
+  // Whole message short and matches → dismissal.
+  if (stripped.length <= SHORT_UTTERANCE_MAX && DISMISS_PHRASE_RE.test(stripped)) {
+    return true;
+  }
+  // Long message must START with the phrase to count.
+  const headRe = new RegExp('^' + DISMISS_PHRASE_RE.source, 'i');
+  return headRe.test(stripped);
 }
 
 // ─── Silence-timer config ───────────────────────────────────────────────
@@ -486,6 +512,23 @@ interface OperatorConversationContextValue {
    * a prior fetch is in flight; no-op when hasMoreEarlier is false.
    */
   loadEarlier: () => Promise<void>;
+
+  /**
+   * Resolve a chat:ask_choice card by POSTing the picked option(s)
+   * to /api/operator/conversations/:id/turn-answer. The endpoint
+   * atomically marks the assistant's tool as answered AND inserts
+   * the user turn (text=joined-labels, source='card_pick'). On
+   * success, the live-tail picks up both rows — no local mutation
+   * needed. Throws on already-answered (409) or validation (400).
+   *
+   * picks is always an array — length 1 for single-select cards,
+   * ≥1 for multi-select (args.multi=true).
+   */
+  answerChoice: (input: {
+    assistantSeq: number;
+    toolIndex: number;
+    picks: Array<{ option_id: string; label: string }>;
+  }) => Promise<void>;
 }
 
 const OperatorConversationContext = createContext<OperatorConversationContextValue | null>(null);
@@ -573,6 +616,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
               role: t.role,
               content: t.text,
               id: typeof t.id === 'string' ? t.id : undefined,
+              seq: typeof t.seq === 'number' ? t.seq : undefined,
+              tools: Array.isArray(t.tools) ? t.tools : undefined,
             })),
             lastTurnAtMs: lastCreated,
           });
@@ -622,7 +667,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       setHasMoreEarlier(page.hasMoreEarlier);
       dispatch({
         type: 'prepend_messages',
-        messages: page.turns.map((t) => ({ role: t.role, content: t.text })),
+        messages: page.turns.map((t) => ({
+          role: t.role,
+          content: t.text,
+          id: typeof t.id === 'string' ? t.id : undefined,
+          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          tools: Array.isArray(t.tools) ? t.tools : undefined,
+        })),
       });
     } catch {
       /* swallow — chat is still functional with the rows already loaded */
@@ -685,7 +736,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       }
       dispatch({
         type: 'append_message',
-        message: { role: t.role, content: t.text, id: typeof t.id === 'string' ? t.id : undefined },
+        message: {
+          role: t.role,
+          content: t.text,
+          id: typeof t.id === 'string' ? t.id : undefined,
+          seq: typeof t.seq === 'number' ? t.seq : undefined,
+          tools: Array.isArray(t.tools) ? t.tools : undefined,
+        },
       });
       newestLoadedSeqRef.current = t.seq;
       if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = t.seq;
@@ -718,6 +775,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       text: string,
       source: 'text_typed' | 'voice_stt' | 'voice_tts' = 'text_typed',
       optimisticId?: string,
+      tools?: ChatToolCall[],
     ) => {
       const id = conversationIdRef.current;
       if (!id) return;
@@ -725,10 +783,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // for the real PG id (G19 id dedup). Either one alone has a race
       // window where the Zero push could double-render the optimistic
       // local message; together they're robust.
+      // `tools` (added 2026-05-11 for chat:ask_choice) is omitted when
+      // undefined so the server route can default to NULL.
+      const body: Record<string, unknown> = { role, text, source };
+      if (tools && tools.length > 0) body.tools = tools;
       void fetch(`/api/operator/conversations/${id}/turns`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ role, text, source }),
+        body: JSON.stringify(body),
       })
         .then((r) => (r.ok ? r.json() : null))
         .then((j: { turn?: { id?: string; seq?: number } } | null) => {
@@ -804,10 +866,18 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // at commit-time; now wired. Also marks the silence-ladder
     // freshness clock so it stays active after a voice exchange.
     const onVoiceUserTurn = (e: Event) => {
-      const detail = (e as CustomEvent<{ tsMs?: number }>).detail;
+      const detail = (e as CustomEvent<{ tsMs?: number; text?: string }>).detail;
       const tsMs = typeof detail?.tsMs === 'number' ? detail.tsMs : Date.now();
+      const text = typeof detail?.text === 'string' ? detail.text : '';
       dispatch({ type: 'record_user_turn', tsMs });
       dispatch({ type: 'mark_turn', tsMs });
+      // E1: bridge text-path's server-side dismissal enforcement into
+      // the voice path. The voice tag observer reads this stamp on the
+      // next assistant flush and force-flips to passive if the brain
+      // forgot to emit <set_mode>passive</set_mode>.
+      if (text && stateRef.current.mode === 'active' && userDismissesOperator(text)) {
+        writePendingDismissalAtMs(tsMs);
+      }
     };
     window.addEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
 
@@ -873,26 +943,39 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
 
         const parsed = parseOperatorTurn(buf);
 
-        if (parsed.say) {
-          const collectedTools = stream.tools && stream.tools.length > 0 ? stream.tools.slice() : undefined;
+        // The turn is meaningful if EITHER the model wrote `<say>` OR
+        // it called a tool. Pre-2026-05-11 we only dispatched/persisted
+        // when parsed.say was non-empty, which silently swallowed
+        // tool-call-only turns (e.g. chat:ask_choice). The card never
+        // appeared because the assistant row was never appended.
+        // Now: a non-empty tool array also qualifies.
+        const collectedTools = stream.tools && stream.tools.length > 0 ? stream.tools.slice() : undefined;
+        const turnHasContent = !!parsed.say || !!collectedTools;
+
+        if (turnHasContent) {
+          const sayContent = parsed.say ?? '';
           dispatch({
             type: 'append_message',
             message: collectedTools
-              ? { role: 'assistant', content: parsed.say, tools: collectedTools }
-              : { role: 'assistant', content: parsed.say },
+              ? { role: 'assistant', content: sayContent, tools: collectedTools }
+              : { role: 'assistant', content: sayContent },
           });
           // Engagement check tracks USER turns only. Assistant turns
           // (a) probe for the want-active phrase to seed G2's decline
           // window, AND (b) RESET that seed on subsequent non-want-active
           // turns so a "no" to a later "want passive?" check doesn't
           // get misclassified as declining active. G12 of the audit.
-          if (sayContainsWantActive(parsed.say)) {
+          if (parsed.say && sayContainsWantActive(parsed.say)) {
             dispatch({ type: 'record_want_active_asked', tsMs: Date.now() });
-          } else {
+          } else if (parsed.say) {
             dispatch({ type: 'record_want_active_asked', tsMs: 0 });
           }
           dispatch({ type: 'mark_turn', tsMs: Date.now() });
-          persistTurn('assistant', parsed.say, 'text_typed');
+          // Persist text + tools. Empty say is fine for tool-only
+          // turns; persistTurn writes whatever we send. The server-side
+          // turns route was extended to accept the tools field
+          // alongside text (POST /api/operator/conversations/:id/turns).
+          persistTurn('assistant', sayContent, 'text_typed', undefined, collectedTools);
         }
         // Successful turn → clear backoff. G14.
         dispatch({ type: 'reset_error_count' });
@@ -1155,6 +1238,34 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     return null;
   }, [state.sub]);
 
+  // chat:ask_choice card click → POST turn-answer. The atomic endpoint
+  // updates assistant.tools[i].answered AND inserts the user turn;
+  // we don't optimistically dispatch local rows because the live-tail
+  // path will pick them up via the sync invalidate the endpoint fires.
+  const answerChoice = useCallback(
+    async (input: {
+      assistantSeq: number;
+      toolIndex: number;
+      picks: Array<{ option_id: string; label: string }>;
+    }): Promise<void> => {
+      const id = conversationIdRef.current;
+      if (!id) throw new Error('answerChoice: no active conversation');
+      const r = await fetch(
+        `/api/operator/conversations/${id}/turn-answer`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        },
+      );
+      if (!r.ok) {
+        const detail = await r.text().catch(() => '');
+        throw new Error(`turn-answer ${r.status}: ${detail.slice(0, 200)}`);
+      }
+    },
+    [],
+  );
+
   const value: OperatorConversationContextValue = useMemo(
     () => ({
       mode: state.mode,
@@ -1168,11 +1279,12 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       hasMoreEarlier,
       loadingEarlier,
       loadEarlier,
+      answerChoice,
     }),
     [
       state.mode, state.sub, state.messages, state.error,
       sendUserMessage, flipMode, bannerText,
-      hasMoreEarlier, loadingEarlier, loadEarlier,
+      hasMoreEarlier, loadingEarlier, loadEarlier, answerChoice,
     ],
   );
 

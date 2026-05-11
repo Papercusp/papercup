@@ -435,9 +435,43 @@ async function askOperatorViaSse(params: { text?: string; trigger?: string }): P
     || trigger === 'quiet_wait_resume' || trigger === 'open_canvas'
     ? trigger
     : 'user_message';
-  const messages = userText
-    ? [{ role: 'user' as const, content: userText }]
-    : [];
+  // Voice/text unification: pre-fetch the recent PG history so the
+  // operator brain has the same context whether the user is typing
+  // or speaking. Without this, voice turns get a stateless brain
+  // (each ask_operator looks like a fresh conversation) while text
+  // turns get the full local-state history. Both paths now hit PG
+  // for the same conversation row.
+  //
+  // HISTORY_LIMIT mirrors the route's HISTORY_KEEP (30) — fetching
+  // more is wasted because the route slices it anyway. One loopback
+  // round-trip, ~5-10ms; negligible vs the LLM call.
+  const HISTORY_LIMIT = 30;
+  const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [];
+  try {
+    const hRes = await fetch(`/api/operator/conversations?limit=${HISTORY_LIMIT}`);
+    if (hRes.ok) {
+      const h = await hRes.json() as {
+        turns: Array<{ role: 'user' | 'assistant' | 'system'; text: string }>;
+      };
+      for (const t of h.turns) {
+        if (t.role !== 'user' && t.role !== 'assistant' && t.role !== 'system') continue;
+        if (typeof t.text !== 'string' || !t.text.trim()) continue;
+        messages.push({ role: t.role, content: t.text });
+      }
+    }
+  } catch { /* fall through to single-turn behavior */ }
+  // Append the current user turn last UNLESS the history already
+  // includes it (the parallel persistOperatorVoiceTurn write might
+  // have landed before our GET). Tail-only check — sufficient for
+  // the realistic race window.
+  if (userText) {
+    const tail = messages[messages.length - 1];
+    const alreadyThere =
+      tail && tail.role === 'user' && tail.content.trim() === userText;
+    if (!alreadyThere) {
+      messages.push({ role: 'user', content: userText });
+    }
+  }
   try {
     const res = await fetch('/api/agent-mcp/operator-converse', {
       method: 'POST',

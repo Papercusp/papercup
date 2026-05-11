@@ -1113,6 +1113,31 @@ export interface ToolExposure {
  * ]
  * ```
  */
+/**
+ * Per-tool guidance for system-prompt assembly. Lives next to the tool
+ * (single source of truth) and is projected into every role's system
+ * prompt that's allowed to call the tool. See agent-mcp's `ToolGuidance`
+ * for full docs.
+ *
+ * Plugin-SDK plugins can populate this in their manifest's `tools[i]`
+ * entry; built-in tools populate it via `defineTool({ guidance })`. Both
+ * paths feed the same projection slot.
+ */
+export interface PluginToolGuidance {
+  /** Primary trigger — "When user asks 'X'" / "When you need Y". 1-2 lines. */
+  when?: string;
+  /** Disambiguation — "NOT for X; use <other_tool>". 1-2 lines. */
+  notWhen?: string;
+  /** Pairing hint — "Chain after <tool_a>" / "Pair with *_get". */
+  chaining?: string;
+  /**
+   * Per-role override. Shallow-merged into the base at projection time.
+   * AgentRole strings are kept opaque here to avoid a cross-package
+   * type-import; runtime validates against the known roles enum.
+   */
+  byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
+}
+
 export interface ToolDefinition {
   /** Function key — matches `plugin.tools[<name>]` in the entry point. */
   name: string;
@@ -1133,6 +1158,12 @@ export interface ToolDefinition {
    * Loader fills sensible defaults when absent — see plugin-mcp-host-design.md.
    */
   expose?: ToolExposure;
+  /**
+   * Optional per-tool guidance for system-prompt assembly. Projected into
+   * the role's system prompt by `assembleRolePrompt`. See
+   * `PluginToolGuidance` above.
+   */
+  guidance?: PluginToolGuidance;
 }
 
 /**

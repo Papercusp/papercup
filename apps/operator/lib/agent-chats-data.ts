@@ -13,6 +13,21 @@ import { getKnownRoles } from './known-roles';
 import { activeWorkspaceId } from './workspace-registry';
 import { notifySyncInvalidate } from './sync-sse';
 
+export interface TranscriptToolCall {
+  name: string;
+  input?: unknown;
+  /**
+   * For interactive tools (chat:ask_choice etc.), the user's
+   * response. Unified picks[] shape — length 1 for single-select,
+   * ≥1 for multi-select. Mirrors operator_turns.tools so the same
+   * React components render both surfaces.
+   */
+  answered?: {
+    picks: Array<{ option_id: string; label: string }>;
+    at: number;
+  };
+}
+
 export interface TranscriptTurn {
   role: 'user' | 'assistant';
   content: string;
@@ -20,6 +35,12 @@ export interface TranscriptTurn {
   tokens_in?: number;
   tokens_out?: number;
   cost_cents?: number;
+  /**
+   * Tool calls that fired during this turn (e.g. chat:ask_choice).
+   * Persisted inside the parent agent_chats.transcript jsonb column —
+   * no schema migration needed since transcript was already jsonb.
+   */
+  tools?: TranscriptToolCall[];
 }
 
 export interface ChatRow {

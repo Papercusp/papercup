@@ -22,6 +22,7 @@ import { Tooltip } from '../harness/Tooltip';
 import RouteLink from './RouteLink';
 import { HudFrameCorners, HudReticleGlyph } from './hud/HudPrimitives';
 import { ChatConversation } from './chat/ChatConversation';
+import { AskChoiceCard, type AskChoiceArgs } from './chat/AskChoiceCard';
 import {
   Activity,
   Bot,
@@ -56,6 +57,7 @@ import {
 } from 'lucide-react';
 import { useTransitionRouter } from 'next-transition-router';
 import { usePathname, useSearchParams } from 'next/navigation';
+import { getOrCreateClientId } from '@/lib/ui/client-id';
 
 gsap.registerPlugin(useGSAP);
 
@@ -761,6 +763,11 @@ export function OracleDock() {
           body: JSON.stringify({
             messages: next.slice(0, -1).filter((m) => m.role !== 'assistant' || m.content),
             currentPath: typeof window !== 'undefined' ? window.location.pathname : '',
+            // Pass our UI-client id so Oracle's ui:dispatch / ui:get_state
+            // calls default to driving THIS tab (the one running the dock).
+            // Threaded into the agentmcp spawn URL as ?client=<id> →
+            // ctx.uiClientId on every Oracle tool call.
+            uiClientId: typeof window !== 'undefined' ? getOrCreateClientId() : null,
             tutorialMode: opts?.tutorialMode ?? tutorialActive,
           }),
           signal: ctrl.signal,
@@ -1328,6 +1335,41 @@ export function OracleDock() {
                       🔧 <strong>{t.name}</strong>
                       {summary && <span className="oracle-tool-args">({summary})</span>}
                     </div>
+                  );
+                }}
+                renderToolCard={(t, _msg, ti) => {
+                  // chat:ask_choice → AskChoiceCard. Other tools fall
+                  // through to renderToolChip.
+                  if (t.name !== 'chat:ask_choice') return null;
+                  const args = (t.input ?? {}) as Partial<AskChoiceArgs>;
+                  if (!args.question || !Array.isArray(args.options) || args.options.length === 0) {
+                    return null;
+                  }
+                  return (
+                    <AskChoiceCard
+                      args={args as AskChoiceArgs}
+                      answered={t.answered}
+                      onAnswer={({ picks }) => {
+                        // Oracle is ephemeral (no transcript table) —
+                        // local state mutation in-component, then send
+                        // the joined labels as a normal user message.
+                        // Mark the local tool entry's `answered` so
+                        // re-renders show the disabled/picked state.
+                        const tab = active;
+                        if (!tab || picks.length === 0) return;
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        const tools = (tab.messages.find((m) => m.tools)?.tools ?? []) as any[];
+                        if (tools[ti]) {
+                          tools[ti].answered = {
+                            picks,
+                            at: Date.now(),
+                          };
+                        }
+                        const joined = picks.map((p) => p.label).join(' · ');
+                        setInput(joined);
+                        void send(tab.id);
+                      }}
+                    />
                   );
                 }}
                 inputValue={input}

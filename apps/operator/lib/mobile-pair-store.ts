@@ -38,8 +38,12 @@ export async function mintPairToken(opts: {
 
   const { db } = getOrgPg();
 
-  // Invalidate any prior unconsumed tokens for this workspace.
-  await db.delete(t).where(and(eq(t.workspace_id, opts.workspaceId), eq(t.consumed, false)));
+  // No prior-token invalidation. Pair tokens are already one-time-use via
+  // the `consumed` flag; multiple concurrent unconsumed tokens are fine,
+  // and the GC below sweeps expired ones. The prior delete-on-mint caused
+  // user-visible "pair token rejected" when two surfaces (desktop UI +
+  // any helper script) minted around the same time — only the latest
+  // mint survived, killing any earlier QR the user had screenshot.
 
   await db.insert(t).values({
     pair_token: pairToken,

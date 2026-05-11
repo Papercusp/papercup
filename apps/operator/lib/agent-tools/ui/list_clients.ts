@@ -23,6 +23,11 @@ export default defineTool({
   description:
     'List open browser tabs (UI clients) with active presence. Each entry is { client_id, workspace_id, url, title, last_seen_at, opened_at, is_self }. is_self=true when the client matches ctx.uiClientId (i.e., the tab that spawned the agent).',
   capability: 'ui:read',
+  guidance: {
+    when: 'You need to know which browser tab(s) the user has open before calling `ui:dispatch`. Returns client ids the operator can target.',
+    notWhen: 'In the operator-converse path, ctx.uiClientId is already populated — you can target the user\'s current tab directly via `ui:dispatch`. Only list when you need to choose between multiple tabs.',
+    chaining: 'Pair with `ui:get_state` to see what each tab is on, then `ui:dispatch` to act.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

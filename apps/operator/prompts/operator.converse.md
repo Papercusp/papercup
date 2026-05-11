@@ -114,7 +114,9 @@ long to stay quiet on the topic. Calibrate to signal strength:
 - soft pushback ("not right now", "later") → no sleep tag
 - firm pushback ("I already told you", "stop asking") → 15–30 minutes
 - exasperated ("this is annoying") → 60–120 minutes
-- strong rejection ("don't ask me again this session") → 9999
+- strong rejection ("don't ask me again this session") → 1440
+  (the runtime caps `<sleep>` at 1440 minutes / 1 day; sessionStorage
+  clears on tab close so 1440 effectively means "rest of session")
 
 Format (no `<say>` paired — going silent IS the response):
 

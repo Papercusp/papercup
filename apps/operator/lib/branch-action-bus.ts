@@ -6,11 +6,12 @@
  * /api/harness/<slug>/branch/<branch>/action-stream subscribes via
  * subscribe() — sub-millisecond fan-out, no 250ms polling.
  *
- * Same shape as harness-log-bus.ts and provision-audit-bus.ts, with a
- * 'done' signal for the terminal action-completed/action-failed event
- * so subscribers can close cleanly.
+ * Internals migrated to @restart/sse's getChannel (2026-05-11). The
+ * public surface (publish/subscribe/ActionEnvelope) is preserved so
+ * call-sites don't need to change.
  */
-import { EventEmitter } from 'node:events';
+
+import { getChannel } from '@restart/sse';
 
 export type ActionEventKind = 'output' | 'stderr' | 'started' | 'completed' | 'failed';
 
@@ -23,35 +24,13 @@ export interface ActionEnvelope {
   ts: number;
 }
 
-interface Channel {
-  emitter: EventEmitter;
-  recent: ActionEnvelope[];
-  seq: number;
-  done: boolean;
-  whenDone: Promise<void>;
-  resolveDone: () => void;
-}
+const CHANNEL_PREFIX = 'branch-action:';
 
-const RECENT_RING_SIZE = 256;
-const channels = new Map<string, Channel>();
-
-function ensureChannel(channelKey: string): Channel {
-  let ch = channels.get(channelKey);
-  if (!ch) {
-    let resolveDone!: () => void;
-    const whenDone = new Promise<void>((r) => { resolveDone = r; });
-    ch = {
-      emitter: new EventEmitter(),
-      recent: [],
-      seq: 0,
-      done: false,
-      whenDone,
-      resolveDone,
-    };
-    ch.emitter.setMaxListeners(50);
-    channels.set(channelKey, ch);
-  }
-  return ch;
+function getActionChannel(channelKey: string) {
+  return getChannel<ActionEnvelope>(`${CHANNEL_PREFIX}${channelKey}`, {
+    ringSize: 256,
+    gcDelayMs: 5 * 60_000, // matches prior behavior — 5 min after done + zero subs
+  });
 }
 
 export function publish(
@@ -60,30 +39,23 @@ export function publish(
   text: string,
   meta?: Record<string, unknown>,
 ): ActionEnvelope {
-  const ch = ensureChannel(channelKey);
+  const ch = getActionChannel(channelKey);
+  // Pre-build envelope so `seq` and `ts` match the published id and time.
+  // We get back the assigned id from publish() and store it in `seq`.
   const env: ActionEnvelope = {
     channelKey,
-    seq: ++ch.seq,
+    seq: 0, // placeholder; rewritten below
     kind,
     text,
     meta,
     ts: Date.now(),
   };
-  ch.recent.push(env);
-  if (ch.recent.length > RECENT_RING_SIZE) ch.recent.shift();
-  ch.emitter.emit('event', env);
+  // BusChannel.publish takes the event verbatim and returns the assigned id.
+  // We patch env.seq with that id so subscribers see the correct monotonic seq.
+  const id = ch.publish(env);
+  env.seq = id;
   if (kind === 'completed' || kind === 'failed') {
-    ch.done = true;
-    ch.resolveDone();
-    // GC the channel after a grace window so late subscribers can
-    // still read the recent ring (terminal-during-backfill case).
-    setTimeout(() => {
-      const cur = channels.get(channelKey);
-      if (cur && cur.done) {
-        cur.emitter.removeAllListeners();
-        channels.delete(channelKey);
-      }
-    }, 5 * 60_000).unref?.();
+    ch.done({ reason: kind });
   }
   return env;
 }
@@ -99,13 +71,36 @@ export function subscribe(
   channelKey: string,
   onEvent: (env: ActionEnvelope) => void,
 ): Subscription {
-  const ch = ensureChannel(channelKey);
-  const handler = (env: ActionEnvelope) => onEvent(env);
-  ch.emitter.on('event', handler);
+  const ch = getActionChannel(channelKey);
+  const iter = ch.subscribe()[Symbol.asyncIterator]();
+  let unsubscribed = false;
+
+  // whenDone resolves on either:
+  //   - explicit unsubscribe()
+  //   - channel.done() (terminal event landed)
+  let resolveDone!: () => void;
+  const whenDone = new Promise<void>((r) => { resolveDone = r; });
+
+  (async () => {
+    while (!unsubscribed) {
+      const { value, done } = await iter.next();
+      if (done) break;
+      if (unsubscribed) break;
+      try { onEvent(value.event); }
+      catch { /* subscriber error doesn't tear down delivery */ }
+    }
+    resolveDone();
+  })();
+
   return {
-    recent: [...ch.recent],
-    done: ch.done,
-    whenDone: ch.whenDone,
-    unsubscribe: () => ch.emitter.off('event', handler),
+    recent: ch.recent.map((e) => e.event),
+    done: ch.isDone,
+    whenDone,
+    unsubscribe() {
+      if (unsubscribed) return;
+      unsubscribed = true;
+      void iter.return?.(undefined);
+      resolveDone();
+    },
   };
 }

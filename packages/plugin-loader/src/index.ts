@@ -641,6 +641,10 @@ export async function registerPluginTools(
           },
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           fn: handler as any,
+          // Plumb plugin-manifest guidance through to the projection so
+          // `agent_tools:list` + `assembleRolePrompt` surface it.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          guidance: (def as any).guidance,
         });
         registered += 1;
       } catch (err) {

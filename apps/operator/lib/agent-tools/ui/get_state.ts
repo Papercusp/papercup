@@ -33,6 +33,10 @@ export default defineTool({
   description:
     'Read the URL state of a browser tab (defaults to the tab that spawned the agent via ctx.uiClientId). Returns { url, pathname, params, title, last_seen_at }. Use to answer "what is the user looking at?" — nuqs serializes panel/tab/filter/selection state to the URL, so the params object reflects most UI state.',
   capability: 'ui:read',
+  guidance: {
+    when: 'User asks "what am I looking at?", "what page am I on?", or you need to verify a panel state before acting ("is the panel already open?").',
+    notWhen: 'Tool calls ARE idempotent — `panel_open` when already open is fine. Don\'t pre-check just to skip a call; the persona rule is "always call". Use `ui:get_state` only when you need to BRANCH on what the user is looking at.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

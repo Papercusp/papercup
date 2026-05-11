@@ -44,6 +44,10 @@ function resolveCompanyId(workspaceId: string): string | null {
 export default defineTool({
   name: 'hindsight:recall',
   capability: 'hindsight:recall',
+  guidance: {
+    when: 'User asks "have we seen X before?", "what did the last debugger find?", or you need cross-agent shared memory about a topic.',
+    notWhen: 'For YOUR conversation history with the user, just rely on the chat context — hindsight is for cross-agent shared memory, not session memory. For LIVE state (current task list, harness status), call the dedicated tool — hindsight may be stale.',
+  },
   args: z.object({
     query: z.string().min(1),
     limit: z.number().int().positive().max(50).default(10),

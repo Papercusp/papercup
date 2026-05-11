@@ -19,6 +19,11 @@ type FeatureRow = z.infer<typeof FeatureSelect>;
 export default defineTool({
   name: 'tasks:list',
   capability: 'tasks:read',
+  guidance: {
+    when: 'User asks "what tasks do I have?", "what\'s on my plate", or you need a task id before calling `tasks:get`/`tasks:update`/`tasks:close`.',
+    notWhen: 'For ONE task by id, use `tasks:get`. For creating a task, use `tasks:create`. For PROJECTS / FEATURES (work the harness is doing), use `harness:*` — tasks are separate from harness features.',
+    chaining: 'Pair with `tasks:get` for detail on a specific row.',
+  },
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),
     status: z.string().optional(),

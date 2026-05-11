@@ -43,6 +43,7 @@ const turnCols = {
   el_conv_id: ot.el_conv_id,
   audio_url: ot.audio_url,
   created_at: ot.created_at,
+  tools: ot.tools,
 } as const;
 
 export type TurnRole = 'user' | 'assistant' | 'system';
@@ -60,6 +61,26 @@ export interface ConversationRow {
   hasAudio: boolean;
 }
 
+/**
+ * A tool-call entry stored alongside a turn's text. Used for
+ * chat:ask_choice (and future generative-UI tools) so the card +
+ * its answered state survives page reload. Persisted to
+ * operator_turns.tools jsonb (migration 015).
+ */
+export interface TurnToolCall {
+  name: string;
+  input?: unknown;
+  /**
+   * Picks array — length 1 for single-select cards, ≥1 for multi.
+   * Unified shape across single + multi (pre-alpha policy, no
+   * legacy single-select variant carried).
+   */
+  answered?: {
+    picks: Array<{ option_id: string; label: string }>;
+    at: number;
+  };
+}
+
 export interface TurnRow {
   id: string;
   conversationId: string;
@@ -70,6 +91,7 @@ export interface TurnRow {
   elConvId: string | null;
   audioUrl: string | null;
   createdAt: number;
+  tools: TurnToolCall[] | null;
 }
 
 /**
@@ -169,6 +191,12 @@ export async function appendTurn(input: {
   source?: TurnSource;
   elConvId?: string | null;
   audioUrl?: string | null;
+  /**
+   * Tool calls that fired during this turn (e.g. chat:ask_choice).
+   * Persisted to operator_turns.tools jsonb. Pass null/omit when the
+   * turn had no tool calls.
+   */
+  tools?: TurnToolCall[] | null;
 }): Promise<TurnRow> {
   await ensureOperatorConversationsTable();
   const { db } = getOrgPg();
@@ -183,20 +211,36 @@ export async function appendTurn(input: {
       .where(eq(ot.conversation_id, input.conversationId));
     const seq = Number(next[0].s);
     try {
-      const inserted = await db
-        .insert(ot)
-        .values({
-          conversation_id: input.conversationId,
+      // Drizzle has a known jsonb auto-conversion bug
+      // (commit 98cfffb7 — three ui:* routes reverted from drizzle to
+      // raw sql for the same reason). The established workaround is
+      // to write jsonb via raw `${JSON.stringify(x)}::jsonb` instead
+      // of letting drizzle's encoder touch the value. Pre-stringify
+      // here and pass as the raw cast for the tools column only.
+      const toolsJson = input.tools && input.tools.length > 0
+        ? JSON.stringify(input.tools)
+        : null;
+      const { sql: rawSql } = getOrgPg();
+      const inserted = (await rawSql.unsafe(
+        `INSERT INTO harness_shared.operator_turns
+           (conversation_id, seq, role, text, source, el_conv_id,
+            audio_url, created_at, tools)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+         RETURNING id, conversation_id, seq, role, text, source,
+                   el_conv_id, audio_url, created_at, tools`,
+        [
+          input.conversationId,
           seq,
-          role: input.role,
-          text: input.text,
-          source: input.source ?? 'text_typed',
-          el_conv_id: input.elConvId ?? null,
-          audio_url: input.audioUrl ?? null,
-          created_at: Date.now(),
-        })
-        .returning(turnCols);
-      return rowToTurn(inserted[0] as Record<string, unknown>);
+          input.role,
+          input.text,
+          input.source ?? 'text_typed',
+          input.elConvId ?? null,
+          input.audioUrl ?? null,
+          Date.now(),
+          toolsJson,
+        ],
+      )) as Array<Record<string, unknown>>;
+      return rowToTurn(inserted[0]);
     } catch (err) {
       const code = (err as { code?: string }).code;
       if (code !== '23505') throw err; // not a unique violation
@@ -257,5 +301,6 @@ function rowToTurn(r: Record<string, unknown>): TurnRow {
     elConvId: r.el_conv_id == null ? null : String(r.el_conv_id),
     audioUrl: r.audio_url == null ? null : String(r.audio_url),
     createdAt: Number(r.created_at),
+    tools: Array.isArray(r.tools) ? (r.tools as TurnToolCall[]) : null,
   };
 }

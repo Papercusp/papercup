@@ -7,8 +7,9 @@
  * `action-completed`, `action-failed`, `done`).
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import '@xterm/xterm/css/xterm.css';
+import { useEventSource } from '@restart/sse/react';
 
 interface Props {
   slug: string;
@@ -103,51 +104,55 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
   }, [runId, slug, branch, name]);
 
   // Subscribe SSE
+  const streamUrl = useMemo(() => runId
+    ? `/api/harness/${slug}/branch/${branch}/action-stream?name=${encodeURIComponent(name)}&runId=${encodeURIComponent(runId)}`
+    : null,
+    [runId, slug, branch, name]);
+
+  const write = (s: string) => termRef.current?.write(s);
+  const ts = () => `${C.dim}${new Date().toISOString().slice(11, 19)}${C.reset} `;
+
+  const { status: esStatus } = useEventSource(streamUrl, {
+    // Disable consecutive-failure escalation — we don't have a fallback,
+    // and the previous impl just retried forever via browser auto-reconnect.
+    maxConsecutiveFailures: 0,
+    handlers: {
+      attached: () => setStatus('streaming'),
+      'action-started': (data) => {
+        try {
+          const d = JSON.parse(data);
+          write(`${ts()}${C.cyan}── starting ${d.branch}/${d.name} ──${C.reset}\r\n`);
+          write(`${ts()}${C.dim}cwd: ${d.cwd}${C.reset}\r\n`);
+        } catch { /* ignore */ }
+      },
+      output: (data) => {
+        try { write(`${JSON.parse(data).line as string}\r\n`); } catch { /* ignore */ }
+      },
+      stderr: (data) => {
+        try { write(`${C.red}${JSON.parse(data).line}${C.reset}\r\n`); } catch { /* ignore */ }
+      },
+      'action-completed': (data) => {
+        try {
+          const d = JSON.parse(data);
+          write(`\r\n${ts()}${C.green}${C.bold}✓ completed${C.reset} (exit ${d.exitCode}, ${d.durationMs} ms)\r\n`);
+        } catch { /* ignore */ }
+        setStatus('done');
+      },
+      'action-failed': (data) => {
+        try {
+          const d = JSON.parse(data);
+          write(`\r\n${ts()}${C.red}${C.bold}✗ failed${C.reset} (exit ${d.exitCode}, ${d.durationMs} ms)\r\n`);
+        } catch { /* ignore */ }
+        setStatus('failed');
+      },
+      done: () => { /* hook handles close on `done` events natively */ },
+    },
+  });
+
+  // Surface a connection-error state if we never made it past 'connecting'.
   useEffect(() => {
-    if (!runId) return;
-    const url = `/api/harness/${slug}/branch/${branch}/action-stream?name=${encodeURIComponent(name)}&runId=${encodeURIComponent(runId)}`;
-    const es = new EventSource(url);
-
-    const write = (s: string) => termRef.current?.write(s);
-    const ts = () => `${C.dim}${new Date().toISOString().slice(11, 19)}${C.reset} `;
-
-    es.addEventListener('attached', () => setStatus('streaming'));
-    es.addEventListener('action-started', (ev: MessageEvent) => {
-      try {
-        const d = JSON.parse(ev.data);
-        write(`${ts()}${C.cyan}── starting ${d.branch}/${d.name} ──${C.reset}\r\n`);
-        write(`${ts()}${C.dim}cwd: ${d.cwd}${C.reset}\r\n`);
-      } catch { /* ignore */ }
-    });
-    es.addEventListener('output', (ev: MessageEvent) => {
-      try { write(`${(JSON.parse(ev.data).line as string)}\r\n`); } catch { /* ignore */ }
-    });
-    es.addEventListener('stderr', (ev: MessageEvent) => {
-      try { write(`${C.red}${JSON.parse(ev.data).line}${C.reset}\r\n`); } catch { /* ignore */ }
-    });
-    es.addEventListener('action-completed', (ev: MessageEvent) => {
-      try {
-        const d = JSON.parse(ev.data);
-        write(`\r\n${ts()}${C.green}${C.bold}✓ completed${C.reset} (exit ${d.exitCode}, ${d.durationMs} ms)\r\n`);
-      } catch { /* ignore */ }
-      setStatus('done');
-    });
-    es.addEventListener('action-failed', (ev: MessageEvent) => {
-      try {
-        const d = JSON.parse(ev.data);
-        write(`\r\n${ts()}${C.red}${C.bold}✗ failed${C.reset} (exit ${d.exitCode}, ${d.durationMs} ms)\r\n`);
-      } catch { /* ignore */ }
-      setStatus('failed');
-    });
-    es.addEventListener('done', () => { es.close(); });
-    es.onerror = () => {
-      // Auto-reconnects; flag only if we never got attached
-      if (status === 'connecting') setStatus('error');
-    };
-
-    return () => es.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, slug, branch, name]);
+    if (esStatus === 'failing' && status === 'connecting') setStatus('error');
+  }, [esStatus, status]);
 
   return (
     <div

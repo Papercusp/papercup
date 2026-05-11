@@ -35,6 +35,7 @@ import { parseOperatorTurn } from '@/lib/operator-converse-tags';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
+import { renderToolsCatalog } from '@/lib/prompt-assembly';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -67,6 +68,29 @@ function buildPrompt(body: ConverseRequestBody): string {
   // Substrate-owned + persona — shared with the voice path.
   sections.push(OPERATOR_CONVERSE_PROMPT);
   sections.push(OPERATOR_PERSONA_PROMPT);
+
+  // Tools catalog with per-tool guidance from defineTool({ guidance }).
+  // Phase 1a of the tool-guidance arc — renders only the tools the
+  // operator is allowed to call. Each ALL_AGENT_MCP_TOOLS entry is the
+  // claude-code-visible form (mcp__agentmcp__<name>); we strip the
+  // server-alias prefix and pass both candidate forms (claude-code's
+  // underscored `orchestrator_spawn` and the registry's dotted
+  // `orchestrator.spawn`) so the catalog resolves regardless of the
+  // dot-to-underscore translation that claude-code applies. Empty
+  // guidance → description-only, so unmigrated tools are
+  // backwards-identical to pre-guidance.
+  const operatorToolNames: string[] = [];
+  for (const fullName of ALL_AGENT_MCP_TOOLS) {
+    const stripped = fullName.replace(/^mcp__agentmcp__/, '');
+    operatorToolNames.push(stripped);
+    if (stripped.includes('_')) {
+      // orchestrator_spawn → orchestrator.spawn (registry's canonical
+      // MCP name uses `.` for plugin tools, claude-code uses `_`).
+      operatorToolNames.push(stripped.replace(/_/g, '.'));
+    }
+  }
+  const catalog = renderToolsCatalog('operator', operatorToolNames);
+  if (catalog) sections.push(catalog);
 
   // Conversation history — minimal serialization. Roles are preserved
   // so the model can reason about who said what.

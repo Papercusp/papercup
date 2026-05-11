@@ -215,6 +215,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
 const MODE_KEY = 'papercusp.operatorMode';
 const SLEEP_UNTIL_KEY = 'papercusp.operatorSleepUntilMs';
 const MESSAGES_KEY = 'papercusp.operatorMessages';
+const PENDING_DISMISSAL_KEY = 'papercusp.operatorPendingDismissalAtMs';
 const MESSAGES_MAX = 100; // bound the stored history to keep sessionStorage well under quota
 
 /**
@@ -236,6 +237,13 @@ export function readOperatorModeFromSession(): OperatorMode | null {
     // reload navigation so the bootstrap re-seeds from voice prefs.
     // Only do this once per page lifetime — subsequent reads should
     // see the cleared value (null → bootstrap → 'active').
+    //
+    // C5 of the audit: we also clear SLEEP_UNTIL_KEY. Intentional —
+    // a reload is treated as a fresh session, and "active" mode with
+    // a stale sleep timer would manifest as a chip that says "Active"
+    // but operator-doesn't-talk for an inexplicable interval. If
+    // sleep-persists-across-reload becomes a product requirement,
+    // gate this on a separate setting; today, freshness wins.
     if (!reloadResetApplied) {
       reloadResetApplied = true;
       try {
@@ -301,6 +309,47 @@ export function writeSleepUntilMs(epochMs: number): void {
 /** Wake the operator immediately. No-op when no sleep is set. */
 export function clearOperatorSleep(): void {
   writeSleepUntilMs(0);
+}
+
+/**
+ * Pending-dismissal bridge (E1). When a user turn matches the
+ * dismissal heuristic, the provider stamps "now" here. The voice tag
+ * observer's flush checks this on each parsed assistant turn — if the
+ * stamp is recent (≤8s) AND the parsed turn didn't already include
+ * `<set_mode>passive</set_mode>`, the observer forces the flip.
+ *
+ * Symmetry with the text-path enforcement in
+ * OperatorConversationProvider.runGeneration: voice users who say
+ * "I'm busy" get the same automatic mode flip as text users who type it.
+ *
+ * sessionStorage rather than a module global so it survives the
+ * provider/observer module boundary in dev with Fast Refresh.
+ */
+const PENDING_DISMISSAL_TTL_MS = 8_000;
+
+export function writePendingDismissalAtMs(epochMs: number): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (epochMs <= 0) window.sessionStorage.removeItem(PENDING_DISMISSAL_KEY);
+    else window.sessionStorage.setItem(PENDING_DISMISSAL_KEY, String(epochMs));
+  } catch { /* sandbox / quota */ }
+}
+
+export function consumeRecentDismissal(now: number = Date.now()): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const v = window.sessionStorage.getItem(PENDING_DISMISSAL_KEY);
+    if (!v) return false;
+    const n = Number(v);
+    if (!Number.isFinite(n) || n <= 0) return false;
+    const fresh = now - n <= PENDING_DISMISSAL_TTL_MS;
+    // Always clear — even stale stamps shouldn't stick around. A new
+    // dismissal will re-stamp.
+    window.sessionStorage.removeItem(PENDING_DISMISSAL_KEY);
+    return fresh;
+  } catch {
+    return false;
+  }
 }
 
 /** Convenience: convert a parsed sleep tag to an absolute epoch ms. */

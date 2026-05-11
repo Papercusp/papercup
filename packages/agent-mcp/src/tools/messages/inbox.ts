@@ -11,6 +11,10 @@ const SLUG_RE = /^[a-z0-9._-]+$/i;
 export default defineTool({
   name: 'messages:inbox',
   capability: 'messages:read',
+  guidance: {
+    when: 'User asks "what\'s in my inbox?", "any messages?", "what did the worker send back?". Cross-harness agent ↔ user messages addressed to you.',
+    notWhen: 'For sent items, use `messages:outbox`. For feature-scoped threads, use `messages:feature_inbox`.',
+  },
   args: z.object({
     slug: z.string().min(1),
     detail: z.enum(['summary', 'full']).default('summary'),

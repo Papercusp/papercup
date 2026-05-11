@@ -129,6 +129,7 @@ export function OperatorChatSidebar() {
           onLoadEarlier={conv.loadEarlier}
           hasMoreEarlier={conv.hasMoreEarlier}
           loadingEarlier={conv.loadingEarlier}
+          onAnswerChoice={conv.answerChoice}
         />
         <div
           className="op-chat-resize-handle"

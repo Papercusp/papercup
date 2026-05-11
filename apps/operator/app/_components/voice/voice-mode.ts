@@ -24,17 +24,27 @@ import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-cli
  * Emit the voice-engagement signal the OperatorConversationProvider
  * listens for. Provider lives in the React tree; voice-mode is the
  * imperative singleton outside it. Window event is the right seam.
+ *
  * Plan's "engagement detection in passive: user voice utterance with
- * address=operator → engagement" — wired here, end-to-end.
+ * address=operator → engagement" — wired here, end-to-end. The voice
+ * engines (EL Conv AI, OpenAI Realtime) all gate STT behind either
+ * wake-word (always-on mode) or PTT (user-initiated), so every
+ * transcript that lands here is implicitly addressed to the operator;
+ * no further address filtering is required. C3 of the audit.
+ *
+ * Timestamp is captured at emit time (the moment STT finalizes the
+ * transcript), not at provider receive time, so a slow React queue
+ * doesn't shift the engagement window. C1 of the audit.
  */
 function emitOperatorUserTurn(text: string): void {
   if (typeof window === 'undefined') return;
   const trimmed = text?.trim();
   if (!trimmed) return;
+  const tsMs = Date.now();
   try {
     window.dispatchEvent(
       new CustomEvent('papercusp:operatorUserTurn', {
-        detail: { text: trimmed, source: 'voice_stt', tsMs: Date.now() },
+        detail: { text: trimmed, source: 'voice_stt', tsMs },
       }),
     );
   } catch { /* ignore */ }

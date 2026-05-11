@@ -22,6 +22,11 @@ function newActionId(): string {
 export default defineTool({
   name: 'tasks:create',
   capability: 'tasks:write',
+  guidance: {
+    when: 'User asks to add a task / TODO / item to track. Always confirm the title out loud before calling — task creation isn\'t silent.',
+    notWhen: 'For asking the harness to DO work (write code, run validation), use `<spawn role="worker" />` instead — tasks track intent, spawns execute it.',
+    chaining: 'After creating, mention the task id in your reply so the user can refer back.',
+  },
   args: z.object({
     harnessSlug: z.string().min(1),
     title: z.string().min(1),

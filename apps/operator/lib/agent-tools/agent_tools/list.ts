@@ -28,8 +28,12 @@ const ALL_ROLES = [
 export default defineTool({
   name: 'agent_tools:list',
   description:
-    'List MCP-exposed tools with permission status for the caller. Each entry includes name, description, capability, roles allowlist, and an `allowed` flag with `reason` when blocked. Use to discover what you can call without trial-and-error.',
+    'List MCP-exposed tools with permission status for the caller. Each entry includes name, description, capability, roles allowlist, an `allowed` flag with `reason` when blocked, AND per-tool `guidance` (when/notWhen/chaining resolved for the queried role). Use to discover what you can call without trial-and-error.',
   capability: 'agent_tools:read',
+  guidance: {
+    when: 'Your tools playbook didn\'t cover a user request and you need to discover what\'s callable. Returns the full catalog filtered by your role, with each tool\'s guidance — treat this as the runtime fallback playbook.',
+    notWhen: 'Don\'t use as a fishing expedition. If your playbook covers it, just call the tool. `agent_tools:list` costs a tool call.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({
@@ -76,6 +80,14 @@ export default defineTool({
       rolesQuota: Record<string, unknown> | null;
       allowed: boolean;
       reason: string | null;
+      /**
+       * Per-tool guidance, resolved against the queried role (i.e.
+       * `byRole[role]` shallow-merged over the base). Null when the tool
+       * has no guidance authored. This is the runtime playbook the model
+       * consults when a tool isn't in `<role>.tools.md`. Phase 1a of the
+       * tool-guidance arc.
+       */
+      guidance: { when?: string; notWhen?: string; chaining?: string } | null;
     }> = [];
 
     for (const tool of listAllProjectedTools()) {
@@ -107,6 +119,12 @@ export default defineTool({
 
       if (onlyAllowed && !allowed) continue;
 
+      // Resolve per-role guidance: shallow-merge byRole[role] over base.
+      // Returns null when the tool has no guidance OR when every resolved
+      // field is empty — keeps the response payload small for the common
+      // un-migrated case.
+      const guidance = resolveProjectedGuidance(tool.guidance, role ?? null);
+
       out.push({
         name,
         description: tool.description,
@@ -119,6 +137,7 @@ export default defineTool({
         rolesQuota: (tool.rolesQuota as Record<string, unknown> | undefined) ?? null,
         allowed,
         reason,
+        guidance,
       });
 
       if (out.length >= limit) break;
@@ -146,4 +165,29 @@ function safeRegex(input: string): RegExp | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Resolve per-tool guidance for a specific role. Shallow-merges
+ * `byRole[role]` over the base `{ when, notWhen, chaining }`. Returns
+ * null when there's nothing to surface — keeps the response compact for
+ * tools that haven't authored guidance yet.
+ */
+function resolveProjectedGuidance(
+  raw:
+    | {
+        when?: string;
+        notWhen?: string;
+        chaining?: string;
+        byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
+      }
+    | undefined,
+  role: string | null,
+): { when?: string; notWhen?: string; chaining?: string } | null {
+  if (!raw) return null;
+  const base = { when: raw.when, notWhen: raw.notWhen, chaining: raw.chaining };
+  const override = role && raw.byRole ? raw.byRole[role] : undefined;
+  const merged = override ? { ...base, ...override } : base;
+  if (!merged.when && !merged.notWhen && !merged.chaining) return null;
+  return merged;
 }

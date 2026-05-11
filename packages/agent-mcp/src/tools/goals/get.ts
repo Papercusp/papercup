@@ -20,6 +20,11 @@ type GoalRow = z.infer<typeof GoalSelect>;
 export default defineTool({
   name: 'goals:get',
   capability: 'goals:read',
+  guidance: {
+    when: 'User names a specific goal and wants the rationale / acceptance criteria.',
+    notWhen: 'For a list of goals, use `goals:list` first.',
+    chaining: 'Follow `goals:list` to find the id.',
+  },
   args: z.object({
     id: z.string().min(1),
     detail: z.enum(['summary', 'full']).default('summary'),

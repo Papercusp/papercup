@@ -21,6 +21,10 @@ type AuditRow = z.infer<typeof AuditSelect>;
 export default defineTool({
   name: 'harness:status',
   capability: 'harness:read',
+  guidance: {
+    when: 'User asks "what is harness X doing right now?", "is sheets active?", or you need recent-activity counts + phase.',
+    notWhen: 'For "what\'s WRONG with X" / "any escalations", use `escalations:get` — that\'s the dedicated tool. For static facts about the harness, use `harness:get`.',
+  },
   args: z.object({
     slug: z.string().min(1),
   }),

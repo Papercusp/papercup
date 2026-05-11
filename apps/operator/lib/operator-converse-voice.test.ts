@@ -14,6 +14,8 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 const writeMode = vi.fn();
 const writeSleep = vi.fn();
 
+let dismissalFlag = false;
+
 vi.mock('./operator-converse-tags', async () => {
   const actual = await vi.importActual<typeof import('./operator-converse-tags')>(
     './operator-converse-tags',
@@ -22,6 +24,12 @@ vi.mock('./operator-converse-tags', async () => {
     ...actual,
     writeOperatorModeToSession: (...args: unknown[]) => writeMode(...args),
     writeSleepUntilMs: (...args: unknown[]) => writeSleep(...args),
+    // One-shot consume: returns + clears in a single call.
+    consumeRecentDismissal: () => {
+      const v = dismissalFlag;
+      dismissalFlag = false;
+      return v;
+    },
   };
 });
 
@@ -31,6 +39,7 @@ describe('createOperatorVoiceTagObserver — split-chunk tag handling', () => {
   beforeEach(() => {
     writeMode.mockReset();
     writeSleep.mockReset();
+    dismissalFlag = false;
   });
 
   it('handles a complete set_mode tag in one chunk', () => {
@@ -88,5 +97,37 @@ describe('createOperatorVoiceTagObserver — split-chunk tag handling', () => {
     obs.flush();
     expect(writeSleep).toHaveBeenCalledTimes(1);
     obs.dispose();
+  });
+
+  describe('E1 — voice-path dismissal enforcement', () => {
+    it('force-flips to passive when dismissal stamp is fresh AND brain forgot the tag', () => {
+      dismissalFlag = true; // simulates a recent userDismissesOperator hit
+      const obs = createOperatorVoiceTagObserver();
+      // Brain replies but forgets <set_mode>passive</set_mode>.
+      obs.push('<say>Okay, I\'ll back off.</say>');
+      obs.flush();
+      expect(writeMode).toHaveBeenCalledWith('passive');
+      obs.dispose();
+    });
+
+    it('does NOT double-flip when brain already emitted set_mode passive', () => {
+      dismissalFlag = true;
+      const obs = createOperatorVoiceTagObserver();
+      obs.push('<say>Got it.</say><set_mode>passive</set_mode>');
+      obs.flush();
+      // Called exactly once with passive — not twice.
+      expect(writeMode).toHaveBeenCalledTimes(1);
+      expect(writeMode).toHaveBeenCalledWith('passive');
+      obs.dispose();
+    });
+
+    it('does not flip when no dismissal stamp is set', () => {
+      dismissalFlag = false;
+      const obs = createOperatorVoiceTagObserver();
+      obs.push('<say>Sure, here is the answer.</say>');
+      obs.flush();
+      expect(writeMode).not.toHaveBeenCalled();
+      obs.dispose();
+    });
   });
 });

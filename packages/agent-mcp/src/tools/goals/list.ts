@@ -20,6 +20,11 @@ type GoalRow = z.infer<typeof GoalSelect>;
 export default defineTool({
   name: 'goals:list',
   capability: 'goals:read',
+  guidance: {
+    when: 'User asks "what are we trying to do?", "what are my goals?", or you need a goal id before calling `goals:get`.',
+    notWhen: 'For TASKS (concrete TODOs), use `tasks:list`. Goals are the higher-level intent; tasks are how you get there.',
+    chaining: 'Pair with `goals:get` for the full body.',
+  },
   args: z.object({
     detail: z.enum(['summary', 'full']).default('summary'),
     limit: z.number().int().positive().max(200).default(50),

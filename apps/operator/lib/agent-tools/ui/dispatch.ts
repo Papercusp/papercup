@@ -40,6 +40,10 @@ export default defineTool({
   description:
     'Dispatch a UI intent to a browser tab and wait for the result. Defaults client_id to ctx.uiClientId (the tab that spawned the agent). Built-in intents: set_url ({params:{...}}), snapshot ({selector?,mode?}), read_visible_text, focus, scroll_into_view, click. Pages can register additional intents via useUiIntent(name, handler).',
   capability: 'ui:dispatch',
+  guidance: {
+    when: 'You need to make something happen in the user\'s browser tab — open the panel, navigate, focus a card, etc. Side-effect tool: writes a ui_intents row the tab consumes via SSE.',
+    notWhen: 'For showing a question + choices in the chat, use `chat:ask_choice` (renders inline buttons). For asking the operator brain to delegate work, use `<spawn>` — `ui:dispatch` is for UI side effects, not work delegation.',
+  },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   args: z.object({

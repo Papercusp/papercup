@@ -24,7 +24,7 @@ import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { getSessionUser } from '@/lib/auth';
-import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
+import { NON_INTERACTIVE_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 import {
   buildOperatorPrompt,
   markFirstRunShown,
@@ -262,7 +262,10 @@ export async function GET(req: NextRequest) {
                 },
               }
             : undefined,
-          allowedTools: scanSuperuserToken ? [...ALL_AGENT_MCP_TOOLS] : [],
+          // Scanner is one-shot — emits suggestions, doesn't have a
+          // user-facing chat session to wait on. Excludes chat:* tools
+          // that require an interactive responder (e.g. chat:ask_choice).
+          allowedTools: scanSuperuserToken ? [...NON_INTERACTIVE_AGENT_MCP_TOOLS] : [],
           toolEventFilter: (raw) =>
             raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
           permissionMode: 'bypassPermissions',
