@@ -52,6 +52,14 @@ jobs:
         continue-on-error: true
         run: npm run lint:drizzle-drift
 
+      # Zero-config drift: assert zero-config.json's per-table column
+      # lists match what drizzle-zero infers from generated.ts. Catches
+      # forgotten new columns + stale config entries.
+      - name: Zero-config drift check (informational — does not gate)
+        if: always()
+        continue-on-error: true
+        run: node libs/zero-harness/scripts/drizzle-zero-cross-check.mjs
+
       - name: Knip (informational — does not gate)
         if: always()
         continue-on-error: true
