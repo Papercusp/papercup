@@ -1,0 +1,25 @@
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
+import { workspaceBackupFor } from '@/lib/backup';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+
+const ALL_ROLES = [
+  'scoper', 'architect', 'worker', 'validator',
+  'reviewer', 'debugger', 'operator', 'documenter', 'curator',
+] as const;
+
+export default defineTool({
+  name: 'backup:settings_get',
+  description: 'Read backup settings + repo stats for the active workspace.',
+  capability: 'backup:read',
+  requirePrincipal: false,
+  roles: [...ALL_ROLES],
+  args: z.object({}),
+  async handler() {
+    const wb = workspaceBackupFor(activeWorkspaceId());
+    const [settings, stats] = await Promise.all([wb.getSettings(), wb.stats()]);
+    return {
+      content: [{ type: 'text', text: JSON.stringify({ settings, stats }) }],
+    };
+  },
+});

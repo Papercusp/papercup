@@ -1,15 +1,23 @@
 # Backup — per-workspace kopia repo
 
-Phase 1 implements the backend wrapper around the kopia CLI. UI lives in
-`/settings/backups` (Phase 2) and `/dev` → Backups tab (Phase 3).
+End-to-end backup system wired into the operator: deduplicated snapshots,
+event triggers, restore-to-clone with promote/rollback safety net, agent
+MCP tools, and dashboard surfaces in `/settings/backups` (Advanced) and
+`/dev` → Backups tab.
 
-## Shape
+## Layout
 
 ```
 apps/operator/lib/backup/
 ├── types.ts            — public types + retention presets
 ├── password.ts         — HKDF from ~/.papercusp/db-encryption-key
-├── workspace-backup.ts — WorkspaceBackup class (ensureRepo, snapshot, list, stats, verify, getSettings)
+├── password.test.ts    — derivation determinism + isolation
+├── workspace-backup.ts — WorkspaceBackup class (everything)
+├── singleton.ts        — per-workspaceId cache
+├── server.ts           — kopia server lifecycle (iframe target)
+├── scheduler.ts        — 1-min tick + triggerSnapshotEvent + kopia detect
+├── hook.ts             — pre-snapshot pg_dumpall hook
+├── index.ts            — public exports
 └── README.md
 ```
 
@@ -17,56 +25,132 @@ apps/operator/lib/backup/
 
 ```
 ~/.papercusp-workspaces/<id>/backups/
-├── kopia-repo/         — the kopia content-addressed store
-├── repository.config   — kopia client config (auto-generated)
-├── cache/              — kopia local cache
-└── logs/               — kopia client logs
+├── kopia-repo/           — content-addressed store
+├── repository.config     — kopia client config
+├── cache/                — local cache
+└── logs/                 — kopia client logs
+~/.papercusp-workspaces/<id>/db-dumps/
+├── pg-embedded.sql.gz    — transactional dump of :16534
+└── hook.log              — hook results
+~/.papercusp-workspaces/<id>/.restored/<snapshotId>/<slug>/
+~/.papercusp-workspaces/<id>/.broken-<ts>-<name>/    — pre-promote live
+~/.papercusp-workspaces/<id>/.rolled-back-<ts>-<name>/ — post-rollback
+~/.papercusp-workspaces/.archive/<id>-<ts>/          — pre-workspace-delete archive
 ```
 
-## Why a per-workspace repo
+## WorkspaceBackup API
 
-See discussion in plan: dedup wins (phase worktrees share ~95%, harnesses
-within a workspace share heavily), lifecycle matches user intent (delete
-workspace = delete one repo), blast-radius isolation is already provided
-by path-scoped restore — no need for per-harness repos to get that.
+```ts
+class WorkspaceBackup {
+  ensureRepo(): Promise<void>
+  snapshot(reason, context?): Promise<SnapshotResult>
+  list(limit?): Promise<SnapshotInfo[]>
+  stats(): Promise<RepoStats>
+  kopiaContentStats(): Promise<{ totalSize, objectCount } | null>
+  verify(): Promise<VerifyResult>
+  maintenance(level: 'quick' | 'full'): Promise<void>
+  getSettings(): Promise<BackupSettings>
+  updateSettings(partial): Promise<BackupSettings>
+  restoreToClone({ kopiaSnapshotId, source?, target? }): Promise<{ targetPath }>
+  promoteRestore({ restoredPath, liveTarget? }): Promise<{ broken, live }>
+  rollbackPromote({ brokenPath }): Promise<{ liveBefore, liveAfter }>
+  recentFailures(limit?): Promise<SnapshotInfo[]>
+}
+```
 
-## Password derivation
+## API endpoints
 
-`deriveRepoPassword(workspaceId)` does HKDF-Expand over the contents of
-`~/.papercusp/db-encryption-key`, with a context label that binds to
-`kopia-backup-v1` + the workspace id. Same threat surface as today's PG
-encryption: lose the key, lose the backups. No new secret to store.
+```
+GET    /api/backups                      — settings + stats
+PUT    /api/backups                      — update settings
+GET    /api/backups/snapshots            — list (PG-backed)
+POST   /api/backups/snapshots            — manual snapshot
+GET    /api/backups/events               — backup_events stream
+GET    /api/backups/failures             — last N failures
+GET    /api/backups/healthcheck          — UI banner state + kopia detect
+POST   /api/backups/verify
+POST   /api/backups/maintenance          — { level: 'quick' | 'full' }
+POST   /api/backups/restore              — restore-to-clone
+POST   /api/backups/promote              — atomic rename clone → live
+POST   /api/backups/rollback             — undo a promote
+GET    /api/backups/broken-list          — .broken-*/ dirs for rollback UI
+GET    /api/backups/server               — start/return kopia server URL for iframe
+DELETE /api/backups/server               — stop kopia server
+```
 
-## What's snapshotted
+## First-party MCP tools
 
-Today the workspace root (`~/.papercusp-workspaces/<id>/`) is the only
-source. The global ignore policy (see `IGNORE_PATTERNS` in
-`workspace-backup.ts`) strips `node_modules`, build artifacts, etc.
+```
+backup:snapshot_create    — pre-destructive op snapshot (all roles)
+backup:snapshot_list      — recent snapshots (all roles)
+backup:diff               — file-level diff between two snapshots (all roles)
+backup:restore            — restore-to-clone (operator/debugger/reviewer)
+backup:promote            — promote clone → live (operator/debugger)
+backup:rollback           — undo a promote (operator/debugger)
+backup:settings_get       — settings + stats (all roles)
+backup:settings_set       — patch settings (operator/debugger)
+```
 
-Coming in Phase 4 (event triggers): pre-snapshot DB dump hook that
-writes transactional PG dumps for both `:5432` and the workspace's
-embedded-pg-on-:16534 into a `db-dumps/` dir inside the workspace, so
-kopia captures consistent copies alongside the raw data dir.
+## Event triggers wired
 
-## Phase 1 scope
+`triggerSnapshotEvent(workspaceId, reason, context)` — call from any
+destructive code path. Currently wired at:
 
-- ✅ `ensureRepo()` — idempotent init/connect
-- ✅ `snapshot(reason, context?)` — creates kopia snapshot + PG row
-- ✅ `list(limit)` — recent snapshots from PG
-- ✅ `stats()` — repo stats from PG (dedup ratio, last ok/fail)
-- ✅ `verify()` — `kopia snapshot verify`
-- ✅ `getSettings()` — read or insert+read row
-- ⏳ `restore()` — Phase 5 (restore-to-clone)
-- ⏳ `maintenance()` — Phase 2
-- ⏳ `mount()` — Phase 3
-- ⏳ `stream()` — Phase 3 (SSE for UI live progress)
-- ⏳ Pre-snapshot DB hook — Phase 4
+- `app/api/plugins/uninstall` — before removing a plugin
+- `app/api/backups/promote` — auto-snapshot before promoting
+- `lib/branch-actions.ts` runAction() — before every harness run
+- `lib/agent-tools/backup/promote.ts` — agent-driven promotion
 
-## Migrations
+Per-workspace `event_triggers` setting gates which reasons fire.
 
-`apps/operator/lib/commands/migrations/012_workspace_backups.sql` creates
-three tables in `harness_shared`:
+## Pre-snapshot DB hook
 
-- `workspace_backup_settings` — one row per workspace
-- `backup_snapshots`         — one row per snapshot attempt
-- `backup_events`            — append-only audit + UI stream
+`hook.ts` runs once per `snapshot()` call. Currently dumps embedded-pg
+:16534 (password=postgres) into `<workspaceRoot>/db-dumps/pg-embedded.sql.gz`.
+Failures log to `hook.log` and never abort the snapshot.
+
+## Threat model — what this protects against
+
+- **Agent destroys files in the workspace** → restore from any
+  snapshot, default to clone-not-overwrite.
+- **Bad merge / bad migration** → restore the pre-op snapshot, diff
+  against live, promote or cherry-pick.
+- **User deletes a workspace by mistake** → kopia repo is archived to
+  `~/.papercusp-workspaces/.archive/<id>-<ts>/` before the dir is
+  removed, so the snapshots survive.
+- **Hot DB state (embedded-pg :16534)** → transactional pg_dumpall on
+  every snapshot.
+
+## Threat model — what this does NOT protect against
+
+- **Loss of `~/.papercusp/db-encryption-key`** — without that the kopia
+  repo can't be decrypted. Same domain as PG encryption today.
+- **Hardware failure on the drive containing the workspace** — local
+  backups only; offsite (S3/B2/rclone) UI exists in settings but the
+  implementation is deferred.
+- **Bad-faith local attacker** — same UID as the operator can read the
+  unencrypted live data; backups don't change that surface.
+
+## Operational notes
+
+- Scheduler is in-process (boot-hooked from `instrumentation.ts`); no
+  systemd dependency, works on Linux + macOS + future Windows.
+- Cadence is per-workspace (`workspace_backup_settings.cadence_minutes`).
+- Repo password is derived (HKDF), not stored.
+- Kopia binary must be on `$PATH` or `KOPIA_BIN` env var. Missing-binary
+  state is surfaced via `/api/backups/healthcheck.kopia` and the
+  /dev + /settings banners.
+- Maintenance is manual (settings button or `kopia:settings_set` not
+  implemented for maintenance — use POST /api/backups/maintenance).
+
+## Migration
+
+`apps/operator/lib/commands/migrations/012_workspace_backups.sql`
+creates `workspace_backup_settings`, `backup_snapshots`, `backup_events`
+in `harness_shared`. Idempotent CREATE IF NOT EXISTS.
+
+## Tests
+
+`password.test.ts` — 3 tests covering format, determinism, per-workspace
+isolation. Backend integration testing requires a live kopia binary +
+PG; run manually via `kopia snapshot create` against a scratch workspace.
