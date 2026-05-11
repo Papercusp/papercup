@@ -68,6 +68,7 @@ interface OperatorTurnRow {
   seq: number;
   role: 'user' | 'assistant' | 'system';
   text: string;
+  createdAt: number;
 }
 
 // ─── State + actions ────────────────────────────────────────────────────
@@ -631,10 +632,32 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     // Dedup by id: if a remote row's id matches an already-loaded
     // message (optimistic uuid or real PG id), skip the append. G19.
     const localIds = new Set(state.messages.map((m) => m.id).filter((x): x is string => !!x));
+    // B4: content-based dedup fallback for the optimistic-write race.
+    // The optimistic id is local-only (PG never sees it); when Zero
+    // echoes the inserted row back BEFORE persistTurn's .then() swaps
+    // the id, the seq-cursor guard can't distinguish "real new turn"
+    // from "echo of the local optimistic". Match by (role, content)
+    // against the most recent few optimistic-prefixed messages and
+    // swap the id in place rather than appending.
+    const optimisticByKey = new Map<string, string>();
+    for (let i = state.messages.length - 1; i >= Math.max(0, state.messages.length - 8); i--) {
+      const m = state.messages[i];
+      if (m.id && m.id.startsWith('opt-')) {
+        optimisticByKey.set(`${m.role} ${m.content}`, m.id);
+      }
+    }
     let lastTurnTs = 0;
     for (const t of sorted) {
       if (since !== null && t.seq <= since) continue;
       if (typeof t.id === 'string' && localIds.has(t.id)) {
+        newestLoadedSeqRef.current = t.seq;
+        continue;
+      }
+      const optKey = `${t.role} ${t.text}`;
+      const optId = optimisticByKey.get(optKey);
+      if (optId) {
+        dispatch({ type: 'replace_message_id', oldId: optId, newId: t.id });
+        optimisticByKey.delete(optKey);
         newestLoadedSeqRef.current = t.seq;
         continue;
       }
@@ -644,8 +667,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       });
       newestLoadedSeqRef.current = t.seq;
       if (oldestLoadedSeqRef.current === null) oldestLoadedSeqRef.current = t.seq;
-      const ts = (t as { createdAt?: number }).createdAt ?? Date.now();
+      const ts = t.createdAt ?? Date.now();
       if (ts > lastTurnTs) lastTurnTs = ts;
+      // B3: cross-tab user turns also count toward engagement. Without
+      // this, a user typing in one tab while another tab is open
+      // would never satisfy mayAskActiveNow()'s 3-in-2min threshold.
+      if (t.role === 'user') {
+        dispatch({ type: 'record_user_turn', tsMs: ts });
+      }
     }
     if (lastTurnTs > 0) dispatch({ type: 'mark_turn', tsMs: lastTurnTs });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -745,9 +774,25 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       }
     };
     window.addEventListener('papercusp:operatorMode', onModeEvent as EventListener);
+
+    // Voice-engagement signal: STT delivers a user transcript →
+    // count toward `recentUserTurnTsMs` so passive-mode's
+    // mayAskActiveNow() satisfies the 3-in-2min threshold from
+    // voice-only sessions too. Plan called this out as a known gap
+    // at commit-time; now wired. Also marks the silence-ladder
+    // freshness clock so it stays active after a voice exchange.
+    const onVoiceUserTurn = (e: Event) => {
+      const detail = (e as CustomEvent<{ tsMs?: number }>).detail;
+      const tsMs = typeof detail?.tsMs === 'number' ? detail.tsMs : Date.now();
+      dispatch({ type: 'record_user_turn', tsMs });
+      dispatch({ type: 'mark_turn', tsMs });
+    };
+    window.addEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
+
     return () => {
       cancelled = true;
       window.removeEventListener('papercusp:operatorMode', onModeEvent as EventListener);
+      window.removeEventListener('papercusp:operatorUserTurn', onVoiceUserTurn as EventListener);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

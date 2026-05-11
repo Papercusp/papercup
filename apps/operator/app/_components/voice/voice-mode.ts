@@ -20,6 +20,26 @@ import { stripWakeWordAndPrefix } from '../../../lib/wake-word';
 import { createOperatorVoiceTagObserver } from '../../../lib/operator-converse-voice';
 import { persistOperatorVoiceTurn } from '../../../lib/operator-conversation-client';
 
+/**
+ * Emit the voice-engagement signal the OperatorConversationProvider
+ * listens for. Provider lives in the React tree; voice-mode is the
+ * imperative singleton outside it. Window event is the right seam.
+ * Plan's "engagement detection in passive: user voice utterance with
+ * address=operator → engagement" — wired here, end-to-end.
+ */
+function emitOperatorUserTurn(text: string): void {
+  if (typeof window === 'undefined') return;
+  const trimmed = text?.trim();
+  if (!trimmed) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('papercusp:operatorUserTurn', {
+        detail: { text: trimmed, source: 'voice_stt', tsMs: Date.now() },
+      }),
+    );
+  } catch { /* ignore */ }
+}
+
 export type VoiceModeStatus =
   | 'off'                    // Voice mode disabled
   | 'connecting'             // Bringing up full-agent session (EL/Realtime negotiating)
@@ -793,6 +813,7 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
       onTranscript: (text) => {
         setState({ lastTranscript: text });
         void persistOperatorVoiceTurn({ role: 'user', text, source: 'voice_stt' });
+        emitOperatorUserTurn(text);
         nudgeFullAgentIdle();
       },
       onAssistantText: (text) => {
@@ -943,6 +964,7 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
         if (text && text.trim().length > 1) onUtteranceFinal(text);
         const elConvId = handle?.getConversationId?.() ?? null;
         void persistOperatorVoiceTurn({ role: 'user', text, source: 'voice_stt', elConvId });
+        emitOperatorUserTurn(text);
         nudgeFullAgentIdle();
       },
       onAssistantText: (text) => {
