@@ -382,6 +382,24 @@
     "_legacyExtras": {
       "type": "object",
       "description": "Escape hatch for forward-compatible extras the schema doesn't know yet."
+    },
+    "requires": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Plugin slugs this plugin requires. Used by lock-resolve to build a dependency graph (CLI: papercusp install, papercusp plugin install). Each entry is a slug like \"@org/dep-plugin\"."
+    },
+    "recommends": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Plugin slugs this plugin recommends (soft dependencies \u2014 surfaced to the user during install but not auto-installed). Same shape as requires."
+    },
+    "defaultConfig": {
+      "type": "object",
+      "description": "Initial config values written to ~/.papercusp/plugin-configs/<slug>.json on first install. Must conform to configSchema if both are declared. Used by papercusp plugin init seeding."
     }
   }
 }

@@ -66,3 +66,45 @@ describe('$schema meta-keyword', () => {
     expect(r.ok).toBe(true);
   });
 });
+
+describe('plugin dependency + config fields', () => {
+  it('accepts requires + recommends arrays', () => {
+    const r = validateManifest({
+      name: '@test/with-deps',
+      version: '0.1.0',
+      kind: 'plugin',
+      papercusp: '^1.0',
+      requires: ['@papercupai/cloudflare-pages'],
+      recommends: ['@papercupai/github-repo'],
+      capabilities: [],
+      actions: [],
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('accepts defaultConfig object', () => {
+    const r = validateManifest({
+      name: '@test/with-default-config',
+      version: '0.1.0',
+      kind: 'plugin',
+      papercusp: '^1.0',
+      defaultConfig: { apiKey: 'placeholder', retries: 3 },
+      capabilities: [],
+      actions: [],
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects requires as non-array', () => {
+    const r = validateManifest({
+      name: '@test/bad-requires',
+      version: '0.1.0',
+      kind: 'plugin',
+      papercusp: '^1.0',
+      requires: 'not-an-array',
+      capabilities: [],
+      actions: [],
+    });
+    expect(r.ok).toBe(false);
+  });
+});
