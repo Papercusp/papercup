@@ -5208,16 +5208,18 @@ function loadIssuesOrSeed(project: ProjectEntry): IssuesFile {
 async function readPendingIssues(project: ProjectEntry): Promise<Issue[]> {
   const { ensureHarnessPendingIssuesTable } = await import('@/lib/ensure-schema');
   await ensureHarnessPendingIssuesTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const rows = await sql<{ issue_id: string; payload: Record<string, unknown>; ts: string | number }[]>`
-    SELECT issue_id, payload, ts
-      FROM harness_shared.harness_pending_issues
-     WHERE harness_slug = ${project.slug}
-     ORDER BY ts ASC
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { asc, eq } = await import('drizzle-orm');
+  const hpi = generated.harness_pending_issuesInHarness_shared;
+  const rows = await db
+    .select({ issue_id: hpi.issue_id, payload: hpi.payload, ts: hpi.ts })
+    .from(hpi)
+    .where(eq(hpi.harness_slug, project.slug))
+    .orderBy(asc(hpi.ts));
   const out: Issue[] = [];
   for (const r of rows) {
-    const p = r.payload ?? {};
+    const p = (r.payload as Record<string, unknown>) ?? {};
     if (!p.title || !p.severity) continue;
     out.push({
       id: r.issue_id,
@@ -5547,17 +5549,18 @@ harness.get('/:slug/reviews/:id', async (c) => {
   const slug = c.req.param('slug');
   const phase = phasePhaseLabel(c.req.query('phase'));
   const id = c.req.param('id').replace(/[^A-Za-z0-9_.-]/g, '');
-  const { sql } = getOrgPg();
-  const rows = await sql<{ payload: PendingReview; review_id: string; resolved: boolean; ts: number }[]>`
-    SELECT payload, review_id, resolved, ts
-      FROM harness_shared.pending_reviews
-     WHERE harness_slug = ${slug}
-       AND phase = ${phase}
-       AND review_id = ${id}
-     LIMIT 1
-  `;
+  const { db } = getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, eq } = await import('drizzle-orm');
+  const prev = generated.pending_reviewsInHarness_shared;
+  const rows = await db
+    .select({ payload: prev.payload, review_id: prev.review_id, resolved: prev.resolved, ts: prev.ts })
+    .from(prev)
+    .where(and(eq(prev.harness_slug, slug), eq(prev.phase, phase), eq(prev.review_id, id)))
+    .limit(1);
   if (!rows.length) return c.json({ error: 'not found' }, 404);
-  return c.json({ ...rows[0].payload, id: rows[0].review_id, resolved: rows[0].resolved, ts: rows[0].ts });
+  const row = rows[0] as { payload: PendingReview; review_id: string; resolved: boolean; ts: number };
+  return c.json({ ...row.payload, id: row.review_id, resolved: row.resolved, ts: row.ts });
 });
 
 harness.post('/:slug/reviews/:id/resolve', async (c) => {
@@ -6854,20 +6857,33 @@ harness.post('/:slug/promote', async (c) => {
   // file + watcher debounce. The file is also written below for back-
   // compat with bash run.sh's pre-loop scanner that reads pending-reviews/.
   {
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const { sql: dsql } = await import('drizzle-orm');
+    const prev = generated.pending_reviewsInHarness_shared;
     const tsMs = ts * 1000;
-    await sql`
-      INSERT INTO harness_shared.pending_reviews
-        (harness_slug, phase, review_id, feature_id, kind, payload, ts, mtime_ms, workspace_id, resolved)
-      VALUES (
-        ${project.slug}, ${from}, ${id}, NULL, 'promotion',
-        ${JSON.stringify(item)}, ${tsMs}, ${tsMs}, ${activeWorkspaceId()}, false
-      )
-      ON CONFLICT (harness_slug, phase, review_id) DO UPDATE
-        SET payload  = EXCLUDED.payload,
-            mtime_ms = EXCLUDED.mtime_ms,
-            resolved = false
-    `;
+    await db
+      .insert(prev)
+      .values({
+        harness_slug: project.slug,
+        phase: from,
+        review_id: id,
+        feature_id: null,
+        kind: 'promotion',
+        payload: item as any,
+        ts: tsMs,
+        mtime_ms: tsMs,
+        workspace_id: activeWorkspaceId(),
+        resolved: false,
+      })
+      .onConflictDoUpdate({
+        target: [prev.harness_slug, prev.phase, prev.review_id],
+        set: {
+          payload: dsql`EXCLUDED.payload`,
+          mtime_ms: dsql`EXCLUDED.mtime_ms`,
+          resolved: false,
+        },
+      });
     void notifySyncInvalidate('pendingReviews.byHarness', { harnessSlug: project.slug });
   }
   await writeFile(join(reviewsDir, `${id}.json`), JSON.stringify(item, null, 2), 'utf8');
@@ -7014,16 +7030,21 @@ harness.post('/:slug/promote/:id/confirm', async (c) => {
   {
     const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
     await ensureHarnessPromotionsTable();
-    const { sql } = (await import('@restart/db-org')).getOrgPg();
-    await sql`
-      INSERT INTO harness_shared.harness_promotions
-        (workspace_id, harness_slug, promotion_id, from_phase, to_phase, sha, ts)
-      VALUES (
-        ${activeWorkspaceId()}, ${project.slug}, ${obj.id}, ${from}, ${to},
-        ${newSha || null}, ${Math.floor(Date.now() / 1000)}
-      )
-      ON CONFLICT (workspace_id, harness_slug, promotion_id) DO NOTHING
-    `;
+    const { db } = (await import('@restart/db-org')).getOrgPg();
+    const { generated } = await import('@restart/db-org');
+    const hp = generated.harness_promotionsInHarness_shared;
+    await db
+      .insert(hp)
+      .values({
+        workspace_id: activeWorkspaceId(),
+        harness_slug: project.slug,
+        promotion_id: obj.id,
+        from_phase: from,
+        to_phase: to,
+        sha: newSha || null,
+        ts: Math.floor(Date.now() / 1000),
+      })
+      .onConflictDoNothing();
   }
 
   // Seed promotion-handoff.md in the dest from the source's validation-contract.md + features.
@@ -7069,15 +7090,16 @@ harness.post('/:slug/rollback', async (c) => {
   // rewinds 'production' to the previous production SHA.)
   const { ensureHarnessPromotionsTable } = await import('@/lib/ensure-schema');
   await ensureHarnessPromotionsTable();
-  const { sql } = (await import('@restart/db-org')).getOrgPg();
-  const promotions = await sql<Array<{ promotion_id: string; sha: string | null; ts: number | bigint }>>`
-    SELECT promotion_id, sha, ts FROM harness_shared.harness_promotions
-     WHERE workspace_id = ${activeWorkspaceId()}
-       AND harness_slug = ${project.slug}
-       AND to_phase     = ${phase}
-     ORDER BY ts DESC
-     LIMIT 10
-  `;
+  const { db } = (await import('@restart/db-org')).getOrgPg();
+  const { generated } = await import('@restart/db-org');
+  const { and, desc, eq } = await import('drizzle-orm');
+  const hp = generated.harness_promotionsInHarness_shared;
+  const promotions = await db
+    .select({ promotion_id: hp.promotion_id, sha: hp.sha, ts: hp.ts })
+    .from(hp)
+    .where(and(eq(hp.workspace_id, activeWorkspaceId()), eq(hp.harness_slug, project.slug), eq(hp.to_phase, phase)))
+    .orderBy(desc(hp.ts))
+    .limit(10);
   if (promotions.length < 2) return c.json({ error: 'no previous promotion to roll back to' }, 400);
   const prior = promotions[1]; // [0] is the current promotion; [1] is the one we want
   if (!prior.sha) return c.json({ error: 'previous promotion has no sha' }, 400);
@@ -7091,14 +7113,15 @@ harness.post('/:slug/rollback', async (c) => {
   // Record the rollback as its own promotion row (sha = the SHA we
   // rolled back TO; from_phase == to_phase == phase). Future rollbacks
   // will see this in the history.
-  await sql`
-    INSERT INTO harness_shared.harness_promotions
-      (workspace_id, harness_slug, promotion_id, from_phase, to_phase, sha, ts)
-    VALUES (
-      ${activeWorkspaceId()}, ${project.slug}, ${`rollback-${Date.now()}`},
-      ${phase}, ${phase}, ${prior.sha}, ${Math.floor(Date.now() / 1000)}
-    )
-  `;
+  await db.insert(hp).values({
+    workspace_id: activeWorkspaceId(),
+    harness_slug: project.slug,
+    promotion_id: `rollback-${Date.now()}`,
+    from_phase: phase,
+    to_phase: phase,
+    sha: prior.sha,
+    ts: Math.floor(Date.now() / 1000),
+  });
 
   return c.json({ ok: true, rolledBackTo: prior.sha });
 });
