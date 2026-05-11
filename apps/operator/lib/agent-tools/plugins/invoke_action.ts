@@ -14,6 +14,10 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export default defineTool({
   name: 'plugins:invoke_action',
+  guidance: {
+    when: 'Invoke a named action a plugin exposes (publish, sync, etc.). Use the action name from `plugins:runtime_status`.',
+    notWhen: 'For TOOLS the plugin exposes (callable as MCP names), call them directly via their mcp__ prefix. Actions are plugin-lifecycle verbs; tools are the catalog.',
+  },
   description: 'Invoke a plugin action via the in-process registry. Diagnostic — architect/operator only.',
   capability: 'plugins:write',
   requirePrincipal: false,

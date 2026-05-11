@@ -17,6 +17,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:get',
+  guidance: {
+    when: 'User names a specific expert and wants its definition (prompt, firing rules, output schema).',
+    notWhen: 'For the list, use `experts:list`. For the SPEC body specifically, use `experts:spec_get`.',
+  },
   description: 'Read one expert instance by id with spec content, spentCents, and nextAction.',
   capability: 'experts:read',
   requirePrincipal: false,

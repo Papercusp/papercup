@@ -16,6 +16,11 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:list',
+  guidance: {
+    when: 'Enumerate registered experts in the harness. Experts are role-scoped reviewer agents that fire on specific events.',
+    notWhen: 'For AGENTS (any role), use `agents:list`. Experts are a subset with explicit firing rules.',
+    chaining: 'Pair with `experts:get` for full definition.',
+  },
   description: 'List expert instances for a harness slug. Returns id, title, status, featureSize, agentCount, roundCount, userEngaged, forkedFrom, createdAt, updatedAt, nextAction.',
   capability: 'experts:read',
   requirePrincipal: false,

@@ -27,6 +27,7 @@
  */
 
 import { NextRequest } from 'next/server';
+import { sseResponse } from '@restart/sse';
 import { runAgentChat } from '@/lib/agent-chat-stream';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
@@ -160,19 +161,12 @@ export async function POST(req: NextRequest) {
   }
 
   const ctrl = new AbortController();
-  // Tear down the spawn if the client disconnects mid-stream.
-  req.signal.addEventListener('abort', () => ctrl.abort(), { once: true });
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const enc = new TextEncoder();
-      const send = (event: string, data: Record<string, unknown>) => {
-        try {
-          controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        } catch {
-          /* controller closed (client disconnected) */
-        }
-      };
+  return sseResponse({
+    signal: req.signal,
+    setup: async (sink) => {
+      sink.onClose(() => ctrl.abort());
+      const send = (event: string, data: Record<string, unknown>) => sink.event(event, data);
 
       try {
         // Wire the agent-mcp server in, same shape as operator-scan.

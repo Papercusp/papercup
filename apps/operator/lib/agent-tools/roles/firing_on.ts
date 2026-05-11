@@ -20,6 +20,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'roles:firing_on',
+  guidance: {
+    when: 'You need to know which roles are configured to fire on a given hook event before firing it (avoids no-op fires).',
+    notWhen: 'For the hook-event ENUM itself, use `hooks:known`. For role details, use `roles:get`.',
+  },
   description: 'Return role manifests whose `firesOn` array includes the given hook event.',
   capability: 'roles:read',
   requirePrincipal: false,

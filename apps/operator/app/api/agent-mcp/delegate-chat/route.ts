@@ -22,6 +22,7 @@ import { NextRequest } from 'next/server';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { sseResponse } from '@restart/sse';
 import { runAgentChat } from '@/lib/agent-chat-stream';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -136,15 +137,10 @@ export async function GET(req: NextRequest): Promise<Response> {
     ? `${SYSTEM_PROMPT}\n\nUser request: ${requestText}`
     : `User: ${requestText}`;
 
-  const enc = new TextEncoder();
-  const stream = new ReadableStream({
-    async start(controller) {
-      const send = (event: string, data: Record<string, unknown>) => {
-        try {
-          controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        } catch { /* writer closed */ }
-      };
-      send('session', { agentSessionId, created: sessionCreated });
+  return sseResponse({
+    signal: req.signal,
+    setup: async (sink) => {
+      sink.event('session', { agentSessionId, created: sessionCreated });
 
       let assistantText = '';
       try {
@@ -205,27 +201,23 @@ export async function GET(req: NextRequest): Promise<Response> {
         for await (const ev of events) {
           if (ev.type === 'delta') {
             assistantText += ev.text;
-            send('delta', { text: ev.text });
+            sink.event('delta', { text: ev.text });
           } else if (ev.type === 'tool_call') {
-            send('tool_call', { name: ev.name, input: ev.input });
+            sink.event('tool_call', { name: ev.name, input: ev.input });
           } else if (ev.type === 'result') {
             const fullText = ev.finalText || assistantText;
-            send('done', {
+            sink.done({
               agentSessionId,
               costUsd: ev.costUsd,
               tokensIn: ev.tokensIn,
               tokensOut: ev.tokensOut,
               fullText,
             });
-            // Persist the turn so the Delegates panel can render history
-            // when the user resumes. Best-effort — table may be missing
-            // (degraded mode), failure shouldn't break the SSE stream.
             void appendDelegateTurn(workspaceId, agentSessionId, {
               ts: new Date().toISOString(),
               request: requestText,
               response: fullText,
             }).catch(() => { /* ignore */ });
-            // Background title generation on first turn (non-blocking).
             if (sessionCreated) {
               void generateSessionTitle({
                 workspace: workspaceId,
@@ -235,22 +227,12 @@ export async function GET(req: NextRequest): Promise<Response> {
               }).catch(() => { /* best-effort */ });
             }
           } else if (ev.type === 'error') {
-            send('error', { message: ev.message, stderr: ev.stderr });
+            sink.event('error', { message: ev.message, stderr: ev.stderr });
           }
         }
       } catch (e: unknown) {
-        send('error', { message: (e as Error)?.message ?? String(e) });
-      } finally {
-        try { controller.close(); } catch { /* already closed */ }
+        sink.event('error', { message: (e as Error)?.message ?? String(e) });
       }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'content-type': 'text/event-stream',
-      'cache-control': 'no-cache, no-transform',
-      'connection': 'keep-alive',
     },
   });
 }

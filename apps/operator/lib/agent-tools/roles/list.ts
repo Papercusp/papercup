@@ -23,6 +23,11 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'roles:list',
+  guidance: {
+    when: 'You need the set of agent roles configured in the workspace (architect, worker, validator, …) before spawning or dispatching.',
+    notWhen: 'For agents currently RUNNING, use `agents:list`. roles:list is the static configuration; agents:list is the live processes.',
+    chaining: 'Pair with `roles:get` for one role\'s definition.',
+  },
   description: 'List role manifests (id, source, fires-on, etc.) for a harness, or globally when no harness given.',
   capability: 'roles:read',
   requirePrincipal: false,

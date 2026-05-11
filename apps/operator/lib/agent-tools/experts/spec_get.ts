@@ -17,6 +17,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:spec_get',
+  guidance: {
+    when: 'Read the SPEC document for an expert — the design / acceptance criteria, separate from the runtime definition.',
+    notWhen: 'For the runtime definition (prompt, firing rules), use `experts:get`. spec_get is the design-doc view.',
+  },
   description: 'Read SPEC.md content for an expert instance.',
   capability: 'experts:read',
   requirePrincipal: false,

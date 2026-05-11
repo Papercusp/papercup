@@ -12,7 +12,7 @@
  *   - command     — { requestId, command: { id, args } }; tab runs it
  *                   via runCommand() and POSTs the result to
  *                   /api/agent-mcp/run-command/result
- *   - heartbeat   — server pings every 5s to keep the connection alive;
+ *   - heartbeat   — emitted by @restart/sse on a 5s timer for keepalive;
  *                   tab pings back via PUT /api/agent-mcp/run-command/sse
  *
  * The tab's `voice-leader.ts` election decides whether to open this
@@ -20,6 +20,7 @@
  */
 
 import { NextRequest } from 'next/server';
+import { sseResponse } from '@restart/sse';
 import {
   registerSession,
   unregisterSession,
@@ -29,6 +30,11 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+type Events = {
+  hello: { workspace: string; sessionId: string };
+  command: { requestId: string; command: unknown };
+};
+
 export async function GET(req: NextRequest): Promise<Response> {
   const url = new URL(req.url);
   const workspace = url.searchParams.get('workspace');
@@ -37,67 +43,30 @@ export async function GET(req: NextRequest): Promise<Response> {
     return new Response('missing workspace or sessionId', { status: 400 });
   }
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({
-    start(controller) {
-      let closed = false;
-      const send = (event: string, data: unknown) => {
-        if (closed) return;
-        try {
-          controller.enqueue(
-            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
-          );
-        } catch {
-          /* writer closed */
-        }
-      };
-
-      // Register the tab as leader; provide a push function that emits a
-      // `command` SSE event for each pending request.
+  return sseResponse<Events>({
+    signal: req.signal,
+    heartbeatMs: 5000,
+    setup: (sink) => {
       registerSession({
         workspace,
         sessionId,
         push: (request) => {
-          send('command', { requestId: request.requestId, command: request.command });
+          sink.event('command', { requestId: request.requestId, command: request.command });
         },
       });
 
-      // Greet the tab.
-      send('hello', { workspace, sessionId });
+      sink.event('hello', { workspace, sessionId });
 
-      // Heartbeat — keeps proxies + browser alive, also tickles
-      // session-registry's lastSeen.
-      const heartbeat = setInterval(() => {
+      const sessionCheck = setInterval(() => {
         if (!heartbeatSession(workspace, sessionId)) {
-          // Session was replaced (newer leader). Close this stream.
-          closed = true;
-          try {
-            controller.close();
-          } catch { /* already closed */ }
-          clearInterval(heartbeat);
-          return;
+          sink.close();
         }
-        send('heartbeat', { t: Date.now() });
       }, 5000);
 
-      // Tab disconnect → unregister.
-      req.signal.addEventListener('abort', () => {
-        closed = true;
-        clearInterval(heartbeat);
+      sink.onClose(() => {
+        clearInterval(sessionCheck);
         unregisterSession(workspace, sessionId);
-        try {
-          controller.close();
-        } catch { /* already closed */ }
       });
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
     },
   });
 }

@@ -21,6 +21,11 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'snapshots:get',
+  guidance: {
+    when: 'User names a specific snapshot id and wants its full content (spec, code, history).',
+    notWhen: 'For the snapshot list, use `snapshots:list` first.',
+    chaining: 'Follow `snapshots:list` for the id.',
+  },
   description: 'Fetch one snapshot listing by id. Returns null when not in the registry.',
   capability: 'snapshots:read',
   requirePrincipal: false,

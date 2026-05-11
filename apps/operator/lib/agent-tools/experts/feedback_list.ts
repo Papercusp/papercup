@@ -18,6 +18,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:feedback_list',
+  guidance: {
+    when: 'Read collected expert feedback / verdicts — useful for "what did the validators say?", "any expert complaints?".',
+    notWhen: 'For YOUR audit log, use `audit:list`. For expert DEFINITIONS, use `experts:list`. feedback_list is the output side.',
+  },
   description: 'List feedback conversations for an expert instance (id, persona, ended, verdict).',
   capability: 'experts:read',
   requirePrincipal: false,

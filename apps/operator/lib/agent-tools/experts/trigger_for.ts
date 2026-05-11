@@ -17,6 +17,10 @@ import {
 
 export default defineTool({
   name: 'experts:trigger_for',
+  guidance: {
+    when: 'Fire experts whose `alwaysFireOn` configuration matches the given event/context — manually-driven version of the normal hook flow.',
+    notWhen: 'For automatic firing, the harness pipeline does it on real events. Only use trigger_for when reviewing / replaying an event.',
+  },
   description: 'Fire experts whose alwaysFireOn matches a lifecycle or event. Mode + event + installSlug + ctx; returns per-role dispatch outcomes.',
   capability: 'experts:write',
   requirePrincipal: false,

@@ -15,6 +15,10 @@ import { defineTool } from '../../define-tool';
 
 export default defineTool({
   name: 'papercusp:list_workspaces',
+  guidance: {
+    when: 'Discovery helper for superuser shells — list all workspaces in the installation. Used when scope-switching.',
+    notWhen: 'For the CURRENT workspace details, use the operator-state APIs. papercusp:list_workspaces is the cross-workspace enumerator.',
+  },
   capability: 'workspaces:read',
   args: z.object({}).strict(),
   async handler(_args, ctx) {

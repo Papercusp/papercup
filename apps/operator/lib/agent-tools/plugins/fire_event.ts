@@ -16,6 +16,10 @@ import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export default defineTool({
   name: 'plugins:fire_event',
+  guidance: {
+    when: 'Synthetically fire a hook event so the registered plugin / role pipelines run their handlers. Useful for replaying / testing event-driven flows.',
+    notWhen: 'For NORMAL flow, events fire from real actions (commit, plan-approved, etc.); only use this when you need to manually trigger them. For listing PENDING events, use `pending_events:list`.',
+  },
   description: 'Fire a free-form plugin event or typed lifecycle hook via the in-process host. Diagnostic — architect/operator only.',
   capability: 'plugins:write',
   requirePrincipal: false,

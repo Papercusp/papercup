@@ -17,6 +17,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:chat_agents',
+  guidance: {
+    when: 'List expert-backed chat agents — the subset of experts that participate in conversational mode (not just batch-fire).',
+    notWhen: 'For ALL chat sessions, use `agent_chats:list`. For all experts, use `experts:list`. chat_agents is the intersection.',
+  },
   description: 'List chatable agents for a harness (static roles + non-terminal expert instances).',
   capability: 'experts:read',
   requirePrincipal: false,

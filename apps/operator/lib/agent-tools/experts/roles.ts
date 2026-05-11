@@ -17,6 +17,10 @@ const ALL_ROLES = [
 
 export default defineTool({
   name: 'experts:roles',
+  guidance: {
+    when: 'Read the set of roles experts are configured for in the harness.',
+    notWhen: 'For ROLES across the workspace, use `roles:list`. experts:roles is the experts subset.',
+  },
   description: 'List registered cross-cutting expert roles for a harness.',
   capability: 'experts:read',
   requirePrincipal: false,
