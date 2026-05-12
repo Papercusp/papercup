@@ -28,7 +28,13 @@
 
 import { NextRequest } from 'next/server';
 import { sseResponse } from '@restart/sse';
-import { runAgentChat } from '@/lib/agent-chat-stream';
+import {
+  dispatchProjectedToolStream,
+  lookupByMcpName,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+// Side-effect: registers operator:converse + the other operator-side tools.
+import '@/lib/agent-tools/index';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
 import { selectHistoryWithinBudget } from '@/lib/operator-converse-history';
@@ -309,7 +315,6 @@ export async function POST(req: NextRequest) {
     signal: req.signal,
     setup: async (sink) => {
       sink.onClose(() => ctrl.abort());
-      const send = (event: string, data: Record<string, unknown>) => sink.event(event, data);
 
       try {
         // Wire the agent-mcp server in, same shape as operator-scan.
@@ -381,32 +386,53 @@ export async function POST(req: NextRequest) {
         const allowedTools: readonly string[] =
           principalOk && superuserToken ? ALL_AGENT_MCP_TOOLS : [];
 
-        const events = runAgentChat({
-          promptText,
-          mcpConfig,
-          allowedTools: [...allowedTools],
-          permissionMode: 'bypassPermissions',
+        const operatorConverseTool = lookupByMcpName('operator:converse');
+        if (!operatorConverseTool) {
+          sink.event('error', { message: 'operator:converse tool not registered' });
+          return;
+        }
+        const ctxBase: UnifiedToolContext = {
+          log: (msg) => { console.log(`[operator:converse][tool] ${msg}`); },
           signal: ctrl.signal,
-        });
+          progress: () => {},
+          emit: () => { /* installed by dispatchProjectedToolStream */ },
+          workspaceId,
+          role: 'operator',
+          runId: `op-converse-${Date.now()}`,
+          spawnId: `op-converse-${Date.now()}`,
+        };
 
         let totalCost = 0;
         let assembled = '';
-        for await (const ev of events) {
+
+        for await (const ev of dispatchProjectedToolStream(
+          operatorConverseTool,
+          'operator:converse',
+          {
+            promptText,
+            mcpConfigJson: mcpConfig ? JSON.stringify(mcpConfig) : '',
+            allowedTools: [...allowedTools],
+          },
+          ctxBase,
+          {},
+        )) {
           if (ctrl.signal.aborted) break;
-          if (ev.type === 'delta') {
-            send('delta', { text: ev.text });
-            assembled += ev.text;
-          } else if (ev.type === 'tool_call') {
-            // Strip the mcp__agentmcp__ prefix to keep the wire format
-            // identical to operator-scan's tool_call events. Sidebar can
-            // render "operator delegated to a worker" inline.
-            const name = ev.name.startsWith('mcp__agentmcp__')
-              ? ev.name.replace(/^mcp__agentmcp__/, '')
-              : ev.name;
-            send('tool_call', { name, input: ev.input });
-          } else if (ev.type === 'result') {
-            totalCost = ev.costUsd ?? 0;
-            void recordSpend(totalCost);
+          if (ev.kind === 'event') {
+            // delta + tool_call are both JSON-shape; forward via sink.event.
+            sink.event(ev.name, ev.data as Record<string, unknown>);
+          } else if (ev.kind === 'done') {
+            try {
+              const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';
+              const out = JSON.parse(text) as { totalCost: number; assembled: string };
+              totalCost = out.totalCost;
+              assembled = out.assembled;
+              void recordSpend(totalCost);
+            } catch (e) {
+              console.warn('[operator-converse] tool result parse failed:', e);
+            }
+          } else if (ev.kind === 'error') {
+            if (!ctrl.signal.aborted) sink.event('error', { message: ev.error.message });
+            return;
           }
         }
 
