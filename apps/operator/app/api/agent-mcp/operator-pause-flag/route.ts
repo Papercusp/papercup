@@ -24,7 +24,7 @@ export async function POST() {
   if (!user) {
     return Response.json({ ok: false, error: 'unauthenticated' }, { status: 401 });
   }
-  await setPaused(user.email);
+  await setPaused(user.username);
   return Response.json({ ok: true, paused: true });
 }
 

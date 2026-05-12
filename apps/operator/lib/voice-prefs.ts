@@ -229,7 +229,6 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
 
 export async function loadVoicePrefs(): Promise<VoicePrefs> {
   const raw = await readOperatorState<Partial<VoicePrefs>>('operator_voice_prefs');
-  if (!raw) return { ...DEFAULT_VOICE_PREFS };
   // Merge with defaults so newly-added fields don't break old rows.
   // EL credit-burn audit concern #3: existing installs whose PG row
   // pre-dates a new field (e.g. agentLanguage, fullAgentSessionMaxMin)
@@ -237,7 +236,27 @@ export async function loadVoicePrefs(): Promise<VoicePrefs> {
   // needed for ADDED fields — only CHANGED defaults of existing fields
   // (concern #6, fullAgentIdleTimeoutMin 5→2) require a one-shot
   // migration if you want to retroactively apply.
-  return mergePrefs(DEFAULT_VOICE_PREFS, raw);
+  const workspace = raw
+    ? mergePrefs(DEFAULT_VOICE_PREFS, raw)
+    : { ...DEFAULT_VOICE_PREFS };
+
+  // Per-user overrides on top of workspace (Plan 4). If no session
+  // user, returns workspace prefs unchanged. User-level overrides only
+  // apply to the specific keys in VOICE_USER_OVERRIDE_KEYS — other
+  // settings (engine, monthly cap, dedup state) stay workspace-scoped.
+  try {
+    const { getSessionUser } = await import('./auth');
+    const { loadUserPreferences, mergeUserOverWorkspace, VOICE_USER_OVERRIDE_KEYS } =
+      await import('./user-preferences');
+    const user = await getSessionUser();
+    if (!user) return workspace;
+    const userPrefs = await loadUserPreferences(user.id);
+    return mergeUserOverWorkspace(workspace, userPrefs, VOICE_USER_OVERRIDE_KEYS);
+  } catch {
+    // Loading user-prefs is best-effort; if cookies aren't available
+    // (background workers, MCP routes) we fall through to workspace.
+    return workspace;
+  }
 }
 
 export async function saveVoicePrefs(patch: Partial<VoicePrefs>): Promise<VoicePrefs> {

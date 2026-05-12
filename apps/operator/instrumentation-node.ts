@@ -87,6 +87,19 @@ export async function register(): Promise<void> {
     console.warn('[voice-prefs-defaults-migrate] non-fatal failure:', err?.message ?? err);
   });
 
+  // Seed the `default` user on first boot. Idempotent. Required so that
+  // routes calling getSessionUserOrDefault() have a user to fall back to
+  // when no session cookie is present (single-user installs). See Plan 4
+  // in PLAN-operator-arc-2026-05-12.md.
+  void (async () => {
+    try {
+      const { ensureDefaultUser } = await import('@/lib/auth');
+      await ensureDefaultUser();
+    } catch (err) {
+      console.warn('[ensure-default-user] non-fatal failure:', (err as Error).message);
+    }
+  })();
+
   // Backup scheduler — per-workspace kopia snapshots on cadence + event.
   // Idempotent: noop if already started in this process. Failures
   // surface in the operator log; backup state is non-critical for
