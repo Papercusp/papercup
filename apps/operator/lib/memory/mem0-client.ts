@@ -211,33 +211,94 @@ async function tryLoad(): Promise<MemoryClient | null> {
     return null;
   }
 
-  // Resolve PG connection string. Transient failures retry next call.
-  let connectionString: string;
+  // Resolve PG connection as discrete fields — mem0's PGVector provider
+  // expects user/password/host/port/dbname, NOT a connectionString.
+  // Transient failures retry next call.
+  let pgFields: { host: string; port: number; user: string; password: string; dbname: string };
   try {
-    const { connectionString: cs } = await import('./mem0-connection');
-    connectionString = await cs();
+    const { pgFields: getFields } = await import('./mem0-connection');
+    pgFields = await getFields();
   } catch (e) {
     warnOnce(`couldn't resolve PG connection: ${(e as Error).message}`);
     return null;
   }
 
-  // Anthropic key for the generative half (fact extraction). PG-first,
-  // env fallback. Recoverable failure — don't poison-cache.
+  // LLM for fact extraction. Cascade: prefer Anthropic Haiku (cheaper)
+  // if a raw API key is available; fall back to OpenAI gpt-4o-mini
+  // when only OpenAI is configured. PG-first, env fallback for both.
+  // Recoverable failure — don't poison-cache.
   let anthropicKey = process.env.ANTHROPIC_API_KEY ?? '';
+  let openaiKey = process.env.OPENAI_API_KEY ?? '';
   try {
     const { readCredentials } = await import('../credentials');
     const creds = await readCredentials();
     if (creds.anthropic_api_key) anthropicKey = creds.anthropic_api_key;
+    if (creds.openai_api_key) openaiKey = creds.openai_api_key;
   } catch {
     /* PG creds unavailable — fall back to env */
   }
-  if (!anthropicKey) {
-    warnOnce('no Anthropic API key in operator-credentials or env (add at /settings/api-keys)');
+
+  let llmConfig: Record<string, unknown>;
+  if (anthropicKey) {
+    llmConfig = {
+      provider: 'anthropic',
+      config: { apiKey: anthropicKey, model: LLM_MODEL },
+    };
+  } else if (openaiKey) {
+    // Slightly more expensive than Haiku 4.5 ($1.50 vs $0.80/M input)
+    // but lets the user run mem0 with just one vendor configured.
+    llmConfig = {
+      provider: 'openai',
+      config: { apiKey: openaiKey, model: 'gpt-4o-mini' },
+    };
+  } else {
+    warnOnce('no Anthropic or OpenAI API key in operator-credentials or env (add at /settings/api-keys)');
     return null;
   }
 
   // Per-mode collection name keeps vector spaces from mixing.
   const collectionName = `${MEM0_COLLECTION_PREFIX}_${resolution.mode}`;
+
+  // Vector-store selection. Prefer pgvector when available; fall back
+  // to mem0's in-process `memory` provider when the PG doesn't ship
+  // the `vector` extension. The in-process store is volatile (lost on
+  // restart) but lets memory:* work end-to-end.
+  let vectorStoreConfig: Record<string, unknown>;
+  try {
+    // Probe: does PG have the vector extension available?
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Client } = require('pg') as typeof import('pg');
+    const probe = new Client({ host: pgFields.host, port: pgFields.port, user: pgFields.user, password: pgFields.password, database: pgFields.dbname });
+    await probe.connect();
+    const r = await probe.query("SELECT 1 FROM pg_available_extensions WHERE name='vector'");
+    await probe.end();
+    if (r.rowCount && r.rowCount > 0) {
+      vectorStoreConfig = {
+        provider: 'pgvector',
+        config: {
+          host: pgFields.host,
+          port: pgFields.port,
+          user: pgFields.user,
+          password: pgFields.password,
+          dbname: pgFields.dbname,
+          collectionName,
+          dimension: EMBEDDER_DIM,
+        },
+      };
+    } else {
+      warnOnce('pgvector extension not available in embedded PG — falling back to in-process memory store (volatile)');
+      vectorStoreConfig = {
+        provider: 'memory',
+        config: { collectionName, dimension: EMBEDDER_DIM },
+      };
+    }
+  } catch (e) {
+    warnOnce(`pgvector probe failed: ${(e as Error).message}; falling back to in-process memory store`);
+    vectorStoreConfig = {
+      provider: 'memory',
+      config: { collectionName, dimension: EMBEDDER_DIM },
+    };
+  }
 
   // Build the embedder config for mem0.
   let embedderConfig: Record<string, unknown>;
@@ -266,21 +327,8 @@ async function tryLoad(): Promise<MemoryClient | null> {
     const { Memory } = await dynamicImport<Mem0Module>(MEM0_PACKAGE);
     _client = new Memory({
       embedder: embedderConfig,
-      vectorStore: {
-        provider: 'pgvector',
-        config: {
-          connectionString,
-          collectionName,
-          dimension: EMBEDDER_DIM,
-        },
-      },
-      llm: {
-        provider: 'anthropic',
-        config: {
-          apiKey: anthropicKey,
-          model: LLM_MODEL,
-        },
-      },
+      vectorStore: vectorStoreConfig,
+      llm: llmConfig,
       historyDbPath: ':memory:',
     });
     _clientMode = resolution.mode;
@@ -313,3 +361,4 @@ export async function getMemoryClient(): Promise<MemoryClient | null> {
 export function getResolvedMode(): ResolvedMode | null {
   return _clientMode;
 }
+

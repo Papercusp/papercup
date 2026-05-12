@@ -139,6 +139,8 @@ export default defineTool({
     }
 
     if (scope.includes('turns')) {
+      // operator_turns has no workspace_id column — it joins through
+      // operator_conversations.workspace_id via the conversation_id FK.
       try {
         const rows = await ctx.tx<{
           id: string;
@@ -146,11 +148,13 @@ export default defineTool({
           text: string;
           rank: number;
         }>`
-          SELECT id, role, text,
-                 ts_rank_cd(text_tsv, plainto_tsquery('english', ${args.query})) AS rank
-            FROM harness_shared.operator_turns
-           WHERE workspace_id = ${ctx.workspaceId}
-             AND text_tsv @@ plainto_tsquery('english', ${args.query})
+          SELECT t.id, t.role, t.text,
+                 ts_rank_cd(t.text_tsv, plainto_tsquery('english', ${args.query})) AS rank
+            FROM harness_shared.operator_turns t
+            JOIN harness_shared.operator_conversations c
+              ON c.id = t.conversation_id
+           WHERE c.workspace_id = ${ctx.workspaceId}
+             AND t.text_tsv @@ plainto_tsquery('english', ${args.query})
         ORDER BY rank DESC
            LIMIT ${limit}
         `;

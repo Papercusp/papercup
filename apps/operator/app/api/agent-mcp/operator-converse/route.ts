@@ -151,9 +151,10 @@ async function buildPrompt(body: ConverseRequestBody, sessionUser: SessionUser |
         // Workspace id for shared-memory filter.
         const { activeWorkspaceId } = await import('@/lib/workspace-registry');
         const ws = activeWorkspaceId();
+        // mem0 v3: user_id lives in `filters`, snake_case.
         const [userHits, sharedHits] = await Promise.all([
-          client.search(recentUserContext, { userId: user.id, limit: 6 }),
-          client.search(recentUserContext, { userId: `workspace:${ws}`, limit: 4 }),
+          client.search(recentUserContext, { filters: { user_id: user.id }, limit: 6 }),
+          client.search(recentUserContext, { filters: { user_id: `workspace:${ws}` }, limit: 4 }),
         ]);
         const combined = [...(userHits.results ?? []), ...(sharedHits.results ?? [])];
         const memText: string[] = [];
@@ -396,6 +397,9 @@ export async function POST(req: NextRequest) {
           if (ev.type === 'delta') {
             send('delta', { text: ev.text });
             assembled += ev.text;
+          } else if (ev.type === 'error') {
+            console.error('[operator-converse] ev error:', ev.message, ev.stderr?.slice(-400));
+            send('delta', { text: `[error: ${ev.message}]` });
           } else if (ev.type === 'tool_call') {
             // Strip the mcp__agentmcp__ prefix to keep the wire format
             // identical to operator-scan's tool_call events. Sidebar can
