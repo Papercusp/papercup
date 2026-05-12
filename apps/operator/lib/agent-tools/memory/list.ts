@@ -48,9 +48,11 @@ export default defineTool({
     }
     const includeShared = args.include_shared !== false;
 
-    const userResults = await client.getAll({ userId: user.id });
+    // mem0 v3 rejects top-level userId on getAll() — use filters.user_id
+    // (snake_case). topK high so the tool list isn't capped at 20.
+    const userResults = await client.getAll({ filters: { user_id: user.id }, topK: 5000 });
     const sharedResults = includeShared
-      ? await client.getAll({ userId: `workspace:${ctx.workspaceId}` })
+      ? await client.getAll({ filters: { user_id: `workspace:${ctx.workspaceId}` }, topK: 5000 })
       : { results: [] as { id: string; memory: string; metadata?: Record<string, unknown> }[] };
 
     let combined = [

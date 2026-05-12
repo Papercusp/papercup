@@ -23,9 +23,13 @@ export async function GET() {
     return NextResponse.json({ results: [], reason: 'mem0_unavailable' });
   }
   const ws = activeWorkspaceId();
+  // mem0 v3 rejects top-level userId on getAll() — must go through
+  // `filters.user_id` (snake_case; camelCase silently doesn't filter
+  // because mem0 reads filters.user_id internally). topK high so
+  // per-user listings aren't capped at mem0's default of 20.
   const [userResults, sharedResults] = await Promise.all([
-    client.getAll({ userId: user.id }),
-    client.getAll({ userId: `workspace:${ws}` }),
+    client.getAll({ filters: { user_id: user.id }, topK: 5000 }),
+    client.getAll({ filters: { user_id: `workspace:${ws}` }, topK: 5000 }),
   ]);
   const combined = [
     ...((userResults.results ?? []).map((r) => ({ ...r, scope: 'user' as const }))),
@@ -50,7 +54,7 @@ export async function DELETE(req: Request) {
   const all = url.searchParams.get('all');
   if (all === '1') {
     // Forget-everything-mine action from /settings/user.
-    const myResults = await client.getAll({ userId: user.id });
+    const myResults = await client.getAll({ filters: { user_id: user.id }, topK: 5000 });
     let n = 0;
     for (const r of myResults.results ?? []) {
       try {

@@ -169,9 +169,10 @@ async function searchMemories(q: string, userId: string, limit: number) {
   if (!client) return [];
   try {
     const ws = activeWorkspaceId();
+    // mem0 v3 rejects top-level userId on search() — use filters.user_id.
     const [userHits, sharedHits] = await Promise.all([
-      client.search(q, { userId, limit }),
-      client.search(q, { userId: `workspace:${ws}`, limit }),
+      client.search(q, { filters: { user_id: userId }, limit }),
+      client.search(q, { filters: { user_id: `workspace:${ws}` }, limit }),
     ]);
     const merged = [
       ...(userHits.results ?? []).map((r) => ({ ...r, scope: 'user' as const })),
