@@ -173,6 +173,21 @@ export interface VoicePrefs {
    */
   agentLanguage: string;
 
+  /**
+   * Embedder choice for the mem0 memory layer (Plan 3).
+   *   'auto'     — prefer OpenAI if key present, else local, else off
+   *   'openai'   — force OpenAI text-embedding-3-small (cheap, fast,
+   *                requires openai_api_key in /settings/api-keys)
+   *   'local'    — force @huggingface/transformers BGE-small (free,
+   *                ~400MB RAM, ~120MB disk; works offline)
+   *   'disabled' — turn memory off entirely (memory:* tools no-op)
+   *
+   * Switching modes uses per-mode collection names in pgvector, so
+   * existing memories aren't corrupted but become "hidden" until you
+   * switch back. See lib/memory/mem0-client.ts.
+   */
+  memoryEmbedderMode: 'auto' | 'openai' | 'local' | 'disabled';
+
   // One-time consents
   webSpeechLeakAcked: boolean;
   kokoroSlowSuggestionDismissed: boolean;
@@ -218,6 +233,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,
   agentLanguage: 'en',
+  memoryEmbedderMode: 'auto',
   webSpeechLeakAcked: false,
   kokoroSlowSuggestionDismissed: false,
   nudgeDedup: {

@@ -110,6 +110,7 @@ export const VOICE_USER_OVERRIDE_KEYS = [
   'speakReceivingFlips',
   'speakCadenceStatus',
   'operatorBackstoryEnabled',
+  'memoryEmbedderMode',
 ] as const;
 
 export type VoiceUserOverrideKey = (typeof VOICE_USER_OVERRIDE_KEYS)[number];

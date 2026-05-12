@@ -74,6 +74,14 @@ const OVERRIDES: readonly OverrideSpec[] = [
     help: 'Announce silence-nudge events via TTS.' },
   { key: 'operatorBackstoryEnabled', kind: 'bool', label: 'Operator backstory enabled',
     help: 'Include the operator persona backstory in the system prompt.' },
+  { key: 'memoryEmbedderMode', kind: 'enum', label: 'Memory embedder',
+    help: 'How mem0 embeds memories for retrieval. Auto prefers OpenAI if you have a key, else local. Local uses ~400MB RAM. Disabled turns memory off entirely.',
+    options: [
+      { value: 'auto', label: 'Auto (recommended) — OpenAI if key, else local' },
+      { value: 'openai', label: 'OpenAI text-embedding-3-small (needs key)' },
+      { value: 'local', label: 'Local @huggingface/transformers (~400MB RAM)' },
+      { value: 'disabled', label: 'Disabled — turn off persistent memory' },
+    ] },
 ] as const;
 
 interface EffectivePrefs {

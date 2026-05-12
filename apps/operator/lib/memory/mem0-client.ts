@@ -3,36 +3,46 @@
  *
  * Plan 3. Backed by mem0ai v3 OSS in library mode:
  *   - storage: pgvector (embedded PG)
- *   - LLM:     Anthropic Haiku 4.5 (cheap fact extraction)
- *   - embedder: @huggingface/transformers BGE-small (local, no API key)
- *
- * NOTE on package choice: originally targeted @xenova/transformers
- * but that package is stuck on sharp@^0.32 which requires
- * old-school node-gyp builds (fails on Node ≥24). Hugging Face
- * officially took over the package as @huggingface/transformers
- * v3+/v4 with the same API + sharp@^0.34 (prebuilt binaries).
- * Same import surface: pipeline('feature-extraction', model_id).
- *
- * Lazy-loaded. The actual mem0ai + transformers modules are heavy
- * (~400MB combined resident memory when loaded). We don't load them
- * until the first .add() or .search() call so cold boot stays fast.
+ *   - LLM:     Anthropic Haiku 4.5 (cheap fact extraction; only generative
+ *              vendor we use — Anthropic does not offer embeddings)
+ *   - embedder: cascade with three modes (configurable via voice-prefs
+ *              `memoryEmbedderMode`):
+ *                openai   — text-embedding-3-small (default; needs key)
+ *                local    — @huggingface/transformers BGE-small (heavy
+ *                           but free; ~400MB RAM, ~120MB disk)
+ *                disabled — memory tools no-op silently
+ *              When mode='auto' (default), resolution order is:
+ *                openai (if key present)
+ *                → local (if package installed)
+ *                → disabled (silent)
  *
  * Per-user scoping: userId = session.user.id (Plan 4 dependency).
- * Workspace-shared memories are stored with metadata.shared: true and
- * filtered in via OR(workspace_id=ws, shared=true) at search time.
+ * Workspace-shared memories: userId = `workspace:<id>`, metadata.shared.
  *
- * Failure mode: if mem0ai isn't installed (npm install pending), all
- * methods return empty arrays / no-op writes. Logs once per process so
- * users notice without spamming.
+ * Vector dimensions are kept at 384 across both embedders so the
+ * pgvector schema is uniform. OpenAI text-embedding-3-small supports
+ * a `dimensions` request parameter that truncates from native 1536 to
+ * 384 with negligible quality loss (per OpenAI's own benchmarks).
+ *
+ * Vector SPACES still differ — a vector from BGE-small and one from
+ * OpenAI aren't comparable even at the same dim count. So we use a
+ * per-mode collection: `operator_memory_openai` vs `operator_memory_local`.
+ * Switching mode "loses" your old memories until you switch back, but
+ * doesn't corrupt either set. A future ship can add re-embed-on-switch
+ * if it becomes a real friction point.
+ *
+ * Failure mode: if a fatal load error occurs (missing npm package),
+ * memory tools return graceful no-ops. Logs once per process per
+ * distinct reason. Recoverable failures (transient PG, missing key the
+ * user can add via /settings/api-keys) DON'T poison-cache, so the next
+ * call retries.
  */
 
-import { getOrgPg } from '@restart/db-org';
-
-const MEM0_COLLECTION = 'operator_memory';
-const EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
 const EMBEDDER_DIM = 384;
+const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
+const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const LLM_MODEL = 'claude-haiku-4-5';
-
+const MEM0_COLLECTION_PREFIX = 'operator_memory';
 
 type MemoryEntry = {
   id: string;
@@ -48,7 +58,7 @@ type MemoryListResult = {
 };
 
 type MemoryClient = {
-  add(content: string, opts: Record<string, unknown>): Promise<unknown>;
+  add(content: string | unknown[], opts: Record<string, unknown>): Promise<unknown>;
   delete(id: string): Promise<unknown>;
   getAll(opts: Record<string, unknown>): Promise<MemoryListResult>;
   search(query: string, opts: Record<string, unknown>): Promise<MemoryListResult>;
@@ -65,6 +75,9 @@ type TransformersModule = {
 
 type Pipeline = (text: string, opts: unknown) => Promise<{ data: Float32Array }>;
 
+type EmbedderMode = 'auto' | 'openai' | 'local' | 'disabled';
+type ResolvedMode = 'openai' | 'local' | 'disabled';
+
 const dynamicImport = new Function(
   'specifier',
   'return import(specifier)',
@@ -72,54 +85,144 @@ const dynamicImport = new Function(
 
 const MEM0_PACKAGE = 'mem0ai/oss';
 const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
+
 let _client: MemoryClient | null = null;
+let _clientMode: ResolvedMode | null = null;
 /**
  * "Permanent" failure cache — only set when the failure is from a
- * truly fixed cause (missing npm package, unparseable config). For
- * recoverable failures (missing Anthropic API key — user can add via
- * /settings/credentials), we do NOT cache so the client retries on
- * the next call.
+ * truly fixed cause (mem0ai npm package missing). For recoverable
+ * failures (missing API key, transient PG hiccup), we do NOT cache
+ * so the next call retries.
  */
 let _clientPermanentFailure = false;
 const _seenWarnReasons = new Set<string>();
 
 function warnOnce(reason: string): void {
-  // Each distinct reason logs once per process. Avoids spamming the
-  // log when many tool calls hit the same missing-key failure but
-  // surfaces a credentials-then-deps double issue clearly.
   if (_seenWarnReasons.has(reason)) return;
   _seenWarnReasons.add(reason);
-  console.warn(`[mem0] not available: ${reason}.`);
+  console.warn(`[mem0] ${reason}.`);
+}
+
+interface EmbedderResolution {
+  mode: ResolvedMode;
+  apiKey?: string;
+  reason?: string;
 }
 
 /**
- * Try to load the mem0 client. Returns null if the dependencies aren't
- * installed or if config can't be assembled.
+ * Pick the actual embedder mode given the user's preference + what
+ * credentials/packages are actually available.
+ *
+ * 'disabled' is a hard stop — never falls back. Auto cascades.
+ */
+async function resolveEmbedder(preference: EmbedderMode): Promise<EmbedderResolution> {
+  if (preference === 'disabled') {
+    return { mode: 'disabled', reason: 'user_disabled' };
+  }
+
+  const tryOpenAi = async (): Promise<EmbedderResolution | null> => {
+    let key = process.env.OPENAI_API_KEY ?? '';
+    try {
+      const { readCredentials } = await import('../credentials');
+      const creds = await readCredentials();
+      if (creds.openai_api_key) key = creds.openai_api_key;
+    } catch {
+      /* PG creds unavailable — fall back to env */
+    }
+    if (!key) return null;
+    return { mode: 'openai', apiKey: key };
+  };
+
+  const tryLocal = async (): Promise<EmbedderResolution | null> => {
+    try {
+      // We don't need to actually load the model here — just resolve
+      // the module path. If the package isn't installed, this throws.
+      await dynamicImport<TransformersModule>(TRANSFORMERS_PACKAGE);
+      return { mode: 'local' };
+    } catch {
+      return null;
+    }
+  };
+
+  if (preference === 'openai') {
+    const openai = await tryOpenAi();
+    if (openai) return openai;
+    return { mode: 'disabled', reason: 'openai_forced_but_no_key' };
+  }
+
+  if (preference === 'local') {
+    const local = await tryLocal();
+    if (local) return local;
+    return { mode: 'disabled', reason: 'local_forced_but_not_installed' };
+  }
+
+  // 'auto' — try openai first, then local, then disabled.
+  const openai = await tryOpenAi();
+  if (openai) return openai;
+  const local = await tryLocal();
+  if (local) return local;
+  return { mode: 'disabled', reason: 'no_openai_key_and_local_not_installed' };
+}
+
+async function readEmbedderPreference(): Promise<EmbedderMode> {
+  try {
+    const { loadVoicePrefs } = await import('../voice-prefs');
+    const prefs = await loadVoicePrefs();
+    const mode = (prefs as Record<string, unknown>).memoryEmbedderMode;
+    if (mode === 'auto' || mode === 'openai' || mode === 'local' || mode === 'disabled') {
+      return mode;
+    }
+  } catch {
+    /* voice-prefs unavailable — fall through to default */
+  }
+  return 'auto';
+}
+
+async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>> {
+  let pipelinePromise: Promise<Pipeline> | null = null;
+
+  return async (text: string): Promise<number[]> => {
+    if (!pipelinePromise) {
+      const transformers = await dynamicImport<TransformersModule>(TRANSFORMERS_PACKAGE);
+      pipelinePromise = transformers.pipeline('feature-extraction', LOCAL_EMBEDDER_MODEL);
+    }
+    const pipe = await pipelinePromise;
+    const result = await pipe(text, { pooling: 'mean', normalize: true });
+    return Array.from(result.data);
+  };
+}
+
+/**
+ * Try to load the mem0 client. Returns null if dependencies aren't
+ * installed, mode is 'disabled', or config can't be assembled.
  */
 async function tryLoad(): Promise<MemoryClient | null> {
   if (_client) return _client;
-  // Permanent failures (deps not installed) skip retries — those won't
-  // resolve mid-process. Recoverable ones (missing API key, transient
-  // PG error) are NOT cached so the next call retries.
   if (_clientPermanentFailure) return null;
 
-  // Resolve the embedded PG connection string the same way every other
-  // module in this app does — via getOrgPg's connection metadata. We
-  // need a raw connection string to hand to pgvector.
+  const preference = await readEmbedderPreference();
+  const resolution = await resolveEmbedder(preference);
+
+  if (resolution.mode === 'disabled') {
+    // Don't cache — user can change preference or add a key any time.
+    if (resolution.reason && resolution.reason !== 'user_disabled') {
+      warnOnce(`embedder unavailable: ${resolution.reason} (set memoryEmbedderMode in /settings/user)`);
+    }
+    return null;
+  }
+
+  // Resolve PG connection string. Transient failures retry next call.
   let connectionString: string;
   try {
     const { connectionString: cs } = await import('./mem0-connection');
     connectionString = await cs();
   } catch (e) {
-    // PG resolution failure is transient (the discovery file may not
-    // be written yet on cold boot). Retry on next call.
     warnOnce(`couldn't resolve PG connection: ${(e as Error).message}`);
     return null;
   }
 
-  // Anthropic API key: PG-first (operator stores in operator_credentials),
-  // env as fallback. A missing key is RECOVERABLE — user can add via
-  // /settings/credentials, so don't poison-cache the failure.
+  // Anthropic key for the generative half (fact extraction). PG-first,
+  // env fallback. Recoverable failure — don't poison-cache.
   let anthropicKey = process.env.ANTHROPIC_API_KEY ?? '';
   try {
     const { readCredentials } = await import('../credentials');
@@ -133,22 +236,41 @@ async function tryLoad(): Promise<MemoryClient | null> {
     return null;
   }
 
-  try {
-    // Dynamic imports so this module can be imported even when the
-    // deps aren't yet installed (build-time + boot-time safety).
-    const { Memory } = await dynamicImport<Mem0Module>(MEM0_PACKAGE);
-    const customEmbedder = await buildLocalEmbedder();
+  // Per-mode collection name keeps vector spaces from mixing.
+  const collectionName = `${MEM0_COLLECTION_PREFIX}_${resolution.mode}`;
 
-    _client = new Memory({
-      embedder: {
-        provider: 'custom',
-        config: { embed: customEmbedder },
+  // Build the embedder config for mem0.
+  let embedderConfig: Record<string, unknown>;
+  if (resolution.mode === 'openai') {
+    embedderConfig = {
+      provider: 'openai',
+      config: {
+        apiKey: resolution.apiKey,
+        model: OPENAI_EMBEDDER_MODEL,
+        // OpenAI's text-embedding-3-small supports the `dimensions`
+        // parameter to truncate from native 1536 → 384, keeping the
+        // pgvector schema uniform between modes.
+        embeddingDims: EMBEDDER_DIM,
       },
+    };
+  } else {
+    // local
+    const customEmbedder = await buildLocalEmbedder();
+    embedderConfig = {
+      provider: 'custom',
+      config: { embed: customEmbedder },
+    };
+  }
+
+  try {
+    const { Memory } = await dynamicImport<Mem0Module>(MEM0_PACKAGE);
+    _client = new Memory({
+      embedder: embedderConfig,
       vectorStore: {
         provider: 'pgvector',
         config: {
           connectionString,
-          collectionName: MEM0_COLLECTION,
+          collectionName,
           dimension: EMBEDDER_DIM,
         },
       },
@@ -161,44 +283,33 @@ async function tryLoad(): Promise<MemoryClient | null> {
       },
       historyDbPath: ':memory:',
     });
-
+    _clientMode = resolution.mode;
     return _client;
   } catch (e) {
-    // The dynamic-import errors here are the permanent class: missing
-    // mem0ai or @huggingface/transformers packages. Those don't resolve
-    // mid-process, so cache.
     const msg = (e as Error).message ?? String(e);
     if (/cannot find module|MODULE_NOT_FOUND|Cannot resolve/i.test(msg)) {
       _clientPermanentFailure = true;
-      warnOnce(`${msg}. Run 'npm install' in apps/operator to enable.`);
+      warnOnce(`${msg}. Run 'npm install --legacy-peer-deps' in apps/operator to enable.`);
     } else {
-      // Unknown failure — retry next call but log it.
+      // Unknown failure — retry next call.
       warnOnce(msg);
     }
     return null;
   }
 }
 
-async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>> {
-  // @huggingface/transformers + ONNX runtime load ~400MB. Singleton per process.
-  type Pipeline = (text: string, opts: unknown) => Promise<{ data: Float32Array }>;
-  let pipelinePromise: Promise<Pipeline> | null = null;
-
-  return async (text: string): Promise<number[]> => {
-    if (!pipelinePromise) {
-      const transformers = await dynamicImport<TransformersModule>(TRANSFORMERS_PACKAGE);
-      pipelinePromise = transformers.pipeline('feature-extraction', EMBEDDER_MODEL);
-    }
-    const pipe = await pipelinePromise;
-    const result = await pipe(text, { pooling: 'mean', normalize: true });
-    return Array.from(result.data);
-  };
-}
-
 /**
- * Returns the mem0 client OR null if dependencies aren't installed
- * or PG isn't reachable. Callers handle the null case as a no-op.
+ * Returns the mem0 client OR null if dependencies aren't installed,
+ * the user disabled memory, or PG isn't reachable. Callers handle the
+ * null case as a no-op.
  */
 export async function getMemoryClient(): Promise<MemoryClient | null> {
   return tryLoad();
+}
+
+/**
+ * Inspection helper for the settings UI / status displays.
+ */
+export function getResolvedMode(): ResolvedMode | null {
+  return _clientMode;
 }
