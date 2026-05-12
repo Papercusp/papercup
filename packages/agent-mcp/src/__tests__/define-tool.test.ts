@@ -178,3 +178,70 @@ describe('tierFor', () => {
     expect(tierFor('frob:nicate')).toBe('medium');
   });
 });
+
+import { lookupByMcpName, _resetProjectionRegistryForTests } from '../tool-projection';
+
+describe('JSON schema flattening for OpenAI compat', () => {
+  beforeEach(() => {
+    _resetCatalogForTests();
+    _resetProjectionRegistryForTests();
+  });
+
+  it('plain z.object schemas pass through with type:object', () => {
+    defineTool({
+      name: 'test:plain',
+      capability: 'test:read',
+      args: z.object({ name: z.string() }),
+      async handler() { return { data: { ok: true } }; },
+    });
+    const t = lookupByMcpName('test:plain');
+    expect(t).toBeTruthy();
+    expect(t!.inputSchema.type).toBe('object');
+    expect((t!.inputSchema as Record<string, unknown>).oneOf).toBeUndefined();
+    expect((t!.inputSchema as Record<string, unknown>).anyOf).toBeUndefined();
+  });
+
+  it('discriminatedUnion flattens to a single object with merged properties', () => {
+    defineTool({
+      name: 'test:union',
+      capability: 'test:read',
+      args: z.discriminatedUnion('op', [
+        z.object({ op: z.literal('peek') }),
+        z.object({ op: z.literal('push'), data: z.string() }),
+      ]),
+      async handler() { return { data: { ok: true } }; },
+    });
+    const t = lookupByMcpName('test:union');
+    expect(t).toBeTruthy();
+    const s = t!.inputSchema as Record<string, unknown>;
+    expect(s.type).toBe('object');
+    expect(s.oneOf).toBeUndefined();
+    expect(s.anyOf).toBeUndefined();
+    const props = s.properties as Record<string, unknown>;
+    expect(props.op).toBeTruthy();
+    expect(props.data).toBeTruthy();
+    expect((s.required as string[]).includes('op')).toBe(true);
+    expect((s.required as string[] | undefined)?.includes('data') ?? false).toBe(false);
+  });
+
+  it('z.union flattens like discriminatedUnion', () => {
+    defineTool({
+      name: 'test:plain_union',
+      capability: 'test:read',
+      args: z.union([
+        z.object({ kind: z.literal('a'), foo: z.string() }),
+        z.object({ kind: z.literal('b'), bar: z.number() }),
+      ]),
+      async handler() { return { data: { ok: true } }; },
+    });
+    const t = lookupByMcpName('test:plain_union');
+    expect(t).toBeTruthy();
+    const s = t!.inputSchema as Record<string, unknown>;
+    expect(s.type).toBe('object');
+    expect(s.oneOf).toBeUndefined();
+    expect(s.anyOf).toBeUndefined();
+    const props = s.properties as Record<string, unknown>;
+    expect(props.foo).toBeTruthy();
+    expect(props.bar).toBeTruthy();
+  });
+});
