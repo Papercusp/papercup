@@ -400,9 +400,15 @@ export default function OperatorSettingsPage() {
         <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginBottom: 8 }}>
           Tier rules, schema, and anti-patterns. Ships with the substrate; cannot be edited here.
         </p>
-        <pre style={{ background: 'rgba(0,0,0,0.04)', padding: 12, borderRadius: 6, fontSize: 12, whiteSpace: 'pre-wrap', maxHeight: 280, overflow: 'auto' }}>
-          {cfg?.substrate_prompt}
-        </pre>
+        <div style={{ height: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
+          <SettingsMarkdownEditor
+            value={cfg?.substrate_prompt ?? ''}
+            readOnly
+            mode="ir"
+            minHeight={280}
+            height={320}
+          />
+        </div>
       </section>
     </div>
   );

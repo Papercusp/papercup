@@ -13,8 +13,16 @@ const SETTINGS_MARKDOWN_TOOLBAR = [
   'edit-mode', 'preview', 'export',
 ] satisfies MarkdownEditorToolbar;
 
+const EMPTY_TOOLBAR = [] satisfies MarkdownEditorToolbar;
+
 type SettingsMarkdownEditorProps = Omit<MarkdownEditorProps, 'outline' | 'toolbar'>;
 
 export function SettingsMarkdownEditor(props: SettingsMarkdownEditorProps) {
-  return <MarkdownEditor {...props} outline={false} toolbar={SETTINGS_MARKDOWN_TOOLBAR} />;
+  return (
+    <MarkdownEditor
+      {...props}
+      outline={false}
+      toolbar={props.readOnly ? EMPTY_TOOLBAR : SETTINGS_MARKDOWN_TOOLBAR}
+    />
+  );
 }
