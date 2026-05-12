@@ -430,29 +430,49 @@ function safeParseClaims(raw: unknown): string[] | undefined {
 const TOP_COLLAPSE_BUTTON_WIDTH = 168;
 const TOP_COLLAPSE_BUTTON_HEIGHT = 22;
 
-interface TopCollapsePanelPlacement {
+interface TopCollapseGapPlacement {
   left: number;
   top: number;
 }
 
-function measureTopCollapsePanelPlacement(): TopCollapsePanelPlacement | null {
-  if (typeof document === 'undefined' || typeof window === 'undefined') return null;
-  const panel = document.querySelector<HTMLElement>('.h-dashboard-left-pane');
-  if (!panel) return null;
+function firstVisibleRect(...selectors: string[]): DOMRect | null {
+  if (typeof document === 'undefined') return null;
+  for (const selector of selectors) {
+    for (const element of document.querySelectorAll<HTMLElement>(selector)) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) return rect;
+    }
+  }
+  return null;
+}
 
-  const rect = panel.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function measureTopCollapseGapPlacement(): TopCollapseGapPlacement | null {
+  if (typeof window === 'undefined') return null;
+
+  const tabsRect = firstVisibleRect('.h-tabs.h-main-tabs');
+  const targetRect = firstVisibleRect(
+    '.h-feature-queue-panel',
+    '.h-dashboard-panel-anchor[data-dashboard-panel="features"]',
+    '.h-dashboard-grid',
+  );
+  if (!targetRect) return null;
 
   const buttonHalf = window.innerWidth <= 720 ? 78 : TOP_COLLAPSE_BUTTON_WIDTH / 2;
-  const minLeft = buttonHalf + 8;
-  const maxLeft = window.innerWidth - buttonHalf - 8;
-  const panelCenter = rect.left + rect.width / 2;
-  const left = Math.round(Math.min(Math.max(panelCenter, minLeft), maxLeft));
+  const targetCenter = targetRect.left + targetRect.width / 2;
+  const left = Math.round(clamp(targetCenter, buttonHalf + 8, window.innerWidth - buttonHalf - 8));
 
-  const minTop = 48;
-  const maxTop = window.innerHeight - TOP_COLLAPSE_BUTTON_HEIGHT - 8;
-  const panelTop = rect.top + 4;
-  const top = Math.round(Math.min(Math.max(panelTop, minTop), maxTop));
+  const gapCenter = tabsRect && targetRect.top > tabsRect.bottom
+    ? (tabsRect.bottom + targetRect.top) / 2
+    : targetRect.top;
+  const top = Math.round(clamp(
+    gapCenter - TOP_COLLAPSE_BUTTON_HEIGHT / 2,
+    8,
+    window.innerHeight - TOP_COLLAPSE_BUTTON_HEIGHT - 8,
+  ));
 
   return { left, top };
 }
@@ -473,18 +493,18 @@ function CollapseTopSectionPortalButton({
   onToggle: () => void;
 }): JSX.Element | null {
   const [mounted, setMounted] = useState(false);
-  const [panelPlacement, setPanelPlacement] = useState<TopCollapsePanelPlacement | null>(null);
+  const [gapPlacement, setGapPlacement] = useState<TopCollapseGapPlacement | null>(null);
 
   useEffect(() => { setMounted(true); }, []);
   useLayoutEffect(() => {
     if (!mounted || !collapsed) {
-      setPanelPlacement(null);
+      setGapPlacement(null);
       return;
     }
 
     const measure = () => {
-      const next = measureTopCollapsePanelPlacement();
-      setPanelPlacement((current) => (
+      const next = measureTopCollapseGapPlacement();
+      setGapPlacement((current) => (
         current?.left === next?.left && current?.top === next?.top ? current : next
       ));
     };
@@ -494,7 +514,7 @@ function CollapseTopSectionPortalButton({
 
     const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
     if (observer) {
-      document.querySelectorAll<HTMLElement>('.h-dashboard-left-pane, .h-dashboard-grid')
+      document.querySelectorAll<HTMLElement>('.h-tabs.h-main-tabs, .h-feature-queue-panel, .h-dashboard-grid')
         .forEach((el) => observer.observe(el));
     }
 
@@ -511,10 +531,10 @@ function CollapseTopSectionPortalButton({
   const titleText = collapsed
     ? 'Restore the top header section'
     : 'Collapse the top header section to free vertical space';
-  const buttonStyle: CSSProperties | undefined = collapsed && panelPlacement !== null
+  const buttonStyle: CSSProperties | undefined = collapsed && gapPlacement !== null
     ? ({
-        '--h-top-collapse-panel-left': `${panelPlacement.left}px`,
-        '--h-top-collapse-panel-top': `${panelPlacement.top}px`,
+        '--h-top-collapse-gap-left': `${gapPlacement.left}px`,
+        '--h-top-collapse-gap-top': `${gapPlacement.top}px`,
       } as CSSProperties)
     : undefined;
   return createPortal(
