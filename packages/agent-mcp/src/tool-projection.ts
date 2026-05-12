@@ -18,7 +18,7 @@
  * Spec: apps/operator/docs/plugin-mcp-host-design.md.
  */
 
-import type { ZodTypeAny } from 'zod';
+import { z, type ZodTypeAny } from 'zod';
 import type {
   AgentRole,
   Capability,
@@ -389,11 +389,45 @@ export function listAllProjectedTools(): readonly ProjectedTool[] {
  * MCP-protocol tool listings, optionally filtered by calling role.
  * Returns only tools with `expose.mcp` set; tools that are HTTP-only are
  * invisible to the agent.
+ *
+ * The `events` field surfaces the tool's typed event vocabulary as
+ * JSON-Schema entries — discoverable by any MCP client. This is the
+ * Papercusp MCP extension that lets clients render typed event streams
+ * (deltas, suggestions, etc.) without out-of-band knowledge of each
+ * tool. Standard MCP clients that don't know about this field simply
+ * ignore it.
  */
 export interface McpToolListing {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Map of event-name → JSON-Schema. Absent when the tool declares no events. */
+  events?: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * Memoise the JSON-Schema serialization per ProjectedTool reference.
+ * Same `events` object identity means same serialized output, so the
+ * weak-keyed cache avoids re-running `z.toJSONSchema` on every
+ * `tools/list` call.
+ */
+const EVENTS_JSON_CACHE = new WeakMap<EventsSchema, Record<string, Record<string, unknown>>>();
+
+function serializeEventsSchema(events: EventsSchema): Record<string, Record<string, unknown>> {
+  const cached = EVENTS_JSON_CACHE.get(events);
+  if (cached) return cached;
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [name, schema] of Object.entries(events)) {
+    // Zod 4: use built-in z.toJSONSchema (zod-to-json-schema@3 returns
+    // empty schemas on zod 4 — same reason define-tool uses this path).
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json = (z as any).toJSONSchema(schema) as Record<string, unknown>;
+    // Drop $schema — MCP clients don't need it and it's noise in tools/list.
+    delete json.$schema;
+    out[name] = json;
+  }
+  EVENTS_JSON_CACHE.set(events, out);
+  return out;
 }
 
 export function listMcpProjections(role?: AgentRole): McpToolListing[] {
@@ -401,11 +435,15 @@ export function listMcpProjections(role?: AgentRole): McpToolListing[] {
   for (const tool of REGISTRY.values()) {
     if (!tool.expose.mcp) continue;
     if (role && tool.roles && !tool.roles.includes(role)) continue;
-    out.push({
+    const listing: McpToolListing = {
       name: tool.expose.mcp.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
-    });
+    };
+    if (tool.events && Object.keys(tool.events).length > 0) {
+      listing.events = serializeEventsSchema(tool.events);
+    }
+    out.push(listing);
   }
   return out;
 }

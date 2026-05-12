@@ -3,6 +3,7 @@
  * Run with: npx vitest run packages/agent-mcp/src/tool-projection.test.ts
  */
 import { afterEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   registerProjectedTool,
   lookupByMcpName,
@@ -115,7 +116,7 @@ describe('listMcpProjections', () => {
     expect(workerView).toEqual(['a.worker', 'c.any']);
   });
 
-  it('exposes name + description + inputSchema only', () => {
+  it('exposes name + description + inputSchema only when events is absent', () => {
     registerProjectedTool(baseTool({
       description: 'desc x',
       inputSchema: { type: 'object', properties: { foo: { type: 'string' } } },
@@ -130,5 +131,40 @@ describe('listMcpProjections', () => {
     });
     // capabilities, roles, etc. NOT exposed in listing — agents see only the contract.
     expect((list[0] as Record<string, unknown>).capabilities).toBeUndefined();
+    expect((list[0] as Record<string, unknown>).events).toBeUndefined();
+  });
+
+  it('surfaces events schemas as JSON-Schema when the tool declares them', () => {
+    registerProjectedTool(baseTool({
+      description: 'streamy tool',
+      expose: { mcp: { name: 's.tool' } },
+      events: {
+        delta: z.object({ text: z.string() }),
+        cost: z.object({ usd: z.number() }),
+      },
+    }));
+    const list = listMcpProjections();
+    expect(list[0]?.events).toBeDefined();
+    expect(Object.keys(list[0]!.events!).sort()).toEqual(['cost', 'delta']);
+    // JSON-Schema shape — each event has type:object + properties.
+    expect(list[0]!.events!.delta).toMatchObject({
+      type: 'object',
+      properties: { text: { type: 'string' } },
+    });
+    expect(list[0]!.events!.cost).toMatchObject({
+      type: 'object',
+      properties: { usd: { type: 'number' } },
+    });
+    // $schema is stripped — clients don't need the metadata.
+    expect((list[0]!.events!.delta as Record<string, unknown>).$schema).toBeUndefined();
+  });
+
+  it('omits events field when declared schema is empty', () => {
+    registerProjectedTool(baseTool({
+      expose: { mcp: { name: 's.empty' } },
+      events: {}, // declared but empty
+    }));
+    const list = listMcpProjections();
+    expect(list[0]?.events).toBeUndefined();
   });
 });
