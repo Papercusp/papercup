@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 
 interface Entry {
   id: string;
@@ -24,7 +25,11 @@ export default function AuditTab({ workspaceIds }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hours, setHours] = useState(24);
+  const [hoursParam, setHoursParam] = useQueryState(
+    'auditHours',
+    parseAsStringEnum(['1', '6', '24', '168', '720']).withDefault('24'),
+  );
+  const hours = Number(hoursParam);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,8 +71,8 @@ export default function AuditTab({ workspaceIds }: Props) {
         <label className="pc-dev-muted">
           window
           <select
-            value={hours}
-            onChange={(e) => setHours(Number(e.target.value))}
+            value={hoursParam}
+            onChange={(e) => setHoursParam(e.target.value as '1' | '6' | '24' | '168' | '720')}
             className="pc-dev-input pc-dev-input-inline"
           >
             <option value={1}>1h</option>

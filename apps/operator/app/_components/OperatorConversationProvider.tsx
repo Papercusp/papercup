@@ -74,11 +74,17 @@ interface OperatorTurnRow {
 
 // ─── State + actions ────────────────────────────────────────────────────
 
+// 2026-05-11 redesign: replaced the 3-rung ladder (silence_nudge →
+// silence_check → quiet_wait) with a single-nudge model. The ladder
+// generated "Still with me?" spam that annoyed users; the new model:
+//   - awaiting_reply: assistant just asked something — arm ONE 30s nudge
+//   - nudged: nudge fired — silent forever until user speaks or says "ready"
+//   - quiet_wait: legacy state kept only for the "say ready" banner UX
 type SubState =
   | 'ready'
   | 'generating'
-  | 'silence_nudge'
-  | 'silence_check'
+  | 'awaiting_reply'
+  | 'nudged'
   | 'quiet_wait'
   | 'passive_idle';
 
@@ -389,10 +395,43 @@ export function userDismissesOperator(text: string): boolean {
 
 // ─── Silence-timer config ───────────────────────────────────────────────
 
-// 10s nudge / 30s check / 30s quiet_wait — matches operator.converse.md.
-const SILENCE_NUDGE_MS = 10_000;
-const SILENCE_CHECK_MS = 30_000;
-const SILENCE_QUIET_WAIT_MS = 30_000;
+/**
+ * Detect whether an assistant turn is awaiting a user reply. Used by
+ * the silence-timer effect: nudges only fire when the operator actually
+ * asked something. If the operator just answered a question and didn't
+ * pose one back, we stay silent indefinitely — no "still with me?"
+ * spam.
+ *
+ * Rules:
+ *   - Trimmed text ends with '?' → awaits
+ *   - Used chat:ask_choice → awaits (definitionally)
+ *   - Otherwise → does NOT await
+ */
+export function detectAwaitingReply(
+  say: string | null | undefined,
+  tools?: ReadonlyArray<{ name?: string }> | null,
+): boolean {
+  if (tools && tools.some((t) => t?.name === 'chat:ask_choice')) return true;
+  if (!say) return false;
+  const trimmed = say.trim().replace(/[*_`~]+$/g, '');
+  return trimmed.endsWith('?');
+}
+
+/**
+ * Detect a "ready"-style user utterance. Triggers a `user_says_ready`
+ * generation that surfaces 2-3 concrete suggestions instead of waiting
+ * for the user to specify what they want. Compromise between
+ * "operator pesters" and "user must be explicit".
+ */
+const USER_READY_RE = /^\s*(ready|next|what's next\??|whats next\??|what now\??|go|continue|keep going|let's go|lets go|resume|what should i (do|work on)( next)?\??)\s*[.!?]*\s*$/i;
+export function detectUserReadyTrigger(text: string): boolean {
+  return USER_READY_RE.test(text);
+}
+
+// 2026-05-11 redesign — single 30s nudge after an assistant question.
+// No further escalation; after the nudge fires the conversation stays
+// quiet until the user types/speaks (or says "ready" to get suggestions).
+const SILENCE_AFTER_QUESTION_MS = 30_000;
 
 // ─── Generation transport ───────────────────────────────────────────────
 
@@ -402,10 +441,10 @@ export interface GenerationRequest {
   /** Why we're calling — fed to the prompt as context. */
   trigger:
     | 'user_message'
-    | 'silence_nudge'
-    | 'silence_check'
+    | 'silence_after_question'
     | 'quiet_wait_resume'
-    | 'open_canvas';
+    | 'open_canvas'
+    | 'user_says_ready';
   /** True when we're allowed to ask "want active?" this turn. */
   mayAskActive: boolean;
   /** AbortSignal for cancellation (e.g. mode flip mid-generation). */
@@ -1082,22 +1121,25 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           return;
         }
 
-        // End-of-turn sub-state depends on the trigger so the silence
-        // ladder escalates correctly:
-        //   user_message / quiet_wait_resume → ready (10s timer to nudge)
-        //   silence_nudge                    → silence_nudge (30s timer to check)
-        //   silence_check                    → silence_check (30s timer to quiet_wait)
-        // Without this trigger-aware end state, every silence turn would
-        // bounce back to 'ready' and the next 10s timer would fire ANOTHER
-        // nudge instead of escalating to the check.
-        const endSub: SubState =
-          stateRef.current.mode === 'passive'
-            ? 'passive_idle'
-            : trigger === 'silence_nudge'
-              ? 'silence_nudge'
-              : trigger === 'silence_check'
-                ? 'silence_check'
-                : 'ready';
+        // End-of-turn sub-state (2026-05-11 redesign):
+        //   silence_after_question → 'nudged' — terminal silence, no more
+        //     escalation. The user must speak / type / say "ready" to
+        //     re-engage.
+        //   user_message / open_canvas / user_says_ready / quiet_wait_resume:
+        //     If the assistant's reply awaits a response (parsed say
+        //     ends with '?' or used chat:ask_choice), → 'awaiting_reply'
+        //     (arms ONE 30s nudge). Otherwise → 'ready' (no timer).
+        const awaitingReply = detectAwaitingReply(parsed.say, parsed.tools);
+        let endSub: SubState;
+        if (stateRef.current.mode === 'passive') {
+          endSub = 'passive_idle';
+        } else if (trigger === 'silence_after_question') {
+          endSub = 'nudged';
+        } else if (awaitingReply) {
+          endSub = 'awaiting_reply';
+        } else {
+          endSub = 'ready';
+        }
         dispatch({ type: 'set_sub', sub: endSub });
       } catch (err) {
         if (ctrl.signal.aborted) return;
@@ -1187,15 +1229,17 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     if (sleepUntilMs > Date.now()) return; // operator self-quieted via <sleep> tag
     const sinceLast = Date.now() - state.lastTurnAtMs;
     if (state.lastTurnAtMs === 0 || sinceLast > SILENCE_FRESHNESS_MS) return;
+    // New ladder: ONLY arm a nudge when the last assistant turn was
+    // explicitly awaiting a reply. After the nudge fires, transition to
+    // 'nudged' and stay quiet — no further escalation, no "still with me?"
+    // spam. The user can say "ready" / "next" to re-engage with
+    // suggestions, or just type what they want.
     let timer: ReturnType<typeof setTimeout> | null = null;
-    if (state.sub === 'ready') {
-      const wait = Math.max(0, (SILENCE_NUDGE_MS * errorMul) - sinceLast);
-      timer = setTimeout(() => void runGeneration('silence_nudge'), wait);
-    } else if (state.sub === 'silence_nudge') {
-      timer = setTimeout(() => void runGeneration('silence_check'), SILENCE_CHECK_MS * errorMul);
-    } else if (state.sub === 'silence_check') {
-      timer = setTimeout(() => dispatch({ type: 'set_sub', sub: 'quiet_wait' }), SILENCE_QUIET_WAIT_MS);
+    if (state.sub === 'awaiting_reply') {
+      const wait = Math.max(0, (SILENCE_AFTER_QUESTION_MS * errorMul) - sinceLast);
+      timer = setTimeout(() => void runGeneration('silence_after_question'), wait);
     }
+    // 'ready' and 'nudged' are quiet states — no timer.
     return () => { if (timer) clearTimeout(timer); };
   }, [state.mode, state.sub, state.lastTurnAtMs, errorMul, runGeneration, voiceActive, sleepUntilMs]);
 
@@ -1244,9 +1288,21 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         dispatch({ type: 'record_want_active_declined', tsMs: nowMs });
       }
       persistTurn('user', trimmed, 'text_typed', optimisticId);
-      // quiet_wait → user re-engaged; resume from the thread.
-      const trigger: GenerationRequest['trigger'] =
-        stateRef.current.sub === 'quiet_wait' ? 'quiet_wait_resume' : 'user_message';
+      // Trigger resolution (priority order):
+      //   - "ready"-style utterance → user_says_ready (surfaces 2-3
+      //     concrete suggestions from workspace inventory)
+      //   - was in quiet_wait/nudged → quiet_wait_resume (reference
+      //     where we left off)
+      //   - otherwise → user_message (default)
+      let trigger: GenerationRequest['trigger'] = 'user_message';
+      if (detectUserReadyTrigger(trimmed)) {
+        trigger = 'user_says_ready';
+      } else if (
+        stateRef.current.sub === 'quiet_wait'
+        || stateRef.current.sub === 'nudged'
+      ) {
+        trigger = 'quiet_wait_resume';
+      }
       // Pass the explicit history including the just-dispatched user
       // turn so the model sees what the user actually said. State hasn't
       // committed yet on this tick; reading state.messages would miss it.

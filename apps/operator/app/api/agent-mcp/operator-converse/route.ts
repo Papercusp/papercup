@@ -6,7 +6,7 @@
  * Request body:
  *   {
  *     messages: [{ role: 'user'|'assistant'|'system', content }],
- *     trigger:  'user_message' | 'silence_nudge' | 'silence_check' | 'quiet_wait_resume' | 'open_canvas',
+ *     trigger:  'user_message' | 'silence_after_question' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready',
  *     mayAskActive: boolean,
  *   }
  *
@@ -47,7 +47,7 @@ export const runtime = 'nodejs';
 
 interface ConverseRequestBody {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
-  trigger?: 'user_message' | 'silence_nudge' | 'silence_check' | 'quiet_wait_resume' | 'open_canvas';
+  trigger?: 'user_message' | 'silence_after_question' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready';
   mayAskActive?: boolean;
   /**
    * UI client id of the originating browser tab. The chat surface
@@ -133,10 +133,10 @@ async function buildPrompt(body: ConverseRequestBody): Promise<string> {
   // message, a self-fired silence nudge, or a quiet-wait resume.
   const triggerLines: Record<NonNullable<ConverseRequestBody['trigger']>, string> = {
     user_message: 'Trigger: user_message — the user just said something. React per the ladder.',
-    silence_nudge: 'Trigger: silence_nudge — the user has been silent ~10s. Say a brief silence prompt ("Still with me?", etc). Do not repeat your previous question.',
-    silence_check: 'Trigger: silence_check — the user has been silent ~30s after your nudge. Ask once: "Do you want me to go into passive mode?". Do not self-flip.',
+    silence_after_question: 'Trigger: silence_after_question — you asked the user something and they did not reply within 30s. Write ONE brief context-specific follow-up that references WHAT you were waiting to hear back on (e.g. "Still want me to dispatch the architect for that?" not "Still with me?"). After this nudge, the system will NOT prompt again. Keep it under 15 words.',
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
     open_canvas: 'Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ONE concrete observed fact + ONE concrete invitation. NEVER a generic greeting like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — those are forbidden openers. Read the workspace inventory above (harness counts, recent activity, escalations, last scan) and pick the most useful concrete thing the user can act on. If the inventory shows nothing, say so concretely and offer a setup action ("Nothing set up here yet. Want to create your first harness?"). Keep it warm and short — 1-2 sentences total.',
+    user_says_ready: 'Trigger: user_says_ready — the user signaled they want suggestions ("ready", "next", "what now?", "go"). Read the workspace inventory above and offer 2-3 concrete things they could work on right now, drawn from the actual harness state. Format as a brief bulleted-or-numbered list. NO generic greeting; NO open question at the end — the user already asked for suggestions, deliver them.',
   };
   sections.push(`## Trigger\n\n${triggerLines[trigger]}`);
 

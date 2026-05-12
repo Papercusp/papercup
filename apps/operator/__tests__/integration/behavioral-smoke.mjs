@@ -121,7 +121,34 @@ async function operatorIsReachable() {
   }
 }
 
+// Tool-gated smokes: ask questions that ONLY a tool call can answer.
+// Each prompt includes a fixture marker word that the brain can only
+// know by calling the correct tool. The fixture lives at
+// ~/.papercusp/harnesses/smoke-fixture/. Run behavioral-smoke-fixture.mjs
+// setup first.
+import { FIXTURE_INFO } from './behavioral-smoke-fixture.mjs';
+
+const TOOL_GATED_SMOKES = [
+  {
+    name: 'asking for escalation contents triggers harness:escalation',
+    request: `read the escalation file for the harness ${FIXTURE_INFO.slug} and report the exact unique marker word it contains. Use a tool — do not guess.`,
+    accept: ['harness:escalation', 'harness_escalation'],
+    requiresMarker: FIXTURE_INFO.escalationMarker,
+    reject: [],
+    rejectReason: '',
+  },
+  {
+    name: 'asking for supervisor-notes triggers harness:escalation',
+    request: `what does the supervisor-notes file say for harness ${FIXTURE_INFO.slug}? Quote the marker word from the file.`,
+    accept: ['harness:escalation', 'harness_escalation'],
+    requiresMarker: FIXTURE_INFO.supervisorMarker,
+    reject: [],
+    rejectReason: '',
+  },
+];
+
 const SMOKES = [
+  ...TOOL_GATED_SMOKES,
   {
     name: 'scanner picks issues:list for "any open issues?"',
     request: 'are there any open issues anywhere in this workspace?',
@@ -178,6 +205,26 @@ async function main() {
 
     const accepted = smoke.accept.some((a) => names.includes(a));
     const rejected = smoke.reject.some((r) => names.includes(r));
+
+    // Tool-gated smoke: the response text MUST contain the fixture
+    // marker. If it does, the tool definitely ran; if it doesn't, the
+    // brain either skipped the tool or hallucinated. Marker-presence
+    // is a stronger signal than tool_call event presence.
+    if (smoke.requiresMarker) {
+      const markerSeen = result.text.includes(smoke.requiresMarker);
+      if (markerSeen && accepted) {
+        ok(`${smoke.name} (marker + tool call both present)`);
+      } else if (markerSeen) {
+        ok(`${smoke.name} (marker present — tool call may have streamed elsewhere)`);
+      } else if (accepted) {
+        bad(smoke.name, `→ tool called but marker '${smoke.requiresMarker}' not in response text — degraded tool output?`);
+      } else {
+        bad(smoke.name, `→ marker '${smoke.requiresMarker}' missing and ${smoke.accept[0]} not called. Brain skipped the fixture.`);
+      }
+      console.log('');
+      continue;
+    }
+
     if (rejected) {
       bad(smoke.name, `→ called a rejected tool: ${smoke.reject.find((r) => names.includes(r))}. ${smoke.rejectReason}`);
     } else if (accepted) {

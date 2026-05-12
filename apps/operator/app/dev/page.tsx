@@ -8,8 +8,8 @@
  */
 'use client';
 
-import { Suspense, useCallback, useState } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { Suspense, useCallback, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import dynamic from 'next/dynamic';
 import WorkspacePicker from './_components/WorkspacePicker';
 import RightRail from './_components/RightRail';
@@ -39,19 +39,36 @@ const BackupsTab = dynamic(() => import('./_components/BackupsTab'), { ssr: fals
 
 type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'sql' | 'studio' | 'backups';
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: 'harnesses', label: 'Harnesses' },
-  { id: 'api', label: 'API' },
-  { id: 'sessions', label: 'Sessions' },
-  { id: 'telemetry', label: 'Telemetry' },
-  { id: 'audit', label: 'Audit' },
-  { id: 'pg', label: 'PG' },
-  { id: 'processes', label: 'Processes' },
-  { id: 'tables', label: 'Tables' },
-  { id: 'sql', label: 'SQL' },
-  { id: 'studio', label: 'Drizzle Studio' },
-  { id: 'backups', label: 'Backups' },
+const TAB_GROUPS: Array<{ label: string; tabs: Array<{ id: TabId; label: string; hint: string }> }> = [
+  {
+    label: 'Operate',
+    tabs: [
+      { id: 'api', label: 'API', hint: 'invoke tools' },
+      { id: 'harnesses', label: 'Harnesses', hint: 'health matrix' },
+      { id: 'sessions', label: 'Sessions', hint: 'spawn drilldown' },
+      { id: 'telemetry', label: 'Telemetry', hint: 'latency + errors' },
+      { id: 'audit', label: 'Audit', hint: 'operator log' },
+    ],
+  },
+  {
+    label: 'Data',
+    tabs: [
+      { id: 'tables', label: 'Tables', hint: 'schema + rows' },
+      { id: 'sql', label: 'SQL', hint: 'read-only query' },
+      { id: 'pg', label: 'PG', hint: 'connections' },
+      { id: 'studio', label: 'Drizzle Studio', hint: 'embedded db UI' },
+    ],
+  },
+  {
+    label: 'Runtime',
+    tabs: [
+      { id: 'processes', label: 'Processes', hint: 'local pids' },
+      { id: 'backups', label: 'Backups', hint: 'kopia + restore' },
+    ],
+  },
 ];
+
+const DENSE_TABS = new Set<TabId>(['tables', 'sql', 'studio', 'backups']);
 
 export default function DevPage() {
   // Top-level /dev tab — URL-backed so agents can read it via ui:get_state
@@ -62,39 +79,69 @@ export default function DevPage() {
     'tab',
     parseAsStringEnum<TabId>([
       'harnesses', 'api', 'sessions', 'telemetry', 'audit',
-      'pg', 'processes', 'tables', 'studio', 'backups',
+      'pg', 'processes', 'tables', 'sql', 'studio', 'backups',
     ]).withDefault('api'),
   );
-  // null = all workspaces; otherwise specific ids
-  const [workspaceIds, setWorkspaceIds] = useState<string[] | null>(null);
+  // null = all workspaces; otherwise specific ids. URL-backed because it is
+  // meaningful filter state for agents and deep-links.
+  const [workspaceParam, setWorkspaceParam] = useQueryState(
+    'devWs',
+    parseAsString.withDefault('*'),
+  );
+  const workspaceIds = useMemo(() => {
+    if (workspaceParam === '*') return null;
+    if (workspaceParam === '') return [];
+    return workspaceParam.split(',').map((id) => id.trim()).filter(Boolean);
+  }, [workspaceParam]);
+  const setWorkspaceIds = useCallback((ids: string[] | null) => {
+    setWorkspaceParam(ids === null ? '*' : ids.join(','));
+  }, [setWorkspaceParam]);
+  const [railParam, setRailParam] = useQueryState(
+    'rail',
+    parseAsStringEnum<'open' | 'closed'>(['open', 'closed']),
+  );
+  const railOpen = (railParam ?? (DENSE_TABS.has(tab) ? 'closed' : 'open')) === 'open';
   // Set by Sessions/Telemetry "rerun" → consumed by ApiTab on mount.
   const [rerun, setRerun] = useState<RerunContext | null>(null);
 
   const rerunAndSwitch = useCallback((ctx: RerunContext) => {
     setRerun(ctx);
     setTab('api');
-  }, []);
+  }, [setTab]);
 
   return (
-    <div className="pc-dev-shell">
+    <div className={`pc-dev-shell ${railOpen ? '' : 'is-rail-closed'}`}>
       <aside className="pc-dev-left">
         <div className="pc-dev-section">
           <div className="pc-dev-section-label">Workspaces</div>
           <WorkspacePicker selected={workspaceIds} onChange={setWorkspaceIds} />
         </div>
-        <nav className="pc-dev-section" aria-label="Dev page tabs">
-          <div className="pc-dev-section-label">Tools</div>
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={`pc-dev-tab ${tab === t.id ? 'is-active' : ''}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
+        <nav className="pc-dev-nav" aria-label="Dev page tabs">
+          {TAB_GROUPS.map((group) => (
+            <section key={group.label} className="pc-dev-section pc-dev-nav-group">
+              <div className="pc-dev-section-label">{group.label}</div>
+              {group.tabs.map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`pc-dev-tab ${tab === t.id ? 'is-active' : ''}`}
+                  onClick={() => setTab(t.id)}
+                >
+                  <span className="pc-dev-tab-label">{t.label}</span>
+                  <span className="pc-dev-tab-hint">{t.hint}</span>
+                </button>
+              ))}
+            </section>
           ))}
         </nav>
+        <button
+          type="button"
+          className="pc-dev-rail-toggle"
+          onClick={() => setRailParam(railOpen ? 'closed' : 'open')}
+        >
+          <span>Status rail</span>
+          <strong>{railOpen ? 'open' : 'hidden'}</strong>
+        </button>
       </aside>
       <main className="pc-dev-main">
         <Suspense fallback={<div className="pc-dev-loading">loading…</div>}>
@@ -113,9 +160,11 @@ export default function DevPage() {
           {tab === 'backups' && <BackupsTab />}
         </Suspense>
       </main>
-      <aside className="pc-dev-right">
-        <RightRail workspaceIds={workspaceIds} />
-      </aside>
+      {railOpen && (
+        <aside className="pc-dev-right">
+          <RightRail workspaceIds={workspaceIds} />
+        </aside>
+      )}
     </div>
   );
 }

@@ -78,6 +78,15 @@ export async function register(): Promise<void> {
     console.warn('[plugin-grants-backfill] non-fatal failure:', err?.message ?? err);
   });
 
+  // One-shot: bring legacy voice-prefs rows down to the credit-burn-batch
+  // tightened defaults. Only touches rows whose value exactly equals the
+  // OLD default — preserves explicit user choices. Idempotent: re-running
+  // after the migration is a no-op (no rows will match the old default
+  // anymore). Failures are non-fatal.
+  void migrateVoicePrefsDefaults().catch((err) => {
+    console.warn('[voice-prefs-defaults-migrate] non-fatal failure:', err?.message ?? err);
+  });
+
   // Backup scheduler — per-workspace kopia snapshots on cadence + event.
   // Idempotent: noop if already started in this process. Failures
   // surface in the operator log; backup state is non-critical for
@@ -235,4 +244,25 @@ async function prewarmSchema(): Promise<void> {
     }
   }
   console.log(`[ensure-schema-prewarm] done in ${Date.now() - t0}ms`);
+}
+
+let _voicePrefsMigrateRan = false;
+async function migrateVoicePrefsDefaults(): Promise<void> {
+  if (_voicePrefsMigrateRan) return;
+  _voicePrefsMigrateRan = true;
+  const { getOrgPg } = await import('@restart/db-org');
+  const { sql } = getOrgPg();
+  // Migrate ONLY rows where the field exactly equals the OLD default —
+  // preserves explicit user choices (e.g. someone who actually wants 5).
+  // Repeated runs no-op once the migration has touched a row.
+  const rows = await sql<{ workspace_id: string }[]>`
+    UPDATE harness_shared.operator_voice_prefs
+       SET payload = jsonb_set(payload, '{fullAgentIdleTimeoutMin}', '2'::jsonb, false),
+           updated_at = ${Date.now()}
+     WHERE (payload->>'fullAgentIdleTimeoutMin')::int = 5
+    RETURNING workspace_id
+  `;
+  if (rows.length > 0) {
+    console.log(`[voice-prefs-defaults-migrate] tightened fullAgentIdleTimeoutMin 5→2 on ${rows.length} row(s)`);
+  }
 }

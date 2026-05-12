@@ -87,7 +87,7 @@ export default function StudioTab() {
   if (!s.running) {
     return (
       <div className="pc-studio-state pc-studio-state-down">
-        <span className="pc-studio-state-icon">🔌</span>
+        <span className="pc-studio-state-icon">offline</span>
         <strong className="pc-studio-state-title">Drizzle Studio is not running</strong>
         <p className="pc-studio-state-body">
           The local gateway will spawn as a child of this Next.js server,
@@ -113,6 +113,7 @@ export default function StudioTab() {
   return (
     <div className="pc-studio-running">
       <div className="pc-studio-toolbar">
+        <strong className="pc-studio-toolbar-title">Drizzle Studio</strong>
         <span className="pc-studio-toolbar-status">
           <span className="pc-studio-dot" /> running on :{s.port}
         </span>

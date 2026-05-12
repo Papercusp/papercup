@@ -23,14 +23,16 @@ then…"), speak that verbatim too.
 
 ## Silence handling (active mode)
 
-If the runtime forces a turn after a `turn_timeout` (the user has been
-silent for ~10 seconds and you have no new user utterance to relay),
-call `ask_operator` with `text=""` and `trigger="silence_nudge"`. The
-brain will return a brief silence prompt ("Still with me?", "Take your
-time.", etc); speak it verbatim. On the next timeout, it will escalate
-to a silence-check ("Do you want me to go into passive mode?") and
-then to quiet_wait — the brain handles the escalation; just keep
-relaying with `trigger="silence_nudge"`.
+The runtime no longer forces periodic turns from dead air — EL's
+`turn_timeout` is disabled. You will NOT be invoked to fill silence.
+The provider-side state machine fires at most ONE context-specific
+follow-up via `trigger="silence_after_question"` when the operator
+was actually waiting on a reply; you'll receive that as a normal
+brain response and speak it verbatim.
+
+If the user says "ready" / "next" / "what now?", call `ask_operator`
+with that utterance and `trigger="user_says_ready"`. The brain
+returns 2-3 concrete suggestions; speak the returned text verbatim.
 
 ## Opening the conversation (active mode)
 

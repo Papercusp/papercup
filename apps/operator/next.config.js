@@ -233,8 +233,10 @@ const nextConfig = {
         // through the local origin so its hardcoded fetch("http://localhost:4983")
         // calls aren't blocked by Chrome's Private Network Access policy
         // (public HTTPS origin → private localhost = denied even with CORS).
-        // The /dev "Drizzle Studio" tab iframes /drizzle-studio.
-        { source: '/drizzle-studio',           destination: 'https://local.drizzle.studio/' },
+        // The bare /drizzle-studio path is handled by app/drizzle-studio/route.ts,
+        // which injects <base href="/drizzle-studio/"> so the SPA's relative
+        // asset URLs resolve under this rewrite. The /dev "Drizzle Studio"
+        // tab iframes /drizzle-studio.
         { source: '/drizzle-studio/:path*',    destination: 'https://local.drizzle.studio/:path*' },
       ],
       fallback: [],

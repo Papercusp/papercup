@@ -454,14 +454,27 @@ async function askOperatorViaSse(params: { text?: string; trigger?: string }): P
   const trigger = typeof params?.trigger === 'string' ? params.trigger : null;
   // No user text + no explicit trigger = nothing to do.
   if (!userText && !trigger) return '';
-  // EL agent uses { trigger: 'silence_nudge' | 'open_canvas' } when EL's
-  // turn_timeout fires (active-mode silence ladder) or when the session
-  // first opens (G17 voice opening utterance). The shell prompt in
-  // prompts/operator.shell.md instructs the agent to pass these through.
-  const effectiveTrigger = trigger === 'silence_nudge' || trigger === 'silence_check'
-    || trigger === 'quiet_wait_resume' || trigger === 'open_canvas'
-    ? trigger
-    : 'user_message';
+  // EL agent forwards { trigger: 'open_canvas' | 'user_says_ready' |
+  // 'quiet_wait_resume' } per the shell prompt. After the 2026-05-11
+  // silence-redesign, EL's turn_timeout is disabled (-1) — the
+  // 'silence_after_question' trigger fires from the provider, not from
+  // a voice path. We accept legacy values defensively (old EL agent
+  // configs that haven't been re-synced yet) and map them to the
+  // closest current equivalent.
+  const VALID_TRIGGERS = new Set([
+    'user_message',
+    'silence_after_question',
+    'quiet_wait_resume',
+    'open_canvas',
+    'user_says_ready',
+  ]);
+  // Legacy mapping: old 'silence_nudge'/'silence_check' both collapse
+  // to 'silence_after_question' so a stale EL config doesn't 500.
+  let effectiveTrigger: string =
+    trigger === 'silence_nudge' || trigger === 'silence_check'
+      ? 'silence_after_question'
+      : (trigger ?? 'user_message');
+  if (!VALID_TRIGGERS.has(effectiveTrigger)) effectiveTrigger = 'user_message';
   // Voice/text unification: pre-fetch the recent PG history so the
   // operator brain has the same context whether the user is typing
   // or speaking. Without this, voice turns get a stateless brain

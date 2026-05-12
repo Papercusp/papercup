@@ -57,6 +57,23 @@ else
   echo "[postbuild-standalone] WARN: $SRC_STATIC missing — page shell will load but every dynamic chunk will 404"
 fi
 
+# ── 1b. drizzle-kit .bin symlink ──────────────────────────────────────
+# Next's standalone trace pulls in node_modules/drizzle-kit/bin.cjs but
+# drops both the package.json (so `require.resolve('drizzle-kit/package.json')`
+# fails) and the node_modules/.bin/ symlink farm. The /api/dev/drizzle-studio
+# route's fallback walk looks for node_modules/.bin/drizzle-kit, so without
+# this symlink the route returns "drizzle-kit binary not found" in any
+# standalone build.
+DK_BIN_DIR="$STANDALONE_ROOT/node_modules/.bin"
+DK_BIN_SRC="$STANDALONE_ROOT/node_modules/drizzle-kit/bin.cjs"
+if [ -f "$DK_BIN_SRC" ]; then
+  mkdir -p "$DK_BIN_DIR"
+  ln -sfn ../drizzle-kit/bin.cjs "$DK_BIN_DIR/drizzle-kit"
+  echo "[postbuild-standalone] linked node_modules/.bin/drizzle-kit → drizzle-kit/bin.cjs"
+else
+  echo "[postbuild-standalone] WARN: $DK_BIN_SRC missing — /api/dev/drizzle-studio will return 'drizzle-kit binary not found'"
+fi
+
 # ── 2. node-pty prebuilds ─────────────────────────────────────────────
 SRC_ROOT="$(cd "$OPERATOR_DIR/../.." && pwd)"
 copied_prebuilds=0

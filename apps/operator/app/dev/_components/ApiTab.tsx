@@ -12,7 +12,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
+import { useQueryState, parseAsString, parseAsBoolean, parseAsStringEnum } from 'nuqs';
 import SchemaForm from './SchemaForm';
 
 interface Tool {
@@ -56,21 +56,30 @@ function namespaceOf(name: string): string {
   return 'misc';
 }
 
+function requiredArgCount(tool: Tool): number {
+  const required = tool.inputSchema?.required;
+  return Array.isArray(required) ? required.length : 0;
+}
+
 export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) {
   const [tools, setTools] = useState<Tool[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<Tool | null>(null);
+  const [selectedName, setSelectedName] = useQueryState('tool', parseAsString);
   // URL-backed: deep-link filter state + agent visibility via ui:get_state.
   const [filter, setFilter] = useQueryState('q', parseAsString.withDefault(''));
   const [showBuiltins, setShowBuiltins] = useQueryState('showBuiltins', parseAsBoolean.withDefault(true));
   const [showPlugins, setShowPlugins] = useQueryState('showPlugins', parseAsBoolean.withDefault(true));
 
-  // Spawn-context (shared across every invocation on this page)
-  const [ctxWorkspace, setCtxWorkspace] = useState(
-    workspaceIds && workspaceIds.length === 1 ? workspaceIds[0] : 'default',
+  // Spawn-context (shared across every invocation on this page).
+  const [ctxWorkspaceParam, setCtxWorkspace] = useQueryState('ctxWs', parseAsString);
+  const ctxWorkspace = ctxWorkspaceParam ?? (
+    workspaceIds && workspaceIds.length === 1 ? workspaceIds[0] : 'default'
   );
   const [ctxHarness, setCtxHarness] = useQueryState('ctxH', parseAsString.withDefault(''));
-  const [ctxRole, setCtxRole] = useState<(typeof ALL_ROLES)[number]>('architect');
+  const [ctxRole, setCtxRole] = useQueryState(
+    'ctxRole',
+    parseAsStringEnum<(typeof ALL_ROLES)[number]>([...ALL_ROLES]).withDefault('architect'),
+  );
   const [ctxRun, setCtxRun] = useQueryState('ctxRun', parseAsString.withDefault('dev-page'));
   const [ctxSpawn, setCtxSpawn] = useQueryState('ctxSpawn', parseAsString.withDefault('dev-page'));
 
@@ -90,22 +99,27 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
       .catch(() => setLoading(false));
   }, []);
 
+  const selected = useMemo(
+    () => tools.find((t) => t.name === selectedName) ?? null,
+    [tools, selectedName],
+  );
+
+
   // Consume incoming rerun context once tools have loaded.
   useEffect(() => {
     if (!rerun || tools.length === 0) return;
     const t = tools.find((x) => x.name === rerun.toolName);
     if (t) {
-      setSelected(t);
+      setSelectedName(t.name);
       if (rerun.workspace) setCtxWorkspace(rerun.workspace);
       if (rerun.harness !== undefined) setCtxHarness(rerun.harness);
-      if (rerun.role) setCtxRole(rerun.role as never);
+      if (rerun.role) setCtxRole(rerun.role as (typeof ALL_ROLES)[number]);
       if (rerun.run) setCtxRun(rerun.run);
       if (rerun.spawn) setCtxSpawn(rerun.spawn);
       if (rerun.args) setArgs(rerun.args);
     }
     onRerunConsumed();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rerun, tools.length]);
+  }, [rerun, tools, onRerunConsumed, setCtxHarness, setCtxRole, setCtxRun, setCtxSpawn, setCtxWorkspace, setSelectedName]);
 
   // Reset args when tool changes
   useEffect(() => {
@@ -215,25 +229,31 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
           grouped.map(([ns, list]) => (
             <div key={ns} className="pc-dev-api-group">
               <div className="pc-dev-api-group-label">
-                {ns} <span className="pc-dev-muted">{list.length}</span>
+                <span>{ns}</span>
+                <span className="pc-dev-api-group-count">{list.length}</span>
               </div>
               {list.map((t) => (
                 <button
                   key={`${t.pluginName}::${t.name}`}
                   type="button"
-                  className={`pc-dev-api-tool ${selected?.name === t.name ? 'is-active' : ''}`}
-                  onClick={() => setSelected(t)}
+                  className={`pc-dev-api-tool ${selected?.name === t.name ? 'is-active' : ''} ${requiredArgCount(t) > 0 ? 'has-required' : ''}`}
+                  onClick={() => setSelectedName(t.name)}
                   title={t.description}
                 >
                   <span className="pc-dev-api-tool-name">{t.name}</span>
-                  {(t.recentInvocations ?? 0) + (t.recentErrors ?? 0) > 0 && (
-                    <span className="pc-dev-api-tool-stats">
-                      {t.recentInvocations ?? 0}
-                      {(t.recentErrors ?? 0) > 0 && (
-                        <span className="pc-dev-api-err">·{t.recentErrors}</span>
-                      )}
-                    </span>
-                  )}
+                  <span className="pc-dev-api-tool-badges">
+                    {requiredArgCount(t) > 0 && (
+                      <span className="pc-dev-api-req-count">{requiredArgCount(t)} req</span>
+                    )}
+                    {(t.recentInvocations ?? 0) + (t.recentErrors ?? 0) > 0 && (
+                      <span className="pc-dev-api-tool-stats">
+                        {t.recentInvocations ?? 0}
+                        {(t.recentErrors ?? 0) > 0 && (
+                          <span className="pc-dev-api-err">·{t.recentErrors}</span>
+                        )}
+                      </span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -291,7 +311,7 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
                   role
                   <select
                     value={ctxRole}
-                    onChange={(e) => setCtxRole(e.target.value as never)}
+                    onChange={(e) => setCtxRole(e.target.value as (typeof ALL_ROLES)[number])}
                     className="pc-dev-input"
                   >
                     {ALL_ROLES.map((r) => (

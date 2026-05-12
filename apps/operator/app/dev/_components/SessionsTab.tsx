@@ -1,7 +1,7 @@
 'use client';
 
 import { Fragment, useEffect, useState, useCallback } from 'react';
-import { useQueryState, parseAsString } from 'nuqs';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 
 interface Entry {
   spawn_id: string;
@@ -81,7 +81,11 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [hours, setHours] = useState(24);
+  const [hoursParam, setHoursParam] = useQueryState(
+    'sessionHours',
+    parseAsStringEnum(['1', '6', '24', '168', '720']).withDefault('24'),
+  );
+  const hours = Number(hoursParam);
   // Selected spawn for drilldown. nuqs-backed so:
   //   (a) the URL deep-links to a specific spawn
   //   (b) `ui:get_state` surfaces the selection to agents
@@ -150,8 +154,8 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
         <label className="pc-dev-muted">
           window
           <select
-            value={hours}
-            onChange={(e) => setHours(Number(e.target.value))}
+            value={hoursParam}
+            onChange={(e) => setHoursParam(e.target.value as '1' | '6' | '24' | '168' | '720')}
             className="pc-dev-input pc-dev-input-inline"
           >
             <option value={1}>1h</option>

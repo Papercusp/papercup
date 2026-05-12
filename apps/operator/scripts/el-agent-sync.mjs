@@ -254,12 +254,12 @@ const PANEL_PARAM = prop('string', 'Which panel: operator or oracle.', { enum: [
 const TOOLS = [
   {
     name: 'ask_operator', type: 'client', expects_response: true,
-    description: 'Send the user\'s exact words to the local operator brain (omp + Claude Max + gitnexus). Returns the operator\'s reply as a string. Call this for every user turn that needs a substantive answer; speak the returned text VERBATIM. Do not paraphrase or generate your own response. For silence (the runtime fired a turn_timeout with no user input) pass trigger="silence_nudge" and an empty text — the brain will return a silence prompt to speak.',
+    description: 'Send the user\'s exact words to the local operator brain (omp + Claude Max + gitnexus). Returns the operator\'s reply as a string. Call this for every user turn that needs a substantive answer; speak the returned text VERBATIM. Do not paraphrase or generate your own response. If the user says "ready" / "next" / "what now", pass trigger="user_says_ready" and an empty text — the brain will return concrete suggestions to speak.',
     parameters: {
       type: 'object',
       properties: {
         text: { type: 'string', description: "The user's verbatim utterance — pass through unchanged. Empty string when this is a silence-triggered turn." },
-        trigger: { type: 'string', description: 'Optional reason for this turn. "silence_nudge" when EL turn_timeout fires with no user input. Default: "user_message".', enum: ['user_message', 'silence_nudge', 'silence_check', 'quiet_wait_resume', 'open_canvas'] },
+        trigger: { type: 'string', description: 'Reason for this turn. Use "user_says_ready" when the user says "ready" / "next" / "what now". Default: "user_message".', enum: ['user_message', 'silence_after_question', 'quiet_wait_resume', 'open_canvas', 'user_says_ready'] },
       },
       required: ['text'],
       description: 'Delegate input.',
@@ -779,21 +779,20 @@ const patch = {
       similarity_boost: OPERATOR_VOICE.similarity_boost,
       speed: OPERATOR_VOICE.speed,
     },
-    // Disable silence-driven agent turns. Default turn_timeout=7s makes
-    // turn_timeout=30 (was 10 — too aggressive, burned EL credits).
-    // EL forces a fresh agent turn after 30s of dead air; in shell
-    // mode the agent calls ask_operator with empty params, which the
-    // SSE route maps to trigger='silence_nudge' on the brain. The
-    // active-mode silence ladder still functions — just with a calmer
-    // cadence (~30s nudge vs the old 10s). Each forced turn is a
-    // billable EL call, so 10s burned ~6 turns/min vs ~2 turns/min
-    // at 30s — 3x cost reduction during silence with no feature loss
-    // (users actually prefer the calmer cadence).
+    // 2026-05-11 silence-redesign: turn_timeout = -1 (disabled). The
+    // EL agent NEVER forces a turn from dead air. The provider-side
+    // single-nudge logic (silence_after_question, 30s, fires once
+    // when the assistant's last turn was a question) is the source of
+    // truth for nudges, and it generates context-specific follow-ups
+    // — not "still with me?" filler. EL was burning credits + annoying
+    // users with periodic auto-turns; this kills both. Voice paths
+    // that want to nudge ride on the same provider state machine via
+    // the chat-sidebar mounted in the desktop chrome.
     //
     // turn_eagerness 'patient' keeps the mid-utterance "I'm thinking"
     // trip-wire long.
     turn: {
-      turn_timeout: 30,
+      turn_timeout: -1,
       turn_eagerness: 'patient',
     },
   },

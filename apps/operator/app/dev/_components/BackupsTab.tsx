@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
+import { useQueryState, parseAsString } from 'nuqs';
 import type { RepoStats, SnapshotInfo } from '@/lib/backup';
 
 interface ServerInfo { workspaceId: string; port: number; url: string; startedAt: string; }
@@ -52,7 +53,7 @@ export default function BackupsTab() {
   const [events, setEvents] = useState<EventRow[]>([]);
   const [brokenDirs, setBrokenDirs] = useState<{ path: string; createdAt: string }[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
-  const [restorePick, setRestorePick] = useState<string>('');
+  const [restorePick, setRestorePick] = useQueryState('backupSnapshot', parseAsString.withDefault(''));
   const iframeRef = useRef<HTMLIFrameElement>(null);
 
   const load = useCallback(async () => {
@@ -201,6 +202,12 @@ export default function BackupsTab() {
 
   return (
     <div className="pc-dev-backups">
+      <header className="pc-dev-tab-header">
+        <h2>Backups</h2>
+        <span className="pc-dev-muted">
+          kopia {server ? `:${server.port}` : 'starting'} · refreshes every 15s
+        </span>
+      </header>
       {healthBanner}
       <div className="pc-dev-backups-metrics">
         <Metric label="Snapshots" value={stats?.totalSnapshots.toLocaleString() ?? '—'} />

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString } from 'nuqs';
 
 interface Process {
   pid: number;
@@ -50,7 +51,10 @@ export default function ProcessesTab() {
   const [processes, setProcesses] = useState<Process[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [kinds, setKinds] = useState<Set<string>>(new Set(ALL_KINDS));
+  const [kindsParam, setKindsParam] = useQueryState(
+    'processKinds',
+    parseAsString.withDefault(ALL_KINDS.join(',')),
+  );
   const [killModal, setKillModal] = useState<KillModalState | null>(null);
 
   useEffect(() => {
@@ -88,6 +92,12 @@ export default function ProcessesTab() {
     };
   }, []);
 
+  const kinds = useMemo(() => {
+    if (kindsParam === '') return new Set<string>();
+    const allowed = new Set<string>(ALL_KINDS);
+    return new Set(kindsParam.split(',').filter((k) => allowed.has(k)));
+  }, [kindsParam]);
+
   const filtered = useMemo(
     () => processes.filter((p) => kinds.has(p.kind)),
     [processes, kinds],
@@ -103,7 +113,7 @@ export default function ProcessesTab() {
     const next = new Set(kinds);
     if (next.has(k)) next.delete(k);
     else next.add(k);
-    setKinds(next);
+    setKindsParam([...next].join(','));
   }
 
   return (

@@ -66,14 +66,25 @@ function drizzleKitBin(): string | null {
   } catch {
     // fall through to symlink walk
   }
-  // Fallback: legacy node_modules/.bin walk for setups where the package
-  // isn't resolvable from this module (unusual workspace layouts).
-  const candidates = [
+  // Fallback A: node_modules/.bin symlink walk (dev + sidecar layouts).
+  // Fallback B: direct bin.cjs probe — Next standalone traces drizzle-kit's
+  // bin.cjs into node_modules/drizzle-kit/ but drops both package.json and
+  // the .bin/ symlink farm, so we run bin.cjs through node directly.
+  const symlinks = [
     'node_modules/.bin/drizzle-kit',
     '../../node_modules/.bin/drizzle-kit',
     '../../../node_modules/.bin/drizzle-kit',
   ];
-  for (const c of candidates) {
+  for (const c of symlinks) {
+    const abs = resolve(process.cwd(), c);
+    if (existsSync(abs)) return abs;
+  }
+  const binCjs = [
+    'node_modules/drizzle-kit/bin.cjs',
+    '../../node_modules/drizzle-kit/bin.cjs',
+    '../../../node_modules/drizzle-kit/bin.cjs',
+  ];
+  for (const c of binCjs) {
     const abs = resolve(process.cwd(), c);
     if (existsSync(abs)) return abs;
   }

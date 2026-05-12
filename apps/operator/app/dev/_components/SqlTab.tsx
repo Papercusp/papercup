@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useQueryState, parseAsStringEnum } from 'nuqs';
 
 /**
  * /dev SQL tab — Monaco-backed read-only SQL playground.
@@ -41,7 +42,10 @@ SELECT slug, status, updated_ts
 
 export default function SqlTab() {
   const [sql, setSql] = useState(DEFAULT_SQL);
-  const [role, setRole] = useState<'admin' | 'app'>('admin');
+  const [role, setRole] = useQueryState(
+    'sqlRole',
+    parseAsStringEnum<'admin' | 'app'>(['admin', 'app']).withDefault('admin'),
+  );
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<QueryResult | null>(null);
 
@@ -66,9 +70,13 @@ export default function SqlTab() {
   return (
     <div className="pc-sql-shell">
       <div className="pc-sql-toolbar">
+        <div className="pc-sql-title">
+          <strong>SQL</strong>
+          <span>read-only · rollback transaction</span>
+        </div>
         <button
           type="button"
-          className="pc-sql-run"
+          className="pc-sql-run pc-dev-btn-primary"
           onClick={run}
           disabled={busy}
           title="Cmd/Ctrl+Enter"

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 
 /**
  * /dev Tables tab — schema-aware table inspector.
@@ -100,11 +101,14 @@ interface Filter { col: string; op: Op; value: unknown }
 
 export default function TablesTab() {
   const [tables, setTables] = useState<TableEntry[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useQueryState('tbl', parseAsString);
   const [detail, setDetail] = useState<TableDetail | null>(null);
   const [rows, setRows] = useState<RowsPayload | null>(null);
-  const [filter, setFilter] = useState('');
-  const [role, setRole] = useState<'admin' | 'app'>('admin');
+  const [filter, setFilter] = useQueryState('tableQ', parseAsString.withDefault(''));
+  const [role, setRole] = useQueryState(
+    'tableRole',
+    parseAsStringEnum<'admin' | 'app'>(['admin', 'app']).withDefault('admin'),
+  );
   const [offset, setOffset] = useState(0);
   /** Active filters — `[col, op, value]` triples. Empty = unfiltered. */
   const [filters, setFilters] = useState<Filter[]>([]);
@@ -219,6 +223,11 @@ export default function TablesTab() {
     const order = new Map(keys.map((k, i) => [k, i] as const));
     return [...detail.columns].sort((a, b) => (order.get(a.name) ?? 99) - (order.get(b.name) ?? 99));
   }, [detail, rows]);
+
+  const rowKeys = useMemo(
+    () => (rows?.rows.length ? Object.keys(rows.rows[0]) : []),
+    [rows],
+  );
 
   /** Click handler for FK cells — switch table + apply eq filter. */
   const navigateFK = useCallback(
@@ -351,7 +360,7 @@ export default function TablesTab() {
                 >
                   + Filter
                 </button>
-                {rows && rows.total !== null && (
+                {rows && (
                   <span className="pc-tables-count">{rows.total.toLocaleString()} rows</span>
                 )}
               </div>
@@ -477,7 +486,7 @@ export default function TablesTab() {
                       {offset.toLocaleString()}–{(offset + rows.rows.length).toLocaleString()}
                     </span>
                     <button
-                      disabled={loading || (rows.total !== null && offset + rows.rows.length >= rows.total)}
+                      disabled={loading || offset + rows.rows.length >= rows.total}
                       onClick={() => {
                         const o = offset + PAGE_SIZE;
                         setOffset(o);
@@ -495,7 +504,7 @@ export default function TablesTab() {
                   <table className="pc-tables-rowgrid">
                     <thead>
                       <tr>
-                        {Object.keys(rows.rows[0]).map((k) => (
+                        {rowKeys.map((k) => (
                           <th key={k}>
                             {k}
                             {fkBySourceColumn.has(k) && <span className="pc-tables-fkmark"> →</span>}
@@ -506,7 +515,7 @@ export default function TablesTab() {
                     <tbody>
                       {rows.rows.map((r, i) => (
                         <tr key={i}>
-                          {Object.keys(rows.rows[0]).map((k) => {
+                          {rowKeys.map((k) => {
                             const fk = fkBySourceColumn.get(k);
                             const value = r[k];
                             const slugLink = isHarnessSlugCell(k, value);
