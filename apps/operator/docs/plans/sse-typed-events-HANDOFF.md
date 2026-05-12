@@ -174,15 +174,22 @@ Other tooling around the operator that the IPC work doesn't touch:
 
 If your work overlaps any of these, coordinate with me first.
 
-### 1. `transport` column on `harness_shared.tool_invocations`
-**Not done.** Requires a Drizzle migration in the
-`libs/papercusp/libs/db` submodule. Today, telemetry consumers infer
-transport from `spawn_id` prefix (`ipc-<id>` for IPC; HTTP/MCP set
-their own runId/spawnId conventions).
+### 1. `transport` column on `harness_shared.tool_invocations` ✅ DONE
 
-If you're working on `/dev → Sessions` or `/dev → Telemetry`, the
-filter-by-transport feature is on the to-do list. Don't add it
-ad-hoc — wait for the column.
+Shipped via the submodule branch
+`papercupai/papercusp#sse-typed-events-transport-column` (file
+`libs/db/sql/058-tool-invocations-transport.sql`) plus the
+plumbing on this branch in `UnifiedToolContext.transport` and
+`PROJECTED_DEPS.recordInvocation`.
+
+Values: `'http' | 'mcp' | 'ipc' | 'in_process' | null`. Older rows
+have null. The submodule pointer is bumped on this branch.
+
+`/dev → Sessions` and `/dev → Telemetry` can now filter by transport.
+If you're adding a filter UI: the column is `transport text` on
+`harness_shared.tool_invocations`. Write SQL like
+`WHERE transport = $1 OR ($1 = 'unknown' AND transport IS NULL)`
+to keep older rows reachable.
 
 ### 2. End-to-end live IPC verification
 The whole stack is unit-tested but **no one has actually rebuilt the
@@ -284,15 +291,14 @@ projects:list > throws when no slug available` — fails on main too.
 
 If you want to pick something up:
 
-1. **Add `transport` column to `tool_invocations`** (gap #1 above) —
-   one PG migration + plumb the field through `recordInvocation`. ~50
-   LoC + 1 schema change. Requires submodule PR coordination.
-2. **End-to-end live IPC verification** (gap #2) — rebuild
+1. **End-to-end live IPC verification** (gap #2) — rebuild
    `papercusp-desktop` with `PAPERCUSP_DESKTOP_IPC=1`, run the
    `/dev → IPC` tab. No code change, just verification. Update this
    doc with results.
-3. **Migrate operator-scan side effects into the tool handler** so
+2. **Migrate operator-scan side effects into the tool handler** so
    it's IPC-allowlist-eligible (gap #3). Substantial refactor; per-tool.
+3. **/dev UI filter by `transport`** — the column exists now; the
+   sessions/telemetry tabs don't yet surface a filter.
 
 ---
 
