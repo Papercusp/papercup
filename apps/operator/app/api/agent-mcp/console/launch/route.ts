@@ -38,6 +38,24 @@ function isLoopback(req: NextRequest): boolean {
   return host.endsWith(':3055') || host.endsWith(':3070');
 }
 
+/**
+ * The Tauri webview can present an origin like `tauri://localhost` even
+ * when the page itself was loaded from http://localhost:3055 — that's
+ * what breaks vanilla fetch with WebKit's "access control checks".
+ * Adding permissive CORS headers is safe here because the endpoint
+ * itself is loopback-gated by isLoopback() above. The operator binds
+ * to 127.0.0.1 only by default (PAPERCUSP_BIND_HOST).
+ */
+const CORS_HEADERS: Record<string, string> = {
+  'access-control-allow-origin': '*',
+  'access-control-allow-methods': 'POST, OPTIONS',
+  'access-control-allow-headers': 'content-type, accept',
+};
+
+export function OPTIONS(): Response {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
 const LINUX_TERMINALS: Array<[string, string[]]> = [
   ['gnome-terminal', ['--window', '--']],
   ['konsole', ['--new-window', '-e']],
@@ -92,13 +110,22 @@ function buildOneliner(cwd: string, env: Record<string, string>, greeting: strin
   ].join(' && ').replace(' && (', ' ; (');
 }
 
+function jsonRes(body: unknown, init?: number | ResponseInit): Response {
+  const r = Response.json(body, typeof init === 'number' ? { status: init } : init);
+  for (const [k, v] of Object.entries(CORS_HEADERS)) r.headers.set(k, v);
+  return r;
+}
+
 export async function POST(req: NextRequest): Promise<Response> {
+  // Log every hit so we can correlate with click events from devtools.
+  const origin = req.headers.get('origin') ?? '(no-origin)';
+  console.log(`[console-launch] POST hit from origin=${origin} host=${req.headers.get('host')}`);
+
   if (!isLoopback(req)) {
-    return Response.json({ status: 'error', error: 'loopback only' }, { status: 403 });
+    return jsonRes({ status: 'error', error: 'loopback only' }, 403);
   }
   const body = (await req.json().catch(() => ({}))) as { slug?: string | null };
 
-  // 1. Build the same envelope we'd hand to Tauri.
   let envelope;
   try {
     envelope = await buildConsoleEnvelope({
@@ -107,13 +134,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       operatorBaseUrl: new URL(req.url).origin,
     });
   } catch (e: any) {
-    return Response.json({ status: 'error', error: e?.message ?? 'envelope build failed' }, { status: 400 });
+    console.warn(`[console-launch] envelope build failed: ${e?.message}`);
+    return jsonRes({ status: 'error', error: e?.message ?? 'envelope build failed' }, 400);
   }
 
-  // 2. Write .mcp.json to cwd (backup-restore is intentionally NOT done
-  //    server-side — the sentinel-file cleanup pattern lives in the
-  //    Tauri spawner; for the server-spawn fallback we accept that the
-  //    user's `.mcp.json` stays in place until manually removed).
   try {
     const mcpPath = join(envelope.cwd, '.mcp.json');
     if (existsSync(mcpPath)) {
@@ -122,21 +146,21 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
     writeFileSync(mcpPath, envelope.mcpJsonContents);
   } catch (e: any) {
-    return Response.json({ status: 'error', error: `write .mcp.json: ${e?.message}` }, { status: 500 });
+    console.warn(`[console-launch] write .mcp.json failed: ${e?.message}`);
+    return jsonRes({ status: 'error', error: `write .mcp.json: ${e?.message}` }, 500);
   }
 
-  // 3. Find a terminal and spawn it.
   if (process.platform !== 'linux') {
-    return Response.json(
+    return jsonRes(
       { status: 'error', error: 'server-side spawn only implemented for Linux; use the Tauri path on macOS/Windows' },
-      { status: 501 },
+      501,
     );
   }
   const term = findLinuxTerminal();
   if (!term) {
-    return Response.json(
+    return jsonRes(
       { status: 'error', error: 'no terminal emulator found. Set $TERMINAL or install gnome-terminal / konsole / alacritty / kitty / wezterm / xterm' },
-      { status: 500 },
+      500,
     );
   }
 
@@ -150,15 +174,17 @@ export async function POST(req: NextRequest): Promise<Response> {
       env: { ...process.env, ...envelope.env },
     });
     child.unref();
-    return Response.json({
+    console.log(`[console-launch] spawned ${term.bin} pid=${child.pid} cwd=${envelope.cwd}`);
+    return jsonRes({
       status: 'ok',
       pid: child.pid,
       terminal: term.bin,
     });
   } catch (e: any) {
-    return Response.json(
+    console.warn(`[console-launch] spawn ${term.bin} failed: ${e?.message}`);
+    return jsonRes(
       { status: 'error', error: `spawn ${term.bin} failed: ${e?.message}` },
-      { status: 500 },
+      500,
     );
   }
 }
