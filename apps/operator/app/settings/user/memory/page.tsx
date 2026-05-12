@@ -18,8 +18,14 @@ const KIND_COLORS: Record<string, string> = {
   ephemeral:  '#9ca3af',
 };
 
+interface FeedbackStats {
+  total_edits: number;
+  total_deletes: number;
+}
+
 export default function MemoryPage() {
   const [rows, setRows] = useState<MemoryRow[]>([]);
+  const [stats, setStats] = useState<FeedbackStats | null>(null);
   const [loading, setLoading] = useState(true);
   const [reason, setReason] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
@@ -27,14 +33,15 @@ export default function MemoryPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch('/api/user/memory');
-      if (!r.ok) {
-        setRows([]);
-        return;
-      }
+      const [r, fs] = await Promise.all([
+        fetch('/api/user/memory'),
+        fetch('/api/user/memory/feedback'),
+      ]);
+      if (!r.ok) { setRows([]); return; }
       const j = await r.json();
       setRows(j.results ?? []);
       setReason(j.reason ?? null);
+      if (fs.ok) setStats(await fs.json());
     } finally {
       setLoading(false);
     }
@@ -116,10 +123,16 @@ export default function MemoryPage() {
       <header>
         <h1 style={{ marginBottom: 8 }}>Operator memory</h1>
         <p style={{ color: 'var(--text-secondary)', margin: 0 }}>
-          Facts the operator has stored about you. Inspect and delete per entry.
-          Workspace-shared entries (visible to other users in this workspace) are
-          marked with a badge.
+          Facts the operator has stored about you. Inspect, edit, or delete
+          per entry. Edits and deletes are recorded as feedback signal for
+          future tuning. Workspace-shared entries (visible to other users in
+          this workspace) are marked with a badge.
         </p>
+        {stats && (stats.total_edits > 0 || stats.total_deletes > 0) && (
+          <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '8px 0 0' }}>
+            Lifetime feedback: <strong>{stats.total_edits}</strong> edits, <strong>{stats.total_deletes}</strong> deletes
+          </p>
+        )}
       </header>
 
       {reason && (

@@ -26,6 +26,7 @@ const SOURCE_COLOR: Record<ProseHit['source'], string> = {
 
 export default function SearchPage() {
   const [q, setQ] = useState('');
+  const [mode, setMode] = useState<'bm25' | 'hybrid'>('bm25');
   const [memories, setMemories] = useState<MemoryHit[]>([]);
   const [prose, setProse] = useState<ProseHit[]>([]);
   const [loading, setLoading] = useState(false);
@@ -37,14 +38,14 @@ export default function SearchPage() {
     setLoading(true);
     setSearched(true);
     try {
-      const r = await fetch(`/api/user/search?q=${encodeURIComponent(q)}&limit=10`);
+      const r = await fetch(`/api/user/search?q=${encodeURIComponent(q)}&limit=10&mode=${mode}`);
       const j = await r.json();
       setMemories(j.memories ?? []);
       setProse(j.prose ?? []);
     } finally {
       setLoading(false);
     }
-  }, [q]);
+  }, [q, mode]);
 
   return (
     <div style={{ padding: 32, maxWidth: 920, display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -57,15 +58,24 @@ export default function SearchPage() {
         </p>
       </header>
 
-      <form onSubmit={onSubmit} style={{ display: 'flex', gap: 8 }}>
+      <form onSubmit={onSubmit} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <input
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="What do you remember about…"
           autoFocus
-          style={{ flex: 1, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
+          style={{ flex: 1, minWidth: 240, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
         />
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value as 'bm25' | 'hybrid')}
+          title="bm25: keyword-only (fast, deterministic). hybrid: combines keyword + semantic via RRF (needs embedder)."
+          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
+        >
+          <option value="bm25">bm25</option>
+          <option value="hybrid">hybrid</option>
+        </select>
         <button type="submit" disabled={loading || !q.trim()} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface-hover)', cursor: 'pointer', fontSize: 14, opacity: loading ? 0.6 : 1 }}>
           {loading ? 'Searching…' : 'Search'}
         </button>

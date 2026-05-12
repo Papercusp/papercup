@@ -60,6 +60,7 @@ type MemoryListResult = {
 type MemoryClient = {
   add(content: string | unknown[], opts: Record<string, unknown>): Promise<unknown>;
   delete(id: string): Promise<unknown>;
+  get(id: string): Promise<MemoryEntry | null>;
   getAll(opts: Record<string, unknown>): Promise<MemoryListResult>;
   search(query: string, opts: Record<string, unknown>): Promise<MemoryListResult>;
   update(id: string, content: string): Promise<unknown>;
