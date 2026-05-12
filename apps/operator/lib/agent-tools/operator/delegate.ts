@@ -194,20 +194,23 @@ export default defineTool({
 
     // Workspace-scope memory injection (delegate is bearer-authed with
     // no cookie user; workspace shared memory is the right grain).
-    // Recovered from main's pre-migration delegate-chat route which
-    // adopted buildMemoryContextBlock — was lost in the merge until
-    // audit round 12 caught it.
-    const memBlock = await buildMemoryContextBlock({
-      userId: null,
-      workspaceId,
-      queryContext: input.requestText,
-      heading: 'Delegate memory (relevant entries)',
-    });
-    const memorySection = memBlock ? `\n\n${memBlock}\n` : '';
+    // ONLY inject on session creation — claude --session-id resumes
+    // with its prior turn-context intact, so re-injecting workspace
+    // memory each turn is wasteful and could confuse the model
+    // mid-conversation. Matches main's pre-merge operator-chat shape.
+    let memoryBlock: string | null = null;
+    if (sessionCreated) {
+      memoryBlock = await buildMemoryContextBlock({
+        userId: null,
+        workspaceId,
+        queryContext: input.requestText,
+        heading: 'Workspace memory (relevant entries)',
+      });
+    }
 
     const promptText = sessionCreated
-      ? `${SYSTEM_PROMPT}${memorySection}\n\nUser request: ${input.requestText}`
-      : `${memorySection}User: ${input.requestText}`;
+      ? [SYSTEM_PROMPT, memoryBlock, `User request: ${input.requestText}`].filter(Boolean).join('\n\n')
+      : `User: ${input.requestText}`;
 
     const mcpConfig = buildMcpConfig();
 
