@@ -1,6 +1,12 @@
 # Desktop-native transport for the endpoint system
 
-**Status:** design doc — **not approved**, gated on a Day-0 benchmark before code lands.
+**Status:** **implemented** on `sse-typed-events-ipc` (papercusp-desktop) + `sse-typed-events` (papercup). See decision below for the benchmark-gate override.
+
+## Decision (2026-05-12) — proceeded without Day-0 benchmark
+
+The reviewer's Day-0 benchmark gate was overridden by user direction: the latency/throughput analysis in this doc was deemed sufficient evidence, and the user judged the medium-plan investment worthwhile on roadmap grounds (binary capability, native backpressure, future tool surface) rather than current measured latency. The shelving memo described in this doc was therefore not produced; the IPC code shipped against the original commit-order plan with the existing analysis as the rationale of record.
+
+Benchmarking remains a useful P2 follow-up — if it later shows IPC isn't measurably better than HTTP+SSE on real workloads, the env-override (`NEXT_PUBLIC_PAPERCUSP_FORCE_HTTP_TRANSPORT=1`) provides a clean rollback path without code changes.
 
 Captures the conversation about going beyond HTTP+SSE for the desktop (Tauri) surface of the endpoint system. Includes the IPC-options landscape, the recommended designs at three investment levels, the reviewer's pushback, and the explicit go/no-go decision gate.
 
