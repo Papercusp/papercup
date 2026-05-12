@@ -323,13 +323,28 @@ async function tryLoad(): Promise<MemoryClient | null> {
     };
   }
 
+  // mem0 tracks add/update/delete event history in SQLite. Default was
+  // `:memory:` (lost on restart). Persist under ~/.papercusp/ so the
+  // event log survives so /settings/user/memory can show it.
+  let historyDbPath = ':memory:';
+  try {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const fs = await import('node:fs/promises');
+    const dir = path.join(os.homedir(), '.papercusp');
+    await fs.mkdir(dir, { recursive: true });
+    historyDbPath = path.join(dir, 'mem0-history.db');
+  } catch {
+    /* fall back to in-memory if we can't write */
+  }
+
   try {
     const { Memory } = await dynamicImport<Mem0Module>(MEM0_PACKAGE);
     _client = new Memory({
       embedder: embedderConfig,
       vectorStore: vectorStoreConfig,
       llm: llmConfig,
-      historyDbPath: ':memory:',
+      historyDbPath,
     });
     _clientMode = resolution.mode;
     return _client;
