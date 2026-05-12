@@ -13,6 +13,7 @@ export interface SetupWizardState {
   finished_at?: string;
   update_channel?: UpdateChannel;
   telemetry_enabled?: boolean;
+  telemetry_sink_url?: string;
   updated_at?: string;
 }
 
@@ -49,6 +50,20 @@ export async function PATCH(req: Request) {
   }
   if (typeof body.telemetry_enabled === 'boolean') {
     next.telemetry_enabled = body.telemetry_enabled;
+  }
+  if (body.telemetry_sink_url === null) {
+    delete next.telemetry_sink_url;
+  } else if (typeof body.telemetry_sink_url === 'string') {
+    // Basic shape guard so a stray non-URL doesn't end up making the
+    // flush worker POST garbage on every tick.
+    try {
+      const u = new URL(body.telemetry_sink_url);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        next.telemetry_sink_url = u.toString();
+      }
+    } catch {
+      // ignore — keep existing value
+    }
   }
   if (body.step_status && typeof body.step_status === 'object') {
     const merged = { ...current.step_status };
