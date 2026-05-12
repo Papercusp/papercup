@@ -240,6 +240,15 @@ export async function ensureDefaultUser(): Promise<void> {
   _ensureDefaultDone = true;
 }
 
+export async function updateDisplayName(user_id: string, display_name: string): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    UPDATE harness_shared.users
+       SET display_name = ${display_name}
+     WHERE id = ${user_id}
+  `;
+}
+
 export async function listUsers(): Promise<User[]> {
   const { sql } = getOrgPg();
   const rows = await sql<{ id: string; username: string; display_name: string; password_hash: string | null }>`

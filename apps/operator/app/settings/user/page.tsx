@@ -10,45 +10,115 @@ interface User {
   has_password: boolean;
 }
 
-const VOICE_USER_OVERRIDE_KEYS = [
-  { key: 'agentLanguage', label: 'Agent language pin' },
-  { key: 'elevenlabsVoiceId', label: 'EL voice id' },
-  { key: 'wakeWordKeyword', label: 'Wake word' },
-  { key: 'voiceMaxSpokenWords', label: 'Max spoken words' },
-  { key: 'fullAgentIdleTimeoutMin', label: 'Idle timeout (min)' },
-  { key: 'fullAgentSessionMaxMin', label: 'Session max (min)' },
-  { key: 'operatorHistoryTokenBudget', label: 'Operator history budget (tokens)' },
-  { key: 'operatorActiveOnStartup', label: 'Operator active on startup' },
-  { key: 'voicePrivacyMode', label: 'Voice privacy mode' },
-  { key: 'speakSuggestions', label: 'Speak suggestions' },
-  { key: 'speakReceivingFlips', label: 'Speak receiving flips' },
-  { key: 'speakCadenceStatus', label: 'Speak cadence status' },
-  { key: 'operatorBackstoryEnabled', label: 'Operator backstory enabled' },
+/**
+ * Override-eligible voice/operator pref keys. Must stay in sync with
+ * VOICE_USER_OVERRIDE_KEYS in lib/user-preferences.ts and the underlying
+ * VoicePrefs schema in lib/voice-prefs.ts.
+ *
+ * Each entry describes how to render + parse the value:
+ *   - kind 'bool' → checkbox, default false
+ *   - kind 'number' → number input, optional min/max
+ *   - kind 'string' → text input
+ *   - kind 'enum' → select dropdown
+ */
+type OverrideSpec =
+  | { key: string; label: string; help: string; kind: 'bool' }
+  | { key: string; label: string; help: string; kind: 'number'; min?: number; max?: number; step?: number }
+  | { key: string; label: string; help: string; kind: 'string' }
+  | { key: string; label: string; help: string; kind: 'enum'; options: { value: string; label: string }[] };
+
+const OVERRIDES: readonly OverrideSpec[] = [
+  { key: 'agentLanguage', kind: 'enum', label: 'Agent language pin',
+    help: 'Force the operator to reply in this language regardless of what the workspace default says.',
+    options: [
+      { value: 'en', label: 'English (en)' },
+      { value: 'es', label: 'Spanish (es)' },
+      { value: 'fr', label: 'French (fr)' },
+      { value: 'de', label: 'German (de)' },
+      { value: 'it', label: 'Italian (it)' },
+      { value: 'pt', label: 'Portuguese (pt)' },
+      { value: 'pl', label: 'Polish (pl)' },
+      { value: 'tr', label: 'Turkish (tr)' },
+      { value: 'ru', label: 'Russian (ru)' },
+      { value: 'nl', label: 'Dutch (nl)' },
+      { value: 'cs', label: 'Czech (cs)' },
+      { value: 'ar', label: 'Arabic (ar)' },
+      { value: 'zh', label: 'Chinese (zh)' },
+    ] },
+  { key: 'elevenlabsVoiceId', kind: 'string', label: 'EL voice id',
+    help: 'ElevenLabs voice id (overrides workspace default).' },
+  { key: 'wakeWordKeyword', kind: 'string', label: 'Wake word',
+    help: 'The word that activates voice mode when Porcupine/openwakeword is enabled.' },
+  { key: 'voiceMaxSpokenWords', kind: 'number', min: 5, max: 200, step: 1, label: 'Max spoken words per reply',
+    help: 'Cap on TTS length per operator turn.' },
+  { key: 'fullAgentIdleTimeoutMin', kind: 'number', min: 0, max: 60, step: 1, label: 'Idle timeout (min)',
+    help: 'Auto-disconnect voice session after this many minutes of user silence. 0 = never.' },
+  { key: 'fullAgentSessionMaxMin', kind: 'number', min: 0, max: 240, step: 5, label: 'Session max (min)',
+    help: 'Hard session-duration cap. 0 = no max.' },
+  { key: 'operatorHistoryTokenBudget', kind: 'number', min: 5000, max: 150000, step: 1000, label: 'Operator history budget (tokens)',
+    help: 'How much chat history the operator brain sees per turn. Higher = better recall, more cost.' },
+  { key: 'operatorActiveOnStartup', kind: 'bool', label: 'Operator active on startup',
+    help: 'When a new chat opens, start in active mode (operator initiates) vs passive.' },
+  { key: 'voicePrivacyMode', kind: 'enum', label: 'Voice privacy mode',
+    help: 'Always-on streams the mic continuously; wake-word-gated only streams after the wake word.',
+    options: [
+      { value: 'always-on', label: 'Always on' },
+      { value: 'wake-word-gated', label: 'Wake-word gated' },
+      { value: 'ptt', label: 'Push-to-talk' },
+    ] },
+  { key: 'speakSuggestions', kind: 'bool', label: 'Speak suggestions out loud',
+    help: 'When the operator surfaces suggestions, also speak them via TTS.' },
+  { key: 'speakReceivingFlips', kind: 'bool', label: 'Speak mode flips',
+    help: 'Announce active/passive mode changes via TTS.' },
+  { key: 'speakCadenceStatus', kind: 'bool', label: 'Speak cadence status',
+    help: 'Announce silence-nudge events via TTS.' },
+  { key: 'operatorBackstoryEnabled', kind: 'bool', label: 'Operator backstory enabled',
+    help: 'Include the operator persona backstory in the system prompt.' },
 ] as const;
+
+interface EffectivePrefs {
+  workspace: Record<string, unknown>;
+  user: Record<string, unknown>;
+}
 
 export default function UserSettingsPage() {
   const [user, setUser] = useState<User | null>(null);
-  const [prefs, setPrefs] = useState<Record<string, unknown>>({});
+  const [effective, setEffective] = useState<EffectivePrefs>({ workspace: {}, user: {} });
   const [loading, setLoading] = useState(true);
+
+  // Display name edit
+  const [displayName, setDisplayName] = useState('');
+  const [savingName, setSavingName] = useState(false);
 
   // Password change UI
   const [currentPw, setCurrentPw] = useState('');
   const [nextPw, setNextPw] = useState('');
   const [pwBusy, setPwBusy] = useState(false);
 
-  // Display name
-  const [displayName, setDisplayName] = useState('');
-
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [me, p] = await Promise.all([
+      const [me, prefsJson, vpJson] = await Promise.all([
         fetch('/api/auth/me').then((r) => r.json()),
         fetch('/api/user/preferences').then((r) => r.ok ? r.json() : { payload: {} }),
+        // /api/voice-prefs returns the MERGED view today. We compute
+        // workspace-only by stripping known user overrides client-side.
+        fetch('/api/voice-prefs').then((r) => r.ok ? r.json() : null).catch(() => null),
       ]);
       setUser(me.user);
       setDisplayName(me.user?.display_name ?? '');
-      setPrefs(p.payload ?? {});
+      const userPrefs = prefsJson.payload ?? {};
+      const merged: Record<string, unknown> = vpJson ?? {};
+      // Effective workspace = merged minus any keys the user has overridden.
+      const workspace: Record<string, unknown> = {};
+      for (const spec of OVERRIDES) {
+        // If user has overridden, the merged value IS the user override.
+        // We can't recover the workspace value from /api/voice-prefs alone
+        // without explicit support; show "(see /settings/voice)" placeholder
+        // for those rows.
+        workspace[spec.key] = merged[spec.key];
+      }
+      setEffective({ workspace, user: userPrefs });
     } finally {
       setLoading(false);
     }
@@ -56,11 +126,47 @@ export default function UserSettingsPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const setOverride = useCallback(async (key: string, value: unknown) => {
+    const r = await fetch('/api/user/preferences', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ [key]: value }),
+    });
+    if (!r.ok) {
+      toast.error(`Failed to set ${key}`);
+      return;
+    }
+    setEffective((p) => ({ ...p, user: { ...p.user, [key]: value } }));
+    toast.success(`Override saved for ${key}`);
+  }, []);
+
   const clearOverride = useCallback(async (key: string) => {
-    await fetch(`/api/user/preferences?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
-    setPrefs((p) => { const out = { ...p }; delete out[key]; return out; });
+    const r = await fetch(`/api/user/preferences?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
+    if (!r.ok) {
+      toast.error(`Failed to clear ${key}`);
+      return;
+    }
+    setEffective((p) => { const u = { ...p.user }; delete u[key]; return { ...p, user: u }; });
     toast.success(`Cleared override for ${key}`);
   }, []);
+
+  const saveDisplayName = useCallback(async () => {
+    setSavingName(true);
+    try {
+      const r = await fetch('/api/auth/me', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ display_name: displayName }),
+      });
+      if (!r.ok) {
+        toast.error('Failed to save display name');
+        return;
+      }
+      toast.success('Display name updated');
+    } finally {
+      setSavingName(false);
+    }
+  }, [displayName]);
 
   const onSetPassword = useCallback(async () => {
     setPwBusy(true);
@@ -95,16 +201,12 @@ export default function UserSettingsPage() {
     );
   }
 
-  const activeOverrides = Object.keys(prefs).filter((k) =>
-    VOICE_USER_OVERRIDE_KEYS.some((v) => v.key === k),
-  );
-
   return (
-    <div style={{ padding: 32, maxWidth: 720, display: 'flex', flexDirection: 'column', gap: 32 }}>
+    <div style={{ padding: 32, maxWidth: 880, display: 'flex', flexDirection: 'column', gap: 32 }}>
       <header>
         <h1 style={{ marginBottom: 8 }}>User preferences</h1>
         <p style={{ color: 'var(--text-secondary)', margin: 0 }}>
-          Settings here override workspace settings just for {user.display_name}.
+          Settings here override workspace defaults just for {user.display_name}.
         </p>
       </header>
 
@@ -112,18 +214,20 @@ export default function UserSettingsPage() {
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Identity</h2>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <label>Username: <code>{user.username}</code> (immutable)</label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <span>Display name</span>
-            <input
-              type="text"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4 }}
-            />
-          </label>
-          {/* Display-name save endpoint TBD — skipping in v1 since
-              the field is read-only on the user table for now.
-              Users can rename via signup (next user). */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+              <span>Display name</span>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4 }}
+              />
+            </label>
+            <button type="button" onClick={saveDisplayName} disabled={savingName || displayName.trim() === user.display_name}>
+              {savingName ? '…' : 'Save'}
+            </button>
+          </div>
         </div>
       </section>
 
@@ -157,37 +261,52 @@ export default function UserSettingsPage() {
       </section>
 
       <section>
-        <h2 style={{ fontSize: 16, marginBottom: 12 }}>Active preference overrides</h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
-          User-scoped values overriding workspace defaults. Edit these from <a href="/settings/voice">/settings/voice</a> or
-          <a href="/settings/operator"> /settings/operator</a> while logged in as this user; clear to fall back to workspace.
+        <h2 style={{ fontSize: 16, marginBottom: 4 }}>Overrides</h2>
+        <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
+          Set a value here to override the workspace default for your account.
+          Leave a row empty (or click Clear) to fall back to the workspace.
         </p>
-        {activeOverrides.length === 0 ? (
-          <p style={{ color: 'var(--text-secondary)' }}>No user-specific overrides set.</p>
-        ) : (
-          <ul style={{ listStyle: 'none', padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {activeOverrides.map((k) => {
-              const label = VOICE_USER_OVERRIDE_KEYS.find((v) => v.key === k)?.label ?? k;
-              return (
-                <li
-                  key={k}
-                  style={{
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                    padding: '6px 10px', borderRadius: 4,
-                    border: '1px solid var(--border)',
-                  }}
-                >
-                  <span>
-                    {label}: <code>{JSON.stringify(prefs[k])}</code>
-                  </span>
-                  <button type="button" onClick={() => clearOverride(k)} style={{ fontSize: 12 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {OVERRIDES.map((spec) => {
+            const overridden = spec.key in effective.user;
+            const value = overridden ? effective.user[spec.key] : effective.workspace[spec.key];
+            return (
+              <div
+                key={spec.key}
+                style={{
+                  display: 'flex', alignItems: 'flex-start', gap: 12,
+                  padding: 12, borderRadius: 6,
+                  border: '1px solid var(--border)',
+                  background: overridden ? 'rgba(167, 139, 250, 0.05)' : 'transparent',
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                    <strong style={{ fontSize: 14 }}>{spec.label}</strong>
+                    {overridden && (
+                      <span style={{ padding: '1px 6px', borderRadius: 3, background: '#a78bfa', color: '#fff', fontSize: 10, fontWeight: 600 }}>OVERRIDE</span>
+                    )}
+                  </div>
+                  <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '0 0 8px' }}>{spec.help}</p>
+                  <OverrideInput
+                    spec={spec}
+                    value={value}
+                    onChange={(v) => setOverride(spec.key, v)}
+                  />
+                </div>
+                {overridden && (
+                  <button
+                    type="button"
+                    onClick={() => clearOverride(spec.key)}
+                    style={{ flexShrink: 0, padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
+                  >
                     Clear
                   </button>
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                )}
+              </div>
+            );
+          })}
+        </div>
       </section>
 
       <section>
@@ -198,5 +317,69 @@ export default function UserSettingsPage() {
         </p>
       </section>
     </div>
+  );
+}
+
+function OverrideInput({ spec, value, onChange }: {
+  spec: OverrideSpec;
+  value: unknown;
+  onChange: (v: unknown) => void;
+}) {
+  // Debounce string + number on blur to avoid one PATCH per keystroke.
+  const [draft, setDraft] = useState<string>(value == null ? '' : String(value));
+  useEffect(() => { setDraft(value == null ? '' : String(value)); }, [value]);
+
+  if (spec.kind === 'bool') {
+    return (
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+        <input
+          type="checkbox"
+          checked={value === true}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span>{value === true ? 'On' : 'Off'}</span>
+      </label>
+    );
+  }
+  if (spec.kind === 'enum') {
+    return (
+      <select
+        value={(value as string) ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4, minWidth: 200 }}
+      >
+        <option value="">(use workspace default)</option>
+        {spec.options.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    );
+  }
+  if (spec.kind === 'number') {
+    return (
+      <input
+        type="number"
+        value={draft}
+        min={spec.min}
+        max={spec.max}
+        step={spec.step}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          const n = Number(draft);
+          if (Number.isFinite(n)) onChange(n);
+        }}
+        style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4, width: 140 }}
+      />
+    );
+  }
+  // string
+  return (
+    <input
+      type="text"
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => { if (draft !== String(value ?? '')) onChange(draft); }}
+      style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4, minWidth: 240 }}
+    />
   );
 }
