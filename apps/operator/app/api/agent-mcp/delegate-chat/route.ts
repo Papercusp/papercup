@@ -133,8 +133,22 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   // Build the conversational prompt. Single-turn shape — claude --session-id
   // resumes any prior turns via its own session store.
+  // On session-creation turn, pre-inject workspace-shared memories. Delegates
+  // are workspace-bearer authed (no cookie user) → workspace-only scope.
+  let memoryBlock: string | null = null;
+  if (sessionCreated) {
+    try {
+      const { buildMemoryContextBlock } = await import('@/lib/memory/injection');
+      memoryBlock = await buildMemoryContextBlock({
+        userId: null,
+        workspaceId,
+        queryContext: requestText,
+        heading: 'Workspace memory (relevant entries)',
+      });
+    } catch { /* best-effort */ }
+  }
   const promptText = sessionCreated
-    ? `${SYSTEM_PROMPT}\n\nUser request: ${requestText}`
+    ? [SYSTEM_PROMPT, memoryBlock, `User request: ${requestText}`].filter(Boolean).join('\n\n')
     : `User: ${requestText}`;
 
   return sseResponse({

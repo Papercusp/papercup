@@ -77,8 +77,8 @@ async function searchProseHybrid(q: string, limit: number): Promise<ProseHit[]> 
   const qVec = await embedQuery(q);
   if (!qVec) return bm.slice(0, limit);
 
-  const { pgFields } = await import('@/lib/memory/mem0-connection');
-  const fields = await pgFields();
+  const { pgClientFields } = await import('@/lib/memory/mem0-connection');
+  const fields = await pgClientFields();
   if (!fields) return bm.slice(0, limit);
   const ws = activeWorkspaceId();
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -185,8 +185,8 @@ async function searchMemories(q: string, userId: string, limit: number) {
 }
 
 async function searchProse(q: string, limit: number): Promise<ProseHit[]> {
-  const { pgFields } = await import('@/lib/memory/mem0-connection');
-  const fields = await pgFields();
+  const { pgClientFields } = await import('@/lib/memory/mem0-connection');
+  const fields = await pgClientFields();
   if (!fields) return [];
   const ws = activeWorkspaceId();
   // eslint-disable-next-line @typescript-eslint/no-require-imports

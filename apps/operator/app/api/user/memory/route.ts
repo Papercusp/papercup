@@ -8,7 +8,7 @@
 
 import { NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
-import { getMemoryClient } from '@/lib/memory/mem0-client';
+import { getMemoryClient, invalidateMemoryClient } from '@/lib/memory/mem0-client';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { recordFeedback } from '@/lib/memory/feedback';
 
@@ -55,25 +55,33 @@ export async function DELETE(req: Request) {
     for (const r of myResults.results ?? []) {
       try {
         await client.delete(r.id);
+        const k = (r.metadata as Record<string, unknown> | undefined)?.kind;
         await recordFeedback({
           memId: r.id, userId: user.id, action: 'forget_all',
+          kind: typeof k === 'string' ? k : null,
           priorText: r.memory ?? null,
         });
         n += 1;
       } catch { /* best-effort */ }
     }
+    // High-impact action — force learning-loop instructions to refresh
+    // on the next memory operation rather than waiting for TTL.
+    invalidateMemoryClient();
     return NextResponse.json({ ok: true, deleted: n });
   }
   if (!id) return NextResponse.json({ error: 'id_or_all_required' }, { status: 400 });
-  // Snapshot prior text BEFORE delete so we can record feedback.
+  // Snapshot prior text + kind BEFORE delete so we can record feedback.
   let priorText: string | null = null;
+  let priorKind: string | null = null;
   try {
     const got = await client.get(id);
     priorText = (got as { memory?: string } | null)?.memory ?? null;
+    const k = (got as { metadata?: Record<string, unknown> } | null)?.metadata?.kind;
+    priorKind = typeof k === 'string' ? k : null;
   } catch { /* best-effort */ }
   await client.delete(id);
   await recordFeedback({
-    memId: id, userId: user.id, action: 'delete', priorText,
+    memId: id, userId: user.id, action: 'delete', kind: priorKind, priorText,
   });
   return NextResponse.json({ ok: true });
 }
@@ -88,14 +96,17 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: 'id_and_memory_required' }, { status: 400 });
   }
   let priorText: string | null = null;
+  let priorKind: string | null = null;
   try {
     const got = await client.get(body.id);
     priorText = (got as { memory?: string } | null)?.memory ?? null;
+    const k = (got as { metadata?: Record<string, unknown> } | null)?.metadata?.kind;
+    priorKind = typeof k === 'string' ? k : null;
   } catch { /* best-effort */ }
   await client.update(body.id, body.memory.trim());
   await recordFeedback({
     memId: body.id, userId: user.id, action: 'edit',
-    priorText, newText: body.memory.trim(),
+    kind: priorKind, priorText, newText: body.memory.trim(),
   });
   return NextResponse.json({ ok: true });
 }

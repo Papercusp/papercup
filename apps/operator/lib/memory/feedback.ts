@@ -16,14 +16,15 @@ export interface FeedbackInput {
   memId: string;
   userId: string;
   action: 'edit' | 'delete' | 'forget_all';
+  kind?: string | null;
   priorText?: string | null;
   newText?: string | null;
 }
 
 export async function recordFeedback(input: FeedbackInput): Promise<void> {
   try {
-    const { pgFields } = await import('./mem0-connection');
-    const fields = await pgFields();
+    const { pgClientFields } = await import('./mem0-connection');
+    const fields = await pgClientFields();
     if (!fields) return;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Client } = require('pg') as typeof import('pg');
@@ -32,13 +33,14 @@ export async function recordFeedback(input: FeedbackInput): Promise<void> {
     try {
       await c.query(
         `INSERT INTO harness_shared.memory_feedback
-           (mem_id, user_id, workspace_id, action, prior_text, new_text)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+           (mem_id, user_id, workspace_id, action, kind, prior_text, new_text)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           input.memId,
           input.userId,
           activeWorkspaceId(),
           input.action,
+          input.kind ?? null,
           input.priorText ?? null,
           input.newText ?? null,
         ],
@@ -69,8 +71,8 @@ export async function loadFeedbackStats(
   recentLimit = 20,
 ): Promise<FeedbackStats | null> {
   try {
-    const { pgFields } = await import('./mem0-connection');
-    const fields = await pgFields();
+    const { pgClientFields } = await import('./mem0-connection');
+    const fields = await pgClientFields();
     if (!fields) return null;
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Client } = require('pg') as typeof import('pg');

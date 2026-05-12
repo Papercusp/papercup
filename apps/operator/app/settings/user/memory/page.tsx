@@ -21,6 +21,7 @@ const KIND_COLORS: Record<string, string> = {
 interface FeedbackStats {
   total_edits: number;
   total_deletes: number;
+  learning_instructions: string | null;
 }
 
 export default function MemoryPage() {
@@ -132,6 +133,16 @@ export default function MemoryPage() {
           <p style={{ fontSize: 12, color: 'var(--text-secondary)', margin: '8px 0 0' }}>
             Lifetime feedback: <strong>{stats.total_edits}</strong> edits, <strong>{stats.total_deletes}</strong> deletes
           </p>
+        )}
+        {stats?.learning_instructions && (
+          <details style={{ marginTop: 12, padding: 12, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)' }}>
+            <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--text-secondary)' }}>
+              Active extraction-prompt adaptation (from your feedback)
+            </summary>
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, marginTop: 8, color: 'var(--text)' }}>
+              {stats.learning_instructions}
+            </pre>
+          </details>
         )}
       </header>
 

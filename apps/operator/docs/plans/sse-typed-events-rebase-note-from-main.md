@@ -1,70 +1,101 @@
-# Rebase note for `sse-typed-events` branch — schema flattener forward-port
+# sse-typed-events rebase notes (from main)
 
-**For the agent on `papercupai/papercup#sse-typed-events`.** When you
-rebase onto current `main` you will conflict on
-`packages/agent-mcp/src/define-tool.ts`. Resolution is mechanical;
-this note exists so you don't have to reconstruct intent from the
-conflict markers.
+This note tracks main-side changes the `sse-typed-events` branch will
+need to reconcile when rebasing. Owners on the branch are listed where
+known. Last updated: 2026-05-12 evening.
 
-## What's on main (not yet on your branch)
+## 1. JSON-schema flattener — `02dde625`
 
-Commit `02dde625` — "agent-mcp: flatten JSON schemas for OpenAI
-strict-mode tool calling".
+**Where:** `packages/agent-mcp/src/define-tool.ts`, both `toJSONSchema`
+call sites.
 
-OpenAI Codex strict mode rejects any function `parameters` schema
-that has `oneOf`/`anyOf`/`allOf`/`not` at the root, or is missing
-`type: "object"` at the root. Zod's `discriminatedUnion` (and
-`z.union`) produces exactly that shape — `{anyOf: [...]}` or
-`{oneOf: [...]}` with no `type` key. Result: every tool whose args
-schema uses a discriminated union has its definition rejected at
-tool-list time, and the whole turn produces zero output.
+**Why:** OpenAI strict-mode tool calling rejects `anyOf`/`oneOf` at the
+root of a tool's `inputSchema`. The flattener wraps these into a proper
+`{ type: "object", properties: {...} }` shape by merging the variants
+of `z.discriminatedUnion` / `z.union` into a flat properties bag with
+all branches as optional.
 
-Fix on main: `flattenForOpenAi(schema)` helper in `define-tool.ts`
-that merges variant `properties` into a single object schema with
-discriminator-only `required` set, then wraps every legacy and
-projected tool's `inputSchema` through it.
+**Resolution:** On rebase, the `sse-typed-events` definitions for
+`inputSchema` should be renamed to `rawSchema` and the final assignment
+should pipe through `flattenForOpenAi(rawSchema)`. The 12 flattener
+tests (`__tests__/define-tool.test.ts`) pin the contract; if they pass,
+the merge is correct.
 
-## Conflict shape
+## 2. Cross-route mem0 injection — `6e10c571`
 
-Your branch's `registerLegacyAsProjected` has:
+**Where:** main has `buildMemoryContextBlock()` in
+`apps/operator/lib/memory/injection.ts` (with 14 unit tests in
+`injection.test.ts`). It is now called from:
+
+- `app/api/agent-mcp/operator-chat/route.ts` (session-creation turn,
+  workspace-only scope — that route is bearer-authed with no cookie user)
+- `app/api/agent-mcp/delegate-chat/route.ts` (same shape)
+
+**Branch-side state:** `sse-typed-events` extracted operator-converse's
+inline injection into `lib/agent-tools/operator/converse-prompt.ts`.
+That code can be replaced with a single call to the helper:
 
 ```ts
-const inputSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
-delete (inputSchema as Record<string, unknown>).$schema;
+import { buildMemoryContextBlock, lastUserContext } from '@/lib/memory/injection';
+
+// inside composeOperatorConversePrompt, replace the 30-line memory block with:
+const memBlock = await buildMemoryContextBlock({
+  userId: sessionUser?.id ?? null,
+  workspaceId,
+  queryContext: lastUserContext(messages, 3),
+});
+if (memBlock) sections.push(memBlock);
 ```
 
-Main has:
+**Missing routes that should adopt the helper after rebase:** the
+branch has `composeArchitectPrompt` and `composeBrainstormPrompt` in
+`lib/agent-tools/architect/prompts.ts`. Neither currently injects
+mem0 memories. Both should call:
 
 ```ts
-const rawSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
-delete (rawSchema as Record<string, unknown>).$schema;
-const inputSchema = flattenForOpenAi(rawSchema);
+const memBlock = await buildMemoryContextBlock({
+  userId: null,                  // architect/brainstorm have no session user
+  workspaceId: activeWorkspaceId(),
+  queryContext: message,
+  heading: 'Architect memory (relevant entries)',   // or Brainstorm
+});
+if (memBlock) sections.push(memBlock);  // or splice into the systemPrompt template
 ```
 
-Same two-line conflict appears at the second projected-tool
-registration site (around line 256 on your branch / 326 on main).
+This unlocks "the architect remembers the workspace's prior design
+decisions" with zero new infrastructure.
 
-## Resolution
+## 3. Memory feedback table — `6e10c571` + submodule `c52b430`
 
-Pick "incoming" (main) for both `inputSchema` assignments AND keep
-the `flattenForOpenAi` helper that lands above them. Your branch's
-`events`/`idleTimeoutSec`/reserved-name guard code is untouched by
-the conflict — it lives further down the file in the
-`ToolDefinitionRegistry`/`UserEvents`/`registerProjectedTool` paths.
+Migration 062 adds `harness_shared.memory_feedback`. `/api/user/memory`
+PATCH/DELETE now records `edit` / `delete` / `forget_all` events.
+`/api/user/memory/feedback` exposes per-user stats; the
+`/settings/user/memory` page surfaces a "Lifetime feedback: N edits, M
+deletes" line.
 
-After resolving, run:
+**No branch impact** — these are user-route changes that don't touch
+the chat-route refactor.
 
-```
-cd packages/agent-mcp && npx vitest run src/__tests__/define-tool.test.ts
-```
+## 4. Plan 2B+C (semantic search + RRF) — `63182bc4` + `e16351b7`
 
-12 tests cover the flattener; they should all pass.
+New tool `search:semantic` plus pure RRF combiner in
+`lib/agent-tools/search/rrf.ts`. The tool registry change in
+`lib/agent-tools/index.ts` is additive. Drift test (`__tests__/integration/tools-md-sync.mjs`)
+shows 22/0 — the new tool's catalog entry is in place.
 
-## Why this matters for IPC
+**No branch impact** unless `sse-typed-events` removed any agent-tool
+registrations.
 
-The IPC path bypasses HTTP/MCP transports but still surfaces the
-same `inputSchema` to clients via `dispatchProjectedToolStream`'s
-schema lookup. If a downstream consumer (e.g. a future agentic
-client that talks OpenAI-strict) goes through IPC, the same flatten
-must apply. Keeping the wrap inside `define-tool.ts` (rather than
-the HTTP route) means IPC is covered automatically.
+## 5. Re-embed worker — `fcc080c2`
+
+`/api/user/memory/reembed` plus mode-switch buttons on
+`/settings/user/memory`. Worker lives in
+`apps/operator/lib/memory/reembed.ts`. No branch impact.
+
+## 6. Embedded-pg pgvector bundling — `465bbd6` (papercusp-desktop)
+
+Desktop build scripts now copy pgvector into the embedded-postgres
+tree on Linux + macOS. Migration 060 wraps `CREATE EXTENSION vector`
+in DO/EXCEPTION so the boot path tolerates Windows (in-memory fallback).
+
+**No branch impact.**

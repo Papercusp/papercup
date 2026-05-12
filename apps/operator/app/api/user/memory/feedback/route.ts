@@ -8,6 +8,7 @@
 import { NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
 import { loadFeedbackStats } from '@/lib/memory/feedback';
+import { buildLearningInstructions } from '@/lib/memory/learning';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,6 +16,12 @@ export const runtime = 'nodejs';
 export async function GET() {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
-  const stats = await loadFeedbackStats(user.id, 20);
-  return NextResponse.json(stats ?? { total_edits: 0, total_deletes: 0, recent: [] });
+  const [stats, learningInstructions] = await Promise.all([
+    loadFeedbackStats(user.id, 20),
+    buildLearningInstructions().catch(() => null),
+  ]);
+  return NextResponse.json({
+    ...(stats ?? { total_edits: 0, total_deletes: 0, recent: [] }),
+    learning_instructions: learningInstructions,
+  });
 }

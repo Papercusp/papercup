@@ -24,7 +24,12 @@
 import { getMemoryClient } from './mem0-client';
 
 export interface MemoryInjectionInput {
-  userId: string;
+  /**
+   * Per-user memory scope. Omit (or pass null) on workspace-bearer
+   * routes that don't have a session user — the helper will then
+   * inject only workspace-shared memories.
+   */
+  userId?: string | null;
   workspaceId: string;
   /** Recent user-turn content concatenated. Empty string returns null. */
   queryContext: string;
@@ -50,19 +55,28 @@ export async function buildMemoryContextBlock(
   const userLimit = input.limit ?? 6;
   const sharedLimit = Math.ceil(userLimit / 2);
 
-  let userHits: { results?: Array<{ memory: string; metadata?: Record<string, unknown> }> } = {};
-  let sharedHits: typeof userHits = {};
+  type Hits = { results?: Array<{ memory: string; metadata?: Record<string, unknown> }> };
+  let userHits: Hits = {};
+  let sharedHits: Hits = {};
   try {
-    [userHits, sharedHits] = await Promise.all([
-      client.search(input.queryContext, {
-        filters: { user_id: input.userId },
-        limit: userLimit,
-      }),
+    const pulls: Array<Promise<Hits>> = [];
+    if (input.userId) {
+      pulls.push(
+        client.search(input.queryContext, {
+          filters: { user_id: input.userId },
+          limit: userLimit,
+        }) as Promise<Hits>,
+      );
+    } else {
+      pulls.push(Promise.resolve({} as Hits));
+    }
+    pulls.push(
       client.search(input.queryContext, {
         filters: { user_id: `workspace:${input.workspaceId}` },
-        limit: sharedLimit,
-      }),
-    ]);
+        limit: input.userId ? sharedLimit : userLimit,
+      }) as Promise<Hits>,
+    );
+    [userHits, sharedHits] = await Promise.all(pulls);
   } catch (err) {
     if (process.env.NODE_ENV !== 'test') {
       console.warn('[memory-injection] search failed:', (err as Error).message);

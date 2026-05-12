@@ -133,6 +133,35 @@ describe('buildMemoryContextBlock', () => {
     expect(block).toMatch(/^## Brainstorm memory/);
   });
 
+  it('workspace-only mode (no userId) pulls only shared memories', async () => {
+    const c = mockClient(
+      [{ memory: 'personal', metadata: { kind: 'preference' } }],
+      [{ memory: 'workspace fact', metadata: { kind: 'project' } }],
+    );
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(getMemoryClient).mockResolvedValue(c as any);
+    const block = await buildMemoryContextBlock({
+      userId: null, workspaceId: 'ws-9', queryContext: 'auth?',
+    });
+    expect(block).toContain('workspace fact');
+    expect(block).not.toContain('personal');
+    // Verify only one search call happened (no per-user pull)
+    const calls = (c.search as ReturnType<typeof vi.fn>).mock.calls;
+    const userIds = calls.map((c) => (c[1] as { filters: { user_id: string } }).filters.user_id);
+    expect(userIds).toEqual(['workspace:ws-9']);
+  });
+
+  it('workspace-only mode honors `limit` for the shared pull', async () => {
+    const c = mockClient([], [{ memory: 'x', metadata: { kind: 'project' } }]);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.mocked(getMemoryClient).mockResolvedValue(c as any);
+    await buildMemoryContextBlock({
+      userId: null, workspaceId: 'ws', queryContext: 'q', limit: 9,
+    });
+    const calls = (c.search as ReturnType<typeof vi.fn>).mock.calls;
+    expect((calls[0][1] as { limit: number }).limit).toBe(9);
+  });
+
   it('passes filter shape mem0 v3 expects (snake_case user_id)', async () => {
     const c = mockClient([{ memory: 'x', metadata: { kind: 'preference' } }]);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
