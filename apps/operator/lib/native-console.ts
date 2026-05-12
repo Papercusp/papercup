@@ -103,26 +103,46 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
     pageOrigin: typeof window !== 'undefined' ? window.location.origin : '(ssr)',
   });
 
-  // Path 1: server-side spawn via the operator. Most resilient.
+  // Primary path: Image().src GET request. This is a no-CORS request
+  // type in browsers — no preflight, no Origin header check, just a
+  // GET to the URL. Tauri's webkit2gtk fetch() preflight is broken in
+  // this build, so we sidestep it entirely. Server-side ?action=spawn
+  // hits doSpawn() and returns a 1x1 PNG.
+  if (typeof window !== 'undefined') {
+    try {
+      console.info('[console-launcher] firing Image().src GET');
+      const params = new URLSearchParams({ action: 'spawn' });
+      if (opts.slug) params.set('slug', opts.slug);
+      const img = new window.Image();
+      const imgLoaded = new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('image-spawn load failed'));
+      });
+      img.src = `http://localhost:3055/api/agent-mcp/console/launch?${params}`;
+      await Promise.race([
+        imgLoaded,
+        new Promise((res) => setTimeout(res, 2000)), // don't block on the PNG
+      ]);
+      console.info('[console-launcher] image-spawn fired');
+      return;
+    } catch (e: any) {
+      console.warn('[console-launcher] image-spawn failed', e?.message);
+    }
+  }
+
+  // Fallback path: fetch() POST. Kept for completeness; this is the
+  // path that triggered the preflight issue we're routing around.
   const endpoints = [resolveLaunchEndpoint()];
-  // Always also fall back to localhost:3055 if the primary fails (covers
-  // Tauri sessions where the page origin isn't loopback at all).
   if (!endpoints[0].includes('localhost:3055')) {
     endpoints.push('http://localhost:3055/api/agent-mcp/console/launch');
   }
-
   let lastError: any;
   for (const url of endpoints) {
     try {
       const { ok, data, status } = await tryServerSideSpawn(opts.slug, url);
-      console.info('[console-launcher] server-side result', { url, status, data });
+      console.info('[console-launcher] fetch result', { url, status, data });
       if (ok && data?.status === 'ok') return;
-      // 501 = "wrong OS" — fall through to Tauri.
-      if (status === 501) {
-        console.info('[console-launcher] server-side returned 501; trying Tauri');
-        break;
-      }
-      // Other server-side error — surface it but also try the next endpoint.
+      if (status === 501) break;
       lastError = new Error(data?.error ?? `console/launch HTTP ${status}`);
     } catch (e: any) {
       console.warn('[console-launcher] fetch failed', { url, error: e?.message });
