@@ -23,7 +23,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { sseResponse } from '@restart/sse';
-import { runAgentChat } from '@/lib/agent-chat-stream';
+import {
+  dispatchProjectedToolStream,
+  lookupByMcpName,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+// Side-effect: registers operator:delegate + the other operator-side tools.
+import '@/lib/agent-tools/index';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
@@ -137,97 +143,117 @@ export async function GET(req: NextRequest): Promise<Response> {
     ? `${SYSTEM_PROMPT}\n\nUser request: ${requestText}`
     : `User: ${requestText}`;
 
+  // Build mcpConfig for the delegate session. delegate: stays stdio
+  // (has UI-coupled semantics not in the projected catalog). agentmcp:
+  // HTTP via mcp-remote bridge for the full operator tool catalog.
+  const mcpConfig = (() => {
+    const superuserToken = (() => {
+      try {
+        return require('node:fs').readFileSync(
+          require('node:path').join(require('node:os').homedir(), '.papercusp', 'superuser-token'),
+          'utf8',
+        ).trim();
+      } catch { return ''; }
+    })();
+    const opBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://127.0.0.1:3055';
+    const servers: Record<string, unknown> = {
+      delegate: {
+        command: 'node',
+        args: [join(process.cwd(), 'apps/operator/lib/delegate-mcp-server.mjs')],
+        env: { DELEGATE_BASE: opBase },
+      },
+    };
+    if (superuserToken) {
+      servers.agentmcp = {
+        type: 'stdio',
+        command: 'npx',
+        args: [
+          '-y',
+          'mcp-remote@latest',
+          `${opBase}/api/mcp?superuser=1`,
+          '--header',
+          `Authorization:Bearer ${superuserToken}`,
+        ],
+      };
+    }
+    return { mcpServers: servers };
+  })();
+
   return sseResponse({
     signal: req.signal,
     setup: async (sink) => {
       sink.event('session', { agentSessionId, created: sessionCreated });
 
-      let assistantText = '';
-      try {
-        const events = runAgentChat({
-          promptText,
-          sessionId: agentSessionId,
-          sessionMode: 'force',
-          // agentmcp: HTTP via mcp-remote bridge (covers the full operator
-          // tool catalog including agent_tools:list, ui:*, autoloop:*,
-          // not just the standalone bootstrap.ts subset).
-          // delegate: stays stdio because it has its own UI-coupled
-          // semantics (dispatchToAgent, followUpInChat) not in the
-          // projected catalog.
-          mcpConfig: (() => {
-            const superuserToken = (() => {
-              try {
-                return require('node:fs').readFileSync(
-                  require('node:path').join(require('node:os').homedir(), '.papercusp', 'superuser-token'),
-                  'utf8',
-                ).trim();
-              } catch { return ''; }
-            })();
-            const opBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://127.0.0.1:3055';
-            const servers: Record<string, unknown> = {
-              delegate: {
-                command: 'node',
-                args: [join(process.cwd(), 'apps/operator/lib/delegate-mcp-server.mjs')],
-                env: {
-                  DELEGATE_BASE: opBase,
-                },
-              },
-            };
-            if (superuserToken) {
-              servers.agentmcp = {
-                type: 'stdio',
-                command: 'npx',
-                args: [
-                  '-y',
-                  'mcp-remote@latest',
-                  `${opBase}/api/mcp?superuser=1`,
-                  '--header',
-                  `Authorization:Bearer ${superuserToken}`,
-                ],
-              };
-            }
-            return { mcpServers: servers };
-          })(),
-          allowedTools: [...ALL_DELEGATE_TOOLS],
-          toolEventFilter: (raw) => {
-            if (raw.startsWith('mcp__agentmcp__')) return raw.replace(/^mcp__agentmcp__/, '');
-            if (raw.startsWith('mcp__delegate__')) return raw.replace(/^mcp__delegate__/, 'delegate:');
-            return null;
-          },
-          permissionMode: 'bypassPermissions',
-          signal: req.signal,
-        });
+      const delegateTool = lookupByMcpName('operator:delegate');
+      if (!delegateTool) {
+        sink.event('error', { message: 'operator:delegate tool not registered' });
+        return;
+      }
+      const ctxBase: UnifiedToolContext = {
+        log: (msg) => { console.log(`[operator:delegate][tool] ${msg}`); },
+        signal: req.signal,
+        progress: () => {},
+        emit: () => { /* installed by dispatchProjectedToolStream */ },
+        workspaceId,
+        role: 'operator',
+        runId: agentSessionId,
+        spawnId: agentSessionId,
+      };
 
-        for await (const ev of events) {
-          if (ev.type === 'delta') {
-            assistantText += ev.text;
-            sink.event('delta', { text: ev.text });
-          } else if (ev.type === 'tool_call') {
-            sink.event('tool_call', { name: ev.name, input: ev.input });
-          } else if (ev.type === 'result') {
-            const fullText = ev.finalText || assistantText;
-            sink.done({
-              agentSessionId,
-              costUsd: ev.costUsd,
-              tokensIn: ev.tokensIn,
-              tokensOut: ev.tokensOut,
-              fullText,
-            });
-            void appendDelegateTurn(workspaceId, agentSessionId, {
-              ts: new Date().toISOString(),
-              request: requestText,
-              response: fullText,
-            }).catch(() => { /* ignore */ });
-            if (sessionCreated) {
-              void generateSessionTitle({
-                workspace: workspaceId,
+      try {
+        for await (const ev of dispatchProjectedToolStream(
+          delegateTool,
+          'operator:delegate',
+          {
+            promptText,
+            agentSessionId,
+            mcpConfigJson: JSON.stringify(mcpConfig),
+            allowedTools: [...ALL_DELEGATE_TOOLS],
+          },
+          ctxBase,
+          {},
+        )) {
+          if (ev.kind === 'event') {
+            sink.event(ev.name, ev.data as Record<string, unknown>);
+          } else if (ev.kind === 'done') {
+            try {
+              const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';
+              const out = JSON.parse(text) as {
+                costUsd: number;
+                tokensIn: number;
+                tokensOut: number;
+                fullText: string;
+              };
+              // Emit the rich done payload the consumer expects
+              // (delegation.ts after Phase 2 reads costUsd + fullText).
+              sink.done({
                 agentSessionId,
-                initiatorMsg: requestText,
-                firstResponse: fullText,
-              }).catch(() => { /* best-effort */ });
+                costUsd: out.costUsd,
+                tokensIn: out.tokensIn,
+                tokensOut: out.tokensOut,
+                fullText: out.fullText,
+              });
+              // Post-stream side effects: append delegate turn to PG,
+              // generate session title on first turn.
+              void appendDelegateTurn(workspaceId, agentSessionId, {
+                ts: new Date().toISOString(),
+                request: requestText,
+                response: out.fullText,
+              }).catch(() => { /* ignore */ });
+              if (sessionCreated) {
+                void generateSessionTitle({
+                  workspace: workspaceId,
+                  agentSessionId,
+                  initiatorMsg: requestText,
+                  firstResponse: out.fullText,
+                }).catch(() => { /* best-effort */ });
+              }
+            } catch (e) {
+              console.warn('[delegate-chat] tool result parse failed:', e);
             }
-          } else if (ev.type === 'error') {
-            sink.event('error', { message: ev.message, stderr: ev.stderr });
+          } else if (ev.kind === 'error') {
+            sink.event('error', { message: ev.error.message });
+            return;
           }
         }
       } catch (e: unknown) {

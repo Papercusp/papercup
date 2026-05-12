@@ -23,6 +23,7 @@ import './operator/stats';
 import './operator/last_scan';
 import './operator/scan';
 import './operator/converse';
+import './operator/delegate';
 import './architect/chat';
 import './operator/scans_list';
 import './operator/audit';
