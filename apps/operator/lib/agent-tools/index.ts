@@ -120,6 +120,7 @@ import './dev/pg_health';
 import './dev/pg_active_queries';
 import './dev/pg_table_sizes';
 import './dev/build_status';
+import './dev/ipc_echo';
 import './dev/processes';
 import './dev/session_detail';
 import './processes/kill';

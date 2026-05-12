@@ -200,8 +200,10 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       // the resolved path from the stdout PAPERCUSP_IPC_READY line.
       socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
       // Initial allowlist: start narrow during burn-in. Widen once
-      // we've verified the first migrated route end-to-end.
+      // we've verified the first migrated route end-to-end. dev:ipc_echo
+      // is the canonical liveness probe (verified by the /dev page).
       allowedTools: [
+        'dev:ipc_echo',
         'operator:scan',
       ],
     });
