@@ -26,8 +26,8 @@
  * gives the body more vertical room).
  */
 
-import { useEffect, useMemo, useRef, type ReactNode } from 'react';
-import { ArrowUpRight, type LucideIcon } from 'lucide-react';
+import { useEffect, useMemo, useRef, type ComponentType, type ReactNode } from 'react';
+import { ArrowUpRight } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 export interface ChatToolCall {
@@ -76,6 +76,11 @@ export interface ChatMessage {
   seq?: number;
 }
 
+export type ChatIconComponent = ComponentType<{
+  className?: string;
+  'aria-hidden'?: boolean;
+}>;
+
 export interface ChatConversationProps {
   messages: ChatMessage[];
   /** True while the model is composing/streaming. Disables input + shows thinking row. */
@@ -87,12 +92,12 @@ export interface ChatConversationProps {
   emptyState: {
     title: string;
     body: string;
-    icon: LucideIcon;
+    icon: ChatIconComponent;
     extra?: ReactNode;
   };
 
   /** Per-message avatar icon picker. Defaults: user → Users, assistant/system → emptyState.icon. */
-  iconForRole?: (role: ChatMessage['role']) => LucideIcon;
+  iconForRole?: (role: ChatMessage['role']) => ChatIconComponent;
   /** Per-message label (default: 'You' for user, emptyState.title for the rest). */
   labelForRole?: (role: ChatMessage['role']) => string;
 
@@ -122,7 +127,7 @@ export interface ChatConversationProps {
   /** Defaults to `'Send a message…'`. */
   inputPlaceholder?: string;
   /** Defaults to emptyState.icon. */
-  inputIcon?: LucideIcon;
+  inputIcon?: ChatIconComponent;
   /** Defaults to 'Send'. Visible label inside the send button. */
   sendLabel?: string;
   /** Label shown inside the send button while busy. Defaults to '…'. */
@@ -335,7 +340,7 @@ export function ChatConversation(props: ChatConversationProps) {
         {messages.length === 0 ? (
           <div className="oracle-empty-state">
             <span className="oracle-empty-state-icon">
-              <EmptyIconComp aria-hidden="true" className="oracle-empty-state-glyph" />
+              <EmptyIconComp aria-hidden className="oracle-empty-state-glyph" />
             </span>
             <strong className="oracle-empty-state-title">{emptyState.title}</strong>
             <span className="oracle-empty-state-text">{emptyState.body}</span>
@@ -358,6 +363,7 @@ export function ChatConversation(props: ChatConversationProps) {
               const Icon = iconForRole ? iconForRole(m.role) : emptyState.icon;
               const label =
                 labelForRole?.(m.role) ?? (m.role === 'user' ? 'You' : emptyState.title);
+              const showRoleLabel = label.trim().length > 0;
               return (
                 <div
                   key={vi.key}
@@ -377,7 +383,7 @@ export function ChatConversation(props: ChatConversationProps) {
                     <Icon className="oracle-msg-icon" />
                   </span>
                   <div className="oracle-msg-stack">
-                    <div className="oracle-msg-role">{label}</div>
+                    {showRoleLabel && <div className="oracle-msg-role">{label}</div>}
                     {/*
                       Each tool is offered to renderToolCard FIRST (below content).
                       If it returns a card, we DON'T also render the same tool as
@@ -431,7 +437,7 @@ export function ChatConversation(props: ChatConversationProps) {
           }}
         >
           <div className="oracle-input-shell">
-            <InputIconComp aria-hidden="true" className="oracle-input-icon" />
+            <InputIconComp aria-hidden className="oracle-input-icon" />
             <input
               ref={inputRef}
               value={inputValue}

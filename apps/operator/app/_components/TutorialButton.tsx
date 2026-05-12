@@ -1,6 +1,6 @@
 'use client';
 
-import { OperatorLogoMark } from './OperatorLogoMark';
+import { OracleLogoMark } from './OracleLogoMark';
 
 // OracleDock is lazy-loaded behind a `ready` gate in ChromeShell, so a click
 // firing before its useEffect has attached the 'oracle:start-tutorial'
@@ -21,7 +21,7 @@ export default function TutorialButton() {
       onClick={onClick}
       title="Walk me through the app"
     >
-      <OperatorLogoMark variant="compact" className="oracle-link-icon" />
+      <OracleLogoMark className="oracle-link-icon" />
       <span>Tutorial</span>
     </button>
   );

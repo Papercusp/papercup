@@ -36,6 +36,7 @@ import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
 import DelegatesSection from './DelegatesSection';
 import ScanHistorySection from './ScanHistorySection';
 import { OperatorLogoMark } from './OperatorLogoMark';
+import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
 
@@ -1667,7 +1668,7 @@ export function OperatorPanel(): ReactElement | null {
               <div className="operator-panel__titlecopy">
                 <div className="operator-panel__title-overline" aria-hidden="true" />
                 <div className="operator-panel__titleline">
-                  <h2>Operator</h2>
+                  <OperatorWordmarkLockup className="operator-panel__wordmark" subtitle="" />
                   <span className={`operator-status operator-status--${effectiveIconState}`}>
                     {statusLabel}
                   </span>

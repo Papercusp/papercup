@@ -140,6 +140,7 @@ export function OperatorChat({
           </div>
         ),
       }}
+      labelForRole={(role) => (role === 'user' ? 'You' : '')}
       inputPlaceholder={passive ? 'Type to wake the Operator…' : 'Reply to the Operator…'}
       inputValue={input}
       onInputChange={setInput}

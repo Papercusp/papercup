@@ -21,8 +21,9 @@ import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { Tooltip } from '../harness/Tooltip';
 import RouteLink from './RouteLink';
 import { HudFrameCorners, HudReticleGlyph } from './hud/HudPrimitives';
-import { ChatConversation } from './chat/ChatConversation';
+import { ChatConversation, type ChatIconComponent } from './chat/ChatConversation';
 import { AskChoiceCard, type AskChoiceArgs } from './chat/AskChoiceCard';
+import { OracleLogoMark } from './OracleLogoMark';
 import {
   Activity,
   Bot,
@@ -197,7 +198,7 @@ function roleHint(role: AgentRole): string {
   return ROLE_HINTS[role] ?? 'Chat directly with this agent.';
 }
 
-const ROLE_ICONS: Record<string, LucideIcon> = {
+const ROLE_ICONS: Record<string, ChatIconComponent> = {
   worker: Hammer,
   validator: ShieldCheck,
   scoper: Compass,
@@ -226,15 +227,15 @@ const ROLE_ICONS: Record<string, LucideIcon> = {
 function normalizeRoleKey(role: AgentRole): string {
   return role.toLowerCase().replace(/[_\s]+/g, '-');
 }
-function roleIcon(role: AgentRole): LucideIcon {
+function roleIcon(role: AgentRole): ChatIconComponent {
   const normalized = normalizeRoleKey(role);
   if (normalized === 'support') return LifeBuoy;
-  if (normalized === 'oracle') return Sparkles;
+  if (normalized === 'oracle') return OracleLogoMark;
   if (normalized === 'security-reviewer') return Lock;
   return ROLE_ICONS[normalized] ?? ROLE_ICONS[normalized.replace(/^chief-/, '')] ?? Bot;
 }
-function targetIcon(t: ChatTarget): LucideIcon {
-  if (t.kind === 'oracle') return Sparkles;
+function targetIcon(t: ChatTarget): ChatIconComponent {
+  if (t.kind === 'oracle') return OracleLogoMark;
   if (t.kind === 'support') return LifeBuoy;
   return roleIcon(t.role);
 }
@@ -969,7 +970,7 @@ export function OracleDock() {
   const lastMsg = active ? active.messages[active.messages.length - 1] : undefined;
   const showThinking = !!(activeBusy && lastMsg && lastMsg.role === 'assistant' && !lastMsg.content && !lastMsg.tools?.length);
   const headerLabel = active ? targetLabel(active.target) : 'Oracle';
-  const ActiveTargetIcon = active ? targetIcon(active.target) : Sparkles;
+  const ActiveTargetIcon = active ? targetIcon(active.target) : OracleLogoMark;
   const headerSubtitle = active ? targetSubtitle(active.target) : 'general help across Papercusp';
 
   useGSAP(() => {
@@ -1153,7 +1154,7 @@ export function OracleDock() {
             >
               <span className="oracle-picker-trigger-role">
                 <span className="oracle-picker-role-icon-wrap">
-                  <SelectedRoleIcon aria-hidden="true" className="oracle-picker-role-icon" />
+                  <SelectedRoleIcon aria-hidden className="oracle-picker-role-icon" />
                 </span>
                 <span className="oracle-picker-trigger-role-label">
                   {selectedRole ? roleLabel(selectedRole) : 'No agents'}
@@ -1180,7 +1181,7 @@ export function OracleDock() {
                     >
                       <span className="oracle-picker-option-line">
                         <span className="oracle-picker-role-icon-wrap">
-                          <RoleIcon aria-hidden="true" className="oracle-picker-role-icon" />
+                          <RoleIcon aria-hidden className="oracle-picker-role-icon" />
                         </span>
                         <span className="oracle-picker-option-title">{roleLabel(role)}</span>
                       </span>
@@ -1203,8 +1204,8 @@ export function OracleDock() {
             Chat with {selectedRole ? roleLabel(selectedRole) : 'agent'}
           </button>
           <div className="oracle-picker-secondary">
-            <button type="button" className="oracle-picker-shortcut oracle-picker-shortcut-oracle" onClick={() => openTab(ORACLE_TARGET)}><Sparkles aria-hidden="true" className="oracle-picker-shortcut-icon" />Oracle</button>
-            <button type="button" className="oracle-picker-shortcut oracle-picker-shortcut-support" onClick={() => openTab(SUPPORT_TARGET)}><LifeBuoy aria-hidden="true" className="oracle-picker-shortcut-icon" />Support</button>
+            <button type="button" className="oracle-picker-shortcut oracle-picker-shortcut-oracle" onClick={() => openTab(ORACLE_TARGET)}><OracleLogoMark aria-hidden className="oracle-picker-shortcut-icon" />Oracle</button>
+            <button type="button" className="oracle-picker-shortcut oracle-picker-shortcut-support" onClick={() => openTab(SUPPORT_TARGET)}><LifeBuoy aria-hidden className="oracle-picker-shortcut-icon" />Support</button>
           </div>
         </div>
       </div>
@@ -1243,7 +1244,7 @@ export function OracleDock() {
           <header className="oracle-dock-header pc-animate-in pc-animate-in--down pc-animate-in--fast">
             <div className="oracle-header-main">
               <span className="oracle-header-badge">
-                <ActiveTargetIcon aria-hidden="true" className="oracle-header-icon" />
+                <ActiveTargetIcon aria-hidden className="oracle-header-icon" />
               </span>
               <div className="oracle-header-copy">
                 <strong>{headerLabel}</strong>
@@ -1276,7 +1277,7 @@ export function OracleDock() {
                   onClick={() => setActiveId(t.id)}
                 >
                   <span className="oracle-tab-label-wrap">
-                    <TabIcon aria-hidden="true" className="oracle-tab-icon" />
+                    <TabIcon aria-hidden className="oracle-tab-icon" />
                     <span className="oracle-tab-label">{tabTitle(t.target, tabs, harnessSlug)}</span>
                   </span>
                   {tabBusy && <span className="oracle-tab-dot oracle-tab-dot-busy" aria-label="thinking" />}

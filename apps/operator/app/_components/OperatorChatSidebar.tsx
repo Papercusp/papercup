@@ -24,6 +24,7 @@ import { Radio } from 'lucide-react';
 import { OperatorChat } from './OperatorChat';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { OperatorLogoMark } from './OperatorLogoMark';
+import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
 const MIN_WIDTH = 360;
@@ -135,7 +136,12 @@ export function OperatorChatSidebar() {
         </div>
         <div className="op-chat-header-copy">
           <div className="op-chat-header-title-row">
-            <strong>Operator</strong>
+            <OperatorWordmarkLockup
+              className="op-chat-wordmark"
+              titleClassName="op-chat-wordmark-title"
+              subtitleClassName="op-chat-wordmark-subtitle"
+              subtitle=""
+            />
             <span className={`op-chat-mode op-chat-mode-${conv.mode}`}>
               <span className="op-chat-mode-dot" aria-hidden="true" />
               {conv.mode}

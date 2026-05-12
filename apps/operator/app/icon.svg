@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" aria-label="Operator app icon — Sentinel Cup">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="38%" r="68%">
+      <stop offset="0%" stop-color="#17324a"/>
+      <stop offset="58%" stop-color="#0b1624"/>
+      <stop offset="100%" stop-color="#07101d"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b9efff"/>
+      <stop offset="52%" stop-color="#57d8ff"/>
+      <stop offset="100%" stop-color="#178db8"/>
+    </linearGradient>
+    <linearGradient id="cup" x1="50%" y1="0%" x2="50%" y2="100%">
+      <stop offset="0%" stop-color="#f3eef9" stop-opacity="0.97"/>
+      <stop offset="100%" stop-color="#d7d2e2" stop-opacity="0.84"/>
+    </linearGradient>
+    <linearGradient id="coffee" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#c8a57b"/>
+      <stop offset="100%" stop-color="#8b5e3d"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)" stroke="url(#ring)" stroke-width="4"/>
+  <path d="M64 18c0 7-8 11-15 17" fill="none" stroke="#d9a977" stroke-width="3.2" stroke-linecap="round"/>
+  <path d="M64 18c0 7 8 11 15 17" fill="none" stroke="#d9a977" stroke-width="3.2" stroke-linecap="round"/>
+  <g transform="translate(0 10)">
+    <path d="M38 40h52l-5 38c0 5-8 9-21 9s-21-4-21-9z" fill="url(#cup)" fill-opacity="0.18" stroke="#d8f4ff" stroke-opacity="0.90" stroke-width="2.3" stroke-linejoin="round"/>
+    <ellipse cx="64" cy="40" rx="26" ry="5.4" fill="url(#cup)" fill-opacity="0.20" stroke="#d8f4ff" stroke-opacity="0.90" stroke-width="2.3"/>
+    <ellipse cx="64" cy="40" rx="19" ry="3.1" fill="url(#coffee)" fill-opacity="0.88"/>
+    <path d="M46 56c10-2.8 26-2.8 36 0" fill="none" stroke="#d9a977" stroke-opacity="0.76" stroke-width="2.2" stroke-linecap="round"/>
+    <rect x="61.5" y="53" width="5" height="19" rx="2.5" fill="#7ce2ff" fill-opacity="0.82"/>
+    <path d="M56.5 79c2.2 2.8 4.7 4 7.5 4s5.3-1.2 7.5-4" fill="none" stroke="#7ce2ff" stroke-opacity="0.82" stroke-width="2" stroke-linecap="round"/>
+  </g>
+</svg>
