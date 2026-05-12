@@ -24,6 +24,10 @@ import { launchNativeConsole, isConsoleLauncherSupported } from '@/lib/native-co
 
 export function ConsoleLauncherButton() {
   const [busy, setBusy] = useState(false);
+  // Visible click counter so we can confirm React's click handler
+  // is firing even when the spawn fails silently. Remove once
+  // Tauri-webview debugging is done.
+  const [clickCount, setClickCount] = useState(0);
   // Tracked but not used as a hide-gate any more — we render the
   // button on every page (browser + Tauri) and explain on click if
   // the user is in the browser-served operator without the desktop
@@ -68,6 +72,7 @@ export function ConsoleLauncherButton() {
       disabled={busy}
       onMouseDown={() => console.info('[console-launcher] mousedown')}
       onClick={async () => {
+        setClickCount((c) => c + 1);
         console.info('[console-launcher] button clicked', { supported, harnessSlug });
         if (!supported) {
           toast.info('Native terminal only opens from the desktop app.', { duration: 6000 });
@@ -90,6 +95,25 @@ export function ConsoleLauncherButton() {
       }}
     >
       <ConsoleIcon />
+      {clickCount > 0 && (
+        <span
+          style={{
+            position: 'absolute',
+            top: -6,
+            right: -6,
+            background: '#10b981',
+            color: '#021016',
+            borderRadius: 999,
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '1px 5px',
+            pointerEvents: 'none',
+            lineHeight: 1,
+          }}
+        >
+          {clickCount}
+        </span>
+      )}
     </button>
   );
 }

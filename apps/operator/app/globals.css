@@ -24048,6 +24048,7 @@ body:has(.operator-panel) {
  * OS-native terminal window via Tauri. See
  * apps/operator/app/_components/ConsoleLauncherButton.tsx. */
 .pc-console-btn {
+  position: relative;
   width: 36px;
   height: 36px;
   display: inline-flex;
