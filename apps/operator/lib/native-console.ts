@@ -8,8 +8,6 @@
  * spawns the user's OS-native terminal in a new window.
  */
 
-import { isTauriNative } from './pty-tauri';
-
 export interface LaunchOpts {
   slug: string | null;
 }
@@ -23,16 +21,30 @@ interface ConsoleEnvelope {
 }
 
 /**
- * True iff we're running in the Tauri desktop bridge. The button hides
- * itself when this returns false — there's no point showing the user
- * a control that can't do anything in a plain browser session.
+ * True iff we're running inside a Tauri webview that can invoke
+ * commands.
+ *
+ * Why not isTauriNative() from pty-tauri.ts: that function gates on
+ * window.__PAPERCUSP_TAURI__, a marker the desktop app only sets in
+ * production mode (main.rs:1168 lives inside the prod setup branch;
+ * dev returns early). In dev Tauri the operator IS running in a Tauri
+ * webview — __TAURI_INTERNALS__.invoke is wired — but the marker
+ * isn't, so isTauriNative() returns false and the console launcher
+ * thinks it's in a plain browser. That's the bug that made the click
+ * silently no-op for the user.
+ *
+ * The console launcher only needs `invoke` (no per-event listen, no
+ * pty IPC), so checking __TAURI_INTERNALS__ directly works in both
+ * dev and prod.
  */
 export function isConsoleLauncherSupported(): boolean {
-  return isTauriNative();
+  if (typeof window === 'undefined') return false;
+  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } };
+  return typeof w.__TAURI_INTERNALS__?.invoke === 'function';
 }
 
 export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
-  if (!isTauriNative()) {
+  if (!isConsoleLauncherSupported()) {
     throw new Error('Native console is only available in the desktop app');
   }
 
