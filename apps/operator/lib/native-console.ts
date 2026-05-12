@@ -83,9 +83,13 @@ function resolveLaunchEndpoint(): string {
 
 async function tryServerSideSpawn(slug: string | null, url: string): Promise<{ ok: boolean; data: any; status: number }> {
   console.info('[console-launcher] fetching', url);
+  // Use text/plain content-type so this counts as a CORS "simple request"
+  // and skips the preflight OPTIONS entirely — Tauri's webkit2gtk in this
+  // build appears to fail preflight handshakes silently. Server parses
+  // either JSON or empty bodies.
   const r = await fetch(url, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'text/plain' },
     body: JSON.stringify({ slug }),
   });
   const data = await r.json().catch(() => ({ status: 'error', error: 'invalid JSON' }));

@@ -149,7 +149,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!isLoopback(req)) {
     return jsonRes({ status: 'error', error: 'loopback only' }, 403);
   }
-  const body = (await req.json().catch(() => ({}))) as { slug?: string | null };
+  // Accept either application/json or text/plain (the renderer uses
+  // text/plain to avoid a CORS preflight). Parse JSON from the text.
+  let body: { slug?: string | null } = {};
+  try {
+    const text = await req.text();
+    if (text.trim()) body = JSON.parse(text);
+  } catch { /* ignore — empty body is fine */ }
 
   let envelope;
   try {
