@@ -33,9 +33,46 @@ export const commands = {
 	 *  a fresh spawn when the resume id is stale.
 	 */
 	ptyIsAlive: (id: string) => __TAURI_INVOKE<boolean>("pty_is_alive", { id }),
+	wslStatus: () => __TAURI_INVOKE<WslStatus>("wsl_status"),
+	wslInstall: () => typedError<null, WslOpError>(__TAURI_INVOKE("wsl_install")),
+	/**
+	 *  Re-launch the desktop app with admin elevation via PowerShell's
+	 *  `Start-Process -Verb RunAs`. The current process exits as soon as
+	 *  the elevated child is spawned. The user sees the UAC prompt,
+	 *  approves, and the app reopens with admin rights — `wsl --install`
+	 *  will then succeed.
+	 */
+	wslRelaunchElevated: () => typedError<null, string>(__TAURI_INVOKE("wsl_relaunch_elevated")),
+	wslImport: () => typedError<null, string>(__TAURI_INVOKE("wsl_import")),
+	wslBootstrap: () => typedError<string, string>(__TAURI_INVOKE("wsl_bootstrap")),
+	/**
+	 *  Restart the desktop app after WSL onboarding completes. The
+	 *  sidecar spawn in setup() short-circuits while WSL state isn't
+	 *  Ready, so a clean restart picks up the now-Ready state and routes
+	 *  the sidecar through `wsl.exe`. Frontend calls this immediately
+	 *  after `wsl_bootstrap` succeeds and a follow-up `wsl_status` returns
+	 *  Ready.
+	 */
+	wslFinalizeReady: () => typedError<null, string>(__TAURI_INVOKE("wsl_finalize_ready")),
+	wslUninstall: () => typedError<null, string>(__TAURI_INVOKE("wsl_uninstall")),
+	consoleLaunch: (envelope: ConsoleEnvelope) => __TAURI_INVOKE<ConsoleLaunchResult>("console_launch", { envelope }),
 };
 
 /* Types */
+/**
+ *  Mirror of the TS-side `ConsoleEnvelope` from
+ *  apps/operator/lib/console-launcher.ts.
+ */
+export type ConsoleEnvelope = {
+	cwd: string,
+	env: { [key in string]: string },
+	mcpJsonContents: string,
+	greetingCmd: string,
+	needsSuperuserBootstrap: boolean,
+};
+
+export type ConsoleLaunchResult = { status: "ok"; pid: number | null; displaced_mcp_json: boolean; bootstrapped: boolean } | { status: "err"; error: string };
+
 export type PtySpawnOpts = {
 	command: string,
 	args?: string[],
@@ -67,6 +104,62 @@ export type Workspace = {
 	name: string,
 	// Unix epoch milliseconds.
 	createdAt: number,
+};
+
+/**
+ *  Typed error for the install commands. Frontend uses the variant tag
+ *  to decide whether to re-launch with elevation, retry, or show a
+ *  generic error.
+ */
+export type WslOpError = 
+/**
+ *  `wsl --install` returned 740 (ERROR_ELEVATION_REQUIRED). User
+ *  must re-launch the app with admin privileges. Message is the
+ *  stderr we got back, mostly for diagnostics.
+ */
+{ kind: "NeedsElevation"; message: string } | 
+// Generic failure — exit code + stderr.
+{ kind: "Failed"; message: string };
+
+export type WslState = 
+/**
+ *  Not on Windows; nothing to do.
+ * 
+ *  Note: NO `rename_all = "camelCase"` here. The frontend
+ *  (apps/operator/lib/wsl-tauri.ts) and the WslOnboardingGate
+ *  component check `state.kind === 'NotSupported' | 'NotInstalled'
+ *  | …` in PascalCase. Adding camelCase here makes the gate's
+ *  pass-through check fail on Linux — the wizard then shows on
+ *  machines that should never see it.
+ */
+{ kind: "NotSupported" } | 
+// `wsl.exe` not on PATH, or `wsl --status` errored.
+{ kind: "NotInstalled" } | 
+// User has launched the install but reboot hasn't happened yet.
+{ kind: "PendingReboot" } | 
+// WSL works, but our papercup-runtime distro hasn't been imported.
+{ kind: "InstalledNoDistro" } | 
+// Distro exists, papercup bootstrap hasn't run.
+{ kind: "PendingBootstrap" } | 
+// Ready to use.
+{ kind: "Ready" } | 
+/**
+ *  Something went wrong. `message` carries detail; frontend shows a
+ *  retry button.
+ */
+{ kind: "Error"; message: string };
+
+export type WslStatus = {
+	state: WslState,
+	/**
+	 *  `true` if `wsl.exe` exists on PATH at all (regardless of version
+	 *  / install state).
+	 */
+	wslExeAvailable: boolean,
+	// Listed via `wsl --list --quiet`. Empty before WSL is installed.
+	distros: string[],
+	// Default WSL version (1 or 2). 0 if unknown.
+	defaultVersion: number,
 };
 
 /* Tauri Specta runtime */

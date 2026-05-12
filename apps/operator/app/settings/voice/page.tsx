@@ -622,13 +622,13 @@ export default function VoiceSettingsPage() {
             </div>
             <div>
               <label style={lbl}>
-                Auto-disconnect ElevenLabs / Realtime session after this many minutes of silence
+                Auto-disconnect after this many minutes of <strong>user</strong> silence
               </label>
               <input
                 type="number"
                 min={0}
                 max={60}
-                value={prefs.fullAgentIdleTimeoutMin ?? 5}
+                value={prefs.fullAgentIdleTimeoutMin ?? 2}
                 onChange={(e) => {
                   const v = Math.max(0, Math.min(60, parseInt(e.target.value, 10) || 0));
                   savePrefsPatch({ fullAgentIdleTimeoutMin: v });
@@ -637,9 +637,32 @@ export default function VoiceSettingsPage() {
                 disabled={savingPrefs}
               />
               <p style={hint}>
-                Default 5 minutes. The mic streams continuously while the session is connected — silence
-                still costs minutes (~$0.08–0.30/min on EL). 0 disables auto-disconnect (not recommended
-                for paid plans). Resume by tapping the voice button.
+                Default <strong>2 minutes</strong>. Only counts USER silence — the agent talking
+                doesn&apos;t reset the timer (so a chatty agent can&apos;t keep the session alive
+                indefinitely). The mic streams continuously while connected; silence still costs
+                minutes (~$0.08–0.30/min on EL). 0 disables auto-disconnect (not recommended).
+              </p>
+            </div>
+            <div>
+              <label style={lbl}>
+                Hard maximum session duration (minutes)
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={240}
+                value={prefs.fullAgentSessionMaxMin ?? 30}
+                onChange={(e) => {
+                  const v = Math.max(0, Math.min(240, parseInt(e.target.value, 10) || 0));
+                  savePrefsPatch({ fullAgentSessionMaxMin: v });
+                }}
+                style={{ ...sel, width: 120 }}
+                disabled={savingPrefs}
+              />
+              <p style={hint}>
+                Default <strong>30 minutes</strong>. Backstop for edge cases — the session
+                auto-disconnects after this many minutes regardless of activity. Tap the voice
+                button to start another. 0 disables the cap.
               </p>
             </div>
             <div>

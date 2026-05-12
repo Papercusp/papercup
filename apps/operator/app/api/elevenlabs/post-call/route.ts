@@ -24,6 +24,7 @@ import crypto from 'node:crypto';
 import { getOrgPg, generated } from '@restart/db-org';
 import { eq } from 'drizzle-orm';
 import { ensureOperatorConversationsTable } from '@/lib/ensure-schema';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 const ot = generated.operatorTurnsInHarnessShared;
 const oc = generated.operatorConversationsInHarnessShared;
@@ -59,6 +60,7 @@ interface TranscriptionPayload {
   data: {
     conversation_id: string;
     status?: string;
+    agent_id?: string;
     metadata?: { call_duration_secs?: number };
     has_audio?: boolean;
   };
@@ -135,6 +137,32 @@ export async function POST(req: NextRequest): Promise<Response> {
              has_audio = COALESCE(${data.has_audio ?? null}::boolean, has_audio)
        WHERE id = ${ourId}
     `;
+
+    // Record EL Conv-AI call duration into harness_shared.el_conv_calls
+    // — the spend-cap table that `/api/agent-mcp/operator-el-spend` reads
+    // for the monthly minute cap check at session-start. Without this
+    // insert, the cap is decorative (every call reads as 0 minutes used
+    // and the over_cap branch never fires).
+    //
+    // ON CONFLICT (conversation_id) DO NOTHING handles webhook retries
+    // gracefully — EL may deliver the post_call_transcription event
+    // more than once for the same call.
+    const durationSecs = data.metadata?.call_duration_secs ?? 0;
+    if (durationSecs > 0) {
+      const workspaceId = activeWorkspaceId();
+      try {
+        await sql`
+          INSERT INTO harness_shared.el_conv_calls
+            (conversation_id, agent_id, workspace, duration_secs)
+          VALUES (${elConvId}, ${data.agent_id ?? null}, ${workspaceId}, ${durationSecs})
+          ON CONFLICT (conversation_id) DO NOTHING
+        `;
+      } catch (err) {
+        // Don't fail the webhook on metering insert errors — the
+        // conversation-write above already succeeded. Log + move on.
+        console.warn('[el-post-call] el_conv_calls insert failed', err);
+      }
+    }
   } else if (event.type === 'post_call_audio') {
     await db.update(oc).set({ hasAudio: true }).where(eq(oc.id, ourId));
   }

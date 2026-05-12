@@ -509,16 +509,53 @@ let elConnectedAt = 0;
 
 // Idle-disconnect timer for EL Conv AI / Realtime sessions. Mic streams
 // continuously while connected; silence still bills minutes. The timer
-// is reset by every transcript event + voice-button click. Default
-// timeout from voice-prefs (5 min); 0 = disabled.
+// is reset by every USER transcript (agent transcripts intentionally
+// don't reset — see voice-mode onAssistantText). Default timeout from
+// voice-prefs (2 min); 0 = disabled.
 let idleTimer: ReturnType<typeof setTimeout> | null = null;
-let idleTimeoutMs = 5 * 60_000;
+let idleTimeoutMs = 2 * 60_000;
+
+// Hard session-max timer. Regardless of activity, the session
+// auto-disconnects after this many ms. Backstop for stuck-session
+// edge cases (idle-detection failure, abandoned tabs, etc.).
+// Set from voice-prefs.fullAgentSessionMaxMin; 0 = no max.
+let sessionMaxTimer: ReturnType<typeof setTimeout> | null = null;
+let sessionMaxMs = 30 * 60_000;
 
 function clearIdleTimer(): void {
   if (idleTimer) {
     clearTimeout(idleTimer);
     idleTimer = null;
   }
+}
+
+function clearSessionMaxTimer(): void {
+  if (sessionMaxTimer) {
+    clearTimeout(sessionMaxTimer);
+    sessionMaxTimer = null;
+  }
+}
+
+/**
+ * Arm the hard session-max timer at session-start. Runs ONCE — does
+ * NOT reset on activity. The whole point is to bound worst-case
+ * billable duration regardless of how active the session is.
+ */
+function armSessionMaxTimer(): void {
+  clearSessionMaxTimer();
+  if (sessionMaxMs <= 0) return;
+  if (!realtimeSession) return;
+  sessionMaxTimer = setTimeout(() => {
+    sessionMaxTimer = null;
+    if (!realtimeSession) return;
+    const labelMin = Math.round(sessionMaxMs / 60_000);
+    void emitVoiceToast(
+      'info',
+      `Voice session hit ${labelMin}m max — disconnecting. Tap the button to start another.`,
+    );
+    stopRealtimeSession();
+    setState({ status: state.mode === 'off' ? 'off' : 'idle' });
+  }, sessionMaxMs);
 }
 
 function armIdleTimer(): void {
@@ -605,6 +642,7 @@ async function drainDelegateInboxOnConnect(): Promise<void> {
 let stopInFlight: Promise<void> | null = null;
 function stopRealtimeSession(): Promise<void> {
   clearIdleTimer();
+  clearSessionMaxTimer();
   if (!realtimeSession) return stopInFlight ?? Promise.resolve();
   const session = realtimeSession;
   realtimeSession = null;
@@ -763,6 +801,10 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     if (typeof prefs.fullAgentIdleTimeoutMin === 'number') {
       idleTimeoutMs = Math.max(0, prefs.fullAgentIdleTimeoutMin) * 60_000;
     }
+    // Pull session-max pref. Hard ceiling regardless of activity.
+    if (typeof prefs.fullAgentSessionMaxMin === 'number') {
+      sessionMaxMs = Math.max(0, prefs.fullAgentSessionMaxMin) * 60_000;
+    }
     // Wake-word-gated mode: don't open EL/Realtime yet — start the local
     // wake-word engine instead. The onWake callback brings up EL only
     // when the wake word fires.
@@ -824,12 +866,15 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
         setState({ lastTranscript: text });
         void persistOperatorVoiceTurn({ role: 'user', text, source: 'voice_stt' });
         emitOperatorUserTurn(text);
+        // Idle = USER idle. Resetting on agent transcripts too lets a
+        // chatty agent keep the session alive indefinitely, defeating
+        // the timeout. EL credit-burn audit, fix #2.
         nudgeFullAgentIdle();
       },
       onAssistantText: (text) => {
         realtimeTagObserver.push(text);
         void persistOperatorVoiceTurn({ role: 'assistant', text, source: 'voice_tts' });
-        nudgeFullAgentIdle();
+        // Intentionally NOT calling nudgeFullAgentIdle() here. See above.
       },
       onError: (err) => {
         console.error('[realtime]', err);
@@ -840,6 +885,7 @@ async function maybeStartFullAgentInner(): Promise<boolean> {
     setState({ status: 'listening', micOwnedByFullAgent: true });
     void emitVoiceToast('info', 'Realtime connected — speak to talk to the operator.');
     armIdleTimer();
+    armSessionMaxTimer();
     return true;
   } catch (err: any) {
     console.warn('[voice] realtime start failed at stage=' + stage + ':', err);
@@ -982,12 +1028,15 @@ async function startElevenLabsConvAgent(_prefs: unknown): Promise<boolean> {
         tagObserver.push(text);
         const elConvId = handle?.getConversationId?.() ?? null;
         void persistOperatorVoiceTurn({ role: 'assistant', text, source: 'voice_tts', elConvId });
-        nudgeFullAgentIdle();
+        // Intentionally NOT calling nudgeFullAgentIdle() here. Idle =
+        // USER idle; resetting on agent transcripts too lets a chatty
+        // agent keep the session alive indefinitely. EL audit fix #2.
       },
       onConnect: () => {
         debugLog('el-conv:connected', { ts: Date.now() });
         elConnectedAt = Date.now();
         armIdleTimer();
+        armSessionMaxTimer();
         // Hindsight inbox: deliver any async-delegate completions that
         // arrived while no session was live. Done after a small delay so
         // the SDK is past the "first turn" handshake before we shove a

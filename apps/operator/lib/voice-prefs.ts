@@ -111,11 +111,20 @@ export interface VoicePrefs {
   operatorActiveOnStartup: boolean;
   /**
    * Auto-disconnect EL Conv AI / Realtime full-agent sessions after
-   * this many minutes of inactivity. Mic streams continuously while
-   * the session is connected — silence still costs minutes. 0 = never
-   * auto-disconnect. Default 5 minutes.
+   * this many minutes of USER inactivity (agent transcripts don't reset
+   * the timer — see voice-mode.ts onAssistantText). Mic streams
+   * continuously while connected — silence still costs minutes.
+   * 0 = never auto-disconnect. Default 2 minutes (was 5 — too generous;
+   * EL credit-burn audit recommended tighter).
    */
   fullAgentIdleTimeoutMin: number;
+  /**
+   * Hard maximum session duration in minutes. Regardless of activity,
+   * the session auto-disconnects after this many minutes. Backstop for
+   * edge cases where idle-detection fails (stuck transcripts, abandoned
+   * tabs, etc.). 0 = no max. Default 30 minutes.
+   */
+  fullAgentSessionMaxMin: number;
   /**
    * Hard monthly cap on ElevenLabs Conv AI minutes. Once the current
    * month's usage reaches this number, voice-mode refuses to start a
@@ -194,7 +203,8 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   narrateLongOps: true,
   operatorBackstoryEnabled: true,
   operatorActiveOnStartup: true,
-  fullAgentIdleTimeoutMin: 5,
+  fullAgentIdleTimeoutMin: 2,
+  fullAgentSessionMaxMin: 30,
   fullAgentMonthlyMinuteCap: 600,
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,

@@ -780,18 +780,20 @@ const patch = {
       speed: OPERATOR_VOICE.speed,
     },
     // Disable silence-driven agent turns. Default turn_timeout=7s makes
-    // turn_timeout=10 brings the active-mode silence ladder in line
-    // with the plan ("~10s after last operator turn → silence-nudge").
-    // EL forces a fresh agent turn after 10s of dead air; in shell
+    // turn_timeout=30 (was 10 — too aggressive, burned EL credits).
+    // EL forces a fresh agent turn after 30s of dead air; in shell
     // mode the agent calls ask_operator with empty params, which the
-    // SSE route maps to trigger='silence_nudge' on the brain — the
-    // brain emits one of the ladder utterances ("Still with me?",
-    // etc) and TTS reads it. Subsequent timeouts escalate the brain's
-    // internal sub-state to silence_check / quiet_wait the same way
-    // the text path does. turn_eagerness 'patient' keeps the
-    // mid-utterance "I'm thinking" trip-wire long.
+    // SSE route maps to trigger='silence_nudge' on the brain. The
+    // active-mode silence ladder still functions — just with a calmer
+    // cadence (~30s nudge vs the old 10s). Each forced turn is a
+    // billable EL call, so 10s burned ~6 turns/min vs ~2 turns/min
+    // at 30s — 3x cost reduction during silence with no feature loss
+    // (users actually prefer the calmer cadence).
+    //
+    // turn_eagerness 'patient' keeps the mid-utterance "I'm thinking"
+    // trip-wire long.
     turn: {
-      turn_timeout: 10,
+      turn_timeout: 30,
       turn_eagerness: 'patient',
     },
   },
