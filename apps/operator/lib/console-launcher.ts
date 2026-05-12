@@ -53,22 +53,25 @@ const TOKEN_PATH = join(homedir(), '.papercusp', 'superuser-token');
 
 /**
  * Where the bundled `papercup` shim + `papercup-status.mjs` live so the
- * Tauri launcher can prepend it to PATH. In standalone builds the
- * sidecar bundler should copy these into `sidecar/bin/`; in dev we
- * resolve relative to this module.
+ * Tauri launcher can prepend it to PATH. We try a few candidates so
+ * dev (`npm run dev` from apps/operator) and prod-standalone (sidecar
+ * bundle layout) both resolve correctly. Returns null when neither
+ * exists — the launcher just runs without the greeting on PATH.
  */
-function resolveScriptsDir(): string {
-  // Standalone build: SIDECAR root contains apps/operator/scripts/.
-  // The lib/ file lives at <root>/apps/operator/lib/console-launcher.js
-  // post-build, so scripts is a sibling. We resolve via __dirname when
-  // available (Node) and fall back to a known relative path.
-  try {
-    // @ts-ignore — __dirname is a Node global in CJS modules
-    if (typeof __dirname === 'string') return resolvePath(__dirname, '..', 'scripts');
-  } catch { /* fall through */ }
-  // Last resort: use the operator app root via papercuspPath. This is
-  // brittle in non-standard layouts but covers the dev-server case.
-  return resolvePath(papercuspPath('..', 'apps', 'operator', 'scripts'));
+function resolveScriptsDir(): string | null {
+  const cwd = process.cwd();
+  const candidates = [
+    // dev: started from apps/operator/, scripts is a sibling of lib/
+    resolvePath(cwd, 'scripts'),
+    // dev from monorepo root: papercup/
+    resolvePath(cwd, 'apps', 'operator', 'scripts'),
+    // standalone build: server runs from sidecar/apps/operator/
+    resolvePath(cwd, '..', '..', 'scripts'),
+  ];
+  for (const c of candidates) {
+    if (existsSync(join(c, 'papercup-status.mjs'))) return c;
+  }
+  return null;
 }
 
 /** Read the superuser bearer token. Returns null if not yet installed. */
@@ -117,11 +120,10 @@ export async function buildConsoleEnvelope(
   // 2b. Pass the operator's scripts dir so the launcher one-liner can
   //     run `papercup status` without the user having anything on PATH
   //     yet. The Tauri spawner prepends this to PATH when invoking the
-  //     terminal one-liner.
-  // __dirname-equivalent in CommonJS-compiled Next.js routes resolves
-  // here; if the file is bundled differently in standalone build we
-  // fall back to the repo-relative scripts path.
-  env.PAPERCUSP_SCRIPTS_DIR = resolveScriptsDir();
+  //     terminal one-liner. Skipped when not resolvable (the terminal
+  //     just opens without the greeting CLI in PATH).
+  const scriptsDir = resolveScriptsDir();
+  if (scriptsDir) env.PAPERCUSP_SCRIPTS_DIR = scriptsDir;
 
   // 3. Build the .mcp.json that the user's claude/codex agent will
   //    auto-discover when they cd here. Points at the superuser door.
