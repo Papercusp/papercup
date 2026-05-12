@@ -1,97 +1,214 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
-import { z } from 'zod';
-import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
-import RouteLink from '../_components/RouteLink';
 
-const LoginSchema = z.object({
-  email: z.string().email('Please enter a valid email'),
-});
-type LoginFormData = z.infer<typeof LoginSchema>;
+interface AvailableUser {
+  id: string;
+  username: string;
+  display_name: string;
+  has_password: boolean;
+}
 
 function LoginForm() {
+  const router = useRouter();
   const sp = useSearchParams();
-  const error = sp.get('error');
+  const redirectTo = sp.get('redirect_to') || '/';
 
-  const [devUrl, setDevUrl] = useState<string | null>(null);
-  const { register, submit, errors, isSubmitting } = useFormWith(LoginSchema, {
-    defaultValues: { email: '' },
-  });
+  const [available, setAvailable] = useState<AvailableUser[]>([]);
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [usePassword, setUsePassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (error === 'expired') toast.error('That magic link expired. Request a new one.');
-    else if (error === 'consumed') toast.error('That magic link was already used.');
-    else if (error === 'invalid_token') toast.error('That magic link is invalid.');
-    else if (error) toast.error(`login error: ${error}`);
-  }, [error]);
+    void (async () => {
+      try {
+        const r = await fetch('/api/auth/me');
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j.user) {
+          router.replace(redirectTo);
+          return;
+        }
+        const users = (j.available ?? []) as AvailableUser[];
+        setAvailable(users);
+        if (users.length === 1) {
+          setUsername(users[0].username);
+          setUsePassword(users[0].has_password);
+        }
+      } catch {
+        /* network failure — show empty form */
+      }
+    })();
+  }, [router, redirectTo]);
 
-  const onSubmit = async (data: LoginFormData) => {
-    setDevUrl(null);
+  // When username changes via dropdown, infer whether password is needed
+  useEffect(() => {
+    if (!username) return;
+    const u = available.find((a) => a.username === username);
+    if (u) setUsePassword(u.has_password);
+  }, [username, available]);
+
+  const onLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
     try {
       const r = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify({ username, password: usePassword ? password : null }),
       });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d?.error ?? 'request failed');
-      toast.success('Magic link sent. Check your email (or the dev console).');
-      if (d?.devMagicUrl) setDevUrl(d.devMagicUrl);
-    } catch (err: any) {
-      toast.error(`failed: ${err?.message ?? err}`);
+      const j = await r.json();
+      if (!r.ok) {
+        toast.error(j.error === 'bad_password' ? 'Wrong password.' : j.error === 'unknown_user' ? 'No such user.' : `Login failed: ${j.error}`);
+        return;
+      }
+      toast.success(`Welcome, ${j.user.display_name}`);
+      router.replace(redirectTo);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onSignup = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      const r = await fetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          username,
+          display_name: displayName,
+          password: usePassword ? password : null,
+          auto_login: true,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) {
+        toast.error(j.error === 'username_taken' ? 'That username is taken.' : `Signup failed: ${j.error}`);
+        return;
+      }
+      toast.success(`Welcome, ${j.user.display_name}`);
+      router.replace(redirectTo);
+    } finally {
+      setSubmitting(false);
     }
   };
 
   return (
-    <div className="pc-shell">
-      <h1>Sign in</h1>
-      <p>
-        Enter your email and we&rsquo;ll send a one-time link. No passwords.
-      </p>
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      minHeight: '100vh', padding: 32,
+    }}>
+      <form
+        onSubmit={mode === 'login' ? onLogin : onSignup}
+        style={{
+          display: 'flex', flexDirection: 'column', gap: 16,
+          minWidth: 320, padding: 32,
+          borderRadius: 12, border: '1px solid var(--border)',
+          background: 'var(--surface)',
+        }}
+      >
+        <h1 style={{ margin: 0, fontSize: 20 }}>
+          {mode === 'login' ? 'Sign in' : 'Create a user'}
+        </h1>
 
-      <div className="pc-card" style={{ maxWidth: 460 }}>
-        <form onSubmit={submit(onSubmit)}>
-          <FormField label="Email" error={errors.email}>
+        {mode === 'login' && available.length > 1 ? (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span>User</span>
+            <select
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            >
+              <option value="">Pick a user…</option>
+              {available.map((u) => (
+                <option key={u.id} value={u.username}>
+                  {u.display_name} ({u.username})
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span>Username</span>
             <input
-              type="email"
-              className="pc-input"
-              placeholder="you@example.com"
-              autoComplete="email"
-              {...register('email')}
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
+              autoComplete="username"
+              required
+              minLength={2}
+              maxLength={32}
+              pattern="[a-z0-9_-]{2,32}"
             />
-          </FormField>
-          <SubmitButton pending={isSubmitting} pendingLabel="Sending…">Send magic link</SubmitButton>
-        </form>
-
-        {devUrl && (
-          <div className="pc-warn" style={{ marginTop: 16 }}>
-            🔧 <strong>Dev mode.</strong> Email isn&rsquo;t wired yet — open this link to sign in:
-            <br />
-            <a href={devUrl} style={{ wordBreak: 'break-all', fontFamily: 'ui-monospace, monospace', fontSize: 11 }}>
-              {devUrl}
-            </a>
-          </div>
+          </label>
         )}
-      </div>
 
-      <div style={{ marginTop: 32, color: 'var(--fg-mute)', fontSize: 12 }}>
-        <p>
-          You don&rsquo;t need an account to use Papercusp locally. The
-          operator runs every agent through the <code>claude</code> CLI on
-          your machine — see <RouteLink href="/setup">Setup</RouteLink> if you haven&rsquo;t
-          authenticated <code>claude</code> yet.
-        </p>
-      </div>
+        {mode === 'signup' && (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span>Display name</span>
+            <input
+              type="text"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              required
+            />
+          </label>
+        )}
+
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={usePassword}
+            onChange={(e) => setUsePassword(e.target.checked)}
+            disabled={mode === 'login' && !!available.find((a) => a.username === username && a.has_password)}
+          />
+          <span>{mode === 'signup' ? 'Set a password (optional)' : 'Use password'}</span>
+        </label>
+
+        {usePassword && (
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span>Password</span>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              minLength={1}
+              required
+            />
+          </label>
+        )}
+
+        <button type="submit" disabled={submitting}>
+          {submitting ? '…' : mode === 'login' ? 'Sign in' : 'Create user'}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setMode(mode === 'login' ? 'signup' : 'login')}
+          style={{
+            background: 'none', border: 'none',
+            color: 'var(--text-secondary)', cursor: 'pointer',
+            fontSize: 13, padding: 0, textAlign: 'left',
+          }}
+        >
+          {mode === 'login' ? "Create a new user instead" : "Sign in to an existing user"}
+        </button>
+      </form>
     </div>
   );
 }
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="pc-shell"><h1>Sign in</h1><p>loading…</p></div>}>
+    <Suspense fallback={<div style={{ padding: 32 }}>Loading…</div>}>
       <LoginForm />
     </Suspense>
   );

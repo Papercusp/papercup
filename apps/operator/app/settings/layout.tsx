@@ -23,6 +23,7 @@ const SETTINGS_GROUPS: readonly SettingsGroup[] = [
     label: 'Identity & devices',
     links: [
       { href: '/settings/profile', label: 'Profile', keywords: ['account', 'identity', 'email', 'display name', 'project directory'] },
+      { href: '/settings/user', label: 'User preferences', keywords: ['user', 'me', 'override', 'password', 'session', 'logout'] },
       { href: '/settings/mobile', label: 'Mobile access', keywords: ['phone', 'device', 'pair', 'qr', 'workspace'] },
       { href: '/settings/publishing', label: 'Publishing', keywords: ['publish', 'preview', 'subdomain', 'public', 'marketplace'] },
     ],

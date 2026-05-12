@@ -7,13 +7,12 @@ import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorPanel';
-import { VoiceButton } from './voice/VoiceButton';
 import { ConsoleLauncherButton } from './ConsoleLauncherButton';
-import { OperatorActiveToggle } from './OperatorActiveToggle';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
+import UserPicker from './UserPicker';
 import UpdateChip from './UpdateChip';
 import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
@@ -159,8 +158,6 @@ export default function ChromeShell() {
           )}
           <OperatorButton />
           <OperatorAutoScanToggle />
-          <OperatorActiveToggle />
-          <VoiceButton />
           <ConsoleLauncherButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
@@ -180,13 +177,14 @@ export default function ChromeShell() {
           <NotificationCenter />
           <RecentActionsCenter />
           <WorkspaceSwitcher />
+          <UserPicker />
         </nav>
       </header>
       <HostCheckBanner />
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
       {/* OperatorPanel mounts on every page (including /settings/*) so
-          clicking the chrome-bar Operator button always opens it. The
+          clicking the chrome-bar Deck button always opens it. The
           panel returns null when its open state is false, so mounting
           it everywhere is essentially free.
 
@@ -263,7 +261,7 @@ function DeferredDocks() {
 // OperatorPanel is split out of DeferredDocks so it can mount on every
 // page including /settings/*. Use a short guaranteed timer instead of a
 // pure requestIdleCallback: editor-heavy settings pages can starve idle
-// work long enough that the chrome Operator button appears dead.
+// work long enough that the chrome Deck button appears dead.
 function DeferredOperatorPanel() {
   const [ready, setReady] = useState(false);
   useEffect(() => {
