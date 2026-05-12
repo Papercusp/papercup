@@ -34,7 +34,23 @@ export function ConsoleLauncherButton() {
   const harnessSlug = extractHarnessSlug(pathname ?? '');
 
   useEffect(() => {
-    setSupported(isConsoleLauncherSupported());
+    const sup = isConsoleLauncherSupported();
+    setSupported(sup);
+    // Mount-time diagnostic so we can confirm the component
+    // *rendered* even if subsequent clicks don't fire onClick.
+    console.info('[console-launcher] mounted', {
+      supported: sup,
+      hasTauriInternals: typeof (window as any).__TAURI_INTERNALS__,
+      tauriInvokeType: typeof (window as any).__TAURI_INTERNALS__?.invoke,
+    });
+    // Mark the global so we can poke the launcher from the devtools
+    // console: `window.__papercupLaunchTerminal()`.
+    (window as any).__papercupLaunchTerminal = () => {
+      console.info('[console-launcher] manual trigger from window');
+      launchNativeConsole({ slug: null }).catch((e) =>
+        console.error('[console-launcher] manual trigger failed', e),
+      );
+    };
   }, []);
 
   const tooltip = supported
@@ -50,6 +66,7 @@ export function ConsoleLauncherButton() {
       aria-label="Launch terminal"
       title={tooltip}
       disabled={busy}
+      onMouseDown={() => console.info('[console-launcher] mousedown')}
       onClick={async () => {
         console.info('[console-launcher] button clicked', { supported, harnessSlug });
         if (!supported) {
