@@ -230,7 +230,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
   const [detail, setDetail] = useState<ExpertDetail | null>(null);
   const [feedback, setFeedback] = useState<FeedbackEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useQueryState('expertTab', parseAsStringEnum<'spec' | 'feedback' | 'chat' | 'identity'>(['spec', 'feedback', 'chat', 'identity']).withDefault('spec'));
+  const [tab, setTab] = useQueryState('expertTab', parseAsStringEnum<'spec' | 'assertions' | 'feedback' | 'chat' | 'identity'>(['spec', 'assertions', 'feedback', 'chat', 'identity']).withDefault('spec'));
 
   // Eager: per-expert identity + SPEC.md content live in
   // harness_shared.harness_experts (mirrored by harness-fs-watcher).
@@ -366,7 +366,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
       </div>
 
       <div style={{ display: 'flex', borderBottom: '1px solid var(--border)', background: 'rgba(255,255,255,0.03)' }}>
-        {(['spec', 'feedback', 'chat', 'identity'] as const).map((t) => (
+        {(['spec', 'assertions', 'feedback', 'chat', 'identity'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -377,13 +377,14 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
               color: tab === t ? 'var(--accent-cool)' : 'var(--fg-dim)',
             }}
           >
-            {t === 'spec' ? 'SPEC.md' : t === 'feedback' ? `feedback (${feedback?.length ?? 0})` : t === 'chat' ? 'chat' : 'identity'}
+            {t === 'spec' ? 'SPEC.md' : t === 'assertions' ? 'assertions' : t === 'feedback' ? `feedback (${feedback?.length ?? 0})` : t === 'chat' ? 'chat' : 'identity'}
           </button>
         ))}
       </div>
 
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
         {tab === 'spec' && <SpecView spec={detail.spec} harnessSlug={harnessSlug} expertId={expertId} />}
+        {tab === 'assertions' && <AssertionsView harnessSlug={harnessSlug} expertId={expertId} />}
         {tab === 'feedback' && <FeedbackList feedback={feedback} />}
         {tab === 'chat' && <ExpertChat harnessSlug={harnessSlug} expertId={expertId} />}
         {tab === 'identity' && (
@@ -487,6 +488,58 @@ function SpecView({ spec, harnessSlug, expertId }: { spec: string; harnessSlug: 
         :global(.experts-spec-md) th, :global(.experts-spec-md) td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
         :global(.experts-spec-md) th { background: rgba(125, 211, 252, 0.08); font-weight: 650; }
       `}</style>
+    </div>
+  );
+}
+
+
+function AssertionsView({ harnessSlug, expertId }: { harnessSlug: string; expertId: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/harness/${harnessSlug}/experts/${expertId}/assertions`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        if (d.error) setError(d.error);
+        else setContent(typeof d.content === 'string' ? d.content : '');
+      })
+      .catch((e) => !cancelled && setError(String(e)))
+      .finally(() => !cancelled && setLoading(false));
+    return () => { cancelled = true; };
+  }, [harnessSlug, expertId]);
+
+  if (loading) {
+    return <div style={{ padding: '20px 24px', color: 'var(--fg-mute)', fontSize: 13 }}>Loading…</div>;
+  }
+  if (error) {
+    return <div style={{ padding: '20px 24px', color: 'var(--danger, #f87171)', fontSize: 13 }}>Error: {error}</div>;
+  }
+  if (!content || !content.trim()) {
+    return (
+      <div style={{ padding: '20px 24px', maxWidth: 880, margin: '0 auto', color: 'var(--fg-mute)', fontSize: 13, lineHeight: 1.55 }}>
+        <p>This expert hasn't written an <code>assertions.md</code> yet.</p>
+        <p>
+          The expert role writes assertions during finalization (Step&nbsp;5.5 of
+          <code> prompts/expert.md</code>). Phase-2 scoper merges those entries
+          verbatim into <code>.harness/validation-contract.md</code>.
+        </p>
+        <p>
+          For experts that pre-date this convention, the scoper falls back to
+          deriving assertions from <code>SPEC.md</code> prose — see the
+          <strong> SPEC.md</strong> tab for the spec content.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: '16px 24px', maxWidth: 880, margin: '0 auto', color: 'var(--fg)' }}>
+      <div className="experts-spec-md" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--fg)' }}>
+        <MarkdownPreview value={content} outline="left" />
+      </div>
     </div>
   );
 }
