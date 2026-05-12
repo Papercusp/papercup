@@ -137,15 +137,15 @@ Reuses Plan 2B's BGE-small embedder singleton.
 
 | # | Item | Effort | Status |
 |---|---|---|---|
-| 3.1 | Install mem0ai + config | 1h | pending |
-| 3.2 | Schema grants for mem0 auto-tables | 0.5h | pending |
-| 3.3 | 5 MCP tools + guidance | 4h | pending |
-| 3.4 | Pre-turn auto-injection in operator-converse | 1.5h | pending |
-| 3.5 | Post-turn extraction (fire-and-forget) | 1h | pending |
-| 3.6 | Persona prompt: memory section (inform, don't ask) | 0.5h | pending |
-| 3.7 | /settings/user/memory UI | 4h | pending |
-| 3.8 | Auto-TTL cleanup worker + manual LLM review | 2h | pending |
-| 3.9 | Tests + live verify | 3h | pending |
+| 3.1 | Install mem0ai + config | 1h | ✅ deps in package.json (`ae639376`); awaits npm install |
+| 3.2 | Schema grants for mem0 auto-tables | 0.5h | n/a (mem0 auto-creates as harness_admin; deferred until install) |
+| 3.3 | 5 MCP tools + guidance | 4h | ✅ `ae639376` |
+| 3.4 | Pre-turn auto-injection in operator-converse | 1.5h | ✅ `ae639376` |
+| 3.5 | Post-turn extraction (fire-and-forget) | 1h | ✅ (this turn) |
+| 3.6 | Persona prompt: memory section (inform, don't ask) | 0.5h | ✅ `ae639376` |
+| 3.7 | /settings/user/memory UI | 4h | ✅ (this turn) |
+| 3.8 | Auto-TTL cleanup worker | 2h | ✅ (this turn) |
+| 3.9 | Tests + live verify | 3h | pending (needs servers + npm install) |
 
 ## Recommended ship order
 1. **Plan 1.2 + 1.3** (small cleanup, ~45 min) — no servers needed
