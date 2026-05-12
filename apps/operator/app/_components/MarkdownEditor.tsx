@@ -29,6 +29,9 @@ function loadVditorCss(): Promise<unknown> {
 }
 
 export type MarkdownEditorMode = 'ir' | 'wysiwyg' | 'sv';
+type VditorOptions = NonNullable<ConstructorParameters<typeof import('vditor').default>[1]>;
+export type MarkdownEditorToolbar = NonNullable<VditorOptions['toolbar']>;
+
 
 export interface MarkdownEditorProps {
   value: string;
@@ -40,7 +43,7 @@ export interface MarkdownEditorProps {
   /** Min height for `ir`/`wysiwyg` modes. Vditor ignores this in `sv`. */
   minHeight?: number;
   /** Override the default toolbar config. Pass [] for no toolbar. */
-  toolbar?: Array<string | object>;
+  toolbar?: MarkdownEditorToolbar;
   /** Show Vditor's built-in document outline panel (left or right). */
   outline?: false | 'left' | 'right';
   /** Forwarded as a className on the outer wrapper. */
@@ -193,7 +196,7 @@ const outlinePanelStyle: React.CSSProperties = {
   borderRight: '1px solid var(--border, #2a2a2a)',
 };
 
-const DEFAULT_TOOLBAR: Array<string | object> = [
+const DEFAULT_TOOLBAR: MarkdownEditorToolbar = [
   'headings', 'bold', 'italic', 'strike', '|',
   'list', 'ordered-list', 'check', 'quote', '|',
   'code', 'inline-code', 'link', 'table', '|',

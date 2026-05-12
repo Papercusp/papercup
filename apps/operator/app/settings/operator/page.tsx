@@ -6,7 +6,7 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import { z } from 'zod';
 import { Controller } from 'react-hook-form';
-import { MarkdownEditor } from '../../_components/MarkdownEditor';
+import { SettingsMarkdownEditor } from '../SettingsMarkdownEditor';
 import { useFormWith, SubmitButton } from '@/lib/forms';
 
 // Form schema — both fields are free-form markdown, allowed to be empty.
@@ -334,7 +334,7 @@ export default function OperatorSettingsPage() {
             name="prompt_user"
             control={control}
             render={({ field }) => (
-              <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={200} />
+              <SettingsMarkdownEditor value={field.value} onChange={field.onChange} mode="ir" minHeight={200} />
             )}
           />
         </div>
@@ -347,7 +347,7 @@ export default function OperatorSettingsPage() {
             name="preferences"
             control={control}
             render={({ field }) => (
-              <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={240} />
+              <SettingsMarkdownEditor value={field.value} onChange={field.onChange} mode="ir" minHeight={240} />
             )}
           />
         </div>

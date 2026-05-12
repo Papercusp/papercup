@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { Controller } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
-import { MarkdownEditor } from '../../_components/MarkdownEditor';
+import { SettingsMarkdownEditor } from '../SettingsMarkdownEditor';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
 
 interface OracleConfig {
@@ -77,7 +77,7 @@ export default function OracleSettingsPage() {
             name="prompt"
             render={({ field }) => (
               <div style={{ minHeight: 320, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-                <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={320} />
+                <SettingsMarkdownEditor value={field.value} onChange={field.onChange} mode="ir" minHeight={320} />
               </div>
             )}
           />
@@ -89,7 +89,7 @@ export default function OracleSettingsPage() {
             name="memory"
             render={({ field }) => (
               <div style={{ minHeight: 240, border: '1px solid var(--border)', borderRadius: 6, overflow: 'hidden' }}>
-                <MarkdownEditor value={field.value} onChange={field.onChange} mode="ir" outline="left" minHeight={240} />
+                <SettingsMarkdownEditor value={field.value} onChange={field.onChange} mode="ir" minHeight={240} />
               </div>
             )}
           />
