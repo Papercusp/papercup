@@ -17,7 +17,7 @@ import { Select } from './Select';
 import HarnessSettingsPanel from './HarnessSettingsPanel';
 import AgentThinkingPopover from './AgentThinkingPopover';
 
-import { Activity as ReactActivity, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Activity as ReactActivity, type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
@@ -427,6 +427,36 @@ function safeParseClaims(raw: unknown): string[] | undefined {
 }
 
 // ─── Component ─────────────────────────────────────────────────────────
+const TOP_COLLAPSE_BUTTON_WIDTH = 168;
+const TOP_COLLAPSE_BUTTON_HEIGHT = 22;
+
+interface TopCollapsePanelPlacement {
+  left: number;
+  top: number;
+}
+
+function measureTopCollapsePanelPlacement(): TopCollapsePanelPlacement | null {
+  if (typeof document === 'undefined' || typeof window === 'undefined') return null;
+  const panel = document.querySelector<HTMLElement>('.h-dashboard-left-pane');
+  if (!panel) return null;
+
+  const rect = panel.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  const buttonHalf = window.innerWidth <= 720 ? 78 : TOP_COLLAPSE_BUTTON_WIDTH / 2;
+  const minLeft = buttonHalf + 8;
+  const maxLeft = window.innerWidth - buttonHalf - 8;
+  const panelCenter = rect.left + rect.width / 2;
+  const left = Math.round(Math.min(Math.max(panelCenter, minLeft), maxLeft));
+
+  const minTop = 48;
+  const maxTop = window.innerHeight - TOP_COLLAPSE_BUTTON_HEIGHT - 8;
+  const panelTop = rect.top + 4;
+  const top = Math.round(Math.min(Math.max(panelTop, minTop), maxTop));
+
+  return { left, top };
+}
+
 
 /**
  * Stable portal-rendered collapse control for the harness top chrome.
@@ -443,7 +473,37 @@ function CollapseTopSectionPortalButton({
   onToggle: () => void;
 }): JSX.Element | null {
   const [mounted, setMounted] = useState(false);
+  const [panelPlacement, setPanelPlacement] = useState<TopCollapsePanelPlacement | null>(null);
+
   useEffect(() => { setMounted(true); }, []);
+  useLayoutEffect(() => {
+    if (!mounted || !collapsed) {
+      setPanelPlacement(null);
+      return;
+    }
+
+    const measure = () => {
+      const next = measureTopCollapsePanelPlacement();
+      setPanelPlacement((current) => (
+        current?.left === next?.left && current?.top === next?.top ? current : next
+      ));
+    };
+
+    measure();
+    window.addEventListener('resize', measure);
+
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    if (observer) {
+      document.querySelectorAll<HTMLElement>('.h-dashboard-left-pane, .h-dashboard-grid')
+        .forEach((el) => observer.observe(el));
+    }
+
+    return () => {
+      window.removeEventListener('resize', measure);
+      observer?.disconnect();
+    };
+  }, [collapsed, mounted]);
+
   if (!mounted || typeof document === 'undefined') return null;
   const Icon = collapsed ? LChevronDown : LChevronUp;
   const actionLabel = collapsed ? 'Expand top section' : 'Collapse top section';
@@ -451,6 +511,12 @@ function CollapseTopSectionPortalButton({
   const titleText = collapsed
     ? 'Restore the top header section'
     : 'Collapse the top header section to free vertical space';
+  const buttonStyle: CSSProperties | undefined = collapsed && panelPlacement !== null
+    ? ({
+        '--h-top-collapse-panel-left': `${panelPlacement.left}px`,
+        '--h-top-collapse-panel-top': `${panelPlacement.top}px`,
+      } as CSSProperties)
+    : undefined;
   return createPortal(
     <button
       type="button"
@@ -460,6 +526,7 @@ function CollapseTopSectionPortalButton({
       aria-expanded={!collapsed}
       aria-label={actionLabel}
       title={titleText}
+      style={buttonStyle}
     >
       <Icon className="h-top-collapse-icon" size={13} strokeWidth={2.4} aria-hidden="true" />
       <span className="h-top-collapse-label">Top section</span>
