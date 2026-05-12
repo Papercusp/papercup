@@ -180,6 +180,23 @@ events: {
 
 The MCP transport always JSON-encodes (JSON-RPC doesn't have a raw-text channel inside a notification's `params`); the classification only affects the SSE wire. Clients consuming over MCP see `data: '<the text>'` as a string field; over SSE for the same event, they see `data: <the text>` without quotes.
 
+### Content-type hints via `.describe()`
+
+Any text-based format works through `z.string()` — XML, CSV, YAML, NDJSON, Markdown, plain logs are all just text-shaped on the wire; the framework doesn't care what the bytes inside the string represent. The producer formats, the consumer parses.
+
+When a tool wants to advertise *which* text format it emits, attach a `.describe()` annotation. It round-trips through `tools/list` as the JSON-Schema `description` field:
+
+```ts
+events: {
+  diff_patch: z.string().describe('application/xml'),
+  log_line:   z.string().describe('text/plain'),
+  json_token: z.string().describe('application/json'),
+  csv_row:    z.string().describe('text/csv'),
+}
+```
+
+`tools/list` returns `events.diff_patch = { type: 'string', description: 'application/xml' }`. Clients pick a parser off the description. No wire-format change — the SSE event stays `event: diff_patch\ndata: <text>`.
+
 The MCP transport dual-fires when `name === 'progress'`: every `ctx.emit('progress', ...)` (or `ctx.progress(...)` via the alias) produces *both* `notifications/papercusp/event` and the spec-standard `notifications/progress`. Built-in MCP UIs that watch the standard progress channel still get a signal; Papercusp-aware clients also receive the typed-event payload.
 
 ### Reserved event names

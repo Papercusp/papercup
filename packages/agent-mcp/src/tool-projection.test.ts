@@ -167,4 +167,32 @@ describe('listMcpProjections', () => {
     const list = listMcpProjections();
     expect(list[0]?.events).toBeUndefined();
   });
+
+  it('round-trips .describe() through to events JSON-Schema (content-type hint)', () => {
+    // Tools can annotate an event payload's content-type (or any other
+    // hint) via z.string().describe('...') / z.object({...}).describe('...').
+    // Surfaced in tools/list as the JSON-Schema `description` field —
+    // clients pick parsers / renderers off it.
+    registerProjectedTool(baseTool({
+      expose: { mcp: { name: 's.described' } },
+      events: {
+        diff_patch: z.string().describe('application/xml'),
+        log_line:   z.string().describe('text/plain'),
+        progress:   z.object({ pct: z.number() }).describe('Progress payload'),
+      },
+    }));
+    const list = listMcpProjections();
+    expect(list[0]?.events?.diff_patch).toMatchObject({
+      type: 'string',
+      description: 'application/xml',
+    });
+    expect(list[0]?.events?.log_line).toMatchObject({
+      type: 'string',
+      description: 'text/plain',
+    });
+    expect(list[0]?.events?.progress).toMatchObject({
+      type: 'object',
+      description: 'Progress payload',
+    });
+  });
 });
