@@ -1,55 +1,64 @@
 /**
- * operator:scan — the operator workspace scanner core.
+ * operator:scan — the operator workspace scanner.
  *
- * Streaming-chat-and-parser tool extracted from the legacy
- * /api/agent-mcp/operator-scan route as Pilot 1 of the typed-event
- * channel migration (Phase 3). The route still owns the pre/post
- * bookkeeping (rate limit, scan-lock, budget, idle-cache
- * short-circuit, scan-history row, plugin-suggestion gathering,
- * writeLastScan, writeSnapshot, recordSuccess, markFirstRunShown,
- * session bumping). It dispatches into this tool via
- * `dispatchProjectedToolStream` for the actual LLM streaming +
- * suggestion parsing.
+ * Self-contained: this tool owns the full scan lifecycle from
+ * lock-acquire through scan-tracker persistence, plugin-suggestion
+ * merging, and idle-snapshot writeback. The HTTP route at
+ * `/api/agent-mcp/operator-scan` is a thin shim that:
+ *   1. Resolves the operator principal + workspaceId
+ *   2. Enforces HTTP-shaped rate limits (429-only — DoS protection)
+ *   3. Optionally short-circuits an idle scan with the cached snapshot
+ *      (cheap cache hit; can't be done from inside SSE response)
+ *   4. Reads the superuser token from disk
+ *   5. Dispatches into this tool and forwards events
  *
- * What this tool does:
- *   1. Spawn the scanner LLM via `runAgentChat` with the caller-built
- *      prompt + the route-resolved superuser MCP config + the
- *      scanner-session resume params.
- *   2. Emit `delta` / `tool_call` events live.
- *   3. On the model's terminal result, run `parseSuggestions` over the
- *      full assistant text, emit each parsed block as a `suggestion`
- *      event, and return the totals.
- *
- * The route picks up the returned text JSON, gathers + emits plugin
- * suggestions, persists the combined card list, and emits the final
- * `done` itself.
+ * Originally split: the route owned everything bookkeeping-related
+ * and dispatched a "streaming chat core" into this tool. Round 1 of
+ * the audit flagged that as a real safety gap once IPC was wired —
+ * an IPC caller of operator:scan would bypass every safety check.
+ * This refactor closes that gap.
  */
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
-import { parseSuggestions } from '@/lib/operator-suggestion-parser';
-import type { OperatorPreferences } from '@/lib/operator-preferences';
+import { parseSuggestions, enrich } from '@/lib/operator-suggestion-parser';
+import { loadPreferences, type OperatorPreferences } from '@/lib/operator-preferences';
 import { NON_INTERACTIVE_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
+import { buildOperatorPrompt, markFirstRunShown } from '@/lib/operator-prompt';
+import { acquireScanLock, releaseScanLock } from '@/lib/operator-scan-lock';
+import { checkBudget, recordSpend } from '@/lib/operator-budget';
+import { writeLastScan } from '@/lib/operator-last-scan';
+import { startOperatorScan, completeOperatorScan, failOperatorScan } from '@/lib/operator-scans';
+import {
+  isScannerResumeEnabled,
+  getOrCreateScannerSessionId,
+  bumpScannerSession,
+} from '@/lib/operator-scanner-session';
+import { buildScannerBootstrap } from '@/lib/operator-scanner-bootstrap';
+import { record503, recordSuccess } from '@/lib/operator-rate-limit';
+import { writeSnapshot } from '@/lib/operator-idle-snapshot';
+import { fingerprint, readTriggerState } from '@/lib/operator-trigger-state';
+import { resolvePluginAwareTier } from '@/lib/operator-plugin-tier';
+import { refreshDismissedFromPg } from '@/lib/operator-dismissed-cache';
+import { gatherPluginSuggestions } from '@/lib/operator-plugin-suggestions';
 
 const ArgsSchema = z.object({
-  /** Pre-composed prompt (bootstrap + base operator prompt + request). */
-  promptText: z.string(),
-  /** Superuser bearer token from ~/.papercusp/superuser-token; null = no MCP tools. */
+  /** User's free-form scan request. The tool wraps it with the base
+   *  operator system prompt. */
+  requestText: z.string(),
+  /** Background scan? Drives the 503 breaker + auto-archival policy
+   *  but doesn't otherwise change behavior in the tool. */
+  background: z.boolean().default(false),
+  /** User id for first-run tracking + audit. 'anonymous' is fine. */
+  userId: z.string().default('anonymous'),
+  /** Superuser bearer token (read by the route from
+   *  ~/.papercusp/superuser-token). null = no MCP tools available. */
   superuserToken: z.string().nullable(),
-  /** Persistent scanner session id (Phase 3 resume); null = fresh session. */
-  scannerSessionId: z.string().nullable(),
-  /** Operator preferences, serialized so the tool args remain JSON-friendly. */
-  preferencesJson: z.string(),
 });
 
 type Args = z.infer<typeof ArgsSchema>;
 
-/**
- * Per-block payload emitted as a `suggestion` event AND returned in
- * the tool result so the route can write the combined card list to
- * scan history.
- */
 interface SuggestionPayload {
   [k: string]: unknown;
   actualTier: unknown;
@@ -57,105 +66,275 @@ interface SuggestionPayload {
   provenanceFlags: unknown;
 }
 
+/**
+ * Pull the scanner's trailing one-line status out of the assistant
+ * text. The scanner.md role tells it to write exactly that after the
+ * <suggestion> blocks. Cap at 280 chars for the History view.
+ */
+function extractScanSummary(text: string): string | null {
+  if (!text) return null;
+  const stripped = text.replace(/<suggestion>[\s\S]*?<\/suggestion>/g, '').trim();
+  if (!stripped) return null;
+  const lines = stripped.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const last = lines[lines.length - 1] ?? null;
+  if (!last) return null;
+  return last.length > 280 ? last.slice(0, 277) + '…' : last;
+}
+
 export default defineTool({
   name: 'operator:scan',
   description:
-    'Operator workspace scanner core: stream a one-shot scanner LLM and parse <suggestion> blocks. Owned by the operator role; not user-callable from spawned agents.',
+    'Operator workspace scanner: acquires the per-workspace lock, runs the scanner LLM, parses + emits suggestion blocks, merges plugin-emitted suggestions, persists everything to scan history + idle snapshot, and releases the lock. Self-contained — safe to call from any transport.',
   capability: 'operator:scan',
   requirePrincipal: false,
   roles: ['operator'],
-  // Wall-clock cap — scanner turns are usually 10-30s; 10min is room for
-  // pathological cases without leaving wedged children running for hours.
   timeoutSec: 600,
-  // Abort if the scanner stops emitting for 2min. Catches deadlocked or
-  // crashed-but-not-exited child processes that wall-clock can't see.
   idleTimeoutSec: 120,
   args: ArgsSchema,
   events: {
-    // delta: JSON-wrapped — the operator panel consumer at
-    // OperatorPanel.tsx:722 does `JSON.parse(data).text`, so this stays
-    // an object schema (NOT z.string()) to preserve consumer wire compat.
+    first_run: z.object({}),
     delta: z.object({ text: z.string() }),
     tool_call: z.object({ name: z.string(), input: z.unknown() }),
-    // Suggestion payload shape comes from operator-suggestion-parser's
-    // enrichment; expressed as a passthrough record so we don't need to
-    // mirror the full ParsedSuggestion schema here.
     suggestion: z.record(z.unknown()),
+    /** Mid-stream error from runAgentChat. Non-fatal — handler keeps
+     *  reading. Carries an optional code; 503-flavored messages set
+     *  code='upstream_503' so the route can drive its breaker. */
+    error: z.object({ message: z.string(), code: z.string().optional() }),
   },
   handler: async (input: Args, ctx) => {
-    const preferences = JSON.parse(input.preferencesJson) as OperatorPreferences;
+    const workspaceId = ctx.workspaceId ?? 'default';
 
-    let costUsd = 0;
-    let assistantText = '';
-    const llmBlocks: SuggestionPayload[] = [];
-    let parseErrors = 0;
-
-    for await (const ev of runAgentChat({
-      promptText: input.promptText,
-      mcpConfig: input.superuserToken
-        ? {
-            mcpServers: {
-              agentmcp: {
-                // omp silently drops type:'http' MCP servers — bridge
-                // through mcp-remote (stdio→HTTP).
-                type: 'stdio',
-                command: 'npx',
-                args: [
-                  '-y',
-                  'mcp-remote@latest',
-                  'http://127.0.0.1:3055/api/mcp?superuser=1',
-                  '--header',
-                  `Authorization:Bearer ${input.superuserToken}`,
-                ],
-              },
-            },
-          }
-        : undefined,
-      // Scanner is one-shot — emits suggestions, doesn't have a
-      // user-facing chat session to wait on. Excludes chat:* tools
-      // that require an interactive responder (e.g. chat:ask_choice).
-      allowedTools: input.superuserToken ? [...NON_INTERACTIVE_AGENT_MCP_TOOLS] : [],
-      toolEventFilter: (raw) =>
-        raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
-      permissionMode: 'bypassPermissions',
-      sessionId: input.scannerSessionId ?? undefined,
-      sessionMode: input.scannerSessionId ? 'force' : undefined,
-      // Caller-side cancellation: forward the dispatcher's signal so
-      // client disconnect or idle/wall-clock timeout actually stops the
-      // subprocess instead of letting it run to completion.
-      signal: ctx.signal,
-    })) {
-      if (ev.type === 'delta') {
-        assistantText += ev.text;
-        ctx.emit('delta', { text: ev.text });
-      } else if (ev.type === 'tool_call') {
-        ctx.emit('tool_call', { name: ev.name, input: ev.input });
-      } else if (ev.type === 'result') {
-        costUsd = ev.costUsd;
-        const parsed = await parseSuggestions(ev.finalText || assistantText, preferences);
-        parseErrors = parsed.parseErrors;
-        for (const block of parsed.blocks) {
-          const payload: SuggestionPayload = {
-            ...block.suggestion.raw,
-            actualTier: block.suggestion.actualTier,
-            auto_dispatch: block.suggestion.auto_dispatch,
-            provenanceFlags: block.suggestion.provenanceFlags,
-          };
-          llmBlocks.push(payload);
-          ctx.emit('suggestion', payload);
-        }
-      } else if (ev.type === 'error') {
-        ctx.emit('error', { message: ev.message });
-      }
+    // ── Pre-LLM safety ────────────────────────────────────────────
+    // Budget check moved into the tool so IPC callers can't bypass it.
+    // Surfaces as a typed error event; route turns no HTTP code (already
+    // inside SSE). Frontend reads `code` to render a budget-specific UX.
+    const budget = await checkBudget();
+    if (budget.state && budget.exceeded) {
+      ctx.emit('error', {
+        message: `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
+        code: 'budget_exhausted',
+      });
+      throw new Error(`budget_exhausted: ${budget.todaySpendUsd}/${budget.capUsd}`);
     }
 
-    return {
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ costUsd, assistantText, llmBlocks, parseErrors }),
-        },
-      ],
-    };
+    // Multi-tab dedup — only one scan at a time per workspace.
+    let lockHolderId = '';
+    try {
+      const acq = await acquireScanLock();
+      if (!acq.acquired) {
+        ctx.emit('error', {
+          message: 'Another scan is in progress for this workspace.',
+          code: 'scan_in_progress',
+        });
+        throw new Error(`scan_in_progress: retry after ${acq.retryAfterSec ?? 30}s`);
+      }
+      lockHolderId = acq.holderId!;
+    } catch (err) {
+      // PG migration not yet applied / transient — fail open in dev.
+      // eslint-disable-next-line no-console
+      console.warn('[operator:scan] scan-lock unavailable, proceeding without dedup:', err);
+    }
+
+    // From here on we hold the lock — make sure to release it.
+    try {
+      const { promptText: basePromptText, isFirstRun } = await buildOperatorPrompt({
+        request: input.requestText,
+        userId: input.userId,
+      });
+      const preferences: OperatorPreferences = await loadPreferences();
+      await resolvePluginAwareTier('__warm__').catch(() => {});
+      await refreshDismissedFromPg().catch(() => {});
+
+      const useResume = isScannerResumeEnabled();
+      const scannerSessionId = useResume ? await getOrCreateScannerSessionId() : null;
+      const bootstrap = useResume
+        ? await buildScannerBootstrap({ workspaceId }).catch(() => '')
+        : '';
+      const promptText = bootstrap + basePromptText;
+
+      // Open the scan-history row.
+      let scanHistoryId: number | null = null;
+      try {
+        scanHistoryId = await startOperatorScan({
+          workspaceId,
+          agentSessionId: scannerSessionId,
+          startedAt: new Date(),
+          requestText: input.requestText.length > 1000
+            ? input.requestText.slice(0, 1000) + '…'
+            : input.requestText,
+        });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[operator:scan] history-start failed:', e);
+      }
+
+      if (isFirstRun) ctx.emit('first_run', {});
+
+      // ── LLM stream ──────────────────────────────────────────────
+      let costUsd = 0;
+      let assistantText = '';
+      const llmBlocks: SuggestionPayload[] = [];
+      let parseErrors = 0;
+
+      try {
+        for await (const ev of runAgentChat({
+          promptText,
+          mcpConfig: input.superuserToken
+            ? {
+                mcpServers: {
+                  agentmcp: {
+                    type: 'stdio',
+                    command: 'npx',
+                    args: [
+                      '-y',
+                      'mcp-remote@latest',
+                      'http://127.0.0.1:3055/api/mcp?superuser=1',
+                      '--header',
+                      `Authorization:Bearer ${input.superuserToken}`,
+                    ],
+                  },
+                },
+              }
+            : undefined,
+          allowedTools: input.superuserToken ? [...NON_INTERACTIVE_AGENT_MCP_TOOLS] : [],
+          toolEventFilter: (raw) =>
+            raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
+          permissionMode: 'bypassPermissions',
+          sessionId: scannerSessionId ?? undefined,
+          sessionMode: scannerSessionId ? 'force' : undefined,
+          signal: ctx.signal,
+        })) {
+          if (ev.type === 'delta') {
+            assistantText += ev.text;
+            ctx.emit('delta', { text: ev.text });
+          } else if (ev.type === 'tool_call') {
+            ctx.emit('tool_call', { name: ev.name, input: ev.input });
+          } else if (ev.type === 'result') {
+            costUsd = ev.costUsd;
+            const parsed = await parseSuggestions(ev.finalText || assistantText, preferences);
+            parseErrors = parsed.parseErrors;
+            for (const block of parsed.blocks) {
+              const payload: SuggestionPayload = {
+                ...block.suggestion.raw,
+                actualTier: block.suggestion.actualTier,
+                auto_dispatch: block.suggestion.auto_dispatch,
+                provenanceFlags: block.suggestion.provenanceFlags,
+              };
+              llmBlocks.push(payload);
+              ctx.emit('suggestion', payload);
+            }
+          } else if (ev.type === 'error') {
+            // 503 breaker: tag the error code so the route (or any
+            // future telemetry sink) can act on upstream failures.
+            const is503 =
+              /503|service unavailable|connection refused|ECONNREFUSED/i.test(ev.message);
+            ctx.emit('error', {
+              message: ev.message,
+              ...(is503 ? { code: 'upstream_503' } : {}),
+            });
+            if (is503 && input.background) {
+              await record503(workspaceId).catch(() => {});
+            }
+          }
+        }
+      } catch (llmErr) {
+        // runAgentChat hard-failed (subprocess crash, etc.). Close the
+        // scan-tracker row as failed before bubbling.
+        if (scanHistoryId != null) {
+          try {
+            await failOperatorScan({
+              id: scanHistoryId,
+              endedAt: new Date(),
+              error: llmErr instanceof Error ? llmErr.message : String(llmErr),
+            });
+          } catch (e2) {
+            // eslint-disable-next-line no-console
+            console.warn('[operator:scan] history-fail failed:', e2);
+          }
+        }
+        throw llmErr;
+      }
+
+      // ── Post-stream persistence ────────────────────────────────
+      void recordSpend(costUsd);
+
+      const finalCards: Record<string, unknown>[] = [...llmBlocks];
+      try {
+        const pluginRaw = await gatherPluginSuggestions();
+        for (const raw of pluginRaw) {
+          const enriched = enrich(raw, preferences);
+          const payload = {
+            ...enriched.raw,
+            actualTier: enriched.actualTier,
+            auto_dispatch: enriched.auto_dispatch,
+            provenanceFlags: { ...enriched.provenanceFlags, pluginAuthored: true },
+          };
+          finalCards.push(payload);
+          ctx.emit('suggestion', payload);
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[operator:scan] plugin suggestions failed:', e);
+      }
+
+      try {
+        await writeLastScan({
+          scanCompletedAt: new Date().toISOString(),
+          scanCostUsd: costUsd,
+          cards: finalCards,
+        });
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[operator:scan] writeLastScan failed:', e);
+      }
+      try {
+        const state = await readTriggerState();
+        await writeSnapshot(fingerprint(state), finalCards, state.perHarness);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[operator:scan] writeSnapshot failed:', e);
+      }
+      await recordSuccess(workspaceId).catch(() => {});
+
+      if (isFirstRun) void markFirstRunShown(input.userId);
+      if (scanHistoryId != null) {
+        try {
+          const summary = extractScanSummary(assistantText);
+          await completeOperatorScan({
+            id: scanHistoryId,
+            endedAt: new Date(),
+            summary,
+            suggestions: finalCards,
+            costUsd,
+            agentSessionId: scannerSessionId,
+          });
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn('[operator:scan] history-complete failed:', e);
+        }
+      }
+      if (scannerSessionId) void bumpScannerSession();
+
+      // Tool result carries the post-stream stats the route surfaces
+      // as `sink.done({...})` so the operator panel can show totals.
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              costUsd,
+              suggestions: finalCards.length,
+              parseErrors,
+            }),
+          },
+        ],
+      };
+    } finally {
+      // Guaranteed lock release — even on throw before the post-stream
+      // persistence completed.
+      if (lockHolderId) {
+        void releaseScanLock(lockHolderId).catch(() => {});
+      }
+    }
   },
 });

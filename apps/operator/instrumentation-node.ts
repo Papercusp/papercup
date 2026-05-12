@@ -206,19 +206,27 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       // route uses. Without this, IPC calls were invisible to
       // /dev → Sessions and /dev → Telemetry. Audit deferred item 4.
       deps: PROJECTED_DEPS,
-      // Initial allowlist: start narrow during burn-in. dev:ipc_echo
-      // is the canonical liveness probe (verified by the /dev page).
+      // IPC allowlist. Each tool here must be self-contained — every
+      // safety check + persistence side-effect lives in the tool
+      // handler, NOT the route. Adding a tool to this list without
+      // verifying that property is the bug class the audit caught.
       //
-      // NOT here yet: operator:scan, operator:converse, operator:delegate,
-      // architect:chat, brainstorm:chat. Each has route-level side-effects
-      // (rate limit, scan lock, budget, idle-cache short-circuit, scan
-      // tracker, plugin merge, session resume) that the IPC fast-path
-      // bypasses today — dispatch goes through `dispatchProjectedToolStream`
-      // directly, not the HTTP Hono shim. Migrating any of these to the
-      // allowlist requires moving the route side-effects into the tool
-      // handler first. Tracked as a Phase 4 follow-up.
+      // dev:ipc_echo — liveness probe (/dev → IPC tab).
+      // operator:scan — self-contained as of the post-deferred refactor:
+      //                 budget check + scan lock + scan tracker + plugin
+      //                 merge + snapshot + session bump all run inside
+      //                 the tool. Route layer keeps only rate-limit
+      //                 (DoS protection — irrelevant for in-boundary IPC)
+      //                 and the idle-cache short-circuit (cheap cache
+      //                 hit — IPC can pay the LLM cost; no harm).
+      //
+      // NOT here yet: operator:converse, operator:delegate,
+      // architect:chat, brainstorm:chat. Their route-level side-effects
+      // haven't been moved into the tool handlers. Migrate per the
+      // operator:scan pattern when needed.
       allowedTools: [
         'dev:ipc_echo',
+        'operator:scan',
       ],
     });
   } catch (err) {
