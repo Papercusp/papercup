@@ -229,18 +229,23 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       //                 pick/resume, mcpConfig assembly, post-stream
       //                 appendDelegateTurn + generateSessionTitle all
       //                 inside the handler. Route is a 100-line shim.
+      // operator:converse — self-contained: buildOperatorPrompt
+      //                 (role+memory+history+trigger), checkBudget,
+      //                 mcpConfig assembly, recordSpend, post-turn
+      //                 mem0.add, and <spawn>-tag dispatch all inside
+      //                 the handler. Route is a ~130-line shim whose
+      //                 only HTTP-specific step is resolving
+      //                 sessionUser from cookies and passing it
+      //                 through as an arg.
       //
-      // NOT here yet: operator:converse. Its post-stream side-effects
-      // (recordSpend, mem0 fact extraction, <spawn> dispatch) need
-      // to move into the handler so IPC dispatches don't lose budget
-      // accounting / memory. Migrate per the operator:delegate /
-      // operator:scan pattern when ready.
+      // All Phase-3 streaming tools are IPC-eligible.
       allowedTools: [
         'dev:ipc_echo',
         'operator:scan',
         'architect:chat',
         'brainstorm:chat',
         'operator:delegate',
+        'operator:converse',
       ],
     });
   } catch (err) {

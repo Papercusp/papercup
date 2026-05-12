@@ -268,8 +268,7 @@ projects:list > throws when no slug available`
 - **Specific git commands** — `git cherry-pick`, `git rebase
   --onto`, etc. depend on local workflow preference. The commit-list
   + ordering is the canonical contract.
-- **`operator:converse` / `operator:delegate` self-containment for
-  IPC** — out of scope of this branch. `architect:chat` +
-  `brainstorm:chat` migrated in commit `eb01030f` (folded into PR 6).
-  Converse/delegate migration is a future PR following the same
-  pattern, per the handoff doc's remaining-work list.
+- (nothing — all four remaining migrations landed on this branch.
+  `architect:chat` + `brainstorm:chat` at `eb01030f`,
+  `operator:delegate` at `ad5ca1a3`, `operator:converse` at the
+  commit following this docs update.)

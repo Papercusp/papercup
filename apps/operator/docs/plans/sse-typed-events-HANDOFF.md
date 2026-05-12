@@ -200,31 +200,26 @@ urgent.
 
 ### 3. Migrating real routes to the IPC fast-path
 
-**Eligible (on the allowlist):**
+**All Phase-3 streaming tools are now IPC-eligible:**
 - `dev:ipc_echo` — liveness probe
-- `operator:scan` — self-contained post-refactor (lock/budget/tracker/snapshot)
+- `operator:scan` — self-contained (lock/budget/tracker/snapshot)
 - `architect:chat` — self-contained: tool resolves project + composes prompt
 - `brainstorm:chat` — same as architect:chat
+- `operator:delegate` — self-contained: session pick/resume,
+  mcpConfig, appendDelegateTurn, generateSessionTitle all in handler
+- `operator:converse` — self-contained: buildOperatorPrompt,
+  checkBudget, recordSpend, post-turn mem0.add, <spawn>-tag dispatch
+  all in handler. `sessionUser` is the one HTTP-specific arg the
+  route forwards (cookies aren't readable from an IPC dispatch);
+  the tool gracefully degrades if it's null.
 
-**NOT yet eligible:**
-- `operator:converse` — route still owns: session-user resolution (cookies),
-  buildPrompt (role files + voice prefs + mem0 pre-turn injection +
-  history budgeting), budget check, principal load, superuser-token
-  read, `recordSpend`, post-turn mem0 `.add()`, `<spawn>` tag dispatch.
-  Migration requires moving all of these into the tool handler. The
-  cookies-based session-user is the IPC-blocking item: the synthetic
-  operator principal has no cookie context, so the tool needs to
-  accept `sessionUser` as an explicit arg (or look it up via a
-  cookie-less route).
-- `operator:delegate` — route still owns: session create / append
-  turn / title generate. Same shape as converse.
-
-Migrating either is per-tool refactor work. If you're working on
-those routes, do NOT add them to the allowlist in
-`apps/operator/instrumentation-node.ts` without first moving the
-audit-trail side-effects into the handler. The `operator:scan`
-diff is the template; `architect:chat` shows the simpler case
-(prompt composition only, no audit trail).
+The IPC trust model (synthetic operator principal, signature-skip,
+webview-as-in-boundary) applies to all six. Adding a new streaming
+tool to the allowlist requires the same self-containment property:
+**every safety check + persistence side-effect must live in the tool
+handler**, not in the HTTP route shim. The pre-existing audit
+gauntlet (rounds 1-7) caught most of the failure modes here; new
+allowlist additions should re-run the same audit pattern.
 
 ### 4. Schema-driven render-into-chat cards (P4 in plan)
 The plan acknowledges `chat:ask_choice` and similar UI-tool patterns
@@ -334,18 +329,29 @@ All three follow-ups from the previous version of this doc shipped:
    the project + compose the prompt themselves. Both allowlisted
    for IPC. Routes are thin shims (~10 lines each).
 
-Remaining work (none currently blocking):
+5. **`operator:delegate` self-contained** ✅ — tool now owns
+   principal load, session pick/resume (createDelegate, getDelegate,
+   autoArchiveIdleDelegates, bumpDelegate), system-prompt
+   composition, mcpConfig assembly (delegate stdio + agentmcp HTTP
+   via mcp-remote bridge, reads ~/.papercusp/superuser-token
+   directly), and post-stream PG writes (appendDelegateTurn +
+   generateSessionTitle). Allowlisted for IPC. Route is a ~100-line
+   shim that parses query params and forwards. New 'session' event
+   emits up-front for consumers that want the agentSessionId before
+   the first delta.
 
-- **Per-tool migration of `operator:converse` / `operator:delegate`**
-  to IPC-eligible. The audit-trail side-effects (recordSpend, mem0
-  fact extraction, `<spawn>` dispatch for converse; session
-  create/append/title-generate for delegate) need to move into the
-  handler so IPC dispatches don't lose budget accounting /
-  conversation history. The cookies-based session-user resolution
-  is the IPC-blocking item — sessionUser needs to become an explicit
-  tool arg (synthetic user for IPC, real user from cookies for HTTP).
-  `operator:scan` and `architect:chat` are the templates; this work
-  is ~1 focused day per tool with an integration test fixture.
+6. **`operator:converse` self-contained** ✅ — tool now owns
+   `buildOperatorPrompt` (role docs + mem0 pre-turn injection +
+   history budgeting + trigger/modality sections), `checkBudget`,
+   principal load + workspace check, mcpConfig assembly,
+   `recordSpend`, post-turn `mem0.add()`, and server-side
+   `<spawn>`-tag dispatch. The route forwards `sessionUser`
+   (resolved from cookies; the one HTTP-specific step) as an arg —
+   the tool gracefully degrades when it's null. Allowlisted for IPC.
+   Route is a ~130-line shim. `buildOperatorPrompt` moved into
+   `lib/agent-tools/operator/converse-prompt.ts`.
+
+Remaining work: none. All Phase-3 streaming tools are IPC-eligible.
 - **Branch merge.** See `sse-typed-events-PR-SPLIT.md` for the
   6-PR split plan covering all 53 commits + their cross-repo
   dependencies. Migration 058 was applied to the live embedded-PG
