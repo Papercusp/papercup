@@ -274,6 +274,36 @@ export async function dispatchProjectedTool(
 
   try {
     const result = await tool.fn(input, handlerCtx);
+    // ok-on-abort race: if the watchdog (idle or wall-clock) fired
+    // mid-handler but the handler returned normally without observing
+    // ctx.signal.aborted, we'd otherwise emit `done` with the partial
+    // result instead of the expected `timeout` error. That hides
+    // wedged-but-not-throwing handlers from the consumer. Treat the
+    // abort signal as authoritative: if it fired, surface a timeout
+    // regardless of what the handler claims to have returned.
+    if (abort.signal.aborted) {
+      if (deps.recordInvocation && windowKey) {
+        try {
+          await deps.recordInvocation({
+            toolName,
+            pluginName: tool.pluginName,
+            ctx,
+            windowKey,
+            durationMs: Date.now() - startedAt,
+            status: 'timeout',
+            errorMessage: `tool "${toolName}" aborted (idle or wall-clock timeout) but handler returned successfully`,
+            args: input,
+          });
+        } catch { /* best-effort */ }
+      }
+      return {
+        ok: false,
+        error: {
+          code: 'timeout',
+          message: `tool "${toolName}" exceeded timeout of ${timeoutSec}s (handler returned but signal had aborted)`,
+        },
+      };
+    }
     if (deps.recordInvocation && windowKey) {
       try {
         await deps.recordInvocation({

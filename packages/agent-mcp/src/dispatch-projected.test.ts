@@ -213,6 +213,31 @@ describe('dispatchProjectedTool', () => {
     expect(r.ok).toBe(true);
   }, 10_000);
 
+  it('ok-on-abort: handler returns ok despite signal aborted → surfaces as timeout error', async () => {
+    // Round-7 follow-up: the watchdog used to fire but if the handler
+    // returned normally without observing ctx.signal.aborted, the
+    // dispatcher would emit `ok: true` + the partial result. That hid
+    // wedged-but-non-throwing handlers from the consumer (they saw a
+    // bogus `done` instead of `error: timeout`). The fix treats
+    // abort.signal.aborted as authoritative.
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        // Handler IGNORES ctx.signal and sleeps WELL past the idle cap.
+        // The idle timer's setInterval first fires at checkMs (1000ms);
+        // the > comparison means we need to sleep > 2× checkMs to
+        // reliably catch the abort before the handler returns.
+        await new Promise((r) => setTimeout(r, 3000));
+        // Returns ok despite the abort having fired.
+        return { content: [{ type: 'text', text: 'should-not-surface' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('timeout');
+  }, 10_000);
+
   it('ctx.progress refreshes idleTimeoutSec deadline (alias parity)', async () => {
     // Regression: a tool that calls ctx.progress() exclusively (no
     // direct ctx.emit) used to trip the idle watchdog because the

@@ -170,6 +170,13 @@ function handleConnection(socket: net.Socket, deps: PerConnectionDeps): void {
   const dec = new FrameDecoder();
   // Per-call AbortControllers, keyed by request id.
   const inFlight = new Map<bigint, AbortController>();
+  // Cancel ids that arrived BEFORE their REQUEST. The handler checks
+  // this set on registration and pre-aborts the new controller. Without
+  // this, a CANCEL frame that races ahead of its REQUEST (possible on
+  // pipelined writes) would silently no-op and the tool would run to
+  // completion. Bounded by lastSeenId so we don't grow indefinitely —
+  // monotonic id check drops anything reused.
+  const preCancelledIds = new Set<bigint>();
   let lastSeenId: bigint = 0n;
 
   const writeFrame = (type: FrameTypeValue, payload: Buffer): boolean => {
@@ -271,6 +278,11 @@ function handleConnection(socket: net.Socket, deps: PerConnectionDeps): void {
 
     const abort = new AbortController();
     inFlight.set(id, abort);
+    // Race: a CANCEL frame for this id may have arrived BEFORE the
+    // REQUEST (pipelined writes). Pre-abort if so.
+    if (preCancelledIds.delete(id)) {
+      abort.abort();
+    }
 
     // Synthetic operator principal. The webview is in-boundary; the
     // signed-URL model doesn't apply (see transports.mdx § Trust model).
@@ -341,6 +353,16 @@ function handleConnection(socket: net.Socket, deps: PerConnectionDeps): void {
       return;
     }
     const id = BigInt(parsed.id ?? 0);
-    inFlight.get(id)?.abort();
+    const ac = inFlight.get(id);
+    if (ac) {
+      ac.abort();
+    } else if (id > lastSeenId) {
+      // CANCEL arrived ahead of its REQUEST. Remember so handleRequest
+      // can pre-abort. Cap the set size defensively: only track ids
+      // strictly ahead of lastSeenId (stale cancels are ignored).
+      preCancelledIds.add(id);
+    }
+    // else: id ≤ lastSeenId AND not in flight → call already terminated.
+    // Silently drop; idempotent.
   }
 }

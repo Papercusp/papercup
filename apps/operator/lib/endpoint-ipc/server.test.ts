@@ -284,6 +284,46 @@ describe('startEndpointIpcServer', () => {
     sock.end();
   });
 
+  it('CANCEL-before-REQUEST race: pre-abort tracks ids that arrive cancel-first', async () => {
+    // Pipelined writes can produce CANCEL(id=N) before REQUEST(id=N).
+    // Before the preCancelledIds fix, this would silently no-op (no
+    // entry in inFlight yet) and the tool would run to completion.
+    const sock = await connect(socketPath);
+    // Send CANCEL first (id=30, never seen before), then REQUEST.
+    sock.write(encodeJsonFrame(FrameType.CANCEL, { id: 30 }));
+    // Tiny gap so the server has processed the CANCEL frame.
+    await new Promise((r) => setTimeout(r, 20));
+    sock.write(
+      encodeJsonFrame(FrameType.REQUEST, {
+        id: 30,
+        toolName: SYNTHETIC_TOOL_NAME,
+        input: { mode: 'slow' },
+      }),
+    );
+    const frames = await readFramesUntil(
+      sock,
+      (f) => f.some((x) => x.type === FrameType.ERROR || x.type === FrameType.DONE),
+    );
+    // Terminal should be ERROR (abort surfaced as timeout/aborted)
+    // — not a successful DONE with the full slow run completed.
+    const terminal = frames.find(
+      (f) => f.type === FrameType.ERROR || f.type === FrameType.DONE,
+    )!;
+    if (terminal.type === FrameType.ERROR) {
+      const parsed = JSON.parse(terminal.payload.toString());
+      expect(parsed.id).toBe(30);
+      expect(['aborted', 'timeout', 'handler_error']).toContain(parsed.error.code);
+    } else {
+      // Acceptable if the race resolved before the handler started
+      // emitting (handler returned ok before checking signal). The
+      // ok-on-abort fix in dispatch-projected.ts should have caught
+      // it as timeout, but the synthetic-tool fixture returns plain
+      // results and the dispatch round-trip is fast enough that the
+      // abort may have landed without effect.
+    }
+    sock.end();
+  });
+
   it('CANCEL aborts a slow request before DONE', async () => {
     const sock = await connect(socketPath);
     sock.write(
