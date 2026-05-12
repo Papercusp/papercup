@@ -237,8 +237,8 @@ const OP_CHAT_SIDEBAR_CSS = `
 }
 
 .op-chat-header-logo {
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
 }
 
 .op-chat-header-copy {

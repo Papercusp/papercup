@@ -345,7 +345,7 @@ export function OperatorButton(): ReactElement {
           {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
           {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
         </span>
-        <span className="pc-header-cta-label">Deck</span>
+        <span className="pc-header-cta-label">DECK</span>
       </button>
       <div
         role="status"

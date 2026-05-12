@@ -26,7 +26,7 @@ export const OperatorLogoMark = forwardRef<SVGSVGElement, Props>(function Operat
   return (
     <svg
       ref={ref}
-      viewBox="0 0 128 128"
+      viewBox="18 12 92 92"
       className={className}
       aria-hidden={decorative ? true : undefined}
       focusable="false"
