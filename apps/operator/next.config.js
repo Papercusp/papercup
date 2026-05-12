@@ -10,36 +10,30 @@ const WEB_UPSTREAM      = process.env.PAPERCUSP_WEB_UPSTREAM      ?? 'http://loc
 // AND the path appears in papercup-rust-server/openapi.yaml. This makes
 // Rust opt-in for both dev (3055) and production (3070) until parity.
 const RUST_UPSTREAM       = process.env.PAPERCUSP_RUST_UPSTREAM     ?? 'http://127.0.0.1:3060';
-// The path.join + __dirname combo is read at build time by Turbopack's
-// NFT tracer; without `turbopackIgnore` the tracer interprets the
-// dynamic path as "the build wants to trace the whole project" and
-// fails page-data collection with "Invalid segment configuration
-// export detected" (caught 2026-05-11). Putting the ignore comment
-// on the `__dirname` arg specifically tells Turbopack not to follow.
-const RUST_OPENAPI_PATH   = process.env.PAPERCUSP_RUST_OPENAPI
-  ?? path.join(/*turbopackIgnore: true*/ __dirname, '../../../papercup-rust-server/openapi.yaml');
-
 /** Parse the `paths:` block of openapi.yaml without pulling in a YAML dep.
  *  Returns Next-style path templates (`/foo/{id}` -> `/foo/:id`).
  *
  *  GATED behind PAPERCUSP_ENABLE_RUST_REWRITES=1. Default is to return
- *  an empty list WITHOUT reading the openapi file. Turbopack's NFT
- *  tracer treats any module-load FS read in this file as "trace the
- *  whole project" and fails page-data collection (the bug we hit
- *  2026-05-11 across 6 consecutive build attempts). Rust routing is
- *  opt-in for both dev (:3055) and prod (:3070); when nobody's setting
- *  the env flag, the rewrites array stays empty and Turbopack stays
- *  happy. Enabling it requires accepting the build-tracer fallout
- *  (and possibly running with `next build --turbopack=false`). */
+ *  an empty list WITHOUT reading the openapi file. The path.join + fs
+ *  calls live *inside* the env-gate so Turbopack's NFT tracer never
+ *  sees them in a default build — module load completes without any
+ *  filesystem operation. Turbopack's `turbopackIgnore` magic comment
+ *  is unreliable across `../../../` relative paths, so the env-gate
+ *  is what actually keeps the tracer quiet. */
 function loadRustPaths() {
   if (process.env.PAPERCUSP_ENABLE_RUST_REWRITES !== '1') {
     return [];
   }
+  // Path computation is deliberately lazy. With the env flag off
+  // (the default — both for :3055 and :3070), execution never reaches
+  // here and `path.join` / `__dirname` are never touched.
+  const openapiPath = process.env.PAPERCUSP_RUST_OPENAPI
+    || path.join(/*turbopackIgnore: true*/ __dirname, '../../../papercup-rust-server/openapi.yaml');
   let text;
   try {
-    text = fs.readFileSync(/*turbopackIgnore: true*/ RUST_OPENAPI_PATH, 'utf8');
+    text = fs.readFileSync(openapiPath, 'utf8');
   } catch (e) {
-    console.warn(`[next.config] rust openapi not readable at ${RUST_OPENAPI_PATH}: ${e.message}`);
+    console.warn(`[next.config] rust openapi not readable at ${openapiPath}: ${e.message}`);
     console.warn('[next.config] ?backend=rust will resolve to ZERO routes until that file exists');
     return [];
   }
@@ -93,7 +87,7 @@ const nextConfig = {
   // vs 12 KB gzipped — 7.3x reduction. With Zero polling at 3 s, that
   // alone saves ~1.4 MB/min of bandwidth on the dashboard.
   compress: true,
-  outputFileTracingRoot: path.join(__dirname, '../..'),
+  outputFileTracingRoot: path.join(/*turbopackIgnore: true*/ __dirname, '../..'),
   // node-pty's native .node bindings live in prebuilds/<platform>/pty.node
   // and are loaded via dynamic require — Next's tracer can't see them.
   // Force-include them so the standalone bundle ships the prebuilt binary

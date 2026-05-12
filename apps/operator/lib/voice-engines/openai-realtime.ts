@@ -57,13 +57,24 @@ const TOOL_ROUTING = [
  *  in so the voice agent runs the continuous turn-taking loop with the
  *  same <say>/<set_mode>/<sleep> tag contract the text path uses.
  *  Passive mode keeps persona + tool routing only — operator only
- *  responds when spoken to. */
-function buildInstructions(): string {
+ *  responds when spoken to.
+ *
+ *  `language` param pins the agent's reply language at the
+ *  instruction layer — closes the EL audit's gap for the Realtime path
+ *  (the EL Conv path uses a separate per-session override; Realtime
+ *  doesn't have an equivalent override field on RealtimeSession at the
+ *  SDK level we use, so we anchor it in the prompt instead). Default 'en'.
+ */
+function buildInstructions(language: string = 'en'): string {
   const operatorMode = readOperatorModeFromSession() ?? 'active';
   const conversePrompt = operatorMode === 'active' ? OPERATOR_CONVERSE_PROMPT : '';
+  const langBlock = language
+    ? `## Language\n\nRespond ONLY in language code "${language}" (BCP-47). If the STT layer mis-transcribes ambient noise as a non-${language} phrase, treat it as noise and stay silent rather than reply in the mis-detected language. NEVER switch languages mid-session even if background audio sounds like a different language.`
+    : '';
   return [
     OPERATOR_PERSONA_PROMPT,
     conversePrompt,
+    langBlock,
     TOOL_ROUTING,
     OPERATOR_FEW_SHOTS,
   ]
@@ -76,9 +87,25 @@ export async function startRealtimeSession(
   callbacks: RealtimeEngineCallbacks = {},
 ): Promise<RealtimeEngineHandle> {
   const registryTools = await buildRegistryTools();
+  // Pin the agent's reply language. Same default ('en') as the EL Conv
+  // AI path; same VoicePrefs.agentLanguage field; same failure mode
+  // (background audio mis-detected as non-English flips the response).
+  // Realtime SDK doesn't expose a session-level transcription.language
+  // we can write to via @openai/agents-realtime's current surface, so
+  // we anchor the constraint in the system prompt instead.
+  let agentLanguage = 'en';
+  try {
+    const r = await fetch('/api/agent-mcp/operator-voice-prefs');
+    if (r.ok) {
+      const p = await r.json() as { agentLanguage?: string };
+      if (typeof p?.agentLanguage === 'string') {
+        agentLanguage = p.agentLanguage.trim() || 'en';
+      }
+    }
+  } catch { /* keep default 'en' */ }
   const agent = new RealtimeAgent({
     name: 'Operator',
-    instructions: buildInstructions(),
+    instructions: buildInstructions(agentLanguage),
     tools: registryTools,
   });
 

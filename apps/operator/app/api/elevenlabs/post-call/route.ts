@@ -147,21 +147,58 @@ export async function POST(req: NextRequest): Promise<Response> {
     // ON CONFLICT (conversation_id) DO NOTHING handles webhook retries
     // gracefully — EL may deliver the post_call_transcription event
     // more than once for the same call.
-    const durationSecs = data.metadata?.call_duration_secs ?? 0;
-    if (durationSecs > 0) {
-      const workspaceId = activeWorkspaceId();
+    //
+    // Duration resolution (defensive — EL's call_duration_secs has
+    // historically been reliable but we shouldn't silently lose
+    // metering if the field ever disappears or arrives malformed):
+    //   1. metadata.call_duration_secs (primary)
+    //   2. Estimate from our own operator_turns timestamps for this
+    //      conversation (oldest user turn → ended_at). Less precise
+    //      but bounds the lower edge so the cap still partially fires.
+    //   3. Log + insert a 0-row marker so a manual audit can see the
+    //      call happened but we couldn't measure it.
+    let durationSecs = Number(data.metadata?.call_duration_secs ?? 0);
+    let durationSource: 'webhook' | 'estimated' | 'unknown' = 'webhook';
+    if (!Number.isFinite(durationSecs) || durationSecs <= 0) {
+      // Fallback: estimate from PG. minutes_used returned by
+      // /operator-el-spend will be a floor of actual usage, but better
+      // than zero.
       try {
-        await sql`
-          INSERT INTO harness_shared.el_conv_calls
-            (conversation_id, agent_id, workspace, duration_secs)
-          VALUES (${elConvId}, ${data.agent_id ?? null}, ${workspaceId}, ${durationSecs})
-          ON CONFLICT (conversation_id) DO NOTHING
+        const rows = await sql`
+          SELECT
+            EXTRACT(EPOCH FROM (
+              COALESCE(MAX(created_at), now()) - COALESCE(MIN(created_at), now())
+            ))::int AS span_secs
+          FROM harness_shared.operator_turns
+          WHERE conversation_id = ${ourId}
+            AND el_conv_id = ${elConvId}
         `;
-      } catch (err) {
-        // Don't fail the webhook on metering insert errors — the
-        // conversation-write above already succeeded. Log + move on.
-        console.warn('[el-post-call] el_conv_calls insert failed', err);
+        const span = Number(rows?.[0]?.span_secs ?? 0);
+        if (Number.isFinite(span) && span > 0) {
+          durationSecs = span;
+          durationSource = 'estimated';
+        }
+      } catch { /* keep durationSecs = 0 */ }
+    }
+    const workspaceId = activeWorkspaceId();
+    try {
+      await sql`
+        INSERT INTO harness_shared.el_conv_calls
+          (conversation_id, agent_id, workspace, duration_secs)
+        VALUES (${elConvId}, ${data.agent_id ?? null}, ${workspaceId}, ${Math.max(0, durationSecs)})
+        ON CONFLICT (conversation_id) DO NOTHING
+      `;
+      if (durationSource !== 'webhook') {
+        console.warn(
+          `[el-post-call] call_duration_secs missing/zero for ${elConvId}; ` +
+          `wrote duration=${durationSecs}s from ${durationSource} source. ` +
+          `Cap accounting may be inexact for this call — monitor if this becomes frequent.`,
+        );
       }
+    } catch (err) {
+      // Don't fail the webhook on metering insert errors — the
+      // conversation-write above already succeeded. Log + move on.
+      console.warn('[el-post-call] el_conv_calls insert failed', err);
     }
   } else if (event.type === 'post_call_audio') {
     await db.update(oc).set({ hasAudio: true }).where(eq(oc.id, ourId));

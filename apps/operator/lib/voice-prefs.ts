@@ -222,6 +222,12 @@ export async function loadVoicePrefs(): Promise<VoicePrefs> {
   const raw = await readOperatorState<Partial<VoicePrefs>>('operator_voice_prefs');
   if (!raw) return { ...DEFAULT_VOICE_PREFS };
   // Merge with defaults so newly-added fields don't break old rows.
+  // EL credit-burn audit concern #3: existing installs whose PG row
+  // pre-dates a new field (e.g. agentLanguage, fullAgentSessionMaxMin)
+  // inherit DEFAULT_VOICE_PREFS values via this merge. No migration
+  // needed for ADDED fields — only CHANGED defaults of existing fields
+  // (concern #6, fullAgentIdleTimeoutMin 5→2) require a one-shot
+  // migration if you want to retroactively apply.
   return mergePrefs(DEFAULT_VOICE_PREFS, raw);
 }
 
