@@ -78,7 +78,7 @@ Resolution order at read time: user pref (if set) → workspace pref → default
 | 4.5 | user_preferences resolver — user > workspace > default | 2h | ✅ `552f7b14` |
 | 4.6 | User picker in chrome | 1.5h | ✅ (this turn) |
 | 4.7 | `/login`, `/signup`, `/settings/user` pages | 4h | ✅ (this turn, login + settings; signup folded into /login) |
-| 4.8 | Welcome trigger + operator_welcome SSE event | 2h | pending |
+| 4.8 | Welcome trigger + user_welcomed converse trigger | 2h | ✅ `a86afa44` |
 | 4.9 | mem0 changes baked into Plan 3 | 2h | pending (Plan 3) |
 | 4.10 | Tests + live verify | 2h | pending (needs servers) |
 
