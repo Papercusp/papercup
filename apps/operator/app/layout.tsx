@@ -6,6 +6,7 @@ import * as Tooltip from '@radix-ui/react-tooltip';
 import { RootSyncProvider } from './_components/RootSyncProvider';
 import ChromeShell from './_components/ChromeShell';
 import { OperatorConversationProvider } from './_components/OperatorConversationProvider';
+import { PostHogProvider } from './_components/PostHogProvider';
 import WslOnboardingGate from './_components/WslOnboardingGate';
 import GlobalShortcutDispatcher from './_components/GlobalShortcutDispatcher';
 import RouteProgressProvider from './_components/RouteProgressProvider';
@@ -122,8 +123,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                           sidebar and any future consumers (voice path,
                           set_mode tag dispatcher) see the same context. */}
                       <OperatorConversationProvider>
-                        <ChromeShell />
-                        <main data-route-transition-page="true">{children}</main>
+                        <PostHogProvider>
+                          <ChromeShell />
+                          <main data-route-transition-page="true">{children}</main>
+                        </PostHogProvider>
                       </OperatorConversationProvider>
                     </WslOnboardingGate>
                   </RouteTransitionProvider>

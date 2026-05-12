@@ -1,31 +1,26 @@
 /**
- * Telemetry flush worker.
+ * Telemetry flush worker — PostHog edition.
  *
  * Moves reports out of the in-app ring buffer (operator-state-pg key
- * 'telemetry_reports') into the long-term archive
- * (harness_shared.telemetry_reports_archive), and — when a remote sink
- * URL is configured — POSTs not-yet-forwarded archive rows to it.
+ * 'telemetry_reports') into the long-term local archive
+ * (harness_shared.telemetry_reports_archive), and — when PostHog is
+ * configured AND telemetry is opted-in — emits one PostHog event per
+ * archive row that hasn't been forwarded yet.
  *
- * Design:
- *   - Idempotent. Safe to call repeatedly; nothing gets archived twice.
- *   - One archive insert per report. Retention is purely a function of
- *     `received_at`; the cleanup step deletes rows older than
- *     PAPERCUSP_TELEMETRY_RETENTION_DAYS (default 30).
- *   - Forwarding is separate from archiving so a failed sink doesn't
- *     block archiving. `forwarded_at` is set on success; NULLs get
- *     retried next flush.
+ * Telemetry is OFF by default. The user opts in via the Setup Wizard
+ * (Step 12). When opt-in is false (or unset) this worker still
+ * archives locally so the user can see their own reports, but it
+ * forwards nothing.
  *
- * Configuration:
- *   - Sink URL: setup_wizard_state.telemetry_sink_url
- *               (or PAPERCUSP_TELEMETRY_SINK_URL env override)
- *   - Sink token: PAPERCUSP_TELEMETRY_SINK_TOKEN (sent as Authorization)
- *   - Retention: PAPERCUSP_TELEMETRY_RETENTION_DAYS (default 30)
+ * PostHog config priority:
+ *   1. setup_wizard_state.telemetry_host + .telemetry_project_key (PG)
+ *   2. PAPERCUSP_POSTHOG_HOST + PAPERCUSP_POSTHOG_KEY (env)
  *
- * Callers:
- *   - Hourly setInterval from instrumentation-node.ts on boot.
- *   - POST /api/desktop/telemetry-flush for manual / test triggers.
+ * If neither is set, archived rows are kept locally and retried on
+ * future flushes once config lands.
  */
 import { getOrgPg } from '@restart/db-org';
+import { PostHog } from 'posthog-node';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -46,16 +41,22 @@ export interface FlushResult {
   forwarded: number;
   forwardFailed: number;
   retentionDeleted: number;
-  sinkConfigured: boolean;
+  posthogConfigured: boolean;
+  optedIn: boolean;
 }
 
 const RETENTION_DAYS = Number(process.env.PAPERCUSP_TELEMETRY_RETENTION_DAYS ?? 30);
 
-async function resolveSinkConfig(): Promise<{ url?: string; token?: string }> {
-  const fromEnv = process.env.PAPERCUSP_TELEMETRY_SINK_URL;
-  if (fromEnv) return { url: fromEnv, token: process.env.PAPERCUSP_TELEMETRY_SINK_TOKEN };
-  const state = await readOperatorState<{ telemetry_sink_url?: string }>('setup_wizard_state');
-  return { url: state?.telemetry_sink_url, token: process.env.PAPERCUSP_TELEMETRY_SINK_TOKEN };
+async function resolvePostHogConfig(): Promise<{ host?: string; projectKey?: string; optedIn: boolean }> {
+  const state = await readOperatorState<{
+    telemetry_enabled?: boolean;
+    telemetry_host?: string;
+    telemetry_project_key?: string;
+  }>('setup_wizard_state');
+  const optedIn = Boolean(state?.telemetry_enabled);
+  const host = state?.telemetry_host || process.env.PAPERCUSP_POSTHOG_HOST;
+  const projectKey = state?.telemetry_project_key || process.env.PAPERCUSP_POSTHOG_KEY;
+  return { host, projectKey, optedIn };
 }
 
 export async function flushTelemetry(): Promise<FlushResult> {
@@ -66,10 +67,13 @@ export async function flushTelemetry(): Promise<FlushResult> {
     forwarded: 0,
     forwardFailed: 0,
     retentionDeleted: 0,
-    sinkConfigured: false,
+    posthogConfigured: false,
+    optedIn: false,
   };
 
-  // 1. Drain ring buffer into archive.
+  // 1. Drain ring buffer into local archive (regardless of opt-in —
+  //    local visibility is fine without consent; we only stop short of
+  //    *forwarding* off-device).
   const buffer = await readOperatorState<ReportsState>('telemetry_reports');
   const reports = buffer?.reports ?? [];
   for (const r of reports) {
@@ -91,52 +95,64 @@ export async function flushTelemetry(): Promise<FlushResult> {
     await writeOperatorState('telemetry_reports', { reports: [] });
   }
 
-  // 2. Forward archive rows that haven't been forwarded yet.
-  const sink = await resolveSinkConfig();
-  if (sink.url) {
-    result.sinkConfigured = true;
-    const pending = await sql<
-      Array<{ id: string; received_at: Date; kind: string; app_version: string | null; os: string | null; payload: unknown }>
-    >`
-      SELECT id, received_at, kind, app_version, os, payload
-        FROM harness_shared.telemetry_reports_archive
-       WHERE forwarded_at IS NULL AND workspace_id = ${workspaceId}
-       ORDER BY received_at ASC
-       LIMIT 100
-    `;
-    for (const row of pending) {
-      try {
-        const headers: Record<string, string> = { 'content-type': 'application/json' };
-        if (sink.token) headers.Authorization = `Bearer ${sink.token}`;
-        const res = await fetch(sink.url, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            workspace_id: workspaceId,
-            received_at: row.received_at,
-            kind: row.kind,
-            app_version: row.app_version,
-            os: row.os,
-            payload: row.payload,
-          }),
-        });
-        if (!res.ok) {
+  // 2. Forward to PostHog, but ONLY if the user opted in.
+  const config = await resolvePostHogConfig();
+  result.optedIn = config.optedIn;
+  if (config.optedIn && config.host && config.projectKey) {
+    result.posthogConfigured = true;
+    const ph = new PostHog(config.projectKey, {
+      host: config.host,
+      flushAt: 1, // smaller batches; flush each capture immediately
+      flushInterval: 0,
+    });
+    try {
+      const pending = await sql<
+        Array<{
+          id: string;
+          received_at: Date;
+          kind: string;
+          app_version: string | null;
+          os: string | null;
+          payload: unknown;
+        }>
+      >`
+        SELECT id, received_at, kind, app_version, os, payload
+          FROM harness_shared.telemetry_reports_archive
+         WHERE forwarded_at IS NULL AND workspace_id = ${workspaceId}
+         ORDER BY received_at ASC
+         LIMIT 100
+      `;
+      for (const row of pending) {
+        try {
+          ph.capture({
+            distinctId: workspaceId,
+            event: `papercusp_${row.kind}`,
+            timestamp: row.received_at,
+            properties: {
+              app_version: row.app_version,
+              os: row.os,
+              payload: row.payload,
+              $set: { app_version: row.app_version, os: row.os },
+              source: 'desktop',
+            },
+          });
+          await sql`
+            UPDATE harness_shared.telemetry_reports_archive
+               SET forwarded_at = now()
+             WHERE id = ${row.id}
+          `;
+          result.forwarded++;
+        } catch {
           result.forwardFailed++;
-          continue;
         }
-        await sql`
-          UPDATE harness_shared.telemetry_reports_archive
-             SET forwarded_at = now()
-           WHERE id = ${row.id}
-        `;
-        result.forwarded++;
-      } catch {
-        result.forwardFailed++;
       }
+      await ph.shutdown();
+    } catch (e) {
+      console.error('[telemetry-flush] posthog batch failed:', (e as Error)?.message ?? e);
     }
   }
 
-  // 3. Enforce retention.
+  // 3. Enforce retention on the local archive.
   if (Number.isFinite(RETENTION_DAYS) && RETENTION_DAYS > 0) {
     const deleted = await sql<{ count: number }[]>`
       WITH d AS (
@@ -157,6 +173,10 @@ let timer: ReturnType<typeof setInterval> | null = null;
 /**
  * Start the hourly flush timer. Idempotent — calling again is a no-op.
  * Wired from instrumentation-node.ts so it boots with the operator.
+ *
+ * Note: the timer ALWAYS runs (so retention still kicks in and local
+ * archive stays bounded). What it forwards off-device is gated by
+ * setup_wizard_state.telemetry_enabled.
  */
 export function startTelemetryFlushWorker(): void {
   if (timer) return;
@@ -166,6 +186,5 @@ export function startTelemetryFlushWorker(): void {
       console.error('[telemetry-flush] failed:', e);
     });
   }, intervalMs);
-  // Don't keep the process alive solely for the timer.
   if (typeof timer.unref === 'function') timer.unref();
 }

@@ -9,12 +9,16 @@ interface FlushResult {
   forwarded: number;
   forwardFailed: number;
   retentionDeleted: number;
-  sinkConfigured: boolean;
+  posthogConfigured: boolean;
+  optedIn: boolean;
 }
 
+type Choice = 'undecided' | 'yes' | 'no';
+
 export function StepTelemetry() {
-  const [enabled, setEnabled] = useState(false);
-  const [sinkUrl, setSinkUrl] = useState('');
+  const [choice, setChoice] = useState<Choice>('undecided');
+  const [host, setHost] = useState('');
+  const [projectKey, setProjectKey] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [tauri, setTauri] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -29,8 +33,11 @@ export function StepTelemetry() {
       try {
         const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
         const j = await r.json();
-        setEnabled(Boolean(j.telemetry_enabled));
-        setSinkUrl(j.telemetry_sink_url ?? '');
+        if (j.telemetry_enabled === true) setChoice('yes');
+        else if (j.telemetry_enabled === false) setChoice('no');
+        else setChoice('undecided');
+        setHost(j.telemetry_host ?? '');
+        setProjectKey(j.telemetry_project_key ?? '');
       } finally {
         setLoaded(true);
       }
@@ -45,13 +52,25 @@ export function StepTelemetry() {
     });
   };
 
-  const toggle = async (v: boolean) => {
-    setEnabled(v);
-    await patch({ telemetry_enabled: v });
+  const accept = async () => {
+    setChoice('yes');
+    await patch({ telemetry_enabled: true });
   };
 
-  const saveSinkUrl = async () => {
-    await patch({ telemetry_sink_url: sinkUrl || null });
+  const decline = async () => {
+    setChoice('no');
+    await patch({ telemetry_enabled: false });
+  };
+
+  const reconsider = () => {
+    setChoice('undecided');
+  };
+
+  const saveConfig = async () => {
+    await patch({
+      telemetry_host: host || null,
+      telemetry_project_key: projectKey || null,
+    });
   };
 
   const sendTest = async () => {
@@ -100,100 +119,207 @@ export function StepTelemetry() {
     }
   };
 
-  return (
-    <div className="pc-step">
-      <p className="pc-step__lead">
-        Help us find bugs in alpha. If you opt in, Papercusp will send anonymized crash reports and
-        performance metrics — no source code, no prompts, no API keys, no personally identifiable
-        information.
-      </p>
-      <label className="pc-toggle">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => void toggle(e.target.checked)}
-          disabled={!loaded}
-        />
-        <span>Send anonymous crash reports and diagnostics</span>
-      </label>
+  if (!loaded) {
+    return (
+      <div className="pc-step">
+        <p className="pc-step__lead">Loading…</p>
+      </div>
+    );
+  }
 
-      {enabled && (
-        <>
-          <label className="pc-field">
-            <span className="pc-field__label">Sink URL (optional)</span>
-            <div className="pc-field__row">
-              <input
-                type="url"
-                className="pc-input"
-                placeholder="https://your-crash-sink.example.com/report"
-                value={sinkUrl}
-                onChange={(e) => setSinkUrl(e.target.value)}
-              />
-              <button type="button" className="pc-btn" onClick={() => void saveSinkUrl()}>
-                Save
-              </button>
-            </div>
-            <span className="pc-field__hint">
-              Reports are archived locally regardless. When this is set, the flush worker also POSTs
-              each report to the URL (with optional <code>PAPERCUSP_TELEMETRY_SINK_TOKEN</code> as a
-              bearer token). Leave blank for local-only.
-            </span>
-          </label>
+  // ── 1. Decision pending (default state on first visit) ─────────────
+  if (choice === 'undecided') {
+    return (
+      <div className="pc-step">
+        <div className="pc-consent">
+          <p className="pc-consent__status">
+            <strong>Telemetry is currently OFF.</strong> Nothing is sent off your machine.
+          </p>
 
-          <div className="pc-step__actions">
-            <button
-              type="button"
-              className="pc-btn"
-              onClick={() => void sendTest()}
-              disabled={testing}
-            >
-              {testing ? 'Sending…' : 'Send test report'}
+          <h3 className="pc-consent__heading">What this would do</h3>
+          <p>
+            If you opt in, Papercusp will send a small amount of diagnostic data to a PostHog
+            instance we operate. The purpose is to find bugs in alpha builds — we get to see when
+            something crashes for a real user, not just when one of us reproduces it locally.
+          </p>
+
+          <h3 className="pc-consent__heading">What gets sent</h3>
+          <ul className="pc-consent__list">
+            <li>
+              <strong>Crash and error reports</strong>: the JavaScript stack trace and a 64-byte
+              kind label (e.g. <code>crash</code>, <code>migration_failed</code>).
+            </li>
+            <li>
+              <strong>App version + OS</strong> (e.g. <code>0.0.1</code> / <code>linux</code>).
+            </li>
+            <li>
+              <strong>Anonymous workspace ID</strong> — a random local identifier (default:{' '}
+              <code>default</code>). Not tied to your name, email, or account.
+            </li>
+            <li>
+              <strong>Page views in the operator UI</strong> (which routes you visit) and{' '}
+              <strong>UI element clicks</strong> (PostHog autocapture).
+            </li>
+          </ul>
+
+          <h3 className="pc-consent__heading">What does NOT get sent</h3>
+          <ul className="pc-consent__list">
+            <li>API keys, OAuth tokens, or any credentials.</li>
+            <li>Source code, file contents, project paths, or anything from your harnesses.</li>
+            <li>Prompts, agent outputs, or conversation history.</li>
+            <li>Your email, name, IP, or any account information.</li>
+            <li>Session recordings (we explicitly disable PostHog's session-replay feature).</li>
+          </ul>
+
+          <h3 className="pc-consent__heading">Where it goes</h3>
+          <p>
+            A PostHog instance operated by the Papercusp maintainers — not PostHog Cloud, not any
+            third-party SaaS. You can also point Papercusp at your own PostHog instance (see below
+            after opting in).
+          </p>
+
+          <h3 className="pc-consent__heading">Reversibility</h3>
+          <p>
+            You can turn this off any time, from this screen, and forwarding stops immediately on
+            the next flush tick. Local archived reports stay on your machine (in your embedded
+            Postgres) and roll off after 30 days regardless.
+          </p>
+
+          <div className="pc-consent__actions">
+            <button type="button" className="pc-btn pc-btn--primary" onClick={() => void accept()}>
+              Yes, opt in
             </button>
-            <button
-              type="button"
-              className="pc-btn"
-              onClick={() => void flushNow()}
-              disabled={flushing}
-            >
-              {flushing ? 'Flushing…' : 'Flush now'}
+            <button type="button" className="pc-btn" onClick={() => void decline()}>
+              No, keep it off
             </button>
-            {lastTest && (
-              <span className="pc-step__saved">
-                Test sent at {new Date(lastTest).toLocaleTimeString()}
-              </span>
-            )}
           </div>
+          <p className="pc-step__hint">
+            Either choice is fine. The app is fully functional with telemetry off; we just lose
+            visibility into bugs you hit.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
-          {lastFlush && (
-            <div className="pc-step__progress" data-status="ok">
-              <div className="pc-step__progress-dot" />
-              <div className="pc-step__progress-text">
-                <strong>Flushed.</strong>
-                <span>
-                  archived={lastFlush.archived} forwarded={lastFlush.forwarded} failed=
-                  {lastFlush.forwardFailed} retention-deleted={lastFlush.retentionDeleted}{' '}
-                  sink-configured={lastFlush.sinkConfigured ? 'yes' : 'no'}
-                </span>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {error && (
-        <div className="pc-step__progress" data-status="error">
+  // ── 2. User declined ──────────────────────────────────────────────
+  if (choice === 'no') {
+    return (
+      <div className="pc-step">
+        <div className="pc-step__progress" data-status="ok">
           <div className="pc-step__progress-dot" />
           <div className="pc-step__progress-text">
-            <strong>Failed.</strong>
-            <span>{error}</span>
+            <strong>Telemetry is off.</strong>
+            <span>Nothing is sent off your machine. You can change your mind any time.</span>
           </div>
         </div>
-      )}
+        <div className="pc-step__actions">
+          <button type="button" className="pc-btn" onClick={reconsider}>
+            Reconsider…
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── 3. User opted in ─────────────────────────────────────────────
+  return (
+    <div className="pc-step">
+      <div className="pc-step__progress" data-status="ok">
+        <div className="pc-step__progress-dot" />
+        <div className="pc-step__progress-text">
+          <strong>Telemetry is on.</strong>
+          <span>Crash reports + autocapture are forwarded on each hourly flush.</span>
+        </div>
+      </div>
+
+      <div className="pc-step__actions">
+        <button type="button" className="pc-btn" onClick={() => void decline()}>
+          Turn off
+        </button>
+      </div>
+
+      <details className="pc-consent__details">
+        <summary>Advanced: point at a different PostHog instance</summary>
+        <p className="pc-step__hint">
+          By default we send to the host configured at build time. Override per-workspace here if
+          you want reports to land in your own PostHog instance instead of ours.
+        </p>
+        <label className="pc-field">
+          <span className="pc-field__label">PostHog host URL</span>
+          <input
+            type="url"
+            className="pc-input"
+            placeholder="https://app.posthog.com"
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+          />
+        </label>
+        <label className="pc-field">
+          <span className="pc-field__label">Project API key</span>
+          <input
+            type="text"
+            className="pc-input"
+            placeholder="phc_..."
+            value={projectKey}
+            onChange={(e) => setProjectKey(e.target.value)}
+          />
+          <span className="pc-field__hint">
+            Project-level "Public API Key" from PostHog Project Settings. Safe to embed
+            (capture-only).
+          </span>
+        </label>
+        <div className="pc-step__actions">
+          <button type="button" className="pc-btn" onClick={() => void saveConfig()}>
+            Save
+          </button>
+        </div>
+      </details>
+
+      <details className="pc-consent__details">
+        <summary>Diagnostics</summary>
+        <div className="pc-step__actions">
+          <button type="button" className="pc-btn" onClick={() => void sendTest()} disabled={testing}>
+            {testing ? 'Sending…' : 'Send test report'}
+          </button>
+          <button type="button" className="pc-btn" onClick={() => void flushNow()} disabled={flushing}>
+            {flushing ? 'Flushing…' : 'Flush now'}
+          </button>
+          {lastTest && (
+            <span className="pc-step__saved">Test recorded at {new Date(lastTest).toLocaleTimeString()}</span>
+          )}
+        </div>
+
+        {lastFlush && (
+          <div className="pc-step__progress" data-status={lastFlush.posthogConfigured ? 'ok' : 'missing'}>
+            <div className="pc-step__progress-dot" />
+            <div className="pc-step__progress-text">
+              <strong>Flushed.</strong>
+              <span>
+                archived={lastFlush.archived} forwarded={lastFlush.forwarded} failed=
+                {lastFlush.forwardFailed} retention-deleted={lastFlush.retentionDeleted}{' '}
+                opted-in={String(lastFlush.optedIn)} posthog-configured=
+                {String(lastFlush.posthogConfigured)}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="pc-step__progress" data-status="error">
+            <div className="pc-step__progress-dot" />
+            <div className="pc-step__progress-text">
+              <strong>Failed.</strong>
+              <span>{error}</span>
+            </div>
+          </div>
+        )}
+      </details>
 
       <p className="pc-step__hint">
-        Reports are archived in <code>harness_shared.telemetry_reports_archive</code> with a default
-        retention of 30 days (<code>PAPERCUSP_TELEMETRY_RETENTION_DAYS</code>). A background worker
-        flushes hourly. Opt-out at any time and the API returns 403 immediately.
+        Reports are also archived locally in <code>harness_shared.telemetry_reports_archive</code>{' '}
+        with a 30-day retention. Even if you opt in, you can browse what's been sent off your
+        machine.
       </p>
     </div>
   );

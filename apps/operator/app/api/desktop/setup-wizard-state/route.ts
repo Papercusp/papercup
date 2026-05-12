@@ -12,8 +12,13 @@ export interface SetupWizardState {
   last_visited_step?: string;
   finished_at?: string;
   update_channel?: UpdateChannel;
+  /** Telemetry opt-in. **Off by default** — the wizard's Step 12 is
+   *  the only place this flips, and only on explicit user click. */
   telemetry_enabled?: boolean;
-  telemetry_sink_url?: string;
+  /** PostHog host URL — empty string clears it (falls back to env). */
+  telemetry_host?: string;
+  /** PostHog project API key — empty string clears it. */
+  telemetry_project_key?: string;
   updated_at?: string;
 }
 
@@ -51,18 +56,26 @@ export async function PATCH(req: Request) {
   if (typeof body.telemetry_enabled === 'boolean') {
     next.telemetry_enabled = body.telemetry_enabled;
   }
-  if (body.telemetry_sink_url === null) {
-    delete next.telemetry_sink_url;
-  } else if (typeof body.telemetry_sink_url === 'string') {
-    // Basic shape guard so a stray non-URL doesn't end up making the
-    // flush worker POST garbage on every tick.
+  if (body.telemetry_host === null || body.telemetry_host === '') {
+    delete next.telemetry_host;
+  } else if (typeof body.telemetry_host === 'string') {
     try {
-      const u = new URL(body.telemetry_sink_url);
+      const u = new URL(body.telemetry_host);
       if (u.protocol === 'http:' || u.protocol === 'https:') {
-        next.telemetry_sink_url = u.toString();
+        next.telemetry_host = u.toString().replace(/\/+$/, '');
       }
     } catch {
-      // ignore — keep existing value
+      // ignore bad URL — keep existing value
+    }
+  }
+  if (body.telemetry_project_key === null || body.telemetry_project_key === '') {
+    delete next.telemetry_project_key;
+  } else if (typeof body.telemetry_project_key === 'string') {
+    const k = body.telemetry_project_key.trim();
+    // PostHog project keys start with `phc_` and are ~50 chars. Accept
+    // anything 8-128 chars to be forgiving of self-hosted variants.
+    if (k.length >= 8 && k.length <= 128 && /^[A-Za-z0-9_-]+$/.test(k)) {
+      next.telemetry_project_key = k;
     }
   }
   if (body.step_status && typeof body.step_status === 'object') {

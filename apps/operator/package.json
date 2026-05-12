@@ -174,7 +174,9 @@
     "vditor": "^3.11.2",
     "verdict-cli": "^0.1.1",
     "ws": "^8.18.0",
-    "zod": "^4.4.2"
+    "zod": "^4.4.2",
+    "posthog-node": "^5.10.0",
+    "posthog-js": "^1.219.0"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
