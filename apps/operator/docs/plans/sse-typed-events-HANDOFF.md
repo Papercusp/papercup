@@ -315,11 +315,18 @@ Remaining work (none currently blocking):
 - **Per-tool migration of `operator:converse` / `operator:delegate` /
   `architect:chat` / `brainstorm:chat`** to IPC-eligible. None are
   on the allowlist today. `operator:scan` is the template for how
-  to move the route's side-effects into the tool handler.
-- **Eventual squash + merge of the branches** (43 commits on
-  papercup + 4 on papercup-desktop + 1 submodule branch on
-  papercusp). Better split into separate PRs (framework, IPC,
-  cleanup) than merged whole; out of scope here.
+  to move the route's side-effects into the tool handler. For
+  architect/brainstorm specifically, a less invasive path exists:
+  extract the prompt-composition helpers (harnessDir, safeRead,
+  parseFeatures, brainstormPath) into a shared lib first, then the
+  tool can import them directly. For operator:converse / operator:
+  delegate, the audit-trail side-effects (recordSpend,
+  appendDelegateTurn) need to move into the handler so IPC dispatches
+  don't lose budget accounting / conversation history.
+- **Branch merge.** See `sse-typed-events-PR-SPLIT.md` for the
+  6-PR split plan covering all 53 commits + their cross-repo
+  dependencies. Migration 058 was applied to the live embedded-PG
+  on 2026-05-12 (column visible in `\d harness_shared.tool_invocations`).
 
 ---
 
