@@ -29,7 +29,7 @@ export async function* dispatchEndpointStreamHttp<TInput>(
 ): AsyncIterable<EndpointStreamEvent> {
   const url =
     options.overrideUrl ??
-    `${options.baseUrl ?? ''}/api/agent-tools/${toolName.replace(':', '/')}`;
+    `${options.baseUrl ?? ''}/api/agent-tools/${toolName.replaceAll(':', '/')}`;
 
   const res = await fetch(url, {
     method: 'POST',

@@ -49,7 +49,13 @@ function recSink() {
  * one of the two has a bug.
  */
 async function forwardDispatch(
-  iter: AsyncIterable<{ kind: string; name?: string; data?: unknown; error?: { message: string } }>,
+  iter: AsyncIterable<{
+    kind: string;
+    name?: string;
+    data?: unknown;
+    error?: { message: string };
+    result?: { content: unknown };
+  }>,
   tool: Pick<ProjectedTool, 'eventWireKinds'>,
   sink: ReturnType<typeof recSink>['sink'],
 ): Promise<void> {
@@ -58,8 +64,12 @@ async function forwardDispatch(
       emitToSseSink(sink, tool, ev.name, ev.data);
     } else if (ev.kind === 'error' && ev.error) {
       sink.eventRaw('error', ev.error.message);
+    } else if (ev.kind === 'done' && ev.result) {
+      // Emit done for symmetry with the catch-all URL. Consumer
+      // (useHarnessChatRuntime) ignores it; future consumers
+      // looking for the terminal event get it regardless of URL.
+      sink.event('done', ev.result.content);
     }
-    // ev.kind === 'done' intentionally skipped (consumer parity).
   }
 }
 
@@ -121,8 +131,8 @@ describe('Hono shim dispatch-loop wire format', () => {
       tool,
       sink,
     );
-    // 2 raw delta + 1 JSON tool_call. No done frame surfaced.
-    expect(events).toHaveLength(3);
+    // 2 raw delta + 1 JSON tool_call + 1 done.
+    expect(events).toHaveLength(4);
     expect(events[0]).toEqual({ kind: 'raw', name: 'delta', data: 'Hello ' });
     expect(events[1]).toEqual({
       kind: 'event',
@@ -130,9 +140,13 @@ describe('Hono shim dispatch-loop wire format', () => {
       data: { name: 'ask_choice', input: { options: ['a', 'b'] } },
     });
     expect(events[2]).toEqual({ kind: 'raw', name: 'delta', data: 'world' });
-    // Critical: NO 'done' event in the recording. Consumer closes on
-    // stream-end; surfacing done would change wire semantics.
-    expect(events.find((e) => e.name === 'done')).toBeUndefined();
+    // Terminal `done` IS emitted for URL-symmetry with the catch-all
+    // route (deferred PR D, item 10). The submodule consumer ignores
+    // it; we emit it so other consumers behave uniformly.
+    const doneEv = events.find((e) => e.name === 'done');
+    expect(doneEv).toBeDefined();
+    expect(doneEv!.kind).toBe('event');
+    expect(doneEv!.data).toEqual([{ type: 'text', text: 'Hello world' }]);
   });
 
   it('round-2 regression: dispatch-level error surfaces as raw-text error', async () => {

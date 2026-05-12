@@ -190,7 +190,7 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
  */
 function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition<TArgs>): void {
   // tasks:list → /api/agent-tools/tasks/list
-  const httpPath = `/api/agent-tools/${def.name.replace(':', '/')}`;
+  const httpPath = `/api/agent-tools/${def.name.replaceAll(':', '/')}`;
   // Zod 4: use built-in z.toJSONSchema. zod-to-json-schema@3 returns just
   // `{ $schema }` for zod 4 schemas — produces empty input schemas.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -251,7 +251,7 @@ function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition
 function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
   def: RoleToolDefinition<TArgs>,
 ): void {
-  const httpPath = `/api/agent-tools/${def.name.replace(':', '/')}`;
+  const httpPath = `/api/agent-tools/${def.name.replaceAll(':', '/')}`;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const inputSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
   delete (inputSchema as Record<string, unknown>).$schema;

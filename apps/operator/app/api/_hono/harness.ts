@@ -5803,10 +5803,15 @@ Rules for proposals:
           // (useHarnessChatRuntime.ts) shows it inline. Previously dropped
           // silently — the user just saw an empty response.
           sink.eventRaw('error', ev.error.message);
+        } else if (ev.kind === 'done') {
+          // Emit terminal `done` for symmetry with the catch-all
+          // /api/agent-tools/architect/chat URL (where the framework
+          // auto-emits done). useHarnessChatRuntime.ts ignores done,
+          // so this is a no-op for the chat panel — but other future
+          // consumers that look for the terminal event work uniformly
+          // regardless of which URL they hit.
+          sink.event('done', ev.result.content);
         }
-        // ev.kind === 'done' is intentionally not surfaced: the
-        // submodule consumer closes on stream-end and ignores `done`,
-        // so we keep the pre-migration wire shape.
       }
     },
   });
@@ -6068,8 +6073,10 @@ Rules:
         } else if (ev.kind === 'error') {
           // Dispatcher-level failure — see architect/chat above.
           sink.eventRaw('error', ev.error.message);
+        } else if (ev.kind === 'done') {
+          // Terminal `done` — see architect/chat above.
+          sink.event('done', ev.result.content);
         }
-        // ev.kind === 'done' intentionally not surfaced (consumer parity).
       }
     },
   });

@@ -183,8 +183,8 @@ What it doesn't give:
 | `0x02` EVENT_JSON | Node → Rust | `{ id, name, data }` |
 | `0x03` DONE | Node → Rust | `{ id, result: ToolResult }` |
 | `0x04` ERROR | Node → Rust | `{ id, error: { code, message } }` |
-| `0x06` EVENT_BIN | Node → Rust | `[8B id u64][4B name-len BE][name UTF-8][raw binary]` |
-| `0x07` CANCEL | Rust → Node | `{ id }` |
+| `0x05` EVENT_BIN | Node → Rust | `[8B id u64][4B name-len BE][name UTF-8][raw binary]` |
+| `0x06` CANCEL | Rust → Node | `{ id }` |
 
 **Self-describing binary frame** (no separate header). Each binary event carries its own `id` and `name` prefix, then raw bytes. Eliminates the concurrent-binary state-management bug the original sketch had (single global `pending_bin_header` slot was a real footgun under concurrent emits).
 
