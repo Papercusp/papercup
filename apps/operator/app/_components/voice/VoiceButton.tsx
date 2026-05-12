@@ -1,17 +1,18 @@
 'use client';
 
 /**
- * Voice mode toggle button. Lives in the chrome header next to Operator.
+ * Voice mode toggle button. Lives in the Operator chat sidebar header.
  *
  * Click cycles: off → push-to-talk → always-on → off.
  * Long-press while in push-to-talk holds the mic open.
  */
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, type ReactElement } from 'react';
 import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   getVoiceConfig,
+  getVoiceState,
   initVoiceMode,
   setVoiceMode,
   startPushToTalk,
@@ -61,20 +62,14 @@ const PTT_SHORTCUT_LABEL = '`';
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   // contenteditable elements: any "true"/"" value, plus inherited via [contenteditable=inherit]
-  if (target.isContentEditable) return true;
+  if (target instanceof HTMLElement && target.isContentEditable) return true;
   return !!target.closest(
     'input, textarea, select, [contenteditable="true"], [contenteditable=""], .cm-editor, .monaco-editor, .xterm, .xterm-screen',
   );
 }
 
-export function VoiceButton(): JSX.Element {
-  const [vs, setVs] = useState<VoiceState>({
-    mode: 'off',
-    status: 'off',
-    supported: false,
-    lastTranscript: '',
-    speakingRole: null,
-  });
+export function VoiceButton(): ReactElement {
+  const [vs, setVs] = useState<VoiceState>(() => getVoiceState());
   const [wakeWord, setWakeWord] = useState(() => getVoiceConfig().wakeWord);
   const [wakeHintSeen, setWakeHintSeen] = useState(() => {
     if (typeof window === 'undefined') return false;

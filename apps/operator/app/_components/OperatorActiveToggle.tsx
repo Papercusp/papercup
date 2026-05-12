@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * OperatorActiveToggle — navbar button that flips operator interaction
+ * OperatorActiveToggle — sidebar button that flips operator interaction
  * mode between active and passive.
  *
  * - Active = operator owns the conversation flow, speaks proactively
@@ -10,8 +10,8 @@
  *
  * Either the user OR the operator (via <set_mode> tags) can flip the
  * mode; both writes go through the same sessionStorage hook in
- * lib/operator-converse-tags.ts. This component just owns the navbar
- * button + visual state.
+ * lib/operator-converse-tags.ts. This component just owns the visible
+ * control + visual state.
  *
  * Mode persistence is sessionStorage (resets per app open). Default on
  * first read is 'active' (matches the user's intent: "active mode by
@@ -19,9 +19,9 @@
  * `activeOnStartup` toggle controls the seed; that lands in a later
  * commit.
  *
- * The button lives in the chrome header next to OperatorButton +
- * VoiceButton (see ChromeShell.tsx, .pc-header-center). It is NOT
- * the operator-panel toggle — that one stays as is.
+ * The control lives in the Operator chat sidebar header, next to the mic
+ * and voice settings controls. It is NOT the deck/panel toggle — that one
+ * stays in the main chrome.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -191,7 +191,7 @@ export function OperatorActiveToggle() {
       <button
         type="button"
         onClick={onClick}
-        className={`pc-header-cta op-active-toggle op-active-toggle--${stateClass}`}
+        className={`op-active-toggle op-active-toggle--${stateClass}`}
         aria-label={aria}
         title={title}
       >

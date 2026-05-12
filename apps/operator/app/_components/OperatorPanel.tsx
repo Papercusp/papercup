@@ -1,12 +1,12 @@
 'use client';
 
 /**
- * Operator panel — primary interaction surface for the Operator concierge.
+ * Deck panel — primary interaction surface for the Operator concierge.
  *
  * Per spec/agent-mcp:
  *   - Top dropdown covering most of the page in all directions.
- *   - Triggered by the Operator button (next to Mission Control) AND
- *     the Cmd/Ctrl+K, O keyboard shortcut.
+ *   - Triggered by the Deck button (next to Mission Control) AND
+ *     the Cmd/Ctrl+K, D keyboard shortcut.
  *   - Click-outside to close.
  *   - Current view stays mounted underneath.
  *   - Icon states: idle / scanning / thinking / acting / paused / awaiting-input.
@@ -283,7 +283,7 @@ export function OperatorButton(): ReactElement {
         }, 1000);
         return;
       }
-      if (armed && e.key === 'o') {
+      if (armed && e.key.toLowerCase() === 'd') {
         e.preventDefault();
         broadcastState({ open: !sharedState.open });
         armed = false;
@@ -302,12 +302,12 @@ export function OperatorButton(): ReactElement {
   // re-asserts itself when iconState falls back to idle/awaiting-input.
   const pausedActive = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
   const titleByState: Record<IconState, string> = {
-    idle: 'Operator — idle',
-    scanning: 'Operator — scanning workspace',
-    thinking: 'Operator — composing suggestions',
-    acting: 'Operator — dispatching',
-    paused: 'Operator — paused (autonomous actions disabled)',
-    'awaiting-input': 'Operator — awaiting your decision on pending suggestions',
+    idle: 'Deck — Operator idle',
+    scanning: 'Deck — Operator scanning workspace',
+    thinking: 'Deck — Operator composing suggestions',
+    acting: 'Deck — Operator dispatching',
+    paused: 'Deck — Operator paused (autonomous actions disabled)',
+    'awaiting-input': 'Deck — Operator awaiting your decision on pending suggestions',
   };
   const title = pausedActive
     ? titleByState.paused
@@ -317,7 +317,7 @@ export function OperatorButton(): ReactElement {
 
   const scanning = state.iconState === 'scanning' || state.iconState === 'thinking';
 
-  // Always-visible count bubbles under the header Operator button. Counts come
+  // Always-visible count bubbles under the header Deck button. Counts come
   // from sharedState.cards (mirrored from the panel's suggestion array).
   const counts = useMemo(() => {
     const c = { pending: 0, accepted: 0, ignored: 0 };
@@ -345,11 +345,11 @@ export function OperatorButton(): ReactElement {
           {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
           {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
         </span>
-        <span className="pc-header-cta-label">Operator</span>
+        <span className="pc-header-cta-label">Deck</span>
       </button>
       <div
         role="status"
-        aria-label={`Operator card counts: ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored`}
+        aria-label={`Deck card counts: ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored`}
         aria-live="polite"
         className="pc-operator-popdown"
       >
@@ -669,7 +669,7 @@ export function OperatorPanel(): ReactElement | null {
       if (!panelRef.current) return;
       if (panelRef.current.contains(e.target as Node)) return;
       const target = e.target as HTMLElement;
-      if (target.closest('[aria-label^="Operator"]')) return;
+      if (target.closest('[aria-label^="Deck"]')) return;
       broadcastState({ open: false });
     };
     const onKey = (e: KeyboardEvent) => {
@@ -1628,7 +1628,7 @@ export function OperatorPanel(): ReactElement | null {
           ref={panelRef}
           role="dialog"
           aria-modal="true"
-          aria-label="Operator panel"
+          aria-label="Deck"
           data-harness-modal="true"
           data-operator-state={effectiveIconState}
           data-scan-status={scanStatus}
@@ -1668,7 +1668,7 @@ export function OperatorPanel(): ReactElement | null {
               <div className="operator-panel__titlecopy">
                 <div className="operator-panel__title-overline" aria-hidden="true" />
                 <div className="operator-panel__titleline">
-                  <OperatorWordmarkLockup className="operator-panel__wordmark" subtitle="" />
+                  <OperatorWordmarkLockup className="operator-panel__wordmark" title="Deck" subtitle="" />
                   <span className={`operator-status operator-status--${effectiveIconState}`}>
                     {statusLabel}
                   </span>
@@ -1678,7 +1678,7 @@ export function OperatorPanel(): ReactElement | null {
 
 
             <div className="operator-panel__actions pc-animate-in pc-animate-in--down pc-animate-in--delay-2">
-              <div className="operator-panel__action-strip" aria-label="Operator controls">
+              <div className="operator-panel__action-strip" aria-label="Deck controls">
                 <button
                   type="button"
                   className="operator-btn operator-btn--primary operator-btn--icon"
@@ -1746,7 +1746,7 @@ export function OperatorPanel(): ReactElement | null {
             </aside>
 
             <main className="operator-panel__feed pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-              <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Operator action views">
+              <div className="operator-panel__metrics operator-feed-tabs pc-animate-in pc-animate-in--down pc-animate-in--delay-1" role="tablist" aria-label="Deck action views">
                 {[
                   { key: 'cards' as MainView, count: pendingCount, label: 'Pending' },
                   { key: 'accepted' as MainView, count: acceptedCount, label: 'Accepted' },
@@ -1848,7 +1848,7 @@ export function OperatorPanel(): ReactElement | null {
                   )}
                 </div>
               ) : (
-                <ul role="list" aria-label="Operator actions" className="operator-feed-list">
+                <ul role="list" aria-label="Deck actions" className="operator-feed-list">
                   {visibleSuggestions.map((s, index) => (
                     <li
                       key={s.id}
@@ -2101,7 +2101,7 @@ export function OperatorPanel(): ReactElement | null {
           </div>
 
           <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-            <span>Cmd/Ctrl+K then O to toggle • Click outside to close</span>
+            <span>Cmd/Ctrl+K then D to toggle • Click outside to close</span>
           </footer>
         </motion.div>
       ) : null}

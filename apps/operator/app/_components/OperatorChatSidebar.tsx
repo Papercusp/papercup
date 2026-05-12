@@ -25,6 +25,8 @@ import { OperatorChat } from './OperatorChat';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
+import { OperatorActiveToggle } from './OperatorActiveToggle';
+import { VoiceButton } from './voice/VoiceButton';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
 const MIN_WIDTH = 360;
@@ -131,27 +133,29 @@ export function OperatorChatSidebar() {
     <aside className="op-chat-sidebar" style={sidebarStyle} aria-label="Operator chat">
       <style>{OP_CHAT_SIDEBAR_CSS}</style>
       <div className="op-chat-header">
-        <div className="op-chat-header-orb" aria-hidden="true">
-          <OperatorLogoMark className="op-chat-header-logo" />
-        </div>
-        <div className="op-chat-header-copy">
-          <div className="op-chat-header-title-row">
-            <OperatorWordmarkLockup
-              className="op-chat-wordmark"
-              titleClassName="op-chat-wordmark-title"
-              subtitleClassName="op-chat-wordmark-subtitle"
-              subtitle=""
-            />
-            <span className={`op-chat-mode op-chat-mode-${conv.mode}`}>
-              <span className="op-chat-mode-dot" aria-hidden="true" />
-              {conv.mode}
+        <div className="op-chat-header-main">
+          <div className="op-chat-header-orb" aria-hidden="true">
+            <OperatorLogoMark className="op-chat-header-logo" />
+          </div>
+          <div className="op-chat-header-copy">
+            <div className="op-chat-header-title-row">
+              <OperatorWordmarkLockup
+                className="op-chat-wordmark"
+                titleClassName="op-chat-wordmark-title"
+                subtitleClassName="op-chat-wordmark-subtitle"
+                subtitle=""
+              />
+            </div>
+            <span className="op-chat-header-subtitle">
+              Workspace assistant · {statusText}
             </span>
           </div>
-          <span className="op-chat-header-subtitle">
-            Workspace assistant · {statusText}
-          </span>
+          <Radio className="op-chat-header-signal" aria-hidden="true" />
         </div>
-        <Radio className="op-chat-header-signal" aria-hidden="true" />
+        <div className="op-chat-controls" role="group" aria-label="Operator voice controls">
+          <OperatorActiveToggle />
+          <VoiceButton />
+        </div>
       </div>
       <OperatorChat
         messages={conv.messages}
@@ -200,14 +204,22 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-header {
   display: flex;
-  align-items: center;
-  gap: 11px;
-  min-height: 74px;
-  padding: 14px 14px 13px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 118px;
+  padding: 12px 12px 11px;
   border-bottom: 1px solid rgba(125, 211, 252, 0.14);
   background:
     linear-gradient(180deg, rgba(11, 25, 42, 0.84), rgba(7, 16, 29, 0.94)),
     #07101d;
+}
+
+.op-chat-header-main {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
 }
 
 .op-chat-header-orb {
@@ -260,44 +272,61 @@ const OP_CHAT_SIDEBAR_CSS = `
   line-height: 1.3;
 }
 
-.op-chat-mode {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 7px;
-  border: 1px solid rgba(125, 211, 252, 0.18);
-  border-radius: 999px;
-  background: rgba(125, 211, 252, 0.07);
-  color: #bae6fd;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.op-chat-mode-passive {
-  border-color: rgba(251, 191, 36, 0.24);
-  background: rgba(251, 191, 36, 0.08);
-  color: #fde68a;
-}
-
-.op-chat-mode-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #34d399;
-  box-shadow: 0 0 8px rgba(52, 211, 153, 0.75);
-}
-
-.op-chat-mode-passive .op-chat-mode-dot {
-  background: #fbbf24;
-  box-shadow: 0 0 8px rgba(251, 191, 36, 0.65);
-}
-
 .op-chat-header-signal {
   width: 16px;
   height: 16px;
+  flex: 0 0 auto;
+  margin-left: auto;
   color: rgba(125, 211, 252, 0.52);
+}
+
+.op-chat-controls {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.op-chat-controls .op-active-toggle {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.op-chat-controls .pc-voice-control {
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 5px;
+  margin-left: 0;
+}
+
+.op-chat-controls .pc-voice-btn {
+  flex: 1 1 auto;
+  justify-content: center;
+  min-width: 0;
+  min-height: 32px;
+  padding: 5px 10px 5px 8px;
+  gap: 7px;
+}
+
+.op-chat-controls .pc-voice-btn-orb {
+  width: 20px;
+  height: 20px;
+}
+
+.op-chat-controls .pc-voice-btn-label {
+  font-size: 11px;
+  letter-spacing: 0.065em;
+}
+
+.op-chat-controls .pc-voice-settings-link {
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 9px;
 }
 
 .op-chat-sidebar .op-chat-banner {
@@ -445,7 +474,7 @@ body.has-op-chat .h-header {
 }
 
 .op-chat-sidebar::after {
-  inset: 74px 0 58px;
+  inset: 118px 0 58px;
   background:
     linear-gradient(90deg, transparent 0%, rgba(125, 211, 252, 0.045) 16%, transparent 36%),
     repeating-linear-gradient(180deg, rgba(255,255,255,0.015) 0 1px, transparent 1px 32px);
@@ -494,14 +523,6 @@ body.has-op-chat .h-header {
 
 .op-chat-header-logo {
   filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.26));
-}
-
-.op-chat-mode {
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(2, 8, 23, 0.14);
-}
-
-.op-chat-mode-dot {
-  animation: op-chat-status-pulse 2.4s ease-in-out infinite;
 }
 
 .op-chat-header-signal {
@@ -613,11 +634,6 @@ body.has-op-chat .h-header {
   0%, 12%, 100% { transform: translateX(-160%) skewX(-20deg); opacity: 0; }
   18%, 32% { transform: translateX(280%) skewX(-20deg); opacity: 1; }
   36% { opacity: 0; }
-}
-
-@keyframes op-chat-status-pulse {
-  0%, 100% { transform: scale(1); opacity: 0.92; }
-  50% { transform: scale(1.22); opacity: 1; }
 }
 
 @keyframes op-chat-signal-fade {
