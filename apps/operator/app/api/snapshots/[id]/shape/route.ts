@@ -10,6 +10,8 @@
  */
 
 import { NextResponse } from 'next/server';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 import {
   readManifestFromTarball,
   effectiveVersionPin,
@@ -32,9 +34,11 @@ interface PluginManifestEntry {
 }
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  if (blocked) return blocked;
   const { id } = await params;
   const snap = await findSnapshot(id);
   if (!snap) return NextResponse.json({ ok: false, error: 'not found' }, { status: 404 });
