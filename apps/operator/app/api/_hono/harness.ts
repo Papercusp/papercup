@@ -5793,12 +5793,16 @@ Rules for proposals:
         {},
       )) {
         if (ev.kind === 'event') {
-          // Schema-inferred wire kinds: delta + error are z.string() →
-          // raw text on wire. dispatchProjectedToolStream yields the
-          // handler's raw payload; we forward to the sink using
-          // eventRaw for those, event() for the JSON-shaped events.
-          if (ev.name === 'delta' || ev.name === 'error') {
+          // Schema-driven wire-kind dispatch: read the tool's
+          // eventWireKinds (set by classifyEventWire at register time)
+          // so this shim doesn't re-encode the rules. If the tool ever
+          // adds another z.string() event, this loop picks it up
+          // automatically instead of needing a hardcoded name list here.
+          const kind = architectChatTool.eventWireKinds?.[ev.name];
+          if (kind === 'string') {
             sink.eventRaw(ev.name, typeof ev.data === 'string' ? ev.data : String(ev.data));
+          } else if (kind === 'binary' && ev.data instanceof Uint8Array) {
+            sink.eventRaw(ev.name, Buffer.from(ev.data).toString('base64'));
           } else {
             sink.event(ev.name, ev.data);
           }
@@ -6067,8 +6071,12 @@ Rules:
         {},
       )) {
         if (ev.kind === 'event') {
-          if (ev.name === 'delta' || ev.name === 'error') {
+          // Schema-driven wire-kind dispatch — see architect/chat above.
+          const kind = brainstormChatTool.eventWireKinds?.[ev.name];
+          if (kind === 'string') {
             sink.eventRaw(ev.name, typeof ev.data === 'string' ? ev.data : String(ev.data));
+          } else if (kind === 'binary' && ev.data instanceof Uint8Array) {
+            sink.eventRaw(ev.name, Buffer.from(ev.data).toString('base64'));
           } else {
             sink.event(ev.name, ev.data);
           }

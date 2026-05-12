@@ -410,10 +410,24 @@ async function buildMcpToolContext(
   const emit: UnifiedToolContext['emit'] =
     progressToken !== undefined && sendNotification
       ? (name, data) => {
+          // JSON-RPC can't carry binary natively. Uint8Array would
+          // JSON.stringify to {"0":...} (one numeric key per byte) —
+          // corrupted on the wire. Match the HTTP transport's behavior:
+          // base64-encode binary payloads. Structural check is cheap
+          // and catches both schema-declared and schema-undeclared
+          // binary emits.
+          let wireData: unknown = data;
+          if (data instanceof Uint8Array) {
+            wireData = {
+              $papercuspBinary: true,
+              encoding: 'base64',
+              data: Buffer.from(data).toString('base64'),
+            };
+          }
           // Papercusp extension notification — always fires.
           sendNotification({
             method: 'notifications/papercusp/event',
-            params: { progressToken, event: name, data },
+            params: { progressToken, event: name, data: wireData },
           }).catch((err) => {
             // eslint-disable-next-line no-console
             console.warn(`[mcp-tool] sendNotification(papercusp/event) failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -421,7 +435,7 @@ async function buildMcpToolContext(
           // Spec-compliance: also fire the standard progress notification
           // for the 'progress' wire event so MCP-aware clients that only
           // know about notifications/progress still get a progress signal.
-          if (name === 'progress' && data !== null && typeof data === 'object') {
+          if (name === 'progress' && data !== null && typeof data === 'object' && !(data instanceof Uint8Array)) {
             sendNotification({
               method: 'notifications/progress',
               params: { progressToken, ...(data as Record<string, unknown>) },
