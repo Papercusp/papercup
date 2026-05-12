@@ -75,9 +75,9 @@ export async function buildOperatorPrompt(
   if (playbook) sections.push(playbook);
 
   // Operator memory pre-turn injection — best-effort, via the shared
-  // helper that the operator-chat and delegate-chat routes also use
-  // (single source of truth for the user/workspace split + result
-  // formatting). Falls through silently when mem0 is unavailable.
+  // helper. Same source of truth as architect/brainstorm prompts +
+  // operator:delegate (each picks its own user/workspace scope).
+  // Falls through silently when mem0 is unavailable.
   const memBlock = await buildMemoryContextBlock({
     userId: sessionUser?.id ?? null,
     workspaceId: activeWorkspaceId(),
