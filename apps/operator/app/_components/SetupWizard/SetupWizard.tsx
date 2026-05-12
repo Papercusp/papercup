@@ -4,6 +4,7 @@ import { useQueryState } from 'nuqs';
 import { useEffect, useMemo } from 'react';
 import { SETUP_STEPS, findStep } from './steps';
 import type { StepStatus } from './types';
+import { StepAgents } from './StepAgents';
 import { StepEmbeddedPg } from './StepEmbeddedPg';
 import { StepPlaceholder } from './StepPlaceholder';
 import { useWizardStatuses } from './useWizardStatuses';
@@ -75,6 +76,8 @@ function renderStep(id: string) {
   switch (id) {
     case 'embedded-pg':
       return <StepEmbeddedPg />;
+    case 'agents':
+      return <StepAgents />;
     default:
       return <StepPlaceholder id={id} />;
   }

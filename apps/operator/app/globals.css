@@ -25100,3 +25100,62 @@ body:has(.operator-panel) {
 }
 .pc-step__progress-text strong { color: var(--fg); }
 .pc-step__progress-text span { color: var(--fg-mute); margin-left: 6px; }
+
+.pc-agent-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  margin-top: 4px;
+}
+@media (min-width: 880px) {
+  .pc-agent-grid { grid-template-columns: 1fr 1fr; }
+}
+.pc-agent-card {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pc-agent-card[data-status="ok"] {
+  border-color: rgba(52, 211, 153, 0.32);
+  background: rgba(52, 211, 153, 0.05);
+}
+.pc-agent-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.pc-agent-card__head h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--fg);
+}
+.pc-agent-card__badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  color: var(--fg-mute);
+}
+.pc-agent-card__badge[data-status="ok"] { background: rgba(52, 211, 153, 0.18); color: var(--good); }
+.pc-agent-card__badge[data-status="missing"] { background: rgba(251, 113, 133, 0.16); color: var(--bad); }
+.pc-agent-card__badge[data-status="error"] { background: rgba(251, 191, 36, 0.16); color: var(--warn); }
+.pc-agent-card__desc {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg-dim);
+  margin: 0;
+}
+.pc-agent-card__detail { font-size: 11.5px; color: var(--fg-mute); margin: 0; font-family: var(--font-mono, ui-monospace, monospace); }
+.pc-agent-card__install-label { font-size: 11.5px; color: var(--fg-mute); margin: 4px 0 0; }
+.pc-agent-card__link { font-size: 12px; margin: 4px 0 0; }
+.pc-agent-card__link a { color: var(--accent); text-decoration: none; }
+.pc-agent-card__link a:hover { text-decoration: underline; }
