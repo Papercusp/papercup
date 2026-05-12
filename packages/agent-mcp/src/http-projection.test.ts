@@ -201,41 +201,48 @@ describe('handleHttpToolRequest', () => {
 
 /* ─── Streaming variant ──────────────────────────────────────────────── */
 
-async function readAllSse(stream: ReadableStream<string>): Promise<string> {
-  const reader = stream.getReader();
-  let out = '';
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    out += value;
-  }
-  return out;
-}
+import type { SseSink } from '@restart/sse';
 
-function parseSseEvents(raw: string): Array<{ event: string; data: unknown }> {
-  const events: Array<{ event: string; data: unknown }> = [];
-  for (const block of raw.split('\n\n').filter((b) => b.trim().length > 0)) {
-    const lines = block.split('\n');
-    let event = 'message';
-    let dataStr = '';
-    for (const line of lines) {
-      if (line.startsWith('event: ')) event = line.slice('event: '.length);
-      else if (line.startsWith('data: ')) dataStr += line.slice('data: '.length);
-    }
-    try { events.push({ event, data: JSON.parse(dataStr) }); }
-    catch { events.push({ event, data: dataStr }); }
-  }
-  return events;
+interface RecordedEvent { event: string; data: unknown }
+
+function recordingSink(): { sink: SseSink; events: RecordedEvent[]; closed: () => boolean } {
+  const events: RecordedEvent[] = [];
+  let isClosed = false;
+  const closeHandlers: Array<() => void> = [];
+  const sink: SseSink = {
+    event(name, data) { if (!isClosed) events.push({ event: name, data }); },
+    eventRaw(name, data) { if (!isClosed) events.push({ event: name, data }); },
+    comment() { /* ignored in tests */ },
+    heartbeat() { if (!isClosed) events.push({ event: 'heartbeat', data: { tsMs: Date.now() } }); },
+    done(payload) {
+      if (isClosed) return;
+      events.push({ event: 'done', data: payload ?? null });
+      isClosed = true;
+      for (const fn of closeHandlers) try { fn(); } catch { /* ignore */ }
+    },
+    close() {
+      if (isClosed) return;
+      isClosed = true;
+      for (const fn of closeHandlers) try { fn(); } catch { /* ignore */ }
+    },
+    onClose(fn) {
+      if (isClosed) { try { fn(); } catch { /* ignore */ } return; }
+      closeHandlers.push(fn);
+    },
+    get closed() { return isClosed; },
+  };
+  return { sink, events, closed: () => isClosed };
 }
 
 describe('handleHttpToolRequestStreaming', () => {
   it('emits a single result event for non-streaming tools', async () => {
     registerProjectedTool(makeTool());
-    const stream = handleHttpToolRequestStreaming(MAKE_REQ({ body: { x: 1 } }), MAKE_EXTRAS());
-    const events = parseSseEvents(await readAllSse(stream));
+    const { sink, events, closed } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ({ body: { x: 1 } }), MAKE_EXTRAS(), sink);
     expect(events).toHaveLength(1);
     expect(events[0]?.event).toBe('result');
     expect(events[0]?.data).toMatchObject({ content: expect.any(Array) });
+    expect(closed()).toBe(true);
   });
 
   it('emits progress events when the function calls ctx.progress(), then a final result', async () => {
@@ -247,8 +254,8 @@ describe('handleHttpToolRequestStreaming', () => {
         return { content: [{ type: 'text', text: 'finished' }] };
       },
     }));
-    const stream = handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS());
-    const events = parseSseEvents(await readAllSse(stream));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
     const progressEvents = events.filter((e) => e.event === 'progress');
     const resultEvents = events.filter((e) => e.event === 'result');
     expect(progressEvents).toHaveLength(3);
@@ -261,11 +268,12 @@ describe('handleHttpToolRequestStreaming', () => {
   });
 
   it('emits an error event when the tool fails (404 / 405 / handler error)', async () => {
-    const stream = handleHttpToolRequestStreaming(
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(
       MAKE_REQ({ pathname: '/api/plugins/missing/tool' }),
       MAKE_EXTRAS(),
+      sink,
     );
-    const events = parseSseEvents(await readAllSse(stream));
     expect(events).toHaveLength(1);
     expect(events[0]?.event).toBe('error');
     expect(events[0]?.data).toMatchObject({ code: 'unknown_tool' });
@@ -273,8 +281,8 @@ describe('handleHttpToolRequestStreaming', () => {
 
   it('emits an error event for handler error during dispatch', async () => {
     registerProjectedTool(makeTool({ fn: async () => { throw new Error('boom'); } }));
-    const stream = handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS());
-    const events = parseSseEvents(await readAllSse(stream));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
     const error = events.find((e) => e.event === 'error');
     expect(error).toBeDefined();
     expect((error!.data as { code: string }).code).toBe('handler_error');

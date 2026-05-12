@@ -19,6 +19,7 @@
   "dependencies": {
     "@mcp-ui/server": "^6.1.0",
     "@modelcontextprotocol/sdk": "*",
+    "@restart/sse": "file:../../libs/sse",
     "postgres": "*",
     "zod": "*",
     "zod-to-json-schema": "*"
