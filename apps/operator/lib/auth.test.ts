@@ -124,6 +124,34 @@ describe('auth.ts integration', () => {
     }
   });
 
+  itPg('changePassword invalidates ALL existing sessions (the route re-issues)', async () => {
+    const name = uname();
+    await authMod!.signup(name, 'T', 'old');
+    const s1 = await authMod!.login(name, 'old');
+    const s2 = await authMod!.login(name, 'old');
+    const { pgClientFields } = await import('./memory/mem0-connection');
+    const fields = await pgClientFields();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { Client } = require('pg') as typeof import('pg');
+    const c = new Client(fields);
+    await c.connect();
+    try {
+      const before = await c.query(
+        'SELECT COUNT(*)::int n FROM harness_shared.user_sessions WHERE token IN ($1,$2)',
+        [s1.token, s2.token],
+      );
+      expect(before.rows[0].n).toBe(2);
+      await authMod!.changePassword(s1.user.id, 'old', 'new');
+      const after = await c.query(
+        'SELECT COUNT(*)::int n FROM harness_shared.user_sessions WHERE token IN ($1,$2)',
+        [s1.token, s2.token],
+      );
+      expect(after.rows[0].n).toBe(0);
+    } finally {
+      await c.end();
+    }
+  });
+
   itPg('changePassword requires the current password', async () => {
     const name = uname();
     const created = await authMod!.signup(name, 'T', 'old');
