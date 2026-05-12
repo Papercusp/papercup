@@ -21,73 +21,92 @@ interface ConsoleEnvelope {
 }
 
 /**
- * True iff we're running inside a Tauri webview that can invoke
- * commands.
+ * True iff we have *any* path to spawn a native terminal.
  *
- * Why not isTauriNative() from pty-tauri.ts: that function gates on
- * window.__PAPERCUSP_TAURI__, a marker the desktop app only sets in
- * production mode (main.rs:1168 lives inside the prod setup branch;
- * dev returns early). In dev Tauri the operator IS running in a Tauri
- * webview — __TAURI_INTERNALS__.invoke is wired — but the marker
- * isn't, so isTauriNative() returns false and the console launcher
- * thinks it's in a plain browser. That's the bug that made the click
- * silently no-op for the user.
+ * Two paths, tried in order at click time:
+ *   1. Server-side spawn via /api/agent-mcp/console/launch — the
+ *      operator process is running as the user with their DISPLAY
+ *      and PATH. Works in browser dev (:3055), Tauri dev, and prod.
+ *      Linux only for now.
+ *   2. Tauri IPC via commands.consoleLaunch — only when in a Tauri
+ *      webview AND the IPC bridge is wired. Original design; left
+ *      as a fallback for completeness.
  *
- * The console launcher only needs `invoke` (no per-event listen, no
- * pty IPC), so checking __TAURI_INTERNALS__ directly works in both
- * dev and prod.
+ * Both paths fall back to throwing if neither works, and the renderer
+ * shows a clear toast with the reason.
+ *
+ * Returns true in dev browser too — because the server-side path
+ * actually works there. That's a design shift from "desktop only" but
+ * a correct one: if the operator can launch a terminal, why hide it?
  */
 export function isConsoleLauncherSupported(): boolean {
+  // Loopback operator can always serve the server-side spawn endpoint
+  // when running on Linux. We don't actually feature-detect the OS at
+  // load-time because we don't know the operator's OS from JS; we
+  // assume it's available and let the click surface a clear error if
+  // it isn't.
+  return true;
+}
+
+function hasTauriInvoke(): boolean {
   if (typeof window === 'undefined') return false;
   const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } };
   return typeof w.__TAURI_INTERNALS__?.invoke === 'function';
 }
 
 export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
-  // Diagnostic logging so devtools shows the path even when the click
-  // "does nothing". Remove once the launch is stable enough that nobody
-  // needs to debug it any more.
-  console.info('[console-launcher] click', { opts, supported: isConsoleLauncherSupported() });
+  console.info('[console-launcher] click', { opts, hasTauri: hasTauriInvoke() });
 
-  if (!isConsoleLauncherSupported()) {
-    throw new Error('Native console is only available in the desktop app');
+  // Path 1: server-side spawn via the operator. This is the
+  // most-resilient path — bypasses Tauri IPC entirely.
+  try {
+    console.info('[console-launcher] trying server-side spawn');
+    const r = await fetch('/api/agent-mcp/console/launch', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ slug: opts.slug }),
+    });
+    const data = await r.json().catch(() => ({ status: 'error', error: 'invalid JSON' }));
+    console.info('[console-launcher] server-side result', data);
+    if (r.ok && data?.status === 'ok') return;
+    // 501 = "not implemented for this OS" — fall through to Tauri.
+    // Other errors (loopback, terminal not found) — surface.
+    if (r.status !== 501) {
+      throw new Error(data?.error ?? `console/launch HTTP ${r.status}`);
+    }
+    console.info('[console-launcher] server-side returned 501; falling through to Tauri');
+  } catch (e: any) {
+    if (!hasTauriInvoke()) {
+      throw e;
+    }
+    console.info('[console-launcher] server-side failed; trying Tauri', e?.message);
   }
 
-  // 1. Resolve envelope from the operator.
-  const r = await fetch('/api/agent-mcp/console/resolve', {
+  // Path 2: Tauri IPC. Same wire we had before; kept for completeness
+  // and to give us a non-Linux story when the time comes.
+  const resolveR = await fetch('/api/agent-mcp/console/resolve', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ slug: opts.slug }),
   });
-  if (!r.ok) {
-    const detail = await r.json().catch(() => null);
-    throw new Error(detail?.error ?? `console/resolve HTTP ${r.status}`);
+  if (!resolveR.ok) {
+    const detail = await resolveR.json().catch(() => null);
+    throw new Error(detail?.error ?? `console/resolve HTTP ${resolveR.status}`);
   }
-  const envelope = (await r.json()) as ConsoleEnvelope;
-  console.info('[console-launcher] envelope resolved', {
-    cwd: envelope.cwd,
-    needsBootstrap: envelope.needsSuperuserBootstrap,
-  });
-
-  // 2. Hand to Tauri via the generated bindings — this is the same
-  //    canonical path the pty bridge uses, going through
-  //    @tauri-apps/api/core's invoke() rather than the
-  //    __TAURI_INTERNALS__ window global. The dev/prod marker
-  //    divergence (PAPERCUSP_TAURI) doesn't affect this path.
+  const envelope = (await resolveR.json()) as ConsoleEnvelope;
   const { commands } = await import('./tauri-bindings');
   const launchFn = (commands as { consoleLaunch?: (e: ConsoleEnvelope) => Promise<unknown> })
     .consoleLaunch;
   if (typeof launchFn !== 'function') {
     throw new Error(
-      'commands.consoleLaunch is not in tauri-bindings.ts — desktop cargo build needs to regenerate bindings. Stop `npm run dev` and re-run.',
+      'No spawn path available — operator endpoint not Linux and Tauri bindings missing console_launch',
     );
   }
-  console.info('[console-launcher] invoking console_launch');
   const result = await launchFn(envelope) as
-    | { status: 'ok'; pid?: number | null; displacedMcpJson?: boolean; bootstrapped?: boolean }
+    | { status: 'ok'; pid?: number | null }
     | { status: 'err'; error: string }
     | null;
-  console.info('[console-launcher] result', result);
+  console.info('[console-launcher] tauri result', result);
   if (result && 'status' in result && (result.status === 'err' || (result as any).Err)) {
     const err = (result as any).error ?? (result as any).Err?.error ?? 'console_launch failed';
     throw new Error(err);
