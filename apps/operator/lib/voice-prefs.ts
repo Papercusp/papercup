@@ -227,6 +227,18 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   },
 };
 
+/**
+ * Workspace-only prefs, skipping the per-user override merge. Use when
+ * you need the raw workspace value (e.g. the /settings/user override
+ * UI shows BOTH workspace-default AND the user override, so it can't
+ * use loadVoicePrefs which already merges them).
+ */
+export async function loadWorkspaceVoicePrefs(): Promise<VoicePrefs> {
+  const raw = await readOperatorState<Partial<VoicePrefs>>('operator_voice_prefs');
+  if (!raw) return { ...DEFAULT_VOICE_PREFS };
+  return mergePrefs(DEFAULT_VOICE_PREFS, raw);
+}
+
 export async function loadVoicePrefs(): Promise<VoicePrefs> {
   const raw = await readOperatorState<Partial<VoicePrefs>>('operator_voice_prefs');
   // Merge with defaults so newly-added fields don't break old rows.

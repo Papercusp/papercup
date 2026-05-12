@@ -5,11 +5,20 @@
  */
 
 import { NextRequest } from 'next/server';
-import { loadVoicePrefs, saveVoicePrefs } from '@/lib/voice-prefs';
+import { loadVoicePrefs, loadWorkspaceVoicePrefs, saveVoicePrefs } from '@/lib/voice-prefs';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+/**
+ * GET ?layer=workspace returns workspace-only prefs (skipping the
+ * per-user override merge). Default behavior (no layer param) returns
+ * the merged effective prefs as before.
+ */
+export async function GET(req: NextRequest) {
+  const layer = new URL(req.url).searchParams.get('layer');
+  if (layer === 'workspace') {
+    return Response.json(await loadWorkspaceVoicePrefs());
+  }
   return Response.json(await loadVoicePrefs());
 }
 

@@ -71,6 +71,7 @@ export default defineTool({
     // input without parser errors. ts_rank_cd for ordering uses
     // cover-density (favors documents where query terms are close
     // together), which matches BM25 spirit more than ts_rank.
+    const harnessFilter = args.harness_slug ?? null;
     if (scope.includes('escalations')) {
       try {
         const rows = await ctx.tx<{
@@ -84,7 +85,8 @@ export default defineTool({
                  ts_rank_cd(body_tsv, plainto_tsquery('english', ${args.query})) AS rank
             FROM harness_shared.harness_escalations
            WHERE workspace_id = ${ctx.workspaceId}
-             AND ${args.harness_slug ? ctx.sql`harness_slug = ${args.harness_slug} AND ` : ctx.sql``} body_tsv @@ plainto_tsquery('english', ${args.query})
+             AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+             AND body_tsv @@ plainto_tsquery('english', ${args.query})
         ORDER BY rank DESC
            LIMIT ${limit}
         `;
@@ -115,7 +117,8 @@ export default defineTool({
                  ts_rank_cd(content_tsv, plainto_tsquery('english', ${args.query})) AS rank
             FROM harness_shared.harness_brainstorm
            WHERE workspace_id = ${ctx.workspaceId}
-             AND ${args.harness_slug ? ctx.sql`harness_slug = ${args.harness_slug} AND ` : ctx.sql``} content_tsv @@ plainto_tsquery('english', ${args.query})
+             AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+             AND content_tsv @@ plainto_tsquery('english', ${args.query})
         ORDER BY rank DESC
            LIMIT ${limit}
         `;

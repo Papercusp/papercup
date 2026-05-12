@@ -98,26 +98,19 @@ export default function UserSettingsPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [me, prefsJson, vpJson] = await Promise.all([
+      const [me, prefsJson, workspaceJson] = await Promise.all([
         fetch('/api/auth/me').then((r) => r.json()),
         fetch('/api/user/preferences').then((r) => r.ok ? r.json() : { payload: {} }),
-        // /api/voice-prefs returns the MERGED view today. We compute
-        // workspace-only by stripping known user overrides client-side.
-        fetch('/api/voice-prefs').then((r) => r.ok ? r.json() : null).catch(() => null),
+        // ?layer=workspace returns workspace-only prefs (no user merge),
+        // so we can show the true fallback value alongside the override.
+        fetch('/api/agent-mcp/operator-voice-prefs?layer=workspace')
+          .then((r) => r.ok ? r.json() : null)
+          .catch(() => null),
       ]);
       setUser(me.user);
       setDisplayName(me.user?.display_name ?? '');
       const userPrefs = prefsJson.payload ?? {};
-      const merged: Record<string, unknown> = vpJson ?? {};
-      // Effective workspace = merged minus any keys the user has overridden.
-      const workspace: Record<string, unknown> = {};
-      for (const spec of OVERRIDES) {
-        // If user has overridden, the merged value IS the user override.
-        // We can't recover the workspace value from /api/voice-prefs alone
-        // without explicit support; show "(see /settings/voice)" placeholder
-        // for those rows.
-        workspace[spec.key] = merged[spec.key];
-      }
+      const workspace: Record<string, unknown> = workspaceJson ?? {};
       setEffective({ workspace, user: userPrefs });
     } finally {
       setLoading(false);
@@ -270,6 +263,7 @@ export default function UserSettingsPage() {
           {OVERRIDES.map((spec) => {
             const overridden = spec.key in effective.user;
             const value = overridden ? effective.user[spec.key] : effective.workspace[spec.key];
+            const workspaceValue = effective.workspace[spec.key];
             return (
               <div
                 key={spec.key}
@@ -281,10 +275,15 @@ export default function UserSettingsPage() {
                 }}
               >
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4, flexWrap: 'wrap' }}>
                     <strong style={{ fontSize: 14 }}>{spec.label}</strong>
                     {overridden && (
-                      <span style={{ padding: '1px 6px', borderRadius: 3, background: '#a78bfa', color: '#fff', fontSize: 10, fontWeight: 600 }}>OVERRIDE</span>
+                      <>
+                        <span style={{ padding: '1px 6px', borderRadius: 3, background: '#a78bfa', color: '#fff', fontSize: 10, fontWeight: 600 }}>OVERRIDE</span>
+                        <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                          workspace: <code>{formatValue(workspaceValue)}</code>
+                        </span>
+                      </>
                     )}
                   </div>
                   <p style={{ color: 'var(--text-secondary)', fontSize: 12, margin: '0 0 8px' }}>{spec.help}</p>
@@ -318,6 +317,12 @@ export default function UserSettingsPage() {
       </section>
     </div>
   );
+}
+
+function formatValue(v: unknown): string {
+  if (v === undefined || v === null) return '(unset)';
+  if (typeof v === 'string') return v === '' ? '(empty)' : v;
+  return String(v);
 }
 
 function OverrideInput({ spec, value, onChange }: {
