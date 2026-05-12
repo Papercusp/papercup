@@ -41,6 +41,7 @@ import {
 import { generateSessionTitle } from '@/lib/delegate-summary';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 import { resolveDelegateSession } from './delegate-session';
+import { buildMemoryContextBlock } from '@/lib/memory/injection';
 
 const ArgsSchema = z.object({
   requestText: z.string().min(1),
@@ -191,9 +192,22 @@ export default defineTool({
     // both depend on this event.
     ctx.emit('session', { agentSessionId, created: sessionCreated });
 
+    // Workspace-scope memory injection (delegate is bearer-authed with
+    // no cookie user; workspace shared memory is the right grain).
+    // Recovered from main's pre-migration delegate-chat route which
+    // adopted buildMemoryContextBlock — was lost in the merge until
+    // audit round 12 caught it.
+    const memBlock = await buildMemoryContextBlock({
+      userId: null,
+      workspaceId,
+      queryContext: input.requestText,
+      heading: 'Delegate memory (relevant entries)',
+    });
+    const memorySection = memBlock ? `\n\n${memBlock}\n` : '';
+
     const promptText = sessionCreated
-      ? `${SYSTEM_PROMPT}\n\nUser request: ${input.requestText}`
-      : `User: ${input.requestText}`;
+      ? `${SYSTEM_PROMPT}${memorySection}\n\nUser request: ${input.requestText}`
+      : `${memorySection}User: ${input.requestText}`;
 
     const mcpConfig = buildMcpConfig();
 
