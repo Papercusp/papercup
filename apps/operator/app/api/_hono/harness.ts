@@ -5802,14 +5802,16 @@ Rules for proposals:
           } else {
             sink.event(ev.name, ev.data);
           }
+        } else if (ev.kind === 'error') {
+          // Dispatcher-level failure (role gate, quota, timeout, throw).
+          // Surface as a raw-text `error` event so the submodule consumer
+          // (useHarnessChatRuntime.ts) shows it inline. Previously dropped
+          // silently — the user just saw an empty response.
+          sink.eventRaw('error', ev.error.message);
         }
-        // done/error from dispatch are surfaced by sseResponse's default
-        // close behavior — sink.done is the framework's auto-done. For
-        // consistency with the pre-migration wire shape we don't emit
-        // a sink.done here: the architect chat consumer ignores `done`
-        // and closes on stream-end. The HTTP-layer auto-done (in
-        // handleHttpToolRequestStreaming) doesn't apply here because we
-        // dispatch in-process, not through the HTTP catch-all.
+        // ev.kind === 'done' is intentionally not surfaced: the
+        // submodule consumer closes on stream-end and ignores `done`,
+        // so we keep the pre-migration wire shape.
       }
     },
   });
@@ -6070,7 +6072,11 @@ Rules:
           } else {
             sink.event(ev.name, ev.data);
           }
+        } else if (ev.kind === 'error') {
+          // Dispatcher-level failure — see architect/chat above.
+          sink.eventRaw('error', ev.error.message);
         }
+        // ev.kind === 'done' intentionally not surfaced (consumer parity).
       }
     },
   });

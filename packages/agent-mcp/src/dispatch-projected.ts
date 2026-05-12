@@ -245,7 +245,27 @@ export async function dispatchProjectedTool(
         ctx.emit(name, data);
       }
     : ctx.emit;
-  const handlerCtx: UnifiedToolContext = { ...ctx, signal: abort.signal, emit: wrappedEmit };
+  // Re-bind ctx.progress to the wrapped emit. The transport adapter's
+  // progress is pre-built and closes over the UN-wrapped emit, which
+  // means a tool calling ctx.progress exclusively (no direct ctx.emit)
+  // would never refresh lastEmitMs — and a slow-progress LLM call
+  // would trip the idle watchdog mid-stream. This wrapper makes
+  // progress an alias of wrappedEmit per D2 of the plan.
+  const wrappedProgress = idleSec > 0
+    ? (pct: number | undefined, msg?: string) => {
+        wrappedEmit('progress', {
+          progress: typeof pct === 'number' ? pct : 0,
+          total: 100,
+          ...(msg ? { message: msg } : {}),
+        });
+      }
+    : ctx.progress;
+  const handlerCtx: UnifiedToolContext = {
+    ...ctx,
+    signal: abort.signal,
+    emit: wrappedEmit,
+    progress: wrappedProgress,
+  };
 
   try {
     const result = await tool.fn(input, handlerCtx);

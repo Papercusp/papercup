@@ -57,13 +57,19 @@ export async function* dispatchEndpointStreamHttp<TInput>(
   for await (const ev of parseSseStream(res.body)) {
     if (ev.event === 'heartbeat') continue;
     if (ev.event === 'done') {
-      let result;
+      // Wire format per the SSE-typed-events plan D1:
+      // `event: done\ndata: <ToolResult.content as JSON>`. The wire
+      // payload is the content array directly, not the envelope. Wrap
+      // it to match EndpointStreamEvent's done shape (parity with IPC,
+      // which sends the full ToolResult).
+      let content: Array<{ type: string; [k: string]: unknown }>;
       try {
-        result = JSON.parse(ev.data);
+        const parsed = JSON.parse(ev.data);
+        content = Array.isArray(parsed) ? parsed : [{ type: 'text', text: String(ev.data) }];
       } catch {
-        result = { content: [{ type: 'text', text: ev.data }] };
+        content = [{ type: 'text', text: ev.data }];
       }
-      yield { kind: 'done', result };
+      yield { kind: 'done', result: { content } };
       return;
     }
     if (ev.event === 'error') {

@@ -213,6 +213,27 @@ describe('dispatchProjectedTool', () => {
     expect(r.ok).toBe(true);
   }, 10_000);
 
+  it('ctx.progress refreshes idleTimeoutSec deadline (alias parity)', async () => {
+    // Regression: a tool that calls ctx.progress() exclusively (no
+    // direct ctx.emit) used to trip the idle watchdog because the
+    // dispatcher only wrapped emit. Plan decision D2 says progress is
+    // an alias of emit('progress', ...); the dispatcher must re-bind
+    // progress so it refreshes lastEmitMs too.
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        for (let i = 0; i < 5; i++) {
+          ctx.progress(i * 20, `step ${i}`);
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(true);
+  }, 10_000);
+
   it('routes ctx.progress() to the unified context (handler can call it)', async () => {
     const progressCalls: Array<[number | undefined, string | undefined]> = [];
     const tool = makeTool({
