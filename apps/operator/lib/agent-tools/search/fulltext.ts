@@ -100,8 +100,10 @@ export default defineTool({
             rank: r.rank,
           });
         }
-      } catch {
-        /* index not yet present — first boot before migration 059 */
+      } catch (err) {
+        // Index not yet present (first boot before migration 059), OR
+        // a real SQL error. Log under ctx.log so we can distinguish.
+        ctx.log?.(`search:fulltext escalations skipped: ${(err as Error).message}`);
       }
     }
 
@@ -131,8 +133,8 @@ export default defineTool({
             rank: r.rank,
           });
         }
-      } catch {
-        /* migration not applied */
+      } catch (err) {
+        ctx.log?.(`search:fulltext brainstorm skipped: ${(err as Error).message}`);
       }
     }
 
@@ -160,8 +162,8 @@ export default defineTool({
             rank: r.rank,
           });
         }
-      } catch {
-        /* migration not applied */
+      } catch (err) {
+        ctx.log?.(`search:fulltext turns skipped: ${(err as Error).message}`);
       }
     }
 
