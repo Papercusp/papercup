@@ -5,6 +5,13 @@ import { usePathname } from 'next/navigation';
 import { useTransitionRouter } from 'next-transition-router';
 import RouteLink from '../_components/RouteLink';
 import { Select } from '../harness/Select';
+import { FLAGS, type FlagKey } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
+
+const SETTINGS_PATH_FLAGS: Record<string, FlagKey> = {
+  '/settings/publishing': FLAGS.CLOUDFLARE_PUBLISH,
+  '/settings/oracle':     FLAGS.ORACLE,
+};
 
 interface SettingsLink {
   readonly href: string;
@@ -68,13 +75,37 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const router = useTransitionRouter();
   const [query, setQuery] = useState('');
 
-  const activeLink = SETTINGS_LINKS.find((link) => pathname === link.href || pathname.startsWith(`${link.href}/`)) ?? SETTINGS_LINKS[0];
+  const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
+  const oracleEnabled = useFlag(FLAGS.ORACLE);
+
+  const flagEnabled: Record<FlagKey, boolean> = {
+    [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
+    [FLAGS.ORACLE]: oracleEnabled,
+    [FLAGS.SNAPSHOTS]: true,
+    [FLAGS.TEMPLATES]: true,
+    [FLAGS.MARKETPLACE]: true,
+    [FLAGS.RUST_PORT_UI]: true,
+    [FLAGS.HARNESS_PHASES]: true,
+  };
+
+  const linkAllowed = (href: string): boolean => {
+    const flag = SETTINGS_PATH_FLAGS[href];
+    return flag ? flagEnabled[flag] : true;
+  };
+
+  const filteredGroups = SETTINGS_GROUPS
+    .map((group) => ({ ...group, links: group.links.filter((l) => linkAllowed(l.href)) }))
+    .filter((group) => group.links.length > 0);
+
+  const filteredLinks = filteredGroups.flatMap((g) => g.links);
+
+  const activeLink = filteredLinks.find((link) => pathname === link.href || pathname.startsWith(`${link.href}/`)) ?? filteredLinks[0];
   const normalizedQuery = query.trim().toLowerCase();
 
   const visibleGroups = useMemo(() => {
-    if (!normalizedQuery) return SETTINGS_GROUPS;
+    if (!normalizedQuery) return filteredGroups;
     const terms = normalizedQuery.split(/\s+/).filter(Boolean);
-    return SETTINGS_GROUPS
+    return filteredGroups
       .map((group) => ({
         ...group,
         links: group.links.filter((link) => {

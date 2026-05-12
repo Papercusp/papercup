@@ -2,6 +2,8 @@ import * as Lucide from 'lucide-react';
 import RouteLink from '@/app/_components/RouteLink';
 
 import { MarkdownPreview } from '@/app/_components/MarkdownEditor';
+import { FLAGS } from '@papercusp/flags';
+import { requireFlag } from '@/lib/require-flag';
 interface DetailResponse {
   slug: string;
   versions: string[];
@@ -69,6 +71,7 @@ function HeaderIcon({ name, kind }: { name: string | null | undefined; kind: 'pl
 }
 
 export default async function HarnessDetailPage({ params }: { params: Promise<{ slug: string }> }) {
+  await requireFlag(FLAGS.MARKETPLACE);
   const rawSlug = (await params).slug;
   const slug = (() => { try { return decodeURIComponent(rawSlug); } catch { return rawSlug; } })();
   const detail = await loadDetail(slug);

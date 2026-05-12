@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,7 +10,9 @@ export const dynamic = 'force-dynamic';
  * Returns the latest manifest + readme for a published slug. Falls back
  * to a 404 if the marketplace is unreachable or the slug isn't published.
  */
-export async function GET(_req: Request, ctx: { params: Promise<{ slug: string }> }) {
+export async function GET(req: Request, ctx: { params: Promise<{ slug: string }> }) {
+  const blocked = await gateApiRoute(req, FLAGS.MARKETPLACE);
+  if (blocked) return blocked;
   const raw = (await ctx.params).slug;
   // Next.js routes preserve URL-encoded path params; decode for downstream
   // use so `@papercupai/fumadocs` (encoded `%40papercupai%2Ffumadocs`) is

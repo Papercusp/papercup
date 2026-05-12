@@ -11,6 +11,8 @@ import { NextResponse } from 'next/server';
 import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -28,7 +30,9 @@ interface TemplateRow extends TemplateVersion {
   versions: { version: string; savedAtMs: number; publishedSlugs: TemplateVersion['publishedSlugs'] }[];
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.TEMPLATES);
+  if (blocked) return blocked;
   const root = papercuspPath('templates');
   if (!existsSync(root)) return NextResponse.json({ templates: [] });
 
