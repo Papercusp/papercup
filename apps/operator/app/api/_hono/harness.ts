@@ -11,7 +11,6 @@
  * PG schema in-process via lib/scaffold-harness-schema.ts.
  */
 import { Hono } from 'hono';
-import { streamSSE } from 'hono/streaming';
 import { sseResponse } from '@restart/sse';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
@@ -5751,29 +5750,35 @@ Rules for proposals:
   ].join('\n\n');
 
   // Stream the response via runAgentChat (backend-aware: claude-code
-  // or omp). Uses Hono's streamSSE for write-time flushing — the prior
-  // raw-ReadableStream approach buffered the whole response under
-  // Next/Turbopack, blocking client receipt until omp finished (60s+
-  // for an architect-sized prompt). Matches the oracle/chat shape.
-  return streamSSE(c, async (stream) => {
-    const send = (event: string, data: string) =>
-      stream.writeSSE({ event, data: data.replace(/\n/g, '\\n') });
-
-    try {
-      for await (const ev of runAgentChat({
-        promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-        cwd: project.path,
-      })) {
-        if (ev.type === 'delta') await send('delta', ev.text);
-        else if (ev.type === 'result') {
-          await send('done', JSON.stringify({ cost: ev.costUsd, input: ev.tokensIn, output: ev.tokensOut }));
-        } else if (ev.type === 'error') {
-          await send('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
+  // or omp). Migrated 2026-05-12 from Hono streamSSE → @restart/sse
+  // sseResponse after verifying that ReadableStream-based streaming no
+  // longer buffers under Next 16/Turbopack (architect/chat probe showed
+  // TTFB=10.8s/total=11.6s with incremental token delivery, matching the
+  // model's token-emit cadence rather than a single end-of-response
+  // flush). The eventRaw path skips JSON.stringify on the delta payload;
+  // parseSseStream on the consumer side joins multi-line data: spec-
+  // compliantly so newlines round-trip without the prior \\n escape.
+  return sseResponse({
+    signal: c.req.raw.signal,
+    setup: async (sink) => {
+      try {
+        for await (const ev of runAgentChat({
+          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
+          cwd: project.path,
+        })) {
+          if (ev.type === 'delta') {
+            sink.eventRaw('delta', ev.text);
+          } else if (ev.type === 'result') {
+            sink.event('done', { cost: ev.costUsd, input: ev.tokensIn, output: ev.tokensOut });
+            sink.close();
+          } else if (ev.type === 'error') {
+            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
+          }
         }
+      } catch (err) {
+        sink.eventRaw('error', `architect chat failed: ${(err as Error).message}`);
       }
-    } catch (err) {
-      await send('error', `architect chat failed: ${(err as Error).message}`);
-    }
+    },
   });
 });
 
@@ -5994,27 +5999,28 @@ Rules:
     'Partner:',
   ].join('\n\n');
 
-  // Same fix as architect chat above: streamSSE flushes per-write,
-  // raw ReadableStream buffers under Next/Turbopack.
-  return streamSSE(c, async (stream) => {
-    const send = (event: string, data: string) =>
-      stream.writeSSE({ event, data: data.replace(/\n/g, '\\n') });
-
-    try {
-      for await (const ev of runAgentChat({
-        promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-        cwd: project.path,
-      })) {
-        if (ev.type === 'delta') await send('delta', ev.text);
-        else if (ev.type === 'result') {
-          await send('done', JSON.stringify({ cost: ev.costUsd }));
-        } else if (ev.type === 'error') {
-          await send('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
+  // Migrated 2026-05-12 to @restart/sse — see architect/chat above.
+  return sseResponse({
+    signal: c.req.raw.signal,
+    setup: async (sink) => {
+      try {
+        for await (const ev of runAgentChat({
+          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
+          cwd: project.path,
+        })) {
+          if (ev.type === 'delta') {
+            sink.eventRaw('delta', ev.text);
+          } else if (ev.type === 'result') {
+            sink.event('done', { cost: ev.costUsd });
+            sink.close();
+          } else if (ev.type === 'error') {
+            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
+          }
         }
+      } catch (err) {
+        sink.eventRaw('error', `brainstorm chat failed: ${(err as Error).message}`);
       }
-    } catch (err) {
-      await send('error', `brainstorm chat failed: ${(err as Error).message}`);
-    }
+    },
   });
 });
 
