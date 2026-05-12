@@ -20,6 +20,12 @@ interface SettingsGroup {
 
 const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
+    label: 'Get started',
+    links: [
+      { href: '/settings/setup-wizard', label: 'Setup Wizard', keywords: ['setup', 'wizard', 'onboarding', 'first run', 'install', 'permissions', 'workspace', 'keys', 'login', 'pair'] },
+    ],
+  },
+  {
     label: 'Identity & devices',
     links: [
       { href: '/settings/profile', label: 'Profile', keywords: ['account', 'identity', 'email', 'display name', 'project directory'] },
