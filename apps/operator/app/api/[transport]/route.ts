@@ -397,26 +397,48 @@ async function buildMcpToolContext(
   const paths = (spawn.isSuperuser && (spawn.workspaceId === '*' || spawn.harnessSlug === '*'))
     ? { projectDir: undefined as unknown as string, stateDir: undefined as unknown as string }
     : await resolveHarnessPathsImpl(spawn.harnessSlug, spawn.workspaceId);
-  // Plugin handlers call ctx.progress(pct, msg). When the MCP client
-  // supplied a progressToken, fan each call to a notifications/progress
-  // event keyed by that token. Otherwise no-op (client opted out).
-  const progress: UnifiedToolContext['progress'] =
+  // Plugin handlers call ctx.emit / ctx.progress. When the MCP client
+  // supplied a progressToken, fan each call to JSON-RPC notifications
+  // over the agent's MCP session. Otherwise no-op (client opted out).
+  //
+  // emit('<name>', data) → notifications/papercusp/event with { event, data }
+  //   (Papercusp-specific extension; standard MCP clients ignore unknown methods.)
+  // emit('progress', payload) → ALSO fires notifications/progress
+  //   (MCP-spec-compliant; built-in MCP UIs use this for progress bars.)
+  //
+  // ctx.progress(pct, msg) is a thin alias over emit('progress', { progress, total, message? }).
+  const emit: UnifiedToolContext['emit'] =
     progressToken !== undefined && sendNotification
-      ? (pct, msg) => {
+      ? (name, data) => {
+          // Papercusp extension notification — always fires.
           sendNotification({
-            method: 'notifications/progress',
-            params: {
-              progressToken,
-              progress: typeof pct === 'number' ? pct : 0,
-              total: 100,
-              ...(msg ? { message: msg } : {}),
-            },
+            method: 'notifications/papercusp/event',
+            params: { progressToken, event: name, data },
           }).catch((err) => {
             // eslint-disable-next-line no-console
-            console.warn(`[mcp-tool] sendNotification failed: ${err instanceof Error ? err.message : String(err)}`);
+            console.warn(`[mcp-tool] sendNotification(papercusp/event) failed: ${err instanceof Error ? err.message : String(err)}`);
           });
+          // Spec-compliance: also fire the standard progress notification
+          // for the 'progress' wire event so MCP-aware clients that only
+          // know about notifications/progress still get a progress signal.
+          if (name === 'progress' && data !== null && typeof data === 'object') {
+            sendNotification({
+              method: 'notifications/progress',
+              params: { progressToken, ...(data as Record<string, unknown>) },
+            }).catch((err) => {
+              // eslint-disable-next-line no-console
+              console.warn(`[mcp-tool] sendNotification(progress) failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
         }
-      : () => { /* progress disabled by client */ };
+      : () => { /* streaming disabled by client (no progressToken) */ };
+  const progress: UnifiedToolContext['progress'] = (pct, msg) => {
+    emit('progress', {
+      progress: typeof pct === 'number' ? pct : 0,
+      total: 100,
+      ...(msg ? { message: msg } : {}),
+    });
+  };
   return {
     workspaceId: spawn.workspaceId,
     harnessSlug: spawn.harnessSlug,
@@ -435,9 +457,7 @@ async function buildMcpToolContext(
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
     },
     progress,
-    // Placeholder no-op — commit 6 of Phase 3 (notifications/papercusp/event)
-    // overrides this with the real sendNotification-fan implementation.
-    emit: () => { /* MCP emit wired in Phase 3 commit 6 */ },
+    emit,
     spawn: pluginSpawnImpl,
     secret: secretImpl,
     signal: new AbortController().signal,
