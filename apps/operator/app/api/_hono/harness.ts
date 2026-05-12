@@ -6032,26 +6032,45 @@ Rules:
     'Partner:',
   ].join('\n\n');
 
-  // Migrated 2026-05-12 to @restart/sse — see architect/chat above.
+  // Phase 3 typed-event migration: route shim dispatches into the
+  // brainstorm:chat tool. Wire-compat via schema-inferred z.string()
+  // for delta + error — see architect/chat above for full notes.
+  const brainstormChatTool = lookupByMcpName('brainstorm:chat');
+  if (!brainstormChatTool) {
+    return c.json({ error: 'brainstorm:chat tool not registered' }, 500);
+  }
   return sseResponse({
     signal: c.req.raw.signal,
     setup: async (sink) => {
-      try {
-        for await (const ev of runAgentChat({
+      const ctxBase: UnifiedToolContext = {
+        log: (msg) => { console.log(`[brainstorm:chat][tool] ${msg}`); },
+        signal: c.req.raw.signal,
+        progress: () => {},
+        emit: () => { /* installed by dispatchProjectedToolStream */ },
+        workspaceId: undefined,
+        role: 'operator',
+        runId: `brainstorm-${project.slug}-${Date.now()}`,
+        spawnId: `brainstorm-${project.slug}`,
+        projectDir: project.path,
+        harnessSlug: project.slug,
+      };
+      for await (const ev of dispatchProjectedToolStream(
+        brainstormChatTool,
+        'brainstorm:chat',
+        {
           promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
           cwd: project.path,
-        })) {
-          if (ev.type === 'delta') {
-            sink.eventRaw('delta', ev.text);
-          } else if (ev.type === 'result') {
-            sink.event('done', { cost: ev.costUsd });
-            sink.close();
-          } else if (ev.type === 'error') {
-            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
+        },
+        ctxBase,
+        {},
+      )) {
+        if (ev.kind === 'event') {
+          if (ev.name === 'delta' || ev.name === 'error') {
+            sink.eventRaw(ev.name, typeof ev.data === 'string' ? ev.data : String(ev.data));
+          } else {
+            sink.event(ev.name, ev.data);
           }
         }
-      } catch (err) {
-        sink.eventRaw('error', `brainstorm chat failed: ${(err as Error).message}`);
       }
     },
   });
