@@ -117,11 +117,6 @@ function ptyResumeKey(slug: string, panelId: string | undefined, laneId: string 
 type SpawnResult = { ok: true; handle: PtyHandle } | { ok: false; error: string };
 const inFlightSpawns = new Map<string, Promise<SpawnResult>>();
 
-interface ToolDef {
-  name: string;
-  label: string;
-  description: string;
-}
 
 interface AuditSession {
   filename: string;
@@ -187,31 +182,11 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
   const handleIdRef = useRef<string | null>(null);
   const [state, setState] = useState<PaneState>({ kind: 'starting' });
   const [restartTick, setRestartTick] = useState(0);
-  const [tools, setTools] = useState<ToolDef[] | null>(null);
-  // Modal toggles are URL-backed so agents can open them via set_url.
-  // showFind / findQuery stay local — showFind is ref-coupled to xterm's
-  // search addon (sync-read in keyboard handlers), findQuery would spam
-  // the URL on every keystroke.
-  const [showTools, setShowTools] = useQueryState('piTools', parseAsBoolean.withDefault(false));
+  // showSessions is URL-backed so agents can open it via set_url. showFind
+  // stays local — it's ref-coupled to xterm's search addon (sync-read in
+  // keyboard handlers) and findQuery would spam the URL on every keystroke.
   const [sessions, setSessions] = useState<AuditSession[] | null>(null);
   const [showSessions, setShowSessions] = useQueryState('piSessions', parseAsBoolean.withDefault(false));
-
-  // Fetch the static papercusp_* tool list once. Endpoint reflects whether
-  // the extension file is present on disk; sidecar passes -e <path> on
-  // omp spawn when it is, so this also tells the user whether tools are
-  // actually wired into this pty.
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const r = await fetch(`/api/harness/${encodeURIComponent(slug)}/pty/tools`);
-        if (!r.ok) return;
-        const data = await r.json() as { extensionAvailable: boolean; tools: ToolDef[] };
-        if (!cancelled && data.extensionAvailable) setTools(data.tools);
-      } catch { /* best-effort */ }
-    })();
-    return () => { cancelled = true; };
-  }, [slug]);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -812,18 +787,6 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
         {/* Spacer so action chips align right */}
         <span className="pi-panel__spacer" />
 
-        {tools && tools.length > 0 && (
-          <Tooltip label="Show papercusp tools the LLM can call from this pty">
-            <button
-              type="button"
-              className="pi-panel__chip"
-              onClick={() => { setShowTools((v) => !v); setShowSessions(false); }}
-            >
-              ↯ {tools.length} papercusp tools
-            </button>
-          </Tooltip>
-        )}
-
         <Tooltip label="Past pi sessions exported to HTML">
           <button
             type="button"
@@ -831,7 +794,6 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
             onClick={async () => {
               const next = !showSessions;
               setShowSessions(next);
-              setShowTools(false);
               if (next && sessions === null) await refreshSessions();
             }}
           >
@@ -847,23 +809,6 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
           >Restart</button>
         )}
       </div>
-
-      {showTools && tools && (
-        <div className="pi-panel__popover">
-          <div className="pi-panel__popover-title">papercusp_* tools loaded for this pty</div>
-          <ul className="pi-panel__tools-list">
-            {tools.map((t) => (
-              <li key={t.name}>
-                <code>{t.name}</code>
-                <span>{t.description}</span>
-              </li>
-            ))}
-          </ul>
-          <div className="pi-panel__popover-foot">
-            Pi calls these via the extension at <code>~/.papercusp/global-plugins/pi/extension.ts</code>.
-          </div>
-        </div>
-      )}
 
       {showSessions && sessions !== null && (
         <div className="pi-panel__popover">
