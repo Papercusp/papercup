@@ -194,7 +194,7 @@ export default function UserSettingsPage() {
         <h2 style={{ fontSize: 16, marginBottom: 12 }}>Memory</h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
           The operator stores things it learns about you (preferences, corrections, etc).
-          See <a href="/settings/user/memory">/settings/user/memory</a> to inspect and delete (coming with mem0 integration).
+          Inspect and delete per entry at <a href="/settings/user/memory" style={{ color: 'var(--accent)' }}>/settings/user/memory</a>.
         </p>
       </section>
     </div>

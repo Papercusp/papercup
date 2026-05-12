@@ -100,6 +100,17 @@ export async function register(): Promise<void> {
     }
   })();
 
+  // Plan 3.8 — periodic mem0 ephemeral-memory cleanup. Idempotent.
+  // No-ops cleanly if mem0 deps aren't installed.
+  void (async () => {
+    try {
+      const { startMemoryCleanup } = await import('@/lib/memory/cleanup-worker');
+      startMemoryCleanup();
+    } catch (err) {
+      console.warn('[memory-cleanup] failed to start:', (err as Error).message);
+    }
+  })();
+
   // Backup scheduler — per-workspace kopia snapshots on cadence + event.
   // Idempotent: noop if already started in this process. Failures
   // surface in the operator log; backup state is non-critical for

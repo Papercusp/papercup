@@ -391,6 +391,41 @@ export async function POST(req: NextRequest) {
             void recordSpend(totalCost);
           }
         }
+
+        // Plan 3.5 — Post-turn fact extraction. Fire-and-forget:
+        // mem0's .add() runs an Anthropic Haiku call to extract atomic
+        // facts from the conversation window. Latency ~1-2s; cost
+        // ~$0.0001 per turn. Doesn't block the SSE response.
+        //
+        // We pass the last few user/assistant turns (not the full
+        // history) so mem0's extractor focuses on what just happened.
+        // If mem0 isn't available (deps not installed, PG down), this
+        // silently no-ops.
+        void (async () => {
+          try {
+            const { getMemoryClient } = await import('@/lib/memory/mem0-client');
+            const { getSessionUserOrDefault } = await import('@/lib/auth');
+            const { activeWorkspaceId } = await import('@/lib/workspace-registry');
+            const client = await getMemoryClient();
+            if (!client) return;
+            const user = await getSessionUserOrDefault();
+            const ws = activeWorkspaceId();
+            const recentWindow = body.messages
+              ? [...body.messages.slice(-5), { role: 'assistant' as const, content: assembled }]
+              : [{ role: 'assistant' as const, content: assembled }];
+            await client.add(recentWindow, {
+              userId: user.id,
+              metadata: {
+                workspace_id: ws,
+                display_name: user.display_name,
+                turn_at: Date.now(),
+              },
+            });
+          } catch (err) {
+            console.warn('[operator-converse] post-turn mem0.add failed:', (err as Error).message);
+          }
+        })();
+
         // Server-side <spawn> tag dispatch. Parsing the assembled
         // turn here (rather than only in the client provider) ensures
         // the voice path also triggers spawns — EL's ask_operator
