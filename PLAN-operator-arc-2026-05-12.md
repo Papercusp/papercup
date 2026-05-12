@@ -148,11 +148,27 @@ Reuses Plan 2B's BGE-small embedder singleton.
 | 3.9 | Tests + live verify | 3h | pending (needs servers + npm install) |
 
 ## Recommended ship order
-1. **Plan 1.2 + 1.3** (small cleanup, ~45 min) — no servers needed
-2. **Plan 1.4** (drift smoke test, 2h) — needs test runner, not full server
-3. **Plan 4** (user accounts, 21h) — foundation for Plan 3's user-scoping
-4. **Plan 2A** (BM25, 2h) — establish recall baseline
-5. **Plan 2B+C** (after 1-2 weeks of BM25 observation, 8.5h) — only if BM25 misses
-6. **Plan 3** (mem0 with user-scoping, 19h) — final layer
+1. **Plan 1.2 + 1.3** (small cleanup, ~45 min) — ✅ shipped `a74c04c1`
+2. **Plan 1.4** (drift smoke test, 2h) — ✅ shipped `55724cc7`
+3. **Plan 4** (user accounts, 21h) — ✅ shipped (`552f7b14` → `8b32f8a6`)
+4. **Plan 2A** (BM25, 2h) — ✅ shipped `4a91a278`
+5. **Plan 2B+C** (after 1-2 weeks of BM25 observation, 8.5h) — **deferred per plan**
+6. **Plan 3** (mem0 with user-scoping, 19h) — ✅ shipped (`ae639376` → `7033efc5`)
 
-Total: ~50-58h across all phases.
+## Status
+
+All code-level work for Plans 1, 2A, 3, 4 is complete. Live verification
+deferred until servers stable + `npm install` in `apps/operator` brings
+in mem0ai + @xenova/transformers + @anthropic-ai/sdk.
+
+**Plan 2B+C** (embeddings + RRF hybrid) is deliberately deferred per
+the original decision: observe BM25 for 1-2 weeks, only build embedding
+layer if real failure cases surface.
+
+Outstanding follow-ups when verifying live:
+- Plan 3.9 — mem0 round-trip: remember → recall → forget
+- Plan 4.10 — login, switch user, override-set, override-clear, welcome trigger
+- Plan 1.1 verify — fresh conversation triggers chat:ask_choice card on `ready`
+- Plan 2A verify — search:fulltext returns ranked hits from escalations/brainstorm/turns
+
+Total: ~52h across all phases, all in code.
