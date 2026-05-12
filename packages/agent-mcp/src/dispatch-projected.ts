@@ -382,7 +382,7 @@ export async function* dispatchProjectedToolStream(
     (r) => {
       if (r.ok && r.result) queue.push({ kind: 'done', result: r.result });
       else if (r.ok) queue.push({ kind: 'done', result: { content: [] } });
-      else queue.push({ kind: 'error', error: r.error ?? { code: 'unknown', message: '' } });
+      else queue.push({ kind: 'error', error: r.error ?? { code: 'handler_error', message: '' } });
       wake();
     },
     (err) => {

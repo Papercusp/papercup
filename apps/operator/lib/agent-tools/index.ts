@@ -21,6 +21,7 @@
 
 import './operator/stats';
 import './operator/last_scan';
+import './operator/scan';
 import './operator/scans_list';
 import './operator/audit';
 import './operator/nudge';

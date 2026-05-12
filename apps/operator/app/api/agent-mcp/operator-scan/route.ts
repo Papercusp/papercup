@@ -20,17 +20,21 @@
 import { NextRequest } from 'next/server';
 import { existsSync, readFileSync } from 'node:fs';
 import { sseResponse } from '@restart/sse';
-import { runAgentChat } from '@/lib/agent-chat-stream';
+import {
+  dispatchProjectedToolStream,
+  lookupByMcpName,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+// Side-effect: registers operator:scan + the other operator-side tools.
+import '@/lib/agent-tools/index';
 import { papercuspPath } from '@/lib/papercusp-root';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { getSessionUser } from '@/lib/auth';
-import { NON_INTERACTIVE_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
 import {
   buildOperatorPrompt,
   markFirstRunShown,
 } from '@/lib/operator-prompt';
-import { parseSuggestions } from '@/lib/operator-suggestion-parser';
 import { loadPreferences } from '@/lib/operator-preferences';
 import { acquireScanLock, releaseScanLock } from '@/lib/operator-scan-lock';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
@@ -208,14 +212,9 @@ export async function GET(req: NextRequest) {
       sink.onClose(() => {
         if (lock.holderId) void releaseScanLock(lock.holderId);
       });
-      const send = (event: string, data: Record<string, unknown>) => sink.event(event, data);
-
-      let costUsd = 0;
-      let assistantText = '';
-      let finalCards: Record<string, unknown>[] = [];
 
       if (isFirstRun) {
-        send('first_run', {});
+        sink.event('first_run', {});
       }
 
       // Read the superuser token (commit 0ccac7cf) for ?superuser=1
@@ -231,121 +230,137 @@ export async function GET(req: NextRequest) {
         if (!scanSuperuserToken || scanSuperuserToken.length < 16) scanSuperuserToken = null;
       } catch { scanSuperuserToken = null; }
 
-      try {
-        const events = runAgentChat({
-          promptText,
-          mcpConfig: scanSuperuserToken
-            ? {
-                mcpServers: {
-                  agentmcp: {
-                    // omp silently drops type:'http' MCP servers —
-                    // bridge through mcp-remote (stdio→HTTP).
-                    type: 'stdio',
-                    command: 'npx',
-                    args: [
-                      '-y',
-                      'mcp-remote@latest',
-                      'http://127.0.0.1:3055/api/mcp?superuser=1',
-                      '--header',
-                      `Authorization:Bearer ${scanSuperuserToken}`,
-                    ],
-                  },
-                },
-              }
-            : undefined,
-          // Scanner is one-shot — emits suggestions, doesn't have a
-          // user-facing chat session to wait on. Excludes chat:* tools
-          // that require an interactive responder (e.g. chat:ask_choice).
-          allowedTools: scanSuperuserToken ? [...NON_INTERACTIVE_AGENT_MCP_TOOLS] : [],
-          toolEventFilter: (raw) =>
-            raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
-          permissionMode: 'bypassPermissions',
-          // Phase 3: resume the workspace's persistent scanner session
-          // so each scan can refer to prior turns. sessionMode 'force'
-          // means create-or-resume — claude won't error if our uuid
-          // doesn't yet have a session record.
-          sessionId: scannerSessionId ?? undefined,
-          sessionMode: scannerSessionId ? 'force' : undefined,
-        });
+      const operatorScanTool = lookupByMcpName('operator:scan');
+      if (!operatorScanTool) {
+        sink.event('error', { message: 'operator:scan tool not registered' });
+        return;
+      }
 
-        for await (const ev of events) {
-          if (ev.type === 'delta') {
-            assistantText += ev.text;
-            send('delta', { text: ev.text });
-          } else if (ev.type === 'tool_call') {
-            send('tool_call', { name: ev.name, input: ev.input });
-          } else if (ev.type === 'result') {
-            costUsd = ev.costUsd;
-            void recordSpend(costUsd);
-            const parsed = await parseSuggestions(ev.finalText || assistantText, preferences);
-            const cards: Record<string, unknown>[] = [];
-            for (const block of parsed.blocks) {
-              const payload = {
-                ...block.suggestion.raw,
-                actualTier: block.suggestion.actualTier,
-                auto_dispatch: block.suggestion.auto_dispatch,
-                provenanceFlags: block.suggestion.provenanceFlags,
-              };
-              cards.push(payload);
-              send('suggestion', payload);
-            }
-            // Plugin-authored suggestions: enriched through the same
-            // pipeline so tier-classification + auto_dispatch are
-            // identical to LLM output.
-            try {
-              const pluginRaw = await gatherPluginSuggestions();
-              for (const raw of pluginRaw) {
-                const enriched = enrich(raw, preferences);
-                const payload = {
-                  ...enriched.raw,
-                  actualTier: enriched.actualTier,
-                  auto_dispatch: enriched.auto_dispatch,
-                  provenanceFlags: { ...enriched.provenanceFlags, pluginAuthored: true },
-                };
-                cards.push(payload);
-                send('suggestion', payload);
+      // Synthesize a minimal UnifiedToolContext for the in-process call.
+      // No principal — operator:scan is role-gated on `operator`, which
+      // we set here. role/runId/spawnId populate tool_invocations rows
+      // so the scanner's invocation is visible in audit.
+      const ctxBase: UnifiedToolContext = {
+        log: (msg) => {
+          // eslint-disable-next-line no-console
+          console.log(`[operator-scan][tool] ${msg}`);
+        },
+        signal: req.signal,
+        progress: () => { /* unused — tool emits via ctx.emit */ },
+        emit: () => { /* installed by dispatchProjectedToolStream */ },
+        workspaceId,
+        role: 'operator',
+        runId: scannerSessionId ?? `scan-${Date.now()}`,
+        spawnId: scannerSessionId ?? `scan-${Date.now()}`,
+      };
+
+      let costUsd = 0;
+      let assistantText = '';
+      let llmBlocks: Record<string, unknown>[] = [];
+      let parseErrors = 0;
+
+      try {
+        for await (const ev of dispatchProjectedToolStream(
+          operatorScanTool,
+          'operator:scan',
+          {
+            promptText,
+            superuserToken: scanSuperuserToken,
+            scannerSessionId,
+            preferencesJson: JSON.stringify(preferences),
+          },
+          ctxBase,
+          {},
+        )) {
+          if (ev.kind === 'event') {
+            // Forward all events. Mid-stream `error` events from the tool
+            // (non-fatal runAgentChat yields) ALSO drive the 503 breaker.
+            sink.event(ev.name, ev.data as Record<string, unknown>);
+            if (ev.name === 'error' && isBackground) {
+              const msg = (ev.data as { message?: string })?.message ?? '';
+              if (/503|service unavailable|connection refused|ECONNREFUSED/i.test(msg)) {
+                await record503(workspaceId);
               }
-            } catch (e) {
-              console.warn('[operator-scan] plugin suggestions failed:', e);
             }
-            finalCards = cards;
+          } else if (ev.kind === 'done') {
+            // Tool result carries the post-stream stats the route needs
+            // for plugin-suggestion merging + persistence.
             try {
-              await writeLastScan({
-                scanCompletedAt: new Date().toISOString(),
-                scanCostUsd: costUsd,
-                cards,
-              });
+              const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';
+              const out = JSON.parse(text) as {
+                costUsd: number;
+                assistantText: string;
+                llmBlocks: Record<string, unknown>[];
+                parseErrors: number;
+              };
+              costUsd = out.costUsd;
+              assistantText = out.assistantText;
+              llmBlocks = out.llmBlocks;
+              parseErrors = out.parseErrors;
             } catch (e) {
-              console.warn('[operator-scan] writeLastScan failed:', e);
+              console.warn('[operator-scan] tool result parse failed:', e);
             }
-            // Refresh idle snapshot so a stable workspace can short-circuit
-            // the next background scan. Persist per-harness one-liners
-            // alongside so the cached path can stream them.
-            try {
-              const state = await readTriggerState();
-              await writeSnapshot(fingerprint(state), cards, state.perHarness);
-            } catch (e) {
-              console.warn('[operator-scan] writeSnapshot failed:', e);
+          } else if (ev.kind === 'error') {
+            sink.event('error', { message: ev.error.message });
+            if (scanHistoryId != null) {
+              try {
+                await failOperatorScan({
+                  id: scanHistoryId,
+                  endedAt: new Date(),
+                  error: ev.error.message,
+                });
+              } catch (e2) {
+                console.warn('[operator-scan] history-fail failed:', e2);
+              }
             }
-            await recordSuccess(workspaceId);
-            sink.done({
-              costUsd,
-              suggestions: parsed.blocks.length,
-              parseErrors: parsed.parseErrors,
-            });
-          } else if (ev.type === 'error') {
-            // Treat downstream 503-ish failures as breaker hits (background only).
-            if (isBackground && /503|service unavailable|connection refused|ECONNREFUSED/i.test(ev.message)) {
-              await record503(workspaceId);
-            }
-            send('error', { message: ev.message });
+            return;
           }
         }
+
+        // Post-stream: spend, plugin suggestions, persistence.
+        void recordSpend(costUsd);
+
+        const finalCards: Record<string, unknown>[] = [...llmBlocks];
+        try {
+          const pluginRaw = await gatherPluginSuggestions();
+          for (const raw of pluginRaw) {
+            const enriched = enrich(raw, preferences);
+            const payload = {
+              ...enriched.raw,
+              actualTier: enriched.actualTier,
+              auto_dispatch: enriched.auto_dispatch,
+              provenanceFlags: { ...enriched.provenanceFlags, pluginAuthored: true },
+            };
+            finalCards.push(payload);
+            sink.event('suggestion', payload);
+          }
+        } catch (e) {
+          console.warn('[operator-scan] plugin suggestions failed:', e);
+        }
+
+        try {
+          await writeLastScan({
+            scanCompletedAt: new Date().toISOString(),
+            scanCostUsd: costUsd,
+            cards: finalCards,
+          });
+        } catch (e) {
+          console.warn('[operator-scan] writeLastScan failed:', e);
+        }
+        try {
+          const state = await readTriggerState();
+          await writeSnapshot(fingerprint(state), finalCards, state.perHarness);
+        } catch (e) {
+          console.warn('[operator-scan] writeSnapshot failed:', e);
+        }
+        await recordSuccess(workspaceId);
+        sink.done({
+          costUsd,
+          suggestions: finalCards.length,
+          parseErrors,
+        });
+
         if (isFirstRun) void markFirstRunShown(userId);
-        // Finalize the history row on the happy path. The summary is
-        // the trailing one-liner the scanner emits after the
-        // <suggestion> blocks (the scanner.md role tells it to write
-        // exactly that as a status line).
         if (scanHistoryId != null) {
           try {
             const summary = extractScanSummary(assistantText);
@@ -363,7 +378,7 @@ export async function GET(req: NextRequest) {
         }
         if (scannerSessionId) void bumpScannerSession();
       } catch (err) {
-        send('error', { message: err instanceof Error ? err.message : String(err) });
+        sink.event('error', { message: err instanceof Error ? err.message : String(err) });
         if (scanHistoryId != null) {
           try {
             await failOperatorScan({
