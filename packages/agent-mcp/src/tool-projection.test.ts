@@ -241,6 +241,64 @@ describe('listMcpProjections', () => {
   });
 });
 
+describe('emitToSseSink', () => {
+  // Lightweight recording sink matching the MinimalEventSink contract.
+  function recSink() {
+    const events: Array<{ kind: 'event' | 'raw'; name: string; data: unknown }> = [];
+    return {
+      events,
+      sink: {
+        event(name: string, value: unknown): void { events.push({ kind: 'event', name, data: value }); },
+        eventRaw(name: string, value: string): void { events.push({ kind: 'raw', name, data: value }); },
+      },
+    };
+  }
+
+  it('z.string() events go through eventRaw with the raw text', async () => {
+    const { emitToSseSink } = await import('./tool-projection');
+    const { sink, events } = recSink();
+    emitToSseSink(sink, { eventWireKinds: { delta: 'string' } } as never, 'delta', 'hello world');
+    expect(events).toEqual([{ kind: 'raw', name: 'delta', data: 'hello world' }]);
+  });
+
+  it('object events go through event with the object passed through', async () => {
+    const { emitToSseSink } = await import('./tool-projection');
+    const { sink, events } = recSink();
+    emitToSseSink(sink, { eventWireKinds: { cost: 'json' } } as never, 'cost', { usd: 0.5 });
+    expect(events).toEqual([{ kind: 'event', name: 'cost', data: { usd: 0.5 } }]);
+  });
+
+  it('binary events go through eventRaw with base64-encoded data', async () => {
+    const { emitToSseSink } = await import('./tool-projection');
+    const { sink, events } = recSink();
+    const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    emitToSseSink(sink, { eventWireKinds: { chunk: 'binary' } } as never, 'chunk', bytes);
+    expect(events).toEqual([{ kind: 'raw', name: 'chunk', data: '3q2+7w==' }]);
+  });
+
+  it('binary kind without Uint8Array data falls back to JSON (defensive)', async () => {
+    const { emitToSseSink } = await import('./tool-projection');
+    const { sink, events } = recSink();
+    // Handler emits a {} instead of Uint8Array; we don't pretend it's binary.
+    emitToSseSink(sink, { eventWireKinds: { chunk: 'binary' } } as never, 'chunk', { wrong: 'shape' });
+    expect(events).toEqual([{ kind: 'event', name: 'chunk', data: { wrong: 'shape' } }]);
+  });
+
+  it('non-string data with string kind is String()-coerced (not JSON-stringified)', async () => {
+    const { emitToSseSink } = await import('./tool-projection');
+    const { sink, events } = recSink();
+    emitToSseSink(sink, { eventWireKinds: { tag: 'string' } } as never, 'tag', 42);
+    expect(events).toEqual([{ kind: 'raw', name: 'tag', data: '42' }]);
+  });
+
+  it('tool without eventWireKinds falls through to JSON (back-compat)', async () => {
+    const { emitToSseSink } = await import('./tool-projection');
+    const { sink, events } = recSink();
+    emitToSseSink(sink, {} as never, 'delta', { text: 'hi' });
+    expect(events).toEqual([{ kind: 'event', name: 'delta', data: { text: 'hi' } }]);
+  });
+});
+
 describe('classifyEventWire', () => {
   it('returns "string" for z.string()', () => {
     expect(classifyEventWire(z.string())).toBe('string');

@@ -22,6 +22,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { sseResponse } from '@restart/sse';
 import {
   dispatchProjectedToolStream,
+  emitToSseSink,
   lookupByMcpName,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -275,7 +276,9 @@ export async function GET(req: NextRequest) {
           if (ev.kind === 'event') {
             // Forward all events. Mid-stream `error` events from the tool
             // (non-fatal runAgentChat yields) ALSO drive the 503 breaker.
-            sink.event(ev.name, ev.data as Record<string, unknown>);
+            // emitToSseSink honors the tool's schema-inferred wire kind
+            // so future z.string()/Uint8Array events Just Work.
+            emitToSseSink(sink, operatorScanTool, ev.name, ev.data);
             if (ev.name === 'error' && isBackground) {
               const msg = (ev.data as { message?: string })?.message ?? '';
               if (/503|service unavailable|connection refused|ECONNREFUSED/i.test(msg)) {

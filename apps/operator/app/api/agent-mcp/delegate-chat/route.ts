@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { sseResponse } from '@restart/sse';
 import {
   dispatchProjectedToolStream,
+  emitToSseSink,
   lookupByMcpName,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -214,7 +215,8 @@ export async function GET(req: NextRequest): Promise<Response> {
           {},
         )) {
           if (ev.kind === 'event') {
-            sink.event(ev.name, ev.data as Record<string, unknown>);
+            // Schema-driven wire-kind dispatch via the shared helper.
+            emitToSseSink(sink, delegateTool, ev.name, ev.data);
           } else if (ev.kind === 'done') {
             try {
               const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';

@@ -30,6 +30,7 @@ import { NextRequest } from 'next/server';
 import { sseResponse } from '@restart/sse';
 import {
   dispatchProjectedToolStream,
+  emitToSseSink,
   lookupByMcpName,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -418,8 +419,8 @@ export async function POST(req: NextRequest) {
         )) {
           if (ctrl.signal.aborted) break;
           if (ev.kind === 'event') {
-            // delta + tool_call are both JSON-shape; forward via sink.event.
-            sink.event(ev.name, ev.data as Record<string, unknown>);
+            // Schema-driven wire-kind dispatch via the shared helper.
+            emitToSseSink(sink, operatorConverseTool, ev.name, ev.data);
           } else if (ev.kind === 'done') {
             try {
               const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';

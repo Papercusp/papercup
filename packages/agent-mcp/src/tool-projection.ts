@@ -132,6 +132,61 @@ export function classifyEventWire(schema: ZodTypeAny): EventWireKind {
   }
 }
 
+/**
+ * Wire-kind-aware sink dispatch — the single source of truth for
+ * "given a ctx.emit(name, data) and a tool's declared events schema,
+ * how does that land on the SSE wire?"
+ *
+ * Used by:
+ *   - HTTP transport adapter (`handleHttpToolRequestStreaming`).
+ *   - Route shims that bypass the HTTP transport and call
+ *     `dispatchProjectedToolStream` themselves (architect/brainstorm
+ *     in `apps/operator/app/api/_hono/harness.ts`, operator-scan /
+ *     operator-converse / delegate-chat).
+ *
+ * Centralizing here prevents the wire-format-drift class of bug:
+ *   - z.string() events going through JSON.stringify (round-2 silent
+ *     mis-encoding for tools added new z.string() events post-pilot).
+ *   - z.instanceof(Uint8Array) → JSON.stringify producing
+ *     `{"0":..., "1":..., ...}` corruption (round-5 HTTP, round-6 MCP).
+ *
+ * Mirrored emit-shape per transport:
+ *   - HTTP/SSE (this helper):           z.string() → sink.eventRaw raw text
+ *                                       z.instanceof(Uint8Array) → sink.eventRaw base64
+ *                                       else → sink.event JSON
+ *   - MCP (notifications/papercusp/event in [transport]/route.ts):
+ *                                       Uint8Array → {$papercuspBinary, encoding, data}
+ *                                       else → params.data
+ *   - IPC (server.ts):                  string event kind: EVENT_JSON with data as string
+ *                                       binary: EVENT_BIN raw bytes
+ *                                       else: EVENT_JSON JSON
+ *
+ * The shape of the SSE sink interface is the @restart/sse SseSink; we
+ * don't import the type here to keep this file dependency-free, so
+ * we declare a structural minimum: `eventRaw(name, string)` for raw-text
+ * payloads and `event(name, value)` for JSON-encoded ones.
+ */
+export interface MinimalEventSink {
+  event(name: string, value: unknown): void;
+  eventRaw(name: string, value: string): void;
+}
+
+export function emitToSseSink(
+  sink: MinimalEventSink,
+  tool: Pick<ProjectedTool, 'eventWireKinds'>,
+  name: string,
+  data: unknown,
+): void {
+  const kind = tool.eventWireKinds?.[name];
+  if (kind === 'string') {
+    sink.eventRaw(name, typeof data === 'string' ? data : String(data));
+  } else if (kind === 'binary' && data instanceof Uint8Array) {
+    sink.eventRaw(name, Buffer.from(data).toString('base64'));
+  } else {
+    sink.event(name, data);
+  }
+}
+
 /* ─── Unified context ────────────────────────────────────────────────── */
 
 /**

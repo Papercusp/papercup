@@ -54,6 +54,7 @@ export {
   listAllProjectedTools,
   listMcpProjections,
   ToolRegistrationError,
+  emitToSseSink,
   _resetProjectionRegistryForTests,
   type ProjectedTool,
   type ToolFn,
@@ -61,6 +62,7 @@ export {
   type ToolExposureHttp,
   type ToolExposureMcp,
   type UnifiedToolContext,
+  type MinimalEventSink,
 } from './tool-projection';
 
 export {

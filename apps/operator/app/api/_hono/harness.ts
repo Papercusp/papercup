@@ -14,6 +14,7 @@ import { Hono } from 'hono';
 import { sseResponse } from '@restart/sse';
 import {
   dispatchProjectedToolStream,
+  emitToSseSink,
   lookupByMcpName,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
@@ -5793,19 +5794,9 @@ Rules for proposals:
         {},
       )) {
         if (ev.kind === 'event') {
-          // Schema-driven wire-kind dispatch: read the tool's
-          // eventWireKinds (set by classifyEventWire at register time)
-          // so this shim doesn't re-encode the rules. If the tool ever
-          // adds another z.string() event, this loop picks it up
-          // automatically instead of needing a hardcoded name list here.
-          const kind = architectChatTool.eventWireKinds?.[ev.name];
-          if (kind === 'string') {
-            sink.eventRaw(ev.name, typeof ev.data === 'string' ? ev.data : String(ev.data));
-          } else if (kind === 'binary' && ev.data instanceof Uint8Array) {
-            sink.eventRaw(ev.name, Buffer.from(ev.data).toString('base64'));
-          } else {
-            sink.event(ev.name, ev.data);
-          }
+          // Schema-driven wire-kind dispatch via the shared helper —
+          // same source of truth as the framework's HTTP transport.
+          emitToSseSink(sink, architectChatTool, ev.name, ev.data);
         } else if (ev.kind === 'error') {
           // Dispatcher-level failure (role gate, quota, timeout, throw).
           // Surface as a raw-text `error` event so the submodule consumer
@@ -6071,15 +6062,9 @@ Rules:
         {},
       )) {
         if (ev.kind === 'event') {
-          // Schema-driven wire-kind dispatch — see architect/chat above.
-          const kind = brainstormChatTool.eventWireKinds?.[ev.name];
-          if (kind === 'string') {
-            sink.eventRaw(ev.name, typeof ev.data === 'string' ? ev.data : String(ev.data));
-          } else if (kind === 'binary' && ev.data instanceof Uint8Array) {
-            sink.eventRaw(ev.name, Buffer.from(ev.data).toString('base64'));
-          } else {
-            sink.event(ev.name, ev.data);
-          }
+          // Schema-driven wire-kind dispatch via the shared helper —
+          // see architect/chat above.
+          emitToSseSink(sink, brainstormChatTool, ev.name, ev.data);
         } else if (ev.kind === 'error') {
           // Dispatcher-level failure — see architect/chat above.
           sink.eventRaw('error', ev.error.message);

@@ -34,6 +34,7 @@ import {
   type DispatchProjectedResult,
 } from './dispatch-projected';
 import {
+  emitToSseSink,
   lookupByHttpPath,
   type ProjectedTool,
   type UnifiedToolContext,
@@ -354,29 +355,9 @@ export async function handleHttpToolRequestStreaming(
   }
 
   // Wire emit → sink. Each ctx.emit(name, data) becomes one SSE event.
-  // Wire shape per event is decided by the tool's declared events schema:
-  //   - z.string() → sink.eventRaw (data is the string, no JSON wrap;
-  //     multi-line data: per spec for embedded \n).
-  //   - z.instanceof(Uint8Array) → base64-encoded via sink.eventRaw.
-  //     SSE can't carry raw binary; base64 is the conventional fallback
-  //     (~1.33× overhead, matches the tools/list discoverability hint
-  //     contentEncoding: 'base64'). The IPC transport sends raw bytes
-  //     via EVENT_BIN frames, so the same emit lands differently per
-  //     transport without the handler needing to know.
-  //   - anything else → sink.event (JSON-stringified).
-  // Defaults to JSON when no events schema is declared (tools that only
-  // use ctx.progress).
-  const wireKinds = resolved.tool.eventWireKinds;
-  resolved.ctx.emit = (name, data) => {
-    const kind = wireKinds?.[name];
-    if (kind === 'string') {
-      sink.eventRaw(name, typeof data === 'string' ? data : String(data));
-    } else if (kind === 'binary' && data instanceof Uint8Array) {
-      sink.eventRaw(name, Buffer.from(data).toString('base64'));
-    } else {
-      sink.event(name, data);
-    }
-  };
+  // The wire-kind dispatch lives in emitToSseSink so transports and
+  // route shims share one source of truth — see its doc comment.
+  resolved.ctx.emit = (name, data) => emitToSseSink(sink, resolved.tool, name, data);
   resolved.ctx.progress = (pct, msg) => {
     resolved.ctx.emit('progress', {
       progress: typeof pct === 'number' ? pct : 0,
