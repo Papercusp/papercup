@@ -51,15 +51,22 @@ export function ConsoleLauncherButton() {
       title={tooltip}
       disabled={busy}
       onClick={async () => {
+        console.info('[console-launcher] button clicked', { supported, harnessSlug });
         if (!supported) {
-          toast.info('The native terminal only opens from the desktop app.');
+          toast.info('Native terminal only opens from the desktop app.', { duration: 6000 });
           return;
         }
         setBusy(true);
         try {
           await launchNativeConsole({ slug: harnessSlug });
+          // Long-toast success in case the terminal opened on another
+          // monitor / workspace and the user wonders if it worked.
+          toast.success('Terminal launched.', { duration: 4000 });
         } catch (e: any) {
-          toast.error(`Terminal launch failed: ${e?.message ?? 'unknown error'}`);
+          console.error('[console-launcher] launch failed', e);
+          toast.error(`Terminal launch failed: ${e?.message ?? 'unknown error'}`, {
+            duration: 10000,
+          });
         } finally {
           setBusy(false);
         }

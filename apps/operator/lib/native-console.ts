@@ -44,6 +44,11 @@ export function isConsoleLauncherSupported(): boolean {
 }
 
 export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
+  // Diagnostic logging so devtools shows the path even when the click
+  // "does nothing". Remove once the launch is stable enough that nobody
+  // needs to debug it any more.
+  console.info('[console-launcher] click', { opts, supported: isConsoleLauncherSupported() });
+
   if (!isConsoleLauncherSupported()) {
     throw new Error('Native console is only available in the desktop app');
   }
@@ -59,22 +64,32 @@ export async function launchNativeConsole(opts: LaunchOpts): Promise<void> {
     throw new Error(detail?.error ?? `console/resolve HTTP ${r.status}`);
   }
   const envelope = (await r.json()) as ConsoleEnvelope;
-
-  // 2. Hand to Tauri. Type bindings come from `tauri-bindings.ts`
-  //    once `console_launch` is regenerated on the next Tauri build.
-  //    Until then we use the raw IPC channel.
-  const win = window as unknown as {
-    __TAURI_INTERNALS__?: {
-      invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
-    };
-  };
-  const invoke = win.__TAURI_INTERNALS__?.invoke;
-  if (!invoke) throw new Error('Tauri invoke not available');
-
-  const result = await invoke<{ status: 'ok' | 'err'; error?: string }>('console_launch', {
-    envelope,
+  console.info('[console-launcher] envelope resolved', {
+    cwd: envelope.cwd,
+    needsBootstrap: envelope.needsSuperuserBootstrap,
   });
-  if (result?.status === 'err') {
-    throw new Error(result.error ?? 'console_launch failed');
+
+  // 2. Hand to Tauri via the generated bindings — this is the same
+  //    canonical path the pty bridge uses, going through
+  //    @tauri-apps/api/core's invoke() rather than the
+  //    __TAURI_INTERNALS__ window global. The dev/prod marker
+  //    divergence (PAPERCUSP_TAURI) doesn't affect this path.
+  const { commands } = await import('./tauri-bindings');
+  const launchFn = (commands as { consoleLaunch?: (e: ConsoleEnvelope) => Promise<unknown> })
+    .consoleLaunch;
+  if (typeof launchFn !== 'function') {
+    throw new Error(
+      'commands.consoleLaunch is not in tauri-bindings.ts — desktop cargo build needs to regenerate bindings. Stop `npm run dev` and re-run.',
+    );
+  }
+  console.info('[console-launcher] invoking console_launch');
+  const result = await launchFn(envelope) as
+    | { status: 'ok'; pid?: number | null; displacedMcpJson?: boolean; bootstrapped?: boolean }
+    | { status: 'err'; error: string }
+    | null;
+  console.info('[console-launcher] result', result);
+  if (result && 'status' in result && (result.status === 'err' || (result as any).Err)) {
+    const err = (result as any).error ?? (result as any).Err?.error ?? 'console_launch failed';
+    throw new Error(err);
   }
 }
