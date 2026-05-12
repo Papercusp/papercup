@@ -555,12 +555,9 @@ app.post('/voice-tool/:name', async (c) => {
     workspace: claims.workspace_id,
     sessionId: claims.sub,
     requestId: `el-mobile-${randomUUID()}`,
-    surface: ((): 'mobile-android' | 'mobile-ios' | 'mobile-unknown' => {
-      const ua = c.req.header('user-agent') ?? '';
-      return ua.includes('Android') ? 'mobile-android'
-        : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
-        : 'mobile-unknown';
-    })(),
+    surface: (await import('../../../lib/mobile-surface')).detectSurface({
+      userAgent: c.req.header('user-agent'),
+    }),
     deviceId: claims.sub,
   };
   try {
@@ -679,17 +676,14 @@ app.get('/voice-session-init', async (c) => {
 
   // Detect platform up front — we need to pass an allowed `source` to EL
   // (their API rejects arbitrary strings). Their enum has android_sdk +
-  // swift_sdk; default unknown.
-  const ua = c.req.header('user-agent') ?? '';
-  let surface = c.req.query('surface');
-  if (!surface) {
-    surface = ua.includes('Android') ? 'mobile-android'
-            : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
-            : 'mobile-unknown';
-  }
-  const elSource = surface === 'mobile-android' ? 'android_sdk'
-                 : surface === 'mobile-ios' ? 'swift_sdk'
-                 : 'unknown';
+  // swift_sdk; default unknown. Shared logic in mobile-surface.ts so the
+  // voice-tool proxy uses the same detection.
+  const { detectSurface, surfaceToElSource } = await import('../../../lib/mobile-surface');
+  const surface = detectSurface({
+    query: c.req.query('surface'),
+    userAgent: c.req.header('user-agent'),
+  });
+  const elSource = surfaceToElSource(surface);
 
   // In-flight dedupe: parallel pair-retries on the same agentId share
   // one outstanding mint promise. Keyed by agentId so concurrent
