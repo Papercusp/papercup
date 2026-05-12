@@ -20,6 +20,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { rrfCombine, RRF_K_DEFAULT } from './rrf';
 
 const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'all'] as const;
 const MODE_CHOICES = ['embeddings', 'hybrid'] as const;
@@ -43,7 +44,6 @@ const ALL_ROLES = [
 
 const HEADLINE_OPTS =
   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
-const RRF_K = 60;
 const EMBEDDER_DIM = 384;
 const OPENAI_EMBEDDER_MODEL = 'text-embedding-3-small';
 const LOCAL_EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
@@ -336,46 +336,18 @@ export default defineTool({
       }
     }
 
-    // ── Combine ─────────────────────────────────────────────────────
-    // Two paths:
-    //   mode=embeddings: just embedding rank, ordered by score desc.
-    //   mode=hybrid: RRF over the union.
-    const combined = new Map<string, { row: SemanticHit; score: number; rankers: Set<string> }>();
-
-    const ingest = (listings: Record<string, Listing>, rankerName: string) => {
-      for (const list of Object.values(listings)) {
-        list.forEach((entry, idx) => {
-          const rrfBoost = 1 / (RRF_K + idx + 1);
-          const existing = combined.get(entry.key);
-          if (existing) {
-            existing.score += rrfBoost;
-            existing.rankers.add(rankerName);
-          } else {
-            combined.set(entry.key, {
-              row: { ...entry.row, rankers: [rankerName] },
-              score: rrfBoost,
-              rankers: new Set([rankerName]),
-            });
-          }
-        });
-      }
-    };
-
+    // ── Combine via RRF (pure, see ./rrf.ts) ────────────────────────
+    const inputs: Array<{ name: string; list: Listing }> = [];
     if (mode === 'hybrid') {
-      ingest(bmListings, 'bm25');
-      ingest(embListings, 'embeddings');
+      for (const list of Object.values(bmListings)) inputs.push({ name: 'bm25', list });
+      for (const list of Object.values(embListings)) inputs.push({ name: 'embeddings', list });
     } else {
-      ingest(embListings, 'embeddings');
+      for (const list of Object.values(embListings)) inputs.push({ name: 'embeddings', list });
     }
-
-    const results = Array.from(combined.values())
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map(({ row, score, rankers }) => ({
-        ...row,
-        score,
-        rankers: Array.from(rankers),
-      }));
+    const fused = rrfCombine(inputs, RRF_K_DEFAULT);
+    const results = fused.slice(0, limit).map(({ row, score, rankers }) => ({
+      ...row, score, rankers,
+    }));
 
     return {
       content: [{
@@ -385,7 +357,7 @@ export default defineTool({
           mode,
           embedder_available: !!queryVec,
           scope,
-          total_hits: combined.size,
+          total_hits: fused.length,
           results,
         }),
       }],

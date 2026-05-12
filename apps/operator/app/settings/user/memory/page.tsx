@@ -42,6 +42,24 @@ export default function MemoryPage() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingDraft, setEditingDraft] = useState('');
+
+  const onSaveEdit = useCallback(async (id: string) => {
+    const r = await fetch('/api/user/memory', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, memory: editingDraft }),
+    });
+    if (r.ok) {
+      toast.success('Updated');
+      setRows((rs) => rs.map((x) => (x.id === id ? { ...x, memory: editingDraft } : x)));
+      setEditingId(null);
+    } else {
+      toast.error('Update failed');
+    }
+  }, [editingDraft]);
+
   const onDelete = useCallback(async (id: string) => {
     if (!confirm('Delete this memory?')) return;
     const r = await fetch(`/api/user/memory?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
@@ -195,15 +213,43 @@ export default function MemoryPage() {
                       <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>expires {new Date(meta.expires_at as string).toLocaleString()}</span>
                     )}
                   </div>
-                  <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.memory}</div>
+                  {editingId === row.id ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      <textarea
+                        value={editingDraft}
+                        onChange={(e) => setEditingDraft(e.target.value)}
+                        rows={3}
+                        style={{ width: '100%', padding: 6, fontFamily: 'inherit', fontSize: 13, border: '1px solid var(--border)', borderRadius: 4, background: 'var(--surface-hover)', color: 'var(--text)' }}
+                      />
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button type="button" onClick={() => onSaveEdit(row.id)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--surface-hover)', cursor: 'pointer', fontSize: 12 }}>Save</button>
+                        <button type="button" onClick={() => setEditingId(null)} style={{ padding: '2px 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12 }}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{row.memory}</div>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => onDelete(row.id)}
-                  style={{ flexShrink: 0, padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
-                >
-                  Delete
-                </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingId(row.id);
+                      setEditingDraft(row.memory);
+                    }}
+                    disabled={editingId !== null && editingId !== row.id}
+                    style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid var(--border)', cursor: 'pointer' }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDelete(row.id)}
+                    style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4, background: 'transparent', border: '1px solid #f87171', color: '#f87171', cursor: 'pointer' }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </li>
             );
           })}

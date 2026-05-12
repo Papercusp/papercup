@@ -321,6 +321,7 @@ export default function UserSettingsPage() {
         <p style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
           The operator stores things it learns about you (preferences, corrections, etc).
           Inspect and delete per entry at <a href="/settings/user/memory" style={{ color: 'var(--accent)' }}>/settings/user/memory</a>.
+          Search across memories + workspace prose at <a href="/settings/user/search" style={{ color: 'var(--accent)' }}>/settings/user/search</a>.
         </p>
       </section>
     </div>

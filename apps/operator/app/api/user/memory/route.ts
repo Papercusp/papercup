@@ -60,3 +60,16 @@ export async function DELETE(req: Request) {
   await client.delete(id);
   return NextResponse.json({ ok: true });
 }
+
+export async function PATCH(req: Request) {
+  const user = await getSessionUser();
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const client = await getMemoryClient();
+  if (!client) return NextResponse.json({ error: 'mem0_unavailable' }, { status: 503 });
+  const body = (await req.json().catch(() => null)) as { id?: string; memory?: string } | null;
+  if (!body?.id || typeof body.memory !== 'string' || !body.memory.trim()) {
+    return NextResponse.json({ error: 'id_and_memory_required' }, { status: 400 });
+  }
+  await client.update(body.id, body.memory.trim());
+  return NextResponse.json({ ok: true });
+}
