@@ -10,7 +10,7 @@ independently mergeable. Update statuses as commits land.
 | 1.1 | `mcp.discoveryDefaultServers: ['agentmcp']` per-spawn override in `libs/papercup-shared/src/agent/chat-stream.ts` | 1h | ✅ `c9c1aa8c` |
 | 1.2 | Replace hardcoded built-in tool filter (Set of names) with `!startsWith('mcp__')` filter | 0.5h | ✅ `a74c04c1` |
 | 1.3 | Document 6th plugin shape ("render-into-chat") in `docs/endpoint-system/function-as-truth.mdx` | 0.25h | ✅ `a74c04c1` |
-| 1.4 | New `__tests__/integration/operator-tool-surface-consistency.test.ts` — catalog ⇄ MCP `tools/list` ⇄ `allowedTools` drift check | 2h | pending |
+| 1.4 | Catalog ⇄ allowedTools drift check (extended `tools-md-sync.mjs`) — caught 4 real issues | 2h | ✅ `55724cc7` |
 
 ## Plan 4 — User accounts + per-user setting overrides
 
@@ -106,9 +106,9 @@ User chose **Plan C (BM25 + embeddings + RRF hybrid)** but ship in order: A firs
 
 | # | Item | Effort | Status |
 |---|---|---|---|
-| 2A.1 | tsvector columns + migration | 0.5h | pending |
-| 2A.2 | `search:fulltext` tool + guidance | 1h | pending |
-| 2A.3 | Backfill script | 0.5h | pending |
+| 2A.1 | tsvector columns + migration (059) | 0.5h | ✅ (submodule) |
+| 2A.2 | `search:fulltext` tool + guidance | 1h | ✅ (this turn) |
+| 2A.3 | Backfill script | 0.5h | ✅ (folded into migration 059 UPDATE) |
 | 2B.1 | pgvector + text_embeddings schema | 1h | pending |
 | 2B.2 | embeddings.ts wrapper (lazy, worker-thread) | 1.5h | pending |
 | 2B.3 | Background embedding worker + battery awareness | 3h | pending |

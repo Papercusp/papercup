@@ -35,6 +35,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__pending_events:list',
   'mcp__agentmcp__hindsight:recall',
   'mcp__agentmcp__search:query',
+  'mcp__agentmcp__search:fulltext',
 
   // Spawn primitive (Phase 9 / @papercupai/orchestrator-spawn plugin).
   // Operator role is allowlisted to spawn any other role with a
