@@ -24,6 +24,12 @@ export async function register(): Promise<void> {
   // the boot-time DDL warming.
   await maybeStartPtyWsServer();
 
+  // Endpoint IPC server (opt-in). Tauri launches the sidecar with
+  // PAPERCUSP_IPC_ENABLE=1; the bootstrap then watches the stdout
+  // ready line and connects from Rust. Without the env var, this
+  // is a no-op so the webapp and non-Tauri dev path are unchanged.
+  await maybeStartEndpointIpcServer();
+
   // Boot-time self-repair: drizzle-kit pull periodically truncates the
   // PG default `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint`
   // at the type-cast colon, producing unbalanced parens that crash
@@ -185,6 +191,79 @@ async function backfillGrantsOnce(): Promise<void> {
   }
   const r = await backfillGrantsFromEnabledPluginsAndLegacyFile(enabledHarnesses);
   console.log(`[plugin-grants-backfill] inserted ${r.inserted} grant rows across ${enabledHarnesses.length} harness(es)`);
+}
+
+/**
+ * Endpoint IPC server — webview→Tauri→Node fast path. Opt-in via
+ * `PAPERCUSP_IPC_ENABLE=1`. The Tauri sidecar bootstrap sets this
+ * before launching the operator and watches stdout for the
+ * `PAPERCUSP_IPC_READY socket=<path>` handshake line.
+ *
+ * In dev (non-Tauri), the env stays unset and this is a no-op.
+ * In the webapp prod surface, the env stays unset and this is a no-op.
+ * In Tauri prod, the env is set + Rust connects post-handshake.
+ */
+async function maybeStartEndpointIpcServer(): Promise<void> {
+  if (process.env.PAPERCUSP_IPC_ENABLE !== '1') return;
+  try {
+    const [{ startEndpointIpcServer }, { PROJECTED_DEPS }] = await Promise.all([
+      import('./lib/endpoint-ipc/server'),
+      import('./lib/projected-tool-deps'),
+    ]);
+    await startEndpointIpcServer({
+      // Default path: ~/.papercusp/sockets/<pid>.sock (Linux/macOS) or
+      // \\\\.\\pipe\\papercusp-<pid> (Windows). The Rust client reads
+      // the resolved path from the stdout PAPERCUSP_IPC_READY line.
+      socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
+      // Same telemetry + quota implementation the HTTP catch-all
+      // route uses. Without this, IPC calls were invisible to
+      // /dev → Sessions and /dev → Telemetry. Audit deferred item 4.
+      deps: PROJECTED_DEPS,
+      // IPC allowlist. Each tool here must be self-contained — every
+      // safety check + persistence side-effect lives in the tool
+      // handler, NOT the route. Adding a tool to this list without
+      // verifying that property is the bug class the audit caught.
+      //
+      // dev:ipc_echo — liveness probe (/dev → IPC tab).
+      // operator:scan — self-contained as of the post-deferred refactor:
+      //                 budget check + scan lock + scan tracker + plugin
+      //                 merge + snapshot + session bump all run inside
+      //                 the tool. Route layer keeps only rate-limit
+      //                 (DoS protection — irrelevant for in-boundary IPC)
+      //                 and the idle-cache short-circuit (cheap cache
+      //                 hit — IPC can pay the LLM cost; no harm).
+      //
+      // architect:chat / brainstorm:chat — self-contained as of
+      //                 the prompts.ts extraction: tool resolves the
+      //                 project + composes SPEC.md/features/brainstorm
+      //                 prompt internally. Args are just the slug +
+      //                 history + message.
+      // operator:delegate — self-contained: principal load, session
+      //                 pick/resume, mcpConfig assembly, post-stream
+      //                 appendDelegateTurn + generateSessionTitle all
+      //                 inside the handler. Route is a 100-line shim.
+      // operator:converse — self-contained: buildOperatorPrompt
+      //                 (role+memory+history+trigger), checkBudget,
+      //                 mcpConfig assembly, recordSpend, post-turn
+      //                 mem0.add, and <spawn>-tag dispatch all inside
+      //                 the handler. Route is a ~130-line shim whose
+      //                 only HTTP-specific step is resolving
+      //                 sessionUser from cookies and passing it
+      //                 through as an arg.
+      //
+      // All Phase-3 streaming tools are IPC-eligible.
+      allowedTools: [
+        'dev:ipc_echo',
+        'operator:scan',
+        'architect:chat',
+        'brainstorm:chat',
+        'operator:delegate',
+        'operator:converse',
+      ],
+    });
+  } catch (err) {
+    console.error('[endpoint-ipc] failed to start:', err);
+  }
 }
 
 async function maybeStartPtyWsServer(): Promise<void> {

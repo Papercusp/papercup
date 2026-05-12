@@ -157,7 +157,9 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
     roles: input.roles,
     rolesQuota: input.rolesQuota,
     timeoutSec: input.timeoutSec,
+    idleTimeoutSec: input.idleTimeoutSec,
     args: input.args,
+    events: input.events,
     handler: input.handler,
     guidance: input.guidance,
   };
@@ -259,7 +261,7 @@ function flattenForOpenAi(schema: Record<string, unknown>): Record<string, unkno
 
 function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition<TArgs>): void {
   // tasks:list → /api/agent-tools/tasks/list
-  const httpPath = `/api/agent-tools/${def.name.replace(':', '/')}`;
+  const httpPath = `/api/agent-tools/${def.name.replaceAll(':', '/')}`;
   // Zod 4: use built-in z.toJSONSchema. zod-to-json-schema@3 returns just
   // `{ $schema }` for zod 4 schemas — produces empty input schemas.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -321,7 +323,7 @@ function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition
 function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
   def: RoleToolDefinition<TArgs>,
 ): void {
-  const httpPath = `/api/agent-tools/${def.name.replace(':', '/')}`;
+  const httpPath = `/api/agent-tools/${def.name.replaceAll(':', '/')}`;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rawSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
   delete (rawSchema as Record<string, unknown>).$schema;
@@ -360,6 +362,8 @@ function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
     roles: def.roles,
     rolesQuota: def.rolesQuota,
     timeoutSec: def.timeoutSec,
+    idleTimeoutSec: def.idleTimeoutSec,
+    events: def.events,
     expose: {
       mcp: { name: def.name },
       http: { path: httpPath, methods: ['POST'] },

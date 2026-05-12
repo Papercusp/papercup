@@ -37,11 +37,10 @@ import {
   lookupByMcpName,
   listMcpProjections,
   dispatchProjectedTool,
-  type DispatchProjectedDeps,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import type { AgentRole } from '@papercusp/plugin-sdk';
-import { getOrgPg, withWorkspace } from '@restart/db-org';
+import { withWorkspace } from '@restart/db-org';
 import { isLoopbackRequest, isValidSuperuserBearer } from '@/lib/superuser-token';
 import { logVerificationFailure, verifySpawnParams } from '@/lib/spawn-signing';
 // Side-effect: register every operator-side first-party tool into the
@@ -282,100 +281,10 @@ import { resolveHarnessPaths as resolveHarnessPathsImpl } from '@/lib/resolve-ha
 import { pluginSpawnImpl, secretImpl } from '@/lib/plugin-spawn-impl';
 
 /* ─── Quota + invocation persistence ─────────────────────────────────── */
-
-async function readQuotaStateImpl(
-  toolName: string,
-  ctx: UnifiedToolContext,
-  windowKey: string,
-): Promise<{ count: number } | null> {
-  if (!ctx.workspaceId) return null;
-  try {
-    const { sql } = getOrgPg();
-    const result = await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [ctx.workspaceId]);
-      return await tx.unsafe(
-        `SELECT count(*)::int AS n FROM harness_shared.tool_invocations
-          WHERE workspace_id = $1
-            AND tool_name = $2
-            AND role = $3
-            AND window_key = $4
-            AND status = 'ok'`,
-        [ctx.workspaceId, toolName, ctx.role ?? '', windowKey],
-      );
-    });
-    const n = (result as Array<{ n: number }>)[0]?.n ?? 0;
-    return { count: n };
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[mcp-route] readQuotaState failed: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
-  }
-}
-
-async function recordInvocationImpl(input: {
-  toolName: string;
-  pluginName: string;
-  ctx: UnifiedToolContext;
-  windowKey: string;
-  durationMs: number;
-  status: 'ok' | 'error' | 'quota-exceeded' | 'role-not-allowed' | 'timeout' | 'invalid-input';
-  outputRef?: string | null;
-  outputSize?: number | null;
-  errorMessage?: string | null;
-}): Promise<void> {
-  if (!input.ctx.workspaceId) return;
-  try {
-    const { sql } = getOrgPg();
-    await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [input.ctx.workspaceId]);
-      await tx.unsafe(
-        `INSERT INTO harness_shared.tool_invocations
-           (workspace_id, harness_slug, plugin_name, tool_name, role,
-            feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
-            window_key, duration_ms, status, output_ref, output_size, error_message, args_json)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)`,
-        [
-          input.ctx.workspaceId,
-          input.ctx.harnessSlug ?? '',
-          input.pluginName,
-          input.toolName,
-          input.ctx.role ?? '',
-          input.ctx.featureId ?? null,
-          input.ctx.chunkId ?? null,
-          input.ctx.runId ?? null,
-          input.ctx.spawnId ?? '',
-          input.ctx.parentSpawnId ?? null,
-          input.windowKey,
-          input.durationMs,
-          input.status,
-          input.outputRef ?? null,
-          input.outputSize ?? null,
-          input.errorMessage ?? null,
-          (() => {
-            if (input.args === undefined || input.args === null) return null;
-            try {
-              const s = JSON.stringify(input.args);
-              if (s.length > 32768) {
-                return JSON.stringify({ _truncated: true, _size: s.length });
-              }
-              return s;
-            } catch {
-              return null;
-            }
-          })(),
-        ],
-      );
-    });
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    console.warn(`[mcp-route] recordInvocation failed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-
-const PROJECTED_DEPS: DispatchProjectedDeps = {
-  readQuotaState: readQuotaStateImpl,
-  recordInvocation: recordInvocationImpl,
-};
+// PROJECTED_DEPS lives in @/lib/projected-tool-deps so the IPC server
+// (and any future transport) can reuse the same telemetry + quota
+// implementation. Don't fork the SQL across transports.
+import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
 
 /**
  * Build a full UnifiedToolContext for an MCP tool invocation. Combines:
@@ -386,6 +295,14 @@ const PROJECTED_DEPS: DispatchProjectedDeps = {
  *   - progress wired to MCP `notifications/progress` when the calling
  *     client supplied a progressToken in `_meta`
  */
+// Exported for tests; not part of the route's public surface.
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export async function __buildMcpToolContext_forTests(
+  ...args: Parameters<typeof buildMcpToolContext>
+): Promise<UnifiedToolContext> {
+  return buildMcpToolContext(...args);
+}
+
 async function buildMcpToolContext(
   spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
@@ -397,26 +314,62 @@ async function buildMcpToolContext(
   const paths = (spawn.isSuperuser && (spawn.workspaceId === '*' || spawn.harnessSlug === '*'))
     ? { projectDir: undefined as unknown as string, stateDir: undefined as unknown as string }
     : await resolveHarnessPathsImpl(spawn.harnessSlug, spawn.workspaceId);
-  // Plugin handlers call ctx.progress(pct, msg). When the MCP client
-  // supplied a progressToken, fan each call to a notifications/progress
-  // event keyed by that token. Otherwise no-op (client opted out).
-  const progress: UnifiedToolContext['progress'] =
+  // Plugin handlers call ctx.emit / ctx.progress. When the MCP client
+  // supplied a progressToken, fan each call to JSON-RPC notifications
+  // over the agent's MCP session. Otherwise no-op (client opted out).
+  //
+  // emit('<name>', data) → notifications/papercusp/event with { event, data }
+  //   (Papercusp-specific extension; standard MCP clients ignore unknown methods.)
+  // emit('progress', payload) → ALSO fires notifications/progress
+  //   (MCP-spec-compliant; built-in MCP UIs use this for progress bars.)
+  //
+  // ctx.progress(pct, msg) is a thin alias over emit('progress', { progress, total, message? }).
+  const emit: UnifiedToolContext['emit'] =
     progressToken !== undefined && sendNotification
-      ? (pct, msg) => {
+      ? (name, data) => {
+          // JSON-RPC can't carry binary natively. Uint8Array would
+          // JSON.stringify to {"0":...} (one numeric key per byte) —
+          // corrupted on the wire. Match the HTTP transport's behavior:
+          // base64-encode binary payloads. Structural check is cheap
+          // and catches both schema-declared and schema-undeclared
+          // binary emits.
+          let wireData: unknown = data;
+          if (data instanceof Uint8Array) {
+            wireData = {
+              $papercuspBinary: true,
+              encoding: 'base64',
+              data: Buffer.from(data).toString('base64'),
+            };
+          }
+          // Papercusp extension notification — always fires.
           sendNotification({
-            method: 'notifications/progress',
-            params: {
-              progressToken,
-              progress: typeof pct === 'number' ? pct : 0,
-              total: 100,
-              ...(msg ? { message: msg } : {}),
-            },
+            method: 'notifications/papercusp/event',
+            params: { progressToken, event: name, data: wireData },
           }).catch((err) => {
             // eslint-disable-next-line no-console
-            console.warn(`[mcp-tool] sendNotification failed: ${err instanceof Error ? err.message : String(err)}`);
+            console.warn(`[mcp-tool] sendNotification(papercusp/event) failed: ${err instanceof Error ? err.message : String(err)}`);
           });
+          // Spec-compliance: also fire the standard progress notification
+          // for the 'progress' wire event so MCP-aware clients that only
+          // know about notifications/progress still get a progress signal.
+          if (name === 'progress' && data !== null && typeof data === 'object' && !(data instanceof Uint8Array)) {
+            sendNotification({
+              method: 'notifications/progress',
+              params: { progressToken, ...(data as Record<string, unknown>) },
+            }).catch((err) => {
+              // eslint-disable-next-line no-console
+              console.warn(`[mcp-tool] sendNotification(progress) failed: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
         }
-      : () => { /* progress disabled by client */ };
+      : () => { /* streaming disabled by client (no progressToken) */ };
+  const progress: UnifiedToolContext['progress'] = (pct, msg) => {
+    emit('progress', {
+      progress: typeof pct === 'number' ? pct : 0,
+      total: 100,
+      ...(msg ? { message: msg } : {}),
+    });
+  };
   return {
     workspaceId: spawn.workspaceId,
     harnessSlug: spawn.harnessSlug,
@@ -435,6 +388,8 @@ async function buildMcpToolContext(
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
     },
     progress,
+    emit,
+    transport: 'mcp',
     spawn: pluginSpawnImpl,
     secret: secretImpl,
     signal: new AbortController().signal,

@@ -86,6 +86,14 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
     parseAsStringEnum(['1', '6', '24', '168', '720']).withDefault('24'),
   );
   const hours = Number(hoursParam);
+  // Transport filter: URL-backed, comma-separated, empty = no filter.
+  // Same shape as TelemetryTab. ui:get_state surfaces the selection
+  // to agents and ui:dispatch set_url can drive it from outside.
+  const [transportParam, setTransportParam] = useQueryState(
+    'sessionTransport',
+    parseAsString.withDefault(''),
+  );
+  const transports = transportParam ? transportParam.split(',') : null;
   // Selected spawn for drilldown. nuqs-backed so:
   //   (a) the URL deep-links to a specific spawn
   //   (b) `ui:get_state` surfaces the selection to agents
@@ -101,7 +109,7 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
     fetch(`/api/agent-tools/dev/sessions?${CTX}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceIds, hours, limit: 200 }),
+      body: JSON.stringify({ workspaceIds, transports, hours, limit: 200 }),
     })
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -119,7 +127,15 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceIds, hours]);
+  }, [workspaceIds, transportParam, hours]);
+
+  const transportSet = new Set(transports ?? []);
+  const toggleTransport = (t: string): void => {
+    const next = new Set(transportSet);
+    if (next.has(t)) next.delete(t);
+    else next.add(t);
+    void setTransportParam(next.size === 0 ? '' : Array.from(next).join(','));
+  };
 
   async function toggleExpand(spawnId: string) {
     if (expanded === spawnId) {
@@ -165,6 +181,29 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
             <option value={720}>30d</option>
           </select>
         </label>
+        <fieldset className="pc-dev-muted" style={{ display: 'inline-flex', gap: 8, marginLeft: 12, alignItems: 'center', border: 0, padding: 0 }}>
+          <span>transport:</span>
+          {(['http', 'mcp', 'ipc', 'in_process', 'unknown'] as const).map((t) => (
+            <label key={t} style={{ display: 'inline-flex', gap: 3, fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={transportSet.has(t)}
+                onChange={() => toggleTransport(t)}
+              />
+              {t}
+            </label>
+          ))}
+          {transportSet.size > 0 && (
+            <button
+              type="button"
+              onClick={() => void setTransportParam('')}
+              className="pc-dev-input pc-dev-input-inline"
+              style={{ padding: '2px 6px', fontSize: 11 }}
+            >
+              clear
+            </button>
+          )}
+        </fieldset>
       </header>
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}

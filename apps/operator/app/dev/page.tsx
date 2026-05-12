@@ -37,8 +37,9 @@ const TablesTab = dynamic(() => import('./_components/TablesTab'), { ssr: false 
 const SqlTab = dynamic(() => import('./_components/SqlTab'), { ssr: false });
 const BackupsTab = dynamic(() => import('./_components/BackupsTab'), { ssr: false });
 const TerminalTab = dynamic(() => import('./_components/TerminalTab'), { ssr: false });
+const IpcTab = dynamic(() => import('./_components/IpcTab'), { ssr: false });
 
-type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'sql' | 'studio' | 'backups' | 'terminal';
+type TabId = 'harnesses' | 'api' | 'sessions' | 'telemetry' | 'audit' | 'pg' | 'processes' | 'tables' | 'sql' | 'studio' | 'backups' | 'terminal' | 'ipc';
 
 const TAB_GROUPS: Array<{ label: string; tabs: Array<{ id: TabId; label: string; hint: string }> }> = [
   {
@@ -66,6 +67,7 @@ const TAB_GROUPS: Array<{ label: string; tabs: Array<{ id: TabId; label: string;
       { id: 'processes', label: 'Processes', hint: 'local pids' },
       { id: 'backups', label: 'Backups', hint: 'kopia + restore' },
       { id: 'terminal', label: 'Terminal', hint: 'xterm.js shell' },
+      { id: 'ipc', label: 'IPC', hint: 'endpoint-IPC probe' },
     ],
   },
 ];
@@ -81,7 +83,7 @@ export default function DevPage() {
     'tab',
     parseAsStringEnum<TabId>([
       'harnesses', 'api', 'sessions', 'telemetry', 'audit',
-      'pg', 'processes', 'tables', 'sql', 'studio', 'backups', 'terminal',
+      'pg', 'processes', 'tables', 'sql', 'studio', 'backups', 'terminal', 'ipc',
     ]).withDefault('api'),
   );
   // null = all workspaces; otherwise specific ids. URL-backed because it is
@@ -161,6 +163,7 @@ export default function DevPage() {
           {tab === 'studio' && <StudioTab />}
           {tab === 'backups' && <BackupsTab />}
           {tab === 'terminal' && <TerminalTab />}
+          {tab === 'ipc' && <IpcTab />}
         </Suspense>
       </main>
       {railOpen && (

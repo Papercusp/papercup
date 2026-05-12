@@ -29,6 +29,7 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { parseSseStream } from '@restart/sse';
 import { selfUrl } from './self-url';
 import {
   type ActionManifest,
@@ -527,24 +528,14 @@ async function runButtonAction(args: {
       } else {
         const ct = res.headers.get('content-type') ?? '';
         if (ct.includes('text/event-stream') && res.body) {
-          // Forward SSE data lines to the log verbatim.
-          const reader = res.body.getReader();
-          const dec = new TextDecoder();
-          let buf = '';
-          while (true) {
-            const { done: rdone, value } = await reader.read();
-            if (rdone) break;
-            buf += dec.decode(value, { stream: true });
-            const events = buf.split('\n\n');
-            buf = events.pop() ?? '';
-            for (const ev of events) {
-              for (const line of ev.split('\n')) {
-                if (line.startsWith('data:')) {
-                  const data = line.slice(5).trimStart();
-                  await logFh.write(data + '\n');
-                }
-              }
-            }
+          // Forward SSE data lines to the log verbatim. Skip heartbeat
+          // frames the @restart/sse server emits as keepalives — those
+          // are transport noise, not button output. Forward every other
+          // event (name-agnostic) so future plugins emitting named
+          // events ('progress', 'line', etc.) still flow through.
+          for await (const ev of parseSseStream(res.body)) {
+            if (ev.event === 'heartbeat') continue;
+            await logFh.write(ev.data + '\n');
           }
         } else {
           // One-shot: log the body as output.

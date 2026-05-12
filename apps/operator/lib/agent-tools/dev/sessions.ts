@@ -22,12 +22,17 @@ export default defineTool({
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
+    /** Filter by transport (which adapter drove dispatch). See
+     *  dev:telemetry for the same field. */
+    transports: z.array(z.enum(['http', 'mcp', 'ipc', 'in_process', 'unknown']))
+      .nullable().optional(),
     hours: z.number().int().positive().max(720).optional(),
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args) {
     const result = await listSessions({
       workspaceIds: args.workspaceIds ?? null,
+      transports: args.transports ?? null,
       hours: args.hours,
       limit: args.limit,
     });

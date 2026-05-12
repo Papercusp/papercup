@@ -5,8 +5,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dispatchProjectedTool,
+  dispatchProjectedToolStream,
   computeProjectedQuotaWindowKey,
   type DispatchProjectedDeps,
+  type DispatchStreamEvent,
 } from './dispatch-projected';
 import {
   _resetProjectionRegistryForTests,
@@ -19,6 +21,7 @@ const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
   log: vi.fn(),
   signal: new AbortController().signal,
   progress: vi.fn(),
+  emit: vi.fn(),
   workspaceId: 'default',
   harnessSlug: 'sheets',
   role: 'worker',
@@ -168,6 +171,116 @@ describe('dispatchProjectedTool', () => {
     expect(recorded).toEqual(['timeout']);
   });
 
+  it('aborts the handler when idleTimeoutSec elapses without an emit', async () => {
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1, // 1s idle cap
+      fn: (_input, ctx) =>
+        new Promise<ToolResult>((resolve, reject) => {
+          // Emit immediately, then go silent for 4s. Idle watchdog should
+          // abort around 1s.
+          ctx.emit('delta', { text: 'hi' });
+          ctx.signal.addEventListener('abort', () => reject(new Error('aborted by idle')));
+          setTimeout(() => resolve({ content: [{ type: 'text', text: 'never' }] }), 4_000);
+        }),
+    });
+    const start = Date.now();
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    const elapsed = Date.now() - start;
+    expect(r.ok).toBe(false);
+    // Idle check interval is max(1s, idleSec/4). With idleSec=1 that's 1s,
+    // so abort fires somewhere in [1s, 2s]. Generous upper bound for CI noise.
+    expect(elapsed).toBeLessThan(3_500);
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    // Reported as timeout since the abort signal fired.
+    expect(r.error?.code).toBe('timeout');
+  }, 10_000);
+
+  it('does NOT abort when emits keep arriving inside idleTimeoutSec', async () => {
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        // Emit every 300ms for ~1.5s — well inside the 1s idle gap.
+        for (let i = 0; i < 5; i++) {
+          ctx.emit('delta', { text: `chunk-${i}` });
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(true);
+  }, 10_000);
+
+  it('ctx.transport is plumbed through to recordInvocation deps', async () => {
+    // PR for migration 058-tool-invocations-transport: every transport
+    // (HTTP / MCP / IPC / in_process) sets ctx.transport on its ctx so
+    // the shared PROJECTED_DEPS.recordInvocation can persist it on
+    // harness_shared.tool_invocations.transport. Verify the dispatcher
+    // doesn't strip the field on its way through wrappedEmit + the
+    // success-path record call.
+    const tool = makeTool({
+      fn: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const recorded: Array<{ transport?: 'http' | 'mcp' | 'ipc' | 'in_process' }> = [];
+    const deps: DispatchProjectedDeps = {
+      recordInvocation: async (input) => {
+        recorded.push({ transport: input.ctx.transport });
+      },
+    };
+    const ctx = MAKE_CTX({ transport: 'ipc' });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, deps);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].transport).toBe('ipc');
+  });
+
+  it('ok-on-abort: handler returns ok despite signal aborted → surfaces as timeout error', async () => {
+    // Round-7 follow-up: the watchdog used to fire but if the handler
+    // returned normally without observing ctx.signal.aborted, the
+    // dispatcher would emit `ok: true` + the partial result. That hid
+    // wedged-but-non-throwing handlers from the consumer (they saw a
+    // bogus `done` instead of `error: timeout`). The fix treats
+    // abort.signal.aborted as authoritative.
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        // Handler IGNORES ctx.signal and sleeps WELL past the idle cap.
+        // The idle timer's setInterval first fires at checkMs (1000ms);
+        // the > comparison means we need to sleep > 2× checkMs to
+        // reliably catch the abort before the handler returns.
+        await new Promise((r) => setTimeout(r, 3000));
+        // Returns ok despite the abort having fired.
+        return { content: [{ type: 'text', text: 'should-not-surface' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('timeout');
+  }, 10_000);
+
+  it('ctx.progress refreshes idleTimeoutSec deadline (alias parity)', async () => {
+    // Regression: a tool that calls ctx.progress() exclusively (no
+    // direct ctx.emit) used to trip the idle watchdog because the
+    // dispatcher only wrapped emit. Plan decision D2 says progress is
+    // an alias of emit('progress', ...); the dispatcher must re-bind
+    // progress so it refreshes lastEmitMs too.
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        for (let i = 0; i < 5; i++) {
+          ctx.progress(i * 20, `step ${i}`);
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(true);
+  }, 10_000);
+
   it('routes ctx.progress() to the unified context (handler can call it)', async () => {
     const progressCalls: Array<[number | undefined, string | undefined]> = [];
     const tool = makeTool({
@@ -183,5 +296,57 @@ describe('dispatchProjectedTool', () => {
     });
     await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
     expect(progressCalls).toEqual([[0, 'starting'], [50, undefined], [100, 'done']]);
+  });
+});
+
+describe('dispatchProjectedToolStream', () => {
+  it('yields each ctx.emit call as an event, then done with the ToolResult', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'hi' });
+        ctx.emit('delta', { text: ' world' });
+        ctx.emit('cost', { usd: 0.0042 });
+        return { content: [{ type: 'text', text: 'hi world' }] };
+      },
+    });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events.map((e) => e.kind)).toEqual(['event', 'event', 'event', 'done']);
+    expect(events[0]).toEqual({ kind: 'event', name: 'delta', data: { text: 'hi' } });
+    expect(events[2]).toEqual({ kind: 'event', name: 'cost', data: { usd: 0.0042 } });
+    expect(events[3]).toMatchObject({ kind: 'done', result: { content: [{ type: 'text', text: 'hi world' }] } });
+  });
+
+  it('yields role_not_allowed when the calling role is not in the tool roles allowlist', async () => {
+    const tool = makeTool({ roles: ['operator'] });
+    const ctx = MAKE_CTX({ role: 'worker' });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, ctx, MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'error', error: { code: 'role_not_allowed' } });
+  });
+
+  it('routes ctx.progress through the same emit channel', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.progress(50, 'halfway');
+        return { content: [] };
+      },
+    });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({
+      kind: 'event',
+      name: 'progress',
+      data: { progress: 50, total: 100, message: 'halfway' },
+    });
+    expect(events[1]?.kind).toBe('done');
   });
 });

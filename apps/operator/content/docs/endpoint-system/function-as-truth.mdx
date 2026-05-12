@@ -104,7 +104,7 @@ For tools whose only purpose is to render UI in the chat sidebar:
 
 ## Where the model is *not* the right answer
 
-- **Bidirectional streams.** Voice WSS, LLM streaming output. Stay on dedicated routes.
+- **Bidirectional streams** (voice WSS, agent ↔ user back-and-forth in one connection). The `(input, ctx) → ToolResult` shape — input once, stream events, then a single result — *does* fit LLM streaming because the model produces a terminal turn (see [typed event streams](/docs/endpoint-system/transports#typed-event-streams)). Anything that needs the server to ask the client questions mid-stream stays out.
 - **File uploads >5MB.** The dispatcher is JSON-in / JSON-or-SSE-out. Multipart isn't wired.
 - **Browser-state actions.** Things like "expand left panel" or "set voice mode." Those don't have a server-side function to project; they're client commands.
 - **Anything that needs a real bearer principal *and* is callable by spawned agents.** Today, agents pass URL spawn context — no bearer. If a tool genuinely needs principal-bound capabilities and agent-callability, it needs HMAC-signed URLs or a real auth layer added first.

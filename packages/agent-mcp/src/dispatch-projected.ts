@@ -211,6 +211,29 @@ export async function dispatchProjectedTool(
   const abort = new AbortController();
   const timeoutSec = tool.timeoutSec ?? 60;
   const timer = setTimeout(() => abort.abort(), timeoutSec * 1000);
+  // Don't keep the Node event loop alive just for the wall-clock
+  // timeout. Tools with multi-minute timeouts (architect/converse/
+  // delegate all use 600s) would otherwise block process exit until
+  // the timer fires. Matches the idle-timer behavior below.
+  if (typeof timer.unref === 'function') timer.unref();
+
+  // Idle timeout: abort when no event has been emitted for
+  // idleTimeoutSec seconds. Augments the wall-clock cap; catches wedged
+  // child processes that have stopped producing output even though
+  // they're not formally hung. Disabled when 0/undefined.
+  const idleSec = tool.idleTimeoutSec ?? 0;
+  let lastEmitMs = Date.now();
+  let idleTimer: ReturnType<typeof setInterval> | null = null;
+  if (idleSec > 0) {
+    // Check every (idleSec / 4) seconds, minimum 1s. Aborts as soon as the
+    // gap since lastEmit exceeds the cap.
+    const checkMs = Math.max(1_000, Math.floor((idleSec * 1000) / 4));
+    idleTimer = setInterval(() => {
+      if (abort.signal.aborted) return;
+      if (Date.now() - lastEmitMs > idleSec * 1000) abort.abort();
+    }, checkMs);
+    if (typeof idleTimer.unref === 'function') idleTimer.unref();
+  }
 
   // Override ctx.signal with our timeout-bound one. The transport-supplied
   // signal (if any) is composed via addEventListener so caller-side aborts
@@ -218,10 +241,69 @@ export async function dispatchProjectedTool(
   if (ctx.signal && !ctx.signal.aborted) {
     ctx.signal.addEventListener('abort', () => abort.abort(), { once: true });
   }
-  const handlerCtx: UnifiedToolContext = { ...ctx, signal: abort.signal };
+  // Wrap ctx.emit so each emit refreshes the idle deadline. The
+  // wrapper is installed only when idleTimeoutSec is on — non-streaming
+  // tools pay no overhead.
+  const wrappedEmit = idleSec > 0
+    ? (name: string, data: unknown) => {
+        lastEmitMs = Date.now();
+        ctx.emit(name, data);
+      }
+    : ctx.emit;
+  // Re-bind ctx.progress to the wrapped emit. The transport adapter's
+  // progress is pre-built and closes over the UN-wrapped emit, which
+  // means a tool calling ctx.progress exclusively (no direct ctx.emit)
+  // would never refresh lastEmitMs — and a slow-progress LLM call
+  // would trip the idle watchdog mid-stream. This wrapper makes
+  // progress an alias of wrappedEmit per D2 of the plan.
+  const wrappedProgress = idleSec > 0
+    ? (pct: number | undefined, msg?: string) => {
+        wrappedEmit('progress', {
+          progress: typeof pct === 'number' ? pct : 0,
+          total: 100,
+          ...(msg ? { message: msg } : {}),
+        });
+      }
+    : ctx.progress;
+  const handlerCtx: UnifiedToolContext = {
+    ...ctx,
+    signal: abort.signal,
+    emit: wrappedEmit,
+    progress: wrappedProgress,
+  };
 
   try {
     const result = await tool.fn(input, handlerCtx);
+    // ok-on-abort race: if the watchdog (idle or wall-clock) fired
+    // mid-handler but the handler returned normally without observing
+    // ctx.signal.aborted, we'd otherwise emit `done` with the partial
+    // result instead of the expected `timeout` error. That hides
+    // wedged-but-not-throwing handlers from the consumer. Treat the
+    // abort signal as authoritative: if it fired, surface a timeout
+    // regardless of what the handler claims to have returned.
+    if (abort.signal.aborted) {
+      if (deps.recordInvocation && windowKey) {
+        try {
+          await deps.recordInvocation({
+            toolName,
+            pluginName: tool.pluginName,
+            ctx,
+            windowKey,
+            durationMs: Date.now() - startedAt,
+            status: 'timeout',
+            errorMessage: `tool "${toolName}" aborted (idle or wall-clock timeout) but handler returned successfully`,
+            args: input,
+          });
+        } catch { /* best-effort */ }
+      }
+      return {
+        ok: false,
+        error: {
+          code: 'timeout',
+          message: `tool "${toolName}" exceeded timeout of ${timeoutSec}s (handler returned but signal had aborted)`,
+        },
+      };
+    }
     if (deps.recordInvocation && windowKey) {
       try {
         await deps.recordInvocation({
@@ -276,5 +358,116 @@ export async function dispatchProjectedTool(
     };
   } finally {
     clearTimeout(timer);
+    if (idleTimer) clearInterval(idleTimer);
+  }
+}
+
+/* ─── In-process streaming dispatch ──────────────────────────────────── */
+
+/**
+ * One value yielded by `dispatchProjectedToolStream`.
+ * - `event`: a ctx.emit(name, data) call from inside the handler.
+ * - `done`: the handler returned successfully.
+ * - `error`: dispatch/handler failed (role gate, quota, timeout, throw).
+ */
+export type DispatchStreamEvent =
+  | { kind: 'event'; name: string; data: unknown }
+  | { kind: 'done'; result: ToolResult }
+  | { kind: 'error'; error: NonNullable<DispatchProjectedResult['error']> };
+
+/**
+ * In-process streaming wrapper around `dispatchProjectedTool` for
+ * callers that want to consume a tool's typed event channel without
+ * going through an HTTP or MCP transport.
+ *
+ * Goes through the full dispatcher — role check, quota, telemetry,
+ * idle watchdog all apply. The escape hatch for callers who want to
+ * bypass gating is to invoke `tool.fn(input, ctx)` directly (documented
+ * as a footgun; loses RLS scoping and audit recording).
+ *
+ * Yields exactly one terminal event (`done` or `error`) before returning.
+ *
+ * Example:
+ *   const tool = lookupByMcpName('architect.chat');
+ *   if (!tool) throw ...;
+ *   for await (const ev of dispatchProjectedToolStream(tool, 'architect.chat', input, ctx, deps)) {
+ *     if (ev.kind === 'event') { ... }
+ *     else if (ev.kind === 'done') { ... }
+ *     else if (ev.kind === 'error') { ... }
+ *   }
+ */
+export async function* dispatchProjectedToolStream(
+  tool: ProjectedTool,
+  toolName: string,
+  input: unknown,
+  ctx: UnifiedToolContext,
+  deps: DispatchProjectedDeps,
+): AsyncGenerator<DispatchStreamEvent, void, void> {
+  const queue: DispatchStreamEvent[] = [];
+  let resolveWait: (() => void) | null = null;
+  const wake = (): void => {
+    const r = resolveWait;
+    resolveWait = null;
+    r?.();
+  };
+
+  // Override emit + progress so each emit pushes onto our queue. The
+  // dispatcher will wrap our emit with its idle-timeout watchdog (if
+  // tool.idleTimeoutSec is set), so wake() still fires correctly.
+  const streamEmit = (name: string, data: unknown): void => {
+    queue.push({ kind: 'event', name, data });
+    wake();
+  };
+  const streamProgress = (pct: number | undefined, msg?: string): void => {
+    streamEmit('progress', {
+      progress: typeof pct === 'number' ? pct : 0,
+      total: 100,
+      ...(msg ? { message: msg } : {}),
+    });
+  };
+  const streamCtx: UnifiedToolContext = {
+    ...ctx,
+    emit: streamEmit,
+    progress: streamProgress,
+  };
+
+  // Kick off dispatch in the background. Whatever it produces lands
+  // in the queue as the terminal event.
+  const dispatchPromise = dispatchProjectedTool(tool, toolName, input, streamCtx, deps).then(
+    (r) => {
+      if (r.ok && r.result) queue.push({ kind: 'done', result: r.result });
+      else if (r.ok) queue.push({ kind: 'done', result: { content: [] } });
+      else queue.push({ kind: 'error', error: r.error ?? { code: 'handler_error', message: '' } });
+      wake();
+    },
+    (err) => {
+      // Defensive — dispatchProjectedTool catches its own throws and
+      // returns { ok: false, ... }. If somehow an exception escapes,
+      // surface it here so the iterator doesn't hang.
+      queue.push({
+        kind: 'error',
+        error: { code: 'handler_error', message: err instanceof Error ? err.message : String(err) },
+      });
+      wake();
+    },
+  );
+
+  try {
+    while (true) {
+      if (queue.length === 0) {
+        await new Promise<void>((res) => {
+          resolveWait = res;
+        });
+      }
+      while (queue.length > 0) {
+        const ev = queue.shift()!;
+        yield ev;
+        if (ev.kind === 'done' || ev.kind === 'error') return;
+      }
+    }
+  } finally {
+    // If the consumer stops iterating early (break / throw), make sure
+    // the dispatch promise still settles so timers/handles clean up.
+    await dispatchPromise.catch(() => {});
   }
 }

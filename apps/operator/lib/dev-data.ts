@@ -10,6 +10,36 @@
  */
 
 import { getOrgPg } from '@restart/db-org';
+
+/**
+ * Build a transport WHERE-fragment for tool_invocations queries.
+ * Composes via postgres-js fragment templating so a caller can splice
+ * `${tFilter}` into a larger SQL template. Returns `sql\`\`` (empty)
+ * when no filter applies — safe to inline.
+ *
+ * 'unknown' matches NULL rows (pre-058 invocations).
+ */
+function buildTransportFilter(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sql: any,
+  transports: TransportFilter[] | null | undefined,
+): unknown {
+  if (!transports) return sql``;
+  if (transports.length === 0) {
+    // Caller asked for no rows. Returning `1=0` is the safest way to
+    // make every row match nothing without restructuring the caller.
+    return sql`AND 1=0`;
+  }
+  const includesUnknown = transports.includes('unknown');
+  const named = transports.filter((t) => t !== 'unknown') as Exclude<TransportFilter, 'unknown'>[];
+  if (includesUnknown && named.length === 0) {
+    return sql`AND transport IS NULL`;
+  }
+  if (includesUnknown) {
+    return sql`AND (transport = ANY(${named}) OR transport IS NULL)`;
+  }
+  return sql`AND transport = ANY(${named})`;
+}
 import { getHealth, type HealthData } from './harness-readers';
 import { loadHarnessRegistry, type ProjectEntry } from './harness-registry';
 import { readRegistry as readWorkspaceRegistry, type WorkspaceEntry } from './workspace-registry';
@@ -79,8 +109,15 @@ export interface TelemetryRollupEntry {
   workspaces: string[];
 }
 
+/** Transport filter values for /dev → Sessions / Telemetry. 'unknown'
+ *  matches NULL rows from before migration 058 added the column. */
+export type TransportFilter = 'http' | 'mcp' | 'ipc' | 'in_process' | 'unknown';
+
 export interface TelemetryRollupInput {
   workspaceIds: string[] | null;
+  /** When set, restrict to rows whose transport column matches one of
+   *  these. 'unknown' matches NULL. Empty array means "no rows". */
+  transports?: TransportFilter[] | null;
   hours?: number;
   limit?: number;
 }
@@ -94,6 +131,7 @@ export async function telemetryRollup(
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
 
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
+  const tFilter = buildTransportFilter(sql, input.transports);
 
   type Row = {
     tool_name: string;
@@ -115,6 +153,7 @@ export async function telemetryRollup(
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
           AND workspace_id = ANY(${input.workspaceIds!})
+          ${tFilter}
         GROUP BY tool_name
         ORDER BY call_count DESC
         LIMIT ${limit}
@@ -129,6 +168,7 @@ export async function telemetryRollup(
           array_agg(DISTINCT workspace_id) AS workspaces
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
+          ${tFilter}
         GROUP BY tool_name
         ORDER BY call_count DESC
         LIMIT ${limit}
@@ -223,6 +263,8 @@ export interface SessionEntry {
 
 export interface SessionListInput {
   workspaceIds: string[] | null;
+  /** Transport filter. See TelemetryRollupInput.transports for shape. */
+  transports?: TransportFilter[] | null;
   hours?: number;
   limit?: number;
 }
@@ -235,6 +277,7 @@ export async function listSessions(
   const { sql } = getOrgPg();
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
+  const tFilter = buildTransportFilter(sql, input.transports);
 
   type Row = {
     spawn_id: string;
@@ -267,6 +310,7 @@ export async function listSessions(
         WHERE invoked_at > ${sinceIso}::timestamptz
           AND workspace_id = ANY(${input.workspaceIds!})
           AND spawn_id IS NOT NULL
+          ${tFilter}
         GROUP BY spawn_id
         ORDER BY started_at DESC
         LIMIT ${limit}
@@ -287,6 +331,7 @@ export async function listSessions(
         FROM harness_shared.tool_invocations
         WHERE invoked_at > ${sinceIso}::timestamptz
           AND spawn_id IS NOT NULL
+          ${tFilter}
         GROUP BY spawn_id
         ORDER BY started_at DESC
         LIMIT ${limit}

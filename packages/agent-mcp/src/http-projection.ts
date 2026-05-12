@@ -27,12 +27,14 @@
  */
 
 import type { AgentRole } from '@papercusp/plugin-sdk';
+import type { SseSink } from '@restart/sse';
 import {
   dispatchProjectedTool,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
 } from './dispatch-projected';
 import {
+  emitToSseSink,
   lookupByHttpPath,
   type ProjectedTool,
   type UnifiedToolContext,
@@ -251,16 +253,21 @@ async function resolveToolAndContext(
     } catch { /* leave undefined; tool will surface a clear error */ }
   }
   const abort = new AbortController();
+  // Default `emit` is a no-op for the JSON path; the streaming path
+  // (`handleHttpToolRequestStreaming`) overwrites this with a sink writer.
+  const noopEmit = () => { /* non-streaming http transport */ };
   const ctx: UnifiedToolContext = {
     log: (msg) => {
-      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {} };
+      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {}, emit: noopEmit };
       extras.log?.(msg, fullCtx);
     },
     signal: abort.signal,
     progress: (pct, msg) => {
-      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {} };
+      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {}, emit: noopEmit };
       extras.progress?.(pct, msg, fullCtx);
     },
+    emit: noopEmit,
+    transport: 'http',
     ...spawnCtx,
     isSuperuser,
     ...(extras.spawn ? { spawn: extras.spawn } : {}),
@@ -319,67 +326,71 @@ export async function handleHttpToolRequest(
 
 /**
  * Handle a streaming tool request — same flow as `handleHttpToolRequest`
- * but instead of returning a JSON body, emits Server-Sent Events:
+ * but writes Server-Sent Events into the caller-supplied `SseSink`.
  *
- *   event: progress
- *   data: { "progress": 50, "total": 100, "message": "..." }
+ * Wire events the framework emits automatically:
+ *   event: done    data: <ToolResult.content as JSON>  (on handler return)
+ *   event: error   data: { code, message }             (on dispatch failure)
  *
- *   event: result
- *   data: { "content": [...] }
+ * Plus whatever the handler emits via `ctx.emit` and `ctx.progress`.
  *
- *   event: error
- *   data: { "code": "...", "message": "..." }
+ * The `ctx.emit` passed to the handler is wired here to fan each
+ * call to a sink event. The legacy `ctx.progress` is reshaped as
+ * a thin alias over `ctx.emit('progress', { progress, total, message? })`.
  *
- * Caller wraps the returned `Response` in their framework's streaming
- * response (Next.js Response with ReadableStream, Hono c.body(stream),
- * etc.). The caller is responsible for setting Content-Type:
- * text/event-stream and the matching headers.
- *
- * Returns a ReadableStream<string> producing the SSE event text. The
- * stream emits at least one `result` or `error` event before closing.
+ * Caller is responsible for opening the SSE response (via @restart/sse's
+ * `sseResponse({ setup: (sink) => handleHttpToolRequestStreaming(...) })`).
+ * This function closes the sink before returning.
  */
-export function handleHttpToolRequestStreaming(
+export async function handleHttpToolRequestStreaming(
   req: HttpToolRequest,
   extras: HttpToolHostExtras,
-): ReadableStream<string> {
-  return new ReadableStream<string>({
-    async start(controller) {
-      const enqueue = (event: string, data: unknown) => {
-        controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      };
+  sink: SseSink,
+): Promise<void> {
+  const resolved = await resolveToolAndContext(req, extras);
+  if (!resolved.ok) {
+    const body = resolved.body as { error: { code: string; message: string } };
+    sink.event('error', { code: body.error.code, message: body.error.message });
+    sink.close();
+    return;
+  }
 
-      const resolved = await resolveToolAndContext(req, extras);
-      if (!resolved.ok) {
-        const body = resolved.body as { error: { code: string; message: string } };
-        enqueue('error', { code: body.error.code, message: body.error.message });
-        controller.close();
-        return;
-      }
+  // Wire emit → sink. Each ctx.emit(name, data) becomes one SSE event.
+  // The wire-kind dispatch lives in emitToSseSink so transports and
+  // route shims share one source of truth — see its doc comment.
+  resolved.ctx.emit = (name, data) => emitToSseSink(sink, resolved.tool, name, data);
+  resolved.ctx.progress = (pct, msg) => {
+    resolved.ctx.emit('progress', {
+      progress: typeof pct === 'number' ? pct : 0,
+      total: 100,
+      ...(msg ? { message: msg } : {}),
+    });
+  };
 
-      // Override progress to fan SSE events to the client.
-      resolved.ctx.progress = (pct, msg) => {
-        try {
-          enqueue('progress', {
-            progress: typeof pct === 'number' ? pct : 0,
-            total: 100,
-            ...(msg ? { message: msg } : {}),
-          });
-        } catch { /* controller closed */ }
-      };
-
-      const r = await dispatchProjectedTool(
-        resolved.tool,
-        resolved.tool.expose.mcp?.name ?? req.pathname,
-        req.body,
-        resolved.ctx,
-        extras.deps,
-      );
-      if (!r.ok) {
-        enqueue('error', r.error!);
-      } else {
-        enqueue('result', { content: r.result?.content ?? [] });
-      }
-      controller.close();
-    },
-  });
+  const r = await dispatchProjectedTool(
+    resolved.tool,
+    resolved.tool.expose.mcp?.name ?? req.pathname,
+    req.body,
+    resolved.ctx,
+    extras.deps,
+  );
+  if (!r.ok) {
+    // Dispatch failure: auto-error. Honor the tool's schema-inferred
+    // wire kind for `error` — if the tool declared `error: z.string()`,
+    // emit the raw message so the wire shape matches handler-emitted
+    // 'error' events. Otherwise default to the JSON envelope.
+    const errorKind = resolved.tool.eventWireKinds?.error;
+    if (errorKind === 'string') {
+      sink.eventRaw('error', r.error!.message);
+    } else {
+      sink.event('error', r.error!);
+    }
+  } else {
+    // Auto-done: handler returned successfully. Payload is the ToolResult
+    // content array — same shape MCP transport returns via tools/call.
+    // Handler-emitted events (delta, tool_call, …) have already streamed
+    // through ctx.emit; this is the terminal event consumers wait for.
+    sink.event('done', r.result?.content ?? []);
+  }
+  sink.close();
 }

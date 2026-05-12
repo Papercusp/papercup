@@ -54,6 +54,8 @@ export {
   listAllProjectedTools,
   listMcpProjections,
   ToolRegistrationError,
+  emitToSseSink,
+  isPapercuspBinaryEnvelope,
   _resetProjectionRegistryForTests,
   type ProjectedTool,
   type ToolFn,
@@ -61,15 +63,19 @@ export {
   type ToolExposureHttp,
   type ToolExposureMcp,
   type UnifiedToolContext,
+  type MinimalEventSink,
+  type PapercuspBinaryEnvelope,
 } from './tool-projection';
 
 export {
   dispatchProjectedTool,
+  dispatchProjectedToolStream,
   computeProjectedQuotaWindowKey,
   UnauthorizedToolError,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
   type DispatchProjectedErrorCode,
+  type DispatchStreamEvent,
 } from './dispatch-projected';
 
 export {

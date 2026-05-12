@@ -1013,6 +1013,27 @@ export interface ToolResult {
 export type ProgressCallback = (pct: number | undefined, msg?: string) => void;
 
 /**
+ * Typed-event streaming callback. Tools call `ctx.emit(name, data)` to
+ * fan a named event over the active transport:
+ *   - HTTP/SSE → `event: <name>\ndata: <JSON(data)>` via @restart/sse
+ *   - MCP → `notifications/papercusp/event` JSON-RPC notification
+ *   - In-process → next value of an async iterator (when called via
+ *     `tool.fnStream`)
+ *
+ * No-op when the transport has no event channel attached (e.g. a
+ * non-streaming HTTP request, or an MCP client that didn't supply a
+ * progressToken).
+ *
+ * `ctx.progress` is a thin alias over `ctx.emit('progress', ...)`.
+ *
+ * Reserved event names: `'done' | 'progress' | 'heartbeat' | 'result'`.
+ * Tools using `defineTool({ events: {...} })` get compile-time errors
+ * if they declare a reserved name. The runtime tolerates emits with
+ * reserved names from old code paths but logs a warning.
+ */
+export type EmitCallback = (name: string, data: unknown) => void;
+
+/**
  * Per-invocation context passed to every tool handler. Different from
  * `PapercuspContext` (lifecycle context) because tool calls have a
  * specific calling agent (role/feature/chunk/spawn) attached.
@@ -1038,8 +1059,10 @@ export interface ToolContext {
   spawnId: string;
   /** Parent spawn ID, set when this spawn was created by another agent's `orchestrator.spawn` call. */
   parentSpawnId: string | null;
-  /** Stream progress events. See ProgressCallback. */
+  /** Stream progress events. See ProgressCallback. Alias for `ctx.emit('progress', { progress, total, message? })`. */
   progress: ProgressCallback;
+  /** Emit a typed named event. See EmitCallback. No-op when transport has no event channel attached. */
+  emit: EmitCallback;
   /** Plugin-scoped logger; output goes to the harness run log. */
   log: (msg: string) => void;
   /** Capability-gated subprocess spawn. Same shape as PapercuspContext.spawn. */

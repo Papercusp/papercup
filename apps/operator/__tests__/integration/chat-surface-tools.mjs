@@ -41,7 +41,6 @@ const REQUIRED = [
 //                       of its own. Test verifies the bridge URL/transport.
 const SURFACES = [
   { label: 'operator-converse', kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/operator-converse/route.ts' },
-  { label: 'operator-chat',     kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/operator-chat/route.ts' },
   { label: 'delegate-chat',     kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/delegate-chat/route.ts' },
   { label: 'oracle',            kind: 'chat',       file: 'apps/operator/app/api/_hono/oracle.ts' },
   { label: 'operator-scan',     kind: 'oneshot',    file: 'apps/operator/app/api/agent-mcp/operator-scan/route.ts' },

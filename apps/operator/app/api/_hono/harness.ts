@@ -12,6 +12,14 @@
  */
 import { Hono } from 'hono';
 import { sseResponse } from '@restart/sse';
+import {
+  dispatchProjectedToolStream,
+  emitToSseSink,
+  lookupByMcpName,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+// Side-effect: registers architect:chat + the other operator-side tools.
+import '@/lib/agent-tools/index';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
 import { getKnownHooks } from '@/lib/known-hooks';
@@ -5678,106 +5686,79 @@ harness.post('/:slug/architect/chat', async (c) => {
     return c.json({ error: 'message required' }, 400);
   }
 
-  // Compose a compact prompt: system instructions + current spec grounding +
-  // conversation history + the new user message. The assistant is told to
-  // stream text and, when ready, emit a diff block with a special marker.
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
-  const contract = safeRead(join(harnessDir(project), 'validation-contract.md')) ?? '';
-  // Features live in Postgres (harness_features) post-2026-04-27 migration.
-  // Render a compact summary for the prompt — same shape the agents used to
-  // read out of features.json, just sourced from the DB now.
-  const featuresList = await parseFeatures(project);
-  const features = JSON.stringify(
-    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status, attempts: f.attempts })) },
-    null,
-    2,
-  );
-  const issues = safeRead(join(harnessDir(project), 'issues.md')) ?? '';
-  let reviewContext = '';
-  if (body.reviewId) {
-    const rpath = join(reviewsDir(project), `${body.reviewId.replace(/[^A-Za-z0-9_.-]/g, '')}.json`);
-    const rraw = safeRead(rpath);
-    if (rraw) reviewContext = `\n\n## Pending review in context\n\n${rraw}\n`;
+  // Prompt composition + history slicing now happen inside the
+  // architect:chat tool (lib/agent-tools/architect/chat.ts).
+
+  // Pilot 2 of typed-event channel migration (2026-05-12 → Phase 3):
+  // the route now composes the prompt and dispatches into the
+  // `architect:chat` projected tool. Wire format unchanged — the tool
+  // declares `delta: z.string()` and `error: z.string()` so the
+  // framework's schema-inferred wire-format keeps both as raw text
+  // (matches the previous sink.eventRaw shape; submodule consumer at
+  // libs/agent-chat's useHarnessChatRuntime.ts unaffected).
+  const architectChatTool = lookupByMcpName('architect:chat');
+  if (!architectChatTool) {
+    return c.json({ error: 'architect:chat tool not registered' }, 500);
   }
-
-  const systemPrompt = `You are the ARCHITECT in an autonomous coding harness, chatting with the human supervisor through the /harness Inbox.
-
-Your job is to help them clarify the spec: ask Socratic questions about any vagueness until the user's intent is precise and testable, then propose a concrete change to SPEC.md or .harness/validation-contract.md.
-
-Current state:
-
-## SPEC.md
-${spec.slice(0, 8000)}
-
-## validation-contract.md
-${contract.slice(0, 6000)}
-
-## features (harness_features in Postgres — summary)
-${features.slice(0, 3000)}
-
-## issues.md tail
-${issues.slice(-3000)}
-${reviewContext}
-
-Rules:
-- Prefer short, pointed clarifying questions over long speeches.
-- When you're ready to propose a change, emit a fenced block. The UI shows the user a summary + Accept button; they trust you on the mechanical details.
-
-Format for file replacements:
-\`\`\`proposal:SPEC.md
-SUMMARY: <1–3 sentences in plain English: what will change and why. This is the ONLY text the user reads by default.>
----
-<complete replacement file contents — verbatim, nothing elided>
-\`\`\`
-
-Use \`proposal:SPEC.md\` or \`proposal:contract\` as the fence language. First line after the fence MUST start with \`SUMMARY:\` then human-facing text; then a line \`---\`; then the full replacement body.
-
-For a supervisor note (short message appended, not replacing a file):
-\`\`\`note:supervisor
-<text that appends to supervisor-notes.md>
-\`\`\`
-
-Rules for proposals:
-- The summary is what the user sees. Make it precise and plain-English. No jargon without definition.
-- The body must be complete — do not elide. The UI writes it verbatim on Accept.
-- Be decisive but never fabricate facts. If you don't know a constraint, ask instead of proposing.`;
-
-  const history = (body.history ?? []).slice(-10);
-  const fullPrompt = [
-    ...history.map((m) => `${m.role === 'user' ? 'User' : 'Architect'}: ${m.content}`),
-    `User: ${body.message}`,
-    'Architect:',
-  ].join('\n\n');
-
-  // Stream the response via runAgentChat (backend-aware: claude-code
-  // or omp). Migrated 2026-05-12 from Hono streamSSE → @restart/sse
-  // sseResponse after verifying that ReadableStream-based streaming no
-  // longer buffers under Next 16/Turbopack (architect/chat probe showed
-  // TTFB=10.8s/total=11.6s with incremental token delivery, matching the
-  // model's token-emit cadence rather than a single end-of-response
-  // flush). The eventRaw path skips JSON.stringify on the delta payload;
-  // parseSseStream on the consumer side joins multi-line data: spec-
-  // compliantly so newlines round-trip without the prior \\n escape.
   return sseResponse({
     signal: c.req.raw.signal,
     setup: async (sink) => {
-      try {
-        for await (const ev of runAgentChat({
-          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-          cwd: project.path,
-        })) {
-          if (ev.type === 'delta') {
-            sink.eventRaw('delta', ev.text);
-          } else if (ev.type === 'result') {
-            sink.event('done', { cost: ev.costUsd, input: ev.tokensIn, output: ev.tokensOut });
-            sink.close();
-          } else if (ev.type === 'error') {
-            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
-          }
+      const ctxBase: UnifiedToolContext = {
+        log: (msg) => { console.log(`[architect:chat][tool] ${msg}`); },
+        signal: c.req.raw.signal,
+        progress: () => {},
+        emit: () => { /* installed by dispatchProjectedToolStream */ },
+        workspaceId: activeWorkspaceId(),
+        role: 'operator',
+        runId: `architect-${project.slug}-${Date.now()}`,
+        spawnId: `architect-${project.slug}`,
+        projectDir: project.path,
+        harnessSlug: project.slug,
+        transport: 'in_process',
+      };
+      // Tool is now self-contained: it resolves the project + composes
+      // the prompt itself. The route just forwards the raw chat args.
+      // See apps/operator/lib/agent-tools/architect/chat.ts for why.
+      for await (const ev of dispatchProjectedToolStream(
+        architectChatTool,
+        'architect:chat',
+        {
+          harnessSlug: project.slug,
+          phase: c.req.query('phase'),
+          history: body.history ?? [],
+          message: body.message,
+          reviewId: body.reviewId,
+        },
+        ctxBase,
+        {},
+      )) {
+        if (ev.kind === 'event') {
+          // Schema-driven wire-kind dispatch via the shared helper —
+          // same source of truth as the framework's HTTP transport.
+          emitToSseSink(sink, architectChatTool, ev.name, ev.data);
+        } else if (ev.kind === 'error') {
+          // Dispatcher-level failure (role gate, quota, timeout, throw).
+          // Surface as a raw-text `error` event so the submodule consumer
+          // (useHarnessChatRuntime.ts) shows it inline. Previously dropped
+          // silently — the user just saw an empty response.
+          sink.eventRaw('error', ev.error.message);
+        } else if (ev.kind === 'done') {
+          // Emit terminal `done` for symmetry with the catch-all
+          // /api/agent-tools/architect/chat URL (where the framework
+          // auto-emits done). useHarnessChatRuntime.ts ignores done
+          // and detects turn-end via stream-EOF, so we MUST close after
+          // emitting so the consumer's reader.read() returns
+          // { done: true } and setIsRunning(false) actually fires.
+          sink.event('done', ev.result.content);
         }
-      } catch (err) {
-        sink.eventRaw('error', `architect chat failed: ${(err as Error).message}`);
       }
+      // Always close — for done, error, AND the case where the
+      // for-await falls through without yielding done/error (signal
+      // abort mid-stream). Without this, useHarnessChatRuntime.ts
+      // hangs reading heartbeats forever and the chat UI stays in
+      // 'Running' state until the user navigates away. Was broken
+      // since the Pilot-2 migration (commit 1512ae2b).
+      sink.close();
     },
   });
 });
@@ -5958,68 +5939,56 @@ harness.post('/:slug/brainstorm/chat', async (c) => {
     return c.json({ error: 'message required' }, 400);
   }
 
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
-  const brainstorm = safeRead(brainstormPath(project)) ?? '';
-  // Same as the Architect chat: features live in harness_features (PG).
-  const featuresList = await parseFeatures(project);
-  const features = JSON.stringify(
-    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status })) },
-    null,
-    2,
-  );
+  // Prompt composition + history slicing now happen inside the
+  // brainstorm:chat tool (lib/agent-tools/architect/chat.ts).
 
-  const systemPrompt = `You are a BRAINSTORM PARTNER for a software project. You're chatting with the human supervisor of a coding harness to help them explore ideas before they become features.
-
-Your job: expand the space of possibilities. Suggest analogues, probe "have you considered…", challenge hidden assumptions. You are expansive, not reductive. This is pre-SPEC ideation — nothing needs to be final yet.
-
-Current state:
-
-## SPEC.md
-${spec.slice(0, 6000)}
-
-## Existing features (harness_features in Postgres — summary)
-${features.slice(0, 2000)}
-
-## Brainstorm scratchpad (what the user is working on)
-${brainstorm.slice(0, 8000)}
-
-Rules:
-- Lead with ideas, tradeoffs, analogues from other domains. Be concrete.
-- When an idea matures enough to be acted on, emit a fenced action block:
-  - \`\`\`promote:feature — create a new todo feature in harness_features. Put a short title on the first line, then markdown body explaining intent + optional claims.
-  - \`\`\`promote:spec — insert into SPEC.md under a "## Brainstormed" section.
-  - \`\`\`promote:issue — file as an issue in issues.json. First line is title; rest is evidence/context.
-- Don't promote too eagerly. Wait until the user signals the idea is ready, or ask them first.
-- Keep responses short and punchy. Long speeches kill brainstorming.`;
-
-  const history = (body.history ?? []).slice(-10);
-  const fullPrompt = [
-    ...history.map((m) => `${m.role === 'user' ? 'User' : 'Partner'}: ${m.content}`),
-    `User: ${body.message}`,
-    'Partner:',
-  ].join('\n\n');
-
-  // Migrated 2026-05-12 to @restart/sse — see architect/chat above.
+  const brainstormChatTool = lookupByMcpName('brainstorm:chat');
+  if (!brainstormChatTool) {
+    return c.json({ error: 'brainstorm:chat tool not registered' }, 500);
+  }
   return sseResponse({
     signal: c.req.raw.signal,
     setup: async (sink) => {
-      try {
-        for await (const ev of runAgentChat({
-          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-          cwd: project.path,
-        })) {
-          if (ev.type === 'delta') {
-            sink.eventRaw('delta', ev.text);
-          } else if (ev.type === 'result') {
-            sink.event('done', { cost: ev.costUsd });
-            sink.close();
-          } else if (ev.type === 'error') {
-            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
-          }
+      const ctxBase: UnifiedToolContext = {
+        log: (msg) => { console.log(`[brainstorm:chat][tool] ${msg}`); },
+        signal: c.req.raw.signal,
+        progress: () => {},
+        emit: () => { /* installed by dispatchProjectedToolStream */ },
+        workspaceId: activeWorkspaceId(),
+        role: 'operator',
+        runId: `brainstorm-${project.slug}-${Date.now()}`,
+        spawnId: `brainstorm-${project.slug}`,
+        projectDir: project.path,
+        harnessSlug: project.slug,
+        transport: 'in_process',
+      };
+      for await (const ev of dispatchProjectedToolStream(
+        brainstormChatTool,
+        'brainstorm:chat',
+        {
+          harnessSlug: project.slug,
+          phase: c.req.query('phase'),
+          history: body.history ?? [],
+          message: body.message,
+        },
+        ctxBase,
+        {},
+      )) {
+        if (ev.kind === 'event') {
+          // Schema-driven wire-kind dispatch via the shared helper —
+          // see architect/chat above.
+          emitToSseSink(sink, brainstormChatTool, ev.name, ev.data);
+        } else if (ev.kind === 'error') {
+          // Dispatcher-level failure — see architect/chat above.
+          sink.eventRaw('error', ev.error.message);
+        } else if (ev.kind === 'done') {
+          // Terminal `done` — see architect/chat above.
+          sink.event('done', ev.result.content);
         }
-      } catch (err) {
-        sink.eventRaw('error', `brainstorm chat failed: ${(err as Error).message}`);
       }
+      // Close so useHarnessChatRuntime's reader returns { done: true }.
+      // See architect/chat above for the bug history.
+      sink.close();
     },
   });
 });

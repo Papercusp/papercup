@@ -1,50 +1,50 @@
 /**
- * GET /api/agent-mcp/operator-scan?request=<text>
+ * GET /api/agent-mcp/operator-scan?request=<text>&background=<0|1>
  *
  * Server-Sent Events stream of Operator's reasoning + suggestions.
  *
- * Events:
+ * Events (forwarded from operator:scan):
+ *   - first_run:    {}                       — emitted once on the first scan
  *   - delta:        { text }                 — Operator text streamed live
  *   - tool_call:    { name, input }          — Operator invoked an MCP tool
  *   - suggestion:   ParsedSuggestion         — emitted as Operator finalizes
- *   - first_run:    {}                       — emitted once on the first scan
- *   - done:         { costUsd, suggestions } — Operator finished
- *   - error:        { message }              — fatal
+ *   - idle_status:  { perHarness, computedAt } — only on the cached path
+ *   - error:        { message, code? }       — fatal OR mid-stream non-fatal
+ *   - done:         { costUsd, suggestions, parseErrors, cached? }
  *
- * The actual MCP server spawned for this request is `agent-mcp`'s
- * standalone entrypoint, with the calling principal's bearer wired in
- * via env. The principal is `system:operator` for the active workspace,
- * loaded from the operator's per-workspace config file.
+ * Most of the lifecycle (lock, scan tracker, plugin merge, snapshot,
+ * session bump, budget enforcement) lives in the operator:scan tool —
+ * see apps/operator/lib/agent-tools/operator/scan.ts. This route is
+ * the thin shim that owns:
+ *   1. Operator-principal resolution (HTTP 503 if not provisioned).
+ *   2. Rate-limit check + HTTP 429 (DoS protection — HTTP-only).
+ *   3. Idle short-circuit (cached snapshot — cheap cache hit; emits
+ *      directly without going through the LLM).
+ *   4. Superuser-token read from disk.
+ *   5. Dispatch the tool and forward its events.
+ *
+ * The IPC fast-path (apps/operator/lib/endpoint-ipc/server.ts) calls
+ * operator:scan directly, getting the same safety + persistence as
+ * the HTTP path (minus rate-limit + idle-cache — neither matters for
+ * in-boundary webview calls).
  */
 
 import { NextRequest } from 'next/server';
-import { existsSync, readFileSync } from 'node:fs';
 import { sseResponse } from '@restart/sse';
-import { runAgentChat } from '@/lib/agent-chat-stream';
-import { papercuspPath } from '@/lib/papercusp-root';
+import {
+  dispatchProjectedToolStream,
+  emitToSseSink,
+  lookupByMcpName,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+// Side-effect: registers operator:scan + the other operator-side tools.
+import '@/lib/agent-tools/index';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { getSessionUser } from '@/lib/auth';
-import { NON_INTERACTIVE_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
-import {
-  buildOperatorPrompt,
-  markFirstRunShown,
-} from '@/lib/operator-prompt';
-import { parseSuggestions } from '@/lib/operator-suggestion-parser';
-import { loadPreferences } from '@/lib/operator-preferences';
-import { acquireScanLock, releaseScanLock } from '@/lib/operator-scan-lock';
-import { checkBudget, recordSpend } from '@/lib/operator-budget';
-import { writeLastScan } from '@/lib/operator-last-scan';
-import { startOperatorScan, completeOperatorScan, failOperatorScan } from '@/lib/operator-scans';
-import { isScannerResumeEnabled, getOrCreateScannerSessionId, bumpScannerSession } from '@/lib/operator-scanner-session';
-import { buildScannerBootstrap } from '@/lib/operator-scanner-bootstrap';
-import { checkRate, record503, recordSuccess } from '@/lib/operator-rate-limit';
-import { canShortCircuit, writeSnapshot } from '@/lib/operator-idle-snapshot';
+import { checkRate } from '@/lib/operator-rate-limit';
+import { canShortCircuit } from '@/lib/operator-idle-snapshot';
 import { fingerprint, readTriggerState } from '@/lib/operator-trigger-state';
-import { resolvePluginAwareTier } from '@/lib/operator-plugin-tier';
-import { refreshDismissedFromPg } from '@/lib/operator-dismissed-cache';
-import { gatherPluginSuggestions } from '@/lib/operator-plugin-suggestions';
-import { enrich } from '@/lib/operator-suggestion-parser';
 
 export const dynamic = 'force-dynamic';
 
@@ -55,41 +55,43 @@ interface SystemPrincipalConfig {
   capabilities: string[];
 }
 
-/**
- * Pull the scanner's trailing one-line status out of the assistant
- * text. The scanner.md role tells it to write exactly that after the
- * <suggestion> blocks (e.g. "Scanned 7 harnesses, surfaced 3
- * suggestions."). Falls back to a generic summary if the model didn't
- * follow the convention this turn.
- */
-function extractScanSummary(text: string): string | null {
-  if (!text) return null;
-  // Drop everything inside <suggestion> blocks; keep the prose around them.
-  const stripped = text.replace(/<suggestion>[\s\S]*?<\/suggestion>/g, '').trim();
-  if (!stripped) return null;
-  // Use the LAST non-empty line — that's where the persona puts the
-  // status sentence. Cap at 280 chars to keep the History view tidy.
-  const lines = stripped.split(/\n+/).map((l) => l.trim()).filter(Boolean);
-  const last = lines[lines.length - 1] ?? null;
-  if (!last) return null;
-  return last.length > 280 ? last.slice(0, 277) + '…' : last;
-}
-
 async function loadOperatorBearer(): Promise<SystemPrincipalConfig | null> {
   const p = await readSystemPrincipal('operator');
-  return p ? { bearer: p.bearer, name: p.name, workspaceId: p.workspaceId, capabilities: p.capabilities } : null;
+  return p
+    ? { bearer: p.bearer, name: p.name, workspaceId: p.workspaceId, capabilities: p.capabilities }
+    : null;
+}
+
+function readSuperuserToken(): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('node:fs') as typeof import('node:fs');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require('node:path') as typeof import('node:path');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('node:os') as typeof import('node:os');
+    const tok = fs
+      .readFileSync(path.join(os.homedir(), '.papercusp', 'superuser-token'), 'utf8')
+      .trim();
+    return tok && tok.length >= 16 ? tok : null;
+  } catch {
+    return null;
+  }
 }
 
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
-  const requestText = url.searchParams.get('request') ?? 'Scan the workspace and surface up to 5 next-action suggestions.';
+  const requestText =
+    url.searchParams.get('request') ??
+    'Scan the workspace and surface up to 5 next-action suggestions.';
   const isBackground = url.searchParams.get('background') === '1';
 
   const principal = await loadOperatorBearer();
   if (!principal) {
-    return new Response('Operator principal not provisioned. POST /api/agent-mcp/provision first.', {
-      status: 503,
-    });
+    return new Response(
+      'Operator principal not provisioned. POST /api/agent-mcp/provision first.',
+      { status: 503 },
+    );
   }
   const workspaceId = activeWorkspaceId();
   if (principal.workspaceId !== workspaceId) {
@@ -102,8 +104,10 @@ export async function GET(req: NextRequest) {
   const sessionUser = await getSessionUser();
   const userId = sessionUser?.id ?? 'anonymous';
 
-  // Per-workspace rate limit + 503 circuit breaker — background scans only.
-  // Manual scans bypass per §4 decision 3 (errors should surface, not be silenced).
+  // Per-workspace rate limit + 503 circuit breaker — background scans
+  // only. Manual scans bypass per the decision: errors should surface,
+  // not be silenced. Rate limit is intentionally HTTP-only — IPC is
+  // in-boundary so no DoS surface.
   if (isBackground) {
     const rate = await checkRate(workspaceId);
     if (!rate.allowed) {
@@ -114,19 +118,17 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Idle short-circuit: cached snapshot if trigger-state is unchanged AND
-  // we're inside the 30 min TTL. Background only — manual rescans always
-  // burn the LLM (user explicitly asked).
+  // Idle short-circuit: cached snapshot if trigger-state is unchanged
+  // AND we're inside the 30 min TTL. Background only — manual rescans
+  // always burn the LLM (user explicitly asked). Lives at the route
+  // because it returns SSE BEFORE any tool dispatch — cheaper than
+  // running the tool just to short-circuit.
   if (isBackground) {
     try {
       const state = await readTriggerState();
       const fp = fingerprint(state);
       const snap = await canShortCircuit(fp);
       if (snap) {
-        // Stream the cached cards as a degenerate scan response. Phase 5
-        // polish: also stream `idle_status` with per-harness one-liners
-        // so the panel can render a useful summary instead of just
-        // showing N cached cards.
         return sseResponse({
           signal: req.signal,
           headers: { 'x-operator-cached': '1' },
@@ -140,241 +142,91 @@ export async function GET(req: NextRequest) {
         });
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.warn('[operator-scan] idle short-circuit unavailable:', err);
     }
   }
 
-  const budget = await checkBudget();
-  if (budget.state && budget.exceeded) {
-    return new Response(
-      `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
-      { status: 402 },
-    );
-  }
+  // Read the superuser token (commit 0ccac7cf) for ?superuser=1 bypass —
+  // operator-scan runs at chrome scope, not inside a spawn, so there's
+  // no harness/run/spawn URL params to pass.
+  const scanSuperuserToken = readSuperuserToken();
 
-  // Multi-tab dedup: refuse if another holder has a fresh lock.
-  let lock: { holderId: string };
-  try {
-    const acq = await acquireScanLock();
-    if (!acq.acquired) {
-      return new Response('Another scan is in progress for this workspace.', {
-        status: 429,
-        headers: { 'retry-after': String(acq.retryAfterSec ?? 30) },
-      });
-    }
-    lock = { holderId: acq.holderId! };
-  } catch (err) {
-    // Migration not yet applied or PG transient — fail open with a hint.
-    // This keeps dev environments unblocked until 014 is applied.
-    console.warn('[operator-scan] scan-lock unavailable, proceeding without dedup:', err);
-    lock = { holderId: '' };
-  }
-
-  const { promptText: basePromptText, isFirstRun } = await buildOperatorPrompt({ request: requestText, userId });
-  const preferences = await loadPreferences();
-  // Warm the plugin-tier cache so the (sync) parser can consult it
-  // when classifying plugin-defined caps from this scan's suggestions.
-  await resolvePluginAwareTier('__warm__').catch(() => {});
-  await refreshDismissedFromPg().catch(() => {});
-
-  // Phase 3: persistent scanner session + state bootstrap. Gated
-  // behind OPERATOR_SCANNER_RESUME=1 until it stabilizes — the
-  // baseline cold-start flow is unaffected when the env var is unset.
-  const useResume = isScannerResumeEnabled();
-  const scannerSessionId = useResume ? await getOrCreateScannerSessionId() : null;
-  const bootstrap = useResume
-    ? await buildScannerBootstrap({ workspaceId }).catch(() => '')
-    : '';
-  const promptText = bootstrap + basePromptText;
-
-  // Persist a scan-history row so the Scan History tab can show this
-  // run even if it errors. Best-effort: a DB hiccup shouldn't block
-  // the user's scan from running.
-  let scanHistoryId: number | null = null;
-  try {
-    scanHistoryId = await startOperatorScan({
-      workspaceId,
-      agentSessionId: scannerSessionId,
-      startedAt: new Date(),
-      requestText: requestText.length > 1000 ? requestText.slice(0, 1000) + '…' : requestText,
-    });
-  } catch (e) {
-    console.warn('[operator-scan] history-start failed:', e);
+  const operatorScanTool = lookupByMcpName('operator:scan');
+  if (!operatorScanTool) {
+    return new Response('operator:scan tool not registered', { status: 500 });
   }
 
   return sseResponse({
     signal: req.signal,
     setup: async (sink) => {
-      sink.onClose(() => {
-        if (lock.holderId) void releaseScanLock(lock.holderId);
-      });
-      const send = (event: string, data: Record<string, unknown>) => sink.event(event, data);
+      const ctxBase: UnifiedToolContext = {
+        log: (msg) => {
+          // eslint-disable-next-line no-console
+          console.log(`[operator-scan][tool] ${msg}`);
+        },
+        signal: req.signal,
+        progress: () => { /* unused — tool emits via ctx.emit */ },
+        emit: () => { /* installed by dispatchProjectedToolStream */ },
+        workspaceId,
+        role: 'operator',
+        runId: `scan-${Date.now()}`,
+        spawnId: `scan-${Date.now()}`,
+        transport: 'in_process',
+      };
 
       let costUsd = 0;
-      let assistantText = '';
-      let finalCards: Record<string, unknown>[] = [];
-
-      if (isFirstRun) {
-        send('first_run', {});
-      }
-
-      // Read the superuser token (commit 0ccac7cf) for ?superuser=1
-      // bypass — operator-scan runs at chrome scope, not inside a
-      // spawn, so there's no harness/run/spawn URL params to pass.
-      let scanSuperuserToken: string | null = null;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        scanSuperuserToken = require('node:fs').readFileSync(
-          require('node:path').join(require('node:os').homedir(), '.papercusp', 'superuser-token'),
-          'utf8',
-        ).trim();
-        if (!scanSuperuserToken || scanSuperuserToken.length < 16) scanSuperuserToken = null;
-      } catch { scanSuperuserToken = null; }
+      let suggestions = 0;
+      let parseErrors = 0;
 
       try {
-        const events = runAgentChat({
-          promptText,
-          mcpConfig: scanSuperuserToken
-            ? {
-                mcpServers: {
-                  agentmcp: {
-                    // omp silently drops type:'http' MCP servers —
-                    // bridge through mcp-remote (stdio→HTTP).
-                    type: 'stdio',
-                    command: 'npx',
-                    args: [
-                      '-y',
-                      'mcp-remote@latest',
-                      'http://127.0.0.1:3055/api/mcp?superuser=1',
-                      '--header',
-                      `Authorization:Bearer ${scanSuperuserToken}`,
-                    ],
-                  },
-                },
-              }
-            : undefined,
-          // Scanner is one-shot — emits suggestions, doesn't have a
-          // user-facing chat session to wait on. Excludes chat:* tools
-          // that require an interactive responder (e.g. chat:ask_choice).
-          allowedTools: scanSuperuserToken ? [...NON_INTERACTIVE_AGENT_MCP_TOOLS] : [],
-          toolEventFilter: (raw) =>
-            raw.startsWith('mcp__agentmcp__') ? raw.replace(/^mcp__agentmcp__/, '') : null,
-          permissionMode: 'bypassPermissions',
-          // Phase 3: resume the workspace's persistent scanner session
-          // so each scan can refer to prior turns. sessionMode 'force'
-          // means create-or-resume — claude won't error if our uuid
-          // doesn't yet have a session record.
-          sessionId: scannerSessionId ?? undefined,
-          sessionMode: scannerSessionId ? 'force' : undefined,
-        });
-
-        for await (const ev of events) {
-          if (ev.type === 'delta') {
-            assistantText += ev.text;
-            send('delta', { text: ev.text });
-          } else if (ev.type === 'tool_call') {
-            send('tool_call', { name: ev.name, input: ev.input });
-          } else if (ev.type === 'result') {
-            costUsd = ev.costUsd;
-            void recordSpend(costUsd);
-            const parsed = await parseSuggestions(ev.finalText || assistantText, preferences);
-            const cards: Record<string, unknown>[] = [];
-            for (const block of parsed.blocks) {
-              const payload = {
-                ...block.suggestion.raw,
-                actualTier: block.suggestion.actualTier,
-                auto_dispatch: block.suggestion.auto_dispatch,
-                provenanceFlags: block.suggestion.provenanceFlags,
+        for await (const ev of dispatchProjectedToolStream(
+          operatorScanTool,
+          'operator:scan',
+          {
+            requestText,
+            background: isBackground,
+            userId,
+            superuserToken: scanSuperuserToken,
+          },
+          ctxBase,
+          {},
+        )) {
+          if (ev.kind === 'event') {
+            emitToSseSink(sink, operatorScanTool, ev.name, ev.data);
+          } else if (ev.kind === 'done') {
+            try {
+              const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';
+              const out = JSON.parse(text) as {
+                costUsd: number;
+                suggestions: number;
+                parseErrors: number;
               };
-              cards.push(payload);
-              send('suggestion', payload);
-            }
-            // Plugin-authored suggestions: enriched through the same
-            // pipeline so tier-classification + auto_dispatch are
-            // identical to LLM output.
-            try {
-              const pluginRaw = await gatherPluginSuggestions();
-              for (const raw of pluginRaw) {
-                const enriched = enrich(raw, preferences);
-                const payload = {
-                  ...enriched.raw,
-                  actualTier: enriched.actualTier,
-                  auto_dispatch: enriched.auto_dispatch,
-                  provenanceFlags: { ...enriched.provenanceFlags, pluginAuthored: true },
-                };
-                cards.push(payload);
-                send('suggestion', payload);
-              }
+              costUsd = out.costUsd;
+              suggestions = out.suggestions;
+              parseErrors = out.parseErrors;
             } catch (e) {
-              console.warn('[operator-scan] plugin suggestions failed:', e);
+              // eslint-disable-next-line no-console
+              console.warn('[operator-scan] tool result parse failed:', e);
             }
-            finalCards = cards;
-            try {
-              await writeLastScan({
-                scanCompletedAt: new Date().toISOString(),
-                scanCostUsd: costUsd,
-                cards,
-              });
-            } catch (e) {
-              console.warn('[operator-scan] writeLastScan failed:', e);
-            }
-            // Refresh idle snapshot so a stable workspace can short-circuit
-            // the next background scan. Persist per-harness one-liners
-            // alongside so the cached path can stream them.
-            try {
-              const state = await readTriggerState();
-              await writeSnapshot(fingerprint(state), cards, state.perHarness);
-            } catch (e) {
-              console.warn('[operator-scan] writeSnapshot failed:', e);
-            }
-            await recordSuccess(workspaceId);
-            sink.done({
-              costUsd,
-              suggestions: parsed.blocks.length,
-              parseErrors: parsed.parseErrors,
-            });
-          } else if (ev.type === 'error') {
-            // Treat downstream 503-ish failures as breaker hits (background only).
-            if (isBackground && /503|service unavailable|connection refused|ECONNREFUSED/i.test(ev.message)) {
-              await record503(workspaceId);
-            }
-            send('error', { message: ev.message });
+          } else if (ev.kind === 'error') {
+            // Tool already emitted a typed error event for the
+            // recoverable cases (budget_exhausted, scan_in_progress).
+            // This branch handles the dispatcher's terminal error
+            // (timeout / role gate / handler throw).
+            sink.event('error', { message: ev.error.message });
+            // Close so the consumer's reader exits — sink.event alone
+            // doesn't EOF the stream. Same bug class as architect/chat
+            // and operator-converse error paths.
+            sink.close();
+            return;
           }
         }
-        if (isFirstRun) void markFirstRunShown(userId);
-        // Finalize the history row on the happy path. The summary is
-        // the trailing one-liner the scanner emits after the
-        // <suggestion> blocks (the scanner.md role tells it to write
-        // exactly that as a status line).
-        if (scanHistoryId != null) {
-          try {
-            const summary = extractScanSummary(assistantText);
-            await completeOperatorScan({
-              id: scanHistoryId,
-              endedAt: new Date(),
-              summary,
-              suggestions: finalCards,
-              costUsd,
-              agentSessionId: scannerSessionId,
-            });
-          } catch (e) {
-            console.warn('[operator-scan] history-complete failed:', e);
-          }
-        }
-        if (scannerSessionId) void bumpScannerSession();
+
+        sink.done({ costUsd, suggestions, parseErrors });
       } catch (err) {
-        send('error', { message: err instanceof Error ? err.message : String(err) });
-        if (scanHistoryId != null) {
-          try {
-            await failOperatorScan({
-              id: scanHistoryId,
-              endedAt: new Date(),
-              error: err instanceof Error ? err.message : String(err),
-            });
-          } catch (e2) {
-            console.warn('[operator-scan] history-fail failed:', e2);
-          }
-        }
+        sink.event('error', { message: err instanceof Error ? err.message : String(err) });
+        sink.close();
       }
     },
   });
