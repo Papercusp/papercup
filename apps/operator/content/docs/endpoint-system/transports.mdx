@@ -264,3 +264,21 @@ Layered defences still apply:
 - `.mcp.json` is written mode 0600; per-spawn worktree dirs are mode 0700.
 
 The signing scheme defends against prompt-injected workers rewriting URL params. It does **not** defend against same-UID code reading the signing key from PG, replaying another spawn's still-valid URL, or any of the other same-UID escalation paths catalogued in [Spawn-URL signing → Threat model](/docs/endpoint-system/spawn-signing#threat-model). Off-loopback exposure still needs a real principal/auth layer in front; that's separate work.
+
+### Desktop IPC: webview is in-boundary
+
+The desktop Tauri app uses a fourth transport — endpoint IPC over a Unix domain socket (Linux/macOS) or named pipe (Windows). The Tauri webview opens a `Channel<T>` through Rust to the Node sidecar's IPC server; the round-trip skips localhost HTTP entirely. See [`apps/operator/lib/endpoint-ipc/PROTOCOL.md`](https://github.com/papercupai/papercup/blob/main/apps/operator/lib/endpoint-ipc/PROTOCOL.md) for the wire format.
+
+IPC calls **skip HMAC signature verification**. The trust boundary is different from the signed-URL HTTP path:
+
+- The signed-URL model defends against a spawned subprocess rewriting its own `?role=...` query param. That subprocess is untrusted code (often a prompt-injected worker) running in a separate process.
+- The webview is *not* a separate process in the same threat sense — it's spawned by the same Tauri parent that spawned the Node sidecar, runs the same trusted UI code, and lives in the same process tree. Rewriting "its own role" is a category error: the webview is the role.
+
+So the IPC adapter synthesizes a fixed `principal: { role: 'operator', workspaceId: <active-workspace> }` and dispatches without verifying any signature. The same dispatcher (role gates, rolesQuota, telemetry, idle/wall-clock timeouts) still runs — only the cryptographic verification step is bypassed. All other defenses (loopback bind, file modes, `.mcp.json` permissions) continue to apply.
+
+What this does **not** apply to:
+
+- **MCP-spawned agents** (claude-code / omp subprocesses) — they go through `/api/mcp` and `/api/sse` over loopback HTTP with signed URLs. They're untrusted same-UID code, exactly the threat the signing scheme targets.
+- **The non-Tauri webapp** (`:3070` test surface, mobile RN clients) — these are not in-boundary; they use HTTP+SSE.
+
+The transport column in `tool_invocations` records which path each call took (`ipc` / `http` / `mcp` / `in_process`), so post-incident review can distinguish the in-boundary fast path from the signed-URL slow path.
