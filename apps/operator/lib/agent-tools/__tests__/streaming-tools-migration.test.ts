@@ -49,6 +49,7 @@ afterEach(() => {
   vi.doUnmock('@/lib/workspace-registry');
   vi.doUnmock('@/lib/delegates');
   vi.doUnmock('@/lib/delegate-summary');
+  vi.doUnmock('@/lib/memory/injection');
 });
 
 describe('architect:chat + brainstorm:chat (raw-text wire)', () => {
@@ -215,6 +216,12 @@ describe('operator:scan / converse / delegate (JSON-delta wire)', () => {
     }));
     vi.doMock('@/lib/delegate-summary', () => ({
       generateSessionTitle: async () => 'untitled',
+    }));
+    // Skip mem0 — the helper warns when the embedder isn't set up in
+    // the test environment and vitest-fail-on-console flips it red.
+    vi.doMock('@/lib/memory/injection', () => ({
+      buildMemoryContextBlock: async () => null,
+      lastUserContext: () => '',
     }));
     const { default: delegate } = await import('@/lib/agent-tools/operator/delegate');
     const { events, ctx } = recordingCtx();
