@@ -121,6 +121,8 @@ import TestsTab from './TestsTab';
 // keeps the component mounted so subsequent tab switches stay instant.
 const ProposalsPanel = dynamic(() => import('./ProposalsPanel'), { ssr: false });
 import HarnessHudOverlay from './HarnessHudOverlay';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 
 /**
  * Wrap a `dynamic()` import with retry + visible loading state so that a
@@ -2392,6 +2394,8 @@ const tagStyle: React.CSSProperties = {
 export default function HarnessDashboard() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const reducedMotion = useReducedMotion() ?? false;
+  const snapshotsEnabled = useFlag(FLAGS.SNAPSHOTS);
+  const templatesEnabled = useFlag(FLAGS.TEMPLATES);
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
@@ -4022,12 +4026,12 @@ export default function HarnessDashboard() {
                     <Wrench size={13} /> cleanup
                   </button>
                 </Tooltip>
-                {activeSlug && (
+                {activeSlug && templatesEnabled && (
                   <Tooltip label="Save current harness as a reusable template (recipe; no in-flight state)">
                     <SaveTemplateButton slug={activeSlug} />
                   </Tooltip>
                 )}
-                {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
+                {activeSlug && snapshotsEnabled && <SaveSnapshotButton slug={activeSlug} />}
               </div>
             )}
 

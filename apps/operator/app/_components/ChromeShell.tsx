@@ -18,6 +18,8 @@ import UpdateChip from './UpdateChip';
 import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
 import TutorialButton from './TutorialButton';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
@@ -82,6 +84,7 @@ export default function ChromeShell() {
   // non-link span with `is-current` styling so it's visibly distinct from
   // the active CTA elsewhere in the app.
   const onHarness = pathname === '/harness' || pathname.startsWith('/harness/');
+  const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
     const active = pathname === href || pathname.startsWith(`${href}/`);
@@ -169,7 +172,9 @@ export default function ChromeShell() {
           <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
           <a href="/installed/harnesses" {...navLinkProps('/installed/harnesses')}>Harnesses</a>
           <a href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</a>
-          <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
+          {snapshotsFlag ? (
+            <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
+          ) : null}
           <a href="/support" {...navLinkProps('/support')}>Support</a>
           <a href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</a>
           {(() => {
