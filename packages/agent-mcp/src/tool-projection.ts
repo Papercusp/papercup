@@ -58,6 +58,45 @@ export type ReservedEventNames = 'done' | 'progress' | 'heartbeat' | 'result';
 /** Compile-time guard: a user-declared events schema cannot contain reserved names. */
 export type UserEvents<T extends EventsSchema> = T & { [K in ReservedEventNames]?: never };
 
+/**
+ * How an event's payload is encoded on the SSE wire:
+ *  - `'string'`: the payload IS a string; emit as `data: <text>\n` (multi-line `data:`
+ *    when text contains newlines, joined back by parseSseStream per SSE spec).
+ *    Use for token streams (LLM deltas, log lines) where the event payload
+ *    has no inherent structure and JSON-wrapping is overhead.
+ *  - `'json'`: emit as `data: <JSON.stringify(payload)>\n`. Use for everything
+ *    structured (suggestions, tool_calls, progress payloads).
+ *
+ * Inferred from the declared Zod schema at tool registration:
+ *  - `z.string()` schemas → 'string'
+ *  - everything else → 'json'
+ *
+ * The MCP transport always JSON-serializes (JSON-RPC carries strings as
+ * JSON-quoted strings inside notifications/papercusp/event); the
+ * classification only affects the HTTP/SSE wire shape.
+ */
+export type EventWireKind = 'string' | 'json';
+
+/**
+ * Inspect a Zod schema and decide whether the wire payload for events
+ * of that shape should be raw text (`'string'`) or JSON-encoded (`'json'`).
+ *
+ * Cheap one-time call per declared event at register time; result is
+ * cached on the tool entry so emit-time has no schema-introspection cost.
+ */
+export function classifyEventWire(schema: ZodTypeAny): EventWireKind {
+  try {
+    // Zod 4: built-in toJSONSchema — same path as inputSchema serialization.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json = (z as any).toJSONSchema(schema) as { type?: string };
+    return json.type === 'string' ? 'string' : 'json';
+  } catch {
+    // Schema rejected json conversion; default to JSON on the wire so
+    // the dispatcher never produces an under-defined string fallback.
+    return 'json';
+  }
+}
+
 /* ─── Unified context ────────────────────────────────────────────────── */
 
 /**
@@ -238,6 +277,13 @@ export interface ProjectedTool {
    * runtime warning — plugin events are a Phase 4+ feature.
    */
   events?: EventsSchema;
+  /**
+   * Per-event wire classification — `'string'` for z.string() schemas
+   * (raw text on SSE), `'json'` for everything else. Computed once at
+   * register time from `events`; cached so emit-time is constant-cost.
+   * Absent when `events` is undefined.
+   */
+  eventWireKinds?: Record<string, EventWireKind>;
   /** Where to project this function — at least one of http/mcp required. */
   expose: ToolExposure;
   /** The function. Source of truth. */
@@ -314,6 +360,16 @@ export function registerProjectedTool(tool: ProjectedTool): void {
     throw new ToolRegistrationError(
       `tool from plugin "${tool.pluginName}" must declare at least one of expose.http / expose.mcp`,
     );
+  }
+  // Pre-classify event wire kinds so emit-time is constant-cost.
+  // Caller might set eventWireKinds explicitly (some tests do); only
+  // compute when absent.
+  if (tool.events && !tool.eventWireKinds) {
+    const kinds: Record<string, EventWireKind> = {};
+    for (const [name, schema] of Object.entries(tool.events)) {
+      kinds[name] = classifyEventWire(schema);
+    }
+    tool.eventWireKinds = kinds;
   }
   if (tool.expose.mcp) {
     const name = tool.expose.mcp.name;

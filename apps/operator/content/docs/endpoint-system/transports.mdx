@@ -155,11 +155,30 @@ defineTool({
 
 ### Projection table
 
-| Wire | When emit('delta', { text: 'hi' }) is called | When handler returns | When handler throws |
+| Wire | When emit('delta', payload) is called | When handler returns | When handler throws |
 |---|---|---|---|
-| **HTTP/SSE** | `event: delta\ndata: {"text":"hi"}` | `event: done\ndata: <ToolResult.content as JSON>` | `event: error\ndata: { code, message }` |
-| **MCP** | `notifications/papercusp/event { progressToken, event: 'delta', data: { text: 'hi' } }` | `tools/call` response with ToolResult | `tools/call` response with `isError: true` |
-| **In-process (`dispatchProjectedToolStream`)** | `{ kind: 'event', name: 'delta', data: { text: 'hi' } }` | `{ kind: 'done', result }` | `{ kind: 'error', error: { code, message } }` |
+| **HTTP/SSE** (`z.string()` schema) | `event: delta\ndata: <payload as raw text>` (one or more `data:` lines per SSE spec for multi-line) | `event: done\ndata: <ToolResult.content as JSON>` | `event: error\ndata: { code, message }` |
+| **HTTP/SSE** (object schema) | `event: delta\ndata: <JSON.stringify(payload)>` | same | same |
+| **MCP** | `notifications/papercusp/event { progressToken, event: 'delta', data: payload }` (always JSON-encoded — JSON-RPC carries strings as quoted strings inside the params object) | `tools/call` response with ToolResult | `tools/call` response with `isError: true` |
+| **In-process (`dispatchProjectedToolStream`)** | `{ kind: 'event', name: 'delta', data: payload }` (handler-supplied; no transcoding) | `{ kind: 'done', result }` | `{ kind: 'error', error: { code, message } }` |
+
+### Wire format per event — schema-inferred
+
+The framework inspects each declared event's Zod schema at registration time and picks the on-the-wire encoding:
+
+- `z.string()` → **raw text**. The payload is the text; multi-line content gets split into multiple `data:` lines per SSE spec, joined back by `parseSseStream`. Use for high-frequency token streams (LLM deltas, log lines) — no JSON.stringify on emit, no JSON.parse on consume, smaller bytes per frame.
+- Any object/union/etc. → **JSON-encoded**. Use for structured events (suggestions, tool_calls, cost summaries).
+
+```ts
+events: {
+  delta:      z.string(),                              // raw on the wire
+  tool_call:  z.object({ name: z.string(), input: z.unknown() }),  // JSON
+  cost:       z.object({ usd: z.number() }),           // JSON
+  suggestion: SuggestionSchema,                        // JSON
+}
+```
+
+The MCP transport always JSON-encodes (JSON-RPC doesn't have a raw-text channel inside a notification's `params`); the classification only affects the SSE wire. Clients consuming over MCP see `data: '<the text>'` as a string field; over SSE for the same event, they see `data: <the text>` without quotes.
 
 The MCP transport dual-fires when `name === 'progress'`: every `ctx.emit('progress', ...)` (or `ctx.progress(...)` via the alias) produces *both* `notifications/papercusp/event` and the spec-standard `notifications/progress`. Built-in MCP UIs that watch the standard progress channel still get a signal; Papercusp-aware clients also receive the typed-event payload.
 

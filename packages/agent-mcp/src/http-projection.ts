@@ -354,10 +354,19 @@ export async function handleHttpToolRequestStreaming(
   }
 
   // Wire emit → sink. Each ctx.emit(name, data) becomes one SSE event.
-  // The previous hand-rolled progress override is replaced by a thin
-  // alias over emit('progress', ...) — same wire shape, single code path.
+  // Wire shape per event is decided by the tool's declared events schema:
+  //   - z.string() → sink.eventRaw (data is the string, no JSON wrap;
+  //     multi-line data: per spec for embedded \n).
+  //   - anything else → sink.event (JSON-stringified).
+  // Defaults to JSON when no events schema is declared (tools that only
+  // use ctx.progress).
+  const wireKinds = resolved.tool.eventWireKinds;
   resolved.ctx.emit = (name, data) => {
-    sink.event(name, data);
+    if (wireKinds?.[name] === 'string') {
+      sink.eventRaw(name, typeof data === 'string' ? data : String(data));
+    } else {
+      sink.event(name, data);
+    }
   };
   resolved.ctx.progress = (pct, msg) => {
     resolved.ctx.emit('progress', {

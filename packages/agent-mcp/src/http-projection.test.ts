@@ -283,6 +283,39 @@ describe('handleHttpToolRequestStreaming', () => {
     expect(events[3]?.data).toEqual([{ type: 'text', text: 'hello world' }]);
   });
 
+  it('emits z.string() events as raw text via sink.eventRaw', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { z } = require('zod') as typeof import('zod');
+    registerProjectedTool(makeTool({
+      events: { delta: z.string() },
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', 'hello');
+        ctx.emit('delta', 'world');
+        return { content: [{ type: 'text', text: 'hello world' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    expect(events[0]).toEqual({ event: 'delta', data: 'hello' });
+    expect(events[1]).toEqual({ event: 'delta', data: 'world' });
+    expect(events[2]).toMatchObject({ event: 'done' });
+  });
+
+  it('emits object-schema events JSON-stringified via sink.event', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { z } = require('zod') as typeof import('zod');
+    registerProjectedTool(makeTool({
+      events: { cost: z.object({ usd: z.number() }) },
+      fn: async (_input, ctx) => {
+        ctx.emit('cost', { usd: 0.5 });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    expect(events[0]).toEqual({ event: 'cost', data: { usd: 0.5 } });
+  });
+
   it('emits an error event when the tool fails (404 / 405 / handler error)', async () => {
     const { sink, events } = recordingSink();
     await handleHttpToolRequestStreaming(
