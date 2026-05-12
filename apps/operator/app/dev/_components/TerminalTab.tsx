@@ -12,8 +12,10 @@
  *
  * Input flows back via POST /pty/<id>/input (batched at rAF).
  *
- * Wired to the harness slug 'dev-shell' so it doesn't collide with
- * existing project ptys. The first spawn auto-runs `bash -l`.
+ * The pty spawn route requires a registered harness slug for path resolution.
+ * We piggyback on the first installed project — the dev terminal just needs
+ * SOMEWHERE to spawn bash; the project's cwd is fine. Resolved at mount time
+ * via /api/installed.
  */
 'use client';
 
@@ -21,12 +23,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { createResilientEventSource } from '@restart/sse';
 import '@xterm/xterm/css/xterm.css';
 
-const HARNESS_SLUG = 'dev-shell';
-
 interface PtyHandle {
   id: string;
   pid: number;
   command: string;
+}
+
+async function resolveHarnessSlug(): Promise<string | null> {
+  try {
+    const r = await fetch('/api/installed');
+    if (!r.ok) return null;
+    const d = (await r.json()) as { projects?: Array<{ slug: string; exists?: boolean }> };
+    return d.projects?.find((p) => p.exists !== false)?.slug ?? null;
+  } catch { return null; }
 }
 
 export default function TerminalTab(): JSX.Element {
@@ -35,6 +44,7 @@ export default function TerminalTab(): JSX.Element {
   const fitRef = useRef<import('@xterm/addon-fit').FitAddon | null>(null);
   const sourceRef = useRef<{ close: () => void } | null>(null);
   const handleRef = useRef<PtyHandle | null>(null);
+  const slugRef = useRef<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'spawning' | 'connecting' | 'live' | 'exited' | 'error'>('idle');
   const [exitCode, setExitCode] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -45,20 +55,26 @@ export default function TerminalTab(): JSX.Element {
     setExitCode(null);
     setErrorMsg(null);
 
-    const spawnRes = await fetch(`/api/harness/${HARNESS_SLUG}/pty/spawn`, {
+    const slug = slugRef.current ?? await resolveHarnessSlug();
+    if (!slug) {
+      setErrorMsg('no harness project found — install one from /dev/harnesses first');
+      setStatus('error');
+      return;
+    }
+    slugRef.current = slug;
+
+    const spawnRes = await fetch(`/api/harness/${slug}/pty/spawn`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        cmd: 'bash',
-        args: ['-l'],
-        cwd: process.env.NODE_ENV === 'development' ? '/tmp' : undefined,
+        command: 'bash',
         cols: 80,
         rows: 24,
       }),
     }).catch((e) => { setErrorMsg(String(e)); return null; });
     if (!spawnRes) { setStatus('error'); return; }
     if (!spawnRes.ok) {
-      setErrorMsg(`spawn failed: ${spawnRes.status}`);
+      setErrorMsg(`spawn failed (${slug}): ${spawnRes.status}`);
       setStatus('error');
       return;
     }
@@ -88,7 +104,7 @@ export default function TerminalTab(): JSX.Element {
     const onResize = () => {
       try { fit.fit(); } catch { /* ignore */ }
       const cols = term.cols, rows = term.rows;
-      void fetch(`/api/harness/${HARNESS_SLUG}/pty/${handle.id}/resize`, {
+      void fetch(`/api/harness/${slug}/pty/${handle.id}/resize`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ cols, rows }),
@@ -105,7 +121,7 @@ export default function TerminalTab(): JSX.Element {
       if (!pending) return;
       const b64 = btoa(unescape(encodeURIComponent(pending)));
       pending = '';
-      void fetch(`/api/harness/${HARNESS_SLUG}/pty/${handle.id}/input`, {
+      void fetch(`/api/harness/${slug}/pty/${handle.id}/input`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ data: b64 }),
@@ -123,7 +139,7 @@ export default function TerminalTab(): JSX.Element {
     // SSE subscribe via @restart/sse — proves the full migration end-to-end.
     setStatus('connecting');
     const source = createResilientEventSource({
-      url: `/api/harness/${HARNESS_SLUG}/pty/${handle.id}/stream`,
+      url: `/api/harness/${slug}/pty/${handle.id}/stream`,
       handlers: {
         data: (b64) => {
           setStatus('live');
@@ -168,9 +184,9 @@ export default function TerminalTab(): JSX.Element {
       sourceRef.current = null;
       const h = handleRef.current;
       handleRef.current = null;
-      // Kill the pty server-side so we don't leak handles between tab visits.
-      if (h) {
-        void fetch(`/api/harness/${HARNESS_SLUG}/pty/${h.id}/kill`, { method: 'POST', keepalive: true })
+      const slug = slugRef.current;
+      if (h && slug) {
+        void fetch(`/api/harness/${slug}/pty/${h.id}/kill`, { method: 'POST', keepalive: true })
           .catch(() => { /* best-effort */ });
       }
     };
@@ -183,8 +199,9 @@ export default function TerminalTab(): JSX.Element {
     sourceRef.current = null;
     termRef.current?.dispose();
     termRef.current = null;
-    if (h) {
-      void fetch(`/api/harness/${HARNESS_SLUG}/pty/${h.id}/kill`, { method: 'POST' })
+    const slug = slugRef.current;
+    if (h && slug) {
+      void fetch(`/api/harness/${slug}/pty/${h.id}/kill`, { method: 'POST' })
         .catch(() => { /* best-effort */ });
     }
     void start();
@@ -206,6 +223,7 @@ export default function TerminalTab(): JSX.Element {
           }}>{status}</span>
           {exitCode !== null && <> (exit code {exitCode})</>}
         </span>
+        {slugRef.current && <span>harness: {slugRef.current}</span>}
         {handleRef.current && <span>pid: {handleRef.current.pid}</span>}
         {errorMsg && <span style={{ color: '#f85149' }}>error: {errorMsg}</span>}
         <button
