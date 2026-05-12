@@ -537,25 +537,15 @@ app.post('/voice-tool/:name', async (c) => {
   // sees an empty registry because mobile.ts itself doesn't pull defs.
   await import('../../../lib/commands/defs');
   const { get, list, runCommand, runQuery } = await import('../../../lib/commands/registry');
-  let def: ReturnType<typeof get> | undefined;
-  let resolvedId: string | undefined;
-  // Fast paths: literal + underscore-to-dot (covers most cases).
-  for (const candidate of [elName, elName.replace(/_/g, '.')]) {
-    const d = get(candidate);
-    if (d) { def = d; resolvedId = candidate; break; }
-  }
-  // Fallback: search all registered defs by normalized form.
-  if (!def) {
-    const all = [
+  const { resolveRegistryToolId } = await import('../../../lib/mobile-tool-resolver');
+  const resolvedId = resolveRegistryToolId(elName, {
+    get: (id) => get(id),
+    list: () => [
       ...list({ kind: 'command', agent: 'operator' }),
       ...list({ kind: 'query', agent: 'operator' }),
-    ];
-    for (const d of all) {
-      if (d.id.replace(/[.-]/g, '_') === elName) {
-        def = d; resolvedId = d.id; break;
-      }
-    }
-  }
+    ],
+  });
+  const def = resolvedId ? get(resolvedId) : undefined;
   if (!def || !resolvedId) {
     return c.json({ ok: false, error: { code: 'unknown-tool', message: `no such registry tool: ${elName}`, retryable: false } }, 404);
   }
