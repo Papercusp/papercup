@@ -126,6 +126,48 @@ async function buildPrompt(body: ConverseRequestBody): Promise<string> {
   const playbook = loadRoleToolsMd('operator');
   if (playbook) sections.push(playbook);
 
+  // Operator memory (Plan 3) — pre-turn auto-injection. Surfaces the
+  // user's stored facts relevant to the last few user turns. Best-
+  // effort: if mem0 isn't available (deps not installed, PG down),
+  // the section is empty and the rest of the prompt is unaffected.
+  try {
+    const recentUserContext = messages
+      .filter((m) => m.role === 'user')
+      .slice(-3)
+      .map((m) => m.content)
+      .join('\n');
+    if (recentUserContext) {
+      const { getMemoryClient } = await import('@/lib/memory/mem0-client');
+      const { getSessionUserOrDefault } = await import('@/lib/auth');
+      const [client, user] = await Promise.all([
+        getMemoryClient(),
+        getSessionUserOrDefault(),
+      ]);
+      if (client && user) {
+        // Workspace id for shared-memory filter.
+        const { activeWorkspaceId } = await import('@/lib/workspace-registry');
+        const ws = activeWorkspaceId();
+        const [userHits, sharedHits] = await Promise.all([
+          client.search(recentUserContext, { userId: user.id, limit: 6 }),
+          client.search(recentUserContext, { userId: `workspace:${ws}`, limit: 4 }),
+        ]);
+        const combined = [...(userHits.results ?? []), ...(sharedHits.results ?? [])];
+        const memText: string[] = [];
+        for (const hit of combined) {
+          const kind = (hit.metadata as Record<string, unknown>)?.kind ?? 'unknown';
+          const shared = (hit.metadata as Record<string, unknown>)?.shared ? ' [shared]' : '';
+          memText.push(`- [${kind}${shared}] ${hit.memory}`);
+        }
+        if (memText.length > 0) {
+          sections.push(`## Operator memory (relevant entries)\n\n${memText.join('\n')}`);
+        }
+      }
+    }
+  } catch (err) {
+    // Pre-turn memory injection is best-effort; never block the prompt.
+    console.warn('[operator-converse] memory injection failed:', (err as Error).message);
+  }
+
   // Conversation history — minimal serialization. Roles are preserved
   // so the model can reason about who said what.
   if (messages.length > 0) {

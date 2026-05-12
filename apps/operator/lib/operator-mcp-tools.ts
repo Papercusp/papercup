@@ -37,6 +37,15 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__search:query',
   'mcp__agentmcp__search:fulltext',
 
+  // Persistent memory layer (Plan 3 — mem0ai/oss in library mode).
+  // 5-kind schema: identity / preference / project / correction / ephemeral.
+  // Per-user scoped via session cookie; workspace-shared via metadata.shared.
+  'mcp__agentmcp__memory:remember',
+  'mcp__agentmcp__memory:search',
+  'mcp__agentmcp__memory:list',
+  'mcp__agentmcp__memory:forget',
+  'mcp__agentmcp__memory:update',
+
   // Spawn primitive (Phase 9 / @papercupai/orchestrator-spawn plugin).
   // Operator role is allowlisted to spawn any other role with a
   // perRun: 60 quota. See /docs/agent-spawning.
