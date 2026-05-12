@@ -768,6 +768,30 @@ app.get('/voice-session-init', async (c) => {
   // are throttled.
   await writeCooldownMark(cooldownKey);
 
+  // Device-local override resolution. Phone stores voice mode + timers
+  // in EncryptedSharedPreferences (Android) or UserDefaults (iOS) and
+  // passes them as query params. Server falls back to workspace
+  // defaults from PG. Sent back in the payload so the client uses
+  // the same values it asked for (or workspace default if absent).
+  const validModes = ['continuous', 'hybrid', 'single-utterance'] as const;
+  type VoiceMode = (typeof validModes)[number];
+  const modeQ = c.req.query('mode');
+  const resolvedMode: VoiceMode = validModes.includes(modeQ as VoiceMode)
+    ? (modeQ as VoiceMode)
+    : prefs.fullAgentVoiceMode;
+  const idleQ = Number(c.req.query('idleMin'));
+  const maxQ = Number(c.req.query('sessionMaxMin'));
+  const resolvedIdle = Number.isFinite(idleQ) && idleQ >= 0
+    ? idleQ : prefs.fullAgentIdleTimeoutMin;
+  const resolvedSessionMax = Number.isFinite(maxQ) && maxQ >= 0
+    ? maxQ : prefs.fullAgentSessionMaxMin;
+  // single-utterance forces an aggressive 1-min cap so the session
+  // ends right after the first response, regardless of what the
+  // device requested.
+  const finalIdle = resolvedMode === 'single-utterance'
+    ? Math.min(resolvedIdle || 1, 1)
+    : resolvedIdle;
+
   return c.json({
     conversationToken: result.token,
     agentId,
@@ -781,13 +805,18 @@ app.get('/voice-session-init', async (c) => {
     //     0 = never auto-disconnect.
     //   - sessionMaxMin: hard ceiling regardless of activity. Armed
     //     once at session-start, not reset. 0 = no max.
-    idleTimeoutMin: prefs.fullAgentIdleTimeoutMin,
-    sessionMaxMin: prefs.fullAgentSessionMaxMin,
+    idleTimeoutMin: finalIdle,
+    sessionMaxMin: resolvedSessionMax,
+    voiceMode: resolvedMode,
     dynamicVariables: {
       device_id: claims.sub,
       workspace_id: claims.workspace_id,
       surface,
       desktop_host: process.env.MOBILE_DESKTOP_HOST ?? '',
+      // EL agent's system prompt branches on this — one prompt, 3
+      // behaviors. The end_conversation client tool is always
+      // registered; the prompt instructs WHEN to use it per mode.
+      voice_mode: resolvedMode,
     },
   });
 });

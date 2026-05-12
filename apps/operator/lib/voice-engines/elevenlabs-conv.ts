@@ -110,9 +110,20 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
   // Build the clientTools map from registry. Only browser:'required' commands
   // and queries are eligible — server-side commands are wired as webhook tools
   // on the EL dashboard.
+  //
+  // `endSession` is set after conv is created (forward-declared) so the
+  // end_conversation tool can call it. We accept the indirection because
+  // end_conversation is rare and the closure cost is one var lookup.
+  // eslint-disable-next-line prefer-const
+  let convRef: { endSession: () => Promise<void> } | null = null;
   const clientTools = buildClientTools({
     workspace: args.workspace,
     tabId: args.tabId,
+    endSession: async () => {
+      // Defer 500ms so the EL receives our tool ack before disconnect.
+      await new Promise((r) => setTimeout(r, 500));
+      try { await convRef?.endSession(); } catch { /* tearing down anyway */ }
+    },
   });
 
   // Build the session-start prompt — but skip the three preflight
@@ -361,6 +372,11 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
     }
   }
 
+  // Link the live session into the end_conversation tool closure so the
+  // agent can tear down via tools.end_conversation. Forward-declared
+  // up top because buildClientTools runs before conv exists.
+  convRef = { endSession: async () => { await conv.endSession(); } };
+
   return {
     async endSession() { await conv.endSession(); },
     getStatus() {
@@ -404,8 +420,19 @@ export async function startElevenLabsConv(args: StartArgs): Promise<ElevenLabsHa
 function buildClientTools(opts: {
   workspace: string;
   tabId: string;
+  endSession: () => Promise<void>;
 }): Record<string, (parameters: any) => Promise<string>> {
   const tools: Record<string, (parameters: any) => Promise<string>> = {};
+
+  // end_conversation — agent ends session after a definitive answer in
+  // hybrid / single-utterance mode. The agent prompt branches on the
+  // dynamic_variable voice_mode and decides when to call us. We ack
+  // EL with "ok" and tear down the session 500ms later so the result
+  // lands before the LiveKit connection closes.
+  tools.end_conversation = async () => {
+    void opts.endSession();
+    return JSON.stringify({ ok: true });
+  };
   const ctx = (): CommandContext => ({
     agent: 'operator',
     workspace: opts.workspace,
