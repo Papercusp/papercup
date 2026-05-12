@@ -160,6 +160,49 @@ describe('listMcpProjections', () => {
     expect((list[0]!.events!.delta as Record<string, unknown>).$schema).toBeUndefined();
   });
 
+  it('serializes z.instanceof(Uint8Array) without throwing (binary placeholder)', () => {
+    // Regression: z.toJSONSchema throws "Custom types cannot be represented
+    // in JSON Schema" on z.instanceof(Uint8Array). Before the catch+fallback
+    // landed, listMcpProjections() would 500 the entire tools/list response
+    // when any tool declared a binary event — and dev:ipc_echo does by
+    // default. Now we emit a placeholder so clients still get the listing.
+    registerProjectedTool(baseTool({
+      expose: { mcp: { name: 's.bin' } },
+      events: {
+        delta: z.object({ text: z.string() }),
+        chunk: z.instanceof(Uint8Array),
+      },
+    }));
+    const list = listMcpProjections();
+    expect(list[0]?.events?.chunk).toMatchObject({
+      type: 'string',
+      contentEncoding: 'base64',
+    });
+    // Non-binary events serialize normally alongside.
+    expect(list[0]?.events?.delta).toMatchObject({
+      type: 'object',
+      properties: { text: { type: 'string' } },
+    });
+  });
+
+  it('falls back to placeholder for any unrepresentable event schema', () => {
+    // Defensive: a custom Zod check that toJSONSchema rejects must not
+    // 500 tools/list — the tool stays usable; only its typed JSON-Schema
+    // view is degraded.
+    registerProjectedTool(baseTool({
+      expose: { mcp: { name: 's.custom' } },
+      events: {
+        weird: z.custom<unknown>(() => true),
+      },
+    }));
+    const list = listMcpProjections();
+    expect(list[0]?.events?.weird).toBeDefined();
+    // Either binary (if classified as such by the heuristic) or the
+    // generic "not representable" placeholder. Both are acceptable;
+    // what matters is no throw.
+    expect(typeof list[0]?.events?.weird).toBe('object');
+  });
+
   it('omits events field when declared schema is empty', () => {
     registerProjectedTool(baseTool({
       expose: { mcp: { name: 's.empty' } },

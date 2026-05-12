@@ -509,13 +509,32 @@ function serializeEventsSchema(events: EventsSchema): Record<string, Record<stri
   if (cached) return cached;
   const out: Record<string, Record<string, unknown>> = {};
   for (const [name, schema] of Object.entries(events)) {
-    // Zod 4: use built-in z.toJSONSchema (zod-to-json-schema@3 returns
-    // empty schemas on zod 4 — same reason define-tool uses this path).
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const json = (z as any).toJSONSchema(schema) as Record<string, unknown>;
-    // Drop $schema — MCP clients don't need it and it's noise in tools/list.
-    delete json.$schema;
-    out[name] = json;
+    const kind = classifyEventWire(schema);
+    if (kind === 'binary') {
+      // z.toJSONSchema throws on z.instanceof(Uint8Array) ("Custom types
+      // cannot be represented in JSON Schema"). Surface binary events
+      // explicitly so MCP clients can decode the EVENT_BIN wire frame.
+      out[name] = {
+        type: 'string',
+        contentEncoding: 'base64',
+        description: 'Binary payload — base64 over JSON transports; raw bytes over IPC EVENT_BIN.',
+      };
+      continue;
+    }
+    try {
+      // Zod 4: use built-in z.toJSONSchema (zod-to-json-schema@3 returns
+      // empty schemas on zod 4 — same reason define-tool uses this path).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const json = (z as any).toJSONSchema(schema) as Record<string, unknown>;
+      // Drop $schema — MCP clients don't need it and it's noise in tools/list.
+      delete json.$schema;
+      out[name] = json;
+    } catch {
+      // Any other unrepresentable schema (custom check, lazy refs to
+      // self, etc.) → emit a permissive placeholder so tools/list never
+      // 500s. The tool still works; clients just lose the typed view.
+      out[name] = { description: 'Schema not representable in JSON Schema.' };
+    }
   }
   EVENTS_JSON_CACHE.set(events, out);
   return out;

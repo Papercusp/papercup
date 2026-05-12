@@ -384,8 +384,16 @@ export async function handleHttpToolRequestStreaming(
     extras.deps,
   );
   if (!r.ok) {
-    // Dispatch failure: auto-error.
-    sink.event('error', r.error!);
+    // Dispatch failure: auto-error. Honor the tool's schema-inferred
+    // wire kind for `error` — if the tool declared `error: z.string()`,
+    // emit the raw message so the wire shape matches handler-emitted
+    // 'error' events. Otherwise default to the JSON envelope.
+    const errorKind = resolved.tool.eventWireKinds?.error;
+    if (errorKind === 'string') {
+      sink.eventRaw('error', r.error!.message);
+    } else {
+      sink.event('error', r.error!);
+    }
   } else {
     // Auto-done: handler returned successfully. Payload is the ToolResult
     // content array — same shape MCP transport returns via tools/call.
