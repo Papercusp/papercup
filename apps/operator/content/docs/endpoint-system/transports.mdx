@@ -122,7 +122,100 @@ event: progress
 data: {"progress":25,"total":100,"message":"fetched manifest"}
 ```
 
-The function code is identical for both. Tools that don't call `ctx.progress` work fine — the receiver just gets the final result.
+The function code is identical for both. Tools that don't call `ctx.progress` work fine — the receiver just gets the final result. `ctx.progress` is a thin alias over the more general `ctx.emit` primitive described next.
+
+## Typed event streams
+
+For tools that need richer streaming than `progress(pct, msg)` — LLM token deltas, mid-stream tool-call announcements, parsed sub-results — declare a typed event vocabulary in the manifest and emit via `ctx.emit(name, data)`:
+
+```ts
+defineTool({
+  name: 'architect.chat',
+  args: z.object({ message: z.string() }),
+  events: {
+    delta:     z.object({ text: z.string() }),
+    tool_call: z.object({ name: z.string(), input: z.unknown() }),
+    cost:      z.object({ usd: z.number() }),
+  },
+  requirePrincipal: false,
+  roles: ['operator'],
+  timeoutSec: 600,
+  idleTimeoutSec: 120,
+  capability: 'harness:write',
+  handler: async (input, ctx) => {
+    for await (const ev of runAgentChat({ promptText: input.message })) {
+      if (ev.type === 'delta')     ctx.emit('delta', { text: ev.text });
+      else if (ev.type === 'tool_call') ctx.emit('tool_call', { name: ev.name, input: ev.input });
+      else if (ev.type === 'result')    ctx.emit('cost', { usd: ev.costUsd });
+    }
+    return { content: [{ type: 'text', text: 'turn complete' }] };
+  },
+});
+```
+
+### Projection table
+
+| Wire | When emit('delta', { text: 'hi' }) is called | When handler returns | When handler throws |
+|---|---|---|---|
+| **HTTP/SSE** | `event: delta\ndata: {"text":"hi"}` | `event: done\ndata: <ToolResult.content as JSON>` | `event: error\ndata: { code, message }` |
+| **MCP** | `notifications/papercusp/event { progressToken, event: 'delta', data: { text: 'hi' } }` | `tools/call` response with ToolResult | `tools/call` response with `isError: true` |
+| **In-process (`dispatchProjectedToolStream`)** | `{ kind: 'event', name: 'delta', data: { text: 'hi' } }` | `{ kind: 'done', result }` | `{ kind: 'error', error: { code, message } }` |
+
+The MCP transport dual-fires when `name === 'progress'`: every `ctx.emit('progress', ...)` (or `ctx.progress(...)` via the alias) produces *both* `notifications/papercusp/event` and the spec-standard `notifications/progress`. Built-in MCP UIs that watch the standard progress channel still get a signal; Papercusp-aware clients also receive the typed-event payload.
+
+### Reserved event names
+
+The framework reserves these wire-level names; the `defineTool` `events` generic refuses them at compile time:
+
+- `done` — framework auto-emits when the handler returns (payload: ToolResult content array).
+- `progress` — reserved for the `ctx.progress` alias shape.
+- `heartbeat` — `@restart/sse` emits every 15s for keepalive.
+- `result` — pre-2026-05-12 legacy terminal name; reserved for collision avoidance.
+
+`error` is intentionally *not* reserved: the framework auto-emits `event: error` on handler throw, but a handler may also `ctx.emit('error', { message })` mid-stream for non-fatal errors. The canonical case is `runAgentChat` yielding `{type:'error'}` events that don't terminate the stream.
+
+### Discoverability
+
+`tools/list` surfaces each tool's events as JSON-Schema, so clients can render typed event streams without out-of-band knowledge:
+
+```jsonc
+{
+  "name": "architect.chat",
+  "description": "...",
+  "inputSchema": { ... },
+  "events": {
+    "delta":     { "type": "object", "properties": { "text": { "type": "string" } } },
+    "tool_call": { "type": "object", "properties": { "name": { "type": "string" }, "input": {} } },
+    "cost":      { "type": "object", "properties": { "usd": { "type": "number" } } }
+  }
+}
+```
+
+Standard MCP clients that don't know about the `events` field simply ignore it.
+
+### Idle timeout
+
+`idleTimeoutSec` augments the wall-clock `timeoutSec`: the dispatcher aborts the handler when the gap between `ctx.emit` calls exceeds the cap. Catches wedged child processes that have stopped producing output but haven't formally hung. `0` or `undefined` disables.
+
+### Strict-streamable
+
+The HTTP catch-all returns `406 Not Acceptable` if a client sends `Accept: text/event-stream` against a tool that declares no `events` and isn't `expose.mcp.streaming === true`. Prevents clients from opening an SSE connection for a one-shot result.
+
+### Cards (render-into-chat tools)
+
+The card-rendering pattern uses two tools at different layers. The **inner** tool (e.g. `chat:ask_choice`) is a vanilla projected tool — the agent calls it like any other and the result is its echoed args. The **outer** chat tool (e.g. `architect.chat`, `operator.chat`) declares `tool_call: z.object({ name: z.string(), input: z.unknown() })` in its `events` schema and emits `ctx.emit('tool_call', ...)` whenever its inner LLM invokes an MCP tool. The browser side reads `t.name` from the persisted tool-call payload and substitutes a custom React component for the default chip. No additional framework primitive is required — cards are an emergent product of `ctx.emit` + a client-side `renderToolCard` dispatcher.
+
+## The three context types
+
+The codebase has three context types floating around — same field set, different supersets. Knowing which is which helps when tracing types through the dispatcher and transport adapters.
+
+| Type | Lives at | Used by | Streaming? |
+|---|---|---|---|
+| `UnifiedToolContext` | `packages/agent-mcp/src/tool-projection.ts` | The dispatcher canonical context. All transport adapters build one. | Yes — `emit`, `progress`. |
+| `ToolContext` (plugin-sdk) | `packages/plugin-sdk/src/index.ts` | Plugin tool handlers (`PluginToolMap`). | Yes — `emit`, `progress` (mirrored from UnifiedToolContext). |
+| `ToolContext` (legacy agent-mcp) | `packages/agent-mcp/src/types.ts` | Legacy principal-gated `defineTool` handlers — `{ principal, tx, log }` only. | No — these don't stream. |
+
+When `defineTool({ requirePrincipal: false, … })` is called (role-gated), the handler receives `UnifiedToolContext` directly. When `defineTool({ … })` is used with default `requirePrincipal: true`, the wrapper synthesizes the legacy `ToolContext` from the unified one — `emit`/`progress` are dropped because legacy built-ins don't stream.
 
 ## Trust model
 
