@@ -157,7 +157,9 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
     roles: input.roles,
     rolesQuota: input.rolesQuota,
     timeoutSec: input.timeoutSec,
+    idleTimeoutSec: input.idleTimeoutSec,
     args: input.args,
+    events: input.events,
     handler: input.handler,
     guidance: input.guidance,
   };
@@ -287,6 +289,8 @@ function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
     roles: def.roles,
     rolesQuota: def.rolesQuota,
     timeoutSec: def.timeoutSec,
+    idleTimeoutSec: def.idleTimeoutSec,
+    events: def.events,
     expose: {
       mcp: { name: def.name },
       http: { path: httpPath, methods: ['POST'] },

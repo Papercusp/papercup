@@ -18,6 +18,7 @@
  * Spec: apps/operator/docs/plugin-mcp-host-design.md.
  */
 
+import type { ZodTypeAny } from 'zod';
 import type {
   AgentRole,
   Capability,
@@ -27,6 +28,35 @@ import type {
   RolesQuota,
   ToolResult,
 } from '@papercusp/plugin-sdk';
+
+/* ─── Event schema types ─────────────────────────────────────────────── */
+
+/** Schema for a tool's typed event channel. Keys are wire-level event names. */
+export type EventsSchema = Record<string, ZodTypeAny>;
+
+/**
+ * Reserved event names — names the framework emits internally OR has
+ * semantics around. Tools declaring an `events` schema must not use
+ * these as keys. The TS-level guard `UserEvents<T>` enforces this at
+ * compile time on `defineTool`'s generic parameter.
+ *
+ * - `done`: framework auto-emits when the handler returns successfully.
+ * - `progress`: emitted via `ctx.progress` (the alias); reserved so
+ *   tools don't redefine its payload shape.
+ * - `heartbeat`: @restart/sse emits this every 15s to keep the
+ *   connection alive; never a tool event.
+ * - `result`: legacy pre-2026-05-12 terminal-event name; reserved for
+ *   collision avoidance even though the framework no longer emits it.
+ *
+ * `error` is intentionally NOT reserved — the framework auto-emits it
+ * on handler throw, but tools may also emit it mid-stream for non-fatal
+ * errors (dual-mode; canonical example is runAgentChat's mid-stream
+ * 'error' yields). See ToolContext.emit doc for the contract.
+ */
+export type ReservedEventNames = 'done' | 'progress' | 'heartbeat' | 'result';
+
+/** Compile-time guard: a user-declared events schema cannot contain reserved names. */
+export type UserEvents<T extends EventsSchema> = T & { [K in ReservedEventNames]?: never };
 
 /* ─── Unified context ────────────────────────────────────────────────── */
 
@@ -188,6 +218,26 @@ export interface ProjectedTool {
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   /** Per-call wall-clock timeout, default 60s. */
   timeoutSec?: number;
+  /**
+   * Idle timeout — abort if no event has been emitted for this many
+   * seconds. Augments `timeoutSec` (the wall-clock cap). 0 or undefined
+   * disables idle-watchdog. Default off. Useful for streaming tools that
+   * spawn child processes — wedged children stop emitting; this catches
+   * them sooner than the wall-clock cap.
+   */
+  idleTimeoutSec?: number;
+  /**
+   * Typed event channel — Zod schemas keyed by event name. Surfaced
+   * via tools/list as JSON-Schema for client discovery. No runtime
+   * validation of outgoing events (trusted code path). Undefined for
+   * tools that don't stream typed events; they may still call
+   * `ctx.progress` (the alias) which goes through the 'progress' wire
+   * event reserved for that purpose.
+   *
+   * Plugins declaring this on their JSON manifest currently get a
+   * runtime warning — plugin events are a Phase 4+ feature.
+   */
+  events?: EventsSchema;
   /** Where to project this function — at least one of http/mcp required. */
   expose: ToolExposure;
   /** The function. Source of truth. */

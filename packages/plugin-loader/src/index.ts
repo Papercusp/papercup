@@ -625,6 +625,18 @@ export async function registerPluginTools(
         const expose = def.expose ?? {};
         const mcpName = expose.mcp?.name ?? `${shortName}.${def.name}`;
         const httpPath = expose.http?.path ?? `/api/plugins/${shortName}/${def.name}`;
+        // Phase 3 carve-out: built-in tools (via defineTool) can declare
+        // `events` for typed streaming. Plugin JSON manifests can't yet
+        // — there's no JSON-Schema-to-Zod converter wired in. Warn loud
+        // so plugin authors don't add the field and get silent no-op.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        if ((def as any).events !== undefined) {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[plugin-loader] plugin "${lp.plugin.name}" tool "${def.name}" declares an "events" field; ` +
+            `plugin event-schemas are a Phase 4+ feature and are not honored yet (the field is ignored).`,
+          );
+        }
         registerProjectedTool({
           pluginName: lp.plugin.name,
           description: def.description,

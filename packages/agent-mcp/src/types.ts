@@ -5,7 +5,7 @@
 import type { AgentRole, RolesQuota, ToolResult } from '@papercusp/plugin-sdk';
 import type { Sql } from 'postgres';
 import type { z, ZodTypeAny } from 'zod';
-import type { UnifiedToolContext } from './tool-projection';
+import type { EventsSchema, UnifiedToolContext, UserEvents } from './tool-projection';
 
 /** A Papercusp capability tier per spec/capabilities §10.6.1. */
 export type CapabilityTier = 'low' | 'medium' | 'high';
@@ -183,7 +183,10 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
  * plugin (that would mix removable third-party plugins with core papercusp
  * code in the catalog forever).
  */
-export interface RoleToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
+export interface RoleToolDefinition<
+  TArgs extends ZodTypeAny = ZodTypeAny,
+  TEvents extends EventsSchema = EventsSchema,
+> {
   name: string;
   description: string;
   /** Capability string for tier classification + descriptive listings. Not enforced. */
@@ -197,7 +200,11 @@ export interface RoleToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   /** Per-call wall-clock timeout, default 60s. */
   timeoutSec?: number;
+  /** Idle timeout — abort if no event emitted for this many seconds. See ProjectedTool.idleTimeoutSec. */
+  idleTimeoutSec?: number;
   args: TArgs;
+  /** Typed event channel. See ProjectedTool.events. */
+  events?: TEvents;
   /**
    * Handler receives the unified context (no principal). May return either
    * a raw `ToolResult` (MCP shape) or a `ToolResponse` envelope; the
@@ -212,7 +219,10 @@ export interface RoleToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
 }
 
 /** Input shape for role-gated `defineTool` — same as RoleToolDefinition minus derived fields. */
-export interface RoleToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
+export interface RoleToolDefinitionInput<
+  TArgs extends ZodTypeAny = ZodTypeAny,
+  TEvents extends EventsSchema = EventsSchema,
+> {
   name?: string;
   description?: string;
   capability: string;
@@ -220,7 +230,15 @@ export interface RoleToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> 
   roles?: AgentRole[];
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   timeoutSec?: number;
+  /** See RoleToolDefinition.idleTimeoutSec. */
+  idleTimeoutSec?: number;
   args: TArgs;
+  /**
+   * Typed event channel — Zod schemas keyed by event name. The
+   * `UserEvents` guard rejects reserved names at compile time.
+   * Reserved names: 'done' | 'progress' | 'heartbeat' | 'result'.
+   */
+  events?: UserEvents<TEvents>;
   handler: (
     args: z.infer<TArgs>,
     ctx: UnifiedToolContext,
