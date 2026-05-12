@@ -739,6 +739,19 @@ const TOOLS = [
       description: 'Card to dismiss.',
     },
   },
+  {
+    name: 'end_conversation', type: 'client', expects_response: false,
+    description:
+      "End the current voice session. Call this AFTER giving a definitive answer that doesn't " +
+      "invite follow-up — e.g. confirmations ('marked done'), single-fact answers ('the time is 3:14'), " +
+      "successful tool completions where no further interaction is needed. Do NOT call after asking " +
+      "a question, leaving the user mid-thought, or in continuous-mode conversational flows. " +
+      "The dynamic_variable {{voice_mode}} indicates when this is appropriate: " +
+      "'single-utterance' = always call after one reply; " +
+      "'hybrid' = call after definitive answers; " +
+      "'continuous' = NEVER call, let the user end the session.",
+    parameters: { type: 'object', properties: {}, required: [], description: 'No parameters.' },
+  },
 ];
 
 // Operator voice + TTS knobs. EL Conv AI for English agents accepts

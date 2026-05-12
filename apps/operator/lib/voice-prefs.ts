@@ -126,6 +126,26 @@ export interface VoicePrefs {
    */
   fullAgentSessionMaxMin: number;
   /**
+   * Conversation flow mode for full-agent voice. Workspace default; each
+   * device may override locally (mobile in EncryptedSharedPrefs/UserDefaults,
+   * desktop in ~/.papercusp/desktop-voice-prefs.json) and pass it as a
+   * `mode=` query param to /voice-session-init.
+   *
+   * - 'continuous' (default): session stays open until user / idle / max.
+   *   Matches ChatGPT mobile voice.
+   * - 'hybrid': continuous + agent calls end_conversation after a
+   *   definitive answer. Best for transactional commands ("mark X done").
+   * - 'single-utterance': one turn, then disconnect. Idle drops to ~3s.
+   *   Most cost-conservative; best for cellular.
+   *
+   * The phone/desktop sends its choice to /voice-session-init, which
+   * passes it through to EL as dynamic_variables.voice_mode. The agent's
+   * system prompt branches on this and is one source of truth for the
+   * 3 behaviors. end_conversation tool is registered on the agent for
+   * all modes — only the prompt instructions differ.
+   */
+  fullAgentVoiceMode: 'continuous' | 'hybrid' | 'single-utterance';
+  /**
    * How many tokens of recent chat history the operator brain sees per
    * converse turn. Replaces the legacy 30-turn fixed cap. The route
    * walks messages newest → oldest, accumulating until this budget is
@@ -228,6 +248,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   operatorActiveOnStartup: true,
   fullAgentIdleTimeoutMin: 2,
   fullAgentSessionMaxMin: 30,
+  fullAgentVoiceMode: 'continuous',
   operatorHistoryTokenBudget: 40000,
   fullAgentMonthlyMinuteCap: 600,
   voicePrivacyMode: 'always-on',

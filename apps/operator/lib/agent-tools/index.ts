@@ -49,6 +49,7 @@ import './ui/get_state';
 import './ui/dispatch';
 import './chat/ask_choice';
 import './search/fulltext';
+import './search/semantic';
 import './memory/remember';
 import './memory/search';
 import './memory/list';

@@ -151,14 +151,14 @@ export default function ChromeShell() {
               <span className="pc-header-cta-orb" aria-hidden="true">
                 <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
               </span>
-              <span className="pc-header-cta-label">Ops</span>
+              <span className="pc-header-cta-label">OPS</span>
             </span>
           ) : (
             <a href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
               <span className="pc-header-cta-orb" aria-hidden="true">
                 <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
               </span>
-              <span className="pc-header-cta-label">Ops</span>
+              <span className="pc-header-cta-label">OPS</span>
             </a>
           )}
           <OperatorButton />

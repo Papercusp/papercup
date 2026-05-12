@@ -188,14 +188,86 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
  *       · ToolResponse.data → ToolResult.content[text(JSON)].
  *       · ToolResponse.uiResources → trailing content items.
  */
+/**
+ * Flatten a JSON schema for OpenAI's function-calling validator.
+ *
+ * OpenAI Codex (strict mode) requires:
+ *   1. `type: "object"` at root.
+ *   2. NO `oneOf`/`anyOf`/`allOf`/`enum`/`not` at root.
+ *
+ * Zod's `discriminatedUnion` (and `z.union`) produces a top-level
+ * `{oneOf: [...]}` or `{anyOf: [...]}` — both rejected.
+ *
+ * Fix: when we see root-level oneOf/anyOf with all-object variants,
+ * merge each variant's `properties` into a single object schema.
+ * The discriminator field (`mode`, `op`, etc.) stays required; every
+ * variant-specific field becomes optional. Handler-level validation
+ * (via def.args.safeParse) re-enforces the per-variant required fields
+ * at runtime, so loosening the schema for OpenAI doesn't compromise
+ * input safety.
+ *
+ * Schemas that already have `type: "object"` and no problematic
+ * top-level keys pass through unchanged.
+ */
+function flattenForOpenAi(schema: Record<string, unknown>): Record<string, unknown> {
+  // Already shaped right.
+  const PROHIBITED_AT_ROOT = ['oneOf', 'anyOf', 'allOf', 'not'];
+  const hasProhibited = PROHIBITED_AT_ROOT.some((k) => k in schema);
+  if (schema.type === 'object' && !hasProhibited) return schema;
+
+  // Pull the discriminator unions out of root.
+  const variants: Array<Record<string, unknown>> = [];
+  for (const key of ['oneOf', 'anyOf']) {
+    if (Array.isArray(schema[key])) {
+      for (const v of schema[key] as Array<Record<string, unknown>>) {
+        if (v && typeof v === 'object') variants.push(v);
+      }
+    }
+  }
+
+  if (variants.length === 0) {
+    // No unions — just ensure type:"object" + strip problematic keys.
+    const out = { ...schema };
+    for (const k of PROHIBITED_AT_ROOT) delete out[k];
+    if (out.type !== 'object') out.type = 'object';
+    return out;
+  }
+
+  // Merge variant properties. Each property keeps its first definition;
+  // a property required by EVERY variant stays required (typically the
+  // discriminator); others become optional.
+  const mergedProps: Record<string, unknown> = {};
+  const requiredSets: Set<string>[] = [];
+  for (const v of variants) {
+    const props = (v.properties as Record<string, unknown>) ?? {};
+    for (const [pk, pv] of Object.entries(props)) {
+      if (!(pk in mergedProps)) mergedProps[pk] = pv;
+    }
+    const req = Array.isArray(v.required) ? new Set(v.required as string[]) : new Set<string>();
+    requiredSets.push(req);
+  }
+  const required = [...requiredSets[0]].filter((p) =>
+    requiredSets.every((s) => s.has(p)),
+  );
+
+  return {
+    type: 'object',
+    properties: mergedProps,
+    ...(required.length > 0 ? { required } : {}),
+    additionalProperties: false,
+    description: typeof schema.description === 'string' ? schema.description : undefined,
+  };
+}
+
 function registerLegacyAsProjected<TArgs extends ZodTypeAny>(def: ToolDefinition<TArgs>): void {
   // tasks:list → /api/agent-tools/tasks/list
   const httpPath = `/api/agent-tools/${def.name.replaceAll(':', '/')}`;
   // Zod 4: use built-in z.toJSONSchema. zod-to-json-schema@3 returns just
   // `{ $schema }` for zod 4 schemas — produces empty input schemas.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const inputSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
-  delete (inputSchema as Record<string, unknown>).$schema;
+  const rawSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
+  delete (rawSchema as Record<string, unknown>).$schema;
+  const inputSchema = flattenForOpenAi(rawSchema);
 
   const projectedFn: ToolFn = async (input, ctx) => {
     if (!ctx.principal || !ctx.tx) {
@@ -253,8 +325,9 @@ function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
 ): void {
   const httpPath = `/api/agent-tools/${def.name.replaceAll(':', '/')}`;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const inputSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
-  delete (inputSchema as Record<string, unknown>).$schema;
+  const rawSchema = (z as any).toJSONSchema(def.args) as Record<string, unknown>;
+  delete (rawSchema as Record<string, unknown>).$schema;
+  const inputSchema = flattenForOpenAi(rawSchema);
 
   const projectedFn: ToolFn = async (input, ctx) => {
     const parsed = def.args.safeParse(input);

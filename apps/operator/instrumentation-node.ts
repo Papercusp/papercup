@@ -117,6 +117,19 @@ export async function register(): Promise<void> {
     }
   })();
 
+  // Plan 2B+C — one-shot embed-backfill sweep ~10s after boot. Fills
+  // body_embedding / content_embedding / text_embedding columns for
+  // any rows missing them. No-ops if pgvector ext missing OR
+  // memoryEmbedderMode=disabled.
+  void (async () => {
+    try {
+      const { startEmbedBackfillWorker } = await import('@/lib/search/embed-backfill');
+      startEmbedBackfillWorker();
+    } catch (err) {
+      console.warn('[embed-backfill] failed to start:', (err as Error).message);
+    }
+  })();
+
   // Backup scheduler — per-workspace kopia snapshots on cadence + event.
   // Idempotent: noop if already started in this process. Failures
   // surface in the operator log; backup state is non-critical for

@@ -43,16 +43,17 @@ export default defineTool({
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 30 }, architect: { perRun: 100 } },
-  args: z.discriminatedUnion('op', [
-    z.object({ op: z.literal('peek') }),
-    z.object({ op: z.literal('drain') }),
-    z.object({
-      op: z.literal('push'),
-      headline: z.string().min(1),
-      kind: z.string().optional(),
-      agentSessionId: z.string().optional(),
-    }),
-  ]),
+  // Flat object schema (not discriminatedUnion) because OpenAI's
+  // function-calling schema validator rejects discriminator-shaped
+  // top-level `anyOf` — it requires `type: "object"` at the root. The
+  // handler enforces the per-op required fields at runtime.
+  args: z.object({
+    op: z.enum(['peek', 'drain', 'push']),
+    headline: z.string().min(1).optional()
+      .describe("Required when op='push'."),
+    kind: z.string().optional(),
+    agentSessionId: z.string().optional(),
+  }),
   async handler(args) {
     const workspaceId = activeWorkspaceId();
     if (args.op === 'peek') {
@@ -62,6 +63,10 @@ export default defineTool({
     if (args.op === 'drain') {
       const items = await drainDelegateInbox({ workspaceId });
       return { content: [{ type: 'text', text: JSON.stringify({ items }) }] };
+    }
+    // op === 'push'
+    if (!args.headline) {
+      return { content: [{ type: 'text', text: JSON.stringify({ error: 'headline is required when op=push' }) }] };
     }
     await pushDelegateInbox({
       workspaceId,

@@ -34,6 +34,7 @@ export async function POST(req: Request) {
   } catch (e: unknown) {
     const code = (e as { code?: string }).code ?? 'login_failed';
     const status = code === 'unknown_user' || code === 'bad_password' ? 401 : 400;
+    if (status >= 500) console.error('[auth/login]', code, (e as Error).stack);
     return NextResponse.json({ error: code }, { status });
   }
 }

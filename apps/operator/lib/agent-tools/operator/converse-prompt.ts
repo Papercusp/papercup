@@ -22,6 +22,8 @@ import {
   loadRoleConverse,
   renderToolsCatalog,
 } from '@/lib/prompt-assembly';
+import { buildMemoryContextBlock, lastUserContext } from '@/lib/memory/injection';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export interface ConverseInput {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
@@ -72,38 +74,16 @@ export async function buildOperatorPrompt(
   const playbook = loadRoleToolsMd('operator');
   if (playbook) sections.push(playbook);
 
-  // Operator memory pre-turn injection — best-effort.
-  try {
-    const recentUserContext = messages
-      .filter((m) => m.role === 'user')
-      .slice(-3)
-      .map((m) => m.content)
-      .join('\n');
-    if (recentUserContext && sessionUser) {
-      const { getMemoryClient } = await import('@/lib/memory/mem0-client');
-      const client = await getMemoryClient();
-      if (client) {
-        const { activeWorkspaceId } = await import('@/lib/workspace-registry');
-        const ws = activeWorkspaceId();
-        const [userHits, sharedHits] = await Promise.all([
-          client.search(recentUserContext, { userId: sessionUser.id, limit: 6 }),
-          client.search(recentUserContext, { userId: `workspace:${ws}`, limit: 4 }),
-        ]);
-        const combined = [...(userHits.results ?? []), ...(sharedHits.results ?? [])];
-        const memText: string[] = [];
-        for (const hit of combined) {
-          const kind = (hit.metadata as Record<string, unknown>)?.kind ?? 'unknown';
-          const shared = (hit.metadata as Record<string, unknown>)?.shared ? ' [shared]' : '';
-          memText.push(`- [${kind}${shared}] ${hit.memory}`);
-        }
-        if (memText.length > 0) {
-          sections.push(`## Operator memory (relevant entries)\n\n${memText.join('\n')}`);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn('[operator-converse] memory injection failed:', (err as Error).message);
-  }
+  // Operator memory pre-turn injection — best-effort, via the shared
+  // helper that the operator-chat and delegate-chat routes also use
+  // (single source of truth for the user/workspace split + result
+  // formatting). Falls through silently when mem0 is unavailable.
+  const memBlock = await buildMemoryContextBlock({
+    userId: sessionUser?.id ?? null,
+    workspaceId: activeWorkspaceId(),
+    queryContext: lastUserContext(messages, 3),
+  });
+  if (memBlock) sections.push(memBlock);
 
   if (messages.length > 0) {
     const transcript = messages

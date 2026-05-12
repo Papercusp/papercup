@@ -47,9 +47,10 @@ export default defineTool({
     const limit = args.limit ?? 8;
 
     // Search across this user's memories AND workspace-shared ones.
+    // mem0 v3: filter key is `user_id` (snake_case), not `userId`.
     const [userHits, sharedHits] = await Promise.all([
-      client.search(args.query, { userId: user.id, limit }),
-      client.search(args.query, { userId: `workspace:${ctx.workspaceId}`, limit }),
+      client.search(args.query, { filters: { user_id: user.id }, limit }),
+      client.search(args.query, { filters: { user_id: `workspace:${ctx.workspaceId}` }, limit }),
     ]);
 
     // Merge + dedupe by id, take top N by score.

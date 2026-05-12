@@ -205,6 +205,14 @@ const nextConfig = {
     // to find the CLI's bin path. Turbopack can't trace subpath imports
     // of CJS packages — externalize so Node resolves at runtime.
     'drizzle-kit',
+    // mem0ai/oss eagerly imports every provider package (ollama,
+    // groq-sdk, etc.) at module load. Turbopack's bundler rewrites
+    // those imports through a path that bypasses package.json exports,
+    // breaking ESM resolution at runtime. Externalize so Node's own
+    // ESM resolver handles it correctly.
+    'mem0ai',
+    'ollama',
+    '@huggingface/transformers',
   ],
   // /api/harness/* and /api/plugins/* are served LOCALLY by this app
   // (mounted in app/api/[[...route]]/route.ts).

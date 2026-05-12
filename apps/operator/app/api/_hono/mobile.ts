@@ -501,6 +501,35 @@ app.post('/voice-tool/:name', async (c) => {
     ? (body as { parameters?: unknown }).parameters ?? {}
     : body ?? {};
 
+  // ── ask_operator is a meta-tool, not in the command registry. The
+  //    desktop handler (lib/voice-engines/elevenlabs-conv.ts) calls
+  //    /api/agent-mcp/operator-converse SSE, drains the stream, and
+  //    returns the <say> body. Replicate that here for mobile.
+  if (elName === 'ask_operator') {
+    const p = params as { text?: string; trigger?: string };
+    const userText = (p?.text ?? '').toString().trim();
+    const triggerRaw = typeof p?.trigger === 'string' ? p.trigger : 'user_message';
+    if (!userText && !triggerRaw) return c.json('');
+    const base = process.env.MOBILE_SELF_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
+    const { askOperatorViaConverse } = await import('../../../lib/mobile-ask-operator');
+    const result = await askOperatorViaConverse({
+      baseUrl: base,
+      userText,
+      trigger: triggerRaw,
+    });
+    // Per-kind logging so we can correlate against operator-converse server logs.
+    if (result.kind === 'empty') {
+      console.warn(`[mobile:ask_operator] empty — events=${result.eventCount} trigger=${result.trigger} userText.length=${userText.length}`);
+    } else if (result.kind === 'timeout') {
+      console.warn(`[mobile:ask_operator] TIMEOUT after ${result.timeoutMs}ms`);
+    } else if (result.kind === 'bad-status') {
+      console.warn(`[mobile:ask_operator] bad-status status=${result.status}`);
+    } else if (result.kind === 'error') {
+      console.warn(`[mobile:ask_operator] error: ${result.error}`);
+    }
+    return c.json(result.text);
+  }
+
   // EL normalizes registry ids by replacing dots+dashes with underscores
   // (e.g. 'harness.list-features' → 'harness_list_features'). The reverse
   // isn't unique, so we iterate the registry and match by normalized form.
@@ -508,25 +537,15 @@ app.post('/voice-tool/:name', async (c) => {
   // sees an empty registry because mobile.ts itself doesn't pull defs.
   await import('../../../lib/commands/defs');
   const { get, list, runCommand, runQuery } = await import('../../../lib/commands/registry');
-  let def: ReturnType<typeof get> | undefined;
-  let resolvedId: string | undefined;
-  // Fast paths: literal + underscore-to-dot (covers most cases).
-  for (const candidate of [elName, elName.replace(/_/g, '.')]) {
-    const d = get(candidate);
-    if (d) { def = d; resolvedId = candidate; break; }
-  }
-  // Fallback: search all registered defs by normalized form.
-  if (!def) {
-    const all = [
+  const { resolveRegistryToolId } = await import('../../../lib/mobile-tool-resolver');
+  const resolvedId = resolveRegistryToolId(elName, {
+    get: (id) => get(id),
+    list: () => [
       ...list({ kind: 'command', agent: 'operator' }),
       ...list({ kind: 'query', agent: 'operator' }),
-    ];
-    for (const d of all) {
-      if (d.id.replace(/[.-]/g, '_') === elName) {
-        def = d; resolvedId = d.id; break;
-      }
-    }
-  }
+    ],
+  });
+  const def = resolvedId ? get(resolvedId) : undefined;
   if (!def || !resolvedId) {
     return c.json({ ok: false, error: { code: 'unknown-tool', message: `no such registry tool: ${elName}`, retryable: false } }, 404);
   }
@@ -536,12 +555,9 @@ app.post('/voice-tool/:name', async (c) => {
     workspace: claims.workspace_id,
     sessionId: claims.sub,
     requestId: `el-mobile-${randomUUID()}`,
-    surface: ((): 'mobile-android' | 'mobile-ios' | 'mobile-unknown' => {
-      const ua = c.req.header('user-agent') ?? '';
-      return ua.includes('Android') ? 'mobile-android'
-        : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
-        : 'mobile-unknown';
-    })(),
+    surface: (await import('../../../lib/mobile-surface')).detectSurface({
+      userAgent: c.req.header('user-agent'),
+    }),
     deviceId: claims.sub,
   };
   try {
@@ -660,17 +676,14 @@ app.get('/voice-session-init', async (c) => {
 
   // Detect platform up front — we need to pass an allowed `source` to EL
   // (their API rejects arbitrary strings). Their enum has android_sdk +
-  // swift_sdk; default unknown.
-  const ua = c.req.header('user-agent') ?? '';
-  let surface = c.req.query('surface');
-  if (!surface) {
-    surface = ua.includes('Android') ? 'mobile-android'
-            : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
-            : 'mobile-unknown';
-  }
-  const elSource = surface === 'mobile-android' ? 'android_sdk'
-                 : surface === 'mobile-ios' ? 'swift_sdk'
-                 : 'unknown';
+  // swift_sdk; default unknown. Shared logic in mobile-surface.ts so the
+  // voice-tool proxy uses the same detection.
+  const { detectSurface, surfaceToElSource } = await import('../../../lib/mobile-surface');
+  const surface = detectSurface({
+    query: c.req.query('surface'),
+    userAgent: c.req.header('user-agent'),
+  });
+  const elSource = surfaceToElSource(surface);
 
   // In-flight dedupe: parallel pair-retries on the same agentId share
   // one outstanding mint promise. Keyed by agentId so concurrent
@@ -706,6 +719,21 @@ app.get('/voice-session-init', async (c) => {
   // are throttled.
   await writeCooldownMark(cooldownKey);
 
+  // Device-local override resolution. Phone stores voice mode + timers
+  // in EncryptedSharedPreferences (Android) or UserDefaults (iOS) and
+  // passes them as query params. Server falls back to workspace
+  // defaults from PG. Sent back in the payload so the client uses
+  // the same values it asked for (or workspace default if absent).
+  const { resolveVoiceInit } = await import('../../../lib/mobile-voice-init-prefs');
+  const resolved = resolveVoiceInit(
+    {
+      mode: c.req.query('mode'),
+      idleMin: c.req.query('idleMin'),
+      sessionMaxMin: c.req.query('sessionMaxMin'),
+    },
+    prefs,
+  );
+
   return c.json({
     conversationToken: result.token,
     agentId,
@@ -719,13 +747,18 @@ app.get('/voice-session-init', async (c) => {
     //     0 = never auto-disconnect.
     //   - sessionMaxMin: hard ceiling regardless of activity. Armed
     //     once at session-start, not reset. 0 = no max.
-    idleTimeoutMin: prefs.fullAgentIdleTimeoutMin,
-    sessionMaxMin: prefs.fullAgentSessionMaxMin,
+    idleTimeoutMin: resolved.idleTimeoutMin,
+    sessionMaxMin: resolved.sessionMaxMin,
+    voiceMode: resolved.voiceMode,
     dynamicVariables: {
       device_id: claims.sub,
       workspace_id: claims.workspace_id,
       surface,
       desktop_host: process.env.MOBILE_DESKTOP_HOST ?? '',
+      // EL agent's system prompt branches on this — one prompt, 3
+      // behaviors. The end_conversation client tool is always
+      // registered; the prompt instructs WHEN to use it per mode.
+      voice_mode: resolved.voiceMode,
     },
   });
 });

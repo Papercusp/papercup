@@ -23,6 +23,8 @@ import {
   resolvePhasedProject,
 } from '@/app/api/_hono/harness';
 import { type Phase, phasePhaseLabel } from '@/lib/harness-phases';
+import { buildMemoryContextBlock } from '@/lib/memory/injection';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export type ChatHistoryEntry = { role: 'user' | 'assistant'; content: string };
 
@@ -105,6 +107,18 @@ Rules for proposals:
 - The body must be complete — do not elide. The UI writes it verbatim on Accept.
 - Be decisive but never fabricate facts. If you don't know a constraint, ask instead of proposing.`;
 
+  // Workspace-scope memory injection (architect has no session user;
+  // workspace shared memory is the right grain). Rebase-note adoption:
+  // unlocks "the architect remembers prior design decisions" with no
+  // new infrastructure.
+  const memBlock = await buildMemoryContextBlock({
+    userId: null,
+    workspaceId: activeWorkspaceId(),
+    queryContext: message,
+    heading: 'Architect memory (relevant entries)',
+  });
+  const memorySection = memBlock ? `\n\n---\n\n${memBlock}` : '';
+
   const trimmed = history.slice(-10);
   const fullPrompt = [
     ...trimmed.map((m) => `${m.role === 'user' ? 'User' : 'Architect'}: ${m.content}`),
@@ -112,7 +126,7 @@ Rules for proposals:
     'Architect:',
   ].join('\n\n');
 
-  return `${systemPrompt}\n\n---\n\n${fullPrompt}\n`;
+  return `${systemPrompt}${memorySection}\n\n---\n\n${fullPrompt}\n`;
 }
 
 export async function composeBrainstormPrompt(
@@ -153,6 +167,15 @@ Rules:
 - Don't promote too eagerly. Wait until the user signals the idea is ready, or ask them first.
 - Keep responses short and punchy. Long speeches kill brainstorming.`;
 
+  // Workspace-scope memory injection (same shape as architect).
+  const memBlock = await buildMemoryContextBlock({
+    userId: null,
+    workspaceId: activeWorkspaceId(),
+    queryContext: message,
+    heading: 'Brainstorm memory (relevant entries)',
+  });
+  const memorySection = memBlock ? `\n\n---\n\n${memBlock}` : '';
+
   const trimmed = history.slice(-10);
   const fullPrompt = [
     ...trimmed.map((m) => `${m.role === 'user' ? 'User' : 'Partner'}: ${m.content}`),
@@ -160,5 +183,5 @@ Rules:
     'Partner:',
   ].join('\n\n');
 
-  return `${systemPrompt}\n\n---\n\n${fullPrompt}\n`;
+  return `${systemPrompt}${memorySection}\n\n---\n\n${fullPrompt}\n`;
 }

@@ -86,15 +86,14 @@ export function ChatwootWidget() {
       ready(() => {
         try {
           window.$chatwoot?.setLabel('papercusp:operator');
-          // Pull in-app identity from the existing auth status endpoint if available (non-blocking).
-          fetch('/api/auth/status')
+          // Pull in-app identity from the user-session endpoint if available (non-blocking).
+          fetch('/api/auth/me')
             .then((r) => (r.ok ? r.json() : null))
             .then((auth) => {
-              const me = auth?.signedIn ? auth.user : null;
+              const me = auth?.user ?? null;
               if (me?.id) {
                 window.$chatwoot?.setUser(String(me.id), {
-                  email: me.email ?? undefined,
-                  name: me.displayName ?? me.email ?? undefined,
+                  name: me.display_name ?? me.username ?? undefined,
                 });
               }
             })

@@ -8,8 +8,9 @@
 
 import { NextResponse } from 'next/server';
 import { getSessionUser } from '@/lib/auth';
-import { getMemoryClient } from '@/lib/memory/mem0-client';
+import { getMemoryClient, invalidateMemoryClient } from '@/lib/memory/mem0-client';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { recordFeedback } from '@/lib/memory/feedback';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -52,11 +53,60 @@ export async function DELETE(req: Request) {
     const myResults = await client.getAll({ userId: user.id });
     let n = 0;
     for (const r of myResults.results ?? []) {
-      try { await client.delete(r.id); n += 1; } catch { /* best-effort */ }
+      try {
+        await client.delete(r.id);
+        const k = (r.metadata as Record<string, unknown> | undefined)?.kind;
+        await recordFeedback({
+          memId: r.id, userId: user.id, action: 'forget_all',
+          kind: typeof k === 'string' ? k : null,
+          priorText: r.memory ?? null,
+        });
+        n += 1;
+      } catch { /* best-effort */ }
     }
+    // High-impact action — force learning-loop instructions to refresh
+    // on the next memory operation rather than waiting for TTL.
+    invalidateMemoryClient();
     return NextResponse.json({ ok: true, deleted: n });
   }
   if (!id) return NextResponse.json({ error: 'id_or_all_required' }, { status: 400 });
+  // Snapshot prior text + kind BEFORE delete so we can record feedback.
+  let priorText: string | null = null;
+  let priorKind: string | null = null;
+  try {
+    const got = await client.get(id);
+    priorText = (got as { memory?: string } | null)?.memory ?? null;
+    const k = (got as { metadata?: Record<string, unknown> } | null)?.metadata?.kind;
+    priorKind = typeof k === 'string' ? k : null;
+  } catch { /* best-effort */ }
   await client.delete(id);
+  await recordFeedback({
+    memId: id, userId: user.id, action: 'delete', kind: priorKind, priorText,
+  });
+  return NextResponse.json({ ok: true });
+}
+
+export async function PATCH(req: Request) {
+  const user = await getSessionUser();
+  if (!user) return NextResponse.json({ error: 'unauthenticated' }, { status: 401 });
+  const client = await getMemoryClient();
+  if (!client) return NextResponse.json({ error: 'mem0_unavailable' }, { status: 503 });
+  const body = (await req.json().catch(() => null)) as { id?: string; memory?: string } | null;
+  if (!body?.id || typeof body.memory !== 'string' || !body.memory.trim()) {
+    return NextResponse.json({ error: 'id_and_memory_required' }, { status: 400 });
+  }
+  let priorText: string | null = null;
+  let priorKind: string | null = null;
+  try {
+    const got = await client.get(body.id);
+    priorText = (got as { memory?: string } | null)?.memory ?? null;
+    const k = (got as { metadata?: Record<string, unknown> } | null)?.metadata?.kind;
+    priorKind = typeof k === 'string' ? k : null;
+  } catch { /* best-effort */ }
+  await client.update(body.id, body.memory.trim());
+  await recordFeedback({
+    memId: body.id, userId: user.id, action: 'edit',
+    kind: priorKind, priorText, newText: body.memory.trim(),
+  });
   return NextResponse.json({ ok: true });
 }

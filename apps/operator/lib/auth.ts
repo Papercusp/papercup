@@ -142,9 +142,11 @@ export async function login(
   const token = newToken();
   const ttl = meta?.ttl_ms ?? DEFAULT_SESSION_TTL_MS;
   const expires = new Date(Date.now() + ttl);
+  // postgres.js in this version doesn't accept Date instances directly
+  // for timestamptz params — pass ISO string.
   await sql`
     INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, user_agent, remote_addr)
-    VALUES (${token}, ${u.id}, ${expires}, ${meta?.user_agent ?? null}, ${meta?.remote_addr ?? null})
+    VALUES (${token}, ${u.id}, ${expires.toISOString()}, ${meta?.user_agent ?? null}, ${meta?.remote_addr ?? null})
   `;
   await sql`
     UPDATE harness_shared.users SET last_login_at = now() WHERE id = ${u.id}
