@@ -10,6 +10,7 @@ import {
   lookupByHttpPath,
   listAllProjectedTools,
   listMcpProjections,
+  classifyEventWire,
   ToolRegistrationError,
   _resetProjectionRegistryForTests,
   type ProjectedTool,
@@ -194,5 +195,45 @@ describe('listMcpProjections', () => {
       type: 'object',
       description: 'Progress payload',
     });
+  });
+});
+
+describe('classifyEventWire', () => {
+  it('returns "string" for z.string()', () => {
+    expect(classifyEventWire(z.string())).toBe('string');
+  });
+
+  it('returns "string" for z.string() with describe()', () => {
+    expect(classifyEventWire(z.string().describe('text/plain'))).toBe('string');
+  });
+
+  it('returns "json" for z.object({...})', () => {
+    expect(classifyEventWire(z.object({ usd: z.number() }))).toBe('json');
+  });
+
+  it('returns "json" for z.number()', () => {
+    expect(classifyEventWire(z.number())).toBe('json');
+  });
+
+  it('returns "binary" for z.instanceof(Uint8Array)', () => {
+    expect(classifyEventWire(z.instanceof(Uint8Array))).toBe('binary');
+  });
+
+  it('binary classification survives a registerProjectedTool round-trip', () => {
+    registerProjectedTool({
+      pluginName: 'fixture',
+      description: 'binary tool',
+      inputSchema: { type: 'object' },
+      capabilities: [],
+      expose: { mcp: { name: 'bin.tool' } },
+      events: {
+        chunk: z.instanceof(Uint8Array),
+        meta:  z.object({ size: z.number() }),
+      },
+      fn: noop,
+    });
+    const t = lookupByMcpName('bin.tool')!;
+    expect(t.eventWireKinds?.chunk).toBe('binary');
+    expect(t.eventWireKinds?.meta).toBe('json');
   });
 });

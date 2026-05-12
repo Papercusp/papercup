@@ -75,7 +75,24 @@ export type UserEvents<T extends EventsSchema> = T & { [K in ReservedEventNames]
  * JSON-quoted strings inside notifications/papercusp/event); the
  * classification only affects the HTTP/SSE wire shape.
  */
-export type EventWireKind = 'string' | 'json';
+/**
+ * On-wire encoding for a single event name.
+ *
+ * - `'string'` — payload is the raw text of the event (no JSON wrapping).
+ *   Picked when the event schema is `z.string()`. SSE `data:` line, IPC
+ *   EVENT_JSON frame with the string as the `data` field.
+ * - `'json'` — payload is `JSON.stringify(data)`. The default for object
+ *   / number / array event schemas.
+ * - `'binary'` — payload is raw bytes (Uint8Array). On SSE this falls
+ *   back to base64 + a `content-encoding: base64` header (not currently
+ *   implemented; would be a separate addition). On the IPC transport,
+ *   this triggers an EVENT_BIN self-describing frame. Picked when the
+ *   event schema is `z.instanceof(Uint8Array)`.
+ *
+ * See `apps/operator/content/docs/endpoint-system/transports.mdx`
+ * § "Schema-inferred wire format".
+ */
+export type EventWireKind = 'string' | 'json' | 'binary';
 
 /**
  * Inspect a Zod schema and decide whether the wire payload for events
@@ -85,6 +102,24 @@ export type EventWireKind = 'string' | 'json';
  * cached on the tool entry so emit-time has no schema-introspection cost.
  */
 export function classifyEventWire(schema: ZodTypeAny): EventWireKind {
+  // Binary check: detect `z.instanceof(Uint8Array)` by probing the
+  // schema with a real Uint8Array. Zod 4 represents instanceof as
+  // `{ type: 'custom', fn }` with the Class captured in the fn closure,
+  // so structural _def sniffing isn't reliable. The probe is cheap
+  // (one parse) and runs once per declared event at register time.
+  //
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const def = (schema as any)?._def;
+  if (def?.type === 'custom') {
+    try {
+      const probe = schema.safeParse(new Uint8Array(0));
+      const rejectsObject = !schema.safeParse({}).success;
+      if (probe.success && rejectsObject) return 'binary';
+    } catch {
+      /* fall through to JSON */
+    }
+  }
+
   try {
     // Zod 4: built-in toJSONSchema — same path as inputSchema serialization.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
