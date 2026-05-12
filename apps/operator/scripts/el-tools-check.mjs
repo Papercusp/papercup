@@ -94,7 +94,9 @@ const warnings = [];
 
 // Tools that intentionally bypass the registry — handled directly in
 // buildClientTools() in elevenlabs-conv.ts. Drift check skips them.
-const REGISTRY_EXEMPT = new Set(['ask_operator']);
+//   ask_operator    — brain delegate; calls /api/agent-mcp/operator-converse
+//   end_conversation — session lifecycle; calls conv.endSession()
+const REGISTRY_EXEMPT = new Set(['ask_operator', 'end_conversation']);
 
 for (const toolName of syncClientNames) {
   if (REGISTRY_EXEMPT.has(toolName)) continue;
