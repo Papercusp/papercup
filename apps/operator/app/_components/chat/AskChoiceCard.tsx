@@ -68,30 +68,6 @@ interface AskChoiceCardProps {
   disableWhenAnswered?: boolean;
 }
 
-function styleClasses(style: AskChoiceOption['style'], isPicked: boolean): string {
-  const base = 'group flex items-center gap-3 bg-transparent px-3.5 py-3 text-left transition-colors';
-  const tone =
-    style === 'primary'
-      ? 'hover:bg-primary/8'
-      : style === 'danger'
-      ? 'hover:bg-destructive/10'
-      : 'hover:bg-white/[0.04]';
-  const picked = isPicked
-    ? style === 'danger'
-      ? 'bg-destructive/14'
-      : style === 'primary'
-      ? 'bg-primary/14'
-      : 'bg-white/[0.06]'
-    : '';
-  return `${base} ${tone} ${picked}`;
-}
-
-function iconBgClasses(style: AskChoiceOption['style']): string {
-  if (style === 'danger') {
-    return 'bg-destructive/12 text-destructive ring-1 ring-destructive/20 group-hover:bg-destructive/20';
-  }
-  return 'bg-primary/10 text-primary ring-1 ring-primary/15 group-hover:bg-primary/18';
-}
 
 export function AskChoiceCard({
   args,
@@ -114,9 +90,8 @@ export function AskChoiceCard({
     if (!isAnswered) return null;
     const labels = answered.picks.map((p) => p.label).join(' · ');
     return (
-      <p className="text-[10.5px] uppercase tracking-[0.14em] text-muted-foreground/70">
-        Picked{' '}
-        <span className="text-foreground/80 normal-case tracking-normal">{labels}</span>
+      <p className="ask-choice-picked">
+        Picked <span>{labels}</span>
       </p>
     );
   };
@@ -130,22 +105,22 @@ export function AskChoiceCard({
     <div
       role="group"
       aria-labelledby={questionId}
-      className="flex flex-col gap-2 mt-2"
+      className="ask-choice-card"
       data-tool="chat:ask_choice"
       data-multi={multi ? 'true' : 'false'}
+      data-answered={isAnswered ? 'true' : 'false'}
     >
-      <div className="flex flex-col gap-1.5">
-        <p id={questionId} className="text-[13.5px] leading-snug text-foreground">
+      <div className="ask-choice-head">
+        <p id={questionId} className="ask-choice-question">
           {args.question}
         </p>
         {renderPickedSummary()}
       </div>
-      <div className="flex flex-col gap-px rounded-xl border border-white/8 bg-white/[0.02] overflow-hidden">
+      <div className="ask-choice-options">
         {args.options.map((opt) => {
           const isPicked = pickedIds.has(opt.id);
           const isToggled = multi && !isAnswered && selected.has(opt.id);
           const showHighlight = isPicked || isToggled;
-          const cls = styleClasses(opt.style, showHighlight);
           const ariaProps: Record<string, string | boolean | undefined> = multi
             ? { 'aria-checked': isToggled || isPicked || false, role: 'checkbox' }
             : { 'aria-pressed': isPicked || undefined };
@@ -172,31 +147,35 @@ export function AskChoiceCard({
                   commit([{ option_id: opt.id, label: opt.label }]);
                 }
               }}
-              className={`${cls} ${buttonsDisabled ? 'cursor-default' : ''}`}
+              className="ask-choice-option"
+              data-style={opt.style ?? 'default'}
+              data-picked={showHighlight ? 'true' : 'false'}
+              data-disabled={buttonsDisabled ? 'true' : 'false'}
             >
               <span
                 aria-hidden="true"
-                className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${iconBgClasses(opt.style)}`}
+                className="ask-choice-option-icon"
+                data-style={opt.style ?? 'default'}
               >
                 {showHighlight ? (
-                  <Check className="h-4 w-4" />
+                  <Check className="ask-choice-icon" />
                 ) : multi ? (
-                  <Square className="h-4 w-4" />
+                  <Square className="ask-choice-icon" />
                 ) : (
-                  <Sparkles className="h-4 w-4" />
+                  <Sparkles className="ask-choice-icon" />
                 )}
               </span>
-              <span className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-[13px] font-medium text-foreground">
+              <span className="ask-choice-option-text">
+                <span className="ask-choice-option-label">
                   {opt.label}
                 </span>
                 {opt.hint && (
-                  <span aria-hidden="true" className="truncate text-[11.5px] text-muted-foreground">{opt.hint}</span>
+                  <span aria-hidden="true" className="ask-choice-option-hint">{opt.hint}</span>
                 )}
               </span>
               {!buttonsDisabled && !multi && (
                 <ChevronRight
-                  className="h-4 w-4 shrink-0 text-muted-foreground/50 transition-all group-hover:translate-x-0.5 group-hover:text-foreground"
+                  className="ask-choice-option-chevron"
                   strokeWidth={2}
                   aria-hidden="true"
                 />
@@ -206,8 +185,8 @@ export function AskChoiceCard({
         })}
       </div>
       {multi && !isAnswered && (
-        <div className="flex items-center justify-end gap-2">
-          <span className="text-[11px] text-muted-foreground/60">
+        <div className="ask-choice-submit-row">
+          <span className="ask-choice-submit-hint">
             {selected.size === 0
               ? 'Pick one or more, then Submit'
               : `${selected.size} selected`}
@@ -221,7 +200,7 @@ export function AskChoiceCard({
                 .map((o) => ({ option_id: o.id, label: o.label }));
               commit(picks);
             }}
-            className="rounded-md bg-primary px-3 py-1.5 text-[12.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            className="ask-choice-submit"
           >
             Submit
           </button>

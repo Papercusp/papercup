@@ -359,6 +359,7 @@ export function ChatConversation(props: ChatConversationProps) {
               return (
                 <div
                   key={vi.key}
+                  data-index={vi.index}
                   data-message-index={vi.index}
                   ref={virtualizer.measureElement}
                   className={`oracle-msg oracle-msg-${m.role}`}

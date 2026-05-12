@@ -287,7 +287,14 @@ export async function GET(req: NextRequest) {
                 provenanceFlags: block.suggestion.provenanceFlags,
               };
               cards.push(payload);
-              send('suggestion', payload);
+              // `ask_user` suggestions feed the operator chat brain
+              // ONLY — they don't render as panel cards. Persisted to
+              // last-scan above so operator-converse can read them
+              // next turn, but skipped in the SSE `suggestion` stream
+              // the panel consumes.
+              if (block.suggestion.raw.action !== 'ask_user') {
+                send('suggestion', payload);
+              }
             }
             // Plugin-authored suggestions: enriched through the same
             // pipeline so tier-classification + auto_dispatch are

@@ -40,7 +40,7 @@ import {
   loadRoleConverse,
   renderToolsCatalog,
 } from '@/lib/prompt-assembly';
-import { buildWorkspaceInventoryBlock } from '@/lib/workspace-inventory';
+import { readLastScan } from '@/lib/operator-last-scan';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -108,12 +108,33 @@ async function buildPrompt(body: ConverseRequestBody): Promise<string> {
   const playbook = loadRoleToolsMd('operator');
   if (playbook) sections.push(playbook);
 
-  // Workspace-at-a-glance snapshot. Gives the brain concrete facts
-  // (harness counts, recent activity) for ladder rung 5 'open with
-  // substance' openers — the alternative is a generic 'Hi, what can
-  // I help with?' which the user explicitly rejected.
-  const inventoryBlock = await buildWorkspaceInventoryBlock().catch(() => '');
-  if (inventoryBlock) sections.push(inventoryBlock);
+  // Scanner-authored high-level questions to surface in chat.
+  // The proactive scanner (operator-scan) emits two flavors of
+  // suggestion: `send_directive` / `navigate` / `inform` render as
+  // panel cards the user clicks, while `ask_user` is a non-technical
+  // decision the brain weaves into chat. Both come from the same
+  // scan; here we read the most recent ones and inject them as a
+  // prompt section so the brain has substance for open_canvas /
+  // user_says_ready turns.
+  try {
+    const lastScan = await readLastScan();
+    const askUserCards = (lastScan?.cards ?? []).filter(
+      (c) => (c as { raw?: { action?: string } })?.raw?.action === 'ask_user',
+    );
+    if (askUserCards.length > 0) {
+      const lines = askUserCards.slice(0, 6).map((c, i) => {
+        const raw = (c as { raw: { question?: string; framing?: string; title?: string } }).raw;
+        const q = raw.question ?? raw.title ?? '';
+        const f = raw.framing ? ` (context: ${raw.framing})` : '';
+        return `${i + 1}. ${q}${f}`;
+      });
+      sections.push(
+        `## Scanner suggestions for the user (high-level decisions)\n\n` +
+          `The scanner surfaced these conversational questions for you to raise with the user when relevant — never technical, never auto-dispatch. Weave them into open_canvas / user_says_ready turns where they fit, or skip if they don't match the moment:\n\n${lines.join('\n')}\n\n` +
+          `Use these as inspiration, not a script — pick at most one per turn, paraphrase naturally, and skip any that don't fit. Never enumerate them verbatim.`,
+      );
+    }
+  } catch { /* degraded — proceed without scanner suggestions */ }
 
   // Conversation history — minimal serialization. Roles are preserved
   // so the model can reason about who said what.
@@ -135,8 +156,8 @@ async function buildPrompt(body: ConverseRequestBody): Promise<string> {
     user_message: 'Trigger: user_message — the user just said something. React per the ladder.',
     silence_after_question: 'Trigger: silence_after_question — you asked the user something and they did not reply within 30s. Write ONE brief context-specific follow-up: first sentence references WHAT you were waiting to hear back on (e.g. "Still want me to dispatch the architect for that?" not "Still with me?"), then end with literally: "When you\'re ready, just say ready." That tells the user how to re-engage without you needing to ask again. After this nudge, the system will NOT prompt again. Total length: 2 sentences, under 30 words.',
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
-    open_canvas: 'Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ONE concrete observed fact + ONE concrete invitation. NEVER a generic greeting like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — those are forbidden openers. Read the workspace inventory above (harness counts, recent activity, escalations, last scan) and pick the most useful concrete thing the user can act on. If the inventory shows nothing, say so concretely and offer a setup action ("Nothing set up here yet. Want to create your first harness?"). Keep it warm and short — 1-2 sentences total.',
-    user_says_ready: 'Trigger: user_says_ready — the user signaled they want suggestions ("ready", "next", "what now?", "go"). Read the workspace inventory above and offer 2-3 concrete things they could work on right now, drawn from the actual harness state. Format as a brief bulleted-or-numbered list. NO generic greeting; NO open question at the end — the user already asked for suggestions, deliver them.',
+    open_canvas: 'Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ONE concrete observed fact + ONE concrete invitation. NEVER a generic greeting like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — those are forbidden openers. If the "Scanner suggestions for the user" section is present above, pick the single most relevant question to raise — paraphrased naturally, not verbatim. Otherwise call `harness:list` or `harness:status` to find a concrete fact to anchor on. Last resort if nothing is set up: "Nothing set up here yet. Want to create your first harness?" Keep it warm and short — 1-2 sentences total.',
+    user_says_ready: 'Trigger: user_says_ready — the user signaled they want suggestions ("ready", "next", "what now?", "go"). If the "Scanner suggestions for the user" section is present above, surface the top 2-3 high-level questions from it, paraphrased naturally. Otherwise call `harness:list` and `harness:status` to find concrete things they could work on. Format as a brief bulleted-or-numbered list of 2-3 items. NO generic greeting; NO open question at the end — the user already asked for suggestions, deliver them.',
   };
   sections.push(`## Trigger\n\n${triggerLines[trigger]}`);
 

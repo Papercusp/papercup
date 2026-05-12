@@ -70,6 +70,7 @@ interface OperatorTurnRow {
   role: 'user' | 'assistant' | 'system';
   text: string;
   createdAt: number;
+  tools?: ChatToolCall[] | null;
 }
 
 // ─── State + actions ────────────────────────────────────────────────────
@@ -656,7 +657,14 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         if (!res.ok) return;
         const json = (await res.json()) as {
           conversation: { id: string };
-          turns: Array<{ id?: string; seq: number; role: 'user' | 'assistant' | 'system'; text: string; createdAt?: number }>;
+          turns: Array<{
+            id?: string;
+            seq: number;
+            role: 'user' | 'assistant' | 'system';
+            text: string;
+            createdAt?: number;
+            tools?: ChatToolCall[] | null;
+          }>;
           hasMoreEarlier: boolean;
         };
         if (cancelled) return;
@@ -716,7 +724,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       );
       if (!res.ok) return;
       const page = (await res.json()) as {
-        turns: Array<{ seq: number; role: 'user' | 'assistant' | 'system'; text: string }>;
+        turns: Array<{
+          id?: string;
+          seq: number;
+          role: 'user' | 'assistant' | 'system';
+          text: string;
+          tools?: ChatToolCall[] | null;
+        }>;
         hasMoreEarlier: boolean;
       };
       if (page.turns.length === 0) {
@@ -1129,7 +1143,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         //     If the assistant's reply awaits a response (parsed say
         //     ends with '?' or used chat:ask_choice), → 'awaiting_reply'
         //     (arms ONE 30s nudge). Otherwise → 'ready' (no timer).
-        const awaitingReply = detectAwaitingReply(parsed.say, parsed.tools);
+        const awaitingReply = detectAwaitingReply(parsed.say, collectedTools);
         let endSub: SubState;
         if (stateRef.current.mode === 'passive') {
           endSub = 'passive_idle';
@@ -1337,10 +1351,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     return null;
   }, [state.sub]);
 
-  // chat:ask_choice card click → POST turn-answer. The atomic endpoint
-  // updates assistant.tools[i].answered AND inserts the user turn;
-  // we don't optimistically dispatch local rows because the live-tail
-  // path will pick them up via the sync invalidate the endpoint fires.
+  // chat:ask_choice card click → POST turn-answer. The endpoint is still
+  // authoritative, but we now mirror the answered-state + picked user turn
+  // locally on success so the sidebar updates immediately instead of waiting
+  // for the live-tail invalidate round-trip.
   const answerChoice = useCallback(
     async (input: {
       assistantSeq: number;
@@ -1361,8 +1375,49 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
         const detail = await r.text().catch(() => '');
         throw new Error(`turn-answer ${r.status}: ${detail.slice(0, 200)}`);
       }
+
+      const answeredAt = Date.now();
+      const existing = stateRef.current.messages.find((m) => m.seq === input.assistantSeq);
+      let nextHistory = stateRef.current.messages;
+      if (existing?.tools && existing.tools[input.toolIndex]) {
+        const nextTools = existing.tools.map((tool, index) =>
+          index === input.toolIndex
+            ? { ...tool, answered: { picks: input.picks, at: answeredAt } }
+            : tool,
+        );
+        dispatch({ type: 'update_message_tools', seq: input.assistantSeq, tools: nextTools });
+        nextHistory = nextHistory.map((msg) =>
+          msg.seq === input.assistantSeq ? { ...msg, tools: nextTools } : msg,
+        );
+      }
+
+      const joined = input.picks.map((p) => p.label).join(' · ');
+      const optimisticId = `opt-${typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)}`;
+      const userMsg: ChatMessage = { role: 'user', content: joined, id: optimisticId };
+      dispatch({ type: 'append_message', message: userMsg });
+      dispatch({ type: 'record_user_turn', tsMs: answeredAt });
+      dispatch({ type: 'mark_turn', tsMs: answeredAt });
+      const askedAt = stateRef.current.wantActiveAskedAtMs;
+      if (
+        askedAt > 0
+        && answeredAt - askedAt < 60_000
+        && userReplyDeclinesActive(joined)
+      ) {
+        dispatch({ type: 'record_want_active_declined', tsMs: answeredAt });
+      }
+
+      let trigger: GenerationRequest['trigger'] = 'user_message';
+      if (detectUserReadyTrigger(joined)) {
+        trigger = 'user_says_ready';
+      } else if (
+        stateRef.current.sub === 'quiet_wait'
+        || stateRef.current.sub === 'nudged'
+      ) {
+        trigger = 'quiet_wait_resume';
+      }
+      void runGeneration(trigger, [...nextHistory, userMsg]);
     },
-    [],
+    [runGeneration],
   );
 
   const value: OperatorConversationContextValue = useMemo(

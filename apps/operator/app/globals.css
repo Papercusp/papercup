@@ -24103,3 +24103,208 @@ body:has(.operator-panel) {
 .pc-console-btn svg {
   display: block;
 }
+
+/* ── Operator sidebar chat parity + card fixes ───────────────────────── */
+
+.op-chat-sidebar .oracle-body > .oracle-empty-state {
+  min-height: calc(100% - 12px);
+}
+
+.op-chat-sidebar .oracle-msg-role {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.op-chat-sidebar .oracle-thinking-row {
+  margin-left: 38px;
+}
+
+.op-chat-sidebar .oracle-error {
+  margin: 0 2px;
+}
+
+.op-chat-sidebar .ask-choice-card {
+  width: min(100%, 318px);
+  margin-top: 8px;
+  margin-left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(10, 19, 31, 0.98), rgba(6, 12, 22, 0.98));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 16px 30px rgba(0,0,0,0.22);
+}
+
+.op-chat-sidebar .oracle-msg-user .ask-choice-card {
+  margin-left: auto;
+}
+
+.ask-choice-head {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ask-choice-question {
+  margin: 0;
+  color: #eef7ff;
+  font-size: 13px;
+  line-height: 1.42;
+}
+
+.ask-choice-picked {
+  margin: 0;
+  color: rgba(186, 230, 253, 0.74);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.ask-choice-picked span {
+  color: #e5f6ff;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.ask-choice-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ask-choice-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid rgba(125, 211, 252, 0.10);
+  border-radius: 14px;
+  background: rgba(255,255,255,0.02);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
+}
+
+.ask-choice-option:hover:not([data-disabled="true"]) {
+  background: rgba(125, 211, 252, 0.08);
+  border-color: rgba(125, 211, 252, 0.24);
+  transform: translateY(-1px);
+}
+
+.ask-choice-option[data-picked="true"] {
+  background: rgba(125, 211, 252, 0.10);
+  border-color: rgba(125, 211, 252, 0.28);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+.ask-choice-option[data-style="primary"][data-picked="true"] {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: rgba(56, 189, 248, 0.34);
+}
+
+.ask-choice-option[data-style="danger"][data-picked="true"] {
+  background: rgba(248, 113, 113, 0.12);
+  border-color: rgba(248, 113, 113, 0.30);
+}
+
+.ask-choice-option[data-disabled="true"] {
+  cursor: default;
+}
+
+.ask-choice-option-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.16);
+  background: rgba(56, 189, 248, 0.10);
+  color: #7dd3fc;
+}
+
+.ask-choice-option-icon[data-style="danger"] {
+  border-color: rgba(248, 113, 113, 0.20);
+  background: rgba(248, 113, 113, 0.10);
+  color: #fda4af;
+}
+
+.ask-choice-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.ask-choice-option-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ask-choice-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #eef7ff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ask-choice-option-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgba(148, 163, 184, 0.86);
+  font-size: 11px;
+}
+
+.ask-choice-option-chevron {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  color: rgba(148, 163, 184, 0.72);
+}
+
+.ask-choice-submit-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.ask-choice-submit-hint {
+  margin-right: auto;
+  color: rgba(148, 163, 184, 0.72);
+  font-size: 11px;
+}
+
+.ask-choice-submit {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 10px;
+  background: rgba(56, 189, 248, 0.14);
+  color: #eaf8ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ask-choice-submit:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.22);
+}
+
+.ask-choice-submit:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
