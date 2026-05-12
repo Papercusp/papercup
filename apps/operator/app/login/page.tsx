@@ -67,6 +67,12 @@ function LoginForm() {
         toast.error(j.error === 'bad_password' ? 'Wrong password.' : j.error === 'unknown_user' ? 'No such user.' : `Login failed: ${j.error}`);
         return;
       }
+      // Stash a one-shot welcome flag for OperatorConversationProvider
+      // to consume on mount → fires user_welcomed trigger with the
+      // display name in the prompt context (Plan 4.8).
+      try {
+        sessionStorage.setItem('papercusp_just_logged_in', j.user.display_name);
+      } catch { /* sessionStorage may be unavailable */ }
       toast.success(`Welcome, ${j.user.display_name}`);
       router.replace(redirectTo);
     } finally {
@@ -93,6 +99,9 @@ function LoginForm() {
         toast.error(j.error === 'username_taken' ? 'That username is taken.' : `Signup failed: ${j.error}`);
         return;
       }
+      try {
+        sessionStorage.setItem('papercusp_just_logged_in', j.user.display_name);
+      } catch { /* sessionStorage may be unavailable */ }
       toast.success(`Welcome, ${j.user.display_name}`);
       router.replace(redirectTo);
     } finally {

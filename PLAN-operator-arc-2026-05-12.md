@@ -8,8 +8,8 @@ independently mergeable. Update statuses as commits land.
 | # | Item | Effort | Status |
 |---|---|---|---|
 | 1.1 | `mcp.discoveryDefaultServers: ['agentmcp']` per-spawn override in `libs/papercup-shared/src/agent/chat-stream.ts` | 1h | ✅ `c9c1aa8c` |
-| 1.2 | Replace hardcoded built-in tool filter (Set of names) with `!startsWith('mcp__')` filter | 0.5h | pending |
-| 1.3 | Document 6th plugin shape ("render-into-chat") in `docs/endpoint-system/function-as-truth.mdx` | 0.25h | pending |
+| 1.2 | Replace hardcoded built-in tool filter (Set of names) with `!startsWith('mcp__')` filter | 0.5h | ✅ `a74c04c1` |
+| 1.3 | Document 6th plugin shape ("render-into-chat") in `docs/endpoint-system/function-as-truth.mdx` | 0.25h | ✅ `a74c04c1` |
 | 1.4 | New `__tests__/integration/operator-tool-surface-consistency.test.ts` — catalog ⇄ MCP `tools/list` ⇄ `allowedTools` drift check | 2h | pending |
 
 ## Plan 4 — User accounts + per-user setting overrides
@@ -71,16 +71,16 @@ Resolution order at read time: user pref (if set) → workspace pref → default
 
 | # | Item | Effort | Status |
 |---|---|---|---|
-| 4.1 | Schema + migration (058) + grants | 1h | pending |
-| 4.2 | Auth lib (`lib/auth/` — login, session, password) | 3h | pending |
-| 4.3 | `/api/auth/*` routes | 2h | pending |
-| 4.4 | Cookie middleware + session lookup | 1.5h | pending |
-| 4.5 | user_preferences resolver — user > workspace > default | 2h | pending |
-| 4.6 | User picker in chrome | 1.5h | pending |
-| 4.7 | `/login`, `/signup`, `/settings/user` pages | 4h | pending |
+| 4.1 | Schema + migration (058) + grants | 1h | ✅ `552f7b14` |
+| 4.2 | Auth lib (`lib/auth/` — login, session, password) | 3h | ✅ `552f7b14` |
+| 4.3 | `/api/auth/*` routes | 2h | ✅ `552f7b14` |
+| 4.4 | Cookie middleware + session lookup | 1.5h | ✅ `552f7b14` (via getSessionUser) |
+| 4.5 | user_preferences resolver — user > workspace > default | 2h | ✅ `552f7b14` |
+| 4.6 | User picker in chrome | 1.5h | ✅ (this turn) |
+| 4.7 | `/login`, `/signup`, `/settings/user` pages | 4h | ✅ (this turn, login + settings; signup folded into /login) |
 | 4.8 | Welcome trigger + operator_welcome SSE event | 2h | pending |
-| 4.9 | mem0 changes baked into Plan 3 | 2h | pending |
-| 4.10 | Tests + live verify | 2h | pending |
+| 4.9 | mem0 changes baked into Plan 3 | 2h | pending (Plan 3) |
+| 4.10 | Tests + live verify | 2h | pending (needs servers) |
 
 ## Plan 2 — Semantic search
 

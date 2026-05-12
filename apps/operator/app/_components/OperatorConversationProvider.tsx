@@ -445,9 +445,12 @@ export interface GenerationRequest {
     | 'silence_after_question'
     | 'quiet_wait_resume'
     | 'open_canvas'
-    | 'user_says_ready';
+    | 'user_says_ready'
+    | 'user_welcomed';
   /** True when we're allowed to ask "want active?" this turn. */
   mayAskActive: boolean;
+  /** Display name set on `user_welcomed` so brain greets by name. */
+  welcomedUser?: { displayName: string };
   /**
    * Output surface for this turn. 'voice' when EL/Realtime is connected
    * so the brain knows text-only affordances (chat:ask_choice buttons)
@@ -498,6 +501,9 @@ const defaultGenerationFn: GenerationFn = async (req) => {
       trigger: req.trigger,
       mayAskActive: req.mayAskActive,
       modality: req.modality,
+      welcomed_user: req.welcomedUser
+        ? { display_name: req.welcomedUser.displayName }
+        : undefined,
       uiClientId: uiClientId || undefined,
     }),
     signal: req.signal,
@@ -1021,7 +1027,10 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const runGeneration = useCallback(
     async (
       trigger: GenerationRequest['trigger'],
-      messagesOverride?: ChatMessage[],
+      opts?: {
+        messagesOverride?: ChatMessage[];
+        welcomedUser?: { displayName: string };
+      },
     ) => {
       // Abort any in-flight generation first (e.g. user sent a new message
       // mid-thinking, or a mode flip happened).
@@ -1033,7 +1042,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       dispatch({ type: 'set_error', error: null });
 
       const snapshot = stateRef.current;
-      const history = messagesOverride ?? snapshot.messages;
+      const history = opts?.messagesOverride ?? snapshot.messages;
 
       try {
         const stream = await generationFn({
@@ -1041,6 +1050,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           trigger,
           mayAskActive: mayAskActiveNow(snapshot),
           modality: voiceActiveRef.current ? 'voice' : 'text',
+          welcomedUser: opts?.welcomedUser,
           signal: ctrl.signal,
         });
 
@@ -1288,8 +1298,25 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     if (state.mode !== 'active') return;
     if (voiceActive) return;
     if (sleepUntilMs > Date.now()) return;
-    if (state.messages.length > 0) return;
     if (state.sub !== 'ready') return;
+
+    // Welcome flow: the login page set sessionStorage on success.
+    // Consume the flag and fire user_welcomed (overrides open_canvas
+    // even when messages exist — login is a fresh conversational moment).
+    // Plan 4.8.
+    let welcomedName: string | null = null;
+    try {
+      welcomedName = sessionStorage.getItem('papercusp_just_logged_in');
+      if (welcomedName) sessionStorage.removeItem('papercusp_just_logged_in');
+    } catch { /* sessionStorage unavailable */ }
+    if (welcomedName) {
+      openCanvasFiredRef.current = true;
+      void runGeneration('user_welcomed', { welcomedUser: { displayName: welcomedName } });
+      return;
+    }
+
+    // Fall-through: only auto-fire open_canvas on truly empty conversation.
+    if (state.messages.length > 0) return;
     openCanvasFiredRef.current = true;
     void runGeneration('open_canvas');
   }, [state.mode, state.sub, state.messages.length, voiceActive, sleepUntilMs, runGeneration]);
@@ -1341,7 +1368,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // turn so the model sees what the user actually said. State hasn't
       // committed yet on this tick; reading state.messages would miss it.
       const nextHistory = [...stateRef.current.messages, userMsg];
-      void runGeneration(trigger, nextHistory);
+      void runGeneration(trigger, { messagesOverride: nextHistory });
     },
     [runGeneration, persistTurn],
   );
@@ -1435,7 +1462,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       ) {
         trigger = 'quiet_wait_resume';
       }
-      void runGeneration(trigger, [...nextHistory, userMsg]);
+      void runGeneration(trigger, { messagesOverride: [...nextHistory, userMsg] });
     },
     [runGeneration],
   );
