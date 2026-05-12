@@ -709,6 +709,18 @@ app.get('/voice-session-init', async (c) => {
   return c.json({
     conversationToken: result.token,
     agentId,
+    // Cost-control limits the mobile client enforces locally. Mirrors
+    // the desktop voice-mode timers (voice-mode.ts armIdleTimer +
+    // armSessionMaxTimer) — same prefs source, same defaults, same
+    // semantics. Sent in the init payload so the phone gets fresh
+    // values every session without a separate prefs endpoint.
+    //   - idleTimeoutMin: bound USER-silence tail (agent talking does
+    //     NOT reset; matches desktop EL credit-burn audit fix #2).
+    //     0 = never auto-disconnect.
+    //   - sessionMaxMin: hard ceiling regardless of activity. Armed
+    //     once at session-start, not reset. 0 = no max.
+    idleTimeoutMin: prefs.fullAgentIdleTimeoutMin,
+    sessionMaxMin: prefs.fullAgentSessionMaxMin,
     dynamicVariables: {
       device_id: claims.sub,
       workspace_id: claims.workspace_id,
