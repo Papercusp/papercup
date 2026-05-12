@@ -68,16 +68,82 @@ export function OPTIONS(): Response {
   return new Response(null, { status: 204, headers: CORS_HEADERS });
 }
 
-/** Sanity probe — any GET hit gets logged so we can tell whether
- *  the Tauri webview can reach the operator at all. */
-export function GET(req: NextRequest): Response {
+/**
+ * GET with ?action=spawn — actually spawn a terminal.
+ *
+ * This is a workaround for Tauri webkit2gtk's broken CORS preflight: a
+ * GET via Image().src is a "no-CORS" request that always reaches the
+ * server, no preflight, no header dance. The renderer hits this URL
+ * via `new Image().src = '...?action=spawn&slug=...'` and the server
+ * just spawns. We return a 1x1 transparent PNG so the browser is
+ * happy (it expected an image).
+ *
+ * GET without ?action= is a passive probe (still logged for debugging).
+ */
+export async function GET(req: NextRequest): Promise<Response> {
+  const url = new URL(req.url);
+  const action = url.searchParams.get('action');
+  const slug = url.searchParams.get('slug');
   const origin = req.headers.get('origin') ?? '(no-origin)';
   const ua = req.headers.get('user-agent') ?? '(no-ua)';
-  dlog(`GET probe origin=${origin} host=${req.headers.get('host')} ua=${ua.slice(0, 60)}`);
-  return Response.json(
-    { status: 'probe-ok', note: 'use POST to actually spawn a terminal' },
-    { headers: CORS_HEADERS },
+
+  if (action !== 'spawn') {
+    dlog(`GET probe origin=${origin} host=${req.headers.get('host')} ua=${ua.slice(0, 60)}`);
+    return Response.json(
+      { status: 'probe-ok', note: 'use ?action=spawn or POST to actually spawn a terminal' },
+      { headers: CORS_HEADERS },
+    );
+  }
+
+  dlog(`GET spawn origin=${origin} host=${req.headers.get('host')} slug=${slug ?? '(null)'} ua=${ua.slice(0, 60)}`);
+
+  if (!isLoopback(req)) {
+    return jsonRes({ status: 'error', error: 'loopback only' }, 403);
+  }
+  try {
+    await doSpawn({ slug: slug || null, operatorBaseUrl: new URL(req.url).origin });
+  } catch (e: any) {
+    dlog(`GET spawn failed: ${e?.message}`);
+  }
+  // Return a 1x1 transparent PNG so callers using <img src=...> are
+  // satisfied. Status 200 with image content-type, no CORS protection
+  // needed since this is a "no-CORS" request type.
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+    'base64',
   );
+  return new Response(png, {
+    status: 200,
+    headers: { 'content-type': 'image/png', 'cache-control': 'no-store' },
+  });
+}
+
+/** Shared spawn implementation called by both POST and GET. */
+async function doSpawn(opts: { slug: string | null; operatorBaseUrl: string }): Promise<void> {
+  const envelope = await buildConsoleEnvelope({
+    workspaceId: activeWorkspaceId(),
+    slug: opts.slug,
+    operatorBaseUrl: opts.operatorBaseUrl,
+  });
+  const mcpPath = join(envelope.cwd, '.mcp.json');
+  if (existsSync(mcpPath)) {
+    const bak = join(envelope.cwd, '.mcp.json.papercusp.bak');
+    if (!existsSync(bak)) renameSync(mcpPath, bak);
+  }
+  writeFileSync(mcpPath, envelope.mcpJsonContents);
+  if (process.platform !== 'linux') throw new Error('linux-only spawn for now');
+  const term = findLinuxTerminal();
+  if (!term) throw new Error('no terminal emulator found');
+  const oneliner = buildOneliner(envelope.cwd, envelope.env, envelope.greetingCmd);
+  const childArgs = [...term.args, 'bash', '-lc', oneliner];
+  const child = spawn(term.bin, childArgs, {
+    detached: true,
+    stdio: 'ignore',
+    cwd: envelope.cwd,
+    env: { ...process.env, ...envelope.env },
+  });
+  child.unref();
+  dlog(`doSpawn launched ${term.bin} pid=${child.pid}`);
 }
 
 const LINUX_TERMINALS: Array<[string, string[]]> = [
