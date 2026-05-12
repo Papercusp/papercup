@@ -26,12 +26,25 @@ type RustEndpointEvent =
   | { kind: 'error'; code: string; message: string };
 
 function base64ToUint8(b64: string): Uint8Array {
-  // Tauri webview is Chromium; atob is available. Keep this path simple
-  // — if we need to support Node-side callers later, we can branch.
-  const bin = atob(b64);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
+  // The Tauri webview is Chromium so `atob` is always available, but
+  // some operator code runs Node-side too (SSR, tests) where `atob`
+  // didn't exist until Node 16+. Prefer the global `atob` if defined;
+  // fall back to Buffer (Node) so this module is universally callable.
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const NodeBuffer = (globalThis as any).Buffer;
+  if (NodeBuffer && typeof NodeBuffer.from === 'function') {
+    const buf: { length: number; [k: number]: number } = NodeBuffer.from(b64, 'base64');
+    const out = new Uint8Array(buf.length);
+    for (let i = 0; i < buf.length; i++) out[i] = buf[i];
+    return out;
+  }
+  throw new Error('base64ToUint8: no atob or Buffer in this environment');
 }
 
 export async function* dispatchEndpointStreamIpc<TInput>(
