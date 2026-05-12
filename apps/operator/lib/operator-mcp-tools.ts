@@ -20,11 +20,14 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__tasks:list',
   'mcp__agentmcp__tasks:get',
   'mcp__agentmcp__tasks:create',
-  'mcp__agentmcp__tasks:update',
-  'mcp__agentmcp__tasks:close',
+  // tasks:update / tasks:close — listed in earlier iterations but no
+  // `defineTool` exists; removed to keep the brain's tool surface
+  // honest. Add back when the handlers ship.
   'mcp__agentmcp__goals:list',
   'mcp__agentmcp__goals:get',
   'mcp__agentmcp__issues:list',
+  'mcp__agentmcp__harness:escalation',
+  'mcp__agentmcp__harness:pending_reviews',
   'mcp__agentmcp__messages:inbox',
   'mcp__agentmcp__messages:outbox',
   'mcp__agentmcp__messages:send',

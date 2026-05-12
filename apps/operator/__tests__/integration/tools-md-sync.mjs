@@ -73,18 +73,13 @@ const note = (n) => { console.log(`  ⚠ ${n}`); warn++; };
 
 function parseChatSurfaceAllowedTools(filepath) {
   const src = readFileSync(join(REPO, filepath), 'utf8');
-  // Match every `mcp__agentmcp__<name>` reference. The route's
-  // allowedTools array is the authoritative shape; we then strip the
-  // prefix to get the catalog name.
+  // Match every `mcp__agentmcp__<name>` reference. Returns the literal
+  // extracted names — `_` form for plugin tools, `:` separator for
+  // built-ins. The `.`↔`_` translation lives in lookupCatalog(), not
+  // here, so a single name has a single representation.
   const matches = src.matchAll(/mcp__agentmcp__([a-zA-Z0-9_:.]+)/g);
   const names = new Set();
-  for (const m of matches) {
-    let n = m[1];
-    // claude-code translates `.` → `_` for the LLM-facing name; our
-    // catalog stores the original dotted name. Normalize both ways.
-    names.add(n);
-    if (n.includes('_')) names.add(n.replace(/_/g, '.'));
-  }
+  for (const m of matches) names.add(m[1]);
   return names;
 }
 
@@ -218,14 +213,46 @@ function parseToolMentions(md) {
   return mentions;
 }
 
+/**
+ * Look up a tool name in the catalog, tolerating the `.`↔`_` naming
+ * divergence between allowedTools (claude-code surface) and the
+ * canonical defineTool name. Per the operator-mcp-tools.ts comment:
+ * "claude-code converts `.` to `_` in MCP tool names — server-side
+ *  exposed as orchestrator.spawn / poll / list_active / cancel but
+ *  Claude sees them as orchestrator_spawn etc."
+ *
+ * To find an `allowedTools` entry in the catalog, try both forms:
+ * literal first, then with `_` converted to `.` only where the first
+ * underscore-segment matches a known plugin/namespace.
+ */
+function lookupCatalog(name) {
+  if (CATALOG.has(name)) return CATALOG.get(name);
+  // Try underscore→dot conversion. The catalog uses `<ns>.<verb>` for
+  // plugin tools (orchestrator.spawn). claude-code's `_` form mangles
+  // BOTH the `:` and `.` separators, but `:` is preserved here.
+  const dotForm = name.replace(/_/g, '.');
+  if (CATALOG.has(dotForm)) return CATALOG.get(dotForm);
+  // Try only first underscore → dot (orchestrator_spawn vs nested)
+  const firstDot = name.replace(/_/, '.');
+  if (CATALOG.has(firstDot)) return CATALOG.get(firstDot);
+  return null;
+}
+
 function checkRole(role, allowedNames, label) {
   console.log(`--- ${label} (${role}) ---`);
 
   // (warn) Every tool in the surface has guidance.when.
+  // (fail) Plan 1.4 — every tool in the surface has a catalog entry.
+  // Catches drift: a tool name in allowedTools whose `defineTool` was
+  // deleted/renamed, or that's typo'd.
   let missingGuidance = 0;
+  const orphans = [];
   for (const name of allowedNames) {
-    const entry = CATALOG.get(name);
-    if (!entry) continue; // tool not in catalog scan (stale name or out-of-scope file)
+    const entry = lookupCatalog(name);
+    if (!entry) {
+      orphans.push(name);
+      continue;
+    }
     if (!entry.hasWhen) {
       missingGuidance += 1;
       if (missingGuidance <= 3) {
@@ -233,15 +260,31 @@ function checkRole(role, allowedNames, label) {
       }
     }
   }
+  if (orphans.length === 0) {
+    ok(`${role}: every allowedTool has a catalog entry (no drift)`);
+  } else {
+    bad(`${role}: ${orphans.length} allowedTool(s) without catalog entry: ${orphans.slice(0, 5).join(', ')}${orphans.length > 5 ? '...' : ''}`);
+  }
   if (missingGuidance > 3) note(`...and ${missingGuidance - 3} more without guidance.when`);
   if (missingGuidance === 0) ok(`every tool in ${role}'s surface has guidance.when`);
+
+  /**
+   * Is a tool name from prose (playbook / persona) considered present
+   * in the role's surface? Tolerates `.`↔`_` divergence the same way
+   * lookupCatalog does — `orchestrator.spawn` in prose matches
+   * `orchestrator_spawn` in allowedTools (the claude-code-mangled form).
+   */
+  const inSurface = (n) =>
+    allowedNames.has(n) ||
+    allowedNames.has(n.replace(/\./g, '_')) ||
+    allowedNames.has(n.replace(/\./, '_'));
 
   // (fail) Every tool mentioned in tools.md is in the role's surface.
   const toolsMdPath = join(PROMPTS_DIR, `${role}.tools.md`);
   if (existsSync(toolsMdPath)) {
     const md = readFileSync(toolsMdPath, 'utf8');
     const mentions = parseToolMentions(md);
-    const stale = [...mentions].filter((n) => !allowedNames.has(n));
+    const stale = [...mentions].filter((n) => !inSurface(n));
     if (stale.length === 0) {
       ok(`${role}.tools.md: every mentioned tool is in the role's surface`);
     } else {
@@ -256,7 +299,7 @@ function checkRole(role, allowedNames, label) {
   if (existsSync(personaPath)) {
     const md = readFileSync(personaPath, 'utf8');
     const mentions = parseToolMentions(md);
-    const stale = [...mentions].filter((n) => !allowedNames.has(n));
+    const stale = [...mentions].filter((n) => !inSurface(n));
     if (stale.length === 0) {
       ok(`${role}.persona.md: every mentioned tool is in the role's surface`);
     } else {
