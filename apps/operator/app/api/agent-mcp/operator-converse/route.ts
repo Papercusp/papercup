@@ -72,7 +72,14 @@ interface ConverseRequestBody {
 // The legacy HISTORY_KEEP=30 fixed-count cap is gone; budget defaults
 // to 40k tokens, configurable via VoicePrefs.operatorHistoryTokenBudget.
 
-async function buildPrompt(body: ConverseRequestBody): Promise<string> {
+interface SessionUser {
+  id: string;
+  username: string;
+  display_name: string;
+  has_password: boolean;
+}
+
+async function buildPrompt(body: ConverseRequestBody, sessionUser: SessionUser | null): Promise<string> {
   const prefs = await loadVoicePrefs().catch(() => null);
   const budget = prefs?.operatorHistoryTokenBudget ?? 40000;
   const messages = selectHistoryWithinBudget(
@@ -136,14 +143,11 @@ async function buildPrompt(body: ConverseRequestBody): Promise<string> {
       .slice(-3)
       .map((m) => m.content)
       .join('\n');
-    if (recentUserContext) {
+    if (recentUserContext && sessionUser) {
       const { getMemoryClient } = await import('@/lib/memory/mem0-client');
-      const { getSessionUserOrDefault } = await import('@/lib/auth');
-      const [client, user] = await Promise.all([
-        getMemoryClient(),
-        getSessionUserOrDefault(),
-      ]);
-      if (client && user) {
+      const client = await getMemoryClient();
+      const user = sessionUser;
+      if (client) {
         // Workspace id for shared-memory filter.
         const { activeWorkspaceId } = await import('@/lib/workspace-registry');
         const ws = activeWorkspaceId();
@@ -272,7 +276,21 @@ export async function POST(req: NextRequest) {
     return new Response('invalid JSON body', { status: 400 });
   }
 
-  const promptText = await buildPrompt(body);
+  // Resolve session user ONCE here — Next.js cookies() reads the
+  // current request context. The post-turn mem0 extraction runs in a
+  // fire-and-forget after the SSE stream completes, by which time
+  // cookies() may not be reachable. Capture the user now and pass to
+  // the closure. Same captured value is used by buildPrompt's
+  // pre-turn injection (via closure) so we read cookies exactly once.
+  let sessionUser: { id: string; username: string; display_name: string; has_password: boolean } | null = null;
+  try {
+    const { getSessionUserOrDefault } = await import('@/lib/auth');
+    sessionUser = await getSessionUserOrDefault();
+  } catch (err) {
+    console.warn('[operator-converse] session user resolution failed:', (err as Error).message);
+  }
+
+  const promptText = await buildPrompt(body, sessionUser);
 
   // Budget gate. operator-converse fires on every user turn AND on
   // silence-ladder timers AND through ask_operator from voice; without
@@ -402,22 +420,24 @@ export async function POST(req: NextRequest) {
         // If mem0 isn't available (deps not installed, PG down), this
         // silently no-ops.
         void (async () => {
+          if (!sessionUser) return; // no user → no per-user memory
           try {
             const { getMemoryClient } = await import('@/lib/memory/mem0-client');
-            const { getSessionUserOrDefault } = await import('@/lib/auth');
             const { activeWorkspaceId } = await import('@/lib/workspace-registry');
             const client = await getMemoryClient();
             if (!client) return;
-            const user = await getSessionUserOrDefault();
+            // sessionUser was captured at the top of POST, before the
+            // SSE stream — safe to read even after the request lifecycle
+            // is over (no cookies() access here).
             const ws = activeWorkspaceId();
             const recentWindow = body.messages
               ? [...body.messages.slice(-5), { role: 'assistant' as const, content: assembled }]
               : [{ role: 'assistant' as const, content: assembled }];
             await client.add(recentWindow, {
-              userId: user.id,
+              userId: sessionUser.id,
               metadata: {
                 workspace_id: ws,
-                display_name: user.display_name,
+                display_name: sessionUser.display_name,
                 turn_at: Date.now(),
               },
             });
