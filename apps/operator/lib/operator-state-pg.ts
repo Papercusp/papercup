@@ -55,7 +55,10 @@ type StateTable =
   // Round-7 extension (migration 029):
   | 'operator_paused'
   // Migration 047 — search-provider keys for OMP web_search:
-  | 'operator_search_provider_credentials';
+  | 'operator_search_provider_credentials'
+  // Migration 061 — Setup Wizard state + telemetry reports buffer:
+  | 'setup_wizard_state'
+  | 'telemetry_reports';
 
 /**
  * Read the single row for the active workspace, or null if missing.

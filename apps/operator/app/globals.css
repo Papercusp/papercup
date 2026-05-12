@@ -25299,3 +25299,7 @@ body:has(.operator-panel) {
 
 .pc-field__row { display: flex; gap: 8px; align-items: stretch; }
 .pc-field__row .pc-input { flex: 1; }
+
+.pc-release-notes { background: var(--bg-2); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; }
+.pc-release-notes summary { cursor: pointer; font-size: 12.5px; color: var(--fg-mute); }
+.pc-release-notes pre { font-size: 12px; color: var(--fg-dim); margin: 8px 0 0; white-space: pre-wrap; max-height: 240px; overflow: auto; }

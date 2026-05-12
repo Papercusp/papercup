@@ -5,14 +5,19 @@ export const dynamic = 'force-dynamic';
 
 const KEY = 'setup_wizard_state';
 
+export type UpdateChannel = 'alpha' | 'beta' | 'stable';
+
 export interface SetupWizardState {
   step_status: Record<string, 'dismissed' | 'completed'>;
   last_visited_step?: string;
   finished_at?: string;
+  update_channel?: UpdateChannel;
+  telemetry_enabled?: boolean;
   updated_at?: string;
 }
 
 const ALLOWED_STATUSES = new Set(['dismissed', 'completed']);
+const ALLOWED_CHANNELS = new Set<UpdateChannel>(['alpha', 'beta', 'stable']);
 
 function defaults(): SetupWizardState {
   return { step_status: {} };
@@ -38,6 +43,12 @@ export async function PATCH(req: Request) {
     delete next.finished_at;
   } else if (typeof body.finished_at === 'string') {
     next.finished_at = body.finished_at;
+  }
+  if (typeof body.update_channel === 'string' && ALLOWED_CHANNELS.has(body.update_channel as UpdateChannel)) {
+    next.update_channel = body.update_channel as UpdateChannel;
+  }
+  if (typeof body.telemetry_enabled === 'boolean') {
+    next.telemetry_enabled = body.telemetry_enabled;
   }
   if (body.step_status && typeof body.step_status === 'object') {
     const merged = { ...current.step_status };
