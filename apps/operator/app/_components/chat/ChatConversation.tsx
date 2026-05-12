@@ -27,7 +27,7 @@
  */
 
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
-import type { LucideIcon } from 'lucide-react';
+import { ArrowUpRight, type LucideIcon } from 'lucide-react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 export interface ChatToolCall {
@@ -440,12 +440,16 @@ export function ChatConversation(props: ChatConversationProps) {
               disabled={busy}
               aria-label={inputPlaceholder}
             />
+            <span className="oracle-input-meta" aria-hidden="true">
+              {busy ? 'busy' : 'enter'}
+            </span>
           </div>
           <button
             type="submit"
             disabled={busy || !inputValue.trim()}
             className="pc-button oracle-send-button"
           >
+            <ArrowUpRight aria-hidden="true" className="oracle-send-icon" />
             <span>{busy ? busyLabel : sendLabel}</span>
           </button>
         </form>

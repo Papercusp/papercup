@@ -24601,3 +24601,138 @@ body:has(.operator-panel) {
     animation: none !important;
   }
 }
+
+/* ── Oracle/Operator sibling pass: assistant panels + command bar ──── */
+
+.oracle-dock .oracle-msg-content,
+.op-chat-sidebar .oracle-msg-content {
+  position: relative;
+  overflow: hidden;
+}
+
+.oracle-dock .oracle-msg-assistant .oracle-msg-content,
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content {
+  border-color: rgba(125, 211, 252, 0.16);
+  background:
+    linear-gradient(180deg, rgba(10, 19, 31, 0.985), rgba(6, 12, 22, 0.995)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.045),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 12px 24px rgba(0,0,0,0.18);
+}
+
+.oracle-dock .oracle-msg-assistant .oracle-msg-content::before,
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 1px;
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0), rgba(125, 211, 252, 0.55), rgba(125, 211, 252, 0));
+  opacity: 0.85;
+}
+
+.oracle-dock .oracle-msg-assistant .oracle-msg-content::after,
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, rgba(255,255,255,0.035), transparent 26%);
+  pointer-events: none;
+}
+
+.oracle-dock .oracle-msg-role,
+.op-chat-sidebar .oracle-msg-role {
+  letter-spacing: 0.12em;
+}
+
+.oracle-dock .oracle-msg-user .oracle-msg-content,
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  font-weight: 500;
+}
+
+.oracle-dock .oracle-form,
+.op-chat-sidebar .oracle-form {
+  align-items: center;
+  gap: 10px;
+}
+
+.oracle-dock .oracle-input-shell,
+.op-chat-sidebar .oracle-input-shell {
+  align-items: center;
+  min-height: 46px;
+  padding-right: 10px;
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.02));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.045),
+    0 8px 18px rgba(0,0,0,0.12);
+}
+
+.oracle-dock .oracle-input-shell::before,
+.op-chat-sidebar .oracle-input-shell::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid rgba(255,255,255,0.03);
+  pointer-events: none;
+}
+
+.oracle-dock .oracle-input-shell input,
+.op-chat-sidebar .oracle-input-shell input {
+  padding-right: 62px !important;
+  letter-spacing: 0.01em;
+}
+
+.oracle-input-meta {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid rgba(125, 211, 252, 0.12);
+  border-radius: 999px;
+  background: rgba(125, 211, 252, 0.06);
+  color: rgba(186, 230, 253, 0.70);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.oracle-input-shell:focus-within .oracle-input-meta {
+  border-color: rgba(125, 211, 252, 0.24);
+  color: rgba(186, 230, 253, 0.9);
+  background: rgba(125, 211, 252, 0.10);
+}
+
+.oracle-dock .oracle-send-button,
+.op-chat-sidebar .oracle-send-button {
+  min-width: 76px;
+  gap: 6px;
+}
+
+.oracle-dock .oracle-send-button .oracle-send-icon,
+.op-chat-sidebar .oracle-send-button .oracle-send-icon {
+  width: 14px;
+  height: 14px;
+}
+
+@media (max-width: 640px) {
+  .oracle-input-meta {
+    display: none;
+  }
+
+  .oracle-dock .oracle-input-shell input,
+  .op-chat-sidebar .oracle-input-shell input {
+    padding-right: 16px !important;
+  }
+}
