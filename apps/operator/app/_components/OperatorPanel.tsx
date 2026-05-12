@@ -35,7 +35,7 @@ import { OperatorReactorCore } from './hud/OperatorReactorCore';
 import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
 import DelegatesSection from './DelegatesSection';
 import ScanHistorySection from './ScanHistorySection';
-import { OperatorLogoMark } from './OperatorLogoMark';
+import { DeckCardsMark } from './ChromeNavMarks';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
@@ -341,7 +341,7 @@ export function OperatorButton(): ReactElement {
         style={{ marginLeft: 8 }}
       >
         <span className="pc-header-cta-orb" aria-hidden="true">
-          <OperatorLogoMark variant="compact" className="pc-header-cta-logo" />
+          <DeckCardsMark className="pc-header-cta-logo pc-header-cta-logo--deck" />
           {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
           {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
         </span>

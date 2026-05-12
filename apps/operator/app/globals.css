@@ -4881,27 +4881,18 @@ body.h-harness-top-collapsed .pc-header {
   font-variant-numeric: tabular-nums;
 }
 
-.pc-header .pc-header-cta--mission .pc-header-cta-orb::before {
-  content: "";
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  background: #67e8f9;
-  box-shadow: 0 0 12px rgba(103, 232, 249, 0.82), 0 0 2px rgba(255,255,255,0.8);
-}
-
-/* "Current page" state for the Mission Control CTA — rendered as a span
-   instead of an anchor when the user is already on /harness, so clicking
-   does nothing. Visually muted + non-interactive cursor. */
+/* Current-page state for the Ops CTA — rendered as a span on /harness so
+   it stays visibly present without navigating. */
 .pc-header .pc-header-cta--mission.is-current {
   cursor: default;
   opacity: 0.55;
   filter: saturate(0.55);
   pointer-events: none;
 }
-.pc-header .pc-header-cta--mission.is-current .pc-header-cta-orb::before {
-  background: #94a3b8;
-  box-shadow: 0 0 4px rgba(148, 163, 184, 0.4);
+
+.pc-header .pc-header-cta--mission.is-current .pc-header-cta-logo--ops {
+  color: #94a3b8;
+  filter: drop-shadow(0 0 4px rgba(148, 163, 184, 0.22));
 }
 
 .pc-header .pc-header-cta--operator .pc-header-cta-orb {
@@ -24739,6 +24730,17 @@ body:has(.operator-panel) {
 
 /* ── Sentinel Cup brand adoption for Operator ───────────────────────── */
 
+.pc-header .pc-header-cta--mission .pc-header-cta-orb {
+  background:
+    radial-gradient(circle at 34% 26%, rgba(255,255,255,0.36), transparent 24%),
+    linear-gradient(180deg, rgba(15, 63, 84, 0.98), rgba(4, 19, 32, 1)) !important;
+  border-color: rgba(125, 211, 252, 0.56) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.26),
+    0 0 14px rgba(125, 211, 252, 0.24),
+    0 0 18px rgba(56, 189, 248, 0.14) !important;
+}
+
 .pc-header .pc-header-cta--operator {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0.02)),
@@ -24759,7 +24761,26 @@ body:has(.operator-panel) {
 .pc-header .pc-header-cta-logo {
   width: 14px;
   height: 14px;
+  color: #ddf6ff;
   filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.26));
+}
+
+.pc-header .pc-header-cta-logo--ops {
+  width: 12px;
+  height: 12px;
+  color: #93ecff;
+  filter:
+    drop-shadow(0 0 7px rgba(103, 232, 249, 0.34))
+    drop-shadow(0 0 1px rgba(255,255,255,0.45));
+}
+
+.pc-header .pc-header-cta-logo--deck {
+  width: 13px;
+  height: 13px;
+  color: #e9f6ff;
+  filter:
+    drop-shadow(0 0 6px rgba(125, 211, 252, 0.24))
+    drop-shadow(0 0 1px rgba(255,255,255,0.28));
 }
 
 .op-chat-sidebar .oracle-empty-state-glyph {

@@ -62,50 +62,50 @@ export const OperatorLogoMark = forwardRef<SVGSVGElement, Props>(function Operat
 
       {compact ? (
         <>
-          <circle cx="64" cy="64" r="56" fill={`url(#${ids.bg})`} stroke="rgba(185,239,255,0.24)" strokeWidth="2" />
-          <path d="M64 17c0 7-8.5 11-16 17" fill="none" stroke="#d9a977" strokeWidth="3.2" strokeLinecap="round" />
-          <path d="M64 17c0 7 8.5 11 16 17" fill="none" stroke="#d9a977" strokeWidth="3.2" strokeLinecap="round" />
-          <g transform="translate(0 8)">
+          <circle cx="64" cy="64" r="57" fill={`url(#${ids.bg})`} stroke="rgba(185,239,255,0.16)" strokeWidth="1" />
+          <path d="M64 18c0 7.5-8.5 12-16 18" fill="none" stroke="#d9a977" strokeWidth="3.2" strokeLinecap="round" />
+          <path d="M64 18c0 7.5 8.5 12 16 18" fill="none" stroke="#d9a977" strokeWidth="3.2" strokeLinecap="round" />
+          <g transform="translate(0 7)">
             <path
-              d="M39 40h50l-5 37c0 5-7.5 9-20 9s-20-4-20-9z"
+              d="M34 39h60l-4.5 45c0 6-9.5 10.5-25.5 10.5S38.5 90 38.5 84z"
               fill={`url(#${ids.cup})`}
-              fillOpacity="0.18"
+              fillOpacity="0.16"
               stroke="#d8f4ff"
-              strokeOpacity="0.90"
-              strokeWidth="2.3"
+              strokeOpacity="0.88"
+              strokeWidth="2.35"
               strokeLinejoin="round"
             />
-            <ellipse cx="64" cy="40" rx="25" ry="5.2" fill={`url(#${ids.cup})`} fillOpacity="0.22" stroke="#d8f4ff" strokeOpacity="0.90" strokeWidth="2.3" />
-            <ellipse cx="64" cy="40" rx="18.5" ry="3.1" fill={`url(#${ids.coffee})`} fillOpacity="0.88" />
-            <path d="M46 56c10-2.7 26-2.7 36 0" fill="none" stroke="#d9a977" strokeOpacity="0.74" strokeWidth="2.1" strokeLinecap="round" />
-            <rect x="61.5" y="53" width="5" height="19" rx="2.5" fill="#7ce2ff" fillOpacity="0.82" />
-            <path d="M56.5 79c2.2 2.7 4.7 4 7.5 4s5.3-1.3 7.5-4" fill="none" stroke="#7ce2ff" strokeOpacity="0.82" strokeWidth="2" strokeLinecap="round" />
+            <ellipse cx="64" cy="39" rx="30" ry="6.2" fill={`url(#${ids.cup})`} fillOpacity="0.2" stroke="#d8f4ff" strokeOpacity="0.88" strokeWidth="2.35" />
+            <ellipse cx="64" cy="39" rx="23.5" ry="3.8" fill={`url(#${ids.coffee})`} fillOpacity="0.9" />
+            <path d="M44.5 58c11.2-3 27.8-3 39 0" fill="none" stroke="#d9a977" strokeOpacity="0.74" strokeWidth="2.15" strokeLinecap="round" />
+            <rect x="60.75" y="55" width="6.5" height="21" rx="3" fill="#7ce2ff" fillOpacity="0.84" />
+            <path d="M54.5 86c2.4 3 5.6 4.5 9.5 4.5s7.1-1.5 9.5-4.5" fill="none" stroke="#7ce2ff" strokeOpacity="0.84" strokeWidth="2.05" strokeLinecap="round" />
           </g>
         </>
       ) : (
         <>
-          <circle cx="64" cy="64" r="58" fill={`url(#${ids.bg})`} stroke="rgba(185,239,255,0.16)" strokeWidth="1" />
-          <circle cx="64" cy="64" r="54" fill="none" stroke={`url(#${ids.ring})`} strokeOpacity="0.82" strokeWidth="2.2" />
-          <path d="M64 16c0 8-9 13-17 20" fill="none" stroke="#d9a977" strokeWidth="3.5" strokeLinecap="round" />
-          <path d="M64 16c0 8 9 13 17 20" fill="none" stroke="#d9a977" strokeWidth="3.5" strokeLinecap="round" />
+          <circle cx="64" cy="64" r="59" fill={`url(#${ids.bg})`} stroke="rgba(185,239,255,0.10)" strokeWidth="0.8" />
+          <circle cx="64" cy="64" r="56" fill="none" stroke={`url(#${ids.ring})`} strokeOpacity="0.38" strokeWidth="1.4" />
+          <path d="M64 18c0 8-9 13-17 20" fill="none" stroke="#d9a977" strokeWidth="3.45" strokeLinecap="round" />
+          <path d="M64 18c0 8 9 13 17 20" fill="none" stroke="#d9a977" strokeWidth="3.45" strokeLinecap="round" />
           <g filter={`url(#${ids.glow})`}>
             <circle cx="64" cy="29" r="2.8" fill="#7ce2ff" />
           </g>
-          <g transform="translate(0 5)">
+          <g transform="translate(0 3)">
             <path
-              d="M35 41h58l-5 42c0 5.5-8.5 10-24 10s-24-4.5-24-10z"
+              d="M31 39h66l-4.5 48c0 6.8-10.8 12.2-28.5 12.2S35.5 93.8 35.5 87z"
               fill={`url(#${ids.cup})`}
-              fillOpacity="0.18"
+              fillOpacity="0.16"
               stroke="#d8f4ff"
-              strokeOpacity="0.90"
-              strokeWidth="2.5"
+              strokeOpacity="0.88"
+              strokeWidth="2.45"
               strokeLinejoin="round"
             />
-            <ellipse cx="64" cy="41" rx="29" ry="5.8" fill={`url(#${ids.cup})`} fillOpacity="0.22" stroke="#d8f4ff" strokeOpacity="0.90" strokeWidth="2.5" />
-            <ellipse cx="64" cy="41" rx="21" ry="3.5" fill={`url(#${ids.coffee})`} fillOpacity="0.88" />
-            <path d="M45 59c10.5-2.9 27.5-2.9 38 0" fill="none" stroke="#d9a977" strokeOpacity="0.74" strokeWidth="2.25" strokeLinecap="round" />
-            <rect x="61.5" y="57" width="5" height="20" rx="2.5" fill="#7ce2ff" fillOpacity="0.80" />
-            <path d="M56 84c2.2 2.9 4.9 4.2 8 4.2s5.8-1.3 8-4.2" fill="none" stroke="#7ce2ff" strokeOpacity="0.80" strokeWidth="2.05" strokeLinecap="round" />
+            <ellipse cx="64" cy="39" rx="33" ry="6.8" fill={`url(#${ids.cup})`} fillOpacity="0.2" stroke="#d8f4ff" strokeOpacity="0.88" strokeWidth="2.45" />
+            <ellipse cx="64" cy="39" rx="25.5" ry="4.1" fill={`url(#${ids.coffee})`} fillOpacity="0.9" />
+            <path d="M43.5 59c11.8-3.2 29.2-3.2 41 0" fill="none" stroke="#d9a977" strokeOpacity="0.74" strokeWidth="2.25" strokeLinecap="round" />
+            <rect x="60.6" y="56" width="6.8" height="22" rx="3.2" fill="#7ce2ff" fillOpacity="0.84" />
+            <path d="M54 88c2.6 3.3 6 4.9 10 4.9s7.4-1.6 10-4.9" fill="none" stroke="#7ce2ff" strokeOpacity="0.84" strokeWidth="2.1" strokeLinecap="round" />
           </g>
         </>
       )}

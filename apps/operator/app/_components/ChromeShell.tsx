@@ -8,6 +8,7 @@ import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import { OperatorButton, OperatorAutoScanToggle } from './OperatorPanel';
 import { ConsoleLauncherButton } from './ConsoleLauncherButton';
+import { OpsTargetMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
 import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
@@ -77,9 +78,9 @@ export default function ChromeShell() {
     (p) => pathname === p || pathname.startsWith(`${p}/`),
   );
   if (chromeless) return null;
-  // When the user is already on a harness page, Mission Control is a
-  // no-op. Render a non-link span with `is-current` styling so it's
-  // visibly distinct from the active CTA elsewhere in the app.
+  // When the user is already on a harness page, Ops is a no-op. Render a
+  // non-link span with `is-current` styling so it's visibly distinct from
+  // the active CTA elsewhere in the app.
   const onHarness = pathname === '/harness' || pathname.startsWith('/harness/');
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
@@ -129,7 +130,7 @@ export default function ChromeShell() {
         <span className="pc-header-hud-line pc-header-hud-line--secondary" aria-hidden="true" />
         {/*
           Three-region grid: left = brand + quote, centre = primary CTAs
-          (Mission Control, Deck, auto-scan, console), right = nav. CSS Grid
+          (Ops, Deck, auto-scan, console), right = nav. CSS Grid
           in `1fr auto 1fr` keeps the centre cluster geometrically centred
           in the viewport regardless of how wide the brand/quote on the left
           and the nav on the right grow.
@@ -144,16 +145,20 @@ export default function ChromeShell() {
           {onHarness ? (
             <span
               className="pc-header-cta pc-header-cta--mission is-current"
-              aria-label="Mission Control (current page)"
+              aria-label="Ops (current page)"
               aria-current="page"
             >
-              <span className="pc-header-cta-orb" aria-hidden="true" />
-              <span className="pc-header-cta-label">Mission Control</span>
+              <span className="pc-header-cta-orb" aria-hidden="true">
+                <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
+              </span>
+              <span className="pc-header-cta-label">Ops</span>
             </span>
           ) : (
-            <a href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Mission Control" {...mainNavJumpGateProps}>
-              <span className="pc-header-cta-orb" aria-hidden="true" />
-              <span className="pc-header-cta-label">Mission Control</span>
+            <a href="/harness" className="pc-header-cta pc-header-cta--mission" aria-label="Ops" {...mainNavJumpGateProps}>
+              <span className="pc-header-cta-orb" aria-hidden="true">
+                <OpsTargetMark className="pc-header-cta-logo pc-header-cta-logo--ops" />
+              </span>
+              <span className="pc-header-cta-label">Ops</span>
             </a>
           )}
           <OperatorButton />

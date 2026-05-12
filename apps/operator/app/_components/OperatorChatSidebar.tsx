@@ -282,11 +282,12 @@ const OP_CHAT_SIDEBAR_CSS = `
 
 .op-chat-controls {
   position: relative;
-  z-index: 1;
+  z-index: 2;
   display: flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
+  overflow: visible;
 }
 
 .op-chat-controls .op-active-toggle {
@@ -298,10 +299,12 @@ const OP_CHAT_SIDEBAR_CSS = `
 }
 
 .op-chat-controls .pc-voice-control {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
   gap: 5px;
   margin-left: 0;
+  overflow: visible;
 }
 
 .op-chat-controls .pc-voice-btn {
@@ -327,6 +330,9 @@ const OP_CHAT_SIDEBAR_CSS = `
   flex: 0 0 auto;
   min-height: 32px;
   padding: 0 9px;
+}
+.op-chat-controls .pc-voice-wake-hint {
+  z-index: 5;
 }
 
 .op-chat-sidebar .op-chat-banner {
@@ -483,7 +489,9 @@ body.has-op-chat .h-header {
 
 .op-chat-header {
   position: relative;
-  overflow: hidden;
+  z-index: 3;
+  overflow: visible;
+  isolation: isolate;
   backdrop-filter: blur(12px);
   background:
     radial-gradient(circle at 12% 12%, rgba(125, 211, 252, 0.12), transparent 18%),
@@ -491,10 +499,16 @@ body.has-op-chat .h-header {
     #07101d;
   box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.08);
 }
+.op-chat-header-main,
+.op-chat-header-signal {
+  position: relative;
+  z-index: 1;
+}
 
 .op-chat-header::after {
   content: '';
   position: absolute;
+  z-index: 0;
   left: -18%;
   top: 0;
   width: 44%;
@@ -550,6 +564,8 @@ body.has-op-chat .h-header {
 }
 
 .op-chat-sidebar .oracle-body {
+  position: relative;
+  z-index: 1;
   background:
     linear-gradient(180deg, rgba(7, 14, 24, 0.96), rgba(4, 9, 17, 0.985)) !important;
 }
