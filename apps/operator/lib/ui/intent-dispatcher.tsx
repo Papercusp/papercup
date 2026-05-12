@@ -16,6 +16,7 @@
  */
 
 import { useEffect } from 'react';
+import { createResilientEventSource } from '@restart/sse';
 import { getOrCreateClientId } from './client-id';
 import { lookupIntent } from './intent-registry';
 import { registerBuiltInIntents } from './built-in-intents';
@@ -57,32 +58,22 @@ export function UiIntentDispatcher(): null {
     const clientId = getOrCreateClientId();
     if (!clientId) return;
 
-    let es: EventSource | null = null;
-    let cancelled = false;
-
-    const open = () => {
-      if (cancelled) return;
-      es = new EventSource(`/api/ui/intents/stream?client_id=${encodeURIComponent(clientId)}`);
-      es.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data) as IntentMessage;
-          if (!msg?.id || !msg.intent) return;
-          void executeIntent(msg);
-        } catch (e) {
-          // eslint-disable-next-line no-console
-          console.warn('[ui-intent] bad message', e);
-        }
-      };
-      es.onerror = () => {
-        // EventSource auto-reconnects with backoff; nothing to do here.
-      };
-    };
-
-    open();
-    return () => {
-      cancelled = true;
-      es?.close();
-    };
+    const source = createResilientEventSource({
+      url: `/api/ui/intents/stream?client_id=${encodeURIComponent(clientId)}`,
+      handlers: {
+        message: (data) => {
+          try {
+            const msg = JSON.parse(data) as IntentMessage;
+            if (!msg?.id || !msg.intent) return;
+            void executeIntent(msg);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn('[ui-intent] bad message', e);
+          }
+        },
+      },
+    });
+    return () => { source.close(); };
   }, []);
   return null;
 }

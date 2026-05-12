@@ -25,6 +25,7 @@
 
 import * as React from 'react';
 import { useEffect, useRef, useState } from 'react';
+import { createResilientEventSource } from '@restart/sse';
 
 interface Props {
   pluginName: string;
@@ -66,7 +67,7 @@ export default function PluginIframe({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const subs = new Map<string, EventSource>(); // event-name → SSE handle
+    const subs = new Map<string, { close: () => void }>(); // event-name → SSE handle
 
     const send = (msg: object): void => {
       const win = iframeRef.current?.contentWindow;
@@ -110,10 +111,14 @@ export default function PluginIframe({
           const e = data as EventSub;
           if (subs.has(e.name)) return;
           const url = `/api/plugins/host/events?plugin=${encodeURIComponent(pluginName)}&install=${encodeURIComponent(installSlug)}&name=${encodeURIComponent(e.name)}`;
-          const sse = new EventSource(url);
-          sse.addEventListener('message', (msg) => {
-            const evt: EventMsg = { kind: 'event', name: e.name, payloadB64: btoa(msg.data ?? ''), nonce };
-            send(evt);
+          const sse = createResilientEventSource({
+            url,
+            handlers: {
+              message: (raw) => {
+                const evt: EventMsg = { kind: 'event', name: e.name, payloadB64: btoa(raw), nonce };
+                send(evt);
+              },
+            },
           });
           subs.set(e.name, sse);
           break;

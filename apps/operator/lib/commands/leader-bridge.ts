@@ -11,6 +11,7 @@
  * See plan §3.3 (multi-tab arbitration).
  */
 
+import { createResilientEventSource } from '@restart/sse';
 import { runCommand, runQuery, get } from './registry';
 import type { AgentId, CommandContext, CommandResult } from './types';
 
@@ -55,36 +56,22 @@ export function startLeaderBridge(opts: BridgeOptions): () => void {
 
 function openStream(workspace: string, tabId: string): { close: () => void } {
   const url = `/api/agent-mcp/run-command/sse?workspace=${encodeURIComponent(workspace)}&sessionId=${encodeURIComponent(tabId)}`;
-  const es = new EventSource(url);
-
-  es.addEventListener('command', (evt) => {
-    try {
-      const msg = JSON.parse((evt as MessageEvent).data) as IncomingCommand;
-      void handleIncoming(msg, workspace, tabId);
-    } catch (err) {
-      console.warn('[leader-bridge] failed to parse incoming command', err);
-    }
-  });
-
-  es.addEventListener('hello', () => {
-    // server confirmed registration; no-op
-  });
-
-  es.addEventListener('heartbeat', () => {
-    // server is alive; nothing else to do
-  });
-
-  es.addEventListener('error', () => {
-    // EventSource auto-reconnects; let it.
-  });
-
-  return {
-    close: () => {
-      try {
-        es.close();
-      } catch { /* already closed */ }
+  const source = createResilientEventSource({
+    url,
+    handlers: {
+      command: (data) => {
+        try {
+          const msg = JSON.parse(data) as IncomingCommand;
+          void handleIncoming(msg, workspace, tabId);
+        } catch (err) {
+          console.warn('[leader-bridge] failed to parse incoming command', err);
+        }
+      },
+      hello: () => { /* server confirmed registration */ },
+      heartbeat: () => { /* keepalive — wrapper resets its zombie watchdog */ },
     },
-  };
+  });
+  return { close: () => source.close() };
 }
 
 async function handleIncoming(

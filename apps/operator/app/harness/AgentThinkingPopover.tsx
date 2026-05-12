@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { createResilientEventSource } from '@restart/sse';
 
 /**
  * Hover popover anchored to a Now-running agent pill that shows the
@@ -90,27 +91,27 @@ export default function AgentThinkingPopover({
   // EventSource lifecycle.
   useEffect(() => {
     setStatus('connecting');
-    const es = new EventSource(`/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`);
-    es.addEventListener('backfill', (e: MessageEvent) => {
-      try {
-        const arr = JSON.parse(e.data) as TimelineEntry[];
-        setEvents(arr);
-        setStatus('live');
-      } catch { /* ignore */ }
+    const source = createResilientEventSource({
+      url: `/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`,
+      handlers: {
+        backfill: (data) => {
+          try {
+            const arr = JSON.parse(data) as TimelineEntry[];
+            setEvents(arr);
+            setStatus('live');
+          } catch { /* ignore */ }
+        },
+        event: (data) => {
+          try {
+            const entry = JSON.parse(data) as TimelineEntry;
+            setEvents((prev) => [...prev, entry]);
+          } catch { /* ignore */ }
+        },
+        done: () => setStatus('done'),
+      },
+      onError: () => setStatus('error'),
     });
-    es.addEventListener('event', (e: MessageEvent) => {
-      try {
-        const entry = JSON.parse(e.data) as TimelineEntry;
-        setEvents((prev) => [...prev, entry]);
-      } catch { /* ignore */ }
-    });
-    es.addEventListener('done', () => {
-      setStatus('done');
-    });
-    es.onerror = () => {
-      setStatus('error');
-    };
-    return () => { es.close(); };
+    return () => { source.close(); };
   }, [slug, phase, runId]);
 
   // Auto-scroll to bottom on new events. We don't auto-scroll if the

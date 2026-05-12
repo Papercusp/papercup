@@ -17,6 +17,7 @@
  * pure browser-side component.
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { createResilientEventSource } from '@restart/sse';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import '@xterm/xterm/css/xterm.css';
 import { Loader2 } from 'lucide-react';
@@ -173,7 +174,7 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<unknown>(null); // xterm Terminal instance
   const fitAddonRef = useRef<unknown>(null); // FitAddon instance
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const eventSourceRef = useRef<{ close: () => void } | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const nativeSessionRef = useRef<NativeSession | null>(null);
   const searchAddonRef = useRef<import('@xterm/addon-search').SearchAddon | null>(null);
@@ -694,28 +695,29 @@ export default function PiPanel({ slug, laneId, command, args, panelId }: PiPane
 
       if (!attached) {
         // ── Fallback: legacy SSE + POST ─────────────────────────────
-        const es = new EventSource(
-          `/api/harness/${encodeURIComponent(slug)}/pty/${handle.id}/stream`,
-        );
-        eventSourceRef.current = es;
-        es.addEventListener('data', (ev) => {
-          try {
-            const bin = atob((ev as MessageEvent).data);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            term.write(bytes);
-          } catch { /* malformed — drop */ }
+        const source = createResilientEventSource({
+          url: `/api/harness/${encodeURIComponent(slug)}/pty/${handle.id}/stream`,
+          handlers: {
+            data: (data) => {
+              try {
+                const bin = atob(data);
+                const bytes = new Uint8Array(bin.length);
+                for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                term.write(bytes);
+              } catch { /* malformed — drop */ }
+            },
+            exit: (data) => {
+              try {
+                const payload = JSON.parse(data);
+                if (mounted) setState({ kind: 'exited', code: payload?.code ?? 0, handle });
+              } catch {
+                if (mounted) setState({ kind: 'exited', code: 0, handle });
+              }
+              source.close();
+            },
+          },
         });
-        es.addEventListener('exit', (ev) => {
-          try {
-            const payload = JSON.parse((ev as MessageEvent).data);
-            if (mounted) setState({ kind: 'exited', code: payload?.code ?? 0, handle });
-          } catch {
-            if (mounted) setState({ kind: 'exited', code: 0, handle });
-          }
-          es.close();
-        });
-        es.onerror = () => { /* browser auto-retries; hard errors surface as exit */ };
+        eventSourceRef.current = source;
 
         // Batched-input fallback: rAF flush, base64 over JSON.
         let pending = '';

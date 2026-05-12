@@ -27,6 +27,7 @@ import { useForm } from 'react-hook-form';
 import { useAutoAnimate } from '@formkit/auto-animate/react';
 import { makeAjvResolver } from '@/lib/forms';
 import { useSyncQuery } from '@restart/sync';
+import { createResilientEventSource } from '@restart/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -2659,7 +2660,7 @@ export default function HarnessDashboard() {
     setPluginsMissing(out);
   }, [activeSlug, installedPlugins, enabledByHarness, pluginConfigRows]);
   const [isCompact, setIsCompact] = useState(false);
-  const esRef = useRef<EventSource | null>(null);
+  const esRef = useRef<{ close: () => void } | null>(null);
   const searchParams = useSearchParams();
   // Both `?project=<slug>` and `?slug=<slug>` work — `slug` is the
   // common shorthand most other handlers in the app use (recorders,
@@ -2740,34 +2741,30 @@ export default function HarnessDashboard() {
 
     // Subscribe to the structured JSONL stream. Server backfills the last
     // 500 events on connect, then live-tails via fs.watch.
-    const es = new EventSource(`/api/harness/${activeSlug}/log/stream?phase=${activePhase}&tail=500`);
-    esRef.current = es;
-
-    es.addEventListener('log', (ev) => {
-      try {
-        const evt = JSON.parse((ev as MessageEvent).data) as import('@restart/ui-primitives').LogEvent;
-        setLogEvents((prev) => {
-          const next = [...prev, evt];
-          return next.length > 5000 ? next.slice(-5000) : next;
-        });
-      } catch { /* ignore malformed event */ }
+    const source = createResilientEventSource({
+      url: `/api/harness/${activeSlug}/log/stream?phase=${activePhase}&tail=500`,
+      handlers: {
+        log: (data) => {
+          try {
+            const evt = JSON.parse(data) as import('@restart/ui-primitives').LogEvent;
+            setLogEvents((prev) => {
+              const next = [...prev, evt];
+              return next.length > 5000 ? next.slice(-5000) : next;
+            });
+          } catch { /* ignore malformed event */ }
+        },
+        rotated: () => setLogEvents([]),
+        features: (data) => {
+          try {
+            const features = JSON.parse(data);
+            setStatus((prev) => prev ? { ...prev, features } : prev);
+          } catch { /* ignore */ }
+        },
+      },
     });
+    esRef.current = source;
 
-    es.addEventListener('rotated', () => {
-      // Server signaled run.log.jsonl was rotated; clear stale events.
-      setLogEvents([]);
-    });
-
-    es.addEventListener('features', (ev) => {
-      try {
-        const features = JSON.parse((ev as MessageEvent).data);
-        setStatus((prev) => prev ? { ...prev, features } : prev);
-      } catch {}
-    });
-
-    es.onerror = () => { /* auto-reconnect */ };
-
-    return () => { es.close(); esRef.current = null; };
+    return () => { source.close(); esRef.current = null; };
   }, [activeSlug, activePhase]);
 
   // Polling: 5 endpoints refetched every 5 s while the dashboard is open.

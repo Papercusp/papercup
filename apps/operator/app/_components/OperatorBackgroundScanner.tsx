@@ -20,6 +20,7 @@
  */
 
 import { useEffect, useRef } from 'react';
+import { createResilientEventSource } from '@restart/sse';
 import { useQuery } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { isAutoAcceptedByThreshold, pushAutoAcceptEvent, sharedState, subscribeOperatorState } from './operator-shared-state';
@@ -52,7 +53,7 @@ export function OperatorBackgroundScanner() {
   const lastChangeAtRef = useRef<number>(0);
   const lastScanCompletedRef = useRef<number>(0);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const inFlightRef = useRef<EventSource | null>(null);
+  const inFlightRef = useRef<{ close: () => void } | null>(null);
   const pausedRef = useRef<boolean>(sharedState.paused);
   const autoAcceptRef = useRef<typeof sharedState.autoAccept>(sharedState.autoAccept);
   // Server-side pause flag (CLI `operator pause` / API POST). Cached so
@@ -94,47 +95,47 @@ export function OperatorBackgroundScanner() {
       // Background scans run unconditionally now — the threshold gates
       // auto-fire, not whether scans run at all. Cards can still surface
       // for user review even when autoAccept is 'off'.
-      const es = new EventSource('/api/agent-mcp/operator-scan?background=1&request=Background+scan%3A+surface+next-action+suggestions.');
-      inFlightRef.current = es;
-      // Fire scan-start event for OperatorVoiceAnnouncer.
       try {
         window.dispatchEvent(new CustomEvent('operator:scan', { detail: { kind: 'scan-start' } }));
       } catch { /* ignore */ }
       let suggestionsCount = 0;
       let autoDispatchedCount = 0;
-      es.addEventListener('suggestion', (ev: MessageEvent) => {
-        try {
-          const s = JSON.parse(ev.data) as SuggestionEvent;
-          suggestionsCount++;
-          // Decide auto-fire from (server signal, user threshold).
-          // Server is conservative: it never marks tier=high cards as
-          // auto_dispatch=true. The user threshold can OPT IN to that
-          // by setting autoAccept='high' — same upgrade-or-downgrade
-          // logic the panel applies on its suggestion handler.
-          const tierAllowed = isAutoAcceptedByThreshold(s.actualTier, autoAcceptRef.current);
-          const shouldAutoFire = tierAllowed; // unifies upgrade + ask-first→auto
-          if (s.auto_dispatch || shouldAutoFire) autoDispatchedCount++;
-          if (!shouldAutoFire) return; // ask-first → wait for the user to open the panel
-          armAutoFireToast(s);
-        } catch {
-          /* ignore */
-        }
+      // One-shot scan stream: disable visibility-pause (we want it to complete
+      // even if the tab is briefly hidden) and disable failure escalation
+      // (the underlying endpoint emits a single 'done' and closes).
+      const source = createResilientEventSource({
+        url: '/api/agent-mcp/operator-scan?background=1&request=Background+scan%3A+surface+next-action+suggestions.',
+        maxConsecutiveFailures: 0,
+        handlers: {
+          suggestion: (data) => {
+            try {
+              const s = JSON.parse(data) as SuggestionEvent;
+              suggestionsCount++;
+              const tierAllowed = isAutoAcceptedByThreshold(s.actualTier, autoAcceptRef.current);
+              const shouldAutoFire = tierAllowed;
+              if (s.auto_dispatch || shouldAutoFire) autoDispatchedCount++;
+              if (!shouldAutoFire) return;
+              armAutoFireToast(s);
+            } catch { /* ignore */ }
+          },
+          done: () => {
+            source.close();
+            inFlightRef.current = null;
+            lastScanCompletedRef.current = Date.now();
+            try {
+              window.dispatchEvent(new CustomEvent('operator:scan', {
+                detail: { kind: 'scan-done', suggestions: suggestionsCount, autoDispatched: autoDispatchedCount },
+              }));
+            } catch { /* ignore */ }
+          },
+        },
+        onError: () => {
+          source.close();
+          inFlightRef.current = null;
+          lastScanCompletedRef.current = Date.now();
+        },
       });
-      es.addEventListener('done', () => {
-        es.close();
-        inFlightRef.current = null;
-        lastScanCompletedRef.current = Date.now();
-        try {
-          window.dispatchEvent(new CustomEvent('operator:scan', {
-            detail: { kind: 'scan-done', suggestions: suggestionsCount, autoDispatched: autoDispatchedCount },
-          }));
-        } catch { /* ignore */ }
-      });
-      es.addEventListener('error', () => {
-        es.close();
-        inFlightRef.current = null;
-        lastScanCompletedRef.current = Date.now();
-      });
+      inFlightRef.current = source;
     };
 
     const scheduleScan = () => {

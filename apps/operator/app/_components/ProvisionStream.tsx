@@ -23,6 +23,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
+import { createResilientEventSource } from '@restart/sse';
 import '@xterm/xterm/css/xterm.css';
 
 export interface ProvisionStreamProps {
@@ -188,29 +189,7 @@ export function ProvisionStream({
     if (runId) params.set('runId', runId);
     if (since) params.set('since', since);
     const url = `/api/provision/stream?${params}`;
-    const es = new EventSource(url);
     setStatus('connecting');
-
-    const onAttached = () => setStatus('streaming');
-    es.addEventListener('attached', onAttached);
-
-    const onAny = (kind: string) => (ev: MessageEvent) => {
-      try {
-        const entry = JSON.parse(ev.data) as AuditEntry;
-        const line = renderEntry(entry);
-        termRef.current?.write(line);
-      } catch { /* skip malformed */ }
-      // Track terminal events for status + onDone
-      const successKinds = ['setup-completed', 'teardown-completed', 'verify-completed'];
-      const failureKinds = ['setup-failed', 'teardown-failed', 'verify-failed'];
-      if (successKinds.includes(kind)) {
-        setStatus('done');
-        onDone?.({ kind: 'success', finalKind: kind });
-      } else if (failureKinds.includes(kind)) {
-        setStatus('done');
-        onDone?.({ kind: 'failed', finalKind: kind });
-      }
-    };
 
     const allKinds = [
       'script-output', 'resource-recorded', 'consent-granted',
@@ -219,29 +198,40 @@ export function ProvisionStream({
       'verify-started', 'verify-completed', 'verify-failed',
       'log-truncated', 'state-set',
     ];
-    const handlers = allKinds.map((k) => {
-      const h = onAny(k);
-      es.addEventListener(k, h as EventListener);
-      return [k, h] as const;
+    const successKinds = new Set(['setup-completed', 'teardown-completed', 'verify-completed']);
+    const failureKinds = new Set(['setup-failed', 'teardown-failed', 'verify-failed']);
+
+    const handleEntry = (kind: string) => (data: string) => {
+      try {
+        const entry = JSON.parse(data) as AuditEntry;
+        const line = renderEntry(entry);
+        termRef.current?.write(line);
+      } catch { /* skip malformed */ }
+      if (successKinds.has(kind)) {
+        setStatus('done');
+        onDone?.({ kind: 'success', finalKind: kind });
+      } else if (failureKinds.has(kind)) {
+        setStatus('done');
+        onDone?.({ kind: 'failed', finalKind: kind });
+      }
+    };
+
+    const handlers: Record<string, (data: string) => void> = {
+      attached: () => setStatus('streaming'),
+      done: () => setStatus('done'),
+    };
+    for (const k of allKinds) handlers[k] = handleEntry(k);
+
+    const source = createResilientEventSource({
+      url,
+      handlers,
+      onStatusChange: (s) => {
+        // Surface a hard error only when we never reach an open state.
+        if (s === 'failing' && status === 'connecting') setStatus('error');
+      },
     });
 
-    const onDoneEv = () => {
-      setStatus('done');
-      es.close();
-    };
-    es.addEventListener('done', onDoneEv);
-
-    es.onerror = () => {
-      // EventSource auto-reconnects; only flag a hard error if we never connected
-      if (status === 'connecting') setStatus('error');
-    };
-
-    return () => {
-      es.removeEventListener('attached', onAttached);
-      es.removeEventListener('done', onDoneEv);
-      for (const [k, h] of handlers) es.removeEventListener(k, h as EventListener);
-      es.close();
-    };
+    return () => { source.close(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [harness, plugin, runId, since]);
 

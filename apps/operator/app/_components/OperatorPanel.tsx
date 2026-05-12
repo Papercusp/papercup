@@ -20,6 +20,7 @@ import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } f
 import { usePathname } from 'next/navigation';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
+import { createResilientEventSource } from '@restart/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
@@ -624,7 +625,7 @@ export function OperatorPanel(): JSX.Element | null {
     return () => { cancelled = true; };
   }, []);
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const evtSrcRef = useRef<EventSource | null>(null);
+  const evtSrcRef = useRef<{ close: () => void } | null>(null);
   const [feedQuery, setFeedQuery] = useState('');
   const [mainView, setMainView] = useQueryState<MainView>(
     'view',
@@ -719,44 +720,46 @@ export function OperatorPanel(): JSX.Element | null {
     setScanStarted(true);
     const url =
       `/api/agent-mcp/operator-scan?request=${encodeURIComponent(request ?? '')}`;
-    const es = new EventSource(url);
-    evtSrcRef.current = es;
-    es.addEventListener('first_run', () => setFirstRun(true));
-    es.addEventListener('delta', (ev: MessageEvent) => {
-      try {
-        const { text } = JSON.parse(ev.data);
-        setStreamLog((log) => {
-          const next = [...log];
-          const last = next[next.length - 1] ?? '';
-          if (last.length < 200) {
-            next[next.length - 1] = (last + text).slice(-200);
-          } else {
-            next.push(text.slice(0, 200));
-          }
-          return next.slice(-5);
-        });
-      } catch {
-        /* ignore */
-      }
-      setState((s) => ({ ...s, iconState: 'thinking' }));
+    const source = createResilientEventSource({
+      url,
+      maxConsecutiveFailures: 0, // one-shot stream — don't escalate
+      handlers: {
+        first_run: () => setFirstRun(true),
+        delta: (data) => {
+          try {
+            const { text } = JSON.parse(data);
+            setStreamLog((log) => {
+              const next = [...log];
+              const last = next[next.length - 1] ?? '';
+              if (last.length < 200) {
+                next[next.length - 1] = (last + text).slice(-200);
+              } else {
+                next.push(text.slice(0, 200));
+              }
+              return next.slice(-5);
+            });
+          } catch { /* ignore */ }
+          setState((s) => ({ ...s, iconState: 'thinking' }));
+        },
+        tool_call: () => {
+          setState((s) => ({ ...s, iconState: 'scanning' }));
+        },
+        idle_status: (data) => {
+          try {
+            const parsed = JSON.parse(data) as { perHarness?: HarnessOneLiner[] };
+            if (Array.isArray(parsed.perHarness)) setHarnessRows(parsed.perHarness);
+          } catch { /* ignore */ }
+        },
+        suggestion: (data) => { handleSuggestionEvent(data); },
+        done: () => { handleDoneEvent(); },
+        error: (data) => { handleErrorEvent(data); },
+      },
     });
-    es.addEventListener('tool_call', () => {
-      setState((s) => ({ ...s, iconState: 'scanning' }));
-    });
-    es.addEventListener('idle_status', (ev: MessageEvent) => {
-      // Cached short-circuit path emits this in lieu of a full LLM scan
-      // (Phase 5 polish). Refresh the per-harness one-liners so a stable
-      // workspace still sees current status.
+    evtSrcRef.current = source;
+
+    function handleSuggestionEvent(data: string) {
       try {
-        const data = JSON.parse(ev.data) as { perHarness?: HarnessOneLiner[] };
-        if (Array.isArray(data.perHarness)) setHarnessRows(data.perHarness);
-      } catch {
-        /* ignore */
-      }
-    });
-    es.addEventListener('suggestion', (ev: MessageEvent) => {
-      try {
-        const raw = JSON.parse(ev.data) as ParsedSuggestion;
+        const raw = JSON.parse(data) as ParsedSuggestion;
         // Auto-accept reconciliation between server (conservative) and
         // client (user-toggleable threshold):
         //
@@ -854,30 +857,28 @@ export function OperatorPanel(): JSX.Element | null {
             speak(`${s.title}. ${s.why}${suffix}`, 'system:operator', priority);
           }).catch(() => {});
         }
-      } catch {
-        /* ignore */
-      }
-    });
-    es.addEventListener('done', () => {
-      // If any cards landed ask-first, the user owes us a decision.
+      } catch { /* ignore */ }
+    }
+
+    function handleDoneEvent() {
       const askFirstPending = suggestionsRef.current.some(
         (c) => c.status === 'pending' && !c.auto_dispatch,
       );
       setScanStatus('complete');
       setState((s) => ({ ...s, iconState: askFirstPending ? 'awaiting-input' : 'idle' }));
-      es.close();
+      source.close();
       evtSrcRef.current = null;
       void refreshDecisions();
-    });
-    es.addEventListener('error', (ev: MessageEvent) => {
-      const detail = (ev as any).data ?? '(no detail)';
+    }
+
+    function handleErrorEvent(detail: string) {
       setStreamLog((log) => [...log, `error: ${detail}`]);
-      setScanError(String(detail));
+      setScanError(detail);
       setScanStatus('error');
       setState((s) => ({ ...s, iconState: 'idle' }));
-      es.close();
+      source.close();
       evtSrcRef.current = null;
-    });
+    }
   }, []);
 
   const provisionAndRescan = useCallback(async () => {
