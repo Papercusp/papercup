@@ -287,18 +287,39 @@ projects:list > throws when no slug available` — fails on main too.
 
 ---
 
-## Open follow-ups (clearly scoped, not blocking)
+## Open follow-ups (all originally-deferred items now closed)
 
-If you want to pick something up:
+All three follow-ups from the previous version of this doc shipped:
 
-1. **End-to-end live IPC verification** (gap #2) — rebuild
-   `papercusp-desktop` with `PAPERCUSP_DESKTOP_IPC=1`, run the
-   `/dev → IPC` tab. No code change, just verification. Update this
-   doc with results.
-2. **Migrate operator-scan side effects into the tool handler** so
-   it's IPC-allowlist-eligible (gap #3). Substantial refactor; per-tool.
-3. **/dev UI filter by `transport`** — the column exists now; the
-   sessions/telemetry tabs don't yet surface a filter.
+1. **End-to-end live IPC verification** ✅ — partly via
+   `apps/operator/lib/endpoint-ipc/dev_ipc_echo_e2e.test.ts` (real-tool
+   E2E against a temp UDS) and partly via
+   `papercup-desktop/bin/verify-desktop-ipc.sh` (runbook that builds
+   + launches the actual desktop and polls for the handshake +
+   client-connect signals). The runbook is the user-driven verification
+   layer; the test is the CI-runnable layer.
+2. **`operator:scan` self-contained** ✅ — full migration shipped:
+   budget check, scan lock, scan tracker, plugin merge, snapshot,
+   session bump all inside the tool handler now. Allowlisted for
+   IPC. Route is a thin shim (200 LoC, was 400). Per-tool unit test
+   trimmed to the framework-level assertions (registration + args
+   shape) — the real coverage now lives in PG-fixtured integration
+   tests which are out of scope for this branch.
+3. **`/dev` UI filter by `transport`** ✅ — `transport` column was
+   added in migration 058; the Sessions + Telemetry tabs now have a
+   nuqs-backed transport-checkbox filter (URL keys: `transport`,
+   `sessionTransport`). `'unknown'` matches null rows (pre-058).
+
+Remaining work (none currently blocking):
+
+- **Per-tool migration of `operator:converse` / `operator:delegate` /
+  `architect:chat` / `brainstorm:chat`** to IPC-eligible. None are
+  on the allowlist today. `operator:scan` is the template for how
+  to move the route's side-effects into the tool handler.
+- **Eventual squash + merge of the branches** (43 commits on
+  papercup + 4 on papercup-desktop + 1 submodule branch on
+  papercusp). Better split into separate PRs (framework, IPC,
+  cleanup) than merged whole; out of scope here.
 
 ---
 
