@@ -18,6 +18,7 @@ import {
   type HttpToolHostExtras,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
+import { sseResponse } from '@restart/sse';
 import { getOrgPg } from '@restart/db-org';
 
 // Register operator-side first-party tools (D1a, role-gated). Module
@@ -158,24 +159,9 @@ async function dispatchHttp(req: Request): Promise<Response> {
   const wantsStream = (headerMap['accept'] ?? '').includes('text/event-stream');
 
   if (wantsStream) {
-    const stringStream = handleHttpToolRequestStreaming(transportReq, HOST_EXTRAS);
-    const encoder = new TextEncoder();
-    const reader = stringStream.getReader();
-    const byteStream = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        const { value, done } = await reader.read();
-        if (done) controller.close();
-        else controller.enqueue(encoder.encode(value));
-      },
-      cancel(reason) { reader.cancel(reason).catch(() => {}); },
-    });
-    return new Response(byteStream, {
-      status: 200,
-      headers: {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-cache',
-        connection: 'keep-alive',
-      },
+    return sseResponse({
+      signal: req.signal,
+      setup: (sink) => handleHttpToolRequestStreaming(transportReq, HOST_EXTRAS, sink),
     });
   }
 
