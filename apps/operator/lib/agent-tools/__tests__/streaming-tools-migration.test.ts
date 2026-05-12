@@ -44,6 +44,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('@/lib/agent-chat-stream');
+  vi.doUnmock('@/lib/agent-tools/architect/prompts');
 });
 
 describe('architect:chat + brainstorm:chat (raw-text wire)', () => {
@@ -74,11 +75,21 @@ describe('architect:chat + brainstorm:chat (raw-text wire)', () => {
           { type: 'result', costUsd: 0.0012, tokensIn: 42, tokensOut: 7 },
         ]),
     }));
+    // The tool now composes the prompt internally from the harness's
+    // SPEC.md / features list. Mock the prompts helpers so the unit
+    // test doesn't need a real project on disk + PG. The wire-format
+    // shape under test (delta as raw text + cost as JSON) is
+    // unaffected by what the prompt actually contains.
+    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+      resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
+      composeArchitectPrompt: async () => 'PROMPT',
+      composeBrainstormPrompt: async () => 'PROMPT',
+    }));
     const { architectChat } = await import('@/lib/agent-tools/architect/chat');
     const { events, ctx } = recordingCtx();
 
     const result = (await architectChat.handler(
-      { promptText: 'pr', cwd: '/tmp' },
+      { harnessSlug: 't', history: [], message: 'hi' },
       ctx,
     )) as { content: Array<{ type: 'text'; text: string }> };
 
@@ -100,10 +111,15 @@ describe('architect:chat + brainstorm:chat (raw-text wire)', () => {
           { type: 'delta', text: ' rest' },
         ]),
     }));
+    vi.doMock('@/lib/agent-tools/architect/prompts', () => ({
+      resolveSlug: async () => ({ slug: 't', path: '/tmp' }),
+      composeArchitectPrompt: async () => 'PROMPT',
+      composeBrainstormPrompt: async () => 'PROMPT',
+    }));
     const { brainstormChat } = await import('@/lib/agent-tools/architect/chat');
     const { events, ctx } = recordingCtx();
 
-    await brainstormChat.handler({ promptText: 'p', cwd: '/tmp' }, ctx);
+    await brainstormChat.handler({ harnessSlug: 't', history: [], message: 'hi' }, ctx);
 
     const errorEv = events.find((e) => e.name === 'error');
     expect(errorEv).toBeTruthy();

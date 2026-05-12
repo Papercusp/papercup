@@ -5,13 +5,14 @@
  * by default, `claude -p` when AGENT_BACKEND=claude-code). Phase 3
  * pilots of the typed-event channel migration.
  *
- * The Hono routes at /:slug/architect/chat and /:slug/brainstorm/chat
- * are thin shims: each composes its role-specific prompt (loads
- * SPEC.md, features list, brainstorm scratchpad, etc.) and dispatches
- * into the matching projected tool via dispatchProjectedToolStream.
- * The tools themselves are prompt-agnostic; the only difference between
- * the two registrations is the name + description (audit-log
- * distinguishability).
+ * Self-contained as of the IPC-allowlist migration (2026-05-12): the
+ * tool resolves the project + composes the role-specific prompt
+ * (SPEC.md, features list, brainstorm scratchpad, etc.) inside the
+ * handler. The Hono routes at /:slug/architect/chat and
+ * /:slug/brainstorm/chat are thin shims that forward the raw chat
+ * args + slug. This unblocks the IPC fast-path: the webview can call
+ * either tool directly via the endpoint-ipc transport without first
+ * hitting an HTTP endpoint to build the prompt.
  *
  * Wire format:
  *   event: delta    data: <raw text>            ← z.string() → raw on wire
@@ -30,15 +31,37 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
+import {
+  composeArchitectPrompt,
+  composeBrainstormPrompt,
+  resolveSlug,
+  type ChatHistoryEntry,
+} from './prompts';
 
-const ArgsSchema = z.object({
-  /** Fully-composed prompt: system instructions + history + current message. */
-  promptText: z.string(),
-  /** Project working directory (cwd for the agent process). */
-  cwd: z.string(),
+const HistorySchema = z.array(
+  z.object({
+    role: z.union([z.literal('user'), z.literal('assistant')]),
+    content: z.string(),
+  }),
+);
+
+const ArchitectArgsSchema = z.object({
+  harnessSlug: z.string(),
+  phase: z.string().optional(),
+  history: HistorySchema.default([]),
+  message: z.string().min(1),
+  reviewId: z.string().optional(),
 });
 
-type Args = z.infer<typeof ArgsSchema>;
+const BrainstormArgsSchema = z.object({
+  harnessSlug: z.string(),
+  phase: z.string().optional(),
+  history: HistorySchema.default([]),
+  message: z.string().min(1),
+});
+
+type ArchitectArgs = z.infer<typeof ArchitectArgsSchema>;
+type BrainstormArgs = z.infer<typeof BrainstormArgsSchema>;
 
 const EVENTS = {
   // z.string() → raw text on the SSE wire (matches pre-migration
@@ -56,12 +79,22 @@ const EVENTS = {
   error: z.string(),
 } as const;
 
-async function chatHandler(input: Args, ctx: { emit: (n: string, d: unknown) => void }, label: string): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+type ChatCtx = {
+  emit: (n: string, d: unknown) => void;
+  signal?: AbortSignal;
+};
+
+async function streamPrompt(
+  promptText: string,
+  cwd: string,
+  ctx: ChatCtx,
+  label: string,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   let finalText = '';
   try {
     for await (const ev of runAgentChat({
-      promptText: input.promptText,
-      cwd: input.cwd,
+      promptText,
+      cwd,
       // Caller-side cancellation: dispatcher's wrapped signal fires on
       // client disconnect / wall-clock timeout / idle timeout. Forward
       // so runAgentChat shuts the subprocess down instead of letting
@@ -97,6 +130,39 @@ async function chatHandler(input: Args, ctx: { emit: (n: string, d: unknown) => 
   return { content: [{ type: 'text', text: finalText }] };
 }
 
+async function architectHandler(
+  input: ArchitectArgs,
+  ctx: ChatCtx,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const project = await resolveSlug(input.harnessSlug, input.phase);
+  if (!project) {
+    throw new Error(`unknown harness: ${input.harnessSlug}`);
+  }
+  const promptText = await composeArchitectPrompt(
+    project,
+    input.history as ChatHistoryEntry[],
+    input.message,
+    input.reviewId,
+  );
+  return streamPrompt(promptText, project.path, ctx, 'architect');
+}
+
+async function brainstormHandler(
+  input: BrainstormArgs,
+  ctx: ChatCtx,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  const project = await resolveSlug(input.harnessSlug, input.phase);
+  if (!project) {
+    throw new Error(`unknown harness: ${input.harnessSlug}`);
+  }
+  const promptText = await composeBrainstormPrompt(
+    project,
+    input.history as ChatHistoryEntry[],
+    input.message,
+  );
+  return streamPrompt(promptText, project.path, ctx, 'brainstorm');
+}
+
 export const architectChat = defineTool({
   name: 'architect:chat',
   description:
@@ -106,9 +172,9 @@ export const architectChat = defineTool({
   roles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
-  args: ArgsSchema,
+  args: ArchitectArgsSchema,
   events: EVENTS,
-  handler: (input, ctx) => chatHandler(input, ctx, 'architect'),
+  handler: architectHandler,
 });
 
 export const brainstormChat = defineTool({
@@ -120,9 +186,9 @@ export const brainstormChat = defineTool({
   roles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
-  args: ArgsSchema,
+  args: BrainstormArgsSchema,
   events: EVENTS,
-  handler: (input, ctx) => chatHandler(input, ctx, 'brainstorm'),
+  handler: brainstormHandler,
 });
 
 export default architectChat;

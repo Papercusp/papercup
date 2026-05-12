@@ -5686,76 +5686,8 @@ harness.post('/:slug/architect/chat', async (c) => {
     return c.json({ error: 'message required' }, 400);
   }
 
-  // Compose a compact prompt: system instructions + current spec grounding +
-  // conversation history + the new user message. The assistant is told to
-  // stream text and, when ready, emit a diff block with a special marker.
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
-  const contract = safeRead(join(harnessDir(project), 'validation-contract.md')) ?? '';
-  // Features live in Postgres (harness_features) post-2026-04-27 migration.
-  // Render a compact summary for the prompt — same shape the agents used to
-  // read out of features.json, just sourced from the DB now.
-  const featuresList = await parseFeatures(project);
-  const features = JSON.stringify(
-    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status, attempts: f.attempts })) },
-    null,
-    2,
-  );
-  const issues = safeRead(join(harnessDir(project), 'issues.md')) ?? '';
-  let reviewContext = '';
-  if (body.reviewId) {
-    const rpath = join(reviewsDir(project), `${body.reviewId.replace(/[^A-Za-z0-9_.-]/g, '')}.json`);
-    const rraw = safeRead(rpath);
-    if (rraw) reviewContext = `\n\n## Pending review in context\n\n${rraw}\n`;
-  }
-
-  const systemPrompt = `You are the ARCHITECT in an autonomous coding harness, chatting with the human supervisor through the /harness Inbox.
-
-Your job is to help them clarify the spec: ask Socratic questions about any vagueness until the user's intent is precise and testable, then propose a concrete change to SPEC.md or .harness/validation-contract.md.
-
-Current state:
-
-## SPEC.md
-${spec.slice(0, 8000)}
-
-## validation-contract.md
-${contract.slice(0, 6000)}
-
-## features (harness_features in Postgres — summary)
-${features.slice(0, 3000)}
-
-## issues.md tail
-${issues.slice(-3000)}
-${reviewContext}
-
-Rules:
-- Prefer short, pointed clarifying questions over long speeches.
-- When you're ready to propose a change, emit a fenced block. The UI shows the user a summary + Accept button; they trust you on the mechanical details.
-
-Format for file replacements:
-\`\`\`proposal:SPEC.md
-SUMMARY: <1–3 sentences in plain English: what will change and why. This is the ONLY text the user reads by default.>
----
-<complete replacement file contents — verbatim, nothing elided>
-\`\`\`
-
-Use \`proposal:SPEC.md\` or \`proposal:contract\` as the fence language. First line after the fence MUST start with \`SUMMARY:\` then human-facing text; then a line \`---\`; then the full replacement body.
-
-For a supervisor note (short message appended, not replacing a file):
-\`\`\`note:supervisor
-<text that appends to supervisor-notes.md>
-\`\`\`
-
-Rules for proposals:
-- The summary is what the user sees. Make it precise and plain-English. No jargon without definition.
-- The body must be complete — do not elide. The UI writes it verbatim on Accept.
-- Be decisive but never fabricate facts. If you don't know a constraint, ask instead of proposing.`;
-
-  const history = (body.history ?? []).slice(-10);
-  const fullPrompt = [
-    ...history.map((m) => `${m.role === 'user' ? 'User' : 'Architect'}: ${m.content}`),
-    `User: ${body.message}`,
-    'Architect:',
-  ].join('\n\n');
+  // Prompt composition + history slicing now happen inside the
+  // architect:chat tool (lib/agent-tools/architect/chat.ts).
 
   // Pilot 2 of typed-event channel migration (2026-05-12 → Phase 3):
   // the route now composes the prompt and dispatches into the
@@ -5784,12 +5716,18 @@ Rules for proposals:
         harnessSlug: project.slug,
         transport: 'in_process',
       };
+      // Tool is now self-contained: it resolves the project + composes
+      // the prompt itself. The route just forwards the raw chat args.
+      // See apps/operator/lib/agent-tools/architect/chat.ts for why.
       for await (const ev of dispatchProjectedToolStream(
         architectChatTool,
         'architect:chat',
         {
-          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-          cwd: project.path,
+          harnessSlug: project.slug,
+          phase: c.req.query('phase'),
+          history: body.history ?? [],
+          message: body.message,
+          reviewId: body.reviewId,
         },
         ctxBase,
         {},
@@ -5994,50 +5932,9 @@ harness.post('/:slug/brainstorm/chat', async (c) => {
     return c.json({ error: 'message required' }, 400);
   }
 
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
-  const brainstorm = safeRead(brainstormPath(project)) ?? '';
-  // Same as the Architect chat: features live in harness_features (PG).
-  const featuresList = await parseFeatures(project);
-  const features = JSON.stringify(
-    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status })) },
-    null,
-    2,
-  );
+  // Prompt composition + history slicing now happen inside the
+  // brainstorm:chat tool (lib/agent-tools/architect/chat.ts).
 
-  const systemPrompt = `You are a BRAINSTORM PARTNER for a software project. You're chatting with the human supervisor of a coding harness to help them explore ideas before they become features.
-
-Your job: expand the space of possibilities. Suggest analogues, probe "have you considered…", challenge hidden assumptions. You are expansive, not reductive. This is pre-SPEC ideation — nothing needs to be final yet.
-
-Current state:
-
-## SPEC.md
-${spec.slice(0, 6000)}
-
-## Existing features (harness_features in Postgres — summary)
-${features.slice(0, 2000)}
-
-## Brainstorm scratchpad (what the user is working on)
-${brainstorm.slice(0, 8000)}
-
-Rules:
-- Lead with ideas, tradeoffs, analogues from other domains. Be concrete.
-- When an idea matures enough to be acted on, emit a fenced action block:
-  - \`\`\`promote:feature — create a new todo feature in harness_features. Put a short title on the first line, then markdown body explaining intent + optional claims.
-  - \`\`\`promote:spec — insert into SPEC.md under a "## Brainstormed" section.
-  - \`\`\`promote:issue — file as an issue in issues.json. First line is title; rest is evidence/context.
-- Don't promote too eagerly. Wait until the user signals the idea is ready, or ask them first.
-- Keep responses short and punchy. Long speeches kill brainstorming.`;
-
-  const history = (body.history ?? []).slice(-10);
-  const fullPrompt = [
-    ...history.map((m) => `${m.role === 'user' ? 'User' : 'Partner'}: ${m.content}`),
-    `User: ${body.message}`,
-    'Partner:',
-  ].join('\n\n');
-
-  // Phase 3 typed-event migration: route shim dispatches into the
-  // brainstorm:chat tool. Wire-compat via schema-inferred z.string()
-  // for delta + error — see architect/chat above for full notes.
   const brainstormChatTool = lookupByMcpName('brainstorm:chat');
   if (!brainstormChatTool) {
     return c.json({ error: 'brainstorm:chat tool not registered' }, 500);
@@ -6062,8 +5959,10 @@ Rules:
         brainstormChatTool,
         'brainstorm:chat',
         {
-          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-          cwd: project.path,
+          harnessSlug: project.slug,
+          phase: c.req.query('phase'),
+          history: body.history ?? [],
+          message: body.message,
         },
         ctxBase,
         {},

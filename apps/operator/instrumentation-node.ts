@@ -220,13 +220,22 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       //                 and the idle-cache short-circuit (cheap cache
       //                 hit — IPC can pay the LLM cost; no harm).
       //
-      // NOT here yet: operator:converse, operator:delegate,
-      // architect:chat, brainstorm:chat. Their route-level side-effects
-      // haven't been moved into the tool handlers. Migrate per the
-      // operator:scan pattern when needed.
+      // architect:chat / brainstorm:chat — self-contained as of
+      //                 the prompts.ts extraction: tool resolves the
+      //                 project + composes SPEC.md/features/brainstorm
+      //                 prompt internally. Args are just the slug +
+      //                 history + message.
+      //
+      // NOT here yet: operator:converse, operator:delegate. Their
+      // route-level audit/budget side-effects (recordSpend,
+      // appendDelegateTurn, mem0 fact extraction) haven't been moved
+      // into the tool handlers. Migrate per the operator:scan pattern
+      // when ready to extend the audit gauntlet to cover them.
       allowedTools: [
         'dev:ipc_echo',
         'operator:scan',
+        'architect:chat',
+        'brainstorm:chat',
       ],
     });
   } catch (err) {
