@@ -21,6 +21,7 @@
 import type {
   AgentRole,
   Capability,
+  EmitCallback,
   PluginSpawn,
   ProgressCallback,
   RolesQuota,
@@ -52,8 +53,30 @@ export interface UnifiedToolContext {
   log: (msg: string) => void;
   /** Aborts on per-tool timeout, parent cancellation, or shutdown. */
   signal: AbortSignal;
-  /** Stream progress events. No-op when transport doesn't support streaming. */
+  /**
+   * Stream progress events. Thin alias over `emit('progress', { progress, total, message? })`.
+   * Tools using the standard pct/msg shape should prefer this; tools
+   * emitting richer typed events should use `emit` directly.
+   * No-op when transport doesn't support streaming.
+   */
   progress: ProgressCallback;
+  /**
+   * Emit a typed named event. The active transport adapter decides what
+   * happens:
+   *   - HTTP/SSE → `event: <name>\ndata: <JSON(data)>` via @restart/sse.
+   *   - MCP → `notifications/papercusp/event` with `{ event: name, data }`.
+   *   - In-process (`fnStream`) → next value of the async iterator.
+   *   - Non-streaming HTTP → no-op.
+   *
+   * Reserved names: 'done' | 'progress' | 'heartbeat' | 'result'. The
+   * framework emits 'done' automatically when the handler returns and
+   * 'error' automatically when it throws. Handlers may also emit 'error'
+   * mid-stream for non-fatal errors (dual-mode by design — preserves
+   * runAgentChat's non-terminal error event semantics).
+   *
+   * Always populated; transport adapter installs the right impl.
+   */
+  emit: EmitCallback;
 
   /* ── Auth / db (typically built-in tools) ─────────────────────────── */
   /** Auth principal resolved from bearer. Null when caller is anonymous. */

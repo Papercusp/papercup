@@ -19,6 +19,7 @@ const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
   log: vi.fn(),
   signal: new AbortController().signal,
   progress: vi.fn(),
+  emit: vi.fn(),
   workspaceId: 'default',
   harnessSlug: 'sheets',
   role: 'worker',

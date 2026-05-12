@@ -435,6 +435,9 @@ async function buildMcpToolContext(
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
     },
     progress,
+    // Placeholder no-op — commit 6 of Phase 3 (notifications/papercusp/event)
+    // overrides this with the real sendNotification-fan implementation.
+    emit: () => { /* MCP emit wired in Phase 3 commit 6 */ },
     spawn: pluginSpawnImpl,
     secret: secretImpl,
     signal: new AbortController().signal,

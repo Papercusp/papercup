@@ -252,16 +252,20 @@ async function resolveToolAndContext(
     } catch { /* leave undefined; tool will surface a clear error */ }
   }
   const abort = new AbortController();
+  // Default `emit` is a no-op for the JSON path; the streaming path
+  // (`handleHttpToolRequestStreaming`) overwrites this with a sink writer.
+  const noopEmit = () => { /* non-streaming http transport */ };
   const ctx: UnifiedToolContext = {
     log: (msg) => {
-      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {} };
+      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {}, emit: noopEmit };
       extras.log?.(msg, fullCtx);
     },
     signal: abort.signal,
     progress: (pct, msg) => {
-      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {} };
+      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {}, emit: noopEmit };
       extras.progress?.(pct, msg, fullCtx);
     },
+    emit: noopEmit,
     ...spawnCtx,
     isSuperuser,
     ...(extras.spawn ? { spawn: extras.spawn } : {}),
