@@ -185,6 +185,9 @@ PR.
 | `00d91054` | operator:scan: fully self-contained, IPC-allowlist eligible |
 | `41ccb211` | endpoint-ipc: real-tool E2E test against actual registry |
 | `4185b580` | docs: handoff doc — close all three deferred items |
+| `5ac4a107` | docs(plans): PR-split plan for the 51-commit branch |
+| `2e440f7f` | db(submodule): apply-058 script + bump pointer; docs: close last item |
+| `eb01030f` | architect:chat + brainstorm:chat: IPC-allowlist eligible |
 
 **Companion PRs:**
 - `papercusp#sse-typed-events-transport-column` — adds the
@@ -265,8 +268,8 @@ projects:list > throws when no slug available`
 - **Specific git commands** — `git cherry-pick`, `git rebase
   --onto`, etc. depend on local workflow preference. The commit-list
   + ordering is the canonical contract.
-- **`operator:converse` / `operator:delegate` / `architect:chat` /
-  `brainstorm:chat` self-containment for IPC** — out of scope.
-  These tools are NOT on the IPC allowlist (per the handoff doc's
-  remaining-work list); migrating them is a future PR following the
-  same pattern operator:scan got.
+- **`operator:converse` / `operator:delegate` self-containment for
+  IPC** — out of scope of this branch. `architect:chat` +
+  `brainstorm:chat` migrated in commit `eb01030f` (folded into PR 6).
+  Converse/delegate migration is a future PR following the same
+  pattern, per the handoff doc's remaining-work list.

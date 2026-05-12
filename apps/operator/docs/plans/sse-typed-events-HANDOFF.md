@@ -199,17 +199,32 @@ PAPERCUSP_IPC_ENABLE env plumbing, this verification becomes more
 urgent.
 
 ### 3. Migrating real routes to the IPC fast-path
-`operator:scan`, `operator:converse`, `operator:delegate`,
-`architect:chat`, `brainstorm:chat` are **not on the IPC allowlist**.
-Each has route-level side effects (rate limit, scan lock, budget,
-idle-cache short-circuit, scan tracker, plugin merge, session resume,
-PG audit append) that the IPC fast-path bypasses today because IPC
-dispatches the tool directly without the Hono route's pre/post code.
 
-Migrating any of these to IPC requires moving the side effects INTO
-the tool handler. That's a per-tool refactor and a different
-project. If you're working on those routes, do NOT add them to the
-allowlist in `apps/operator/instrumentation-node.ts`.
+**Eligible (on the allowlist):**
+- `dev:ipc_echo` — liveness probe
+- `operator:scan` — self-contained post-refactor (lock/budget/tracker/snapshot)
+- `architect:chat` — self-contained: tool resolves project + composes prompt
+- `brainstorm:chat` — same as architect:chat
+
+**NOT yet eligible:**
+- `operator:converse` — route still owns: session-user resolution (cookies),
+  buildPrompt (role files + voice prefs + mem0 pre-turn injection +
+  history budgeting), budget check, principal load, superuser-token
+  read, `recordSpend`, post-turn mem0 `.add()`, `<spawn>` tag dispatch.
+  Migration requires moving all of these into the tool handler. The
+  cookies-based session-user is the IPC-blocking item: the synthetic
+  operator principal has no cookie context, so the tool needs to
+  accept `sessionUser` as an explicit arg (or look it up via a
+  cookie-less route).
+- `operator:delegate` — route still owns: session create / append
+  turn / title generate. Same shape as converse.
+
+Migrating either is per-tool refactor work. If you're working on
+those routes, do NOT add them to the allowlist in
+`apps/operator/instrumentation-node.ts` without first moving the
+audit-trail side-effects into the handler. The `operator:scan`
+diff is the template; `architect:chat` shows the simpler case
+(prompt composition only, no audit trail).
 
 ### 4. Schema-driven render-into-chat cards (P4 in plan)
 The plan acknowledges `chat:ask_choice` and similar UI-tool patterns
@@ -310,19 +325,27 @@ All three follow-ups from the previous version of this doc shipped:
    nuqs-backed transport-checkbox filter (URL keys: `transport`,
    `sessionTransport`). `'unknown'` matches null rows (pre-058).
 
+4. **`architect:chat` + `brainstorm:chat` self-contained** ✅ —
+   prompt composition (SPEC.md, features list, brainstorm
+   scratchpad, validation contract, issues tail, pending-review
+   context) moved from the Hono routes into
+   `apps/operator/lib/agent-tools/architect/prompts.ts`. Tools now
+   take `{harnessSlug, history, message, reviewId?}` and resolve
+   the project + compose the prompt themselves. Both allowlisted
+   for IPC. Routes are thin shims (~10 lines each).
+
 Remaining work (none currently blocking):
 
-- **Per-tool migration of `operator:converse` / `operator:delegate` /
-  `architect:chat` / `brainstorm:chat`** to IPC-eligible. None are
-  on the allowlist today. `operator:scan` is the template for how
-  to move the route's side-effects into the tool handler. For
-  architect/brainstorm specifically, a less invasive path exists:
-  extract the prompt-composition helpers (harnessDir, safeRead,
-  parseFeatures, brainstormPath) into a shared lib first, then the
-  tool can import them directly. For operator:converse / operator:
-  delegate, the audit-trail side-effects (recordSpend,
-  appendDelegateTurn) need to move into the handler so IPC dispatches
-  don't lose budget accounting / conversation history.
+- **Per-tool migration of `operator:converse` / `operator:delegate`**
+  to IPC-eligible. The audit-trail side-effects (recordSpend, mem0
+  fact extraction, `<spawn>` dispatch for converse; session
+  create/append/title-generate for delegate) need to move into the
+  handler so IPC dispatches don't lose budget accounting /
+  conversation history. The cookies-based session-user resolution
+  is the IPC-blocking item — sessionUser needs to become an explicit
+  tool arg (synthetic user for IPC, real user from cookies for HTTP).
+  `operator:scan` and `architect:chat` are the templates; this work
+  is ~1 focused day per tool with an integration test fixture.
 - **Branch merge.** See `sse-typed-events-PR-SPLIT.md` for the
   6-PR split plan covering all 53 commits + their cross-repo
   dependencies. Migration 058 was applied to the live embedded-PG
