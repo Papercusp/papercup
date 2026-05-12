@@ -386,6 +386,14 @@ const PROJECTED_DEPS: DispatchProjectedDeps = {
  *   - progress wired to MCP `notifications/progress` when the calling
  *     client supplied a progressToken in `_meta`
  */
+// Exported for tests; not part of the route's public surface.
+// eslint-disable-next-line @typescript-eslint/naming-convention
+export async function __buildMcpToolContext_forTests(
+  ...args: Parameters<typeof buildMcpToolContext>
+): Promise<UnifiedToolContext> {
+  return buildMcpToolContext(...args);
+}
+
 async function buildMcpToolContext(
   spawn: BuiltSpawnContext,
   progressToken: string | number | undefined,
