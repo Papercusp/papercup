@@ -282,21 +282,21 @@ async function tryLoad(): Promise<MemoryClient | null> {
           password: pgFields.password,
           dbname: pgFields.dbname,
           collectionName,
-          dimension: EMBEDDER_DIM,
+          embeddingModelDims: EMBEDDER_DIM,
         },
       };
     } else {
       warnOnce('pgvector extension not available in embedded PG — falling back to in-process memory store (volatile)');
       vectorStoreConfig = {
         provider: 'memory',
-        config: { collectionName, dimension: EMBEDDER_DIM },
+        config: { collectionName, embeddingModelDims: EMBEDDER_DIM },
       };
     }
   } catch (e) {
     warnOnce(`pgvector probe failed: ${(e as Error).message}; falling back to in-process memory store`);
     vectorStoreConfig = {
       provider: 'memory',
-      config: { collectionName, dimension: EMBEDDER_DIM },
+      config: { collectionName, embeddingModelDims: EMBEDDER_DIM },
     };
   }
 
