@@ -508,59 +508,26 @@ app.post('/voice-tool/:name', async (c) => {
   if (elName === 'ask_operator') {
     const p = params as { text?: string; trigger?: string };
     const userText = (p?.text ?? '').toString().trim();
-    const trigger = typeof p?.trigger === 'string' ? p.trigger : 'user_message';
-    if (!userText && !trigger) return c.json('');
-    const VALID = new Set([
-      'user_message', 'silence_after_question', 'quiet_wait_resume',
-      'open_canvas', 'user_says_ready',
-    ]);
-    const effective = (trigger === 'silence_nudge' || trigger === 'silence_check')
-      ? 'silence_after_question'
-      : (VALID.has(trigger) ? trigger : 'user_message');
+    const triggerRaw = typeof p?.trigger === 'string' ? p.trigger : 'user_message';
+    if (!userText && !triggerRaw) return c.json('');
     const base = process.env.MOBILE_SELF_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
-    try {
-      const res = await fetch(`${base}/api/agent-mcp/operator-converse`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          messages: userText ? [{ role: 'user', content: userText }] : [],
-          trigger: effective,
-          mayAskActive: false,
-        }),
-      });
-      if (!res.ok || !res.body) {
-        return c.json('I had trouble just then — say that again?');
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      let assembled = '';
-      // Drain SSE.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const evt = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          for (const line of evt.split('\n')) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const payload = JSON.parse(line.slice(6));
-              if (typeof payload?.text === 'string') assembled += payload.text;
-            } catch { /* skip non-JSON */ }
-          }
-        }
-      }
-      const sayMatch = assembled.match(/<say(?:\s[^>]*)?>([\s\S]*?)<\/say>/i);
-      const out = (sayMatch ? sayMatch[1] : assembled).trim() || '...';
-      return c.json(out);
-    } catch (err) {
-      console.warn('[mobile:ask_operator]', err);
-      return c.json('I had trouble just then — say that again?');
+    const { askOperatorViaConverse } = await import('../../../lib/mobile-ask-operator');
+    const result = await askOperatorViaConverse({
+      baseUrl: base,
+      userText,
+      trigger: triggerRaw,
+    });
+    // Per-kind logging so we can correlate against operator-converse server logs.
+    if (result.kind === 'empty') {
+      console.warn(`[mobile:ask_operator] empty — events=${result.eventCount} trigger=${result.trigger} userText.length=${userText.length}`);
+    } else if (result.kind === 'timeout') {
+      console.warn(`[mobile:ask_operator] TIMEOUT after ${result.timeoutMs}ms`);
+    } else if (result.kind === 'bad-status') {
+      console.warn(`[mobile:ask_operator] bad-status status=${result.status}`);
+    } else if (result.kind === 'error') {
+      console.warn(`[mobile:ask_operator] error: ${result.error}`);
     }
+    return c.json(result.text);
   }
 
   // EL normalizes registry ids by replacing dots+dashes with underscores
