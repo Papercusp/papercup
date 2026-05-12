@@ -212,13 +212,40 @@ export async function dispatchProjectedTool(
   const timeoutSec = tool.timeoutSec ?? 60;
   const timer = setTimeout(() => abort.abort(), timeoutSec * 1000);
 
+  // Idle timeout: abort when no event has been emitted for
+  // idleTimeoutSec seconds. Augments the wall-clock cap; catches wedged
+  // child processes that have stopped producing output even though
+  // they're not formally hung. Disabled when 0/undefined.
+  const idleSec = tool.idleTimeoutSec ?? 0;
+  let lastEmitMs = Date.now();
+  let idleTimer: ReturnType<typeof setInterval> | null = null;
+  if (idleSec > 0) {
+    // Check every (idleSec / 4) seconds, minimum 1s. Aborts as soon as the
+    // gap since lastEmit exceeds the cap.
+    const checkMs = Math.max(1_000, Math.floor((idleSec * 1000) / 4));
+    idleTimer = setInterval(() => {
+      if (abort.signal.aborted) return;
+      if (Date.now() - lastEmitMs > idleSec * 1000) abort.abort();
+    }, checkMs);
+    if (typeof idleTimer.unref === 'function') idleTimer.unref();
+  }
+
   // Override ctx.signal with our timeout-bound one. The transport-supplied
   // signal (if any) is composed via addEventListener so caller-side aborts
   // still propagate.
   if (ctx.signal && !ctx.signal.aborted) {
     ctx.signal.addEventListener('abort', () => abort.abort(), { once: true });
   }
-  const handlerCtx: UnifiedToolContext = { ...ctx, signal: abort.signal };
+  // Wrap ctx.emit so each emit refreshes the idle deadline. The
+  // wrapper is installed only when idleTimeoutSec is on — non-streaming
+  // tools pay no overhead.
+  const wrappedEmit = idleSec > 0
+    ? (name: string, data: unknown) => {
+        lastEmitMs = Date.now();
+        ctx.emit(name, data);
+      }
+    : ctx.emit;
+  const handlerCtx: UnifiedToolContext = { ...ctx, signal: abort.signal, emit: wrappedEmit };
 
   try {
     const result = await tool.fn(input, handlerCtx);
@@ -276,5 +303,6 @@ export async function dispatchProjectedTool(
     };
   } finally {
     clearTimeout(timer);
+    if (idleTimer) clearInterval(idleTimer);
   }
 }

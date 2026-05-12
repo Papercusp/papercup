@@ -169,6 +169,48 @@ describe('dispatchProjectedTool', () => {
     expect(recorded).toEqual(['timeout']);
   });
 
+  it('aborts the handler when idleTimeoutSec elapses without an emit', async () => {
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1, // 1s idle cap
+      fn: (_input, ctx) =>
+        new Promise<ToolResult>((resolve, reject) => {
+          // Emit immediately, then go silent for 4s. Idle watchdog should
+          // abort around 1s.
+          ctx.emit('delta', { text: 'hi' });
+          ctx.signal.addEventListener('abort', () => reject(new Error('aborted by idle')));
+          setTimeout(() => resolve({ content: [{ type: 'text', text: 'never' }] }), 4_000);
+        }),
+    });
+    const start = Date.now();
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    const elapsed = Date.now() - start;
+    expect(r.ok).toBe(false);
+    // Idle check interval is max(1s, idleSec/4). With idleSec=1 that's 1s,
+    // so abort fires somewhere in [1s, 2s]. Generous upper bound for CI noise.
+    expect(elapsed).toBeLessThan(3_500);
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    // Reported as timeout since the abort signal fired.
+    expect(r.error?.code).toBe('timeout');
+  }, 10_000);
+
+  it('does NOT abort when emits keep arriving inside idleTimeoutSec', async () => {
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        // Emit every 300ms for ~1.5s — well inside the 1s idle gap.
+        for (let i = 0; i < 5; i++) {
+          ctx.emit('delta', { text: `chunk-${i}` });
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(true);
+  }, 10_000);
+
   it('routes ctx.progress() to the unified context (handler can call it)', async () => {
     const progressCalls: Array<[number | undefined, string | undefined]> = [];
     const tool = makeTool({
