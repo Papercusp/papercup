@@ -19,7 +19,7 @@
  * against the harness's project dir or a worktree.
  */
 import type { Hono } from 'hono';
-import { stream } from 'hono/streaming';
+import { sseResponse } from '@restart/sse';
 import { existsSync, mkdtempSync, readFileSync, mkdirSync, writeFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -647,90 +647,63 @@ function resolvePiBinary(): string {
   });
 
   harness.get('/:slug/pty/:id/stream', (c) => {
-  const id = c.req.param('id');
-  const handle = getPty(id);
-  if (!handle) {
-    return c.json({ error: 'unknown pty id', id }, 404);
-  }
-
-  c.header('Content-Type', 'text/event-stream; charset=utf-8');
-  c.header('Cache-Control', 'no-cache, no-transform');
-  c.header('Connection', 'keep-alive');
-  c.header('X-Accel-Buffering', 'no');
-
-  return stream(c, async (s) => {
-    let cleanup: (() => void) | null = null;
-    let closed = false;
-
-    const onData = (chunk: Buffer) => {
-      if (closed) return;
-      s.write(`event: data\ndata: ${chunk.toString('base64')}\n\n`).catch(() => {
-        closed = true;
-        cleanup?.();
-      });
-    };
-    const onExit = (code: number) => {
-      if (closed) return;
-      const payload = JSON.stringify({ code });
-      s.write(`event: exit\ndata: ${payload}\n\n`).catch(() => {});
-      closed = true;
-    };
-
-    // Replay full session history into the new subscriber. Non-empty for
-    // prewarmed handles AND for tab-switch remounts where the same pty
-    // had output that earlier consumers already saw — the new xterm
-    // starts blank and needs the whole history to re-render the prior
-    // state.
-    const history = getHistory(id);
-    if (history && history.length > 0) {
-      try { onData(history); } catch { /* see onData */ }
+    const id = c.req.param('id');
+    const handle = getPty(id);
+    if (!handle) {
+      return c.json({ error: 'unknown pty id', id }, 404);
     }
 
-    handle.onData.add(onData);
-    handle.onExit.add(onExit);
-    cleanup = () => {
-      handle.onData.delete(onData);
-      handle.onExit.delete(onExit);
-    };
+    return sseResponse({
+      signal: c.req.raw.signal,
+      heartbeatMs: 15_000,
+      setup: (sink) => {
+        const onData = (chunk: Buffer) => {
+          if (sink.closed) return;
+          sink.eventRaw('data', chunk.toString('base64'));
+        };
+        const onExit = (code: number) => {
+          if (sink.closed) return;
+          sink.event('exit', { code });
+          sink.close();
+        };
 
-    if (handle.killed) {
-      onExit(handle.exitCode ?? 0);
-      cleanup();
-      return;
-    }
+        // Replay full session history into the new subscriber. Non-empty for
+        // prewarmed handles AND for tab-switch remounts where the same pty
+        // had output that earlier consumers already saw — the new xterm
+        // starts blank and needs the whole history to re-render the prior
+        // state.
+        const history = getHistory(id);
+        if (history && history.length > 0) {
+          try { onData(history); } catch { /* see onData */ }
+        }
 
-    // Keep the SSE consumer counted as activity so the reaper spares this pty.
-    const ticker = setInterval(() => {
-      if (closed) return;
-      markActive(id);
-      // SSE comment ping — no event delivered to the client.
-      s.write(': keepalive\n\n').catch(() => {
-        closed = true;
-        cleanup?.();
-        clearInterval(ticker);
-      });
-    }, 15_000);
+        handle.onData.add(onData);
+        handle.onExit.add(onExit);
 
-    s.onAbort(() => {
-      closed = true;
-      cleanup?.();
-      clearInterval(ticker);
-      // Don't kill the pty on SSE disconnect — PiPanel unmounts on
-      // every dashboard tab switch, and killing here would force a
-      // full respawn (and full omp restart) when the user comes back.
-      // The handle keeps writing to its history buffer; the next
-      // /stream connection replays it. Idle reaper still cleans up
-      // truly-abandoned ptys after IDLE_TIMEOUT_MS.
+        if (handle.killed) {
+          onExit(handle.exitCode ?? 0);
+          return;
+        }
+
+        // Keep the SSE consumer counted as activity so the reaper spares
+        // this pty. Lib's heartbeat handles wire keepalive; we just need
+        // the markActive() side effect.
+        const ticker = setInterval(() => {
+          if (!sink.closed) markActive(id);
+        }, 15_000);
+        if (typeof ticker.unref === 'function') ticker.unref();
+
+        sink.onClose(() => {
+          clearInterval(ticker);
+          handle.onData.delete(onData);
+          handle.onExit.delete(onExit);
+          // Don't kill the pty on SSE disconnect — PiPanel unmounts on
+          // every dashboard tab switch, and killing here would force a
+          // full respawn (and full omp restart) when the user comes back.
+        });
+      },
     });
-
-    // Block until exit or abort.
-    while (!closed && !handle.killed) {
-      await new Promise((r) => setTimeout(r, 1000));
-    }
-    clearInterval(ticker);
-    cleanup?.();
   });
-});
 
   harness.post('/:slug/pty/:id/input', async (c) => {
   const id = c.req.param('id');
