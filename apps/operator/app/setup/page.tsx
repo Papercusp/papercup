@@ -1,3 +1,4 @@
+import Chromeless from '../_components/Chromeless';
 import { SetupWizard } from '../_components/SetupWizard/SetupWizard';
 
 export const metadata = {
@@ -7,6 +8,7 @@ export const metadata = {
 export default function SetupPage() {
   return (
     <div className="pc-shell pc-setup-shell">
+      <Chromeless />
       <SetupWizard mode="first-run" />
     </div>
   );

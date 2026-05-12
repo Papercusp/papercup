@@ -24,14 +24,29 @@ interface Props {
 }
 
 export function SetupWizard({ mode }: Props) {
-  const [stepId, setStepId] = useQueryState('step', { defaultValue: SETUP_STEPS[0].id });
-  const { statuses, refreshAll } = useWizardStatuses();
+  const { statuses, persisted, refreshAll, setStepPersistedStatus, setLastVisitedStep } =
+    useWizardStatuses();
+  const [stepId, setStepId] = useQueryState('step', {
+    defaultValue: persisted.last_visited_step ?? SETUP_STEPS[0].id,
+  });
 
   useEffect(() => {
     refreshAll();
   }, [refreshAll]);
 
+  useEffect(() => {
+    if (stepId) void setLastVisitedStep(stepId);
+  }, [stepId, setLastVisitedStep]);
+
   const active = useMemo(() => findStep(stepId) ?? SETUP_STEPS[0], [stepId]);
+  const isDismissed = persisted.step_status?.[active.id] === 'dismissed';
+  const isCompleted = persisted.step_status?.[active.id] === 'completed';
+
+  const goNext = () => {
+    const idx = SETUP_STEPS.findIndex((s) => s.id === active.id);
+    const next = SETUP_STEPS[idx + 1];
+    if (next) setStepId(next.id);
+  };
 
   return (
     <div className="pc-setup-wizard" data-mode={mode}>
@@ -77,6 +92,57 @@ export function SetupWizard({ mode }: Props) {
           <p>{active.summary}</p>
         </header>
         <section className="pc-setup-wizard__main-body">{renderStep(active.id)}</section>
+        <footer className="pc-setup-wizard__main-footer">
+          <div className="pc-setup-wizard__main-footer-left">
+            {!active.required && !isDismissed && !isCompleted && (
+              <button
+                type="button"
+                className="pc-btn"
+                onClick={() => void setStepPersistedStatus(active.id, 'dismissed')}
+              >
+                Skip this step
+              </button>
+            )}
+            {isDismissed && (
+              <span className="pc-setup-wizard__skip-note">
+                Skipped.{' '}
+                <button
+                  type="button"
+                  className="pc-link-btn"
+                  onClick={() => void setStepPersistedStatus(active.id, null)}
+                >
+                  Un-skip
+                </button>
+              </span>
+            )}
+            {!isCompleted && active.id !== 'embedded-pg' && active.id !== 'agents' && (
+              <button
+                type="button"
+                className="pc-btn"
+                onClick={() => void setStepPersistedStatus(active.id, 'completed')}
+              >
+                Mark as done
+              </button>
+            )}
+            {isCompleted && (
+              <span className="pc-setup-wizard__skip-note">
+                Done.{' '}
+                <button
+                  type="button"
+                  className="pc-link-btn"
+                  onClick={() => void setStepPersistedStatus(active.id, null)}
+                >
+                  Reset
+                </button>
+              </span>
+            )}
+          </div>
+          <div className="pc-setup-wizard__main-footer-right">
+            <button type="button" className="pc-btn pc-btn--primary" onClick={goNext}>
+              Continue →
+            </button>
+          </div>
+        </footer>
       </main>
     </div>
   );
