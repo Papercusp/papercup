@@ -119,7 +119,10 @@ export function OperatorChat({
         icon: OperatorLogoMark,
         extra: (
           <div className="op-chat-empty-panel" aria-hidden="true">
-            <div className="op-chat-empty-panel-label">Common starting points</div>
+            <div className="op-chat-empty-panel-head">
+              <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
+              <div className="op-chat-empty-panel-label">Common starting points</div>
+            </div>
             <div className="op-chat-empty-panel-list">
               <div className="op-chat-empty-row">
                 <span className="op-chat-empty-row-title">Scan workspaces</span>

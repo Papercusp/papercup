@@ -1,3 +1,4 @@
+import { OperatorLogoMark } from '../OperatorLogoMark';
 import { HudReticleGlyph } from './HudPrimitives';
 
 type OperatorOverlayState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
@@ -26,7 +27,9 @@ export function OperatorScanOverlay({
       <div className="operator-hud-beam operator-hud-beam--bottom" />
       <HudReticleGlyph className="operator-hud-reticle operator-hud-reticle--left" size={96} />
       <HudReticleGlyph className="operator-hud-reticle operator-hud-reticle--right" size={96} />
-
+      <div className="operator-hud-overlay__badge">
+        <OperatorLogoMark variant="compact" className="operator-hud-overlay__logo" />
+      </div>
     </div>
   );
 }

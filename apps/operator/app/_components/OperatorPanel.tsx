@@ -340,7 +340,7 @@ export function OperatorButton(): ReactElement {
         style={{ marginLeft: 8 }}
       >
         <span className="pc-header-cta-orb" aria-hidden="true">
-          <OperatorLogoMark className="pc-header-cta-logo" />
+          <OperatorLogoMark variant="compact" className="pc-header-cta-logo" />
           {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
           {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
         </span>

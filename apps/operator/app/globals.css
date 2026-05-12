@@ -24767,3 +24767,66 @@ body:has(.operator-panel) {
   height: 28px;
   filter: drop-shadow(0 0 12px rgba(125, 211, 252, 0.20));
 }
+
+/* ── Sentinel Cup rollout: tutorial, onboarding, HUD ───────────────── */
+
+.oracle-link--tutorial {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.oracle-link-icon {
+  width: 16px;
+  height: 16px;
+  filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.18));
+}
+
+.op-chat-empty-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 9px;
+}
+
+.op-chat-empty-panel-logo {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  filter: drop-shadow(0 0 8px rgba(125, 211, 252, 0.18));
+}
+
+.op-chat-empty-panel-label {
+  margin-bottom: 0;
+}
+
+.operator-reactor-core__logo {
+  position: relative;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  opacity: 0.88;
+  filter: drop-shadow(0 0 10px rgba(var(--operator-reactor-core), 0.22));
+}
+
+.operator-hud-overlay__badge {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(var(--operator-reactor-core), 0.14);
+  background: radial-gradient(circle at 35% 28%, rgba(255,255,255,0.10), transparent 24%), rgba(7, 16, 29, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+  opacity: 0.72;
+}
+
+.operator-hud-overlay__logo {
+  width: 19px;
+  height: 19px;
+  opacity: 0.72;
+  filter: drop-shadow(0 0 8px rgba(var(--operator-reactor-core), 0.18));
+}

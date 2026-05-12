@@ -1,3 +1,4 @@
+import { OperatorLogoMark } from '../OperatorLogoMark';
 import { HudFrameCorners, HudReticleGlyph, HudRingGlyph } from './HudPrimitives';
 
 type OperatorReactorState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
@@ -36,6 +37,7 @@ export function OperatorReactorCore({ state, reducedMotion = false }: OperatorRe
         <span className="operator-reactor-core__pulse" />
         <span className="operator-reactor-core__orb" />
         <span className="operator-reactor-core__flare" />
+        <OperatorLogoMark variant="compact" className="operator-reactor-core__logo" />
       </div>
       <HudReticleGlyph className="operator-reactor-reticle" size={112} />
       <HudFrameCorners className="operator-reactor-frame" />

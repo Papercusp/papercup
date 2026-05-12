@@ -1,5 +1,7 @@
 'use client';
 
+import { OperatorLogoMark } from './OperatorLogoMark';
+
 // OracleDock is lazy-loaded behind a `ready` gate in ChromeShell, so a click
 // firing before its useEffect has attached the 'oracle:start-tutorial'
 // listener gets dropped on the floor. Persist a one-shot intent flag in
@@ -14,12 +16,13 @@ export default function TutorialButton() {
   return (
     <button
       type="button"
-      className="oracle-link"
+      className="oracle-link oracle-link--tutorial"
       style={{ background: 'transparent', border: 0, padding: '4px 8px', cursor: 'pointer', font: 'inherit' }}
       onClick={onClick}
       title="Walk me through the app"
     >
-      Tutorial
+      <OperatorLogoMark variant="compact" className="oracle-link-icon" />
+      <span>Tutorial</span>
     </button>
   );
 }
