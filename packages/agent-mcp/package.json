@@ -9,6 +9,7 @@
     "./server": "./src/server.ts",
     "./define-tool": "./src/define-tool.ts",
     "./registry": "./src/registry.ts",
+    "./tool-projection": "./src/tool-projection.ts",
     "./provisioning": "./src/provisioning.ts",
     "./auth": "./src/auth.ts"
   },

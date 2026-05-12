@@ -57,7 +57,7 @@ interface SuggestionPayload {
   provenanceFlags: unknown;
 }
 
-defineTool({
+export default defineTool({
   name: 'operator:scan',
   description:
     'Operator workspace scanner core: stream a one-shot scanner LLM and parse <suggestion> blocks. Owned by the operator role; not user-callable from spawned agents.',

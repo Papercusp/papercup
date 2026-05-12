@@ -92,7 +92,7 @@ async function chatHandler(input: Args, ctx: { emit: (n: string, d: unknown) => 
   return { content: [{ type: 'text', text: finalText }] };
 }
 
-defineTool({
+export const architectChat = defineTool({
   name: 'architect:chat',
   description:
     'Architect-mode chat turn: clarify spec, propose patches. Streams deltas; returns the assembled final text.',
@@ -106,7 +106,7 @@ defineTool({
   handler: (input, ctx) => chatHandler(input, ctx, 'architect'),
 });
 
-defineTool({
+export const brainstormChat = defineTool({
   name: 'brainstorm:chat',
   description:
     'Brainstorm partner chat turn: expand ideas, suggest analogues, challenge assumptions. Streams deltas; returns the assembled final text.',
@@ -119,3 +119,5 @@ defineTool({
   events: EVENTS,
   handler: (input, ctx) => chatHandler(input, ctx, 'brainstorm'),
 });
+
+export default architectChat;

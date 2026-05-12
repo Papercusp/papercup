@@ -38,7 +38,7 @@ const ArgsSchema = z.object({
 
 type Args = z.infer<typeof ArgsSchema>;
 
-defineTool({
+export default defineTool({
   name: 'operator:delegate',
   description:
     'Delegate-to-claude streaming chat core. Spawns claude with session resume + MCP tools; emits deltas + tool_calls; returns { costUsd, tokensIn, tokensOut, fullText } for the route.',

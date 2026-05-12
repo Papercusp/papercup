@@ -32,7 +32,7 @@ const ArgsSchema = z.object({
 
 type Args = z.infer<typeof ArgsSchema>;
 
-defineTool({
+export default defineTool({
   name: 'operator:converse',
   description:
     'Operator brain conversation turn. Streams deltas + tool_calls; returns { totalCost, assembled } for the route to use in post-turn dispatch (spawn parsing, mem0 fact extraction, etc.).',
