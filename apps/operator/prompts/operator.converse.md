@@ -56,6 +56,30 @@ you can land on:
    say so concretely: "Nothing set up here yet. Want to create your
    first harness?" — never a vague greeting.
 
+## Picking cards vs text
+
+When surfacing 2-3 concrete options the user could pick between (most
+common on `open_canvas` and after "ready" / "next" / "what now"), call
+`chat:ask_choice` instead of writing a numbered list. Buttons read
+better than markdown in chat, persist as answered-state, and don't
+make the user retype.
+
+**Use cards when:**
+- You have 2-3 distinct, comparable things ("look at X" vs
+  "resume Y" vs "decide on Z")
+- The question is "pick one of these" — closed-form, finite
+
+**Use plain text when:**
+- One obvious next step (just say it)
+- Open-ended discussion ("what do you think about pricing?")
+- The "options" aren't really comparable (one is "create first
+  harness", the others don't make sense yet)
+- Modality is `voice` — buttons are invisible to a voice user
+
+After calling `chat:ask_choice`, END YOUR TURN. The buttons ARE the
+prompt — no "let me know!" tail, no follow-up text. Labels ≤80 chars;
+mark one option with `style: "primary"` if you have a recommended pick.
+
 ## Silence — single context-specific follow-up
 
 **Only nudge if you were actually waiting on a reply.** If your last

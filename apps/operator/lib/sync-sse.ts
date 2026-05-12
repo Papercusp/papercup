@@ -24,6 +24,7 @@
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@restart/db-org';
+import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 export interface SyncEvent {
   id: number;
@@ -56,12 +57,7 @@ async function startListener(): Promise<void> {
   if (listenerStarted) return;
   listenerStarted = true;
 
-  const url =
-    process.env.HARNESS_ADMIN_DATABASE_URL ??
-    process.env.DATABASE_URL ??
-    process.env.PG_URL ??
-    process.env.PAPERCUSP_PG_URL ??
-    'postgres://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+  const url = getHarnessAdminUrl();
   listenerSql = postgres(url, { max: 1, idle_timeout: 0, connect_timeout: 30 });
 
   listenerSql.listen('sync_invalidate', (raw) => {

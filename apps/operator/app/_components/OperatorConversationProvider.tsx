@@ -448,6 +448,12 @@ export interface GenerationRequest {
     | 'user_says_ready';
   /** True when we're allowed to ask "want active?" this turn. */
   mayAskActive: boolean;
+  /**
+   * Output surface for this turn. 'voice' when EL/Realtime is connected
+   * so the brain knows text-only affordances (chat:ask_choice buttons)
+   * are invisible to the user — must reply in plain say() instead.
+   */
+  modality: 'voice' | 'text';
   /** AbortSignal for cancellation (e.g. mode flip mid-generation). */
   signal: AbortSignal;
 }
@@ -491,6 +497,7 @@ const defaultGenerationFn: GenerationFn = async (req) => {
       messages: req.messages,
       trigger: req.trigger,
       mayAskActive: req.mayAskActive,
+      modality: req.modality,
       uiClientId: uiClientId || undefined,
     }),
     signal: req.signal,
@@ -996,6 +1003,11 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   // below so the runner always sees the latest committed state.
   const stateRef = useRef(state);
   useEffect(() => { stateRef.current = state; }, [state]);
+  // Voice-active mirror so runGeneration (which is declared before
+  // useState voiceActive) can read the current value without a re-bind.
+  // Initialized eagerly from the voice subscription so the very first
+  // turn after voice connects sees the right modality.
+  const voiceActiveRef = useRef<boolean>(false);
 
   // ── Generation runner ──────────────────────────────────────────────
   // Drains the stream, buffers chunks into a single string, parses tags
@@ -1028,6 +1040,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           messages: history,
           trigger,
           mayAskActive: mayAskActiveNow(snapshot),
+          modality: voiceActiveRef.current ? 'voice' : 'text',
           signal: ctrl.signal,
         });
 
@@ -1193,6 +1206,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
   const [voiceActive, setVoiceActive] = useState(() => {
     try { return getVoiceState().mode !== 'off'; } catch { return false; }
   });
+  // Ref mirror so runGeneration (declared above) can read the current
+  // value without a useCallback re-bind on every voice state change.
+  // Provider mounts BEFORE the first generation runs, so the initial
+  // ref value matches the first useState init.
+  useEffect(() => {
+    voiceActiveRef.current = voiceActive;
+  }, [voiceActive]);
   useEffect(() => {
     return subscribeVoiceState((s) => setVoiceActive(s.mode !== 'off'));
   }, []);

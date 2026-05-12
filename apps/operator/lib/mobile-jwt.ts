@@ -105,7 +105,17 @@ export function deviceAuth() {
     const auth = c.req.header('authorization') ?? '';
     const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
     const claims = token ? verifyDeviceToken(token) : null;
-    if (!claims) return c.json({ error: 'unauthorized' }, 401);
+    if (!claims) {
+      // TEMP voice-tool diagnostic: log what's missing so we can see
+      // why the phone's tool proxy 401s while heartbeats pass.
+      const path = c.req.path ?? '?';
+      console.warn(
+        `[deviceAuth] 401 path=${path} authPresent=${!!auth} ` +
+        `bearerForm=${auth.startsWith('Bearer ')} tokenLen=${token.length} ` +
+        `verified=${!!claims}`
+      );
+      return c.json({ error: 'unauthorized' }, 401);
+    }
     const { isRevoked } = await import('./mobile-device-store');
     if (await isRevoked(claims.sub).catch(() => false)) {
       return c.json({ error: 'revoked' }, 401);

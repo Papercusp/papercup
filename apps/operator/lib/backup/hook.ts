@@ -30,8 +30,10 @@ interface HookContext {
   workspaceRoot: string;
 }
 
-const EMBEDDED_PG_PORT = 16534;
-const EMBEDDED_PG_PASSWORD = 'postgres'; // from libs/papercusp/packages/embedded-postgres-server
+// Embedded PG port is no longer fixed — desktop picks at boot and writes
+// it to ~/.papercusp/embedded-pg.json (or honors PAPERCUSP_PG_PORT env).
+// Use the discovery helper instead of a hardcoded port.
+import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 
 export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
   const dumpDir = join(ctx.workspaceRoot, 'db-dumps');
@@ -42,12 +44,15 @@ export async function runPreSnapshotHook(ctx: HookContext): Promise<void> {
     await appendFile(logPath, `[${new Date().toISOString()}] ${msg}\n`).catch(() => {});
   };
 
-  // --- embedded-pg :16534 ---
+  // --- embedded-pg (port discovered at runtime) ---
+  const { url, source } = getHarnessAdminUrlWithSource();
+  await log(`embedded-pg URL source: ${source}`);
+  const parsed = new URL(url);
   await dumpPg({
-    host: '127.0.0.1',
-    port: EMBEDDED_PG_PORT,
-    user: 'postgres',
-    password: EMBEDDED_PG_PASSWORD,
+    host: parsed.hostname,
+    port: Number(parsed.port) || 5432,
+    user: parsed.username || 'postgres',
+    password: decodeURIComponent(parsed.password || 'postgres'),
     outPath: join(dumpDir, 'pg-embedded.sql.gz'),
     log,
   });

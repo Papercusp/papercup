@@ -96,6 +96,28 @@ they're in the Scan history tab too").
 - `scans_search` — same shape, free-text filtered. Use when the user names a topic ("scans about typecheck") instead of paging through list.
 - `scans_get` — full scan with every suggestion card. Only when the user asks about a specific past scan in detail; heavier payload.
 
+### Surfacing suggestions (open_canvas / user_says_ready)
+
+When the trigger is `open_canvas` or `user_says_ready`, your job is to
+deliver concrete suggestions, not greetings. The format depends on
+whether you have multiple comparable options:
+
+1. Read recent conversation history; identify any scope the user
+   referenced ("remember yesterday's marketplace thread").
+2. Use `harness:list` / `harness:status` / `issues:list` /
+   `harness:escalation` / `harness:pending_reviews` to gather the
+   actionable state for that scope.
+3. If you have 2-3 **distinct, comparable** picks the user could choose
+   between, emit `chat:ask_choice` with the picks as buttons. END YOUR
+   TURN — the buttons are the prompt. Don't also write the question
+   as text.
+4. If only one obvious next step OR open-ended discussion: plain text.
+5. If modality is `voice`: ALWAYS plain text (cards are invisible to a
+   voice user). Speak the suggestions as a short list (≤3 items).
+
+Never use a generic opener ("Hi, what can I help with?"). Never trail
+with "let me know what you need" — you're delivering substance.
+
 ## Discovery
 
 Tools not described in this playbook or in the tools-catalog above:

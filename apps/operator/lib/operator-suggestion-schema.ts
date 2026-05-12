@@ -47,28 +47,6 @@ export const SuggestionSchema = z.discriminatedUnion('action', [
     capability: z.null(),
     body: z.string().min(1),
   }),
-  /**
-   * High-level conversational suggestion the scanner surfaces to the
-   * operator BRAIN, not to the user as a clickable card. Used by
-   * operator-converse to compose contextual replies. Strict scope:
-   *   - Non-technical decisions only (pricing, scope, direction)
-   *   - NOT implementation choices ("which library", "which API")
-   *   - NO capability gate, NO target_resource, NO directive — these
-   *     are conversational prompts the operator weaves into chat,
-   *     never auto-dispatched. If something needs an action, use
-   *     send_directive/navigate instead.
-   * Rendered as a prompt section in operator-converse, not as a panel
-   * card. The operator says it (or doesn't, depending on context)
-   * during the next open_canvas / user_says_ready turn.
-   */
-  baseFields.extend({
-    action: z.literal('ask_user'),
-    capability: z.null(),
-    /** The question to surface to the user in chat. */
-    question: z.string().min(1),
-    /** Optional context the brain uses to frame the question. */
-    framing: z.string().optional(),
-  }),
 ]);
 
 export type Suggestion = z.infer<typeof SuggestionSchema>;

@@ -31,6 +31,8 @@ import { sseResponse } from '@restart/sse';
 import { runAgentChat } from '@/lib/agent-chat-stream';
 import { checkBudget, recordSpend } from '@/lib/operator-budget';
 import { parseOperatorTurn } from '@/lib/operator-converse-tags';
+import { selectHistoryWithinBudget } from '@/lib/operator-converse-history';
+import { loadVoicePrefs } from '@/lib/voice-prefs';
 import { readSystemPrincipal } from '@/lib/system-principal';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
@@ -40,7 +42,7 @@ import {
   loadRoleConverse,
   renderToolsCatalog,
 } from '@/lib/prompt-assembly';
-import { readLastScan } from '@/lib/operator-last-scan';
+
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -50,6 +52,13 @@ interface ConverseRequestBody {
   trigger?: 'user_message' | 'silence_after_question' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready';
   mayAskActive?: boolean;
   /**
+   * Output surface for this turn. 'voice' when EL/Realtime is
+   * connected — the brain MUST reply in plain say() because
+   * text-only affordances (chat:ask_choice buttons) are invisible
+   * to a voice user. Defaults to 'text' on missing/unknown values.
+   */
+  modality?: 'voice' | 'text';
+  /**
    * UI client id of the originating browser tab. The chat surface
    * passes this through so the agent's MCP URL is bound to that tab
    * — `ctx.uiClientId` is populated and `ui:*` tools default to it.
@@ -57,13 +66,20 @@ interface ConverseRequestBody {
   uiClientId?: string;
 }
 
-const HISTORY_KEEP = 30; // last 30 messages — bounds token cost on long convos
-const MAX_USER_TURN_CHARS = 8_000; // soft guard against pasted dumps
+// History selection is token-budgeted (see selectHistoryWithinBudget).
+// The legacy HISTORY_KEEP=30 fixed-count cap is gone; budget defaults
+// to 40k tokens, configurable via VoicePrefs.operatorHistoryTokenBudget.
 
 async function buildPrompt(body: ConverseRequestBody): Promise<string> {
-  const messages = (body.messages ?? [])
-    .filter((m) => m && typeof m.role === 'string' && typeof m.content === 'string')
-    .slice(-HISTORY_KEEP);
+  const prefs = await loadVoicePrefs().catch(() => null);
+  const budget = prefs?.operatorHistoryTokenBudget ?? 40000;
+  const messages = selectHistoryWithinBudget(
+    (body.messages ?? []).filter(
+      (m) => m && typeof m.role === 'string' && typeof m.content === 'string',
+    ),
+    budget,
+  );
+  const modality: 'voice' | 'text' = body.modality === 'voice' ? 'voice' : 'text';
 
   const trigger = body.trigger ?? 'user_message';
   const mayAskActive = !!body.mayAskActive;
@@ -108,44 +124,13 @@ async function buildPrompt(body: ConverseRequestBody): Promise<string> {
   const playbook = loadRoleToolsMd('operator');
   if (playbook) sections.push(playbook);
 
-  // Scanner-authored high-level questions to surface in chat.
-  // The proactive scanner (operator-scan) emits two flavors of
-  // suggestion: `send_directive` / `navigate` / `inform` render as
-  // panel cards the user clicks, while `ask_user` is a non-technical
-  // decision the brain weaves into chat. Both come from the same
-  // scan; here we read the most recent ones and inject them as a
-  // prompt section so the brain has substance for open_canvas /
-  // user_says_ready turns.
-  try {
-    const lastScan = await readLastScan();
-    const askUserCards = (lastScan?.cards ?? []).filter(
-      (c) => (c as { raw?: { action?: string } })?.raw?.action === 'ask_user',
-    );
-    if (askUserCards.length > 0) {
-      const lines = askUserCards.slice(0, 6).map((c, i) => {
-        const raw = (c as { raw: { question?: string; framing?: string; title?: string } }).raw;
-        const q = raw.question ?? raw.title ?? '';
-        const f = raw.framing ? ` (context: ${raw.framing})` : '';
-        return `${i + 1}. ${q}${f}`;
-      });
-      sections.push(
-        `## Scanner suggestions for the user (high-level decisions)\n\n` +
-          `The scanner surfaced these conversational questions for you to raise with the user when relevant — never technical, never auto-dispatch. Weave them into open_canvas / user_says_ready turns where they fit, or skip if they don't match the moment:\n\n${lines.join('\n')}\n\n` +
-          `Use these as inspiration, not a script — pick at most one per turn, paraphrase naturally, and skip any that don't fit. Never enumerate them verbatim.`,
-      );
-    }
-  } catch { /* degraded — proceed without scanner suggestions */ }
-
   // Conversation history — minimal serialization. Roles are preserved
   // so the model can reason about who said what.
   if (messages.length > 0) {
+    // Messages were already truncated to maxTurnChars by
+    // selectHistoryWithinBudget — no double-truncation here.
     const transcript = messages
-      .map((m) => {
-        const truncated = m.content.length > MAX_USER_TURN_CHARS
-          ? m.content.slice(0, MAX_USER_TURN_CHARS) + '…'
-          : m.content;
-        return `[${m.role}]\n${truncated}`;
-      })
+      .map((m) => `[${m.role}]\n${m.content}`)
       .join('\n\n');
     sections.push(`## Conversation history (oldest first; last ${messages.length} turns)\n\n${transcript}`);
   }
@@ -156,9 +141,44 @@ async function buildPrompt(body: ConverseRequestBody): Promise<string> {
     user_message: 'Trigger: user_message — the user just said something. React per the ladder.',
     silence_after_question: 'Trigger: silence_after_question — you asked the user something and they did not reply within 30s. Write ONE brief context-specific follow-up: first sentence references WHAT you were waiting to hear back on (e.g. "Still want me to dispatch the architect for that?" not "Still with me?"), then end with literally: "When you\'re ready, just say ready." That tells the user how to re-engage without you needing to ask again. After this nudge, the system will NOT prompt again. Total length: 2 sentences, under 30 words.',
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
-    open_canvas: 'Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ONE concrete observed fact + ONE concrete invitation. NEVER a generic greeting like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — those are forbidden openers. If the "Scanner suggestions for the user" section is present above, pick the single most relevant question to raise — paraphrased naturally, not verbatim. Otherwise call `harness:list` or `harness:status` to find a concrete fact to anchor on. Last resort if nothing is set up: "Nothing set up here yet. Want to create your first harness?" Keep it warm and short — 1-2 sentences total.',
-    user_says_ready: 'Trigger: user_says_ready — the user signaled they want suggestions ("ready", "next", "what now?", "go"). If the "Scanner suggestions for the user" section is present above, surface the top 2-3 high-level questions from it, paraphrased naturally. Otherwise call `harness:list` and `harness:status` to find concrete things they could work on. Format as a brief bulleted-or-numbered list of 2-3 items. NO generic greeting; NO open question at the end — the user already asked for suggestions, deliver them.',
+    open_canvas: `Trigger: open_canvas — fresh chat with no prior history. Open the conversation per ladder rung 5: ONE concrete observed fact + ONE concrete invitation. NEVER a generic greeting like "Hi, what can I help with" / "How can I help you today" / "Let me know what you need" — those are forbidden openers.
+
+You have FULL recent conversation history above and MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews / audit:list). Use them to find a concrete fact to anchor on.
+
+If you find 2-3 distinct, comparable things the user could pick between (e.g. "look at sheets escalation" vs "resume marketplace pipeline" vs "decide on wiki"), emit \`chat:ask_choice\` with the choices as buttons (≤80 chars per label). End your turn after the tool call — the buttons ARE the prompt; do NOT also write the question as text.
+
+If there's only 1 obvious thing OR the situation is open-ended (fresh install, single escalation, no clear comparables), use plain <say> text. Format: one observed fact + one concrete invitation, ≤2 sentences.
+
+Last resort if nothing is set up: "Nothing set up here yet. Want to create your first harness?"
+
+NOTE: when modality is 'voice' (see Modality section above), do NOT emit chat:ask_choice — buttons are invisible to a voice user. Always use plain <say>.`,
+
+    user_says_ready: `Trigger: user_says_ready — the user signaled they want suggestions ("ready", "next", "what now?", "go").
+
+You have FULL recent conversation history above. Re-read it to find any specific scope the user referenced ("remember yesterday's X", "let's continue with Y") and re-anchor on that thread. If no specific reference, use MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews) to find what's actionable right now.
+
+When you have 2-3 distinct, comparable options, emit \`chat:ask_choice\` with the choices as buttons (≤80 chars per label). Examples of good button labels:
+- "Look at sheets's escalation"
+- "Resume the marketplace pipeline"
+- "Decide what to do with wiki"
+
+Mark one option with style: "primary" if you have a recommended pick. End your turn after the tool call.
+
+If there's only 1 obvious next step OR the situation is open-ended, use plain <say> with a brief bullet list or a single concrete suggestion.
+
+Either way: NO generic greeting, NO open trailing question, NO "let me know what you need" — you're delivering substance.
+
+NOTE: when modality is 'voice', do NOT emit chat:ask_choice — buttons are invisible to a voice user. Speak the suggestions aloud as a short list instead.`,
   };
+  // Modality — tells the brain whether the user is reading text or
+  // hearing audio. Voice users can't see chat:ask_choice buttons.
+  sections.push(
+    `## Modality\n\nOutput surface: **${modality}**.\n\n` +
+      (modality === 'voice'
+        ? 'You are speaking to a voice user. Reply in plain <say> text. DO NOT call chat:ask_choice — buttons in the chat sidebar are invisible to a voice user. If you have multiple options to surface, speak them as a short spoken list (≤3 items).'
+        : 'You are talking to a user reading the chat sidebar. When you have 2-3 distinct, comparable options, you may emit chat:ask_choice to render clickable buttons. Otherwise use plain <say> text.'),
+  );
+
   sections.push(`## Trigger\n\n${triggerLines[trigger]}`);
 
   if (mayAskActive) {

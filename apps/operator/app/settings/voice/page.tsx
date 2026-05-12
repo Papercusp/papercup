@@ -666,6 +666,30 @@ export default function VoiceSettingsPage() {
               </p>
             </div>
             <div>
+              <label style={lbl}>
+                Operator history budget (tokens)
+              </label>
+              <input
+                type="number"
+                min={5000}
+                max={150000}
+                step={1000}
+                value={prefs.operatorHistoryTokenBudget ?? 40000}
+                onChange={(e) => {
+                  const v = Math.max(5000, Math.min(150000, parseInt(e.target.value, 10) || 40000));
+                  savePrefsPatch({ operatorHistoryTokenBudget: v });
+                }}
+                style={{ ...sel, width: 140 }}
+                disabled={savingPrefs}
+              />
+              <p style={hint}>
+                Default <strong>40000</strong>. How much chat history the operator brain sees per
+                turn. Higher = better recall on long conversations, more cost per reply.
+                Claude&apos;s full context is 200000 — we reserve the rest for the system prompt,
+                tools, and the response. Range 5000–150000.
+              </p>
+            </div>
+            <div>
               <label style={lbl}>Privacy mode for ElevenLabs / Realtime sessions</label>
               <select
                 value={prefs.voicePrivacyMode ?? 'always-on'}

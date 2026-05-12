@@ -142,53 +142,6 @@ Do NOT generate paths like \`/harness/<slug>/spec/<file>\` or
 </suggestion>
 \`\`\`
 
-### \`ask_user\` — HIGH-LEVEL DECISION FOR THE OPERATOR TO RAISE IN CHAT
-
-A conversational suggestion the OPERATOR BRAIN uses to compose chat
-replies — NOT rendered as a panel card. Use this for **high-level,
-non-technical decisions only**: priorities, scope tradeoffs, direction,
-"what should we focus on", "is this still the goal". The brain weaves
-it into a turn when relevant (open_canvas, user_says_ready, or natural
-flow).
-
-**STRICTLY non-technical.** Forbidden topics:
-- Implementation choices ("which library", "which API", "which DB
-  schema") — those go to the architect / scoper
-- Tier-high actions ("dispatch a worker", "approve a review") — those
-  are \`send_directive\` panel cards
-- Code review or PR triage
-- Anything a clickable card answers better
-
-**Examples of good ask_user:**
-- "Are we still aiming to launch by end of Q2, or has that slipped?"
-- "Sheets and forms both have escalations. Which one matters more?"
-- "Is the marketplace the priority, or should we land mobile first?"
-- "I notice we haven't worked on the wiki harness in 3 weeks — still
-  active or shelve it?"
-
-**Examples of WRONG ask_user (use a card instead):**
-- ❌ "Should I dispatch the architect to refactor sheets?" — that's
-  a \`send_directive\` card
-- ❌ "Should I use Postgres or SQLite for the new feature?" — too
-  technical, ask the architect
-- ❌ "Want me to merge this PR?" — that's a \`send_directive\` card
-
-\`\`\`
-<suggestion>
-{
-  "id": "<stable-id>",
-  "action": "ask_user",
-  "capability": null,
-  "title": "<≤80 chars, summary for the brain's context>",
-  "why": "<why this matters — context for the brain, not the user>",
-  "reason": "<≥10 chars, why this surfaced>",
-  "tier": "low",
-  "question": "<the actual question to raise in chat, ≤180 chars>",
-  "framing": "<optional context the brain uses to weave it in>"
-}
-</suggestion>
-\`\`\`
-
 ## Tier classification (load-bearing)
 
 You must include \`tier\` on every suggestion. The substrate verifies it
@@ -204,9 +157,7 @@ Canonical capability tier table:
 | \`harness:dispatch:*\`, \`pending_events:write\`, \`secrets:read:*\`, \`secrets:write:*\` | high |
 | Anything else (plugin-defined caps not in this table) | high (fail-safe) |
 
-\`navigate\`, \`inform\`, and \`ask_user\` are always \`low\` (no dispatch).
-\`ask_user\` additionally never renders as a panel card — it's only ever
-surfaced through the operator's chat brain.
+\`navigate\` and \`inform\` are always \`low\` (no dispatch).
 
 ## Anti-patterns — DO NOT
 

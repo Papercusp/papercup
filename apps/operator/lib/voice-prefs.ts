@@ -126,6 +126,14 @@ export interface VoicePrefs {
    */
   fullAgentSessionMaxMin: number;
   /**
+   * How many tokens of recent chat history the operator brain sees per
+   * converse turn. Replaces the legacy 30-turn fixed cap. The route
+   * walks messages newest → oldest, accumulating until this budget is
+   * hit. Higher = better long-conversation recall, more $ per reply.
+   * Default 40000 (~10-15% of Claude's 200k context). Range 5000-150000.
+   */
+  operatorHistoryTokenBudget: number;
+  /**
    * Hard monthly cap on ElevenLabs Conv AI minutes. Once the current
    * month's usage reaches this number, voice-mode refuses to start a
    * new session and surfaces a toast. 0 = uncapped. Default 600 min
@@ -205,6 +213,7 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   operatorActiveOnStartup: true,
   fullAgentIdleTimeoutMin: 2,
   fullAgentSessionMaxMin: 30,
+  operatorHistoryTokenBudget: 40000,
   fullAgentMonthlyMinuteCap: 600,
   voicePrivacyMode: 'always-on',
   wakeGatedIdleTimeoutSec: 20,
@@ -240,6 +249,14 @@ export async function saveVoicePrefs(patch: Partial<VoicePrefs>): Promise<VoiceP
 
 function mergePrefs(base: VoicePrefs, patch: Partial<VoicePrefs>): VoicePrefs {
   const out: VoicePrefs = { ...base, ...patch };
+  // Clamp operatorHistoryTokenBudget to a sane range. Fall back to the
+  // base default on NaN / negative / absurdly small / absurdly large.
+  const budget = Number(out.operatorHistoryTokenBudget);
+  if (!Number.isFinite(budget) || budget < 5000 || budget > 150000) {
+    out.operatorHistoryTokenBudget = base.operatorHistoryTokenBudget ?? 40000;
+  } else {
+    out.operatorHistoryTokenBudget = Math.round(budget);
+  }
   // Deep-merge nudgeDedup so partial patches don't drop unwritten kinds.
   if (patch.nudgeDedup) {
     out.nudgeDedup = {

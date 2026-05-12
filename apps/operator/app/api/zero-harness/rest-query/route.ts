@@ -27,6 +27,7 @@ import { gzipSync } from 'node:zlib';
 import postgres from 'postgres';
 
 import { schema, queries } from '@restart/zero-harness';
+import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { mustGetQuery } = require('@rocicorp/zero') as {
@@ -51,8 +52,7 @@ let _provider: { run: (q: any) => Promise<any[]> } | null = null;
 
 function getProvider() {
   if (_provider) return _provider;
-  const url = process.env.HARNESS_ADMIN_DATABASE_URL
-    ?? 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+  const url = getHarnessAdminUrl();
   const sock = process.env.PAPERCUSP_PGLITE_SOCKET_DIR;
   _client = postgres(url, {
     max: Math.max(1, Number(process.env.PAPERCUSP_DB_POOL_MAX) || 4),

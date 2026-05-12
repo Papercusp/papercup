@@ -233,9 +233,8 @@ async function renameHarness(
   oldProjectDir: string,
 ): Promise<void> {
   const postgres = (await import('postgres')).default;
-  const url =
-    process.env.HARNESS_ADMIN_DATABASE_URL ??
-    'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+  const { getHarnessAdminUrl } = await import('@/lib/embedded-pg-discovery');
+  const url = getHarnessAdminUrl();
   const sql = postgres(url, { max: 1 });
   try {
     await sql.unsafe(`ALTER SCHEMA harness_${oldSlug} RENAME TO harness_${newSlug}`);

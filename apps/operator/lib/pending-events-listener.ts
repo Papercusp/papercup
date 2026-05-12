@@ -14,6 +14,7 @@
  */
 
 import postgres from 'postgres';
+import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 export interface PendingEventNotification {
   id: string;
@@ -31,10 +32,7 @@ let started = false;
 let listenerSql: postgres.Sql | null = null;
 
 function adminUrl(): string {
-  return (
-    process.env.HARNESS_ADMIN_DATABASE_URL ??
-    'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp'
-  );
+  return getHarnessAdminUrl();
 }
 
 export function onPendingEventInserted(handler: Handler): () => void {

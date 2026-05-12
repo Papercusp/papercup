@@ -17,6 +17,7 @@ import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { getHarnessAdminUrl } from '@/lib/embedded-pg-discovery';
 import { createServer } from 'node:net';
 
 export const runtime = 'nodejs';
@@ -142,9 +143,7 @@ export async function POST() {
       ...process.env,
       // drizzle-kit needs DATABASE_URL or the URL in the config; the
       // config reads HARNESS_ADMIN_DATABASE_URL so admin role is used.
-      HARNESS_ADMIN_DATABASE_URL:
-        process.env.HARNESS_ADMIN_DATABASE_URL ??
-        'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp',
+      HARNESS_ADMIN_DATABASE_URL: getHarnessAdminUrl(),
     },
   });
 
