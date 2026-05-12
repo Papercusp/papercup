@@ -45,6 +45,10 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock('@/lib/agent-chat-stream');
   vi.doUnmock('@/lib/agent-tools/architect/prompts');
+  vi.doUnmock('@/lib/system-principal');
+  vi.doUnmock('@/lib/workspace-registry');
+  vi.doUnmock('@/lib/delegates');
+  vi.doUnmock('@/lib/delegate-summary');
 });
 
 describe('architect:chat + brainstorm:chat (raw-text wire)', () => {
@@ -189,15 +193,37 @@ describe('operator:scan / converse / delegate (JSON-delta wire)', () => {
           { type: 'result', costUsd: 0.001, tokensIn: 5, tokensOut: 5 },
         ]),
     }));
+    // operator:delegate is now self-contained — handler runs
+    // readSystemPrincipal + createDelegate + bumpDelegate +
+    // autoArchiveIdleDelegates + appendDelegateTurn +
+    // generateSessionTitle internally. Mock everything PG-touching so
+    // the unit test stays unit-y.
+    vi.doMock('@/lib/system-principal', () => ({
+      readSystemPrincipal: async () => ({
+        bearer: 'x', workspaceId: 'default', principalId: 'p_test',
+      }),
+    }));
+    vi.doMock('@/lib/workspace-registry', () => ({
+      activeWorkspaceId: () => 'default',
+    }));
+    vi.doMock('@/lib/delegates', () => ({
+      createDelegate: async () => {},
+      getDelegate: async () => null,
+      bumpDelegate: async () => {},
+      autoArchiveIdleDelegates: async () => {},
+      appendDelegateTurn: async () => {},
+    }));
+    vi.doMock('@/lib/delegate-summary', () => ({
+      generateSessionTitle: async () => 'untitled',
+    }));
     const { default: delegate } = await import('@/lib/agent-tools/operator/delegate');
     const { events, ctx } = recordingCtx();
 
     await delegate.handler(
       {
-        promptText: 'p',
-        agentSessionId: 'sess_T',
-        mcpConfigJson: '{"mcpServers":{}}',
-        allowedTools: [],
+        requestText: 'do the thing',
+        sessionId: undefined,
+        newSession: false,
       },
       ctx,
     );
@@ -206,6 +232,11 @@ describe('operator:scan / converse / delegate (JSON-delta wire)', () => {
     expect(errorEv).toBeTruthy();
     expect(typeof errorEv!.data).toBe('object');
     expect((errorEv!.data as { message: string }).message).toBe('soft fail');
+
+    // The new self-contained shape also emits a `session` event upfront.
+    const sessionEv = events.find((e) => e.name === 'session');
+    expect(sessionEv).toBeTruthy();
+    expect((sessionEv!.data as { created: boolean }).created).toBe(true);
   });
 });
 

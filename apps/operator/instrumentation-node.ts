@@ -225,17 +225,22 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       //                 project + composes SPEC.md/features/brainstorm
       //                 prompt internally. Args are just the slug +
       //                 history + message.
+      // operator:delegate — self-contained: principal load, session
+      //                 pick/resume, mcpConfig assembly, post-stream
+      //                 appendDelegateTurn + generateSessionTitle all
+      //                 inside the handler. Route is a 100-line shim.
       //
-      // NOT here yet: operator:converse, operator:delegate. Their
-      // route-level audit/budget side-effects (recordSpend,
-      // appendDelegateTurn, mem0 fact extraction) haven't been moved
-      // into the tool handlers. Migrate per the operator:scan pattern
-      // when ready to extend the audit gauntlet to cover them.
+      // NOT here yet: operator:converse. Its post-stream side-effects
+      // (recordSpend, mem0 fact extraction, <spawn> dispatch) need
+      // to move into the handler so IPC dispatches don't lose budget
+      // accounting / memory. Migrate per the operator:delegate /
+      // operator:scan pattern when ready.
       allowedTools: [
         'dev:ipc_echo',
         'operator:scan',
         'architect:chat',
         'brainstorm:chat',
+        'operator:delegate',
       ],
     });
   } catch (err) {
