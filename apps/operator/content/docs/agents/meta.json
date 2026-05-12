@@ -1,4 +1,4 @@
 {
   "title": "Agents",
-  "pages": ["index", "action-registry", "operator-persona", "authoring-experts"]
+  "pages": ["index", "action-registry", "operator-persona", "prompt-assembly", "authoring-experts"]
 }

@@ -90,7 +90,12 @@ For plugins, this goes in `libs/papercusp/plugins/<name>/papercusp.json`:
   "capabilities": ["http:fetch:example.com"],
   "roles": ["worker", "architect"],
   "rolesQuota": { "worker": { "perChunk": 1 }, "architect": { "perRun": 5 } },
-  "timeoutSec": 60
+  "timeoutSec": 60,
+  "guidance": {
+    "when": "When the user asks you to <X>; pair with <Y> for the chained-list case.",
+    "notWhen": "Not for <Z> — use <other_tool> instead.",
+    "chaining": "After <prerequisite_tool> if you need its id; before <successor_tool>."
+  }
 }
 ```
 
@@ -100,6 +105,7 @@ Notes:
 - **`roles` is enforced.** Workers use `perChunk` quotas (resets per chunk); everyone else uses `perRun` (resets per orchestrator run).
 - **Reads usually don't need a quota.** Only set `rolesQuota` for: external API spend, PG write bursts, subprocess fan-out.
 - **`timeoutSec` defaults to 60** if omitted. The dispatcher aborts via `ctx.signal` when it fires.
+- **`guidance` is optional but strongly recommended.** Rendered into the [prompt-assembly tools catalog](/docs/agents/prompt-assembly#section-2--tools-catalog) so every role that's allowed to call the tool gets the same `when` / `notWhen` / `chaining` framing without you having to write it in N role files. Built-in tools pass `guidance` to `defineTool({...})` as a sibling of `capability`. Omit it and the catalog falls back to description-only.
 
 ### Step 2.5 — If you need a new PG schema, apply the migration manually
 
