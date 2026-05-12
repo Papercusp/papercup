@@ -19,7 +19,6 @@
  * users notice without spamming.
  */
 
-import type { Memory } from 'mem0ai/oss';
 import { getOrgPg } from '@restart/db-org';
 
 const MEM0_COLLECTION = 'operator_memory';
@@ -27,23 +26,75 @@ const EMBEDDER_MODEL = 'Xenova/bge-small-en-v1.5';
 const EMBEDDER_DIM = 384;
 const LLM_MODEL = 'claude-haiku-4-5';
 
-let _client: Memory | null = null;
-let _clientLoadFailed = false;
-let _warnedAboutMissingDeps = false;
 
-function warnOnceMissingDeps(reason: string): void {
-  if (_warnedAboutMissingDeps) return;
-  _warnedAboutMissingDeps = true;
-  console.warn(`[mem0] not available: ${reason}. memory:* tools will no-op until 'npm install' brings in mem0ai + @xenova/transformers + @anthropic-ai/sdk.`);
+type MemoryEntry = {
+  id: string;
+  memory?: string;
+  metadata?: Record<string, unknown>;
+  score?: number;
+  [key: string]: unknown;
+};
+
+type MemoryListResult = {
+  results?: MemoryEntry[];
+  [key: string]: unknown;
+};
+
+type MemoryClient = {
+  add(content: string, opts: Record<string, unknown>): Promise<unknown>;
+  delete(id: string): Promise<unknown>;
+  getAll(opts: Record<string, unknown>): Promise<MemoryListResult>;
+  search(query: string, opts: Record<string, unknown>): Promise<MemoryListResult>;
+  update(id: string, content: string): Promise<unknown>;
+};
+
+type Mem0Module = {
+  Memory: new (config: Record<string, unknown>) => MemoryClient;
+};
+
+type TransformersModule = {
+  pipeline: (task: string, model: string) => Promise<Pipeline>;
+};
+
+type Pipeline = (text: string, opts: unknown) => Promise<{ data: Float32Array }>;
+
+const dynamicImport = new Function(
+  'specifier',
+  'return import(specifier)',
+) as <T>(specifier: string) => Promise<T>;
+
+const MEM0_PACKAGE = 'mem0ai/oss';
+const TRANSFORMERS_PACKAGE = '@xenova/transformers';
+let _client: MemoryClient | null = null;
+/**
+ * "Permanent" failure cache — only set when the failure is from a
+ * truly fixed cause (missing npm package, unparseable config). For
+ * recoverable failures (missing Anthropic API key — user can add via
+ * /settings/credentials), we do NOT cache so the client retries on
+ * the next call.
+ */
+let _clientPermanentFailure = false;
+const _seenWarnReasons = new Set<string>();
+
+function warnOnce(reason: string): void {
+  // Each distinct reason logs once per process. Avoids spamming the
+  // log when many tool calls hit the same missing-key failure but
+  // surfaces a credentials-then-deps double issue clearly.
+  if (_seenWarnReasons.has(reason)) return;
+  _seenWarnReasons.add(reason);
+  console.warn(`[mem0] not available: ${reason}.`);
 }
 
 /**
  * Try to load the mem0 client. Returns null if the dependencies aren't
  * installed or if config can't be assembled.
  */
-async function tryLoad(): Promise<Memory | null> {
+async function tryLoad(): Promise<MemoryClient | null> {
   if (_client) return _client;
-  if (_clientLoadFailed) return null;
+  // Permanent failures (deps not installed) skip retries — those won't
+  // resolve mid-process. Recoverable ones (missing API key, transient
+  // PG error) are NOT cached so the next call retries.
+  if (_clientPermanentFailure) return null;
 
   // Resolve the embedded PG connection string the same way every other
   // module in this app does — via getOrgPg's connection metadata. We
@@ -53,18 +104,32 @@ async function tryLoad(): Promise<Memory | null> {
     const { connectionString: cs } = await import('./mem0-connection');
     connectionString = await cs();
   } catch (e) {
-    _clientLoadFailed = true;
-    warnOnceMissingDeps(`couldn't resolve PG connection: ${(e as Error).message}`);
+    // PG resolution failure is transient (the discovery file may not
+    // be written yet on cold boot). Retry on next call.
+    warnOnce(`couldn't resolve PG connection: ${(e as Error).message}`);
+    return null;
+  }
+
+  // Anthropic API key: PG-first (operator stores in operator_credentials),
+  // env as fallback. A missing key is RECOVERABLE — user can add via
+  // /settings/credentials, so don't poison-cache the failure.
+  let anthropicKey = process.env.ANTHROPIC_API_KEY ?? '';
+  try {
+    const { readCredentials } = await import('../credentials');
+    const creds = await readCredentials();
+    if (creds.anthropic_api_key) anthropicKey = creds.anthropic_api_key;
+  } catch {
+    /* PG creds unavailable — fall back to env */
+  }
+  if (!anthropicKey) {
+    warnOnce('no Anthropic API key in operator-credentials or env (add at /settings/api-keys)');
     return null;
   }
 
   try {
     // Dynamic imports so this module can be imported even when the
     // deps aren't yet installed (build-time + boot-time safety).
-    const { Memory } = await import('mem0ai/oss');
-    // We import transformers lazily inside the custom embedder, not
-    // here, so mem0 can construct without it.
-    // The embedder runs INSIDE mem0's pipeline.
+    const { Memory } = await dynamicImport<Mem0Module>(MEM0_PACKAGE);
     const customEmbedder = await buildLocalEmbedder();
 
     _client = new Memory({
@@ -83,7 +148,7 @@ async function tryLoad(): Promise<Memory | null> {
       llm: {
         provider: 'anthropic',
         config: {
-          apiKey: process.env.ANTHROPIC_API_KEY ?? '',
+          apiKey: anthropicKey,
           model: LLM_MODEL,
         },
       },
@@ -92,8 +157,17 @@ async function tryLoad(): Promise<Memory | null> {
 
     return _client;
   } catch (e) {
-    _clientLoadFailed = true;
-    warnOnceMissingDeps((e as Error).message);
+    // The dynamic-import errors here are the permanent class: missing
+    // mem0ai or @xenova/transformers packages. Those don't resolve
+    // mid-process, so cache.
+    const msg = (e as Error).message ?? String(e);
+    if (/cannot find module|MODULE_NOT_FOUND|Cannot resolve/i.test(msg)) {
+      _clientPermanentFailure = true;
+      warnOnce(`${msg}. Run 'npm install' in apps/operator to enable.`);
+    } else {
+      // Unknown failure — retry next call but log it.
+      warnOnce(msg);
+    }
     return null;
   }
 }
@@ -105,9 +179,7 @@ async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>
 
   return async (text: string): Promise<number[]> => {
     if (!pipelinePromise) {
-      const transformers = (await import('@xenova/transformers')) as {
-        pipeline: (task: string, model: string) => Promise<Pipeline>;
-      };
+      const transformers = await dynamicImport<TransformersModule>(TRANSFORMERS_PACKAGE);
       pipelinePromise = transformers.pipeline('feature-extraction', EMBEDDER_MODEL);
     }
     const pipe = await pipelinePromise;
@@ -120,6 +192,6 @@ async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>
  * Returns the mem0 client OR null if dependencies aren't installed
  * or PG isn't reachable. Callers handle the null case as a no-op.
  */
-export async function getMemoryClient(): Promise<Memory | null> {
+export async function getMemoryClient(): Promise<MemoryClient | null> {
   return tryLoad();
 }
