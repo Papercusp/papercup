@@ -211,6 +211,11 @@ export async function dispatchProjectedTool(
   const abort = new AbortController();
   const timeoutSec = tool.timeoutSec ?? 60;
   const timer = setTimeout(() => abort.abort(), timeoutSec * 1000);
+  // Don't keep the Node event loop alive just for the wall-clock
+  // timeout. Tools with multi-minute timeouts (architect/converse/
+  // delegate all use 600s) would otherwise block process exit until
+  // the timer fires. Matches the idle-timer behavior below.
+  if (typeof timer.unref === 'function') timer.unref();
 
   // Idle timeout: abort when no event has been emitted for
   // idleTimeoutSec seconds. Augments the wall-clock cap; catches wedged

@@ -3,6 +3,7 @@
  * Run with: npx vitest run packages/agent-mcp/src/http-projection.test.ts
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   handleHttpToolRequest,
   handleHttpToolRequestStreaming,
@@ -335,5 +336,50 @@ describe('handleHttpToolRequestStreaming', () => {
     const error = events.find((e) => e.event === 'error');
     expect(error).toBeDefined();
     expect((error!.data as { code: string }).code).toBe('handler_error');
+  });
+
+  it('emits binary events as base64 over SSE (HTTP transport)', async () => {
+    // Regression: ctx.emit(name, Uint8Array) used to fall into the
+    // generic else branch → sink.event() → JSON.stringify(Uint8Array)
+    // which produces {"0":222,"1":173,...} — useless to any consumer.
+    // The HTTP path now base64-encodes binary events to match the
+    // tools/list discoverability hint (contentEncoding: 'base64'). The
+    // IPC path stays raw via EVENT_BIN frames; same emit, different
+    // wire per transport.
+    registerProjectedTool(makeTool({
+      events: { chunk: z.instanceof(Uint8Array) },
+      eventWireKinds: { chunk: 'binary' },
+      fn: async (_input, ctx) => {
+        ctx.emit('chunk', new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    const bin = events.find((e) => e.event === 'chunk');
+    expect(bin).toBeDefined();
+    // Sink received the base64-encoded string. 3q2+7w== is hex deadbeef.
+    expect(typeof bin!.data).toBe('string');
+    expect(bin!.data).toBe('3q2+7w==');
+  });
+
+  it('auto-error honors schema-inferred wire kind (raw text for z.string())', async () => {
+    // Regression: tools declaring `error: z.string()` (architect/brainstorm)
+    // expect raw text on the wire so the submodule consumer can do
+    // accum += data. The framework's auto-error path was always emitting
+    // JSON envelope until round-3 audit. Verify the eventWireKinds.error
+    // === 'string' branch produces a raw-string sink event.
+    registerProjectedTool(makeTool({
+      events: { error: z.string() },
+      eventWireKinds: { error: 'string' },
+      fn: async () => { throw new Error('raw-text-message'); },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    const error = events.find((e) => e.event === 'error');
+    expect(error).toBeDefined();
+    // Data is the raw message text, not a {code, message} envelope.
+    expect(typeof error!.data).toBe('string');
+    expect(error!.data).toContain('raw-text-message');
   });
 });
