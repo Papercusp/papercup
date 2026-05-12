@@ -4,7 +4,14 @@
  * Plan 3. Backed by mem0ai v3 OSS in library mode:
  *   - storage: pgvector (embedded PG)
  *   - LLM:     Anthropic Haiku 4.5 (cheap fact extraction)
- *   - embedder: @xenova/transformers BGE-small (local, no API key)
+ *   - embedder: @huggingface/transformers BGE-small (local, no API key)
+ *
+ * NOTE on package choice: originally targeted @xenova/transformers
+ * but that package is stuck on sharp@^0.32 which requires
+ * old-school node-gyp builds (fails on Node ≥24). Hugging Face
+ * officially took over the package as @huggingface/transformers
+ * v3+/v4 with the same API + sharp@^0.34 (prebuilt binaries).
+ * Same import surface: pipeline('feature-extraction', model_id).
  *
  * Lazy-loaded. The actual mem0ai + transformers modules are heavy
  * (~400MB combined resident memory when loaded). We don't load them
@@ -64,7 +71,7 @@ const dynamicImport = new Function(
 ) as <T>(specifier: string) => Promise<T>;
 
 const MEM0_PACKAGE = 'mem0ai/oss';
-const TRANSFORMERS_PACKAGE = '@xenova/transformers';
+const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
 let _client: MemoryClient | null = null;
 /**
  * "Permanent" failure cache — only set when the failure is from a
@@ -158,7 +165,7 @@ async function tryLoad(): Promise<MemoryClient | null> {
     return _client;
   } catch (e) {
     // The dynamic-import errors here are the permanent class: missing
-    // mem0ai or @xenova/transformers packages. Those don't resolve
+    // mem0ai or @huggingface/transformers packages. Those don't resolve
     // mid-process, so cache.
     const msg = (e as Error).message ?? String(e);
     if (/cannot find module|MODULE_NOT_FOUND|Cannot resolve/i.test(msg)) {
@@ -173,7 +180,7 @@ async function tryLoad(): Promise<MemoryClient | null> {
 }
 
 async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>> {
-  // @xenova/transformers loads ~400MB. Singleton per process.
+  // @huggingface/transformers + ONNX runtime load ~400MB. Singleton per process.
   type Pipeline = (text: string, opts: unknown) => Promise<{ data: Float32Array }>;
   let pipelinePromise: Promise<Pipeline> | null = null;
 
