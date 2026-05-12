@@ -52,7 +52,11 @@ function drizzleKitBin(): string | null {
   // standalone bundle where Next traces `drizzle-kit/` but doesn't
   // recreate the `node_modules/.bin/` symlink farm.
   try {
-    const pkgPath = require.resolve('drizzle-kit/package.json');
+    // Indirect eval defeats Turbopack's static module-graph trace.
+    // drizzle-kit IS installed at runtime (devDependency surviving the
+    // desktop sidecar copy), but subpath resolves through Turbopack
+    // fail at build time. The runtime require still works.
+    const pkgPath = (0, eval)("require.resolve('drizzle-kit/package.json')") as string;
     const pkg = JSON.parse(require('node:fs').readFileSync(pkgPath, 'utf8')) as { bin?: Record<string, string> | string };
     const binRel = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.['drizzle-kit'];
     if (binRel) {

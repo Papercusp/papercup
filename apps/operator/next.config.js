@@ -207,6 +207,10 @@ const nextConfig = {
     // with "could not derive tool name from call site". Externalize so
     // Node loads it via require() and the original file paths survive.
     '@papercusp/agent-mcp',
+    // drizzle-studio route does require.resolve('drizzle-kit/package.json')
+    // to find the CLI's bin path. Turbopack can't trace subpath imports
+    // of CJS packages — externalize so Node resolves at runtime.
+    'drizzle-kit',
   ],
   // /api/harness/* and /api/plugins/* are served LOCALLY by this app
   // (mounted in app/api/[[...route]]/route.ts).

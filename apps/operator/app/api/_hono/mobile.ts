@@ -565,12 +565,66 @@ app.post('/voice-tool/:name', async (c) => {
 // Phone uses the ElevenLabs Android/iOS SDK to start a WebRTC session
 // with this token + dynamicVariables. ElevenLabs holds the agent prompt;
 // it's the same agent the desktop uses. See docs/VOICE_V1_PLAN.md.
+//
+// Mint protection mirrors the desktop's operator-elevenlabs-bootstrap:
+//   - 8s cooldown (per-agentId, PG-backed via cooldown_marks) so a
+//     network-hiccup pair retry doesn't spam EL.
+//   - In-flight dedupe (process-local Map) so parallel mobile clients
+//     paired to the same desktop share one mint round-trip.
+//   - Concurrent-limit error mapping (EL 429 → 503 with hint) so the
+//     mobile client can show "another tab still has voice".
+//
+// Token mints don't bill directly, but each consumes the workspace
+// concurrency slot for ~30s — spam-pair without protection would DoS
+// the user's own voice sessions. EL credit-burn audit, fix #4.
+const MOBILE_MINT_COOLDOWN_MS = 8_000;
+const mobileMintInFlight = new Map<
+  string,
+  Promise<{ token: string } | { error: string; status: number; detail: string }>
+>();
+
+async function mintMobileElToken(
+  agentId: string,
+  apiKey: string,
+  elSource: string,
+): Promise<{ token: string } | { error: string; status: number; detail: string }> {
+  let res: Response;
+  try {
+    res = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}&source=${elSource}`,
+      {
+        method: 'GET',
+        headers: { 'xi-api-key': apiKey, 'accept': 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      },
+    );
+  } catch (err) {
+    return { error: 'mint_failed', status: 502, detail: (err as Error)?.message ?? String(err) };
+  }
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 400);
+    if (res.status === 429 && /concurrent_limit_exceeded|workspace_concurrency_limit/i.test(detail)) {
+      return { error: 'concurrent_limit', status: res.status, detail };
+    }
+    return { error: 'mint_rejected', status: res.status, detail };
+  }
+  const raw = await res.text();
+  let parsed: { token?: string; conversation_token?: string } = {};
+  try { parsed = JSON.parse(raw); } catch { /* keep empty */ }
+  const token = parsed.token ?? parsed.conversation_token;
+  if (typeof token !== 'string' || !token) {
+    return { error: 'mint_shape', status: 502, detail: `no token in EL response; raw: ${raw.slice(0, 200)}` };
+  }
+  return { token };
+}
+
 app.get('/voice-session-init', async (c) => {
   const claims = c.get('deviceClaims');
   // Reuse the desktop's voice prefs + EL credentials. Same agent, no
   // mobile-only agent_id.
   const { loadVoicePrefs } = await import('../../../lib/voice-prefs');
   const { readElevenLabsKey } = await import('../../../lib/voice-credentials');
+  const { readCooldownMark, writeCooldownMark } = await import('../../../lib/cooldown-marks');
   const prefs = await loadVoicePrefs();
   if (prefs.fullAgentEngine !== 'elevenlabs-conv' &&
       prefs.fullAgentEngine !== 'elevenlabs-conversational') {
@@ -584,6 +638,26 @@ app.get('/voice-session-init', async (c) => {
   if (!apiKey) {
     return c.json({ error: 'no_api_key', hint: 'Add ElevenLabs API key in /settings/api-keys.' }, 404);
   }
+
+  // Cooldown gate — refuse if a mint for this agent fired in the last 8s.
+  // Shared with the desktop via harness_shared.cooldown_marks, so a
+  // mobile retry that races a desktop mint also waits.
+  const cooldownKey = `el-mint:${agentId}`;
+  const lastMintMs = (await readCooldownMark(cooldownKey)) ?? 0;
+  const sinceLast = Date.now() - lastMintMs;
+  if (sinceLast < MOBILE_MINT_COOLDOWN_MS) {
+    const retryInMs = MOBILE_MINT_COOLDOWN_MS - sinceLast;
+    return c.json(
+      {
+        error: 'mint_cooldown',
+        hint: `Slow down — minted a fresh EL token ${(sinceLast / 1000).toFixed(1)}s ago. Retry in ${(retryInMs / 1000).toFixed(1)}s.`,
+        retryAfterMs: retryInMs,
+      },
+      429,
+      { 'Retry-After': String(Math.ceil(retryInMs / 1000)) },
+    );
+  }
+
   // Detect platform up front — we need to pass an allowed `source` to EL
   // (their API rejects arbitrary strings). Their enum has android_sdk +
   // swift_sdk; default unknown.
@@ -597,29 +671,43 @@ app.get('/voice-session-init', async (c) => {
   const elSource = surface === 'mobile-android' ? 'android_sdk'
                  : surface === 'mobile-ios' ? 'swift_sdk'
                  : 'unknown';
-  // Mint a fresh conversation token from EL.
-  let res: Response;
-  try {
-    res = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversation/token?agent_id=${encodeURIComponent(agentId)}&source=${elSource}`,
-      { method: 'GET', headers: { 'xi-api-key': apiKey, 'accept': 'application/json' }, signal: AbortSignal.timeout(8000) },
+
+  // In-flight dedupe: parallel pair-retries on the same agentId share
+  // one outstanding mint promise. Keyed by agentId so concurrent
+  // mobile clients targeting the same desktop reuse the same fetch.
+  let pending = mobileMintInFlight.get(agentId);
+  if (!pending) {
+    pending = mintMobileElToken(agentId, apiKey, elSource).finally(() => {
+      mobileMintInFlight.delete(agentId);
+    });
+    mobileMintInFlight.set(agentId, pending);
+  }
+  const result = await pending;
+
+  if ('error' in result) {
+    if (result.error === 'concurrent_limit') {
+      return c.json(
+        {
+          error: 'concurrent_limit',
+          hint: 'Another tab or device still has an active EL session. Close other operator sessions and retry. (EL Conv AI workspace concurrency limit.)',
+          status: result.status,
+          detail: result.detail,
+        },
+        503,
+      );
+    }
+    return c.json(
+      { error: result.error, detail: result.detail },
+      result.status === 429 ? 503 : 502,
     );
-  } catch (err) {
-    return c.json({ error: 'mint_failed', detail: (err as Error)?.message ?? String(err) }, 502);
   }
-  if (!res.ok) {
-    const detail = (await res.text().catch(() => '')).slice(0, 400);
-    return c.json({ error: 'mint_rejected', status: res.status, detail }, res.status === 429 ? 503 : 502);
-  }
-  const raw = await res.text();
-  let parsed: { token?: string; conversation_token?: string } = {};
-  try { parsed = JSON.parse(raw); } catch { /* keep empty */ }
-  const token = parsed.token ?? parsed.conversation_token;
-  if (typeof token !== 'string' || !token) {
-    return c.json({ error: 'mint_shape', detail: `no token in EL response; raw: ${raw.slice(0, 200)}` }, 502);
-  }
+
+  // Successful mint — record so subsequent calls (mobile or desktop)
+  // are throttled.
+  await writeCooldownMark(cooldownKey);
+
   return c.json({
-    conversationToken: token,
+    conversationToken: result.token,
     agentId,
     dynamicVariables: {
       device_id: claims.sub,

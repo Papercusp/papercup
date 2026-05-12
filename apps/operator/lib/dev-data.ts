@@ -491,7 +491,7 @@ export async function buildStatus(): Promise<BuildStatus> {
     let cur = start;
     for (let i = 0; i < 5; i++) {
       try {
-        fs.statSync(path.join(cur, '.next'));
+        fs.statSync(path.join(/*turbopackIgnore: true*/ cur, '.next'));
         return cur;
       } catch {
         /* not here */
@@ -512,7 +512,7 @@ export async function buildStatus(): Promise<BuildStatus> {
     }
   }
 
-  const prodNext = path.join(operatorDir, '.next');
+  const prodNext = path.join(/*turbopackIgnore: true*/ operatorDir, '.next');
 
   // bin/prod log paths — try a few common locations.
   const workspaceRoot = path.resolve(operatorDir, '..', '..');
