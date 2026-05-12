@@ -5,8 +5,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dispatchProjectedTool,
+  dispatchProjectedToolStream,
   computeProjectedQuotaWindowKey,
   type DispatchProjectedDeps,
+  type DispatchStreamEvent,
 } from './dispatch-projected';
 import {
   _resetProjectionRegistryForTests,
@@ -226,5 +228,57 @@ describe('dispatchProjectedTool', () => {
     });
     await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
     expect(progressCalls).toEqual([[0, 'starting'], [50, undefined], [100, 'done']]);
+  });
+});
+
+describe('dispatchProjectedToolStream', () => {
+  it('yields each ctx.emit call as an event, then done with the ToolResult', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'hi' });
+        ctx.emit('delta', { text: ' world' });
+        ctx.emit('cost', { usd: 0.0042 });
+        return { content: [{ type: 'text', text: 'hi world' }] };
+      },
+    });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events.map((e) => e.kind)).toEqual(['event', 'event', 'event', 'done']);
+    expect(events[0]).toEqual({ kind: 'event', name: 'delta', data: { text: 'hi' } });
+    expect(events[2]).toEqual({ kind: 'event', name: 'cost', data: { usd: 0.0042 } });
+    expect(events[3]).toMatchObject({ kind: 'done', result: { content: [{ type: 'text', text: 'hi world' }] } });
+  });
+
+  it('yields role_not_allowed when the calling role is not in the tool roles allowlist', async () => {
+    const tool = makeTool({ roles: ['operator'] });
+    const ctx = MAKE_CTX({ role: 'worker' });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, ctx, MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'error', error: { code: 'role_not_allowed' } });
+  });
+
+  it('routes ctx.progress through the same emit channel', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.progress(50, 'halfway');
+        return { content: [] };
+      },
+    });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({
+      kind: 'event',
+      name: 'progress',
+      data: { progress: 50, total: 100, message: 'halfway' },
+    });
+    expect(events[1]?.kind).toBe('done');
   });
 });

@@ -306,3 +306,113 @@ export async function dispatchProjectedTool(
     if (idleTimer) clearInterval(idleTimer);
   }
 }
+
+/* ─── In-process streaming dispatch ──────────────────────────────────── */
+
+/**
+ * One value yielded by `dispatchProjectedToolStream`.
+ * - `event`: a ctx.emit(name, data) call from inside the handler.
+ * - `done`: the handler returned successfully.
+ * - `error`: dispatch/handler failed (role gate, quota, timeout, throw).
+ */
+export type DispatchStreamEvent =
+  | { kind: 'event'; name: string; data: unknown }
+  | { kind: 'done'; result: ToolResult }
+  | { kind: 'error'; error: NonNullable<DispatchProjectedResult['error']> };
+
+/**
+ * In-process streaming wrapper around `dispatchProjectedTool` for
+ * callers that want to consume a tool's typed event channel without
+ * going through an HTTP or MCP transport.
+ *
+ * Goes through the full dispatcher — role check, quota, telemetry,
+ * idle watchdog all apply. The escape hatch for callers who want to
+ * bypass gating is to invoke `tool.fn(input, ctx)` directly (documented
+ * as a footgun; loses RLS scoping and audit recording).
+ *
+ * Yields exactly one terminal event (`done` or `error`) before returning.
+ *
+ * Example:
+ *   const tool = lookupByMcpName('architect.chat');
+ *   if (!tool) throw ...;
+ *   for await (const ev of dispatchProjectedToolStream(tool, 'architect.chat', input, ctx, deps)) {
+ *     if (ev.kind === 'event') { ... }
+ *     else if (ev.kind === 'done') { ... }
+ *     else if (ev.kind === 'error') { ... }
+ *   }
+ */
+export async function* dispatchProjectedToolStream(
+  tool: ProjectedTool,
+  toolName: string,
+  input: unknown,
+  ctx: UnifiedToolContext,
+  deps: DispatchProjectedDeps,
+): AsyncGenerator<DispatchStreamEvent, void, void> {
+  const queue: DispatchStreamEvent[] = [];
+  let resolveWait: (() => void) | null = null;
+  const wake = (): void => {
+    const r = resolveWait;
+    resolveWait = null;
+    r?.();
+  };
+
+  // Override emit + progress so each emit pushes onto our queue. The
+  // dispatcher will wrap our emit with its idle-timeout watchdog (if
+  // tool.idleTimeoutSec is set), so wake() still fires correctly.
+  const streamEmit = (name: string, data: unknown): void => {
+    queue.push({ kind: 'event', name, data });
+    wake();
+  };
+  const streamProgress = (pct: number | undefined, msg?: string): void => {
+    streamEmit('progress', {
+      progress: typeof pct === 'number' ? pct : 0,
+      total: 100,
+      ...(msg ? { message: msg } : {}),
+    });
+  };
+  const streamCtx: UnifiedToolContext = {
+    ...ctx,
+    emit: streamEmit,
+    progress: streamProgress,
+  };
+
+  // Kick off dispatch in the background. Whatever it produces lands
+  // in the queue as the terminal event.
+  const dispatchPromise = dispatchProjectedTool(tool, toolName, input, streamCtx, deps).then(
+    (r) => {
+      if (r.ok && r.result) queue.push({ kind: 'done', result: r.result });
+      else if (r.ok) queue.push({ kind: 'done', result: { content: [] } });
+      else queue.push({ kind: 'error', error: r.error ?? { code: 'unknown', message: '' } });
+      wake();
+    },
+    (err) => {
+      // Defensive — dispatchProjectedTool catches its own throws and
+      // returns { ok: false, ... }. If somehow an exception escapes,
+      // surface it here so the iterator doesn't hang.
+      queue.push({
+        kind: 'error',
+        error: { code: 'handler_error', message: err instanceof Error ? err.message : String(err) },
+      });
+      wake();
+    },
+  );
+
+  try {
+    while (true) {
+      if (queue.length === 0) {
+        await new Promise<void>((res) => {
+          resolveWait = res;
+        });
+      }
+      while (queue.length > 0) {
+        const ev = queue.shift()!;
+        yield ev;
+        if (ev.kind === 'done' || ev.kind === 'error') return;
+      }
+    }
+  } finally {
+    // If the consumer stops iterating early (break / throw), make sure
+    // the dispatch promise still settles so timers/handles clean up.
+    await dispatchPromise.catch(() => {});
+  }
+}

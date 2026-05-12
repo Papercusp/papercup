@@ -65,11 +65,13 @@ export {
 
 export {
   dispatchProjectedTool,
+  dispatchProjectedToolStream,
   computeProjectedQuotaWindowKey,
   UnauthorizedToolError,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
   type DispatchProjectedErrorCode,
+  type DispatchStreamEvent,
 } from './dispatch-projected';
 
 export {
