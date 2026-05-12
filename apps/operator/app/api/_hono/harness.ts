@@ -12,6 +12,7 @@
  */
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { sseResponse } from '@restart/sse';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
 import { getKnownHooks } from '@/lib/known-hooks';
@@ -1570,44 +1571,49 @@ harness.get('/:slug/agents/:runId/stream', async (c) => {
     return out;
   };
 
-  return streamSSE(c, async (stream) => {
-    let ownAborted = false;
-    const token: StreamToken = {
-      abort: () => { ownAborted = true; },
-      createdAt: Date.now(),
-      remoteIP,
-      slug: project.slug,
-    };
-    activeStreams.set(streamKey, token);
+  return sseResponse({
+    signal: c.req.raw.signal,
+    // Lib's heartbeat replaces the prior 2s 'ping' keepalive loop. 15s is
+    // the spec-default for SSE keepalive and matches the rest of the app.
+    heartbeatMs: 15_000,
+    setup: async (sink) => {
+      const token: StreamToken = {
+        abort: () => { sink.close(); },
+        createdAt: Date.now(),
+        remoteIP,
+        slug: project.slug,
+      };
+      activeStreams.set(streamKey, token);
+      sink.onClose(() => {
+        if (activeStreams.get(streamKey) === token) activeStreams.delete(streamKey);
+      });
 
-    let lineBuf = '';
-    let done = false;
+      let lineBuf = '';
+      let done = false;
 
-    const emitChunk = async (chunk: string) => {
-      lineBuf += chunk;
-      let nl: number;
-      while ((nl = lineBuf.indexOf('\n')) !== -1) {
-        const line = lineBuf.slice(0, nl).trim();
-        lineBuf = lineBuf.slice(nl + 1);
-        if (!line) continue;
-        const entries = parseLine(line);
-        for (const e of entries) {
-          await stream.writeSSE({ event: 'event', data: JSON.stringify(e) });
-          if (e.kind === 'result') {
-            done = true;
-            await stream.writeSSE({ event: 'done', data: '{}' });
+      const emitChunk = (chunk: string) => {
+        lineBuf += chunk;
+        let nl: number;
+        while ((nl = lineBuf.indexOf('\n')) !== -1) {
+          const line = lineBuf.slice(0, nl).trim();
+          lineBuf = lineBuf.slice(nl + 1);
+          if (!line) continue;
+          const entries = parseLine(line);
+          for (const e of entries) {
+            sink.event('event', e);
+            if (e.kind === 'result') {
+              done = true;
+              sink.event('done', {});
+              sink.close();
+              return;
+            }
           }
         }
-      }
-    };
+      };
 
-    try {
       // Backfill: prefer PG-canonical jsonl_body from harness_run_output
       // (Phase 4); fall back to disk for runs that completed before
-      // activation or in CLI-only mode. parseLine mutates
-      // pendingText/pendingThinking; that's intended — across many
-      // lines, deltas accumulate and flush on assistant/turn_end/result
-      // events the same as in tail mode.
+      // activation or in CLI-only mode.
       let backfillRaw: string | null = null;
       try {
         const { sql } = (await import('@restart/db-org')).getOrgPg();
@@ -1642,46 +1648,38 @@ harness.get('/:slug/agents/:runId/stream', async (c) => {
         if (pendingText) { backfill.push({ kind: 'text', text: pendingText }); pendingText = ''; }
         if (pendingThinking) { backfill.push({ kind: 'status', text: `[thinking] ${pendingThinking}` }); pendingThinking = ''; }
         const capped = backfill.length > 200 ? backfill.slice(-200) : backfill;
-        await stream.writeSSE({ event: 'backfill', data: JSON.stringify(capped) });
-        if (done) await stream.writeSSE({ event: 'done', data: '{}' });
+        sink.event('backfill', capped);
+        if (done) { sink.event('done', {}); sink.close(); return; }
       } else {
-        await stream.writeSSE({ event: 'backfill', data: '[]' });
+        sink.event('backfill', []);
       }
 
       // Live mode: in-process bus only. Orchestrator's invoke.ts POSTs
       // each subprocess stdout chunk to /api/internal/run-chunk, which
       // publishes to the per-run channel; this subscriber emits one
-      // SSE event per parsed line. The on-disk JSONL is no longer the
-      // streaming path — invoke.ts writes it once at exit (or skips
-      // entirely in PG-canonical mode), so fs.watch had nothing to
-      // watch and was retired in this commit.
+      // SSE event per parsed line.
       const { subscribe: busSubscribe } = await import('@/lib/run-chunk-bus');
       const channelKey = `${project.slug}:${runId}`;
       const busSub = busSubscribe(channelKey, (env) => {
-        void emitChunk(env.data);
+        if (sink.closed) return;
+        emitChunk(env.data);
       });
       // Replay anything in the recent ring buffer (subscriber joined
       // after publishing started).
       for (const env of busSub.recent) {
-        await emitChunk(env.data);
+        emitChunk(env.data);
+        if (sink.closed) break;
       }
       // When the bus signals done, propagate to the SSE client.
-      void busSub.whenDone.then(async () => {
-        if (!done) {
+      void busSub.whenDone.then(() => {
+        if (!done && !sink.closed) {
           done = true;
-          try { await stream.writeSSE({ event: 'done', data: '{}' }); } catch {}
+          sink.event('done', {});
+          sink.close();
         }
       });
-
-      // Keepalive + abort check.
-      while (!ownAborted && !stream.aborted && !done) {
-        await stream.sleep(2000);
-        await stream.writeSSE({ event: 'ping', data: '{}' });
-      }
-      busSub.unsubscribe();
-    } finally {
-      if (activeStreams.get(streamKey) === token) activeStreams.delete(streamKey);
-    }
+      sink.onClose(() => busSub.unsubscribe());
+    },
   });
 });
 
@@ -2116,17 +2114,21 @@ harness.get('/:slug/stream', async (c) => {
   const previous = activeStreams.get(streamKey);
   if (previous) previous.abort();
 
-  return streamSSE(c, async (stream) => {
-    let ownAborted = false;
-    const token: StreamToken = {
-      abort: () => { ownAborted = true; },
-      createdAt: Date.now(),
-      remoteIP,
-      slug: project.slug,
-    };
-    activeStreams.set(streamKey, token);
+  return sseResponse({
+    signal: c.req.raw.signal,
+    heartbeatMs: 15_000,
+    setup: async (sink) => {
+      const token: StreamToken = {
+        abort: () => { sink.close(); },
+        createdAt: Date.now(),
+        remoteIP,
+        slug: project.slug,
+      };
+      activeStreams.set(streamKey, token);
+      sink.onClose(() => {
+        if (activeStreams.get(streamKey) === token) activeStreams.delete(streamKey);
+      });
 
-    try {
       let lastFeatureState = '';
 
       // Backfill from disk once on connect — replays the tail so the
@@ -2138,45 +2140,38 @@ harness.get('/:slug/stream', async (c) => {
         const start = Math.max(0, stat.size - tailBytes);
         const fd = readFileSync(runLogPath, 'utf8');
         const chunk = fd.slice(start);
-        if (chunk) await stream.writeSSE({ event: 'log', data: chunk });
-      } catch {}
+        if (chunk) sink.eventRaw('log', chunk);
+      } catch { /* no log file yet */ }
 
       const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
       const sub = logSubscribe(`${project.slug}:raw`, (env) => {
-        void stream.writeSSE({ event: 'log', data: env.line + '\n' }).catch(() => {});
+        if (sink.closed) return;
+        sink.eventRaw('log', env.line + '\n');
       });
       // Replay recent ring (small; pre-backfill covers history).
       for (const env of sub.recent) {
-        void stream.writeSSE({ event: 'log', data: env.line + '\n' }).catch(() => {});
+        if (sink.closed) break;
+        sink.eventRaw('log', env.line + '\n');
       }
+      sink.onClose(() => sub.unsubscribe());
 
+      // Features come from PG (parseFeatures) — still polled because
+      // they're not in the bus today. 3s cadence; loop ends when sink closes.
       const pushFeatures = async () => {
+        if (sink.closed) return;
         const feats = await parseFeatures(project);
         const state = JSON.stringify(feats.map((f) => [f.id, f.status, f.attempts]));
         if (state !== lastFeatureState) {
           lastFeatureState = state;
-          await stream.writeSSE({ event: 'features', data: JSON.stringify(feats) });
+          sink.event('features', feats);
         }
       };
-
-      try {
-        while (true) {
-          if (stream.aborted || ownAborted) break;
-          // Features come from PG (parseFeatures) — still polled because
-          // they're not in the bus today. Lower frequency now that log
-          // tailing is event-driven.
-          await pushFeatures();
-          await stream.sleep(3000);
-        }
-      } finally {
-        sub.unsubscribe();
+      while (!sink.closed) {
+        await pushFeatures();
+        if (sink.closed) break;
+        await new Promise((r) => setTimeout(r, 3000));
       }
-    } finally {
-      // Only remove if we're still the registered token (eviction may have replaced us).
-      if (activeStreams.get(streamKey) === token) {
-        activeStreams.delete(streamKey);
-      }
-    }
+    },
   });
 });
 
@@ -2279,51 +2274,26 @@ harness.get('/:slug/log/stream', async (c) => {
   const previous = activeStreams.get(streamKey);
   if (previous) previous.abort();
 
-  return streamSSE(c, async (stream) => {
-    let ownAborted = false;
-    const token: StreamToken = {
-      abort: () => { ownAborted = true; },
-      createdAt: Date.now(),
-      remoteIP,
-      slug: project.slug,
-    };
-    activeStreams.set(streamKey, token);
+  return sseResponse({
+    signal: c.req.raw.signal,
+    // Lib heartbeat replaces the prior 15s 'ping' keepalive loop.
+    heartbeatMs: 15_000,
+    setup: async (sink) => {
+      const token: StreamToken = {
+        abort: () => { sink.close(); },
+        createdAt: Date.now(),
+        remoteIP,
+        slug: project.slug,
+      };
+      activeStreams.set(streamKey, token);
+      sink.onClose(() => {
+        if (activeStreams.get(streamKey) === token) activeStreams.delete(streamKey);
+      });
 
-    let lastSize = 0;
-    let lineBuf = '';
-
-    // Emit each parseable JSONL line as one SSE event. Tolerates broken
-    // lines silently (rotation can race with write).
-    const emitLines = async (chunk: string) => {
-      lineBuf += chunk;
-      let nl: number;
-      while ((nl = lineBuf.indexOf('\n')) >= 0) {
-        const raw = lineBuf.slice(0, nl);
-        lineBuf = lineBuf.slice(nl + 1);
-        if (!raw.trim()) continue;
-        try {
-          const evt = JSON.parse(raw);
-          await stream.writeSSE({ event: 'log', data: JSON.stringify(evt) });
-        } catch {
-          /* malformed line — skip rather than break the stream */
-        }
-      }
-    };
-
-    // Backfill: read the tail of the file and replay the last N lines so
-    // the client has immediate context on connect.
-    //
-    // Two fixes vs the prior implementation (which took 6-7s for 500 lines):
-    //   1. Read only the last 1 MiB via openSync + readSync(offset). The
-    //      previous code did `readFileSync` of the whole file then sliced
-    //      in memory — on a 50 MiB log that's 50 MiB of allocation per
-    //      reconnect.
-    //   2. Don't await per-line. SSE backpressure means each writeSSE in
-    //      a loop can take tens of ms; 500 × 20ms = 10s of dead time. We
-    //      build the multi-event payload as a single string, then issue
-    //      one write. The browser sees no difference; the server stops
-    //      blocking on its own backpressure.
-    const backfill = async () => {
+      // Backfill: read the tail of the file and replay the last N lines.
+      // Reads only the last 1 MiB (not the whole file) to keep cold
+      // reconnect under ~1s even on a 50 MiB log. sink.eventRaw skips
+      // JSON.stringify since the JSONL line is already a JSON string.
       try {
         const stat = statSync(jsonlPath);
         const tailBytes = 1024 * 1024;
@@ -2331,13 +2301,8 @@ harness.get('/:slug/log/stream', async (c) => {
         const len = stat.size - start;
         const buf = Buffer.alloc(len);
         const fd = openSync(jsonlPath, 'r');
-        try {
-          readSync(fd, buf, 0, len, start);
-        } finally {
-          closeSync(fd);
-        }
-        lastSize = stat.size;
-        // If we sliced into the middle of a line, drop the partial first one.
+        try { readSync(fd, buf, 0, len, start); }
+        finally { closeSync(fd); }
         let chunk = buf.toString('utf8');
         if (start > 0) {
           const firstNl = chunk.indexOf('\n');
@@ -2345,68 +2310,36 @@ harness.get('/:slug/log/stream', async (c) => {
         }
         const allLines = chunk.split('\n').filter(Boolean);
         const toReplay = allLines.slice(-tailSize);
-
-        // Build the SSE payload in one pass, then issue ONE write. SSE
-        // events are framed by `event: <name>\ndata: <text>\n\n`; we
-        // emit all `log` events back-to-back followed by the
-        // `backfill-done` event.
-        let payload = '';
         let count = 0;
         for (const raw of toReplay) {
-          try {
-            // Validate the JSON lossily so we don't feed broken data to
-            // the client, but reuse the original string to skip a stringify.
-            JSON.parse(raw);
-            payload += `event: log\ndata: ${raw}\n\n`;
-            count++;
-          } catch { /* skip malformed */ }
+          if (sink.closed) break;
+          try { JSON.parse(raw); }
+          catch { continue; /* skip malformed */ }
+          sink.eventRaw('log', raw);
+          count++;
         }
-        payload += `event: backfill-done\ndata: ${count}\n\n`;
-        // Write the whole batch via the underlying response writer so
-        // we bypass writeSSE's per-event flush logic.
-        await stream.write(payload);
+        sink.eventRaw('backfill-done', String(count));
       } catch {
-        await stream.writeSSE({ event: 'backfill-done', data: '0' });
+        sink.eventRaw('backfill-done', '0');
       }
-    };
 
-    await backfill();
-
-    // Live updates come from the in-process log bus. run.sh's log()
-    // function POSTs each line to /api/internal/log-event; that handler
-    // calls publish() on the harness-log-bus channel; this subscriber
-    // emits one SSE event per line. Sub-ms latency, no fs.watch, no
-    // periodic re-stat. The on-disk JSONL is still authoritative for
-    // backfill-on-connect (above) and historical /log/history queries.
-    const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
-    const sub = logSubscribe(`${project.slug}:log`, (env) => {
-      // Validate JSON before forwarding — keeps the client surface
-      // identical to the prior fs.watch path.
-      try { JSON.parse(env.line); }
-      catch { return; }
-      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
-    });
-    // Replay any recent ring-buffer entries the subscriber missed
-    // between connect and subscribe — small in practice (≤256 lines)
-    // because we already backfilled from disk above.
-    for (const env of sub.recent) {
-      try { JSON.parse(env.line); }
-      catch { continue; }
-      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
-    }
-
-    try {
-      while (true) {
-        if (stream.aborted || ownAborted) break;
-        await stream.sleep(15_000);
-        await stream.writeSSE({ event: 'ping', data: '{}' });
+      // Live updates from the in-process log bus.
+      const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
+      const sub = logSubscribe(`${project.slug}:log`, (env) => {
+        if (sink.closed) return;
+        try { JSON.parse(env.line); }
+        catch { return; }
+        sink.eventRaw('log', env.line);
+      });
+      // Replay recent ring entries that landed between backfill and subscribe.
+      for (const env of sub.recent) {
+        if (sink.closed) break;
+        try { JSON.parse(env.line); }
+        catch { continue; }
+        sink.eventRaw('log', env.line);
       }
-    } finally {
-      sub.unsubscribe();
-      if (activeStreams.get(streamKey) === token) {
-        activeStreams.delete(streamKey);
-      }
-    }
+      sink.onClose(() => sub.unsubscribe());
+    },
   });
 });
 
