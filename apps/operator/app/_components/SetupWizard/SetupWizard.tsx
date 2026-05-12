@@ -5,8 +5,18 @@ import { useEffect, useMemo } from 'react';
 import { SETUP_STEPS, findStep } from './steps';
 import type { StepStatus } from './types';
 import { StepAgents } from './StepAgents';
+import { StepAutoUpdate } from './StepAutoUpdate';
+import { StepBackups } from './StepBackups';
 import { StepEmbeddedPg } from './StepEmbeddedPg';
+import { StepGit } from './StepGit';
+import { StepKeys } from './StepKeys';
+import { StepLogins } from './StepLogins';
+import { StepMobilePairing } from './StepMobilePairing';
+import { StepOsPermissions } from './StepOsPermissions';
 import { StepPlaceholder } from './StepPlaceholder';
+import { StepTelemetry } from './StepTelemetry';
+import { StepVoiceDevices } from './StepVoiceDevices';
+import { StepWorkspace } from './StepWorkspace';
 import { useWizardStatuses } from './useWizardStatuses';
 
 interface Props {
@@ -74,10 +84,30 @@ export function SetupWizard({ mode }: Props) {
 
 function renderStep(id: string) {
   switch (id) {
+    case 'os-permissions':
+      return <StepOsPermissions />;
     case 'embedded-pg':
       return <StepEmbeddedPg />;
+    case 'workspace':
+      return <StepWorkspace />;
     case 'agents':
       return <StepAgents />;
+    case 'logins':
+      return <StepLogins />;
+    case 'keys':
+      return <StepKeys />;
+    case 'git':
+      return <StepGit />;
+    case 'voice-devices':
+      return <StepVoiceDevices />;
+    case 'mobile-pairing':
+      return <StepMobilePairing />;
+    case 'backups':
+      return <StepBackups />;
+    case 'auto-update':
+      return <StepAutoUpdate />;
+    case 'telemetry':
+      return <StepTelemetry />;
     default:
       return <StepPlaceholder id={id} />;
   }
