@@ -12,6 +12,13 @@
  */
 import { Hono } from 'hono';
 import { sseResponse } from '@restart/sse';
+import {
+  dispatchProjectedToolStream,
+  lookupByMcpName,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
+// Side-effect: registers architect:chat + the other operator-side tools.
+import '@/lib/agent-tools/index';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
 import { getKnownHooks } from '@/lib/known-hooks';
@@ -5749,34 +5756,60 @@ Rules for proposals:
     'Architect:',
   ].join('\n\n');
 
-  // Stream the response via runAgentChat (backend-aware: claude-code
-  // or omp). Migrated 2026-05-12 from Hono streamSSE → @restart/sse
-  // sseResponse after verifying that ReadableStream-based streaming no
-  // longer buffers under Next 16/Turbopack (architect/chat probe showed
-  // TTFB=10.8s/total=11.6s with incremental token delivery, matching the
-  // model's token-emit cadence rather than a single end-of-response
-  // flush). The eventRaw path skips JSON.stringify on the delta payload;
-  // parseSseStream on the consumer side joins multi-line data: spec-
-  // compliantly so newlines round-trip without the prior \\n escape.
+  // Pilot 2 of typed-event channel migration (2026-05-12 → Phase 3):
+  // the route now composes the prompt and dispatches into the
+  // `architect:chat` projected tool. Wire format unchanged — the tool
+  // declares `delta: z.string()` and `error: z.string()` so the
+  // framework's schema-inferred wire-format keeps both as raw text
+  // (matches the previous sink.eventRaw shape; submodule consumer at
+  // libs/agent-chat's useHarnessChatRuntime.ts unaffected).
+  const architectChatTool = lookupByMcpName('architect:chat');
+  if (!architectChatTool) {
+    return c.json({ error: 'architect:chat tool not registered' }, 500);
+  }
   return sseResponse({
     signal: c.req.raw.signal,
     setup: async (sink) => {
-      try {
-        for await (const ev of runAgentChat({
+      const ctxBase: UnifiedToolContext = {
+        log: (msg) => { console.log(`[architect:chat][tool] ${msg}`); },
+        signal: c.req.raw.signal,
+        progress: () => {},
+        emit: () => { /* installed by dispatchProjectedToolStream */ },
+        workspaceId: undefined,
+        role: 'operator',
+        runId: `architect-${project.slug}-${Date.now()}`,
+        spawnId: `architect-${project.slug}`,
+        projectDir: project.path,
+        harnessSlug: project.slug,
+      };
+      for await (const ev of dispatchProjectedToolStream(
+        architectChatTool,
+        'architect:chat',
+        {
           promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
           cwd: project.path,
-        })) {
-          if (ev.type === 'delta') {
-            sink.eventRaw('delta', ev.text);
-          } else if (ev.type === 'result') {
-            sink.event('done', { cost: ev.costUsd, input: ev.tokensIn, output: ev.tokensOut });
-            sink.close();
-          } else if (ev.type === 'error') {
-            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
+        },
+        ctxBase,
+        {},
+      )) {
+        if (ev.kind === 'event') {
+          // Schema-inferred wire kinds: delta + error are z.string() →
+          // raw text on wire. dispatchProjectedToolStream yields the
+          // handler's raw payload; we forward to the sink using
+          // eventRaw for those, event() for the JSON-shaped events.
+          if (ev.name === 'delta' || ev.name === 'error') {
+            sink.eventRaw(ev.name, typeof ev.data === 'string' ? ev.data : String(ev.data));
+          } else {
+            sink.event(ev.name, ev.data);
           }
         }
-      } catch (err) {
-        sink.eventRaw('error', `architect chat failed: ${(err as Error).message}`);
+        // done/error from dispatch are surfaced by sseResponse's default
+        // close behavior — sink.done is the framework's auto-done. For
+        // consistency with the pre-migration wire shape we don't emit
+        // a sink.done here: the architect chat consumer ignores `done`
+        // and closes on stream-end. The HTTP-layer auto-done (in
+        // handleHttpToolRequestStreaming) doesn't apply here because we
+        // dispatch in-process, not through the HTTP catch-all.
       }
     },
   });
