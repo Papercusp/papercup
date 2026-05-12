@@ -24,31 +24,20 @@ import { launchNativeConsole, isConsoleLauncherSupported } from '@/lib/native-co
 
 export function ConsoleLauncherButton() {
   const [busy, setBusy] = useState(false);
-  // Visible click counter so we can confirm React's click handler
-  // is firing even when the spawn fails silently. Remove once
-  // Tauri-webview debugging is done.
-  const [clickCount, setClickCount] = useState(0);
-  // Tracked but not used as a hide-gate any more — we render the
-  // button on every page (browser + Tauri) and explain on click if
-  // the user is in the browser-served operator without the desktop
-  // bridge. Hiding it conditionally meant the user couldn't see
-  // where this affordance was supposed to live.
-  const [supported, setSupported] = useState(true);
+  // Click counter — defensive parse so HMR state weirdness can't
+  // produce NaN (React warns 'Received NaN for children attribute'
+  // when that happens, which we saw in the user's Tauri devtools).
+  const [clickCount, setClickCount] = useState<number>(0);
   const pathname = usePathname();
   const harnessSlug = extractHarnessSlug(pathname ?? '');
 
   useEffect(() => {
-    const sup = isConsoleLauncherSupported();
-    setSupported(sup);
-    // Mount-time diagnostic so we can confirm the component
-    // *rendered* even if subsequent clicks don't fire onClick.
     console.info('[console-launcher] mounted', {
-      supported: sup,
       hasTauriInternals: typeof (window as any).__TAURI_INTERNALS__,
       tauriInvokeType: typeof (window as any).__TAURI_INTERNALS__?.invoke,
+      pageOrigin: window.location.origin,
     });
-    // Mark the global so we can poke the launcher from the devtools
-    // console: `window.__papercupLaunchTerminal()`.
+    // Manual trigger from devtools: window.__papercupLaunchTerminal()
     (window as any).__papercupLaunchTerminal = () => {
       console.info('[console-launcher] manual trigger from window');
       launchNativeConsole({ slug: null }).catch((e) =>
@@ -57,32 +46,27 @@ export function ConsoleLauncherButton() {
     };
   }, []);
 
-  const tooltip = supported
-    ? (harnessSlug
-        ? `Launch terminal in ${harnessSlug}`
-        : 'Launch terminal in workspace root')
-    : 'Launch terminal (desktop app only)';
+  const tooltip = harnessSlug
+    ? `Launch terminal in ${harnessSlug}`
+    : 'Launch terminal in workspace root';
 
   return (
     <button
       type="button"
-      className={`pc-console-btn${busy ? ' is-busy' : ''}${supported ? '' : ' is-unsupported'}`}
+      className={`pc-console-btn${busy ? ' is-busy' : ''}`}
       aria-label="Launch terminal"
       title={tooltip}
       disabled={busy}
       onMouseDown={() => console.info('[console-launcher] mousedown')}
       onClick={async () => {
-        setClickCount((c) => c + 1);
-        console.info('[console-launcher] button clicked', { supported, harnessSlug });
-        if (!supported) {
-          toast.info('Native terminal only opens from the desktop app.', { duration: 6000 });
-          return;
-        }
+        // Defensive: cast to number so HMR-preserved state can't
+        // produce NaN. setState fn-form means we don't rely on stale
+        // closure variable either.
+        setClickCount((c) => (Number.isFinite(c) ? c + 1 : 1));
+        console.info('[console-launcher] button clicked', { harnessSlug });
         setBusy(true);
         try {
           await launchNativeConsole({ slug: harnessSlug });
-          // Long-toast success in case the terminal opened on another
-          // monitor / workspace and the user wonders if it worked.
           toast.success('Terminal launched.', { duration: 4000 });
         } catch (e: any) {
           console.error('[console-launcher] launch failed', e);
