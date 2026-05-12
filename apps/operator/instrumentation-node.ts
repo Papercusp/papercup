@@ -24,6 +24,12 @@ export async function register(): Promise<void> {
   // the boot-time DDL warming.
   await maybeStartPtyWsServer();
 
+  // Endpoint IPC server (opt-in). Tauri launches the sidecar with
+  // PAPERCUSP_IPC_ENABLE=1; the bootstrap then watches the stdout
+  // ready line and connects from Rust. Without the env var, this
+  // is a no-op so the webapp and non-Tauri dev path are unchanged.
+  await maybeStartEndpointIpcServer();
+
   // Boot-time self-repair: drizzle-kit pull periodically truncates the
   // PG default `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint`
   // at the type-cast colon, producing unbalanced parens that crash
@@ -172,6 +178,36 @@ async function backfillGrantsOnce(): Promise<void> {
   }
   const r = await backfillGrantsFromEnabledPluginsAndLegacyFile(enabledHarnesses);
   console.log(`[plugin-grants-backfill] inserted ${r.inserted} grant rows across ${enabledHarnesses.length} harness(es)`);
+}
+
+/**
+ * Endpoint IPC server — webview→Tauri→Node fast path. Opt-in via
+ * `PAPERCUSP_IPC_ENABLE=1`. The Tauri sidecar bootstrap sets this
+ * before launching the operator and watches stdout for the
+ * `PAPERCUSP_IPC_READY socket=<path>` handshake line.
+ *
+ * In dev (non-Tauri), the env stays unset and this is a no-op.
+ * In the webapp prod surface, the env stays unset and this is a no-op.
+ * In Tauri prod, the env is set + Rust connects post-handshake.
+ */
+async function maybeStartEndpointIpcServer(): Promise<void> {
+  if (process.env.PAPERCUSP_IPC_ENABLE !== '1') return;
+  try {
+    const { startEndpointIpcServer } = await import('./lib/endpoint-ipc/server');
+    await startEndpointIpcServer({
+      // Default path: ~/.papercusp/sockets/<pid>.sock (Linux/macOS) or
+      // \\\\.\\pipe\\papercusp-<pid> (Windows). The Rust client reads
+      // the resolved path from the stdout PAPERCUSP_IPC_READY line.
+      socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
+      // Initial allowlist: start narrow during burn-in. Widen once
+      // we've verified the first migrated route end-to-end.
+      allowedTools: [
+        'operator:scan',
+      ],
+    });
+  } catch (err) {
+    console.error('[endpoint-ipc] failed to start:', err);
+  }
 }
 
 async function maybeStartPtyWsServer(): Promise<void> {
