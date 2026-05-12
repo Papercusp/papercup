@@ -88,6 +88,7 @@ export interface ChatConversationProps {
     title: string;
     body: string;
     icon: LucideIcon;
+    extra?: ReactNode;
   };
 
   /** Per-message avatar icon picker. Defaults: user → Users, assistant/system → emptyState.icon. */
@@ -338,6 +339,7 @@ export function ChatConversation(props: ChatConversationProps) {
             </span>
             <strong className="oracle-empty-state-title">{emptyState.title}</strong>
             <span className="oracle-empty-state-text">{emptyState.body}</span>
+            {emptyState.extra}
           </div>
         ) : (
           <div

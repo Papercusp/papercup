@@ -114,8 +114,27 @@ export function OperatorChat({
         title: 'Operator',
         body: passive
           ? 'In passive mode. Type below to wake them.'
-          : 'Say what you’re thinking.',
+          : 'Tell me what you want to inspect, scan, or unblock.',
         icon: Bot,
+        extra: (
+          <div className="op-chat-empty-panel" aria-hidden="true">
+            <div className="op-chat-empty-panel-label">Common starting points</div>
+            <div className="op-chat-empty-panel-list">
+              <div className="op-chat-empty-row">
+                <span className="op-chat-empty-row-title">Scan workspaces</span>
+                <span className="op-chat-empty-row-hint">find active harnesses and urgent issues</span>
+              </div>
+              <div className="op-chat-empty-row">
+                <span className="op-chat-empty-row-title">Review blockers</span>
+                <span className="op-chat-empty-row-hint">surface failing runs, audits, and pending answers</span>
+              </div>
+              <div className="op-chat-empty-row">
+                <span className="op-chat-empty-row-title">Summarize state</span>
+                <span className="op-chat-empty-row-hint">get a quick brief on what changed recently</span>
+              </div>
+            </div>
+          </div>
+        ),
       }}
       inputPlaceholder={passive ? 'Type to wake the Operator…' : 'Reply to the Operator…'}
       inputValue={input}

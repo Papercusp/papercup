@@ -24344,7 +24344,61 @@ body:has(.operator-panel) {
 }
 
 .op-chat-sidebar .oracle-empty-state-text {
+  max-width: 248px;
   color: rgba(148, 163, 184, 0.88);
+  line-height: 1.5;
+}
+
+.op-chat-empty-panel {
+  width: min(100%, 264px);
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.14);
+  border-radius: 16px;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(125, 211, 252, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(8, 17, 29, 0.95), rgba(5, 11, 20, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    0 16px 30px rgba(2, 8, 23, 0.16);
+}
+
+.op-chat-empty-panel-label {
+  margin-bottom: 9px;
+  color: rgba(186, 230, 253, 0.72);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.op-chat-empty-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.op-chat-empty-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(125, 211, 252, 0.10);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.02);
+  text-align: left;
+}
+
+.op-chat-empty-row-title {
+  color: #eef7ff;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.op-chat-empty-row-hint {
+  color: rgba(148, 163, 184, 0.82);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .op-chat-sidebar .ask-choice-card {
@@ -24428,6 +24482,72 @@ body:has(.operator-panel) {
   opacity: 0.85;
 }
 
+.op-chat-sidebar .oracle-msg-role {
+  margin-bottom: 6px;
+  color: rgba(148, 163, 184, 0.84);
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-role {
+  color: rgba(125, 211, 252, 0.96);
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  padding: 11px 13px 10px;
+  font-size: 13.5px;
+  line-height: 1.62;
+  letter-spacing: 0.008em;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  padding: 11px 14px 10px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.op-chat-sidebar .oracle-thinking-row {
+  position: relative;
+  overflow: hidden;
+  gap: 10px;
+  padding: 8px 12px;
+  border-color: rgba(125, 211, 252, 0.18);
+  background:
+    radial-gradient(circle at 14% 50%, rgba(125, 211, 252, 0.08), transparent 24%),
+    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.02));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 20px rgba(0,0,0,0.14);
+  animation: op-chat-thinking-breathe 2.4s ease-in-out infinite;
+}
+
+.op-chat-sidebar .oracle-thinking-row::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.12), transparent);
+  transform: translateX(-150%);
+  animation: op-chat-thinking-sheen 2.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.op-chat-sidebar .oracle-thinking-row > span:first-child {
+  position: relative;
+  z-index: 1;
+  color: #d5e9f7;
+  font-size: 12.5px;
+  letter-spacing: 0.01em;
+}
+
+.op-chat-sidebar .oracle-thinking-dots {
+  position: relative;
+  z-index: 1;
+}
+
+.op-chat-sidebar .oracle-thinking-dots span {
+  width: 5px;
+  height: 5px;
+  opacity: 0.75;
+  background: #7dd3fc;
+  box-shadow: 0 0 8px rgba(125, 211, 252, 0.45);
+}
+
 .ask-choice-submit {
   background: linear-gradient(180deg, rgba(71, 198, 255, 0.22), rgba(56, 189, 248, 0.14));
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
@@ -24460,11 +24580,24 @@ body:has(.operator-panel) {
   100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(103, 232, 249, 0); }
 }
 
+@keyframes op-chat-thinking-breathe {
+  0%, 100% { transform: translateY(0); box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 10px 20px rgba(0,0,0,0.14); }
+  50% { transform: translateY(-1px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 14px 24px rgba(0,0,0,0.18); }
+}
+
+@keyframes op-chat-thinking-sheen {
+  0%, 18%, 100% { transform: translateX(-150%); opacity: 0; }
+  28%, 60% { transform: translateX(150%); opacity: 1; }
+  68% { opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .op-chat-sidebar .oracle-empty-state-icon,
   .op-chat-sidebar .ask-choice-card::before,
   .ask-choice-option::before,
-  .ask-choice-card[data-answered="true"] .ask-choice-option[data-picked="true"] {
+  .ask-choice-card[data-answered="true"] .ask-choice-option[data-picked="true"],
+  .op-chat-sidebar .oracle-thinking-row,
+  .op-chat-sidebar .oracle-thinking-row::before {
     animation: none !important;
   }
 }
