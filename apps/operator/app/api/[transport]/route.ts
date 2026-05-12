@@ -389,6 +389,7 @@ async function buildMcpToolContext(
     },
     progress,
     emit,
+    transport: 'mcp',
     spawn: pluginSpawnImpl,
     secret: secretImpl,
     signal: new AbortController().signal,

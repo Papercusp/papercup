@@ -199,6 +199,7 @@ export async function GET(req: NextRequest): Promise<Response> {
         role: 'operator',
         runId: agentSessionId,
         spawnId: agentSessionId,
+        transport: 'in_process',
       };
 
       try {

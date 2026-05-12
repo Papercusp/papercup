@@ -213,6 +213,28 @@ describe('dispatchProjectedTool', () => {
     expect(r.ok).toBe(true);
   }, 10_000);
 
+  it('ctx.transport is plumbed through to recordInvocation deps', async () => {
+    // PR for migration 058-tool-invocations-transport: every transport
+    // (HTTP / MCP / IPC / in_process) sets ctx.transport on its ctx so
+    // the shared PROJECTED_DEPS.recordInvocation can persist it on
+    // harness_shared.tool_invocations.transport. Verify the dispatcher
+    // doesn't strip the field on its way through wrappedEmit + the
+    // success-path record call.
+    const tool = makeTool({
+      fn: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const recorded: Array<{ transport?: 'http' | 'mcp' | 'ipc' | 'in_process' }> = [];
+    const deps: DispatchProjectedDeps = {
+      recordInvocation: async (input) => {
+        recorded.push({ transport: input.ctx.transport });
+      },
+    };
+    const ctx = MAKE_CTX({ transport: 'ipc' });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, deps);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].transport).toBe('ipc');
+  });
+
   it('ok-on-abort: handler returns ok despite signal aborted → surfaces as timeout error', async () => {
     // Round-7 follow-up: the watchdog used to fire but if the handler
     // returned normally without observing ctx.signal.aborted, the

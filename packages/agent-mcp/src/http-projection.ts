@@ -267,6 +267,7 @@ async function resolveToolAndContext(
       extras.progress?.(pct, msg, fullCtx);
     },
     emit: noopEmit,
+    transport: 'http',
     ...spawnCtx,
     isSuperuser,
     ...(extras.spawn ? { spawn: extras.spawn } : {}),

@@ -294,6 +294,7 @@ function handleConnection(socket: net.Socket, deps: PerConnectionDeps): void {
       signal: abort.signal,
       progress: () => { /* dispatchProjectedToolStream overrides this */ },
       emit: () => { /* dispatchProjectedToolStream overrides this */ },
+      transport: 'ipc',
       workspaceId: activeWorkspaceId(),
       role: 'operator',
       runId: `ipc-${id}`,

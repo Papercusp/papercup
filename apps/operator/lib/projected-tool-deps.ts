@@ -73,8 +73,10 @@ async function recordInvocationImpl(input: {
         `INSERT INTO harness_shared.tool_invocations
            (workspace_id, harness_slug, plugin_name, tool_name, role,
             feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
-            window_key, duration_ms, status, output_ref, output_size, error_message, args_json)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb)`,
+            window_key, duration_ms, status, output_ref, output_size,
+            error_message, args_json, transport)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
+                 $16,$17::jsonb,$18)`,
         [
           input.ctx.workspaceId,
           input.ctx.harnessSlug ?? '',
@@ -104,6 +106,10 @@ async function recordInvocationImpl(input: {
               return null;
             }
           })(),
+          // ctx.transport set by HTTP / MCP / IPC adapters. NULL for
+          // direct-handler-call shims (the route shim path) where no
+          // transport is actually involved at dispatch time.
+          input.ctx.transport ?? null,
         ],
       );
     });

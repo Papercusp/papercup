@@ -290,6 +290,17 @@ export interface UnifiedToolContext {
    */
   isSuperuser?: boolean;
 
+  /**
+   * Which transport adapter built this context. Recorded on the
+   * `tool_invocations.transport` column so /dev → Sessions / Telemetry
+   * can filter by transport.
+   *
+   * Set by transport adapters (HTTP, MCP, IPC). Left undefined for
+   * in-process / shim callers that build a ctx directly without going
+   * through an adapter — `recordInvocation` writes null in that case.
+   */
+  transport?: 'http' | 'mcp' | 'ipc' | 'in_process';
+
   /* ── Spawn context (typically agent-driven calls) ─────────────────── */
   workspaceId?: string;
   harnessSlug?: string;

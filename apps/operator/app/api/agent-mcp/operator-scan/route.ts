@@ -253,6 +253,7 @@ export async function GET(req: NextRequest) {
         role: 'operator',
         runId: scannerSessionId ?? `scan-${Date.now()}`,
         spawnId: scannerSessionId ?? `scan-${Date.now()}`,
+        transport: 'in_process',
       };
 
       let costUsd = 0;

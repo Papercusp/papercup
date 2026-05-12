@@ -401,6 +401,7 @@ export async function POST(req: NextRequest) {
           role: 'operator',
           runId: `op-converse-${Date.now()}`,
           spawnId: `op-converse-${Date.now()}`,
+          transport: 'in_process',
         };
 
         let totalCost = 0;

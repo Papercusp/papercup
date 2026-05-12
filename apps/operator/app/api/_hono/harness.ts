@@ -5782,6 +5782,7 @@ Rules for proposals:
         spawnId: `architect-${project.slug}`,
         projectDir: project.path,
         harnessSlug: project.slug,
+        transport: 'in_process',
       };
       for await (const ev of dispatchProjectedToolStream(
         architectChatTool,
@@ -6055,6 +6056,7 @@ Rules:
         spawnId: `brainstorm-${project.slug}`,
         projectDir: project.path,
         harnessSlug: project.slug,
+        transport: 'in_process',
       };
       for await (const ev of dispatchProjectedToolStream(
         brainstormChatTool,
