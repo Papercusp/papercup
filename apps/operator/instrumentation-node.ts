@@ -193,12 +193,19 @@ async function backfillGrantsOnce(): Promise<void> {
 async function maybeStartEndpointIpcServer(): Promise<void> {
   if (process.env.PAPERCUSP_IPC_ENABLE !== '1') return;
   try {
-    const { startEndpointIpcServer } = await import('./lib/endpoint-ipc/server');
+    const [{ startEndpointIpcServer }, { PROJECTED_DEPS }] = await Promise.all([
+      import('./lib/endpoint-ipc/server'),
+      import('./lib/projected-tool-deps'),
+    ]);
     await startEndpointIpcServer({
       // Default path: ~/.papercusp/sockets/<pid>.sock (Linux/macOS) or
       // \\\\.\\pipe\\papercusp-<pid> (Windows). The Rust client reads
       // the resolved path from the stdout PAPERCUSP_IPC_READY line.
       socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
+      // Same telemetry + quota implementation the HTTP catch-all
+      // route uses. Without this, IPC calls were invisible to
+      // /dev → Sessions and /dev → Telemetry. Audit deferred item 4.
+      deps: PROJECTED_DEPS,
       // Initial allowlist: start narrow during burn-in. dev:ipc_echo
       // is the canonical liveness probe (verified by the /dev page).
       //
