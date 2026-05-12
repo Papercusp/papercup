@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,7 +30,23 @@ export function harnessPath(...segments: string[]): string {
  * full main loop. The bash run.sh remains as a function library for
  * sites that source individual helpers (e.g. invokeScoperBackground)
  * but is no longer the canonical iteration driver.
+ *
+ * IMPORTANT: `path.join('..')` collapses syntactically — NOT via the
+ * filesystem. When harnessPackageDir() is a symlink (default dev:
+ * ~/autonomous-harness → .../libs/papercusp/packages/harness), a naive
+ * `join(base, '..')` walks up from the SYMLINK NAME's parent
+ * (`~/orchestrator/bin/run.ts`), not the symlink target's. We resolve
+ * the real path first so '..' correctly lands on `.../packages/`.
  */
 export function orchestratorRunBin(): string {
-  return join(harnessPackageDir(), '..', 'orchestrator', 'bin', 'run.ts');
+  const base = harnessPackageDir();
+  let real: string;
+  try {
+    real = realpathSync(base);
+  } catch {
+    // Symlink missing or path doesn't exist — fall back to the unresolved
+    // path. The caller's existsSync check will surface the real problem.
+    real = base;
+  }
+  return join(real, '..', 'orchestrator', 'bin', 'run.ts');
 }
