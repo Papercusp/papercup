@@ -328,7 +328,7 @@ export async function GET(req: NextRequest) {
               console.warn('[operator-scan] writeSnapshot failed:', e);
             }
             await recordSuccess(workspaceId);
-            send('done', {
+            sink.done({
               costUsd,
               suggestions: parsed.blocks.length,
               parseErrors: parsed.parseErrors,
