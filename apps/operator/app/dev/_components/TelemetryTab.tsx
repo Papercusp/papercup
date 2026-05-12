@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 
 interface Entry {
   tool_name: string;
@@ -28,6 +28,13 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
     parseAsStringEnum(['1', '6', '24', '72', '168']).withDefault('24'),
   );
   const hours = Number(hoursParam);
+  // Transport filter: comma-separated, empty = no filter. URL-backed
+  // so deep links + agent invocations can pre-filter via ui:get_state.
+  const [transportParam, setTransportParam] = useQueryState(
+    'transport',
+    parseAsString.withDefault(''),
+  );
+  const transports = transportParam ? transportParam.split(',') : null;
 
   useEffect(() => {
     let cancelled = false;
@@ -42,7 +49,7 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
     fetch(`/api/agent-tools/dev/telemetry?${params}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspaceIds, hours, limit: 100 }),
+      body: JSON.stringify({ workspaceIds, transports, hours, limit: 100 }),
     })
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -60,7 +67,15 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [workspaceIds, hours]);
+  }, [workspaceIds, transportParam, hours]);
+
+  const transportSet = new Set(transports ?? []);
+  const toggleTransport = (t: string): void => {
+    const next = new Set(transportSet);
+    if (next.has(t)) next.delete(t);
+    else next.add(t);
+    void setTransportParam(next.size === 0 ? '' : Array.from(next).join(','));
+  };
 
   return (
     <div className="pc-dev-tab-body">
@@ -80,6 +95,29 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
             <option value={168}>7d</option>
           </select>
         </label>
+        <fieldset className="pc-dev-muted" style={{ display: 'inline-flex', gap: 8, marginLeft: 12, alignItems: 'center', border: 0, padding: 0 }}>
+          <span>transport:</span>
+          {(['http', 'mcp', 'ipc', 'in_process', 'unknown'] as const).map((t) => (
+            <label key={t} style={{ display: 'inline-flex', gap: 3, fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={transportSet.has(t)}
+                onChange={() => toggleTransport(t)}
+              />
+              {t}
+            </label>
+          ))}
+          {transportSet.size > 0 && (
+            <button
+              type="button"
+              onClick={() => void setTransportParam('')}
+              className="pc-dev-input pc-dev-input-inline"
+              style={{ padding: '2px 6px', fontSize: 11 }}
+            >
+              clear
+            </button>
+          )}
+        </fieldset>
       </header>
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
