@@ -56,7 +56,7 @@ type StateTable =
   | 'operator_paused'
   // Migration 047 — search-provider keys for OMP web_search:
   | 'operator_search_provider_credentials'
-  // Migration 061 — Setup Wizard state + telemetry reports buffer:
+  // Migration 062 — Setup Wizard state + telemetry reports buffer:
   | 'setup_wizard_state'
   | 'telemetry_reports';
 
