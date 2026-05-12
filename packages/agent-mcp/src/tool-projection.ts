@@ -171,6 +171,28 @@ export interface MinimalEventSink {
   eventRaw(name: string, value: string): void;
 }
 
+/**
+ * Self-describing binary envelope. Same shape as the MCP transport's
+ * notifications/papercusp/event params.data field for binary events.
+ * Cross-transport unification (audit item 14) — consumers can use one
+ * decoder regardless of wire format.
+ */
+export interface PapercuspBinaryEnvelope {
+  $papercuspBinary: true;
+  encoding: 'base64';
+  /** Base64-encoded payload bytes. */
+  data: string;
+}
+
+export function isPapercuspBinaryEnvelope(v: unknown): v is PapercuspBinaryEnvelope {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { $papercuspBinary?: unknown }).$papercuspBinary === true &&
+    typeof (v as { data?: unknown }).data === 'string'
+  );
+}
+
 export function emitToSseSink(
   sink: MinimalEventSink,
   tool: Pick<ProjectedTool, 'eventWireKinds'>,
@@ -181,7 +203,18 @@ export function emitToSseSink(
   if (kind === 'string') {
     sink.eventRaw(name, typeof data === 'string' ? data : String(data));
   } else if (kind === 'binary' && data instanceof Uint8Array) {
-    sink.eventRaw(name, Buffer.from(data).toString('base64'));
+    // Emit the same self-describing envelope as the MCP transport
+    // (notifications/papercusp/event params.data). Consumers see a
+    // uniform shape regardless of wire; HTTP consumer detects via
+    // isPapercuspBinaryEnvelope. Slightly more bytes than raw base64
+    // (~35-byte envelope tax) but consumers don't need out-of-band
+    // schema info to know it's binary.
+    const envelope: PapercuspBinaryEnvelope = {
+      $papercuspBinary: true,
+      encoding: 'base64',
+      data: Buffer.from(data).toString('base64'),
+    };
+    sink.event(name, envelope);
   } else {
     sink.event(name, data);
   }

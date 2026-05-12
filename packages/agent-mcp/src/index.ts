@@ -55,6 +55,7 @@ export {
   listMcpProjections,
   ToolRegistrationError,
   emitToSseSink,
+  isPapercuspBinaryEnvelope,
   _resetProjectionRegistryForTests,
   type ProjectedTool,
   type ToolFn,
@@ -63,6 +64,7 @@ export {
   type ToolExposureMcp,
   type UnifiedToolContext,
   type MinimalEventSink,
+  type PapercuspBinaryEnvelope,
 } from './tool-projection';
 
 export {

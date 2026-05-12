@@ -358,9 +358,15 @@ describe('handleHttpToolRequestStreaming', () => {
     await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
     const bin = events.find((e) => e.event === 'chunk');
     expect(bin).toBeDefined();
-    // Sink received the base64-encoded string. 3q2+7w== is hex deadbeef.
-    expect(typeof bin!.data).toBe('string');
-    expect(bin!.data).toBe('3q2+7w==');
+    // PR F unification (audit item 14): HTTP and MCP transports both
+    // emit the same self-describing PapercuspBinaryEnvelope shape so
+    // consumers can normalize without out-of-band schema info.
+    // 3q2+7w== is hex deadbeef.
+    expect(bin!.data).toEqual({
+      $papercuspBinary: true,
+      encoding: 'base64',
+      data: '3q2+7w==',
+    });
   });
 
   it('auto-error honors schema-inferred wire kind (raw text for z.string())', async () => {

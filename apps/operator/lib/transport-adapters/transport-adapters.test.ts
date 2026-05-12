@@ -76,6 +76,27 @@ describe('dispatchEndpointStreamHttp', () => {
     expect((events[0] as { code: string }).code).toBe('http_403');
   });
 
+  it('detects the binary envelope and yields kind: binary with Uint8Array', async () => {
+    // PR F (audit item 14): cross-transport binary unification. HTTP
+    // wire carries the self-describing envelope; consumer normalizes
+    // to the same shape as IPC.
+    const body =
+      'event: chunk\ndata: {"$papercuspBinary":true,"encoding":"base64","data":"3q2+7w=="}\n\n' +
+      'event: done\ndata: []\n\n';
+    vi.stubGlobal('fetch', vi.fn(async () => makeSseResponse(body)));
+    const { dispatchEndpointStreamHttp } = await import('./http-stream');
+    const events = [];
+    for await (const ev of dispatchEndpointStreamHttp('foo:bar', {})) {
+      events.push(ev);
+    }
+    const bin = events.find((e) => e.kind === 'binary');
+    expect(bin).toBeDefined();
+    expect((bin as { name: string }).name).toBe('chunk');
+    const data = (bin as { data: Uint8Array }).data;
+    expect(data).toBeInstanceOf(Uint8Array);
+    expect(Array.from(data)).toEqual([0xde, 0xad, 0xbe, 0xef]);
+  });
+
   it('overrideUrl bypasses the default /api/agent-tools/<name> path', async () => {
     const fetchSpy = vi.fn(async () => makeSseResponse('event: done\ndata: {}\n\n'));
     vi.stubGlobal('fetch', fetchSpy);

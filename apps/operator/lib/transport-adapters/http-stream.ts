@@ -14,10 +14,29 @@
  */
 
 import { parseSseStream } from '@restart/sse';
+import { isPapercuspBinaryEnvelope } from '@papercusp/agent-mcp';
 import type {
   EndpointStreamEvent,
   DispatchEndpointStreamOptions,
 } from './types';
+
+function base64ToUint8Universal(b64: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const NodeBuffer = (globalThis as any).Buffer;
+  if (NodeBuffer && typeof NodeBuffer.from === 'function') {
+    const buf: { length: number; [k: number]: number } = NodeBuffer.from(b64, 'base64');
+    const out = new Uint8Array(buf.length);
+    for (let i = 0; i < buf.length; i++) out[i] = buf[i];
+    return out;
+  }
+  throw new Error('base64ToUint8: no atob or Buffer in this environment');
+}
 
 export async function* dispatchEndpointStreamHttp<TInput>(
   toolName: string,
@@ -87,10 +106,18 @@ export async function* dispatchEndpointStreamHttp<TInput>(
       return;
     }
     // Other events: pass through. Try JSON-parsing first; fall back
-    // to raw string for z.string()-typed events on the wire.
+    // to raw string for z.string()-typed events on the wire. If the
+    // parsed shape is a self-describing binary envelope (audit
+    // item 14 unification), decode to Uint8Array and yield as a
+    // 'binary' event — matches the IPC consumer's shape.
     let data: unknown = ev.data;
     try {
       data = JSON.parse(ev.data);
+      if (isPapercuspBinaryEnvelope(data)) {
+        const bytes = base64ToUint8Universal(data.data);
+        yield { kind: 'binary', name: ev.event ?? 'message', data: bytes };
+        continue;
+      }
     } catch {
       /* raw string is correct for z.string() events */
     }

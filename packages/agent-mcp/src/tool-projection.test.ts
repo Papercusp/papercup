@@ -268,12 +268,41 @@ describe('emitToSseSink', () => {
     expect(events).toEqual([{ kind: 'event', name: 'cost', data: { usd: 0.5 } }]);
   });
 
-  it('binary events go through eventRaw with base64-encoded data', async () => {
+  it('binary events emit the self-describing envelope (cross-transport unification)', async () => {
     const { emitToSseSink } = await import('./tool-projection');
     const { sink, events } = recSink();
     const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
     emitToSseSink(sink, { eventWireKinds: { chunk: 'binary' } } as never, 'chunk', bytes);
-    expect(events).toEqual([{ kind: 'raw', name: 'chunk', data: '3q2+7w==' }]);
+    // PR F (item 14): same envelope shape as MCP transport's
+    // notifications/papercusp/event params.data so consumers across
+    // HTTP / MCP / IPC can normalize without out-of-band schema info.
+    expect(events).toEqual([{
+      kind: 'event',
+      name: 'chunk',
+      data: {
+        $papercuspBinary: true,
+        encoding: 'base64',
+        data: '3q2+7w==',
+      },
+    }]);
+  });
+
+  it('isPapercuspBinaryEnvelope detects the envelope shape', async () => {
+    const { isPapercuspBinaryEnvelope } = await import('./tool-projection');
+    expect(isPapercuspBinaryEnvelope({
+      $papercuspBinary: true,
+      encoding: 'base64',
+      data: '3q2+7w==',
+    })).toBe(true);
+    expect(isPapercuspBinaryEnvelope({ data: '3q2+7w==' })).toBe(false);
+    expect(isPapercuspBinaryEnvelope({ $papercuspBinary: false })).toBe(false);
+    expect(isPapercuspBinaryEnvelope(null)).toBe(false);
+    expect(isPapercuspBinaryEnvelope('string')).toBe(false);
+    expect(isPapercuspBinaryEnvelope({
+      $papercuspBinary: true,
+      encoding: 'base64',
+      data: 123, // not a string
+    })).toBe(false);
   });
 
   it('binary kind without Uint8Array data falls back to JSON (defensive)', async () => {
