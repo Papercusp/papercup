@@ -20,6 +20,40 @@
  */
 import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { listPendingReviews, getEscalation, listFeaturesForHarness } from '@/lib/harness-readers';
+import { phasePhaseLabel } from '@/lib/harness-phases';
+
+/**
+ * Per-harness summary line — the actionable surface area the brain
+ * uses to compose concrete suggestions. Each line surfaces:
+ *   - features: total / passed / awaiting-review
+ *   - pending reviews: count (when > 0)
+ *   - escalations: flagged badge (when present)
+ * Lines without any actionable signal are dropped so the inventory
+ * doesn't pad with empty "sheets: 0/0" noise.
+ */
+async function buildHarnessSummary(slug: string): Promise<string | null> {
+  const phase = phasePhaseLabel(undefined);
+  const [featuresR, reviewsR, escalationR] = await Promise.allSettled([
+    listFeaturesForHarness(slug, phase),
+    listPendingReviews(slug, phase),
+    getEscalation(slug, phase),
+  ]);
+  const features = featuresR.status === 'fulfilled' && featuresR.value.ok ? featuresR.value.data.features : [];
+  const reviews = reviewsR.status === 'fulfilled' && reviewsR.value.ok ? reviewsR.value.data.reviews : [];
+  const escalation = escalationR.status === 'fulfilled' && escalationR.value.ok ? escalationR.value.data : null;
+  const total = features.length;
+  const passed = features.filter((f) => f.status === 'passed').length;
+  const review = features.filter((f) => f.needs_human_review).length;
+  const reviewCount = reviews.length;
+  const escalated = !!(escalation?.escalation && String(escalation.escalation).trim());
+  if (total === 0 && reviewCount === 0 && !escalated) return null;
+  const parts: string[] = [`${slug}: ${passed}/${total} passed`];
+  if (review > 0) parts.push(`${review} awaiting review`);
+  if (reviewCount > 0) parts.push(`${reviewCount} pending review(s)`);
+  if (escalated) parts.push(`⚠ ESCALATED`);
+  return `  - ${parts.join(' · ')}`;
+}
 
 export async function buildWorkspaceInventoryBlock(): Promise<string> {
   const workspace = activeWorkspaceId();
@@ -42,7 +76,18 @@ export async function buildWorkspaceInventoryBlock(): Promise<string> {
 
   if (!projects.length && !agents.length) return '';
 
-  const projectLines = projects.slice(0, 6).map((p) => `  - ${p.slug}`);
+  // Enriched per-harness summaries — features/reviews/escalations.
+  // Suggestions the brain composes from this are now grounded in real
+  // actionable state, not just slugs.
+  const topProjects = projects.slice(0, 8);
+  const summaries = await Promise.all(topProjects.map((p) => buildHarnessSummary(p.slug).catch(() => null)));
+  const summaryLines = summaries.filter((s): s is string => !!s);
+  // Fallback: harnesses with no actionable state still get a thin
+  // line so they're visible.
+  const quietLines = topProjects
+    .filter((_, i) => summaries[i] == null)
+    .map((p) => `  - ${p.slug}: (no activity)`);
+
   const agentLines = agents.map((a) => {
     const ago = a.last_active
       ? `${Math.round((Date.now() - new Date(a.last_active).getTime()) / 60000)}m ago`
@@ -50,13 +95,15 @@ export async function buildWorkspaceInventoryBlock(): Promise<string> {
     return `  - ${a.slug}/${a.role} (${a.chat_count} chats, ${ago})`;
   });
 
+  const harnessSection = [...summaryLines, ...quietLines];
+
   return [
     '\n\n## Workspace at a glance',
     `\nWorkspace: ${workspace}`,
-    projectLines.length
-      ? `\nHarnesses (${projects.length}${projects.length > 6 ? ', showing 6' : ''}):\n${projectLines.join('\n')}`
+    harnessSection.length
+      ? `\nHarnesses (${projects.length}${projects.length > 8 ? ', showing 8' : ''}):\n${harnessSection.join('\n')}`
       : '',
     agentLines.length ? `\nMost-active agents:\n${agentLines.join('\n')}` : '',
-    '\n\nThis is a snapshot. For deeper info call `harness:list` / `agents:list` / `harness:status`.',
+    '\n\nThis is a snapshot. Use these specific facts to compose suggestions; for deeper info call `harness:list` / `harness:status` / `harness:escalation`.',
   ].join('');
 }

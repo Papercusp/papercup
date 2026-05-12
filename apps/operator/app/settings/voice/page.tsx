@@ -756,10 +756,12 @@ export default function VoiceSettingsPage() {
                 disabled={savingPrefs}
               />
               <ElSpendStatus />
+              <ElSubscriptionStatus />
               <p style={hint}>
                 Default 600 min (~10 hours). When the current month&apos;s usage hits this cap, new EL
-                sessions refuse to start and you get a toast. 0 disables the cap. Updated by EL&apos;s
-                post-call webhook (must be configured on the EL dashboard pointing at <code>/api/elevenlabs/post-call</code>).
+                sessions refuse to start and you get a toast. 0 disables the cap. Usage is read
+                directly from ElevenLabs <code>/v1/convai/conversations</code> (canonical) with a
+                <code> harness_shared.el_conv_calls</code> fallback if the EL API is unreachable.
               </p>
             </div>
           </div>
@@ -1303,6 +1305,116 @@ function ElSpendStatus() {
         </>
       )}
       {cap == null && ' (uncapped)'}
+    </div>
+  );
+}
+
+function ElSubscriptionStatus() {
+  type SubData = {
+    tier: string | null;
+    status: string | null;
+    character_count: number;
+    character_limit: number | null;
+    character_limit_exceeded: boolean;
+    pct_used: number | null;
+    next_reset_unix: number | null;
+    next_reset_iso: string | null;
+    concurrent_session_limit: number | null;
+    currency: string | null;
+    billing_period: string | null;
+    can_extend: boolean | null;
+    source: 'elevenlabs' | 'no-key' | 'error';
+    error_detail: string | null;
+  };
+  const [data, setData] = useState<SubData | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await fetch('/api/agent-mcp/operator-el-subscription');
+        if (!r.ok || cancelled) return;
+        setData(await r.json());
+      } catch { /* leave null */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+  if (!data) return null;
+  // No key configured — silent (the spend hint already covers the empty case).
+  if (data.source === 'no-key') return null;
+  // Error — surface clearly + actionable when it's the common scoped-key case.
+  if (data.source === 'error') {
+    const missingPerm = /missing_permissions|missing the permission/i.test(data.error_detail ?? '');
+    return (
+      <div style={{
+        marginTop: 8, padding: 8, fontSize: 12, borderRadius: 6,
+        background: missingPerm ? '#fef3c7' : '#fee2e2',
+        color: missingPerm ? '#92400e' : '#991b1b',
+        border: `1px solid ${missingPerm ? '#fde68a' : '#fecaca'}`,
+      }}>
+        <strong>ElevenLabs plan status: unavailable.</strong>
+        {missingPerm ? (
+          <>
+            {' '}Your EL API key is missing the <code>user_read</code> permission, so we can&apos;t
+            read your plan tier or character budget. Regenerate the key at{' '}
+            <a href="https://elevenlabs.io/app/settings/api-keys" target="_blank" rel="noreferrer"
+               style={{ color: 'inherit', textDecoration: 'underline' }}>
+              elevenlabs.io/app/settings/api-keys
+            </a>{' '}with <code>user_read</code> checked, then paste it on the Voice Credentials page.
+          </>
+        ) : (
+          <> {data.error_detail}</>
+        )}
+      </div>
+    );
+  }
+  const chars = data.character_count.toLocaleString();
+  const limit = data.character_limit?.toLocaleString();
+  const pct = data.pct_used != null ? Math.round(data.pct_used * 100) : null;
+  const exceeded = data.character_limit_exceeded;
+  const warn = !exceeded && (data.pct_used ?? 0) >= 0.8;
+  const resetLabel = data.next_reset_unix
+    ? new Date(data.next_reset_unix * 1000).toLocaleDateString(undefined, {
+        month: 'short', day: 'numeric', year: 'numeric',
+      })
+    : null;
+  return (
+    <div style={{
+      marginTop: 8, padding: 8, fontSize: 12, borderRadius: 6,
+      background: exceeded ? '#fee2e2' : warn ? '#fef3c7' : '#f3f4f6',
+      color: exceeded ? '#991b1b' : warn ? '#92400e' : '#374151',
+      border: `1px solid ${exceeded ? '#fecaca' : warn ? '#fde68a' : '#e5e7eb'}`,
+    }}>
+      <div>
+        <strong>ElevenLabs plan</strong>
+        {data.tier && <> · {data.tier}</>}
+        {data.status && data.status !== 'active' && <> · <em>{data.status}</em></>}
+      </div>
+      {data.character_limit != null && (
+        <div style={{ marginTop: 2 }}>
+          Characters: <strong>{chars}</strong> / {limit} ({pct}%)
+          {resetLabel && <> · resets {resetLabel}</>}
+          {exceeded && ' — character cap reached'}
+        </div>
+      )}
+      {data.character_limit == null && (
+        <div style={{ marginTop: 2 }}>
+          Characters used: <strong>{chars}</strong> (no plan cap){resetLabel && <> · resets {resetLabel}</>}
+        </div>
+      )}
+      {data.concurrent_session_limit != null && (
+        <div style={{ marginTop: 2 }}>
+          Concurrent session limit: {data.concurrent_session_limit}
+          {data.concurrent_session_limit <= 1 && (
+            <> — only one EL session can run at a time across desktop + mobile</>
+          )}
+        </div>
+      )}
+      {exceeded && (
+        <div style={{ marginTop: 4 }}>
+          New EL sessions will fail with &quot;exceeds your quota limit&quot; until the period resets
+          or you upgrade.
+        </div>
+      )}
     </div>
   );
 }
