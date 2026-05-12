@@ -501,6 +501,68 @@ app.post('/voice-tool/:name', async (c) => {
     ? (body as { parameters?: unknown }).parameters ?? {}
     : body ?? {};
 
+  // ── ask_operator is a meta-tool, not in the command registry. The
+  //    desktop handler (lib/voice-engines/elevenlabs-conv.ts) calls
+  //    /api/agent-mcp/operator-converse SSE, drains the stream, and
+  //    returns the <say> body. Replicate that here for mobile.
+  if (elName === 'ask_operator') {
+    const p = params as { text?: string; trigger?: string };
+    const userText = (p?.text ?? '').toString().trim();
+    const trigger = typeof p?.trigger === 'string' ? p.trigger : 'user_message';
+    if (!userText && !trigger) return c.json('');
+    const VALID = new Set([
+      'user_message', 'silence_after_question', 'quiet_wait_resume',
+      'open_canvas', 'user_says_ready',
+    ]);
+    const effective = (trigger === 'silence_nudge' || trigger === 'silence_check')
+      ? 'silence_after_question'
+      : (VALID.has(trigger) ? trigger : 'user_message');
+    const base = process.env.MOBILE_SELF_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
+    try {
+      const res = await fetch(`${base}/api/agent-mcp/operator-converse`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          messages: userText ? [{ role: 'user', content: userText }] : [],
+          trigger: effective,
+          mayAskActive: false,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        return c.json('I had trouble just then — say that again?');
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let assembled = '';
+      // Drain SSE.
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const evt = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const line of evt.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+              const payload = JSON.parse(line.slice(6));
+              if (typeof payload?.text === 'string') assembled += payload.text;
+            } catch { /* skip non-JSON */ }
+          }
+        }
+      }
+      const sayMatch = assembled.match(/<say(?:\s[^>]*)?>([\s\S]*?)<\/say>/i);
+      const out = (sayMatch ? sayMatch[1] : assembled).trim() || '...';
+      return c.json(out);
+    } catch (err) {
+      console.warn('[mobile:ask_operator]', err);
+      return c.json('I had trouble just then — say that again?');
+    }
+  }
+
   // EL normalizes registry ids by replacing dots+dashes with underscores
   // (e.g. 'harness.list-features' → 'harness_list_features'). The reverse
   // isn't unique, so we iterate the registry and match by normalized form.
