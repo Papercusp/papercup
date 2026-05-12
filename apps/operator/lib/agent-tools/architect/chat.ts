@@ -62,6 +62,11 @@ async function chatHandler(input: Args, ctx: { emit: (n: string, d: unknown) => 
     for await (const ev of runAgentChat({
       promptText: input.promptText,
       cwd: input.cwd,
+      // Caller-side cancellation: dispatcher's wrapped signal fires on
+      // client disconnect / wall-clock timeout / idle timeout. Forward
+      // so runAgentChat shuts the subprocess down instead of letting
+      // it burn tokens we'll never read.
+      signal: ctx.signal,
     })) {
       if (ev.type === 'delta') {
         ctx.emit('delta', ev.text);

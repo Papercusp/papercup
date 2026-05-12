@@ -120,6 +120,10 @@ export default defineTool({
       permissionMode: 'bypassPermissions',
       sessionId: input.scannerSessionId ?? undefined,
       sessionMode: input.scannerSessionId ? 'force' : undefined,
+      // Caller-side cancellation: forward the dispatcher's signal so
+      // client disconnect or idle/wall-clock timeout actually stops the
+      // subprocess instead of letting it run to completion.
+      signal: ctx.signal,
     })) {
       if (ev.type === 'delta') {
         assistantText += ev.text;

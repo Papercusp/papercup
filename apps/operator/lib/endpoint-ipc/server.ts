@@ -34,6 +34,7 @@ import {
   type UnifiedToolContext,
   type DispatchProjectedDeps,
 } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 /** Returns the default per-process socket path on this OS. */
 export function defaultSocketPath(pid: number = process.pid): string {
@@ -273,12 +274,15 @@ function handleConnection(socket: net.Socket, deps: PerConnectionDeps): void {
 
     // Synthetic operator principal. The webview is in-boundary; the
     // signed-URL model doesn't apply (see transports.mdx § Trust model).
+    // workspaceId comes from the live registry (matches what the HTTP
+    // route's `activeWorkspaceId()` returns) so per-workspace state and
+    // RLS resolve correctly.
     const ctx: UnifiedToolContext = {
       log: (m) => deps.logger.info(`[${parsed.toolName}] ${m}`),
       signal: abort.signal,
       progress: () => { /* dispatchProjectedToolStream overrides this */ },
       emit: () => { /* dispatchProjectedToolStream overrides this */ },
-      workspaceId: 'default',
+      workspaceId: activeWorkspaceId(),
       role: 'operator',
       runId: `ipc-${id}`,
       spawnId: `ipc-${id}`,
