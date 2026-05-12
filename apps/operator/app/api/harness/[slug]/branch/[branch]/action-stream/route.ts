@@ -14,14 +14,16 @@
  * for history; live updates come from the bus.
  */
 import { promises as fs } from 'node:fs';
-import { sseResponse, ACTION_MAX_DURATION_SEC } from '@restart/sse';
+import { sseResponse } from '@restart/sse';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 import { isBranch, runLogPath } from '@/lib/branch-actions';
 import { subscribe as subscribeAction } from '@/lib/branch-action-bus';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = ACTION_MAX_DURATION_SEC;
+// maxDuration must be a literal — Next's segment-config parser can't
+// resolve imported constants (ACTION_MAX_DURATION_SEC = 1_800 in @restart/sse).
+export const maxDuration = 1_800;
 
 interface Params { params: Promise<{ slug: string; branch: string }> }
 

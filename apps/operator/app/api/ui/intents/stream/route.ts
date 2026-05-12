@@ -15,14 +15,16 @@
  */
 
 import { NextResponse } from 'next/server';
-import { sseResponse, SYNC_MAX_DURATION_SEC } from '@restart/sse';
+import { sseResponse } from '@restart/sse';
 import { getOrgPg } from '@restart/db-org';
 import { isLoopbackRequest } from '@/lib/superuser-token';
 import { ensureUiIntentsTable } from '@/lib/ensure-schema';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = SYNC_MAX_DURATION_SEC;
+// maxDuration must be a literal — Next's segment-config parser can't
+// resolve imported constants (SYNC_MAX_DURATION_SEC = 86_400 in @restart/sse).
+export const maxDuration = 86_400;
 
 const POLL_MS = 250;
 

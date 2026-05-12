@@ -11,13 +11,15 @@
  * The connection closes when a terminal kind for the matching runId is
  * observed (the server emits a final `done` event and closes).
  */
-import { sseResponse, ACTION_MAX_DURATION_SEC } from '@restart/sse';
+import { sseResponse } from '@restart/sse';
 import { readAudit, type AuditEntry } from '@/lib/provision/audit-log';
 import { subscribe as subscribeAudit } from '@/lib/provision-audit-bus';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = ACTION_MAX_DURATION_SEC;
+// maxDuration must be a literal — Next's segment-config parser can't
+// resolve imported constants (ACTION_MAX_DURATION_SEC = 1_800 in @restart/sse).
+export const maxDuration = 1_800;
 
 const DEFAULT_BACKFILL = 200;
 

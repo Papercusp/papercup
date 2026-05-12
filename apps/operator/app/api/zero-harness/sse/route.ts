@@ -27,12 +27,14 @@
  * The wire-format snapshot test in libs/sse/src/wire-format-snapshot.test.ts
  * pins the byte-exact output against the desktop client's expectations.
  */
-import { sseResponse, parseLastEventId, SYNC_MAX_DURATION_SEC, type SyncSseEventVocabulary } from '@restart/sse';
+import { sseResponse, parseLastEventId, type SyncSseEventVocabulary } from '@restart/sse';
 import { subscribe, backfillSince, type SyncEvent } from '../../../../lib/sync-sse';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = SYNC_MAX_DURATION_SEC;
+// maxDuration must be a literal — Next's segment-config parser can't
+// resolve imported constants (SYNC_MAX_DURATION_SEC = 86_400 in @restart/sse).
+export const maxDuration = 86_400;
 
 function payloadFor(ev: SyncEvent): { name: string; args?: unknown; data?: unknown[] } {
   const out: { name: string; args?: unknown; data?: unknown[] } = { name: ev.name };

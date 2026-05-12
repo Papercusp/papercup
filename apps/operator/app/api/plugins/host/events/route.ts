@@ -11,12 +11,14 @@
  * preserved exactly for backward compatibility with PluginIframe's
  * consumer-side parser (which has the same conditional).
  */
-import { sseResponse, SYNC_MAX_DURATION_SEC } from '@restart/sse';
+import { sseResponse } from '@restart/sse';
 import { getPluginHost } from '@/lib/plugin-host-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = SYNC_MAX_DURATION_SEC;
+// maxDuration must be a literal — Next's segment-config parser can't
+// resolve imported constants (SYNC_MAX_DURATION_SEC = 86_400 in @restart/sse).
+export const maxDuration = 86_400;
 
 export async function GET(req: Request): Promise<Response> {
   const url = new URL(req.url);

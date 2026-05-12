@@ -7,13 +7,15 @@
  */
 
 import { NextRequest } from 'next/server';
-import { sseResponse, SYNC_MAX_DURATION_SEC } from '@restart/sse';
+import { sseResponse } from '@restart/sse';
 import { onPendingEventInserted } from '@/lib/pending-events-listener';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = SYNC_MAX_DURATION_SEC;
+// maxDuration must be a literal — Next's segment-config parser can't
+// resolve imported constants (SYNC_MAX_DURATION_SEC = 86_400 in @restart/sse).
+export const maxDuration = 86_400;
 
 interface Events {
   hello: { workspaceId: string };
