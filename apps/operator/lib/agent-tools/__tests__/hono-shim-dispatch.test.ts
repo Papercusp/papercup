@@ -33,11 +33,14 @@ type Recorded = { kind: 'event' | 'raw'; name: string; data: unknown };
 
 function recSink() {
   const events: Recorded[] = [];
+  let closed = false;
   return {
     events,
+    get closed() { return closed; },
     sink: {
       event(name: string, value: unknown): void { events.push({ kind: 'event', name, data: value }); },
       eventRaw(name: string, value: string): void { events.push({ kind: 'raw', name, data: value }); },
+      close(): void { closed = true; },
     },
   };
 }
@@ -71,6 +74,11 @@ async function forwardDispatch(
       sink.event('done', ev.result.content);
     }
   }
+  // CRITICAL: close so useHarnessChatRuntime's reader.read() returns
+  // { done: true }. Without this, the consumer hangs reading heartbeats
+  // forever after each turn — was the audit-round-10 bug (broken since
+  // commit 1512ae2b).
+  sink.close();
 }
 
 function makeTool(over: Partial<ProjectedTool>): ProjectedTool {
@@ -232,5 +240,53 @@ describe('Hono shim dispatch-loop wire format', () => {
     expect(errorEvents).toHaveLength(1);
     expect(errorEvents[0].kind).toBe('raw');
     expect(errorEvents[0].data).toContain('handler exploded');
+  });
+
+  it('round-10 regression: closes the sink after the for-await completes', async () => {
+    // The big audit-round-10 bug: the shim emitted `done` as a regular
+    // event but never called sink.close(). sseResponse's
+    // Promise.resolve(setup).catch(...) only handles errors — a setup
+    // that returns cleanly doesn't auto-close. The chat consumer's
+    // reader.read() never returned { done: true }, so setIsRunning
+    // (false) never fired and the UI hung on 'Running' forever.
+    registerProjectedTool(makeTool({
+      events: { delta: z.string() },
+      eventWireKinds: { delta: 'string' },
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', 'hi');
+        return { content: [{ type: 'text', text: 'hi' }] };
+      },
+    }));
+    const tool = lookupByMcpName('fix:shim')!;
+    const r = recSink();
+    await forwardDispatch(
+      dispatchProjectedToolStream(tool, 'fix:shim', {}, makeCtx(), {}),
+      tool,
+      r.sink,
+    );
+    // Without sink.close() at the bottom of forwardDispatch, the
+    // mirrored shim would leak the connection. Mirror divergence is
+    // exactly the kind of drift this test exists to catch.
+    expect(r.closed).toBe(true);
+  });
+
+  it('round-10 regression: closes the sink after dispatch-level error', async () => {
+    // Same shape, but the dispatcher errors out (role denied). Pre-fix,
+    // the shim emitted error and didn't close. Now it must close so
+    // the consumer sees stream-end and stops spinning.
+    registerProjectedTool(makeTool({
+      events: { delta: z.string() },
+      eventWireKinds: { delta: 'string' },
+      roles: ['architect'], // ctx.role === 'operator' → denied
+      fn: async () => ({ content: [{ type: 'text', text: '' }] }),
+    }));
+    const tool = lookupByMcpName('fix:shim')!;
+    const r = recSink();
+    await forwardDispatch(
+      dispatchProjectedToolStream(tool, 'fix:shim', {}, makeCtx(), {}),
+      tool,
+      r.sink,
+    );
+    expect(r.closed).toBe(true);
   });
 });
