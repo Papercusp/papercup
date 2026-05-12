@@ -5745,13 +5745,20 @@ harness.post('/:slug/architect/chat', async (c) => {
         } else if (ev.kind === 'done') {
           // Emit terminal `done` for symmetry with the catch-all
           // /api/agent-tools/architect/chat URL (where the framework
-          // auto-emits done). useHarnessChatRuntime.ts ignores done,
-          // so this is a no-op for the chat panel — but other future
-          // consumers that look for the terminal event work uniformly
-          // regardless of which URL they hit.
+          // auto-emits done). useHarnessChatRuntime.ts ignores done
+          // and detects turn-end via stream-EOF, so we MUST close after
+          // emitting so the consumer's reader.read() returns
+          // { done: true } and setIsRunning(false) actually fires.
           sink.event('done', ev.result.content);
         }
       }
+      // Always close — for done, error, AND the case where the
+      // for-await falls through without yielding done/error (signal
+      // abort mid-stream). Without this, useHarnessChatRuntime.ts
+      // hangs reading heartbeats forever and the chat UI stays in
+      // 'Running' state until the user navigates away. Was broken
+      // since the Pilot-2 migration (commit 1512ae2b).
+      sink.close();
     },
   });
 });
@@ -5979,6 +5986,9 @@ harness.post('/:slug/brainstorm/chat', async (c) => {
           sink.event('done', ev.result.content);
         }
       }
+      // Close so useHarnessChatRuntime's reader returns { done: true }.
+      // See architect/chat above for the bug history.
+      sink.close();
     },
   });
 });

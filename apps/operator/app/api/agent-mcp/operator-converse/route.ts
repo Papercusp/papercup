@@ -143,6 +143,11 @@ export async function POST(req: NextRequest) {
             }
           } else if (ev.kind === 'error') {
             if (!ctrl.signal.aborted) sink.event('error', { message: ev.error.message });
+            // Close on error so the voice consumer's reader returns
+            // EOF and the chat UI stops spinning. Was missing —
+            // sink.event alone leaves the stream open and the client
+            // hangs reading heartbeats.
+            sink.close();
             return;
           }
         }
@@ -151,6 +156,7 @@ export async function POST(req: NextRequest) {
         if (!ctrl.signal.aborted) {
           sink.event('error', { message: err instanceof Error ? err.message : String(err) });
         }
+        sink.close();
       }
     },
   });

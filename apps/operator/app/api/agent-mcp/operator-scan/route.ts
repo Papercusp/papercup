@@ -215,6 +215,10 @@ export async function GET(req: NextRequest) {
             // This branch handles the dispatcher's terminal error
             // (timeout / role gate / handler throw).
             sink.event('error', { message: ev.error.message });
+            // Close so the consumer's reader exits — sink.event alone
+            // doesn't EOF the stream. Same bug class as architect/chat
+            // and operator-converse error paths.
+            sink.close();
             return;
           }
         }
@@ -222,6 +226,7 @@ export async function GET(req: NextRequest) {
         sink.done({ costUsd, suggestions, parseErrors });
       } catch (err) {
         sink.event('error', { message: err instanceof Error ? err.message : String(err) });
+        sink.close();
       }
     },
   });

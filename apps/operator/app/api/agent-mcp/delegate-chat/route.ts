@@ -111,11 +111,17 @@ export async function GET(req: NextRequest): Promise<Response> {
             }
           } else if (ev.kind === 'error') {
             sink.event('error', { message: ev.error.message });
+            // Close so delegation.ts's parseSseStream reader exits.
+            // Without this, the consumer waits on heartbeats forever
+            // and the voice path's race-with-deadline blocks until
+            // the 10s sync timeout instead of failing fast.
+            sink.close();
             return;
           }
         }
       } catch (e: unknown) {
         sink.event('error', { message: (e as Error)?.message ?? String(e) });
+        sink.close();
       }
     },
   });
