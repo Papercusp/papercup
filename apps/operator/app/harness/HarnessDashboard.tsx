@@ -2396,6 +2396,7 @@ export default function HarnessDashboard() {
   const reducedMotion = useReducedMotion() ?? false;
   const snapshotsEnabled = useFlag(FLAGS.SNAPSHOTS);
   const templatesEnabled = useFlag(FLAGS.TEMPLATES);
+  const harnessPhasesEnabled = useFlag(FLAGS.HARNESS_PHASES);
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
@@ -3833,7 +3834,7 @@ export default function HarnessDashboard() {
           <div className="h-header-main">
           <div className="h-project-card">
             <div className="h-project-topline">
-              {activeSlug && (
+              {activeSlug && harnessPhasesEnabled && (
                 <div className="h-project-phases">
                   <PhaseTabs slug={activeSlug} activePhase={activePhase} onChange={setActivePhase} />
                 </div>
@@ -4867,6 +4868,7 @@ export function SingleSubpanelHeader({ id, label }: { id: 'inbox' | 'git'; label
 function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string; phase: Phase }) {
   const [tab, setTab] = useQueryState('validationTab', parseAsStringEnum<'issues' | 'report' | 'tests'>(['issues', 'report', 'tests']).withDefault('issues'));
   const [issueCount, setIssueCount] = useState<number | null>(null);
+  const harnessPhasesEnabled = useFlag(FLAGS.HARNESS_PHASES);
 
   // Wrap with `<Panel>` so the maximize/restore button (provided by
   // `Panel` and styled via `.h-panel-maximize`) shows up consistently
@@ -4885,14 +4887,16 @@ function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string
           {issueCount !== null && <span className="h-tab-count">{issueCount}</span>}
         </button>
       </Tooltip>
-      <Tooltip label="Show test claims and validator outcomes">
-        <button
-          className={`h-tab${tab === 'tests' ? ' on' : ''}`}
-          onClick={() => setTab('tests')}
-        >
-          tests
-        </button>
-      </Tooltip>
+      {harnessPhasesEnabled ? (
+        <Tooltip label="Show test claims and validator outcomes">
+          <button
+            className={`h-tab${tab === 'tests' ? ' on' : ''}`}
+            onClick={() => setTab('tests')}
+          >
+            tests
+          </button>
+        </Tooltip>
+      ) : null}
       <Tooltip label="Show the validator's prose report for the latest run">
         <button
           className={`h-tab${tab === 'report' ? ' on' : ''}`}
