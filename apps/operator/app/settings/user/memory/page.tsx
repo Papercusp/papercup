@@ -63,6 +63,30 @@ export default function MemoryPage() {
     }
   }, [refresh]);
 
+  const [reembedBusy, setReembedBusy] = useState<null | 'openai-to-local' | 'local-to-openai'>(null);
+  const onReembed = useCallback(async (from: 'openai' | 'local', to: 'openai' | 'local') => {
+    if (!confirm(`Re-embed every memory from "${from}" into the "${to}" collection? This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`)) return;
+    setReembedBusy(`${from}-to-${to}` as typeof reembedBusy);
+    try {
+      const r = await fetch('/api/user/memory/reembed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from, to }),
+      });
+      const j = await r.json();
+      if (r.ok) {
+        toast.success(`Re-embedded ${j.reembedded} of ${j.totalSource} (${j.skipped} skipped, ${j.errors} errors) in ${Math.round(j.durationMs / 100) / 10}s`);
+        await refresh();
+      } else {
+        toast.error(`Re-embed failed: ${j.message ?? j.error}`);
+      }
+    } catch (err) {
+      toast.error(`Re-embed failed: ${(err as Error).message}`);
+    } finally {
+      setReembedBusy(null);
+    }
+  }, [refresh]);
+
   const filtered = filter === 'all'
     ? rows
     : rows.filter((r) => (r.metadata as Record<string, unknown>)?.kind === filter);
@@ -108,14 +132,34 @@ export default function MemoryPage() {
             </button>
           ))}
         </div>
-        <button
-          type="button"
-          onClick={onForgetAll}
-          disabled={rows.length === 0}
-          style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #f87171', color: '#f87171', background: 'transparent', cursor: 'pointer', fontSize: 13 }}
-        >
-          Forget all my memories
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            type="button"
+            onClick={() => onReembed('openai', 'local')}
+            disabled={reembedBusy !== null}
+            title="Re-embed openai-collection memories into the local-collection so they're visible after switching memoryEmbedderMode to local."
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
+          >
+            {reembedBusy === 'openai-to-local' ? 'Re-embedding…' : 'openai → local'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onReembed('local', 'openai')}
+            disabled={reembedBusy !== null}
+            title="Re-embed local-collection memories into the openai-collection so they're visible after switching memoryEmbedderMode to openai."
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', cursor: 'pointer', fontSize: 12, opacity: reembedBusy ? 0.5 : 1 }}
+          >
+            {reembedBusy === 'local-to-openai' ? 'Re-embedding…' : 'local → openai'}
+          </button>
+          <button
+            type="button"
+            onClick={onForgetAll}
+            disabled={rows.length === 0}
+            style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #f87171', color: '#f87171', background: 'transparent', cursor: 'pointer', fontSize: 13 }}
+          >
+            Forget all my memories
+          </button>
+        </div>
       </div>
 
       {filtered.length === 0 ? (
