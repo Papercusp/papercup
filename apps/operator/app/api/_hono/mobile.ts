@@ -518,6 +518,13 @@ app.post('/voice-tool/:name', async (c) => {
       ? 'silence_after_question'
       : (VALID.has(trigger) ? trigger : 'user_message');
     const base = process.env.MOBILE_SELF_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
+    // Hard cap so a stuck operator-converse doesn't tie up an EL session
+    // for the full session-max ceiling. 25s is comfortably longer than
+    // the worst-case observed (~19s) while still bounded.
+    const ASK_OPERATOR_TIMEOUT_MS = 25_000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ASK_OPERATOR_TIMEOUT_MS);
+    let timedOut = false;
     try {
       const res = await fetch(`${base}/api/agent-mcp/operator-converse`, {
         method: 'POST',
@@ -527,14 +534,17 @@ app.post('/voice-tool/:name', async (c) => {
           trigger: effective,
           mayAskActive: false,
         }),
+        signal: controller.signal,
       });
       if (!res.ok || !res.body) {
-        return c.json('I had trouble just then — say that again?');
+        console.warn(`[mobile:ask_operator] converse returned status=${res.status} ok=${res.ok} hasBody=${!!res.body}`);
+        return c.json("Operator is offline — can't reach the brain right now. Try again in a moment.");
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
       let assembled = '';
+      let eventCount = 0;
       // Drain SSE.
       // eslint-disable-next-line no-constant-condition
       while (true) {
@@ -545,6 +555,7 @@ app.post('/voice-tool/:name', async (c) => {
         while ((idx = buf.indexOf('\n\n')) !== -1) {
           const evt = buf.slice(0, idx);
           buf = buf.slice(idx + 2);
+          eventCount += 1;
           for (const line of evt.split('\n')) {
             if (!line.startsWith('data: ')) continue;
             try {
@@ -555,11 +566,26 @@ app.post('/voice-tool/:name', async (c) => {
         }
       }
       const sayMatch = assembled.match(/<say(?:\s[^>]*)?>([\s\S]*?)<\/say>/i);
-      const out = (sayMatch ? sayMatch[1] : assembled).trim() || '...';
+      const out = (sayMatch ? sayMatch[1] : assembled).trim();
+      if (!out) {
+        // Empty assembled = operator-converse produced no text_delta
+        // events. This is the documented brain-bug failure mode (see
+        // docs/HANDOFF_OPERATOR_BRAIN_EMPTY_DELTAS.md). Distinct
+        // message so the user knows it's not the phone's fault.
+        console.warn(`[mobile:ask_operator] empty assembled — events=${eventCount} trigger=${effective} userText.length=${userText.length}`);
+        return c.json("The operator brain returned an empty response. This is a known issue — your phone is fine.");
+      }
       return c.json(out);
     } catch (err) {
-      console.warn('[mobile:ask_operator]', err);
-      return c.json('I had trouble just then — say that again?');
+      const aborted = (err as Error)?.name === 'AbortError' || controller.signal.aborted;
+      if (aborted) timedOut = true;
+      console.warn(`[mobile:ask_operator] ${timedOut ? 'TIMEOUT' : 'error'}:`, err);
+      if (timedOut) {
+        return c.json(`Operator brain took longer than ${ASK_OPERATOR_TIMEOUT_MS / 1000}s — skipping this turn.`);
+      }
+      return c.json("Hit an error reaching the operator brain — try again.");
+    } finally {
+      clearTimeout(timer);
     }
   }
 
