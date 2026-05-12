@@ -24308,3 +24308,163 @@ body:has(.operator-panel) {
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* ── Operator chat metallic pass 2 ──────────────────────────────────── */
+
+.op-chat-sidebar .oracle-empty-state {
+  gap: 12px;
+}
+
+.op-chat-sidebar .oracle-empty-state-icon {
+  position: relative;
+  width: 52px;
+  height: 52px;
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255,255,255,0.18), transparent 24%),
+    linear-gradient(180deg, rgba(56, 189, 248, 0.18), rgba(56, 189, 248, 0.07));
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 14px 28px rgba(2, 8, 23, 0.20);
+  animation: op-chat-empty-float 4.8s ease-in-out infinite;
+}
+
+.op-chat-sidebar .oracle-empty-state-icon::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.08);
+  opacity: 0.7;
+}
+
+.op-chat-sidebar .oracle-empty-state-title {
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 10px rgba(125, 211, 252, 0.08);
+}
+
+.op-chat-sidebar .oracle-empty-state-text {
+  color: rgba(148, 163, 184, 0.88);
+}
+
+.op-chat-sidebar .ask-choice-card {
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+  background:
+    radial-gradient(circle at 16% 0%, rgba(125, 211, 252, 0.09), transparent 28%),
+    linear-gradient(180deg, rgba(10, 19, 31, 0.98), rgba(6, 12, 22, 0.98));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.05),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 18px 30px rgba(0,0,0,0.24);
+}
+
+.op-chat-sidebar .ask-choice-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -22%;
+  width: 42%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  transform: skewX(-18deg);
+  animation: op-chat-card-sheen 10s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.op-chat-sidebar .ask-choice-card[data-answered="true"] {
+  border-color: rgba(103, 232, 249, 0.24);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.05),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 20px 34px rgba(0,0,0,0.26),
+    0 0 0 1px rgba(103, 232, 249, 0.06);
+}
+
+.ask-choice-option {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.026), rgba(255,255,255,0.018));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
+}
+
+.ask-choice-option::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.10), transparent);
+  transform: translateX(-160%);
+  pointer-events: none;
+}
+
+.ask-choice-option:hover:not([data-disabled="true"])::before {
+  animation: op-chat-option-sheen 720ms ease;
+}
+
+.ask-choice-option[data-picked="true"] {
+  background:
+    linear-gradient(180deg, rgba(56, 189, 248, 0.14), rgba(56, 189, 248, 0.08));
+}
+
+.ask-choice-option[data-style="danger"][data-picked="true"] {
+  background: linear-gradient(180deg, rgba(248, 113, 113, 0.14), rgba(248, 113, 113, 0.08));
+}
+
+.ask-choice-card[data-answered="true"] .ask-choice-option[data-picked="true"] {
+  animation: op-chat-card-pick 420ms ease-out;
+}
+
+.ask-choice-option-icon {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+}
+
+.ask-choice-option-label {
+  color: #f2f8ff;
+}
+
+.ask-choice-option-chevron {
+  opacity: 0.85;
+}
+
+.ask-choice-submit {
+  background: linear-gradient(180deg, rgba(71, 198, 255, 0.22), rgba(56, 189, 248, 0.14));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+  transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.ask-choice-submit:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+@keyframes op-chat-empty-float {
+  0%, 100% { transform: translateY(0); box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 14px 28px rgba(2, 8, 23, 0.20); }
+  50% { transform: translateY(-2px); box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 18px 34px rgba(2, 8, 23, 0.24); }
+}
+
+@keyframes op-chat-card-sheen {
+  0%, 14%, 100% { transform: translateX(-180%) skewX(-18deg); opacity: 0; }
+  20%, 34% { transform: translateX(300%) skewX(-18deg); opacity: 1; }
+  38% { opacity: 0; }
+}
+
+@keyframes op-chat-option-sheen {
+  from { transform: translateX(-160%); }
+  to { transform: translateX(160%); }
+}
+
+@keyframes op-chat-card-pick {
+  0% { transform: scale(0.985); box-shadow: 0 0 0 rgba(103, 232, 249, 0); }
+  55% { transform: scale(1.01); box-shadow: 0 0 0 6px rgba(103, 232, 249, 0.08); }
+  100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(103, 232, 249, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .op-chat-sidebar .oracle-empty-state-icon,
+  .op-chat-sidebar .ask-choice-card::before,
+  .ask-choice-option::before,
+  .ask-choice-card[data-answered="true"] .ask-choice-option[data-picked="true"] {
+    animation: none !important;
+  }
+}

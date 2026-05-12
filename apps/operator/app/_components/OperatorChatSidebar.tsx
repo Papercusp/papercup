@@ -409,4 +409,222 @@ body.has-op-chat .h-header {
   left: var(--op-chat-w, 360px);
   width: calc(100vw - var(--op-chat-w, 360px));
 }
+
+.op-chat-sidebar {
+  isolation: isolate;
+  background:
+    radial-gradient(circle at 16% 0%, rgba(125, 211, 252, 0.16), transparent 22%),
+    radial-gradient(circle at 82% 12%, rgba(255,255,255,0.06), transparent 16%),
+    linear-gradient(180deg, #08111d 0%, #040913 58%, #03070f 100%);
+  box-shadow:
+    inset -1px 0 0 rgba(255,255,255,0.03),
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    22px 0 54px rgba(0, 0, 0, 0.24);
+}
+
+.op-chat-sidebar::before,
+.op-chat-sidebar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.op-chat-sidebar::before {
+  border-right: 1px solid rgba(186, 230, 253, 0.10);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.04), transparent 12%, transparent 88%, rgba(255,255,255,0.03));
+  opacity: 0.8;
+}
+
+.op-chat-sidebar::after {
+  inset: 74px 0 58px;
+  background:
+    linear-gradient(90deg, transparent 0%, rgba(125, 211, 252, 0.045) 16%, transparent 36%),
+    repeating-linear-gradient(180deg, rgba(255,255,255,0.015) 0 1px, transparent 1px 32px);
+  opacity: 0.55;
+}
+
+.op-chat-header {
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(12px);
+  background:
+    radial-gradient(circle at 12% 12%, rgba(125, 211, 252, 0.12), transparent 18%),
+    linear-gradient(180deg, rgba(10, 23, 39, 0.96), rgba(6, 14, 25, 0.98)),
+    #07101d;
+  box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.08);
+}
+
+.op-chat-header::after {
+  content: '';
+  position: absolute;
+  left: -18%;
+  top: 0;
+  width: 44%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  transform: skewX(-20deg);
+  animation: op-chat-header-sheen 9s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.op-chat-header-orb {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 36% 28%, rgba(255,255,255,0.25), transparent 24%),
+    linear-gradient(180deg, rgba(56, 189, 248, 0.22), rgba(56, 189, 248, 0.08));
+}
+
+.op-chat-header-orb::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 11px;
+  border: 1px solid rgba(255,255,255,0.05);
+}
+
+.op-chat-header-icon {
+  filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.32));
+}
+
+.op-chat-mode {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 6px 18px rgba(2, 8, 23, 0.14);
+}
+
+.op-chat-mode-dot {
+  animation: op-chat-status-pulse 2.4s ease-in-out infinite;
+}
+
+.op-chat-header-signal {
+  opacity: 0.8;
+  animation: op-chat-signal-fade 3.8s ease-in-out infinite;
+}
+
+.op-chat-sidebar .op-chat-banner {
+  position: relative;
+  overflow: hidden;
+  backdrop-filter: blur(8px);
+  background:
+    linear-gradient(180deg, rgba(56, 189, 248, 0.10), rgba(56, 189, 248, 0.05));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.op-chat-sidebar .op-chat-banner::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.10), transparent);
+  transform: translateX(-140%);
+  animation: op-chat-banner-sheen 7s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.op-chat-sidebar .oracle-body {
+  background:
+    linear-gradient(180deg, rgba(7, 14, 24, 0.96), rgba(4, 9, 17, 0.985)) !important;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  background:
+    linear-gradient(180deg, rgba(9, 19, 31, 0.97), rgba(6, 12, 22, 0.99)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.04),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 12px 24px rgba(0,0,0,0.18);
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  background:
+    linear-gradient(180deg, rgba(20, 53, 82, 0.99), rgba(9, 31, 52, 0.99)) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.05),
+    inset 0 -1px 0 rgba(0,0,0,0.18),
+    0 14px 28px rgba(2, 8, 23, 0.22);
+}
+
+.op-chat-sidebar .oracle-form {
+  position: relative;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.025);
+}
+
+.op-chat-sidebar .oracle-form::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(125, 211, 252, 0.24), transparent);
+}
+
+.op-chat-sidebar .oracle-form input {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+}
+
+.op-chat-sidebar .oracle-send-button {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(125, 211, 252, 0.30);
+  background: linear-gradient(180deg, rgba(71, 198, 255, 0.22), rgba(56, 189, 248, 0.12));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.06),
+    0 8px 18px rgba(2, 8, 23, 0.18);
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.op-chat-sidebar .oracle-send-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(125, 211, 252, 0.42);
+  background: linear-gradient(180deg, rgba(103, 232, 249, 0.26), rgba(56, 189, 248, 0.16));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.08),
+    0 10px 20px rgba(2, 8, 23, 0.22);
+}
+
+.op-chat-sidebar .oracle-send-button::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.14), transparent);
+  transform: translateX(-150%);
+}
+
+.op-chat-sidebar .oracle-send-button:hover:not(:disabled)::after {
+  animation: op-chat-button-sheen 800ms ease;
+}
+
+.op-chat-resize-handle {
+  width: 7px;
+}
+
+.op-chat-resize-handle:hover {
+  background: linear-gradient(180deg, rgba(125, 211, 252, 0.04), rgba(125, 211, 252, 0.22), rgba(125, 211, 252, 0.04));
+}
+
+@keyframes op-chat-header-sheen {
+  0%, 12%, 100% { transform: translateX(-160%) skewX(-20deg); opacity: 0; }
+  18%, 32% { transform: translateX(280%) skewX(-20deg); opacity: 1; }
+  36% { opacity: 0; }
+}
+
+@keyframes op-chat-status-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.92; }
+  50% { transform: scale(1.22); opacity: 1; }
+}
+
+@keyframes op-chat-signal-fade {
+  0%, 100% { opacity: 0.42; transform: scale(1); }
+  50% { opacity: 0.92; transform: scale(1.08); }
+}
+
+@keyframes op-chat-banner-sheen {
+  0%, 72%, 100% { transform: translateX(-150%); opacity: 0; }
+  78%, 92% { transform: translateX(140%); opacity: 1; }
+}
+
+@keyframes op-chat-button-sheen {
+  from { transform: translateX(-150%); }
+  to { transform: translateX(150%); }
+}
 `;
