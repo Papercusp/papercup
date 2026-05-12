@@ -199,12 +199,19 @@ async function maybeStartEndpointIpcServer(): Promise<void> {
       // \\\\.\\pipe\\papercusp-<pid> (Windows). The Rust client reads
       // the resolved path from the stdout PAPERCUSP_IPC_READY line.
       socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
-      // Initial allowlist: start narrow during burn-in. Widen once
-      // we've verified the first migrated route end-to-end. dev:ipc_echo
+      // Initial allowlist: start narrow during burn-in. dev:ipc_echo
       // is the canonical liveness probe (verified by the /dev page).
+      //
+      // NOT here yet: operator:scan, operator:converse, operator:delegate,
+      // architect:chat, brainstorm:chat. Each has route-level side-effects
+      // (rate limit, scan lock, budget, idle-cache short-circuit, scan
+      // tracker, plugin merge, session resume) that the IPC fast-path
+      // bypasses today — dispatch goes through `dispatchProjectedToolStream`
+      // directly, not the HTTP Hono shim. Migrating any of these to the
+      // allowlist requires moving the route side-effects into the tool
+      // handler first. Tracked as a Phase 4 follow-up.
       allowedTools: [
         'dev:ipc_echo',
-        'operator:scan',
       ],
     });
   } catch (err) {
