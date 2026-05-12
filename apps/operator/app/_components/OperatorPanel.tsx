@@ -16,7 +16,7 @@
  * or dismiss each.
  */
 
-import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
 import { usePathname } from 'next/navigation';
 import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
@@ -35,16 +35,10 @@ import { OperatorReactorCore } from './hud/OperatorReactorCore';
 import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
 import DelegatesSection from './DelegatesSection';
 import ScanHistorySection from './ScanHistorySection';
+import { OperatorLogoMark } from './OperatorLogoMark';
 type IconState = 'idle' | 'scanning' | 'thinking' | 'acting' | 'paused' | 'awaiting-input';
 
-const ICON_GLYPH: Record<IconState, string> = {
-  idle: '●',
-  scanning: '◐',
-  thinking: '◑',
-  acting: '◉',
-  paused: '⏸',
-  'awaiting-input': '◆',
-};
+
 
 interface ProvenanceFlags {
   tierMismatch?: boolean;
@@ -266,7 +260,7 @@ gsap.registerPlugin(useGSAP);
 
 export { setOperatorState };
 
-export function OperatorButton(): JSX.Element {
+export function OperatorButton(): ReactElement {
   const [state, setState] = useState<OperatorState>(sharedState);
 
   useEffect(() => {
@@ -306,7 +300,6 @@ export function OperatorButton(): JSX.Element {
   // and should override the paused indicator while they're running. Pause
   // re-asserts itself when iconState falls back to idle/awaiting-input.
   const pausedActive = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
-  const glyph = pausedActive ? ICON_GLYPH.paused : ICON_GLYPH[state.iconState];
   const titleByState: Record<IconState, string> = {
     idle: 'Operator — idle',
     scanning: 'Operator — scanning workspace',
@@ -347,7 +340,7 @@ export function OperatorButton(): JSX.Element {
         style={{ marginLeft: 8 }}
       >
         <span className="pc-header-cta-orb" aria-hidden="true">
-          <span className="pc-header-cta-glyph">{glyph}</span>
+          <OperatorLogoMark className="pc-header-cta-logo" />
           {scanning && <span className="pc-header-cta-scan-ring" aria-hidden="true" />}
           {state.autoAccept !== 'off' && !scanning && <span className="pc-header-cta-auto-dot" aria-hidden="true" />}
         </span>
@@ -385,7 +378,7 @@ function formatRelativeAgo(now: number, then: number): string {
   return `${hr}h ago`;
 }
 
-function CustomBudgetEntry({ disabled, onSet }: { disabled: boolean; onSet: (cap: number) => void | Promise<void> }): JSX.Element {
+function CustomBudgetEntry({ disabled, onSet }: { disabled: boolean; onSet: (cap: number) => void | Promise<void> }): ReactElement {
   const [value, setValue] = useState<string>('');
   const parsed = Number(value);
   const valid = Number.isFinite(parsed) && parsed > 0 && parsed <= 1000;
@@ -431,7 +424,7 @@ function CustomBudgetEntry({ disabled, onSet }: { disabled: boolean; onSet: (cap
   );
 }
 
-function OperatorAutoAcceptFeed({ events }: { events: readonly import('./operator-shared-state').AutoAcceptEvent[] }): JSX.Element | null {
+function OperatorAutoAcceptFeed({ events }: { events: readonly import('./operator-shared-state').AutoAcceptEvent[] }): ReactElement | null {
   // Tick once per 30s so relative-time labels refresh while the feed is visible.
   const [, forceTick] = useState(0);
   useEffect(() => {
@@ -480,7 +473,7 @@ function OperatorCountBubble({
   label: 'pending' | 'accepted' | 'ignored';
   count: number;
   tone: 'pending' | 'accepted' | 'ignored';
-}): JSX.Element {
+}): ReactElement {
   return (
     <span
       className={`pc-operator-count-bubble pc-operator-count-bubble--${tone}`}
@@ -508,7 +501,7 @@ const AUTO_ACCEPT_TOOLTIP: Record<AutoAcceptLevel, string> = {
   high: 'Auto-accept: HIGH. Every card auto-fires after the 5s undo countdown — INCLUDING high-risk ones (secrets, dispatches, code execution). Use with care. Click to cycle.',
 };
 
-export function OperatorAutoScanToggle(): JSX.Element {
+export function OperatorAutoScanToggle(): ReactElement {
   const [autoAccept, setAutoAcceptState] = useState<AutoAcceptLevel>(sharedState.autoAccept);
   useEffect(() => {
     return subscribeOperatorState((s) => {
@@ -543,7 +536,7 @@ interface BudgetSnapshot {
   exceeded: boolean;
 }
 
-export function OperatorPanel(): JSX.Element | null {
+export function OperatorPanel(): ReactElement | null {
   const [state, setState] = useState<OperatorState>(sharedState);
   const [suggestions, setSuggestions] = useState<SuggestionCard[]>([]);
   const [decisions, setDecisions] = useState<DecisionRow[]>([]);

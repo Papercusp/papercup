@@ -19,9 +19,10 @@
  */
 
 import { useCallback, useState, type ReactNode } from 'react';
-import { Bot, Wrench } from 'lucide-react';
+import { Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
 import { AskChoiceCard, type AskChoiceArgs } from './chat/AskChoiceCard';
+import { OperatorLogoMark } from './OperatorLogoMark';
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -115,7 +116,7 @@ export function OperatorChat({
         body: passive
           ? 'In passive mode. Type below to wake them.'
           : 'Tell me what you want to inspect, scan, or unblock.',
-        icon: Bot,
+        icon: OperatorLogoMark,
         extra: (
           <div className="op-chat-empty-panel" aria-hidden="true">
             <div className="op-chat-empty-panel-label">Common starting points</div>

@@ -20,9 +20,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Radio } from 'lucide-react';
+import { Radio } from 'lucide-react';
 import { OperatorChat } from './OperatorChat';
 import { useOperatorConversation } from './OperatorConversationProvider';
+import { OperatorLogoMark } from './OperatorLogoMark';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
 const MIN_WIDTH = 360;
@@ -130,7 +131,7 @@ export function OperatorChatSidebar() {
       <style>{OP_CHAT_SIDEBAR_CSS}</style>
       <div className="op-chat-header">
         <div className="op-chat-header-orb" aria-hidden="true">
-          <Bot className="op-chat-header-icon" />
+          <OperatorLogoMark className="op-chat-header-logo" />
         </div>
         <div className="op-chat-header-copy">
           <div className="op-chat-header-title-row">
@@ -217,9 +218,9 @@ const OP_CHAT_SIDEBAR_CSS = `
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 28px rgba(2, 8, 23, 0.28);
 }
 
-.op-chat-header-icon {
-  width: 18px;
-  height: 18px;
+.op-chat-header-logo {
+  width: 22px;
+  height: 22px;
 }
 
 .op-chat-header-copy {
@@ -485,8 +486,8 @@ body.has-op-chat .h-header {
   border: 1px solid rgba(255,255,255,0.05);
 }
 
-.op-chat-header-icon {
-  filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.32));
+.op-chat-header-logo {
+  filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.26));
 }
 
 .op-chat-mode {
