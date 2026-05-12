@@ -75,6 +75,7 @@
     "@mistralai/mistralai": "^2.2.1",
     "@monaco-editor/react": "^4.7.0",
     "@openai/agents-realtime": "^0.8.5",
+    "@papercusp/flags": "file:../../libs/flags",
     "@papercusp/harness": "file:../../libs/papercusp/packages/harness",
     "@papercusp/orchestrator": "file:../../libs/papercusp/packages/orchestrator",
     "@papercusp/plugin-loader": "file:../../packages/plugin-loader",
