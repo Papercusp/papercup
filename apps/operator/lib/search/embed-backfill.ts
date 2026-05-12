@@ -146,6 +146,12 @@ const TARGETS: BackfillTarget[] = [
     bodySql: 'text',
     idCol: 'id',
   },
+  {
+    table: 'harness_shared.harness_decisions',
+    embedCol: 'body_embedding',
+    bodySql: `COALESCE(verb, '') || ' ' || COALESCE(args, '')`,
+    idCol: 'ctid',
+  },
 ];
 
 async function backfillTable(
@@ -292,25 +298,51 @@ export async function runBackfillSweep(): Promise<BackfillStats[] | { skipped: s
 }
 
 /**
- * Schedule a single sweep ~10s after boot. Idle thereafter.
- * No periodic resweep — new rows wait for next boot to embed.
+ * Embed-backfill scheduling:
+ *   - Initial sweep ~10s after boot (warm-up + catch any rows added
+ *     while the process was down).
+ *   - Periodic resweep every CADENCE_MS thereafter. Each sweep scans
+ *     `WHERE embedding IS NULL` so a write between sweeps is picked
+ *     up on the next pass.
+ *
+ * We deliberately don't use LISTEN/NOTIFY for the streaming case: the
+ * batch shape (BATCH_SIZE rows per pull) is hostile to per-row signals,
+ * and the cadence here keeps embedder cost predictable.
+ *
+ * CADENCE_MS: 5 min — fast enough that semantic search stays fresh for
+ * a long-running server, slow enough that an empty sweep is cheap
+ * (single SELECT COUNT per target table).
  */
+const CADENCE_MS = 5 * 60 * 1000;
+
 let _bootTimer: NodeJS.Timeout | null = null;
-export function startEmbedBackfillWorker(): void {
-  if (_bootTimer) return;
-  _bootTimer = setTimeout(() => {
-    void runBackfillSweep().then((r) => {
-      if (Array.isArray(r)) {
-        const total = r.reduce((acc, s) => acc + s.embedded, 0);
-        if (total > 0) {
-          console.log(
-            `[embed-backfill] sweep complete: ` +
-              r.map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}`).join(' '),
-          );
-        }
+let _periodicTimer: NodeJS.Timeout | null = null;
+
+async function _runSweepLogged(label: string): Promise<void> {
+  try {
+    const r = await runBackfillSweep();
+    if (Array.isArray(r)) {
+      const total = r.reduce((acc, s) => acc + s.embedded, 0);
+      if (total > 0) {
+        console.log(
+          `[embed-backfill] ${label} sweep complete: ` +
+            r.map((s) => `${s.table.split('.').pop()}=${s.embedded}/${s.scanned}`).join(' '),
+        );
       }
-    }).catch((err) => {
-      console.warn('[embed-backfill] sweep failed:', (err as Error).message);
-    });
-  }, 10_000);
+    }
+  } catch (err) {
+    console.warn(`[embed-backfill] ${label} sweep failed:`, (err as Error).message);
+  }
+}
+
+export function startEmbedBackfillWorker(): void {
+  if (_bootTimer || _periodicTimer) return;
+  _bootTimer = setTimeout(() => { void _runSweepLogged('boot'); }, 10_000);
+  _periodicTimer = setInterval(() => { void _runSweepLogged('periodic'); }, CADENCE_MS);
+  if (typeof _periodicTimer.unref === 'function') _periodicTimer.unref();
+}
+
+export function stopEmbedBackfillWorker(): void {
+  if (_bootTimer) { clearTimeout(_bootTimer); _bootTimer = null; }
+  if (_periodicTimer) { clearInterval(_periodicTimer); _periodicTimer = null; }
 }

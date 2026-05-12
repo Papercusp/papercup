@@ -23,7 +23,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'all'] as const;
+const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
 
 interface FullTextHit {
   source: string;       // 'escalations' | 'brainstorm' | 'turns'
@@ -68,7 +68,7 @@ export default defineTool({
   async handler(args, ctx) {
     const limit = args.limit ?? 5;
     const scope = args.scope?.includes('all') || !args.scope?.length
-      ? ['escalations', 'brainstorm', 'turns']
+      ? ['escalations', 'brainstorm', 'turns', 'decisions']
       : args.scope;
 
     const hits: FullTextHit[] = [];
@@ -190,6 +190,46 @@ export default defineTool({
         }
       } catch (err) {
         ctx.log?.(`search:fulltext turns skipped: ${(err as Error).message}`);
+      }
+    }
+
+    if (scope.includes('decisions')) {
+      try {
+        const rows = await ctx.tx<{
+          harness_slug: string;
+          line_hash: string;
+          verb: string;
+          args: string;
+          iso: string;
+          rank: number;
+        }>`
+          SELECT harness_slug, line_hash, verb, args, iso,
+                 ts_rank_cd(body_tsv, plainto_tsquery('english', ${args.query})) AS rank,
+                 ts_headline('english',
+                   coalesce(verb, '') || ' ' || coalesce(args, ''),
+                   plainto_tsquery('english', ${args.query}),
+                   ${HEADLINE_OPTS}
+                 ) AS highlight
+            FROM harness_shared.harness_decisions
+           WHERE workspace_id = ${ctx.workspaceId}
+             AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+             AND body_tsv @@ plainto_tsquery('english', ${args.query})
+        ORDER BY rank DESC
+           LIMIT ${limit}
+        ` as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; rank: number; highlight: string }>;
+        for (const r of rows) {
+          const body = `${r.verb} ${r.args}`.trim();
+          hits.push({
+            source: 'decisions',
+            source_id: `${r.harness_slug}:${r.line_hash}`,
+            harness_slug: r.harness_slug,
+            excerpt: `[${r.iso}] ${body.slice(0, 200)}${body.length > 200 ? '…' : ''}`,
+            highlight: r.highlight,
+            rank: r.rank,
+          });
+        }
+      } catch (err) {
+        ctx.log?.(`search:fulltext decisions skipped: ${(err as Error).message}`);
       }
     }
 

@@ -51,7 +51,7 @@ const adminPreviewCors = async (c: any, next: any) => {
 // gzipped (7.3x), and Zero polls it every 3 s — enabling compression here
 // saves ~1.4 MB/min of bandwidth on a typical dashboard session.
 // `threshold: 1024` skips small responses where gzip overhead exceeds the
-// payload (e.g. /api/auth/status at 151 B).
+// payload (e.g. /api/auth/me at 151 B).
 app.use('*', compress({ threshold: 1024 }));
 
 app.use('/harness/*', adminPreviewCors);

@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { rrfCombine, RRF_K_DEFAULT } from './rrf';
 
-const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'all'] as const;
+const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
 const MODE_CHOICES = ['embeddings', 'hybrid'] as const;
 
 interface SemanticHit {
@@ -135,7 +135,7 @@ export default defineTool({
     const limit = args.limit ?? 5;
     const mode = args.mode ?? 'hybrid';
     const scope = args.scope?.includes('all') || !args.scope?.length
-      ? ['escalations', 'brainstorm', 'turns']
+      ? ['escalations', 'brainstorm', 'turns', 'decisions']
       : args.scope;
     const harnessFilter = args.harness_slug ?? null;
 
@@ -241,6 +241,37 @@ export default defineTool({
           });
         } catch (err) { ctx.log?.(`bm25 turns skipped: ${(err as Error).message}`); }
       }
+      if (scope.includes('decisions')) {
+        try {
+          const rows = (await ctx.tx`
+            SELECT harness_slug, line_hash, verb, args, iso,
+                   ts_rank_cd(body_tsv, plainto_tsquery('english', ${args.query})) AS rank,
+                   ts_headline('english',
+                     coalesce(verb, '') || ' ' || coalesce(args, ''),
+                     plainto_tsquery('english', ${args.query}),
+                     ${HEADLINE_OPTS}) AS highlight
+              FROM harness_shared.harness_decisions
+             WHERE workspace_id = ${ctx.workspaceId}
+               AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+               AND body_tsv @@ plainto_tsquery('english', ${args.query})
+          ORDER BY rank DESC LIMIT ${limit * 3}
+          `) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; rank: number; highlight: string }>;
+          bmListings.decisions = rows.map((r) => {
+            const body = `${r.verb} ${r.args}`.trim();
+            const key = `decisions:${r.harness_slug}:${r.line_hash}`;
+            return {
+              key, score: r.rank, row: {
+                source: 'decisions',
+                source_id: `${r.harness_slug}:${r.line_hash}`,
+                harness_slug: r.harness_slug,
+                excerpt: `[${r.iso}] ${body.slice(0, 200)}${body.length > 200 ? '…' : ''}`,
+                highlight: r.highlight,
+                score: r.rank, rankers: ['bm25'],
+              },
+            };
+          });
+        } catch (err) { ctx.log?.(`bm25 decisions skipped: ${(err as Error).message}`); }
+      }
     }
 
     // ── Embeddings ──────────────────────────────────────────────────
@@ -333,6 +364,38 @@ export default defineTool({
             };
           });
         } catch (err) { ctx.log?.(`embed turns skipped: ${(err as Error).message}`); }
+      }
+      if (scope.includes('decisions')) {
+        try {
+          const rows = (await ctx.tx`
+            SELECT harness_slug, line_hash, verb, args, iso,
+                   1 - (body_embedding <=> ${qVec}::vector) AS sim,
+                   ts_headline('english',
+                     coalesce(verb, '') || ' ' || coalesce(args, ''),
+                     plainto_tsquery('english', ${args.query}),
+                     ${HEADLINE_OPTS}) AS highlight
+              FROM harness_shared.harness_decisions
+             WHERE workspace_id = ${ctx.workspaceId}
+               AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+               AND body_embedding IS NOT NULL
+          ORDER BY body_embedding <=> ${qVec}::vector
+             LIMIT ${limit * 3}
+          `) as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; sim: number; highlight: string }>;
+          embListings.decisions = rows.map((r) => {
+            const body = `${r.verb} ${r.args}`.trim();
+            const key = `decisions:${r.harness_slug}:${r.line_hash}`;
+            return {
+              key, score: r.sim, row: {
+                source: 'decisions',
+                source_id: `${r.harness_slug}:${r.line_hash}`,
+                harness_slug: r.harness_slug,
+                excerpt: `[${r.iso}] ${body.slice(0, 200)}${body.length > 200 ? '…' : ''}`,
+                highlight: r.highlight,
+                score: r.sim, rankers: ['embeddings'],
+              },
+            };
+          });
+        } catch (err) { ctx.log?.(`embed decisions skipped: ${(err as Error).message}`); }
       }
     }
 
