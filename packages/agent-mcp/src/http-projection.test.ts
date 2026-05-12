@@ -235,17 +235,17 @@ function recordingSink(): { sink: SseSink; events: RecordedEvent[]; closed: () =
 }
 
 describe('handleHttpToolRequestStreaming', () => {
-  it('emits a single result event for non-streaming tools', async () => {
+  it('emits a single done event for non-streaming tools', async () => {
     registerProjectedTool(makeTool());
     const { sink, events, closed } = recordingSink();
     await handleHttpToolRequestStreaming(MAKE_REQ({ body: { x: 1 } }), MAKE_EXTRAS(), sink);
     expect(events).toHaveLength(1);
-    expect(events[0]?.event).toBe('result');
-    expect(events[0]?.data).toMatchObject({ content: expect.any(Array) });
+    expect(events[0]?.event).toBe('done');
+    expect(events[0]?.data).toEqual(expect.any(Array));
     expect(closed()).toBe(true);
   });
 
-  it('emits progress events when the function calls ctx.progress(), then a final result', async () => {
+  it('emits progress events when the function calls ctx.progress(), then a final done', async () => {
     registerProjectedTool(makeTool({
       fn: async (_input, ctx) => {
         ctx.progress(0, 'starting');
@@ -257,14 +257,30 @@ describe('handleHttpToolRequestStreaming', () => {
     const { sink, events } = recordingSink();
     await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
     const progressEvents = events.filter((e) => e.event === 'progress');
-    const resultEvents = events.filter((e) => e.event === 'result');
+    const doneEvents = events.filter((e) => e.event === 'done');
     expect(progressEvents).toHaveLength(3);
-    expect(resultEvents).toHaveLength(1);
+    expect(doneEvents).toHaveLength(1);
     expect(progressEvents[0]?.data).toMatchObject({ progress: 0, message: 'starting' });
     expect(progressEvents[2]?.data).toMatchObject({ progress: 100, message: 'done' });
-    expect(resultEvents[0]?.data).toMatchObject({
-      content: [{ type: 'text', text: 'finished' }],
-    });
+    expect(doneEvents[0]?.data).toEqual([{ type: 'text', text: 'finished' }]);
+  });
+
+  it('emits each ctx.emit call as a wire event, then done with result.content', async () => {
+    registerProjectedTool(makeTool({
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'hello' });
+        ctx.emit('delta', { text: ' world' });
+        ctx.emit('cost', { usd: 0.0012 });
+        return { content: [{ type: 'text', text: 'hello world' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    const order = events.map((e) => e.event);
+    expect(order).toEqual(['delta', 'delta', 'cost', 'done']);
+    expect(events[0]?.data).toEqual({ text: 'hello' });
+    expect(events[2]?.data).toEqual({ usd: 0.0012 });
+    expect(events[3]?.data).toEqual([{ type: 'text', text: 'hello world' }]);
   });
 
   it('emits an error event when the tool fails (404 / 405 / handler error)', async () => {

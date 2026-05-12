@@ -324,24 +324,21 @@ export async function handleHttpToolRequest(
 
 /**
  * Handle a streaming tool request — same flow as `handleHttpToolRequest`
- * but writes Server-Sent Events into the caller-supplied `SseSink`:
+ * but writes Server-Sent Events into the caller-supplied `SseSink`.
  *
- *   event: progress
- *   data: { "progress": 50, "total": 100, "message": "..." }
+ * Wire events the framework emits automatically:
+ *   event: done    data: <ToolResult.content as JSON>  (on handler return)
+ *   event: error   data: { code, message }             (on dispatch failure)
  *
- *   event: result
- *   data: { "content": [...] }
+ * Plus whatever the handler emits via `ctx.emit` and `ctx.progress`.
  *
- *   event: error
- *   data: { "code": "...", "message": "..." }
+ * The `ctx.emit` passed to the handler is wired here to fan each
+ * call to a sink event. The legacy `ctx.progress` is reshaped as
+ * a thin alias over `ctx.emit('progress', { progress, total, message? })`.
  *
  * Caller is responsible for opening the SSE response (via @restart/sse's
- * `sseResponse({ setup: (sink) => handleHttpToolRequestStreaming(req, extras, sink) })`).
- * This function emits at least one `result` or `error` event and then
- * closes the sink before returning.
- *
- * Wire format unchanged from pre-2026-05-12 hand-rolled string version;
- * only the byte-emitting layer moved to @restart/sse's encodeFrame.
+ * `sseResponse({ setup: (sink) => handleHttpToolRequestStreaming(...) })`).
+ * This function closes the sink before returning.
  */
 export async function handleHttpToolRequestStreaming(
   req: HttpToolRequest,
@@ -356,9 +353,14 @@ export async function handleHttpToolRequestStreaming(
     return;
   }
 
-  // Override progress to fan SSE events to the client via the sink.
+  // Wire emit → sink. Each ctx.emit(name, data) becomes one SSE event.
+  // The previous hand-rolled progress override is replaced by a thin
+  // alias over emit('progress', ...) — same wire shape, single code path.
+  resolved.ctx.emit = (name, data) => {
+    sink.event(name, data);
+  };
   resolved.ctx.progress = (pct, msg) => {
-    sink.event('progress', {
+    resolved.ctx.emit('progress', {
       progress: typeof pct === 'number' ? pct : 0,
       total: 100,
       ...(msg ? { message: msg } : {}),
@@ -373,9 +375,14 @@ export async function handleHttpToolRequestStreaming(
     extras.deps,
   );
   if (!r.ok) {
+    // Dispatch failure: auto-error.
     sink.event('error', r.error!);
   } else {
-    sink.event('result', { content: r.result?.content ?? [] });
+    // Auto-done: handler returned successfully. Payload is the ToolResult
+    // content array — same shape MCP transport returns via tools/call.
+    // Handler-emitted events (delta, tool_call, …) have already streamed
+    // through ctx.emit; this is the terminal event consumers wait for.
+    sink.event('done', r.result?.content ?? []);
   }
   sink.close();
 }
