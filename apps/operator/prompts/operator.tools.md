@@ -124,10 +124,15 @@ When the user references something from older context the chat
 history budget has evicted ("remember when we decided pricing",
 "the X discussion from last week"):
 
-1. `search:fulltext { query: "<user's phrasing>", scope: ['escalations', 'brainstorm', 'turns'] }`
-2. If a high-rank hit returns, fetch its full row via the appropriate
+1. `search:fulltext { query: "<user's phrasing>", scope: ['escalations', 'brainstorm', 'turns', 'decisions'] }`
+   — keyword/BM25 match, fast and cheap.
+2. If the user's phrasing is paraphrased (e.g. "auth approach" when the
+   recorded text said "JWT decision"), use `search:semantic`
+   (`{ query, mode: 'hybrid' }`) instead — combines BM25 + embedding
+   similarity via RRF.
+3. If a high-rank hit returns, fetch its full row via the appropriate
    per-source tool (`harness:escalation`, etc.) when needed.
-3. Reference it back to the user with specifics ("Yes — back on May 4
+4. Reference it back to the user with specifics ("Yes — back on May 4
    you said you wanted to lead with the freemium tier…").
 
 For structured queries (tasks/goals/issues/audit), use the dedicated
