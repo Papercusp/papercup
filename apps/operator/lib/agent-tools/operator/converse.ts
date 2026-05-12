@@ -183,7 +183,7 @@ export default defineTool({
         permissionMode: 'bypassPermissions',
         signal: ctx.signal,
       })) {
-        if (ctx.signal?.aborted) break;
+        if (ctx.signal.aborted) break;
         if (ev.type === 'delta') {
           ctx.emit('delta', { text: ev.text });
           assembled += ev.text;

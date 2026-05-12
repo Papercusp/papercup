@@ -36,6 +36,7 @@ import {
 // Side-effect: registers operator:converse + the other operator-side tools.
 import '@/lib/agent-tools/index';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { checkBudget } from '@/lib/operator-budget';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -55,6 +56,23 @@ export async function POST(req: NextRequest) {
     body = (await req.json()) as ConverseRequestBody;
   } catch {
     return new Response('invalid JSON body', { status: 400 });
+  }
+
+  // Budget pre-flight. The voice consumer at elevenlabs-conv.ts:525
+  // checks `res.ok` and degrades to "I had trouble..." on non-2xx.
+  // If we let the tool's internal budget check throw, the dispatcher
+  // converts it to an SSE error event with HTTP 200 — voice users
+  // see a silent '...' because the EL consumer only accumulates
+  // `payload.text` from delta events. Pre-flight here preserves the
+  // 402 status code for HTTP consumers. The tool also re-checks
+  // budget internally so IPC dispatches (which skip this shim)
+  // don't bypass the gate.
+  const budget = await checkBudget();
+  if (budget.state && budget.exceeded) {
+    return new Response(
+      `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
+      { status: 402 },
+    );
   }
 
   // Resolve session user from cookies ONCE here — Next.js cookies()

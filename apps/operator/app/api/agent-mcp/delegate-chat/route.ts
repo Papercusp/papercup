@@ -26,6 +26,7 @@ import {
 // Side-effect: registers operator:delegate + the other operator-side tools.
 import '@/lib/agent-tools/index';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { resolveDelegateSession } from '@/lib/agent-tools/operator/delegate-session';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -45,6 +46,11 @@ export async function GET(req: NextRequest): Promise<Response> {
     return new Response('operator:delegate tool not registered', { status: 500 });
   }
 
+  // Pre-resolve the session id so ctx.runId/spawnId == agentSessionId
+  // (preserves /dev → Sessions audit grouping). The tool calls the
+  // same helper internally; both end up at the same agentSessionId.
+  const resolved = await resolveDelegateSession(workspaceId, requestedSessionId, newSession);
+
   return sseResponse({
     signal: req.signal,
     setup: async (sink) => {
@@ -55,8 +61,8 @@ export async function GET(req: NextRequest): Promise<Response> {
         emit: () => { /* installed by dispatchProjectedToolStream */ },
         workspaceId,
         role: 'operator',
-        runId: `op-delegate-${Date.now()}`,
-        spawnId: `op-delegate-${Date.now()}`,
+        runId: resolved.agentSessionId,
+        spawnId: resolved.agentSessionId,
         transport: 'in_process',
       };
 
@@ -66,8 +72,10 @@ export async function GET(req: NextRequest): Promise<Response> {
           'operator:delegate',
           {
             requestText,
-            sessionId: requestedSessionId,
-            newSession,
+            sessionId: resolved.agentSessionId,
+            newSession: false,
+            preResolved: true,
+            sessionCreated: resolved.sessionCreated,
           },
           ctxBase,
           {},

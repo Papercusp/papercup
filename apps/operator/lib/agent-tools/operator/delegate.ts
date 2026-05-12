@@ -25,10 +25,9 @@
  */
 
 import { z } from 'zod';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { defineTool } from '@papercusp/agent-mcp';
 import { runAgentChat } from '@/lib/agent-chat-stream';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
@@ -36,19 +35,32 @@ import { readSystemPrincipal } from '@/lib/system-principal';
 import {
   bumpDelegate,
   createDelegate,
-  getDelegate,
   autoArchiveIdleDelegates,
   appendDelegateTurn,
 } from '@/lib/delegates';
 import { generateSessionTitle } from '@/lib/delegate-summary';
 import { ALL_AGENT_MCP_TOOLS } from '@/lib/operator-mcp-tools';
+import { resolveDelegateSession } from './delegate-session';
 
 const ArgsSchema = z.object({
   requestText: z.string().min(1),
-  /** Optional claude-session id to resume. */
+  /** Optional claude-session id to resume. The tool resolves
+   *  via resolveDelegateSession internally; if you pre-resolved
+   *  (e.g. the Hono route does, to keep ctx.runId == agentSessionId),
+   *  pass the already-resolved id here. */
   sessionId: z.string().optional(),
   /** Force a fresh session even if sessionId points at an open one. */
   newSession: z.boolean().optional(),
+  /** When the caller has pre-resolved the session (HTTP route does),
+   *  this skips the internal resolve and uses sessionId as-is.
+   *  IPC callers leave both this and sessionId empty for a fresh
+   *  session, or pass sessionId only for resume.
+   *
+   *  Set sessionCreated to match: true when this is a new session
+   *  the caller wants the tool to record via createDelegate, false
+   *  when resuming. */
+  preResolved: z.boolean().optional(),
+  sessionCreated: z.boolean().optional(),
 });
 
 type Args = z.infer<typeof ArgsSchema>;
@@ -145,20 +157,19 @@ export default defineTool({
       );
     }
 
-    // Session resolution: resume open session if requested, else fresh UUID.
+    // Session resolution. If the caller pre-resolved (Hono route does
+    // so it can set ctx.runId/spawnId == agentSessionId, preserving
+    // /dev → Sessions audit grouping), trust their id+created flag.
+    // Otherwise resolve via the shared helper.
     let agentSessionId: string;
-    let sessionCreated = false;
-    if (input.newSession || !input.sessionId) {
-      agentSessionId = randomUUID();
-      sessionCreated = true;
+    let sessionCreated: boolean;
+    if (input.preResolved && input.sessionId) {
+      agentSessionId = input.sessionId;
+      sessionCreated = !!input.sessionCreated;
     } else {
-      const existing = await getDelegate(workspaceId, input.sessionId).catch(() => null);
-      if (existing && existing.status === 'open') {
-        agentSessionId = existing.agentSessionId;
-      } else {
-        agentSessionId = randomUUID();
-        sessionCreated = true;
-      }
+      const r = await resolveDelegateSession(workspaceId, input.sessionId, !!input.newSession);
+      agentSessionId = r.agentSessionId;
+      sessionCreated = r.sessionCreated;
     }
 
     // Fire-and-forget cleanup; cheap.
@@ -261,7 +272,3 @@ export default defineTool({
   },
 });
 
-// existsSync import kept for tree-shaking guard against bundlers that
-// drop unused fs imports — buildMcpConfig may grow into using it later
-// for env-var-overridden delegate server paths.
-void existsSync;
