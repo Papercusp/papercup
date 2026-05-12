@@ -72,34 +72,21 @@ export function subscribe(
   onEvent: (env: ActionEnvelope) => void,
 ): Subscription {
   const ch = getActionChannel(channelKey);
-  const iter = ch.subscribe()[Symbol.asyncIterator]();
-  let unsubscribed = false;
-
-  // whenDone resolves on either:
-  //   - explicit unsubscribe()
-  //   - channel.done() (terminal event landed)
   let resolveDone!: () => void;
   const whenDone = new Promise<void>((r) => { resolveDone = r; });
-
-  (async () => {
-    while (!unsubscribed) {
-      const { value, done } = await iter.next();
-      if (done) break;
-      if (unsubscribed) break;
-      try { onEvent(value.event); }
-      catch { /* subscriber error doesn't tear down delivery */ }
-    }
-    resolveDone();
-  })();
+  const offPublish = ch.onPublish((item) => {
+    try { onEvent(item.event); }
+    catch { /* subscriber error doesn't tear down delivery */ }
+  });
+  const offDone = ch.onDone(() => resolveDone());
 
   return {
     recent: ch.recent.map((e) => e.event),
     done: ch.isDone,
     whenDone,
     unsubscribe() {
-      if (unsubscribed) return;
-      unsubscribed = true;
-      void iter.return?.(undefined);
+      offPublish();
+      offDone();
       resolveDone();
     },
   };

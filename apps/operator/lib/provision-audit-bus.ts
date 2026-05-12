@@ -42,25 +42,13 @@ export function subscribe(
   onEntry: (env: AuditEnvelope) => void,
 ): Subscription {
   const ch = getAuditChannel(channelKey);
-  const iter = ch.subscribe()[Symbol.asyncIterator]();
-  let unsubscribed = false;
-
-  (async () => {
-    while (!unsubscribed) {
-      const { value, done } = await iter.next();
-      if (done) break;
-      if (unsubscribed) break;
-      try { onEntry(value.event); }
-      catch { /* subscriber error doesn't tear down delivery */ }
-    }
-  })();
+  const offPublish = ch.onPublish((item) => {
+    try { onEntry(item.event); }
+    catch { /* subscriber error doesn't tear down delivery */ }
+  });
 
   return {
     recent: ch.recent.map((e) => e.event),
-    unsubscribe() {
-      if (unsubscribed) return;
-      unsubscribed = true;
-      void iter.return?.(undefined);
-    },
+    unsubscribe() { offPublish(); },
   };
 }

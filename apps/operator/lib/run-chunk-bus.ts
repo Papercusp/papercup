@@ -21,7 +21,7 @@
  * arrival order at the bus. The previous bus passed seq through; this
  * one does the same. The channel's auto-id (id) is discarded.
  */
-import { getChannel, _resetChannelsForTest, listChannels } from '@restart/sse';
+import { getChannel, _resetChannelsForTest, listChannels, dropChannel } from '@restart/sse';
 
 export interface ChunkEnvelope {
   runId: string;
@@ -33,6 +33,17 @@ export interface ChunkEnvelope {
 const CHANNEL_PREFIX = 'run-chunk:';
 const CLOSED_CHANNEL_GC_MS = 5 * 60_000;
 
+// Bus-level closed tracking. getChannel revives a GC-pending channel (resets
+// isDone to false on re-fetch); that's the right semantic for HMR but the
+// wrong one for our "publish after close is silently dropped" contract. We
+// hold our own closed set so the bus's API stays sticky across re-fetch.
+function closedKey(runId: string): string { return `${CHANNEL_PREFIX}${runId}`; }
+function closedSet(): Set<string> {
+  const g = globalThis as { __runChunkBusClosed__?: Set<string> };
+  if (!g.__runChunkBusClosed__) g.__runChunkBusClosed__ = new Set();
+  return g.__runChunkBusClosed__;
+}
+
 function getRunChannel(runId: string) {
   return getChannel<ChunkEnvelope>(`${CHANNEL_PREFIX}${runId}`, {
     ringSize: 64,
@@ -40,21 +51,26 @@ function getRunChannel(runId: string) {
   });
 }
 
+function isClosed(runId: string): boolean {
+  return closedSet().has(closedKey(runId));
+}
+
 /** Publish one chunk to the run's channel. Caller's seq is preserved. */
 export function publish(runId: string, seq: number, data: string): void {
-  const ch = getRunChannel(runId);
-  if (ch.isDone) {
+  if (isClosed(runId)) {
     // Late publish after close — silently drop, matches prior behavior.
     return;
   }
+  const ch = getRunChannel(runId);
   const env: ChunkEnvelope = { runId, seq, data, ts: Date.now() };
   ch.publish(env);
 }
 
 /** Mark the run as complete. Subscribers' whenDone resolves; 5min GC clock starts. */
 export function closeChannel(runId: string): void {
+  if (isClosed(runId)) return;
+  closedSet().add(closedKey(runId));
   const ch = getRunChannel(runId);
-  if (ch.isDone) return;
   ch.done();
 }
 
@@ -70,39 +86,28 @@ export function subscribe(
 } {
   const ch = getRunChannel(runId);
   const recent = ch.recent.map((e) => e.event);
-  const iter = ch.subscribe()[Symbol.asyncIterator]();
-  let unsubscribed = false;
   let resolveDone!: () => void;
   const whenDone = new Promise<void>((r) => { resolveDone = r; });
-
-  if (ch.isDone) {
+  if (isClosed(runId)) {
     resolveDone();
   }
-
-  (async () => {
-    while (!unsubscribed) {
-      const { value, done } = await iter.next();
-      if (done) break;
-      if (unsubscribed) break;
-      try { handler(value.event); } catch { /* never crash producer */ }
-    }
-    resolveDone();
-  })();
+  const offPublish = ch.onPublish((item) => handler(item.event));
+  const offDone = ch.onDone(() => resolveDone());
 
   return {
     recent,
     unsubscribe: () => {
-      if (unsubscribed) return;
-      unsubscribed = true;
-      void iter.return?.(undefined);
+      offPublish();
+      offDone();
     },
     whenDone,
-    isClosed: () => ch.isDone,
+    isClosed: () => isClosed(runId),
   };
 }
 
-/** Test-only: drop all channels. */
+/** Test-only: drop all channels and reset bus-level closed state. */
 export function _resetRunChunkBus(): void {
+  closedSet().clear();
   _resetChannelsForTest();
 }
 
@@ -113,9 +118,9 @@ export function busStats(): { activeChannels: number; closedChannels: number; to
   let subs = 0;
   for (const c of listChannels()) {
     if (!c.key.startsWith(CHANNEL_PREFIX)) continue;
-    if (c.isDone) closed++;
+    if (isClosed(c.key.slice(CHANNEL_PREFIX.length))) closed++;
     else active++;
-    subs += c.subscribers;
+    subs += c.syncHandlers;
   }
   return { activeChannels: active, closedChannels: closed, totalSubscribers: subs };
 }
