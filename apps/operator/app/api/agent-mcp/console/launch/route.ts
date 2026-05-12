@@ -14,8 +14,20 @@
  * Loopback-only, same trust model as the other admin endpoints.
  */
 import { spawn } from 'node:child_process';
-import { existsSync, writeFileSync, renameSync } from 'node:fs';
+import { appendFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
+
+/**
+ * Debug log file so we can diagnose 'click does nothing' without
+ * needing access to the Next.js stdout. Remove after the Tauri bug
+ * is solved.
+ */
+const DEBUG_LOG = '/tmp/console-launch.log';
+function dlog(line: string): void {
+  try {
+    appendFileSync(DEBUG_LOG, `${new Date().toISOString()} ${line}\n`);
+  } catch { /* best-effort */ }
+}
 
 import { NextRequest } from 'next/server';
 
@@ -54,6 +66,18 @@ const CORS_HEADERS: Record<string, string> = {
 
 export function OPTIONS(): Response {
   return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
+/** Sanity probe — any GET hit gets logged so we can tell whether
+ *  the Tauri webview can reach the operator at all. */
+export function GET(req: NextRequest): Response {
+  const origin = req.headers.get('origin') ?? '(no-origin)';
+  const ua = req.headers.get('user-agent') ?? '(no-ua)';
+  dlog(`GET probe origin=${origin} host=${req.headers.get('host')} ua=${ua.slice(0, 60)}`);
+  return Response.json(
+    { status: 'probe-ok', note: 'use POST to actually spawn a terminal' },
+    { headers: CORS_HEADERS },
+  );
 }
 
 const LINUX_TERMINALS: Array<[string, string[]]> = [
@@ -117,8 +141,9 @@ function jsonRes(body: unknown, init?: number | ResponseInit): Response {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
-  // Log every hit so we can correlate with click events from devtools.
   const origin = req.headers.get('origin') ?? '(no-origin)';
+  const ua = req.headers.get('user-agent') ?? '(no-ua)';
+  dlog(`POST hit origin=${origin} host=${req.headers.get('host')} ua=${ua.slice(0, 60)}`);
   console.log(`[console-launch] POST hit from origin=${origin} host=${req.headers.get('host')}`);
 
   if (!isLoopback(req)) {
