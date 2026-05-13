@@ -327,7 +327,9 @@ Spike decides whether the migration is feasible OR voice modality stays at the p
 
 **Risk:** high. Tightly coupled to EL Conv AI's contract. Spike-first gating is the mitigation; the spike's spike-killing outcome is acceptable.
 
-### T3.2 — Plugin events from JSON manifests (P4.1)
+### T3.2 — Plugin events from JSON manifests (P4.1) — **shipped 2026-05-13**
+
+**Status:** ✅ Implemented. Plugin authors can declare `events: { <name>: <JSON-Schema> }` in `papercusp.json`. See `packages/agent-mcp/src/plugin-events.ts` for the validator + classifier; the plugin loader (`packages/plugin-loader/src/index.ts:632`) wires it in.
 
 **Goal:** plugin authors can declare `events: { delta: { type: 'string' } }` in `papercusp.json` instead of being limited to built-ins via `defineTool`.
 

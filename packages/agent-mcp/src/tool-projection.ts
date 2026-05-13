@@ -442,15 +442,27 @@ export interface ProjectedTool {
    * `ctx.progress` (the alias) which goes through the 'progress' wire
    * event reserved for that purpose.
    *
-   * Plugins declaring this on their JSON manifest currently get a
-   * runtime warning — plugin events are a Phase 4+ feature.
+   * Plugins declaring this on their JSON manifest go through
+   * `eventsJsonSchema` below — the plugin loader populates that
+   * field after validating the JSON-Schema subset (T3.2).
    */
   events?: EventsSchema;
   /**
+   * Plugin-side event schemas declared as raw JSON-Schema. Used by
+   * plugin tools that ship their `papercusp.json` manifest with an
+   * `events` block. The plugin loader validates against the
+   * supported subset (`packages/agent-mcp/src/plugin-events.ts`),
+   * classifies wire kinds, and populates this field alongside the
+   * computed `eventWireKinds`. Built-in tools (via `defineTool`)
+   * use `events` (Zod) above; the two fields are mutually exclusive.
+   * Phase 4 T3.2.
+   */
+  eventsJsonSchema?: Record<string, Record<string, unknown>>;
+  /**
    * Per-event wire classification — `'string'` for z.string() schemas
    * (raw text on SSE), `'json'` for everything else. Computed once at
-   * register time from `events`; cached so emit-time is constant-cost.
-   * Absent when `events` is undefined.
+   * register time from `events` OR `eventsJsonSchema`; cached so
+   * emit-time is constant-cost. Absent when neither is declared.
    */
   eventWireKinds?: Record<string, EventWireKind>;
   /** Where to project this function — at least one of http/mcp required. */
@@ -531,23 +543,33 @@ export function registerProjectedTool(tool: ProjectedTool): void {
     );
   }
   // Reject reserved event names at register time. The compile-time
-  // UserEvents<T> guard catches them in TS, but plugins bypass TS
-  // by declaring `events` in their JSON manifest — this is the
-  // runtime backstop. Phase 4 T2.3.
-  if (tool.events) {
-    for (const name of Object.keys(tool.events)) {
-      if (RESERVED_EVENT_NAMES.includes(name as ReservedEventNames)) {
-        throw new ToolRegistrationError(
-          `tool "${tool.expose.mcp?.name ?? tool.expose.http?.path}" declared the reserved event name "${name}". ` +
-            `Reserved names (auto-emitted by the framework): ${RESERVED_EVENT_NAMES.join(', ')}.` +
-            (name === 'chunk' ? ' Declare `largeOutput: true` instead and return outputRef from the handler.' : ''),
-        );
-      }
+  // UserEvents<T> guard catches them in TS for built-ins, but plugins
+  // bypass TS via JSON manifests — this is the runtime backstop.
+  // Phase 4 T2.3 (built-ins) + T3.2 (plugin manifests).
+  const declaredEventNames: string[] = [
+    ...(tool.events ? Object.keys(tool.events) : []),
+    ...(tool.eventsJsonSchema ? Object.keys(tool.eventsJsonSchema) : []),
+  ];
+  for (const name of declaredEventNames) {
+    if (RESERVED_EVENT_NAMES.includes(name as ReservedEventNames)) {
+      throw new ToolRegistrationError(
+        `tool "${tool.expose.mcp?.name ?? tool.expose.http?.path}" declared the reserved event name "${name}". ` +
+          `Reserved names (auto-emitted by the framework): ${RESERVED_EVENT_NAMES.join(', ')}.` +
+          (name === 'chunk' ? ' Declare `largeOutput: true` instead and return outputRef from the handler.' : ''),
+      );
     }
   }
+  // Reject conflicting declarations — a tool must use ONE of the two
+  // event-schema forms, not both.
+  if (tool.events && tool.eventsJsonSchema) {
+    throw new ToolRegistrationError(
+      `tool "${tool.expose.mcp?.name ?? tool.expose.http?.path}" declared both \`events\` (Zod) AND \`eventsJsonSchema\` (plugin JSON). Use one — built-ins via defineTool use Zod; plugin manifests use JSON-Schema.`,
+    );
+  }
   // Pre-classify event wire kinds so emit-time is constant-cost.
-  // Caller might set eventWireKinds explicitly (some tests do); only
-  // compute when absent.
+  // Caller might set eventWireKinds explicitly (some tests do, and
+  // the plugin loader does after running validateAndClassifyPluginEvents);
+  // only compute when absent.
   if (tool.events && !tool.eventWireKinds) {
     const kinds: Record<string, EventWireKind> = {};
     for (const [name, schema] of Object.entries(tool.events)) {
@@ -701,6 +723,10 @@ export function listMcpProjections(role?: AgentRole): McpToolListing[] {
     };
     if (tool.events && Object.keys(tool.events).length > 0) {
       listing.events = serializeEventsSchema(tool.events);
+    } else if (tool.eventsJsonSchema && Object.keys(tool.eventsJsonSchema).length > 0) {
+      // Plugin tools (T3.2): the JSON-Schema is the source of truth;
+      // no conversion needed.
+      listing.events = tool.eventsJsonSchema;
     }
     out.push(listing);
   }
