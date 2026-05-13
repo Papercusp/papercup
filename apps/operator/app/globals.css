@@ -25474,11 +25474,6 @@ body:has(.operator-panel) {
   box-shadow: none;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step[data-active="true"] .pc-setup-wizard__step-btn::before {
-  inset: 8px auto 8px 0;
-  box-shadow: none;
-}
-
 .pc-setup-wizard__eyebrow {
   display: flex;
   align-items: center;
@@ -25544,12 +25539,6 @@ body:has(.operator-panel) {
   font-size: 12px;
   line-height: 1.4;
   color: var(--fg-mute);
-}
-
-@media (max-width: 900px) {
-  .pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__steps {
-    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
-  }
 }
 
 .pc-divider { height: 1px; background: var(--border); margin: 16px 0 8px; }

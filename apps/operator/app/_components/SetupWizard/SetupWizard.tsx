@@ -130,10 +130,10 @@ export function SetupWizard({ mode }: Props) {
   };
 
   if (recap) {
-    const okCount = SETUP_STEPS.filter(
+    const completed = SETUP_STEPS.filter(
       (s) =>
         statuses[s.id] === 'ok' || persisted.step_status?.[s.id] === 'completed',
-    ).length;
+    );
     return (
       <div className="pc-setup-wizard pc-setup-wizard--recap" data-mode={mode}>
         <div className="pc-step pc-step--recap">
@@ -141,18 +141,13 @@ export function SetupWizard({ mode }: Props) {
             You're all set.
           </h2>
           <p className="pc-step__lead">
-            Setup finished — {okCount} of {SETUP_STEPS.length} steps confirmed ready. Anything you
-            skipped, you can revisit any time from Settings → Setup Wizard.
+            Setup finished — {completed.length} of {SETUP_STEPS.length} steps confirmed ready.
+            Anything you skipped, you can revisit any time from Settings → Setup Wizard.
           </p>
           <ul className="pc-bullets">
-            {SETUP_STEPS.filter(
-              (s) =>
-                statuses[s.id] === 'ok' || persisted.step_status?.[s.id] === 'completed',
-            )
-              .slice(0, 6)
-              .map((s) => (
-                <li key={s.id}>{s.title}</li>
-              ))}
+            {completed.slice(0, 6).map((s) => (
+              <li key={s.id}>{s.title}</li>
+            ))}
           </ul>
           <div className="pc-step__actions">
             <button
