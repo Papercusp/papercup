@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Tooltip } from './Tooltip';
+import { useConfirmDialog } from './useConfirmDialog';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
 import { Trash2, Loader2, Globe, User } from 'lucide-react';
 import { toast } from 'sonner';
@@ -34,6 +35,7 @@ export default function PromptsTab({ slug, alive }: Props) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const reloadList = useCallback(async () => {
     try {
@@ -128,7 +130,12 @@ export default function PromptsTab({ slug, alive }: Props) {
 
   const deleteOverride = useCallback(async () => {
     if (!selected || selected.scope !== 'override' || !data?.overrideExists) return;
-    if (!confirm(`Delete ${selected.role} override? This reverts to the global base.`)) return;
+    if (!await askConfirm({
+      title: `Delete ${selected.role} override?`,
+      body: 'Reverts this role to the global base prompt for this harness.',
+      confirmLabel: 'Delete override',
+      destructive: true,
+    })) return;
     setDeleting(true);
     try {
       const r = await fetch(`/api/harness/${slug}/prompts/${selected.role}`, { method: 'DELETE' });
@@ -143,7 +150,7 @@ export default function PromptsTab({ slug, alive }: Props) {
     } finally {
       setDeleting(false);
     }
-  }, [slug, selected, data, reloadList]);
+  }, [slug, selected, data, reloadList, askConfirm]);
 
   // Ctrl/Cmd+S saves when on override scope. Sourced from the registry
   // so /settings/shortcuts can rebind it.
@@ -160,6 +167,7 @@ export default function PromptsTab({ slug, alive }: Props) {
 
   return (
     <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
+      {confirmEl}
       {/* ─── Sidebar: two grouped sections ─── */}
       <div style={{
         width: 240, flexShrink: 0,

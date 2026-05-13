@@ -13,6 +13,8 @@ import { Check as LCheck, ChevronDown as LChevronDown, ChevronUp as LChevronUp }
 import { Modal } from './Modal';
 import { Tooltip } from './Tooltip';
 import { Checkbox } from './Checkbox';
+import { useConfirmDialog } from './useConfirmDialog';
+import { usePromptDialog } from './usePromptDialog';
 import { Select } from './Select';
 import HarnessSettingsPanel from './HarnessSettingsPanel';
 import AgentThinkingPopover from './AgentThinkingPopover';
@@ -1817,13 +1819,19 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
   const tabIcon = plugin.dashboardTabs?.[0]?.icon ?? plugin.icon ?? null;
   const [busy, setBusy] = useState(false);
   const [invoking, setInvoking] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const configPath = `~/.papercusp/harnesses/${harnessSlug}/plugin-configs/${dirSlug}.json`;
   const secretCaps = (plugin.capabilities ?? []).filter((c) => c.startsWith('secrets:read:'));
   const eventListens = (plugin.capabilities ?? []).filter((c) => c.startsWith('events:listen:'));
   const httpFetches = (plugin.capabilities ?? []).filter((c) => c.startsWith('http:fetch:'));
 
   async function disable() {
-    if (!confirm(`Disable ${plugin.name} in ${harnessSlug}?\n\nThe plugin's config will be preserved.`)) return;
+    if (!await askConfirm({
+      title: `Disable ${plugin.name}?`,
+      body: `${plugin.name} will stop running in ${harnessSlug}. The plugin's config is preserved.`,
+      confirmLabel: 'Disable',
+      destructive: true,
+    })) return;
     setBusy(true);
     try {
       const r = await fetch('/api/plugins/enable', {
@@ -1866,6 +1874,7 @@ function PluginPanelCard({ plugin, harnessSlug, onChange }: {
 
   return (
     <div className="pc-card h-plugin-card" style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {confirmEl}
       <div className="h-plugin-card-head" style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
         <span className="h-plugin-card-icon" style={{
           flex: '0 0 auto', width: 40, height: 40, borderRadius: 8,
@@ -2400,6 +2409,8 @@ export default function HarnessDashboard() {
   const designEnabled = useFlag(FLAGS.DESIGN);
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
   // Selected harness — deep-link via ?slug=, agent-visible via ui:get_state.
   const [activeSlug, setActiveSlug] = useQueryState('slug', parseAsString);
@@ -3287,10 +3298,15 @@ export default function HarnessDashboard() {
 
   const resetFeature = useCallback(async (id: string) => {
     if (!activeSlug) return;
-    if (!confirm(`Reset ${id} to todo with attempts=0?`)) return;
+    if (!await askConfirm({
+      title: `Reset ${id}?`,
+      body: 'Feature returns to todo with attempts=0. Any in-flight work on this feature is interrupted.',
+      confirmLabel: 'Reset',
+      destructive: true,
+    })) return;
     await fetch(`/api/harness/${activeSlug}/features/${id}/reset?phase=${activePhase}`, { method: 'POST' });
     toast.success(`${id} reset`);
-  }, [activeSlug]);
+  }, [activeSlug, activePhase, askConfirm]);
 
   const launchHarness = useCallback(async () => {
     if (!activeSlug) return;
@@ -3392,7 +3408,11 @@ export default function HarnessDashboard() {
 
   const cleanupHarness = useCallback(async () => {
     if (!activeSlug) return;
-    if (!confirm('Run cleanup? Scoper will deprecate features whose claims no longer match SPEC.md and modify partial-matches. No new features will be added. Code is not auto-removed.')) return;
+    if (!await askConfirm({
+      title: 'Run cleanup?',
+      body: 'Scoper will deprecate features whose claims no longer match SPEC.md and modify partial-matches. No new features will be added. Code is not auto-removed.',
+      confirmLabel: 'Run cleanup',
+    })) return;
     const { announceOpStart, announceOpEnd } = await import('@/lib/voice-narration');
     const handle = announceOpStart('cleanup', { slug: activeSlug });
     try {
@@ -3411,11 +3431,16 @@ export default function HarnessDashboard() {
       announceOpEnd('cleanup', { outcome: 'fail', reason: 'request rejected', slug: activeSlug }, handle);
       toast.error('Cleanup failed', { description: String(e) });
     }
-  }, [activeSlug, pollScoperResult]);
+  }, [activeSlug, pollScoperResult, askConfirm]);
 
   const stopHarness = useCallback(async () => {
     if (!activeSlug) return;
-    if (!confirm(`Send SIGTERM to the harness process for ${activeSlug}?`)) return;
+    if (!await askConfirm({
+      title: `Stop harness ${activeSlug}?`,
+      body: 'Send SIGTERM to the harness process. In-flight work will be interrupted.',
+      confirmLabel: 'Send SIGTERM',
+      destructive: true,
+    })) return;
     try {
       const res = await fetch(`/api/harness/${activeSlug}/stop?phase=${activePhase}`, { method: 'POST' });
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
@@ -3424,7 +3449,7 @@ export default function HarnessDashboard() {
     } catch (e) {
       toast.error('Stop failed', { description: String(e) });
     }
-  }, [activeSlug, activePhase]);
+  }, [activeSlug, activePhase, askConfirm]);
 
   // ─── Linear-inspired extensions ─────
 
@@ -3610,16 +3635,32 @@ export default function HarnessDashboard() {
         title: 'Request checkpoint — pause harness for human approval',
         icon: '⏸', keywords: 'checkpoint pause hermes gate approval',
         perform: async () => {
-          const name = typeof window !== 'undefined' ? window.prompt('Checkpoint name (letters/numbers/-_. only):', 'manual') : null;
+          const name = await askPrompt({
+            title: 'Request checkpoint',
+            label: 'Checkpoint name',
+            body: 'A human approval gate will pause the harness with this name. Letters, numbers, dots, dashes, and underscores only.',
+            defaultValue: 'manual',
+            placeholder: 'e.g. before-migration',
+            submitLabel: 'Next',
+            validate: (v) => /^[A-Za-z0-9_.-]+$/.test(v) ? null : 'Letters, numbers, dot/dash/underscore only',
+          });
           if (!name) return;
           const cleanName = name.replace(/[^A-Za-z0-9_.-]/g, '');
           if (!cleanName) { toast.error('invalid name'); return; }
-          const message = typeof window !== 'undefined' ? window.prompt('Context message (optional):', '') : '';
+          const message = await askPrompt({
+            title: `Checkpoint "${cleanName}"`,
+            label: 'Context message (optional)',
+            body: 'Describe why this checkpoint is being requested. Visible to the human approver. Leave blank if no context needed.',
+            placeholder: 'waiting for schema review…',
+            submitLabel: 'Request checkpoint',
+            allowEmpty: true,
+          });
+          if (message === null) return;
           try {
             const r = await fetch(`/api/harness/${activeSlug}/checkpoint/${encodeURIComponent(cleanName)}/request`, {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({ message: message ?? '' }),
+              body: JSON.stringify({ message }),
             });
             const d = await r.json();
             if (d.ok) toast.success(`checkpoint "${cleanName}" requested`);
@@ -3812,6 +3853,8 @@ export default function HarnessDashboard() {
       data-hud-panel={activePanel}
       className={`h-root h-root--maximal-hud${isBrainstormPanel ? ' brainstorm-mode' : ''}${topChromeCollapsed ? ' top-chrome-collapsed' : ''}`}
     >
+      {confirmEl}
+      {promptEl}
       <HarnessHudOverlay
         alive={!!status?.alive}
         activePanel={activePanel}
@@ -4192,7 +4235,7 @@ export default function HarnessDashboard() {
         <div className="h-guide-strip">
           {activeSlug ? <Loader2 size={14} className="h-spin" /> : <Activity size={14} />}
           <span>{activeSlug ? `Loading ${activeSlug} mission state…` : 'Pick a project to unlock docs, VSCode, logs, issues, and agent controls.'}</span>
-          <button className="h-guide-action" onClick={() => setPaletteOpen(true)} title="Open the command palette (⌘K)">Open commands</button>
+          <Tooltip label="Open the command palette (⌘K)"><button className="h-guide-action" onClick={() => setPaletteOpen(true)} aria-label="Open the command palette">Open commands</button></Tooltip>
         </div>
       )}
 
