@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface HarnessRow {
   slug: string;
@@ -79,62 +80,58 @@ export default function HarnessesTab({ workspaceIds }: Props) {
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
       {!loading && !error && (
-        <table className="pc-dev-table">
-          <thead>
-            <tr>
-              <th>Slug</th>
-              <th>Workspace</th>
-              <th>Kind</th>
-              <th>Alive</th>
-              <th>Esc</th>
-              <th>Total</th>
-              <th>Passed</th>
-              <th>Failing</th>
-              <th>In progress</th>
-              <th>Blocked</th>
-              <th>Last run</th>
-              <th>Ghost</th>
-              <th>Verdict</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const h = r.health;
-              return (
-                <tr key={`${r.workspaceId}::${r.slug}`}>
-                  <td>
-                    <a href={`/harness/${r.slug}`} className="pc-dev-slug">
-                      {r.slug}
-                    </a>
-                  </td>
-                  <td className="pc-dev-muted">{r.workspaceName}</td>
-                  <td className="pc-dev-muted">{r.harness_kind ?? '—'}</td>
-                  <td>{h ? (h.alive ? <span className="pc-dev-ok">●</span> : <span className="pc-dev-muted">○</span>) : '—'}</td>
-                  <td>{h?.escalated ? <span className="pc-dev-api-err">!</span> : ''}</td>
-                  <td>{h?.features.total ?? '—'}</td>
-                  <td>{h?.features.passed ?? '—'}</td>
-                  <td className={h?.features.failing ? 'pc-dev-api-err' : ''}>
-                    {h?.features.failing ?? '—'}
-                  </td>
-                  <td>{h?.features.inProgress ?? '—'}</td>
-                  <td>{h?.features.blocked ?? '—'}</td>
-                  <td className="pc-dev-muted">{fmtAge(h?.lastRunAgeSeconds)}</td>
-                  <td className="pc-dev-muted">
-                    {h?.ghostRate == null ? '—' : `${(h.ghostRate * 100).toFixed(0)}%`}
-                  </td>
-                  <td>
-                    {!h ? <span className="pc-dev-muted">{r.healthError ?? '—'}</span> : h.ok ? (
-                      <span className="pc-dev-ok">OK</span>
-                    ) : (
-                      <span className="pc-dev-api-err">FAIL</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div style={{ height: Math.min(640, 32 + rows.length * 28 + 4) }}>
+          <RichGrid<HarnessRow>
+            columns={HARNESS_COLUMNS}
+            rows={rows}
+            getRowId={(r) => `${r.workspaceId}::${r.slug}`}
+            rowMinHeight={28}
+            headerHeight={32}
+          />
+        </div>
       )}
     </div>
   );
 }
+
+const HARNESS_COLUMNS: ColumnDef<HarnessRow>[] = [
+  {
+    key: 'slug', header: 'Slug', width: 2,
+    toCopyText: (r) => r.slug,
+    render: ({ row }) => <a href={`/harness/${row.slug}`} className="pc-dev-slug">{row.slug}</a>,
+  },
+  { key: 'workspace', header: 'Workspace', width: 1.5, toCopyText: (r) => r.workspaceName, render: ({ row }) => <span className="pc-dev-muted">{row.workspaceName}</span> },
+  { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.harness_kind ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.harness_kind ?? '—'}</span> },
+  {
+    key: 'alive', header: 'Alive', width: 0.7, align: 'center',
+    toCopyText: (r) => r.health ? (r.health.alive ? 'alive' : 'dead') : '',
+    render: ({ row }) => row.health ? (row.health.alive ? <span className="pc-dev-ok">●</span> : <span className="pc-dev-muted">○</span>) : <>—</>,
+  },
+  {
+    key: 'esc', header: 'Esc', width: 0.5, align: 'center',
+    toCopyText: (r) => r.health?.escalated ? '!' : '',
+    render: ({ row }) => row.health?.escalated ? <span className="pc-dev-api-err">!</span> : <></>,
+  },
+  { key: 'total', header: 'Total', width: 0.7, align: 'right', toCopyText: (r) => String(r.health?.features.total ?? ''), render: ({ row }) => <>{row.health?.features.total ?? '—'}</> },
+  { key: 'passed', header: 'Passed', width: 0.7, align: 'right', toCopyText: (r) => String(r.health?.features.passed ?? ''), render: ({ row }) => <>{row.health?.features.passed ?? '—'}</> },
+  {
+    key: 'failing', header: 'Failing', width: 0.8, align: 'right',
+    toCopyText: (r) => String(r.health?.features.failing ?? ''),
+    render: ({ row }) => <span className={row.health?.features.failing ? 'pc-dev-api-err' : ''}>{row.health?.features.failing ?? '—'}</span>,
+  },
+  { key: 'progress', header: 'In progress', width: 0.9, align: 'right', toCopyText: (r) => String(r.health?.features.inProgress ?? ''), render: ({ row }) => <>{row.health?.features.inProgress ?? '—'}</> },
+  { key: 'blocked', header: 'Blocked', width: 0.8, align: 'right', toCopyText: (r) => String(r.health?.features.blocked ?? ''), render: ({ row }) => <>{row.health?.features.blocked ?? '—'}</> },
+  { key: 'lastrun', header: 'Last run', width: 0.9, align: 'right', toCopyText: (r) => fmtAge(r.health?.lastRunAgeSeconds), render: ({ row }) => <span className="pc-dev-muted">{fmtAge(row.health?.lastRunAgeSeconds)}</span> },
+  {
+    key: 'ghost', header: 'Ghost', width: 0.7, align: 'right',
+    toCopyText: (r) => r.health?.ghostRate == null ? '' : `${(r.health.ghostRate * 100).toFixed(0)}%`,
+    render: ({ row }) => <span className="pc-dev-muted">{row.health?.ghostRate == null ? '—' : `${(row.health.ghostRate * 100).toFixed(0)}%`}</span>,
+  },
+  {
+    key: 'verdict', header: 'Verdict', width: 1, align: 'center',
+    toCopyText: (r) => !r.health ? (r.healthError ?? '') : r.health.ok ? 'OK' : 'FAIL',
+    render: ({ row }) => !row.health
+      ? <span className="pc-dev-muted">{row.healthError ?? '—'}</span>
+      : row.health.ok ? <span className="pc-dev-ok">OK</span> : <span className="pc-dev-api-err">FAIL</span>,
+  },
+];
