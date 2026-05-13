@@ -11,7 +11,7 @@
  */
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { streamSSE } from 'hono/streaming';
+import { sseResponse } from '@restart/sse';
 import { z } from 'zod';
 import { join } from 'node:path';
 import { openSync, readSync, closeSync, statSync } from 'node:fs';
@@ -914,66 +914,59 @@ app.get('/harnesses/:slug/log/stream', async (c) => {
   const jsonlPath = join(harnessDir(project), 'logs', 'run.log.jsonl');
   const tailSize = Math.min(Math.max(parseInt(c.req.query('tail') ?? '500', 10) || 500, 1), 5000);
 
-  return streamSSE(c, async (stream) => {
-    let aborted = false;
-    const onAbort = () => { aborted = true; };
-
-    // Backfill: read last 1 MiB of jsonl, replay up to tailSize valid lines
-    // as `event: log`, then emit `event: backfill-done` with the count.
-    let lastSize = 0;
-    try {
-      const stat = statSync(jsonlPath);
-      const tailBytes = 1024 * 1024;
-      const start = Math.max(0, stat.size - tailBytes);
-      const len = stat.size - start;
-      const buf = Buffer.alloc(len);
-      const fd = openSync(jsonlPath, 'r');
-      try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
-      lastSize = stat.size;
-      let chunk = buf.toString('utf8');
-      if (start > 0) {
-        const firstNl = chunk.indexOf('\n');
-        if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+  return sseResponse({
+    signal: c.req.raw.signal,
+    // 15s keepalive — replaces the old hand-rolled 'event: ping' loop.
+    heartbeatMs: 15_000,
+    setup: async (sink) => {
+      // Backfill: read last 1 MiB of jsonl, replay up to tailSize valid lines
+      // as `event: log`, then emit `event: backfill-done` with the count.
+      try {
+        const stat = statSync(jsonlPath);
+        const tailBytes = 1024 * 1024;
+        const start = Math.max(0, stat.size - tailBytes);
+        const len = stat.size - start;
+        const buf = Buffer.alloc(len);
+        const fd = openSync(jsonlPath, 'r');
+        try { readSync(fd, buf, 0, len, start); } finally { closeSync(fd); }
+        let chunk = buf.toString('utf8');
+        if (start > 0) {
+          const firstNl = chunk.indexOf('\n');
+          if (firstNl >= 0) chunk = chunk.slice(firstNl + 1);
+        }
+        const allLines = chunk.split('\n').filter(Boolean);
+        const toReplay = allLines.slice(-tailSize);
+        let count = 0;
+        for (const raw of toReplay) {
+          if (sink.closed) break;
+          try { JSON.parse(raw); }
+          catch { continue; /* skip malformed */ }
+          // sink.eventRaw: the JSONL line is already a JSON string —
+          // pass through verbatim, no double-stringification.
+          sink.eventRaw('log', raw);
+          count++;
+        }
+        sink.eventRaw('backfill-done', String(count));
+      } catch {
+        sink.eventRaw('backfill-done', '0');
       }
-      const allLines = chunk.split('\n').filter(Boolean);
-      const toReplay = allLines.slice(-tailSize);
-      let payload = '';
-      let count = 0;
-      for (const raw of toReplay) {
-        try { JSON.parse(raw); payload += `event: log\ndata: ${raw}\n\n`; count++; }
-        catch { /* skip malformed */ }
-      }
-      payload += `event: backfill-done\ndata: ${count}\n\n`;
-      await stream.write(payload);
-    } catch {
-      await stream.writeSSE({ event: 'backfill-done', data: '0' });
-    }
-    void lastSize;
 
-    // Live updates via the in-process log bus (run.sh log() POSTs to
-    // /api/internal/log-event → publish(); we subscribe here).
-    const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
-    const sub = logSubscribe(`${project.slug}:log`, (env) => {
-      try { JSON.parse(env.line); }
-      catch { return; }
-      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
-    });
-    for (const env of sub.recent) {
-      try { JSON.parse(env.line); }
-      catch { continue; }
-      void stream.writeSSE({ event: 'log', data: env.line }).catch(() => { /* client gone */ });
-    }
-
-    try {
-      while (true) {
-        if (stream.aborted || aborted) break;
-        await stream.sleep(15_000);
-        await stream.writeSSE({ event: 'ping', data: '{}' });
+      // Live updates via the in-process log bus.
+      const { subscribe: logSubscribe } = await import('@/lib/harness-log-bus');
+      const sub = logSubscribe(`${project.slug}:log`, (env) => {
+        if (sink.closed) return;
+        try { JSON.parse(env.line); }
+        catch { return; }
+        sink.eventRaw('log', env.line);
+      });
+      for (const env of sub.recent) {
+        if (sink.closed) break;
+        try { JSON.parse(env.line); }
+        catch { continue; }
+        sink.eventRaw('log', env.line);
       }
-    } finally {
-      sub.unsubscribe();
-      onAbort();
-    }
+      sink.onClose(() => sub.unsubscribe());
+    },
   });
 });
 
