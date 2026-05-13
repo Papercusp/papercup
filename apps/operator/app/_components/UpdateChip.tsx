@@ -26,6 +26,7 @@ import {
   installUpdate,
   isDesktop,
 } from '../../lib/version-tauri';
+import { useConfirmDialog } from '../harness/useConfirmDialog';
 
 const POLL_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6h
 
@@ -35,6 +36,7 @@ export default function UpdateChip() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [installing, setInstalling] = useState(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     setDesktop(isDesktop());
@@ -74,7 +76,11 @@ export default function UpdateChip() {
 
   const onInstall = async () => {
     if (installing) return;
-    if (!window.confirm('Install update and restart?')) return;
+    if (!await askConfirm({
+      title: `Install v${info?.new_version ?? '?'} and restart?`,
+      body: 'Papercusp will quit, swap binaries, and relaunch. In-flight work is interrupted.',
+      confirmLabel: 'Install and restart',
+    })) return;
     setInstalling(true);
     try {
       await installUpdate();
@@ -106,6 +112,8 @@ export default function UpdateChip() {
 
   if (updateAvailable) {
     return (
+      <>
+      {confirmEl}
       <button
         type="button"
         onClick={onInstall}
@@ -128,6 +136,7 @@ export default function UpdateChip() {
         <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'currentColor' }} />
         {installing ? 'Installing…' : `Update to v${info!.new_version}`}
       </button>
+      </>
     );
   }
 

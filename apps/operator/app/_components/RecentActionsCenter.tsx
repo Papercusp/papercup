@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Activity, X } from 'lucide-react';
 import { OperatorActionLog, prefetchRecentActions } from './OperatorActionLog';
+import { Popover } from '../harness/Popover';
 
 /**
  * Recent-actions popover. Mirrors the NotificationCenter bell pattern
@@ -45,8 +46,7 @@ function readActiveSlug(): string | null {
 export function RecentActionsCenter() {
   const [open, setOpen] = useQueryState('recent', parseAsBoolean.withDefault(false));
   const [slug, setSlug] = useState<string | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  // Outside-click + ESC handled by Radix Popover via harness/Popover wrapper.
 
   // Re-read slug whenever the popover is opened so it follows the
   // user's current harness without needing parent state. Also re-read
@@ -79,42 +79,30 @@ export function RecentActionsCenter() {
     }
   }, [open]);
 
-  // Close on outside click + Escape, same as NotificationCenter.
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (panelRef.current?.contains(t)) return;
-      if (buttonRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onClick);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onClick);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   const close = useCallback(() => setOpen(false), []);
 
   return (
     <div className="notif-center">
-      <button
-        ref={buttonRef}
-        type="button"
-        className="notif-bell"
-        aria-label="Recent actions"
-        title="Recent actions (replan, cleanup, snapshots, plugin ops, expert dispatches)"
-        onClick={() => setOpen((o) => !o)}
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        ariaLabel="Recent actions"
+        tooltipLabel="Recent actions (replan, cleanup, snapshots, plugin ops, expert dispatches)"
+        side="bottom"
+        align="end"
+        sideOffset={8}
+        zIndex={1400}
+        contentClassName="notif-panel"
+        trigger={
+          <button
+            type="button"
+            className="notif-bell"
+            aria-label="Recent actions"
+          >
+            <Activity size={16} aria-hidden="true" />
+          </button>
+        }
       >
-        <Activity size={16} aria-hidden="true" />
-      </button>
-      {open && (
-        <div ref={panelRef} className="notif-panel" role="dialog" aria-label="Recent actions">
           <div className="notif-panel-head">
             <span>Recent actions {slug && <span style={{ opacity: 0.6, fontWeight: 400 }}>· {slug}</span>}</span>
             <button
@@ -138,8 +126,7 @@ export function RecentActionsCenter() {
               </div>
             )}
           </div>
-        </div>
-      )}
+      </Popover>
     </div>
   );
 }

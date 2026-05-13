@@ -20,6 +20,9 @@ import {
   renameWorkspace,
   switchWorkspace,
 } from '../../lib/workspaces-tauri';
+import { useConfirmDialog } from '../harness/useConfirmDialog';
+import { usePromptDialog } from '../harness/usePromptDialog';
+import { Tooltip } from '../harness/Tooltip';
 
 export default function WorkspaceSwitcher() {
   const [reg, setReg] = useState<WorkspaceRegistry | null>(null);
@@ -28,6 +31,8 @@ export default function WorkspaceSwitcher() {
   const [renameValue, setRenameValue] = useState('');
   const wrapRef = useRef<HTMLSpanElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(null);
 
@@ -83,7 +88,13 @@ export default function WorkspaceSwitcher() {
   const refresh = () => listWorkspaces().then(setReg).catch(() => {});
 
   const onCreate = async () => {
-    const name = window.prompt('New workspace name');
+    const name = await askPrompt({
+      title: 'New workspace',
+      label: 'Workspace name',
+      placeholder: 'my-workspace',
+      submitLabel: 'Create',
+      validate: (v) => v.length > 64 ? 'Max 64 characters' : null,
+    });
     if (!name) return;
     try {
       await createWorkspace(name);
@@ -96,13 +107,12 @@ export default function WorkspaceSwitcher() {
 
   const onSwitch = async (id: string) => {
     if (id === reg.current) return setOpen(false);
-    if (
-      !window.confirm(
-        `Switch to "${reg.workspaces.find((w) => w.id === id)?.name}"? The app will reload.`,
-      )
-    ) {
-      return;
-    }
+    const target = reg.workspaces.find((w) => w.id === id)?.name ?? id;
+    if (!await askConfirm({
+      title: `Switch to "${target}"?`,
+      body: 'The app will reload into the selected workspace.',
+      confirmLabel: 'Switch',
+    })) return;
     progress.start(0.08, 0, true);
     try {
       await switchWorkspace(id, { resetTo: `/harness?ws=${encodeURIComponent(id)}` });
@@ -142,13 +152,13 @@ export default function WorkspaceSwitcher() {
       toast.error('switch to another workspace before deleting this one');
       return;
     }
-    if (
-      !window.confirm(
-        `Delete workspace "${ws.name}"? Its database, harnesses, snapshots, and credentials are removed permanently.`,
-      )
-    ) {
-      return;
-    }
+    if (!await askConfirm({
+      title: `Delete workspace "${ws.name}"?`,
+      body: 'Its database, harnesses, snapshots, and credentials are removed permanently. Type the workspace name to confirm.',
+      confirmLabel: 'Delete workspace',
+      destructive: true,
+      requireType: ws.name,
+    })) return;
     try {
       await deleteWorkspace(ws.id);
       await refresh();
@@ -160,26 +170,30 @@ export default function WorkspaceSwitcher() {
 
   return (
     <span ref={wrapRef} className="pc-workspace-switcher" style={{ position: 'relative', fontSize: 13 }}>
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="pc-workspace-trigger"
-        style={{
-          background: 'transparent',
-          border: '1px solid var(--border, #2a2a2a)',
-          color: 'var(--fg-dim, #aaa)',
-          padding: '3px 8px',
-          borderRadius: 4,
-          cursor: 'pointer',
-          font: 'inherit',
-        }}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        title="Switch or manage workspaces"
-      >
-        {current?.name ?? 'workspace'} <span className="pc-workspace-trigger-caret" style={{ opacity: 0.6 }}>▾</span>
-      </button>
+      {confirmEl}
+      {promptEl}
+      <Tooltip label="Switch or manage workspaces">
+        <button
+          ref={buttonRef}
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="pc-workspace-trigger"
+          style={{
+            background: 'transparent',
+            border: '1px solid var(--border, #2a2a2a)',
+            color: 'var(--fg-dim, #aaa)',
+            padding: '3px 8px',
+            borderRadius: 4,
+            cursor: 'pointer',
+            font: 'inherit',
+          }}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="Switch or manage workspaces"
+        >
+          {current?.name ?? 'workspace'} <span className="pc-workspace-trigger-caret" style={{ opacity: 0.6 }}>▾</span>
+        </button>
+      </Tooltip>
       {open && menuPos && typeof document !== 'undefined' && createPortal(
         <div
           ref={menuRef}

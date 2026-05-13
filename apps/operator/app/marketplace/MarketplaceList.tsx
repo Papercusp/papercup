@@ -11,6 +11,7 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
 import * as Lucide from 'lucide-react';
 import { Checkbox } from '../harness/Checkbox';
+import { Modal } from '../harness/Modal';
 import InstallButton from './InstallButton';
 import RouteLink from '../_components/RouteLink';
 import { useSyncQuery } from '@restart/sync';
@@ -455,10 +456,17 @@ function EnablePicker({ slug, harnesses, enabledIn, onCancel, onApply }: EnableP
   }
 
   return (
-    <div role="dialog" className="pc-marketplace-dialog-backdrop" onClick={onCancel}>
-      <div className="pc-marketplace-dialog" onClick={(e) => e.stopPropagation()}>
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onCancel(); }}
+      title={`Enable ${slug} in…`}
+      srOnlyTitle
+      closeOnOutsideClick={!busy}
+      closeOnEscape={!busy}
+    >
+      <div className="pc-marketplace-dialog">
         <div className="pc-marketplace-dialog-title">Enable {slug} in…</div>
-        <p>Tick the harnesses where this plugin should be active. Per-harness configs use the plugin's defaults.</p>
+        <p>Tick the harnesses where this plugin should be active. Per-harness configs use the plugin&apos;s defaults.</p>
         {harnesses.length === 0 ? (
           <div className="pc-marketplace-empty compact">No harnesses installed yet. Install a template first.</div>
         ) : (
@@ -487,6 +495,6 @@ function EnablePicker({ slug, harnesses, enabledIn, onCancel, onApply }: EnableP
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

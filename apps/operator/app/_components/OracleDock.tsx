@@ -1090,7 +1090,7 @@ export function OracleDock() {
     });
     const SelectedRoleIcon = selectedRole ? roleIcon(selectedRole) : Bot;
     return (
-      <div className="oracle-picker-body pc-animate-in pc-animate-in--down pc-animate-in--fast" role="dialog" aria-label="Start a new chat">
+      <div className="oracle-picker-body pc-animate-in pc-animate-in--down pc-animate-in--fast" role="region" aria-label="Start a new chat">
         <div className="oracle-picker-simple oracle-picker-form">
           <div className="oracle-picker-field">
             <label htmlFor="oracle-picker-harness-trigger">Harness</label>

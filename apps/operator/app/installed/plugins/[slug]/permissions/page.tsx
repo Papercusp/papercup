@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { use } from 'react';
 import { toast } from 'sonner';
 import RouteLink from '../../../../_components/RouteLink';
+import { Checkbox } from '../../../../harness/Checkbox';
 import { explainCapability, tierBadgeColor } from '@/lib/capability-explain';
 
 interface ManifestResp {
@@ -174,12 +175,11 @@ export default function PluginPermissionsPage({
                     const key = `${h.slug}:${cap}`;
                     return (
                       <td key={h.slug} style={{ textAlign: 'center', padding: '10px 12px', borderBottom: '1px solid var(--border, #1a1a1a)' }}>
-                        <input
-                          type="checkbox"
+                        <Checkbox
                           checked={granted}
                           disabled={busy === key}
                           onChange={() => toggle(h.slug, cap, granted)}
-                          aria-label={`Grant ${cap} to ${h.slug}`}
+                          ariaLabel={`Grant ${cap} to ${h.slug}`}
                         />
                       </td>
                     );

@@ -1,6 +1,7 @@
 'use client';
 
 import { OracleLogoMark } from './OracleLogoMark';
+import { Tooltip } from '../harness/Tooltip';
 
 // OracleDock is lazy-loaded behind a `ready` gate in ChromeShell, so a click
 // firing before its useEffect has attached the 'oracle:start-tutorial'
@@ -14,15 +15,17 @@ export default function TutorialButton() {
     window.dispatchEvent(new CustomEvent('oracle:start-tutorial'));
   };
   return (
-    <button
-      type="button"
-      className="oracle-link oracle-link--tutorial"
-      style={{ background: 'transparent', border: 0, padding: '4px 8px', cursor: 'pointer', font: 'inherit' }}
-      onClick={onClick}
-      title="Walk me through the app"
-    >
-      <OracleLogoMark className="oracle-link-icon" />
-      <span>Tutorial</span>
-    </button>
+    <Tooltip label="Walk me through the app">
+      <button
+        type="button"
+        className="oracle-link oracle-link--tutorial"
+        style={{ background: 'transparent', border: 0, padding: '4px 8px', cursor: 'pointer', font: 'inherit' }}
+        onClick={onClick}
+        aria-label="Walk me through the app"
+      >
+        <OracleLogoMark className="oracle-link-icon" />
+        <span>Tutorial</span>
+      </button>
+    </Tooltip>
   );
 }

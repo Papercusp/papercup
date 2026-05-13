@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@restart/sync';
+import { Checkbox } from './Checkbox';
 
 /**
  * Per-harness Settings panel — one tab inside the harness UI.
@@ -618,10 +619,10 @@ export default function HarnessSettingsPanel({
             </div>
 
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, marginBottom: 8 }}>
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={parallel.useChunkLoop}
-                onChange={(e) => setParallel((p) => ({ ...p, useChunkLoop: e.target.checked }))}
+                onChange={(v) => setParallel((p) => ({ ...p, useChunkLoop: v }))}
+                ariaLabel="chunk loop enabled"
               />
               <span>chunk loop enabled</span>
             </label>
@@ -686,10 +687,10 @@ export default function HarnessSettingsPanel({
               Synthesizer (always merges/polishes worker output before validation)
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={parallel.synthesizeSingle}
-                onChange={(e) => setParallel((p) => ({ ...p, synthesizeSingle: e.target.checked }))}
+                onChange={(v) => setParallel((p) => ({ ...p, synthesizeSingle: v }))}
+                ariaLabel="synthesize single-worker output"
               />
               <span>synthesize single-worker output</span>
               <span style={{ fontSize: 11, color: 'var(--pc-muted, #9a9a9a)' }}>

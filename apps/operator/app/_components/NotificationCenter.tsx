@@ -1,9 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Bell, X, Trash2 } from 'lucide-react';
 import { useSyncQuery } from '@restart/sync';
+import { Tooltip } from '../harness/Tooltip';
+import { Popover } from '../harness/Popover';
+import { useConfirmDialog } from '../harness/useConfirmDialog';
 
 interface ToastEntry {
   id: number;
@@ -62,8 +65,7 @@ export function NotificationCenter() {
     // Hydrate once on mount; deliberate empty deps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  // Outside-click + ESC handled by Radix Popover via harness/Popover wrapper.
 
   // HarnessZeroProvider is now hoisted to root layout (2026-05-07,
   // resolved by Paperclip's harness-phases-const fix); useSyncQuery
@@ -107,64 +109,58 @@ export function NotificationCenter() {
     }).catch(() => { /* offline — localStorage already saved */ });
   }, [open]);
 
-  // Close on outside click and on Escape.
-  useEffect(() => {
-    if (!open) return;
-    const onClick = (e: MouseEvent) => {
-      const t = e.target as Node;
-      if (panelRef.current?.contains(t)) return;
-      if (buttonRef.current?.contains(t)) return;
-      setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('mousedown', onClick);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onClick);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   const unread = toasts.filter((t) => t.createdAt > lastSeen).length;
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const clearAll = useCallback(async () => {
-    if (!confirm('Clear all notification history?')) return;
-    // Zero pushes the empty state once the DELETE commits — no optimistic
-    // setState needed.
+    if (!await askConfirm({
+      title: 'Clear all notification history?',
+      body: 'Removes every entry from the notification log. This cannot be undone.',
+      confirmLabel: 'Clear all',
+      destructive: true,
+    })) return;
     try {
       await fetch('/api/toast-log?all=1', { method: 'DELETE' });
     } catch { /* ignore */ }
-  }, []);
+  }, [askConfirm]);
 
   return (
     <div className="notif-center">
-      <button
-        ref={buttonRef}
-        type="button"
-        className="notif-bell"
-        aria-label={`Notification history${unread ? ` (${unread} new)` : ''}`}
-        title="Notification history"
-        onClick={() => setOpen((o) => !o)}
+      {confirmEl}
+      <Popover
+        open={open}
+        onOpenChange={setOpen}
+        ariaLabel="Notification history"
+        tooltipLabel="Notification history"
+        side="bottom"
+        align="end"
+        sideOffset={8}
+        zIndex={1400}
+        contentClassName="notif-panel"
+        trigger={
+          <button
+            type="button"
+            className="notif-bell"
+            aria-label={`Notification history${unread ? ` (${unread} new)` : ''}`}
+          >
+            <Bell size={16} aria-hidden="true" />
+            {unread > 0 && <span className="notif-badge">{unread > 99 ? '99+' : unread}</span>}
+          </button>
+        }
       >
-        <Bell size={16} aria-hidden="true" />
-        {unread > 0 && <span className="notif-badge">{unread > 99 ? '99+' : unread}</span>}
-      </button>
-      {open && (
-        <div ref={panelRef} className="notif-panel" role="dialog" aria-label="Notification history">
           <div className="notif-panel-head">
             <span>Notifications</span>
             <div style={{ display: 'flex', gap: 4 }}>
-              <button
-                type="button"
-                className="notif-panel-action"
-                onClick={clearAll}
-                title="Clear all notification history"
-                aria-label="Clear all"
-              >
-                <Trash2 size={13} aria-hidden="true" />
-              </button>
+              <Tooltip label="Clear all notification history">
+                <button
+                  type="button"
+                  className="notif-panel-action"
+                  onClick={clearAll}
+                  aria-label="Clear all"
+                >
+                  <Trash2 size={13} aria-hidden="true" />
+                </button>
+              </Tooltip>
               <button
                 type="button"
                 className="notif-panel-action"
@@ -205,8 +201,7 @@ export function NotificationCenter() {
               </ul>
             )}
           </div>
-        </div>
-      )}
+      </Popover>
     </div>
   );
 }

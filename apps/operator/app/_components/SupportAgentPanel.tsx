@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { MarkdownPreview } from './MarkdownEditor';
+import { Tooltip } from '../harness/Tooltip';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -237,15 +238,17 @@ export function SupportAgentPanel({ surface = 'operator' }: { surface?: 'public'
         >
           {busy ? '…' : 'Ask'}
         </button>
-        <button
-          type="button"
-          onClick={() => window.dispatchEvent(new CustomEvent('papercusp:open-support'))}
-          className="pc-button"
-          style={{ padding: '10px 16px', background: 'var(--bg)' }}
-          title="Talk to a human via Support"
-        >
-          👤
-        </button>
+        <Tooltip label="Talk to a human via Support">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('papercusp:open-support'))}
+            className="pc-button"
+            style={{ padding: '10px 16px', background: 'var(--bg)' }}
+            aria-label="Talk to a human via Support"
+          >
+            👤
+          </button>
+        </Tooltip>
       </form>
     </div>
   );
