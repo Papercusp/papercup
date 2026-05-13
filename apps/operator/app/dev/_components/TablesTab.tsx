@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import { Select } from '@/app/harness/Select';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 /**
  * /dev Tables tab — schema-aware table inspector.
@@ -348,10 +350,15 @@ export default function TablesTab() {
               <div className="pc-tables-controls">
                 <label className="pc-tables-role">
                   Role:
-                  <select value={role} onChange={(e) => setRole(e.target.value as 'admin' | 'app')}>
-                    <option value="admin">admin (RLS bypass)</option>
-                    <option value="app">app (workspace-scoped)</option>
-                  </select>
+                  <Select
+                    value={role}
+                    onChange={(v) => setRole(v as 'admin' | 'app')}
+                    ariaLabel="Connection role"
+                    options={[
+                      { value: 'admin', label: 'admin (RLS bypass)' },
+                      { value: 'app', label: 'app (workspace-scoped)' },
+                    ]}
+                  />
                 </label>
                 <button
                   type="button"
@@ -397,45 +404,51 @@ export default function TablesTab() {
 
             <section className="pc-tables-columns">
               <h3>Columns</h3>
-              <table className="pc-tables-coltable">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Type</th>
-                    <th>Null?</th>
-                    <th>PK</th>
-                    <th>FK</th>
-                    <th>Default</th>
-                    <th>Flags</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {orderedColumns.map((c) => {
-                    const fk = fkBySourceColumn.get(c.name);
-                    return (
-                      <tr key={c.name} className={c.primary ? 'is-pk' : ''}>
-                        <td className="pc-tables-colname">{c.name}</td>
-                        <td>
-                          <code>{c.dataType}</code>
-                          <span className="pc-tables-coltype-mute"> · {c.columnType.replace(/^Pg/, '')}</span>
-                        </td>
-                        <td>{c.notNull ? '' : 'null'}</td>
-                        <td>{c.primary ? 'PK' : ''}</td>
-                        <td className="pc-tables-fkcell">
-                          {fk && <code>{fk.foreignTable}.{fk.foreignColumn}</code>}
-                        </td>
-                        <td className="pc-tables-coldefault">
-                          {c.hasDefault ? (c.default !== null && c.default !== undefined ? String(c.default) : '<sql>') : ''}
-                        </td>
-                        <td>
-                          {c.isUnique && <span className="pc-tables-flag">unique</span>}
-                          {c.generated && <span className="pc-tables-flag">generated</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div style={{ height: Math.min(480, 32 + orderedColumns.length * 28 + 4) }}>
+                <RichGrid<ColumnSummary>
+                  columns={[
+                    { key: 'name', header: 'Name', width: 1.5, toCopyText: (r) => r.name, render: ({ row }) => <span className="pc-tables-colname">{row.name}</span> },
+                    {
+                      key: 'type', header: 'Type', width: 2,
+                      toCopyText: (r) => `${r.dataType} (${r.columnType.replace(/^Pg/, '')})`,
+                      render: ({ row }) => <><code>{row.dataType}</code><span className="pc-tables-coltype-mute"> · {row.columnType.replace(/^Pg/, '')}</span></>,
+                    },
+                    { key: 'null', header: 'Null?', width: 0.6, toCopyText: (r) => r.notNull ? '' : 'null', render: ({ row }) => <>{row.notNull ? '' : 'null'}</> },
+                    { key: 'pk', header: 'PK', width: 0.4, align: 'center', toCopyText: (r) => r.primary ? 'PK' : '', render: ({ row }) => <>{row.primary ? 'PK' : ''}</> },
+                    {
+                      key: 'fk', header: 'FK', width: 1.5,
+                      toCopyText: (r) => {
+                        const fk = fkBySourceColumn.get(r.name);
+                        return fk ? `${fk.foreignTable}.${fk.foreignColumn}` : '';
+                      },
+                      render: ({ row }) => {
+                        const fk = fkBySourceColumn.get(row.name);
+                        return <span className="pc-tables-fkcell">{fk && <code>{fk.foreignTable}.{fk.foreignColumn}</code>}</span>;
+                      },
+                    },
+                    {
+                      key: 'default', header: 'Default', width: 1.2,
+                      toCopyText: (r) => r.hasDefault ? (r.default !== null && r.default !== undefined ? String(r.default) : '<sql>') : '',
+                      render: ({ row }) => <span className="pc-tables-coldefault">{row.hasDefault ? (row.default !== null && row.default !== undefined ? String(row.default) : '<sql>') : ''}</span>,
+                    },
+                    {
+                      key: 'flags', header: 'Flags', width: 1.2,
+                      toCopyText: (r) => [r.isUnique && 'unique', r.generated && 'generated'].filter(Boolean).join(' '),
+                      render: ({ row }) => (
+                        <>
+                          {row.isUnique && <span className="pc-tables-flag">unique</span>}
+                          {row.generated && <span className="pc-tables-flag">generated</span>}
+                        </>
+                      ),
+                    },
+                  ]}
+                  rows={orderedColumns}
+                  getRowId={(r) => r.name}
+                  rowMinHeight={28}
+                  headerHeight={32}
+                  getRowBg={(r) => r.primary ? 'rgba(255,255,255,0.04)' : undefined}
+                />
+              </div>
               {detail.primaryKey.length > 1 && (
                 <p className="pc-tables-pkrow">
                   Composite PK: <code>{detail.primaryKey.join(', ')}</code>
@@ -500,56 +513,56 @@ export default function TablesTab() {
               </div>
               {rows?.error && <pre className="pc-tables-err">{rows.error}</pre>}
               {rows && rows.rows.length > 0 && (
-                <div className="pc-tables-rowgrid-scroll">
-                  <table className="pc-tables-rowgrid">
-                    <thead>
-                      <tr>
-                        {rowKeys.map((k) => (
-                          <th key={k}>
-                            {k}
-                            {fkBySourceColumn.has(k) && <span className="pc-tables-fkmark"> →</span>}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.rows.map((r, i) => (
-                        <tr key={i}>
-                          {rowKeys.map((k) => {
-                            const fk = fkBySourceColumn.get(k);
-                            const value = r[k];
-                            const slugLink = isHarnessSlugCell(k, value);
-                            return (
-                              <td key={k}>
-                                {slugLink ? (
-                                  <a
-                                    href={`/harness?slug=${encodeURIComponent(String(value))}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="pc-tables-slug-link"
-                                    title={`Open harness "${value}" in dashboard ↗`}
-                                  >
-                                    {renderCell(value)} <span className="pc-tables-slug-arrow">↗</span>
-                                  </a>
-                                ) : fk && value !== null && value !== undefined ? (
-                                  <button
-                                    type="button"
-                                    className="pc-tables-fklink"
-                                    onClick={() => navigateFK(fk.foreignTable, fk.foreignColumn, value)}
-                                    title={`Open ${fk.foreignTable} where ${fk.foreignColumn} = ${valueToLabel(value)}`}
-                                  >
-                                    {renderCell(value)}
-                                  </button>
-                                ) : (
-                                  renderCell(value)
-                                )}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div style={{ height: Math.min(560, 32 + rows.rows.length * 28 + 4) }}>
+                  <RichGrid<Record<string, unknown>>
+                    columns={rowKeys.map<ColumnDef<Record<string, unknown>>>((k) => ({
+                      key: `col:${k}`,
+                      header: (
+                        <>
+                          {k}
+                          {fkBySourceColumn.has(k) && <span className="pc-tables-fkmark"> →</span>}
+                        </>
+                      ),
+                      headerText: k,
+                      width: 1,
+                      toCopyText: (r) => renderCell(r[k]),
+                      render: ({ row }) => {
+                        const fk = fkBySourceColumn.get(k);
+                        const value = row[k];
+                        const slugLink = isHarnessSlugCell(k, value);
+                        if (slugLink) {
+                          return (
+                            <a
+                              href={`/harness?slug=${encodeURIComponent(String(value))}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="pc-tables-slug-link"
+                              title={`Open harness "${value}" in dashboard ↗`}
+                            >
+                              {renderCell(value)} <span className="pc-tables-slug-arrow">↗</span>
+                            </a>
+                          );
+                        }
+                        if (fk && value !== null && value !== undefined) {
+                          return (
+                            <button
+                              type="button"
+                              className="pc-tables-fklink"
+                              onClick={() => navigateFK(fk.foreignTable, fk.foreignColumn, value)}
+                              title={`Open ${fk.foreignTable} where ${fk.foreignColumn} = ${valueToLabel(value)}`}
+                            >
+                              {renderCell(value)}
+                            </button>
+                          );
+                        }
+                        return <>{renderCell(value)}</>;
+                      },
+                    }))}
+                    rows={rows.rows}
+                    getRowId={(r) => JSON.stringify(r)}
+                    rowMinHeight={28}
+                    headerHeight={32}
+                  />
                 </div>
               )}
               {rows && rows.rows.length === 0 && !rows.error && (
@@ -583,23 +596,22 @@ function FilterComposer({
   return (
     <div className="pc-tables-composer">
       <span className="pc-tables-composer-label">WHERE</span>
-      <select value={col} onChange={(e) => setCol(e.target.value)}>
-        {columns.map((c) => (
-          <option key={c.name} value={c.name}>
-            {c.name} ({c.columnType.replace(/^Pg/, '').toLowerCase()})
-          </option>
-        ))}
-      </select>
-      <select
-        className="pc-tables-composer-opsel"
+      <Select
+        value={col}
+        onChange={setCol}
+        ariaLabel="Filter column"
+        options={columns.map((c) => ({
+          value: c.name,
+          label: `${c.name} (${c.columnType.replace(/^Pg/, '').toLowerCase()})`,
+        }))}
+      />
+      <Select
         value={op}
-        onChange={(e) => setOp(e.target.value as Op)}
-        title="Comparison operator"
-      >
-        {OPS.map((o) => (
-          <option key={o.op} value={o.op}>{o.label}</option>
-        ))}
-      </select>
+        onChange={(v) => setOp(v as Op)}
+        ariaLabel="Comparison operator"
+        triggerClassName="pc-tables-composer-opsel"
+        options={OPS.map((o) => ({ value: o.op, label: o.label }))}
+      />
       {needsValue && (
         <input
           type="text"
