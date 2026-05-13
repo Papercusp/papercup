@@ -85,8 +85,25 @@ export function SetupWizard({ mode }: Props) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ finished_at: new Date().toISOString() }),
       });
-      if (mode === 'first-run') router.push('/harness');
-      else setFinishing(false);
+      if (mode === 'first-run') {
+        // Land on /marketplace when the workspace is empty — landing on
+        // /harness with no harnesses is a confusing dead-end. Once at
+        // least one template is installed, /harness is the right home.
+        let dest = '/harness';
+        try {
+          const r = await fetch('/api/installed', { cache: 'no-store' });
+          if (r.ok) {
+            const j = (await r.json()) as { projects?: unknown[] };
+            const count = Array.isArray(j.projects) ? j.projects.length : 0;
+            if (count === 0) dest = '/marketplace';
+          }
+        } catch {
+          // Network failure → fall through to /harness.
+        }
+        router.push(dest);
+      } else {
+        setFinishing(false);
+      }
     } catch {
       setFinishing(false);
     }
