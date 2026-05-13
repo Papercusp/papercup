@@ -57,6 +57,50 @@ describe('registerProjectedTool', () => {
     expect(() => registerProjectedTool(baseTool({ expose: {} }))).toThrow(ToolRegistrationError);
   });
 
+  it('rejects framework-only event names at register time (Phase 4 T2.3)', async () => {
+    // RESERVED_EVENT_NAMES is the runtime backstop for plugins that
+    // bypass the TS-level UserEvents<T> guard via JSON manifests.
+    // Only the FRAMEWORK-AUTO-EMITTED names are reserved:
+    //   - done: dispatcher emits at successful completion
+    //   - heartbeat: transport ping
+    //   - result: MCP-shaped envelope
+    //   - chunk: framework-emitted for largeOutput tools
+    // `progress` and `error` are intentionally NOT reserved — tools
+    // declare schemas for them (e.g. dev:ipc_echo declares progress).
+    const { z } = await import('zod');
+    for (const reserved of ['done', 'heartbeat', 'result', 'chunk']) {
+      _resetProjectionRegistryForTests();
+      const events = { [reserved]: z.object({}) };
+      expect(() => registerProjectedTool(baseTool({
+        expose: { mcp: { name: `fix.reserved-${reserved}` } },
+        events: events as never,
+      }))).toThrow(/reserved event name/);
+    }
+  });
+
+  it('accepts non-reserved event names (progress + error are user-emittable)', async () => {
+    // Locks in the D2 / D3 carve-outs: tools can declare progress
+    // (alias of ctx.progress sugar) and error (D3 dual-mode) without
+    // tripping the reserved-name check.
+    const { z } = await import('zod');
+    for (const name of ['progress', 'error', 'delta', 'tool_call']) {
+      _resetProjectionRegistryForTests();
+      const events = { [name]: z.object({}) };
+      expect(() => registerProjectedTool(baseTool({
+        expose: { mcp: { name: `fix.allowed-${name}` } },
+        events: events as never,
+      }))).not.toThrow();
+    }
+  });
+
+  it('chunk-reservation error message points at largeOutput', async () => {
+    const { z } = await import('zod');
+    expect(() => registerProjectedTool(baseTool({
+      expose: { mcp: { name: 'fix.chunk-reserved' } },
+      events: { chunk: z.object({ ref: z.string() }) } as never,
+    }))).toThrow(/largeOutput/);
+  });
+
   it('rejects a name without a namespace separator', () => {
     expect(() => registerProjectedTool(baseTool({ expose: { mcp: { name: 'noprefix' } } }))).toThrow(/namespace separator/);
   });
