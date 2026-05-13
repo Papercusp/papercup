@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { OperatorChat } from './OperatorChat';
+import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { OperatorLogoMark } from './OperatorLogoMark';
@@ -168,6 +169,12 @@ export function OperatorChatSidebar() {
         conversationId={conv.conversationId ?? undefined}
         workspaceId={workspaceId}
       />
+      {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
+          client-side caller of askUserLocal has a slot to render into.
+          Cards render here when triggered by render-time UI affordances
+          (tab pickers, confirms) rather than server-side tool flows
+          which go through PendingCardsBar instead. */}
+      <LocalCardHost />
       <div
         className="op-chat-resize-handle"
         role="separator"
