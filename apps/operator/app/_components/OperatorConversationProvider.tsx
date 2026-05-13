@@ -603,6 +603,13 @@ interface OperatorConversationContextValue {
     toolIndex: number;
     picks: Array<{ option_id: string; label: string }>;
   }) => Promise<void>;
+
+  /**
+   * Active conversation id, or null when no conversation is selected.
+   * Consumed by PendingCardsBar to scope /card-response POSTs to the
+   * active chat.
+   */
+  conversationId: string | null;
 }
 
 const OperatorConversationContext = createContext<OperatorConversationContextValue | null>(null);
@@ -1481,11 +1488,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       loadingEarlier,
       loadEarlier,
       answerChoice,
+      conversationId: convId,
     }),
     [
       state.mode, state.sub, state.messages, state.error,
       sendUserMessage, flipMode, bannerText,
       hasMoreEarlier, loadingEarlier, loadEarlier, answerChoice,
+      convId,
     ],
   );
 
