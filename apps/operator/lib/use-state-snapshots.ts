@@ -105,5 +105,26 @@ export function useStateSnapshots(): {
     return out;
   }, [byRun]);
 
-  return { cards, connected };
+  return { cards, connected, byRun };
+}
+
+/**
+ * Selector helper: from a useStateSnapshots() result, extract
+ * (runId → toolState) for runs that have a published toolState.
+ * Pure function (no hook); does not open a second EventSource.
+ *
+ * Usage:
+ *   const snaps = useStateSnapshots();
+ *   const states = selectToolStates(snaps.byRun);
+ */
+export function selectToolStates(
+  byRun: Map<string, SnapshotEnvelope>,
+): Map<string, unknown> {
+  const out = new Map<string, unknown>();
+  for (const env of byRun.values()) {
+    if (env.snapshot.toolState !== undefined) {
+      out.set(env.runId, env.snapshot.toolState);
+    }
+  }
+  return out;
 }
