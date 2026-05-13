@@ -217,6 +217,34 @@ const nextConfig = {
   // /api/harness/* and /api/plugins/* are served LOCALLY by this app
   // (mounted in app/api/[[...route]]/route.ts).
   //
+  // Permissive CORS for the Tauri webview.
+  //
+  // Same-origin fetches from a WebKitGTK Tauri window are intermittently
+  // rejected with "Fetch API cannot load … due to access control checks"
+  // when the response carries `Vary: RSC, …` (Next's App Router uses Vary
+  // on `RSC`, `Next-Router-State-Tree`, etc.). Adding ACAO:* makes WebKit
+  // treat the response as definitively permissive regardless of Vary
+  // shenanigans, eliminating the false-positive block.
+  //
+  // Safe because:
+  //  - The operator dev server binds 127.0.0.1 only (PAPERCUSP_BIND_HOST
+  //    is unset). Browsers can't reach it from a remote origin in the
+  //    first place.
+  //  - Prod (:3070) is the same Next.js app behind localhost-only Tauri
+  //    sidecar; same threat model.
+  async headers() {
+    return [
+      {
+        source: '/:path*',
+        headers: [
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+          { key: 'Access-Control-Allow-Methods', value: 'GET,POST,PUT,PATCH,DELETE,OPTIONS' },
+          { key: 'Access-Control-Allow-Headers', value: '*' },
+        ],
+      },
+    ];
+  },
+
   // Cross-app routes still need rewrites:
   //   /api/{org,briefings,public}/* → apps/papercup on :3061 (Papercup demo)
   //   /api/{admin-sidebar,repo-git,build-info}/* → apps/web on :3001 (Restart admin)
