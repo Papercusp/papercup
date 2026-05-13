@@ -62,12 +62,27 @@ export default defineTool({
     operator: { perRun: 15 },
   },
   args: argsSchema,
-  async handler(args) {
+  async handler(args, ctx) {
     const response = await executeDocsGet(
       args,
       source as unknown as GetSource,
       (page) => getLLMText(page as never),
     );
+
+    // Emit per-call telemetry signal. Schema:
+    //   { requested, found, not_found, truncated, sliced, has_heading }
+    // Persists into harness_shared.tool_invocations.metadata_json
+    // (migration 068). Drives Phase 2 trigger predicates documented
+    // in apps/operator/docs/plans/docs-retrieval-phase1.md.
+    ctx.metadata?.({
+      requested: response.results.length,
+      found: response.results.filter((r) => r.found).length,
+      not_found: response.results.filter((r) => !r.found).length,
+      truncated: response.results.filter((r) => 'truncated' in r && r.truncated).length,
+      sliced: response.results.filter((r) => 'sliced' in r && r.sliced).length,
+      has_heading: Boolean(args.heading),
+    });
+
     return {
       content: [{ type: 'text' as const, text: JSON.stringify(response) }],
     };
