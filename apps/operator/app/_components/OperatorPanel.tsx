@@ -17,9 +17,10 @@
  */
 
 import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
-import { Search } from 'lucide-react';
+import * as Collapsible from '@radix-ui/react-collapsible';
+import { ArrowUpRight, ChevronDown, Pause, Play, RefreshCcw, Search, Settings2, X } from 'lucide-react';
 import { usePathname } from 'next/navigation';
-import { useQueryState, parseAsString, parseAsStringLiteral } from 'nuqs';
+import { useQueryState, parseAsBoolean, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 import { createResilientEventSource } from '@restart/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -34,7 +35,6 @@ import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
 import RouteLink from './RouteLink';
-import { OperatorReactorCore } from './hud/OperatorReactorCore';
 import { OperatorScanOverlay } from './hud/OperatorScanOverlay';
 import DelegatesSection from './DelegatesSection';
 import ScanHistorySection from './ScanHistorySection';
@@ -292,13 +292,26 @@ export { setOperatorState };
 
 export function OperatorButton(): ReactElement {
   const [state, setState] = useState<OperatorState>(sharedState);
+  const [deckOpen, setDeckOpen] = useQueryState('deck', parseAsBoolean.withDefault(false));
 
   useEffect(() => {
-    const fn = (partial: Partial<OperatorState>) =>
+    const fn = (partial: Partial<OperatorState>) => {
       setState((s) => ({ ...s, ...partial }));
+      if (typeof partial.open === 'boolean') void setDeckOpen(partial.open);
+    };
     void hydrateOperatorStateFromPg();
     return subscribeOperatorState(fn);
-  }, []);
+  }, [setDeckOpen]);
+
+  useEffect(() => {
+    if (deckOpen === state.open) return;
+    broadcastState({ open: deckOpen });
+  }, [deckOpen, state.open]);
+
+  const setOpen = useCallback((next: boolean) => {
+    void setDeckOpen(next);
+    broadcastState({ open: next });
+  }, [setDeckOpen]);
 
   useEffect(() => {
     let armed = false;
@@ -314,21 +327,18 @@ export function OperatorButton(): ReactElement {
       }
       if (armed && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        broadcastState({ open: !sharedState.open });
+        setOpen(!sharedState.open);
         armed = false;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [setOpen]);
 
   const toggle = useCallback(() => {
-    broadcastState({ open: !sharedState.open });
-  }, []);
+    setOpen(!state.open);
+  }, [setOpen, state.open]);
 
-  // Pause is "no autonomous work" — manual scan/think/act are user-driven
-  // and should override the paused indicator while they're running. Pause
-  // re-asserts itself when iconState falls back to idle/awaiting-input.
   const pausedActive = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
   const titleByState: Record<IconState, string> = {
     idle: 'Deck — Operator idle',
@@ -345,9 +355,6 @@ export function OperatorButton(): ReactElement {
       : titleByState[state.iconState];
 
   const scanning = state.iconState === 'scanning' || state.iconState === 'thinking';
-
-  // Always-visible count bubbles under the header Deck button. Counts come
-  // from sharedState.cards (mirrored from the panel's suggestion array).
   const counts = useMemo(() => {
     const c = { pending: 0, accepted: 0, ignored: 0 };
     for (const card of state.cards) {
@@ -357,13 +364,13 @@ export function OperatorButton(): ReactElement {
     }
     return c;
   }, [state.cards]);
-
+  const buttonLabel = `${title}. ${counts.pending} pending, ${counts.accepted} accepted, ${counts.ignored} ignored.`;
 
   return (
     <span className="pc-header-cta-shell pc-header-cta-shell--operator">
       <button
         className={`pc-header-cta pc-header-cta--operator pc-header-cta--${state.iconState}${state.paused ? ' is-paused' : ''}${scanning ? ' is-scanning' : ''}${state.autoAccept !== 'off' ? ' is-auto' : ''}`}
-        aria-label={title}
+        aria-label={buttonLabel}
         title={title}
         onClick={toggle}
         aria-expanded={state.open}
@@ -1756,7 +1763,7 @@ export function OperatorPanel(): ReactElement | null {
                   type="button"
                   className="operator-btn operator-btn--primary operator-btn--icon"
                   onClick={() => startScan()}
-                  aria-label="Re-scan Operator suggestions"
+                  aria-label="Scan"
                 >
                   <span aria-hidden="true">↻</span>
                   <span>Scan</span>
@@ -1921,7 +1928,7 @@ export function OperatorPanel(): ReactElement | null {
                     <li
                       key={s.id}
                       role="article"
-                      aria-label={`${s.title} — ${tierLabel(s.actualTier)}, ${s.status === 'accepted' ? 'accepted' : s.status === 'ignored' ? 'ignored' : s.auto_dispatch ? 'auto-accepting' : 'awaiting your decision'}`}
+                      aria-label={`${s.title} — ${s.status === 'accepted' ? 'accepted' : s.status === 'ignored' ? 'ignored' : s.auto_dispatch ? 'accepts automatically soon' : 'awaiting your decision'}`}
                       data-entry-index={index}
                       data-entry-state={s.status}
                       data-entry-tier={s.actualTier}
@@ -1935,6 +1942,7 @@ export function OperatorPanel(): ReactElement | null {
                       </div>
                       <div className="operator-entry__content">
                         <div className="operator-entry__meta">
+                          <span className={`operator-kind operator-kind--${s.action}`}>{s.action === 'send_directive' ? 'Directive' : s.action === 'navigate' ? 'Open' : 'Note'}</span>
                           <span className={`operator-tier operator-tier--${s.actualTier}`}>{tierLabel(s.actualTier)}</span>
                           {!(mainView === 'cards' && s.status === 'pending') && (
                             <>
@@ -1961,7 +1969,7 @@ export function OperatorPanel(): ReactElement | null {
                             <div className="operator-entry__state">
                               {s.status === 'pending' && s.auto_dispatch && (
                                 <span className="operator-state-text operator-state-text--auto">
-                                  ⚡ Auto-accepting in {autoDispatchSeconds(s, now)}s
+                                  Accepts automatically in {autoDispatchSeconds(s, now)}s
                                 </span>
                               )}
                               {s.status === 'pending' && (s.failedAttempts ?? 0) > 0 && (
@@ -1969,21 +1977,21 @@ export function OperatorPanel(): ReactElement | null {
                                   className="operator-state-text operator-state-text--warn"
                                   title={s.lastFailureReason ?? 'unknown error'}
                                 >
-                                  ⚠ Last attempt failed: {humanizeFailure(s.lastFailureReason)} — try again
+                                  Last attempt failed: {humanizeFailure(s.lastFailureReason)} — try again
                                 </span>
                               )}
                               {s.status === 'accepted' && (
-                                <span className="operator-state-text operator-state-text--good">✓ accepted</span>
+                                <span className="operator-state-text operator-state-text--good">Accepted</span>
                               )}
                               {s.status === 'ignored' && (
-                                <span className="operator-state-text operator-state-text--muted">ignored</span>
+                                <span className="operator-state-text operator-state-text--muted">Ignored</span>
                               )}
                             </div>
                             <div className="operator-entry__buttons">
-                              {/* Auto-fire countdown: Cancel turns it into a regular pending card; otherwise the timer fires the same Accept flow. */}
+                              {/* Auto-fire countdown: Keep for review turns it into a regular pending card; otherwise the timer fires the same Accept flow. */}
                               {s.status === 'pending' && s.auto_dispatch && (
                                 <button type="button" className="operator-mini-btn operator-mini-btn--ghost" onClick={() => undoCancelSuggestion(s.id)}>
-                                  Cancel auto
+                                  Keep for review
                                 </button>
                               )}
 
@@ -2066,12 +2074,17 @@ export function OperatorPanel(): ReactElement | null {
                         )}
 
                         {s.action === 'send_directive' && s.directive_body && (
-                          <details className="operator-entry__details">
-                            <summary>Directive body</summary>
-                            <div>
-                              <MarkdownPreview value={s.directive_body} outline="left" />
-                            </div>
-                          </details>
+                          <Collapsible.Root className="operator-entry__details">
+                            <Collapsible.Trigger className="operator-entry__details-trigger">
+                              <ChevronDown size={12} aria-hidden="true" />
+                              <span>Preview message</span>
+                            </Collapsible.Trigger>
+                            <Collapsible.Content className="operator-entry__details-content">
+                              <div>
+                                <MarkdownPreview value={s.directive_body} outline="left" />
+                              </div>
+                            </Collapsible.Content>
+                          </Collapsible.Root>
                         )}
                         {s.action === 'inform' && s.body && (
                           <div className="operator-entry__markdown operator-entry__markdown--compact">
@@ -2106,6 +2119,7 @@ export function OperatorPanel(): ReactElement | null {
                   </p>
                 </section>
               )}
+              <DelegatesSection />
               <section className="operator-section">
                 {decisions.length === 0 ? (
                   <div className="operator-empty-rail">
@@ -2169,7 +2183,7 @@ export function OperatorPanel(): ReactElement | null {
           </div>
 
           <footer className="operator-panel__footer pc-animate-in pc-animate-in--fade pc-animate-in--delay-2">
-            <span>Cmd/Ctrl+K then D to toggle • Click outside to close</span>
+            <span>Cmd/Ctrl+K then D • Esc closes • Click outside closes</span>
           </footer>
         </motion.div>
       ) : null}
