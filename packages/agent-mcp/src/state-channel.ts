@@ -51,6 +51,7 @@ export interface VersionedSnapshot {
 }
 
 type Subscriber = (vs: VersionedSnapshot) => void;
+type WorkspaceSubscriber = (vs: VersionedSnapshot, workspaceId: string) => void;
 
 interface RunEntry {
   workspaceId: string;
@@ -68,6 +69,13 @@ const __SYM = Symbol.for('papercusp.stateChannelRegistry');
 type RegistryGlobals = typeof globalThis & {
   [__SYM]?: {
     runs: Map<string /* runId */, RunEntry>;
+    /**
+     * Workspace-scoped subscribers — fire on every mutation in any
+     * run scoped to the given workspaceId. Used by the chat-surface
+     * SSE consumer at /api/operator/state-snapshot to forward every
+     * card change without needing to know runIds in advance.
+     */
+    workspaceSubs: Map<string /* workspaceId */, Set<WorkspaceSubscriber>>;
     gcTimer: ReturnType<typeof setInterval> | null;
     lifecycleSubscribed: boolean;
   };
@@ -78,6 +86,7 @@ function registry() {
   if (!g[__SYM]) {
     g[__SYM] = {
       runs: new Map(),
+      workspaceSubs: new Map(),
       gcTimer: null,
       lifecycleSubscribed: false,
     };
@@ -112,6 +121,20 @@ function emit(entry: RunEntry): void {
       cb(vs);
     } catch (e) {
       console.warn('[state-channel] subscriber threw', { runId: entry.runId, error: e });
+    }
+  }
+  // Fan out to workspace-scoped subscribers (chat surfaces, /dev tab).
+  const wsSet = registry().workspaceSubs.get(entry.workspaceId);
+  if (wsSet) {
+    for (const cb of wsSet) {
+      try {
+        cb(vs, entry.workspaceId);
+      } catch (e) {
+        console.warn('[state-channel] workspace subscriber threw', {
+          workspaceId: entry.workspaceId,
+          error: e,
+        });
+      }
     }
   }
 }
@@ -217,6 +240,54 @@ export function closeRun(runId: string): void {
 }
 
 /**
+ * Subscribe to ALL snapshot changes within a workspace, irrespective
+ * of runId. Used by chat-surface SSE consumers — they don't know
+ * which runIds will exist in advance, but they always know their
+ * active workspace.
+ *
+ * The subscriber fires on every mutation in any run scoped to the
+ * workspace. It does NOT receive an "initial" snapshot for currently-
+ * open runs; the caller should walk getSnapshot(runId) for known
+ * runIds if they need that. This API is for live updates only.
+ */
+export function subscribeWorkspace(
+  workspaceId: string,
+  cb: WorkspaceSubscriber,
+): () => void {
+  const r = registry();
+  let set = r.workspaceSubs.get(workspaceId);
+  if (!set) {
+    set = new Set();
+    r.workspaceSubs.set(workspaceId, set);
+  }
+  set.add(cb);
+  return () => {
+    set!.delete(cb);
+    if (set!.size === 0) r.workspaceSubs.delete(workspaceId);
+  };
+}
+
+/**
+ * Snapshot every open run scoped to a workspace. Used by chat-surface
+ * SSE consumers right after subscribeWorkspace, so the client sees
+ * every currently-open card on stream open.
+ */
+export function snapshotWorkspace(workspaceId: string): VersionedSnapshot[] {
+  const r = registry();
+  const out: VersionedSnapshot[] = [];
+  for (const entry of r.runs.values()) {
+    if (entry.workspaceId === workspaceId) {
+      out.push({
+        runId: entry.runId,
+        version: entry.version,
+        snapshot: entry.snapshot,
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Workspace-switch subscriber. Drops every run scoped to the workspace.
  */
 export function dropStateSnapshotsForWorkspaceSwitch(workspaceId: string): void {
@@ -226,12 +297,15 @@ export function dropStateSnapshotsForWorkspaceSwitch(workspaceId: string): void 
       r.runs.delete(rid);
     }
   }
+  // Drop workspace subscribers too — they're scoped to the old workspace.
+  r.workspaceSubs.delete(workspaceId);
 }
 
 /** Test-only: clear everything. */
 export function _resetStateChannelForTests(): void {
   const r = registry();
   r.runs.clear();
+  r.workspaceSubs.clear();
 }
 
 /** Test-only stats. */

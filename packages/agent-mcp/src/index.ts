@@ -45,6 +45,8 @@ export {
   setToolState,
   getSnapshot,
   subscribe as subscribeStateChannel,
+  subscribeWorkspace,
+  snapshotWorkspace,
   dropStateSnapshotsForWorkspaceSwitch,
 } from './state-channel';
 export type {
