@@ -72,6 +72,19 @@ type CardResponse<TSchema extends ZodTypeAny> =
   | { action: 'cancel' };
 ```
 
+### Submit payload shape by presentation
+
+The renderer wraps the user's response into a per-kind payload shape:
+
+| Presentation | Submit payload |
+|---|---|
+| `radio`, `checkbox` | `{ picks: [optionId, ...] }` |
+| `text` | `{ value: string }` |
+| `date` | `{ value: string }` *(ISO `yyyy-mm-dd`)* |
+| `slider` | `{ value: number }` |
+
+Your `dataSchema` must match the payload shape. For a single-select radio with two options, that's typically `z.object({ picks: z.tuple([z.enum(['x','y'])]) })`. For a date, `z.object({ value: z.string().date() })`. The server validates the inbound payload against `dataSchema` before resolving the handler's promise.
+
 ### `presentation` shapes
 
 ```ts

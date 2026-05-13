@@ -11,11 +11,22 @@
  * snapshot drops the resolved card from openCards and the bar shows
  * the next one (or hides entirely).
  *
- * Sibling to the in-transcript tool_call card flow today. As tools
- * migrate to ctx.askUser (commit 8 + follow-ups), new cards appear
- * here. Historical chat:ask_choice cards (rendered from tool_call
- * args in the chat transcript) continue to work via the existing
- * renderToolCard path on OperatorChat.
+ * Dispatch by presentation kind:
+ *   - radio / checkbox → AskChoiceCard
+ *   - text / date / slider → InputCard
+ *   - unknown / missing → fallbackText
+ *
+ * Submit payload is shape-specific. The card author's dataSchema
+ * tells the framework what the value-key looks like; the runtime
+ * here keeps the convention:
+ *   - choice → { picks: [option_id, ...] }
+ *   - input  → { value: ... }
+ *
+ * Optimistic-dismiss (audit): on successful POST, the correlationId
+ * is added to a local dismissed set so the card hides immediately
+ * even if the state-snapshot SSE update doesn't arrive (disconnected
+ * mid-flow). The server's PENDING map is already cleared at this
+ * point — the dismiss is purely a UI bridge.
  */
 
 import { useState, type ReactNode } from 'react';
@@ -25,6 +36,7 @@ import {
   type AskChoiceArgs,
   type AskChoiceResponse,
 } from './AskChoiceCard';
+import { InputCard, type InputCardResponse } from './InputCard';
 import { useStateSnapshots, type OpenCardWithRun } from '@/lib/use-state-snapshots';
 import { postCardResponse } from '@/lib/post-card-response';
 
@@ -35,11 +47,6 @@ interface Props {
   workspaceId: string;
 }
 
-/**
- * Translate an OpenCardSnapshot's presentation into AskChoiceArgs.
- * Returns null for presentations the bar doesn't yet render (text,
- * date, slider — PR 3 expands AskChoiceCard).
- */
 function toAskChoiceArgs(card: OpenCardWithRun): AskChoiceArgs | null {
   const p = card.presentation;
   if (!p) return null;
@@ -60,68 +67,31 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
   const { cards, connected } = useStateSnapshots();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /**
-   * Optimistic-dismiss: once /card-response returns ok:true, the
-   * server has resolved the deferred and dropped the card from PENDING.
-   * Normally the state-snapshot SSE pushes the updated openCards array
-   * and this set is irrelevant. But if the SSE is disconnected mid-flow,
-   * the snapshot update never arrives — the card would stay rendered
-   * forever. Tracking dismissed correlationIds locally bridges that gap.
-   */
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
 
   const visibleCards = cards.filter((c) => !dismissed.has(c.correlationId));
   if (visibleCards.length === 0) return null;
   const head = visibleCards[0];
   const remaining = visibleCards.length - 1;
-  const args = toAskChoiceArgs(head);
 
-  if (!args) {
-    // Unknown presentation kind. Show a generic fallback so the user
-    // isn't blocked; PR 3 adds renderers for text/date/slider.
-    return (
-      <div className="pending-cards-bar pending-cards-bar--fallback" role="status">
-        <p>{head.prompt}</p>
-        <p className="pending-cards-bar-hint">
-          {head.fallbackText ?? 'No renderer for this card type yet.'}
-        </p>
-      </div>
-    );
-  }
-
-  const respond = async (response: AskChoiceResponse): Promise<void> => {
+  const post = async (
+    body:
+      | { action: 'submit'; payload: unknown }
+      | { action: 'decline'; reason?: string }
+      | { action: 'cancel' },
+  ): Promise<void> => {
     setBusy(true);
     setError(null);
     const correlationId = head.correlationId;
     try {
-      const body =
-        response.action === 'submit'
-          ? {
-              correlationId,
-              workspaceId,
-              action: 'submit' as const,
-              payload: {
-                picks: response.picks.map((p) => p.option_id),
-              },
-            }
-          : response.action === 'decline'
-          ? {
-              correlationId,
-              workspaceId,
-              action: 'decline' as const,
-              reason: response.reason,
-            }
-          : {
-              correlationId,
-              workspaceId,
-              action: 'cancel' as const,
-            };
-      const r = await postCardResponse(conversationId, body);
+      const r = await postCardResponse(conversationId, {
+        correlationId,
+        workspaceId,
+        ...body,
+      });
       if (!r.ok) {
         setError(r.error ?? `card-response failed (${r.status})`);
       } else {
-        // Optimistic-dismiss covers the SSE-disconnected case where the
-        // server resolved the card but the snapshot update can't reach us.
         setDismissed((prev) => {
           const next = new Set(prev);
           next.add(correlationId);
@@ -135,13 +105,65 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
     }
   };
 
-  return (
-    <div className="pending-cards-bar" data-busy={busy ? 'true' : 'false'}>
+  const onChoiceResponse = (response: AskChoiceResponse): void => {
+    if (response.action === 'submit') {
+      void post({
+        action: 'submit',
+        payload: { picks: response.picks.map((p) => p.option_id) },
+      });
+    } else if (response.action === 'decline') {
+      void post({ action: 'decline', reason: response.reason });
+    } else {
+      void post({ action: 'cancel' });
+    }
+  };
+
+  const onInputResponse = (response: InputCardResponse): void => {
+    if (response.action === 'submit') {
+      void post({ action: 'submit', payload: { value: response.value } });
+    } else {
+      void post({ action: 'decline', reason: response.reason });
+    }
+  };
+
+  const choiceArgs = toAskChoiceArgs(head);
+  const inputKinds = head.presentation?.kind;
+  const isInput =
+    inputKinds === 'text' || inputKinds === 'date' || inputKinds === 'slider';
+
+  let body: ReactNode;
+  if (choiceArgs) {
+    body = (
       <AskChoiceCard
-        args={args}
-        onResponse={respond}
+        args={choiceArgs}
+        onResponse={onChoiceResponse}
         allowDecline={head.allowDecline ?? true}
       />
+    );
+  } else if (isInput && head.presentation) {
+    body = (
+      <InputCard
+        prompt={head.prompt}
+        presentation={head.presentation as Parameters<typeof InputCard>[0]['presentation']}
+        fallbackText={head.fallbackText}
+        allowDecline={head.allowDecline ?? true}
+        onResponse={onInputResponse}
+      />
+    );
+  } else {
+    body = (
+      <div className="pending-cards-bar pending-cards-bar--fallback" role="status">
+        <p>{head.prompt}</p>
+        <p className="pending-cards-bar-hint">
+          {head.fallbackText ?? 'No renderer for this card type yet.'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pending-cards-bar" data-busy={busy ? 'true' : 'false'}>
+      {body}
       {remaining > 0 && (
         <p className="pending-cards-bar-queue" aria-live="polite">
           {remaining} more {remaining === 1 ? 'card' : 'cards'} after this
