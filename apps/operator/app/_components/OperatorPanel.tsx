@@ -20,7 +20,7 @@ import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, ty
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { ArrowUpRight, ChevronDown, Pause, Play, RefreshCcw, Search, Settings2, X } from 'lucide-react';
 import { usePathname } from 'next/navigation';
-import { useQueryState, parseAsBoolean, parseAsString, parseAsStringLiteral } from 'nuqs';
+import { useQueryState, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 import { createResilientEventSource } from '@restart/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -292,26 +292,13 @@ export { setOperatorState };
 
 export function OperatorButton(): ReactElement {
   const [state, setState] = useState<OperatorState>(sharedState);
-  const [deckOpen, setDeckOpen] = useQueryState('deck', parseAsBoolean.withDefault(false));
 
   useEffect(() => {
-    const fn = (partial: Partial<OperatorState>) => {
+    const fn = (partial: Partial<OperatorState>) =>
       setState((s) => ({ ...s, ...partial }));
-      if (typeof partial.open === 'boolean') void setDeckOpen(partial.open);
-    };
     void hydrateOperatorStateFromPg();
     return subscribeOperatorState(fn);
-  }, [setDeckOpen]);
-
-  useEffect(() => {
-    if (deckOpen === state.open) return;
-    broadcastState({ open: deckOpen });
-  }, [deckOpen, state.open]);
-
-  const setOpen = useCallback((next: boolean) => {
-    void setDeckOpen(next);
-    broadcastState({ open: next });
-  }, [setDeckOpen]);
+  }, []);
 
   useEffect(() => {
     let armed = false;
@@ -327,17 +314,17 @@ export function OperatorButton(): ReactElement {
       }
       if (armed && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        setOpen(!sharedState.open);
+        broadcastState({ open: !sharedState.open });
         armed = false;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [setOpen]);
+  }, []);
 
   const toggle = useCallback(() => {
-    setOpen(!state.open);
-  }, [setOpen, state.open]);
+    broadcastState({ open: !sharedState.open });
+  }, []);
 
   const pausedActive = state.paused && (state.iconState === 'idle' || state.iconState === 'awaiting-input');
   const titleByState: Record<IconState, string> = {
@@ -353,7 +340,6 @@ export function OperatorButton(): ReactElement {
     : state.paused
       ? `${titleByState[state.iconState]} (paused — auto-dispatch off)`
       : titleByState[state.iconState];
-
   const scanning = state.iconState === 'scanning' || state.iconState === 'thinking';
   const counts = useMemo(() => {
     const c = { pending: 0, accepted: 0, ignored: 0 };
@@ -682,15 +668,14 @@ export function OperatorPanel(): ReactElement | null {
   }, []);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<{ close: () => void } | null>(null);
-  const [feedQuery, setFeedQuery] = useQueryState('deckQ', parseAsString.withDefault(''));
+  const [feedQuery, setFeedQuery] = useState('');
   const [mainView, setMainView] = useQueryState<MainView>(
     'deckView',
     parseAsStringLiteral(['cards', 'accepted', 'ignored', 'scan-history'] as const).withDefault('cards'),
   );
   // Active harness filter — selected from the card toolbar dropdown.
-  // Empty string = all harnesses.
-  const [harnessFilterValue, setHarnessFilterValue] = useQueryState('deckHarness', parseAsString.withDefault(''));
-  const harnessFilter = harnessFilterValue || null;
+  // null = all harnesses.
+  const [harnessFilter, setHarnessFilter] = useState<string | null>(null);
   const [harnessRows, setHarnessRows] = useState<HarnessOneLiner[]>([]);
   const [scanStatus, setScanStatus] = useState<ScanStatus>('idle');
   const [scanError, setScanError] = useState<string | null>(null);
@@ -1874,8 +1859,8 @@ export function OperatorPanel(): ReactElement | null {
                     </div>
                     <div className="operator-feed-harness-filter">
                       <Select
-                        value={harnessFilterValue || '_all'}
-                        onChange={(value) => setHarnessFilterValue(value === '_all' ? '' : value)}
+                        value={harnessFilter ?? '_all'}
+                        onChange={(v) => setHarnessFilter(v === '_all' ? null : v)}
                         ariaLabel="Filter actions by harness"
                         triggerClassName="operator-feed-harness-select"
                         options={harnessOptions.map((option) => ({ value: option.value, label: option.label }))}
@@ -1894,7 +1879,7 @@ export function OperatorPanel(): ReactElement | null {
                     type="button"
                     onClick={() => {
                       setFeedQuery('');
-                      setHarnessFilterValue('');
+                      setHarnessFilter(null);
                     }}
                   >
                     Clear
