@@ -17,6 +17,11 @@ function LoginForm() {
   const router = useRouter();
   const sp = useSearchParams();
   const redirectTo = sp.get('redirect_to') || '/';
+  // When the user navigates here from UserPicker → "Switch user" we set
+  // `?switch=1`. In that mode we (a) never auto-redirect even if a session
+  // exists, (b) skip the one-user autofill, and (c) show a banner so the
+  // user understands the in-flight session will be replaced.
+  const isSwitching = sp.get('switch') === '1';
 
   const [available, setAvailable] = useState<AvailableUser[]>([]);
   const [mode, setMode] = useState<'login' | 'signup'>('login');
@@ -32,13 +37,17 @@ function LoginForm() {
         const r = await fetch('/api/auth/me');
         if (!r.ok) return;
         const j = await r.json();
-        if (j.user) {
+        // Switching: never auto-redirect even if a session exists. The
+        // user is deliberately on /login to swap accounts.
+        if (j.user && !isSwitching) {
           router.replace(redirectTo);
           return;
         }
         const users = (j.available ?? []) as AvailableUser[];
         setAvailable(users);
-        if (users.length === 1) {
+        // Switching: skip the single-user autofill so the form is empty
+        // and the user can pick a different account from scratch.
+        if (!isSwitching && users.length === 1) {
           setUsername(users[0].username);
           setUsePassword(users[0].has_password);
         }
@@ -46,7 +55,7 @@ function LoginForm() {
         /* network failure — show empty form */
       }
     })();
-  }, [router, redirectTo]);
+  }, [router, redirectTo, isSwitching]);
 
   // When username changes via dropdown, infer whether password is needed
   useEffect(() => {
@@ -75,6 +84,27 @@ function LoginForm() {
       try {
         sessionStorage.setItem('papercusp_just_logged_in', j.user.display_name);
       } catch { /* sessionStorage may be unavailable */ }
+      // When switching, clear AutoLoginWelcomeToast stamps for OTHER users
+      // so the next session for those accounts gets a fresh welcome on
+      // its 4am cycle. Cheap — runs in localStorage only. Uses the
+      // official Storage API (length + key(i)) rather than Object.keys
+      // for correctness against shimmed environments (test fixtures, etc).
+      if (isSwitching && j.user?.id) {
+        try {
+          const toRemove: string[] = [];
+          for (let i = 0; i < localStorage.length; i += 1) {
+            const key = localStorage.key(i);
+            if (
+              key &&
+              key.startsWith('papercusp_user_welcomed_') &&
+              key !== `papercusp_user_welcomed_${j.user.id}`
+            ) {
+              toRemove.push(key);
+            }
+          }
+          for (const key of toRemove) localStorage.removeItem(key);
+        } catch { /* localStorage unavailable */ }
+      }
       toast.success(`Welcome, ${j.user.display_name}`);
       router.replace(redirectTo);
     } finally {
@@ -128,6 +158,21 @@ function LoginForm() {
         <h1 style={{ margin: 0, fontSize: 20 }}>
           {mode === 'login' ? 'Sign in' : 'Create a user'}
         </h1>
+        {isSwitching && (
+          <div
+            role="status"
+            style={{
+              fontSize: 12,
+              padding: '8px 10px',
+              borderRadius: 6,
+              border: '1px solid var(--border)',
+              background: 'var(--surface-2, transparent)',
+              opacity: 0.85,
+            }}
+          >
+            Signing in as a different user. Your current session will be replaced.
+          </div>
+        )}
 
         {mode === 'login' && available.length > 1 ? (
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
