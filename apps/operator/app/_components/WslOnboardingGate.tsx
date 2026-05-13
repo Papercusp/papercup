@@ -23,6 +23,7 @@
  */
 
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import {
   isTauri,
   wslBootstrap,
@@ -35,6 +36,7 @@ import {
   type WslOpError,
   type WslStatus,
 } from '../../lib/wsl-tauri';
+import { useConfirmDialog } from '../harness/useConfirmDialog';
 
 function isWslOpError(e: unknown): e is WslOpError {
   return (
@@ -52,6 +54,7 @@ interface Props {
 export default function WslOnboardingGate({ children }: Props) {
   const [status, setStatus] = useState<WslStatus | null | 'pending'>('pending');
   const [busy, setBusy] = useState<string | null>(null);
+  const { askConfirm, confirmEl } = useConfirmDialog();
   const [logTail, setLogTail] = useState<string>('');
   // Track the prior state-kind so we can detect the transition into
   // Ready and trigger one app restart (so the Rust side spawns the
@@ -104,7 +107,10 @@ export default function WslOnboardingGate({ children }: Props) {
         // wslFinalizeReady triggers app.restart(); the only way control
         // returns is if it failed to start. Surface for the user.
         finalizingRef.current = false;
-        alert(`Could not restart papercup: ${err}\n\nPlease quit and reopen.`);
+        toast.error(`Could not restart papercup: ${err}`, {
+          description: 'Please quit and reopen.',
+          duration: Infinity,
+        });
       });
     }
   }, [status]);
@@ -173,7 +179,11 @@ export default function WslOnboardingGate({ children }: Props) {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
-        zIndex: 999999,
+        // Sits above normal app chrome but BELOW modal (z:100) + toast
+        // (z:150) so the wrapper's confirmation modal can render over
+        // the gate. The gate covers the whole viewport, so nothing
+        // else competes for the layer.
+        zIndex: 60,
         fontFamily: 'system-ui, sans-serif',
       }}
     >
@@ -196,7 +206,7 @@ export default function WslOnboardingGate({ children }: Props) {
           about 5 minutes.
         </p>
 
-        <Step status={status} busy={busy} onAction={refresh} logTail={logTail} />
+        <Step status={status} busy={busy} onAction={refresh} logTail={logTail} askConfirm={askConfirm} />
 
         <details style={{ marginTop: 24, fontSize: 12, color: 'var(--fg-mute, #9a9aa3)' }}>
           <summary style={{ cursor: 'pointer' }}>Diagnostics</summary>
@@ -217,7 +227,13 @@ export default function WslOnboardingGate({ children }: Props) {
           <button
             type="button"
             onClick={async () => {
-              if (!confirm('Reset the papercup runtime? This removes the WSL distro.')) return;
+              const ok = await askConfirm({
+                title: 'Reset the papercup runtime?',
+                body: 'This removes the WSL distro and you will have to reinstall.',
+                confirmLabel: 'Reset',
+                destructive: true,
+              });
+              if (!ok) return;
               await wslUninstall();
               await refresh();
             }}
@@ -236,6 +252,7 @@ export default function WslOnboardingGate({ children }: Props) {
           </button>
         </details>
       </div>
+      {confirmEl}
     </div>
   );
 }
@@ -245,11 +262,13 @@ function Step({
   busy,
   onAction,
   logTail,
+  askConfirm,
 }: {
   status: WslStatus;
   busy: string | null;
   onAction: () => void;
   logTail: string;
+  askConfirm: ReturnType<typeof useConfirmDialog>['askConfirm'];
 }) {
   const { state } = status;
   switch (state.kind) {
@@ -270,22 +289,23 @@ function Step({
                 if (isWslOpError(err) && err.kind === 'NeedsElevation') {
                   // One-click re-launch as admin — UAC prompt comes
                   // from PowerShell's Start-Process -Verb RunAs.
-                  if (
-                    confirm(
-                      'WSL install needs administrator privileges. Re-launch papercup as admin?',
-                    )
-                  ) {
+                  const ok = await askConfirm({
+                    title: 'WSL install needs administrator privileges',
+                    body: 'Re-launch papercup as admin? You\'ll see a Windows UAC prompt next.',
+                    confirmLabel: 'Re-launch as admin',
+                  });
+                  if (ok) {
                     try {
                       await wslRelaunchElevated();
                       // wslRelaunchElevated calls app.exit() — control
                       // shouldn't return here, but if it does, refresh.
                     } catch (relaunchErr) {
-                      alert(`Could not re-launch as admin: ${relaunchErr}`);
+                      toast.error(`Could not re-launch as admin: ${relaunchErr}`);
                     }
                   }
                 } else {
                   const msg = isWslOpError(err) ? err.message : String(err);
-                  alert(`Install failed: ${msg}`);
+                  toast.error(`Install failed: ${msg}`);
                 }
               }
               onAction();
