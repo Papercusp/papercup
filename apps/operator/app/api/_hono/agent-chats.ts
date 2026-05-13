@@ -21,7 +21,6 @@
  *   DELETE /:slug/agent-chats/:chatId               → archive (sets archived_at)
  */
 import type { Hono } from 'hono';
-import { stream } from 'hono/streaming';
 import { sseResponse } from '@restart/sse';
 import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { existsSync, readFileSync } from 'node:fs';
