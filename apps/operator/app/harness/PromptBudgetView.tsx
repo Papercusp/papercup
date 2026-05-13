@@ -14,6 +14,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Row {
   id: number;
@@ -24,6 +25,12 @@ interface Row {
   total_chars: number;
   substrate_chars: number;
   history_chars: number;
+}
+
+function fmtWhen(ts_ms: number): string {
+  return new Date(ts_ms).toLocaleTimeString(undefined, {
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
 }
 
 const SUBTLE = 'var(--pc-muted, #9a9a9a)';
@@ -81,6 +88,39 @@ export function PromptBudgetView({
   const avgTotal = Math.round(total / rows.length);
   const maxTotal = rows.reduce((a, r) => Math.max(a, r.total_chars), 0);
 
+  const columns: ColumnDef<Row>[] = [
+    {
+      key: 'when', header: 'When', width: 1.2, align: 'left',
+      toCopyText: (r) => fmtWhen(r.ts_ms),
+      render: ({ row }) => <>{fmtWhen(row.ts_ms)}</>,
+    },
+    {
+      key: 'role', header: 'Role', width: 1, align: 'left',
+      toCopyText: (r) => r.role,
+      render: ({ row }) => <>{row.role}</>,
+    },
+    {
+      key: 'feature', header: 'Feature', width: 2, align: 'left',
+      toCopyText: (r) => r.feature_id ?? '',
+      render: ({ row }) => <span style={{ fontFamily: 'monospace' }}>{row.feature_id ?? '—'}</span>,
+    },
+    {
+      key: 'total', header: 'Total', width: 1.2, align: 'right',
+      toCopyText: (r) => String(r.total_chars),
+      render: ({ row }) => <>{row.total_chars.toLocaleString()}</>,
+    },
+    {
+      key: 'substrate', header: 'Substrate', width: 1.2, align: 'right',
+      toCopyText: (r) => String(r.substrate_chars),
+      render: ({ row }) => <span style={{ color: SUBTLE }}>{row.substrate_chars.toLocaleString()}</span>,
+    },
+    {
+      key: 'history', header: 'History', width: 1.2, align: 'right',
+      toCopyText: (r) => String(r.history_chars),
+      render: ({ row }) => <span style={{ color: SUBTLE }}>{row.history_chars.toLocaleString()}</span>,
+    },
+  ];
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ display: 'flex', gap: 12, fontSize: 11, color: SUBTLE, flexWrap: 'wrap' }}>
@@ -93,40 +133,17 @@ export function PromptBudgetView({
           Refresh
         </button>
       </div>
-      <div style={{ overflowX: 'auto', border: BORDER, borderRadius: 4 }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-          <thead>
-            <tr style={{ background: 'var(--pc-card-bg,#141414)' }}>
-              <th style={th}>When</th>
-              <th style={th}>Role</th>
-              <th style={th}>Feature</th>
-              <th style={th}>Total</th>
-              <th style={th}>Substrate</th>
-              <th style={th}>History</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => {
-              const when = new Date(r.ts_ms).toLocaleTimeString(undefined, {
-                hour: '2-digit', minute: '2-digit', second: '2-digit',
-              });
-              return (
-                <tr key={r.id} style={{ borderTop: BORDER }}>
-                  <td style={td}>{when}</td>
-                  <td style={td}>{r.role}</td>
-                  <td style={{ ...td, fontFamily: 'monospace' }}>{r.feature_id ?? '—'}</td>
-                  <td style={{ ...td, textAlign: 'right' }}>{r.total_chars.toLocaleString()}</td>
-                  <td style={{ ...td, textAlign: 'right', color: SUBTLE }}>{r.substrate_chars.toLocaleString()}</td>
-                  <td style={{ ...td, textAlign: 'right', color: SUBTLE }}>{r.history_chars.toLocaleString()}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div style={{ height: 300, border: BORDER, borderRadius: 4 }}>
+        <RichGrid
+          columns={columns}
+          rows={rows}
+          getRowId={(r) => String(r.id)}
+          rowMinHeight={28}
+          headerHeight={28}
+        />
       </div>
     </div>
   );
 }
 
-const th: React.CSSProperties = { textAlign: 'left', padding: '4px 8px', fontWeight: 500, fontSize: 10, color: SUBTLE, textTransform: 'uppercase' };
-const td: React.CSSProperties = { padding: '3px 8px' };
+

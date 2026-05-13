@@ -7,6 +7,7 @@ import RouteLink from '../../_components/RouteLink';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface InstalledPluginRecord {
   name: string;
@@ -161,6 +162,43 @@ export default function InstalledPluginsPage() {
     }
   }
 
+  const runtimeStatusColumns: ColumnDef<RuntimeStatusRow>[] = [
+    {
+      key: 'plugin', header: 'Plugin', width: 2,
+      toCopyText: (r) => r.plugin,
+      render: ({ row }) => <>{row.plugin}</>,
+    },
+    {
+      key: 'runtime', header: 'Runtime', width: 1,
+      toCopyText: (r) => r.runtime,
+      render: ({ row }) => <code style={{ fontSize: 11 }}>{row.runtime}</code>,
+    },
+    {
+      key: 'loadedFor', header: 'Loaded for', width: 2,
+      toCopyText: (r) => r.loadedFor.join(', '),
+      render: ({ row }) => row.loadedFor.length > 0 ? <>{row.loadedFor.join(', ')}</> : <em style={{ opacity: 0.5 }}>—</em>,
+    },
+    {
+      key: 'pid', header: 'PID', width: 1, align: 'right',
+      toCopyText: (r) => r.pid != null ? String(r.pid) : '',
+      render: ({ row }) => row.pid != null ? <>{row.pid}</> : <em style={{ opacity: 0.5 }}>—</em>,
+    },
+    {
+      key: 'restarts', header: 'Restarts', width: 1, align: 'right',
+      toCopyText: (r) => r.restartCount != null ? String(r.restartCount) : '',
+      render: ({ row }) => row.restartCount != null ? <>{row.restartCount}</> : <em style={{ opacity: 0.5 }}>—</em>,
+    },
+    {
+      key: 'ok', header: 'OK', width: 1, align: 'center',
+      toCopyText: (r) => r.ok ? 'OK' : 'FAIL',
+      render: ({ row }) => (
+        <span style={{ color: row.ok ? 'var(--ok, #22c55e)' : 'var(--danger, #ef4444)' }}>
+          {row.ok ? '●' : '○'}
+        </span>
+      ),
+    },
+  ];
+
   return (
     <div className="pc-shell pc-marketplace-shell">
       {confirmEl}
@@ -189,32 +227,15 @@ export default function InstalledPluginsPage() {
       {runtimeStatus.length > 0 && (
         <section className="pc-card" style={{ padding: 12, marginBottom: 12 }}>
           <p className="pc-eyebrow" style={{ marginBottom: 8 }}>Plugin runtime status</p>
-          <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ textAlign: 'left', opacity: 0.7 }}>
-                <th>Plugin</th>
-                <th>Runtime</th>
-                <th>Loaded for</th>
-                <th>PID</th>
-                <th>Restarts</th>
-                <th>OK</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runtimeStatus.map((row) => (
-                <tr key={`${row.plugin}::${row.runtime}`} style={{ borderTop: '1px solid var(--border, rgba(255,255,255,0.1))' }}>
-                  <td>{row.plugin}</td>
-                  <td><code style={{ fontSize: 11 }}>{row.runtime}</code></td>
-                  <td>{row.loadedFor.join(', ') || <em style={{ opacity: 0.5 }}>—</em>}</td>
-                  <td>{row.pid ?? <em style={{ opacity: 0.5 }}>—</em>}</td>
-                  <td>{row.restartCount ?? <em style={{ opacity: 0.5 }}>—</em>}</td>
-                  <td style={{ color: row.ok ? 'var(--ok, #22c55e)' : 'var(--danger, #ef4444)' }}>
-                    {row.ok ? '●' : '○'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(360, 36 + runtimeStatus.length * 32 + 4) }}>
+            <RichGrid<RuntimeStatusRow>
+              columns={runtimeStatusColumns}
+              rows={runtimeStatus}
+              getRowId={(r) => `${r.plugin}::${r.runtime}`}
+              rowMinHeight={32}
+              headerHeight={32}
+            />
+          </div>
         </section>
       )}
       {loading ? (

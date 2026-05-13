@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { useSyncQuery } from '@restart/sync';
 import { Checkbox } from './Checkbox';
 import { Select } from './Select';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 /**
  * Per-harness Settings panel — one tab inside the harness UI.
@@ -495,21 +496,56 @@ export default function HarnessSettingsPanel({
     });
   };
 
-  // ───── telemetry table styles ─────
-  const cellStyle: React.CSSProperties = {
-    padding: '6px 10px',
-    borderBottom: '1px solid var(--pc-border, #2a2a2a)',
-    fontSize: 12,
-    textAlign: 'left',
-  };
-  const headerStyle: React.CSSProperties = {
-    ...cellStyle,
-    color: 'var(--pc-muted, #9a9a9a)',
-    fontWeight: 500,
-    fontSize: 11,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  };
+  // ───── telemetry columns ─────
+  const telemetryColumns: ColumnDef<TelemetryRow>[] = [
+    {
+      key: 'when', header: 'When', width: 2,
+      toCopyText: (r) => new Date(r.ts).toISOString(),
+      render: ({ row }) => <>{new Date(row.ts).toLocaleString()}</>,
+    },
+    {
+      key: 'feature', header: 'Feature', width: 2,
+      toCopyText: (r) => r.feature_id,
+      render: ({ row }) => <>{row.feature_id}</>,
+    },
+    {
+      key: 'n', header: 'N', width: 1,
+      toCopyText: (r) => r.requested_n === r.actual_n ? String(r.actual_n) : `${r.actual_n} (req ${r.requested_n})`,
+      render: ({ row }) => <>{row.requested_n === row.actual_n ? row.actual_n : `${row.actual_n} (req ${row.requested_n})`}</>,
+    },
+    {
+      key: 'tier', header: 'Tier', width: 1,
+      toCopyText: (r) => r.tier_label ?? '',
+      render: ({ row }) => <>{row.tier_label ?? '—'}</>,
+    },
+    {
+      key: 'slots', header: 'Slots', width: 1,
+      toCopyText: (r) => r.max_slots != null && r.available_at_decision != null ? `${r.available_at_decision}/${r.max_slots}` : '',
+      render: ({ row }) => <>{row.max_slots != null && row.available_at_decision != null ? `${row.available_at_decision}/${row.max_slots}` : '—'}</>,
+    },
+    {
+      key: 'synth', header: 'Synth', width: 1.5,
+      toCopyText: (r) => r.synthesized === true ? 'ok' : r.synthesized === false ? `failed${r.synthesis_error ? `: ${r.synthesis_error}` : ''}` : '',
+      render: ({ row }) => {
+        const text = row.synthesized === true ? 'ok' : row.synthesized === false ? `failed${row.synthesis_error ? ` (${row.synthesis_error.slice(0, 40)})` : ''}` : '—';
+        const color = row.synthesized === false ? 'var(--bad, #d97757)' : 'var(--pc-muted, #9a9a9a)';
+        return <span style={{ color }} title={row.synthesis_error ?? undefined}>{text}</span>;
+      },
+    },
+    {
+      key: 'outcome', header: 'Outcome', width: 1,
+      toCopyText: (r) => r.outcome ?? 'pending',
+      render: ({ row }) => {
+        const color = row.outcome === 'pass' ? 'var(--good, #6aa84f)' : row.outcome === 'fail' ? 'var(--bad, #d97757)' : 'var(--pc-muted, #9a9a9a)';
+        return <span style={{ color }}>{row.outcome ?? 'pending'}</span>;
+      },
+    },
+    {
+      key: 'duration', header: 'Duration', width: 1,
+      toCopyText: (r) => r.duration_ms != null ? `${(r.duration_ms / 1000).toFixed(1)}s` : '',
+      render: ({ row }) => <>{row.duration_ms != null ? `${(row.duration_ms / 1000).toFixed(1)}s` : '—'}</>,
+    },
+  ];
 
   return (
     <div style={{ padding: 16, maxWidth: 920, overflowY: 'auto' }}>
@@ -978,58 +1014,14 @@ export default function HarnessSettingsPanel({
               No worker decisions recorded yet. Run the harness with tier-mode worker counts to populate.
             </div>
           ) : (
-            <div style={{ overflowX: 'auto', border: '1px solid var(--pc-border, #2a2a2a)', borderRadius: 4 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>
-                    <th style={headerStyle}>When</th>
-                    <th style={headerStyle}>Feature</th>
-                    <th style={headerStyle}>N</th>
-                    <th style={headerStyle}>Tier</th>
-                    <th style={headerStyle}>Slots</th>
-                    <th style={headerStyle}>Synth</th>
-                    <th style={headerStyle}>Outcome</th>
-                    <th style={headerStyle}>Duration</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {telemetry.map((row) => {
-                    const when = new Date(row.ts).toLocaleString();
-                    const nDisplay = row.requested_n === row.actual_n
-                      ? `${row.actual_n}`
-                      : `${row.actual_n} (req ${row.requested_n})`;
-                    const slots = row.max_slots != null && row.available_at_decision != null
-                      ? `${row.available_at_decision}/${row.max_slots}`
-                      : '—';
-                    const outcomeColor = row.outcome === 'pass'
-                      ? 'var(--good, #6aa84f)'
-                      : row.outcome === 'fail'
-                      ? 'var(--bad, #d97757)'
-                      : 'var(--pc-muted, #9a9a9a)';
-                    const duration = row.duration_ms != null ? `${(row.duration_ms / 1000).toFixed(1)}s` : '—';
-                    const synthDisplay = row.synthesized === true
-                      ? 'ok'
-                      : row.synthesized === false
-                      ? `failed${row.synthesis_error ? ` (${row.synthesis_error.slice(0, 40)})` : ''}`
-                      : '—';
-                    const synthColor = row.synthesized === false
-                      ? 'var(--bad, #d97757)'
-                      : 'var(--pc-muted, #9a9a9a)';
-                    return (
-                      <tr key={row.id}>
-                        <td style={cellStyle}>{when}</td>
-                        <td style={cellStyle}>{row.feature_id}</td>
-                        <td style={cellStyle}>{nDisplay}</td>
-                        <td style={cellStyle}>{row.tier_label ?? '—'}</td>
-                        <td style={cellStyle}>{slots}</td>
-                        <td style={{ ...cellStyle, color: synthColor }} title={row.synthesis_error ?? undefined}>{synthDisplay}</td>
-                        <td style={{ ...cellStyle, color: outcomeColor }}>{row.outcome ?? 'pending'}</td>
-                        <td style={cellStyle}>{duration}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div style={{ height: 360, border: '1px solid var(--pc-border, #2a2a2a)', borderRadius: 4 }}>
+              <RichGrid<TelemetryRow>
+                columns={telemetryColumns}
+                rows={telemetry}
+                getRowId={(r) => String(r.id)}
+                rowMinHeight={32}
+                headerHeight={32}
+              />
             </div>
           )}
         </section>
