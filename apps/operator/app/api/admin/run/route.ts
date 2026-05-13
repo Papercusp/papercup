@@ -31,7 +31,13 @@ export async function GET(req: Request): Promise<Response> {
     heartbeatMs: 15_000,
     initialHeartbeat: true,
     setup: async (sink) => {
-      const child = spawn('bash', ['-lc', entry.command], {
+      // -lic = login + interactive + command. The user's ~/.bashrc has Ubuntu's
+      // standard non-interactive-return guard at the top (`case $- in *i*) ;;
+      // *) return;; esac`), so a plain `-lc` skips ALL the env exports below it
+      // — NVM, BUN, COMPOSIO, ELEVENLABS_API_KEY, HINDSIGHT_API_URL, cargo env,
+      // Android SDK, Cloudflare token, etc. Passing -i flips $- to include `i`
+      // so the guard passes and the rest of .bashrc runs.
+      const child = spawn('bash', ['-lic', entry.command], {
         cwd: entry.cwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '0' },
@@ -53,6 +59,12 @@ export async function GET(req: Request): Promise<Response> {
       });
       const errRl = createInterface({ input: child.stderr, crlfDelay: Infinity });
       errRl.on('line', (line) => {
+        // Silence bash's two `-i without TTY` complaints — purely cosmetic,
+        // no functional impact.
+        if (
+          line === 'bash: cannot set terminal process group (-1): Inappropriate ioctl for device' ||
+          line === 'bash: no job control in this shell'
+        ) return;
         if (!sink.closed) sink.event('log', { stream: 'stderr', line });
       });
 

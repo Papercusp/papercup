@@ -93,7 +93,15 @@ export const ADMIN_COMMANDS: AdminCommand[] = [
     command: 'bin/dev 2>&1',
     cwd: PAPERCUP_REPO,
   },
+  {
+    id: 'env-probe',
+    label: 'Env probe',
+    section: 'running',
+    description: 'Prints a handful of env vars from your interactive shell config (NVM, BUN, COMPOSIO, HINDSIGHT_API_URL, CLOUDFLARE_API_TOKEN). Useful for diagnosing "command can\'t find X" issues.',
+    command: 'echo "PATH=$PATH"; echo "NVM=$(type -t nvm 2>/dev/null)"; echo "NODE=$(which node)"; echo "BUN_INSTALL=$BUN_INSTALL"; echo "COMPOSIO_INSTALL_DIR=$COMPOSIO_INSTALL_DIR"; echo "HINDSIGHT_API_URL=$HINDSIGHT_API_URL"; echo "ELEVENLABS_API_KEY=$(test -n "$ELEVENLABS_API_KEY" && echo set || echo unset)"; echo "CLOUDFLARE_API_TOKEN=$(test -n "$CLOUDFLARE_API_TOKEN" && echo set || echo unset)"; echo "ANTHROPIC_API_KEY=$(test -n "$ANTHROPIC_API_KEY" && echo set || echo unset)"; echo "OPENAI_API_KEY=$(test -n "$OPENAI_API_KEY" && echo set || echo unset)"',
+  },
 ];
+
 
 export function getCommand(id: string): AdminCommand | null {
   return ADMIN_COMMANDS.find((c) => c.id === id) ?? null;
