@@ -246,7 +246,8 @@ const SOFT_PREREQS: Array<{ name: string; hint: string }> = [
   { name: 'git', hint: 'Bundled on Windows; macOS: install Xcode CLT (xcode-select --install); Linux: apt/dnf install git. Required by harness worktree + version-detection flows.' },
   { name: 'tar', hint: 'macOS/Linux ship tar by default. Windows 10+ has tar.exe — if missing, update Windows. Required by snapshot publish/fork.' },
   { name: 'curl', hint: 'macOS/Linux ship curl by default. Windows 10+ has curl.exe. Required by harness fetch flows.' },
-  // gh, node, bash, omp, code-server are all bundled now and don't need
+  { name: 'gh', hint: 'GitHub CLI — bundled on most platforms. Used by the Setup Wizard\'s "Sign in to GitHub" button. Install: https://cli.github.com/' },
+  // node, bash, omp, code-server are all bundled now and don't need
   // soft-prereq surfacing — preflight's hard checks pick them up via PATH
   // (which Tauri prepends with sidecar/bin and, on Windows, the MinGit
   // tree). If a bundled binary fails to download at build time the

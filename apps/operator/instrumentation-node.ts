@@ -197,6 +197,16 @@ export async function register(): Promise<void> {
   } catch (err) {
     console.warn('[backup-scheduler] failed to start:', err instanceof Error ? err.message : err);
   }
+
+  // Telemetry flush worker. Hourly drain of the in-app ring buffer
+  // into the archive + (when configured) forward to remote sink.
+  // Idempotent across re-registrations.
+  try {
+    const { startTelemetryFlushWorker } = await import('@/lib/telemetry-flush');
+    startTelemetryFlushWorker();
+  } catch (err) {
+    console.warn('[telemetry-flush] failed to start:', err instanceof Error ? err.message : err);
+  }
 }
 
 let _backfillRan = false;
