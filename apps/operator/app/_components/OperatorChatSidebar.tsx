@@ -645,4 +645,167 @@ body.has-op-chat .h-header {
   from { transform: translateX(-150%); }
   to { transform: translateX(150%); }
 }
+
+/* Simplicity/readability pass: flatten decorative motion, tighten message
+   rhythm, and give the composer more useful text space. */
+.op-chat-sidebar {
+  background:
+    linear-gradient(180deg, rgba(6, 14, 24, 0.99), rgba(3, 8, 15, 0.99)) !important;
+  box-shadow:
+    inset -1px 0 0 rgba(255,255,255,0.035),
+    14px 0 34px rgba(0, 0, 0, 0.18) !important;
+}
+
+.op-chat-sidebar::after,
+.op-chat-header::after,
+.op-chat-sidebar .op-chat-banner::after,
+.op-chat-sidebar .oracle-form::before,
+.op-chat-sidebar .oracle-send-button::after,
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::before,
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::after {
+  display: none !important;
+}
+
+.op-chat-sidebar::before {
+  opacity: 0.42 !important;
+  background: none !important;
+}
+
+.op-chat-header {
+  padding: 8px 10px 7px !important;
+  background: rgba(5, 13, 23, 0.96) !important;
+  box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.10) !important;
+  backdrop-filter: none !important;
+}
+
+.op-chat-header-main {
+  gap: 9px !important;
+}
+
+.op-chat-header-orb {
+  width: 34px !important;
+  height: 34px !important;
+  flex-basis: 34px !important;
+  border-radius: 12px !important;
+  background: rgba(56, 189, 248, 0.10) !important;
+  box-shadow: none !important;
+}
+
+.op-chat-header-orb::after {
+  inset: 2px !important;
+  border-radius: 10px !important;
+}
+
+.op-chat-header-logo {
+  width: 26px !important;
+  height: 26px !important;
+  filter: none !important;
+}
+
+.op-chat-header-copy {
+  gap: 3px !important;
+}
+
+.op-chat-header-title-row strong {
+  font-size: 13.5px !important;
+}
+
+.op-chat-controls .op-active-toggle,
+.op-chat-controls .pc-voice-btn,
+.op-chat-controls .pc-voice-settings-link {
+  min-height: 27px !important;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-body {
+  padding: 8px 8px 9px !important;
+  gap: 7px !important;
+  background: rgba(3, 8, 15, 0.98) !important;
+}
+
+.op-chat-sidebar .oracle-msg {
+  padding-inline: 0 !important;
+  column-gap: 7px !important;
+}
+
+.op-chat-sidebar .oracle-msg-avatar {
+  width: 20px !important;
+  height: 20px !important;
+  flex-basis: 20px !important;
+  margin-top: 3px;
+  opacity: 0.66;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-msg-icon {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.op-chat-sidebar .oracle-msg-stack {
+  max-width: calc(100% - 28px) !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
+  max-width: min(84%, 286px) !important;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  padding: 9px 10px !important;
+  border-radius: 12px !important;
+  background: rgba(7, 15, 27, 0.94) !important;
+  box-shadow: none !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  background: rgba(14, 45, 70, 0.96) !important;
+}
+
+.op-chat-sidebar .oracle-tool-chip {
+  min-height: 22px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  opacity: 0.74;
+  font-size: 10.5px;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .op-chat-banner {
+  margin: 8px 9px 0 !important;
+  padding: 8px 9px !important;
+  border-radius: 10px !important;
+  background: rgba(56, 189, 248, 0.075) !important;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-form {
+  padding: 8px !important;
+  gap: 6px !important;
+  background: rgba(5, 12, 22, 0.98) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell {
+  min-height: 38px !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input {
+  padding-right: 12px !important;
+  font-size: 13px !important;
+}
+
+.op-chat-sidebar .oracle-input-meta {
+  display: none !important;
+}
+
+.op-chat-sidebar .oracle-send-button {
+  min-width: 58px !important;
+  min-height: 38px !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
 `;
