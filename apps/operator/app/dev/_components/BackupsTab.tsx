@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Select } from '@/app/harness/Select';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import type { RepoStats, SnapshotInfo } from '@/lib/backup';
 
 interface ServerInfo { workspaceId: string; port: number; url: string; startedAt: string; }
@@ -360,19 +361,20 @@ export default function BackupsTab() {
       {events.length > 0 && (
         <section className="pc-dev-backups-events">
           <h3>Event log ({events.length})</h3>
-          <table>
-            <thead><tr><th>Time</th><th>Snapshot</th><th>Kind</th><th>Payload</th></tr></thead>
-            <tbody>
-              {events.map((ev) => (
-                <tr key={ev.id}>
-                  <td>{ev.at.replace('T', ' ').slice(11, 19)}</td>
-                  <td>{ev.snapshotId ?? '—'}</td>
-                  <td>{ev.kind}</td>
-                  <td><code>{JSON.stringify(ev.payload)}</code></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(360, 32 + events.length * 28 + 4) }}>
+            <RichGrid<EventRow>
+              columns={[
+                { key: 'time', header: 'Time', width: 1, toCopyText: (r) => r.at, render: ({ row }) => <>{row.at.replace('T', ' ').slice(11, 19)}</> },
+                { key: 'snap', header: 'Snapshot', width: 1, toCopyText: (r) => r.snapshotId != null ? String(r.snapshotId) : '', render: ({ row }) => <>{row.snapshotId ?? '—'}</> },
+                { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.kind, render: ({ row }) => <>{row.kind}</> },
+                { key: 'payload', header: 'Payload', width: 4, toCopyText: (r) => JSON.stringify(r.payload), render: ({ row }) => <code>{JSON.stringify(row.payload)}</code> },
+              ]}
+              rows={events}
+              getRowId={(r) => String(r.id)}
+              rowMinHeight={28}
+              headerHeight={32}
+            />
+          </div>
         </section>
       )}
     </div>
