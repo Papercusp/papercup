@@ -141,3 +141,4 @@ import './backup/rollback';
 import './backup/settings_get';
 import './backup/settings_set';
 import './docs/outline';
+import './docs/get';
