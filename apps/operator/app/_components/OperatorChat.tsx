@@ -67,6 +67,24 @@ interface Props {
   workspaceId?: string;
 }
 
+const STARTING_PROMPTS = [
+  {
+    title: 'Scan workspaces',
+    hint: 'find active harnesses and urgent issues',
+    prompt: 'Scan my workspaces for active harnesses and urgent issues.',
+  },
+  {
+    title: 'Review blockers',
+    hint: 'surface failing runs, audits, and pending answers',
+    prompt: 'Review current blockers, failing runs, audits, and pending answers.',
+  },
+  {
+    title: 'Summarize state',
+    hint: 'get a quick brief on what changed recently',
+    prompt: 'Summarize the current workspace state and what changed recently.',
+  },
+] as const;
+
 export function OperatorChat({
   messages, busy, passive, onSend, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
@@ -132,24 +150,25 @@ export function OperatorChat({
           : 'Tell me what you want to inspect, scan, or unblock.',
         icon: OperatorLogoMark,
         extra: (
-          <div className="op-chat-empty-panel" aria-hidden="true">
+          <div className="op-chat-empty-panel" aria-label="Common starting points">
             <div className="op-chat-empty-panel-head">
               <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
               <div className="op-chat-empty-panel-label">Common starting points</div>
             </div>
             <div className="op-chat-empty-panel-list">
-              <div className="op-chat-empty-row">
-                <span className="op-chat-empty-row-title">Scan workspaces</span>
-                <span className="op-chat-empty-row-hint">find active harnesses and urgent issues</span>
-              </div>
-              <div className="op-chat-empty-row">
-                <span className="op-chat-empty-row-title">Review blockers</span>
-                <span className="op-chat-empty-row-hint">surface failing runs, audits, and pending answers</span>
-              </div>
-              <div className="op-chat-empty-row">
-                <span className="op-chat-empty-row-title">Summarize state</span>
-                <span className="op-chat-empty-row-hint">get a quick brief on what changed recently</span>
-              </div>
+              {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
+                <button
+                  key={title}
+                  type="button"
+                  className="op-chat-empty-row"
+                  onClick={() => setInput(prompt)}
+                  disabled={busy}
+                  aria-label={`${title}: ${hint}. Draft this prompt.`}
+                >
+                  <span className="op-chat-empty-row-title">{title}</span>
+                  <span className="op-chat-empty-row-hint">{hint}</span>
+                </button>
+              ))}
             </div>
           </div>
         ),

@@ -1105,4 +1105,28 @@ body.has-op-chat .h-header {
   border-color: rgba(103, 232, 249, 0.66) !important;
   background: rgba(56, 189, 248, 0.30) !important;
 }
+
+.op-chat-sidebar button.op-chat-empty-row {
+  width: 100%;
+  appearance: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.op-chat-sidebar button.op-chat-empty-row:hover:not(:disabled) {
+  border-color: rgba(103, 232, 249, 0.36) !important;
+  background: rgba(16, 35, 55, 0.99) !important;
+}
+
+.op-chat-sidebar button.op-chat-empty-row:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.62);
+  outline-offset: 3px;
+}
+
+.op-chat-sidebar button.op-chat-empty-row:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
 `;
