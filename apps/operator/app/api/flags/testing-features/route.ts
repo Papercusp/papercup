@@ -1,6 +1,6 @@
 /**
- * GET  /api/flags/live-updates  - returns { liveUpdates: boolean, source: string }
- * POST /api/flags/live-updates  - body { enabled: boolean }, persists to
+ * GET  /api/flags/testing-features  - returns { testingFeatures: boolean, source: string }
+ * POST /api/flags/testing-features  - body { enabled: boolean }, persists to
  *                                ~/.papercusp/posthog.json
  *
  * "Live updates" is Papercusp's opt-in to remote feature-flag fetches.
@@ -27,8 +27,8 @@ export const runtime = 'nodejs';
 const CONFIG_PATH = path.join(os.homedir(), '.papercusp', 'posthog.json');
 
 export function GET() {
-  const { liveUpdates, source } = getPosthogConfigWithSource();
-  return NextResponse.json({ liveUpdates, source });
+  const { testingFeatures, source } = getPosthogConfigWithSource();
+  return NextResponse.json({ testingFeatures, source });
 }
 
 export async function POST(req: Request) {
@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   } catch {
     // file may not exist yet — we'll create it with the bare minimum
   }
-  parsed.liveUpdates = body.enabled;
+  parsed.testingFeatures = body.enabled;
 
   await fs.promises.mkdir(path.dirname(CONFIG_PATH), { recursive: true });
   await fs.promises.writeFile(CONFIG_PATH, JSON.stringify(parsed, null, 2) + '\n', {
@@ -62,5 +62,5 @@ export async function POST(req: Request) {
   // bust the in-process config cache so the next request picks up the new value
   resetPosthogConfigForTest();
 
-  return NextResponse.json({ ok: true, liveUpdates: body.enabled });
+  return NextResponse.json({ ok: true, testingFeatures: body.enabled });
 }

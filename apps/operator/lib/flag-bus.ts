@@ -19,7 +19,7 @@ import {
 } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
 
-import { getPosthogConfig, isLiveUpdatesEnabled } from './posthog-config';
+import { getPosthogConfig, isTestingFeaturesEnabled } from './posthog-config';
 
 export type FlagChangeEnvelope = {
   type: 'flag_changed';
@@ -38,7 +38,7 @@ function bootIfNeeded(): void {
   // user (or CI) has explicitly enabled live updates. Otherwise we
   // never touch the network and getAllFlags() returns FLAG_DEFAULTS,
   // which IS the V1 ship state.
-  if (!isBackendConfigured() && isLiveUpdatesEnabled()) {
+  if (!isBackendConfigured() && isTestingFeaturesEnabled()) {
     initFlagBackend(getPosthogConfig());
   }
 }

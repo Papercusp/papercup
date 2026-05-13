@@ -16,7 +16,7 @@ import * as path from 'node:path';
 
 import type { PostHogConfig } from '@papercusp/flags/server';
 
-type Resolved = { config: PostHogConfig | null; source: string; liveUpdates: boolean };
+type Resolved = { config: PostHogConfig | null; source: string; testingFeatures: boolean };
 
 let cached: Resolved | null = null;
 
@@ -24,8 +24,8 @@ export function getPosthogConfig(): PostHogConfig | null {
   return resolve().config;
 }
 
-export function isLiveUpdatesEnabled(): boolean {
-  return resolve().liveUpdates;
+export function isTestingFeaturesEnabled(): boolean {
+  return resolve().testingFeatures;
 }
 
 export function getPosthogConfigWithSource(): Resolved {
@@ -43,12 +43,12 @@ function resolve(): Resolved {
   const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
   const envKey = process.env.PAPERCUSP_POSTHOG_KEY;
   const envPersonal = process.env.PAPERCUSP_POSTHOG_PERSONAL_KEY ?? envKey;
-  const envLive = process.env.PAPERCUSP_POSTHOG_LIVE_UPDATES === 'true';
+  const envLive = process.env.PAPERCUSP_POSTHOG_TESTING_FEATURES === 'true';
   if (envHost && envKey) {
     cached = {
       config: { host: envHost, projectKey: envKey, personalApiKey: envPersonal ?? envKey },
       source: 'env',
-      liveUpdates: envLive,
+      testingFeatures: envLive,
     };
     return cached;
   }
@@ -58,13 +58,13 @@ function resolve(): Resolved {
     const raw = fs.readFileSync(discoveryPath, 'utf8');
     const parsed = JSON.parse(raw) as Partial<PostHogConfig> & {
       host?: string;
-      liveUpdates?: boolean;
+      testingFeatures?: boolean;
     };
-    // Default `liveUpdates` to FALSE: with PostHog discovered but not
+    // Default `testingFeatures` to FALSE: with PostHog discovered but not
     // opted in, we still serve flags from FLAG_DEFAULTS (bundled). The
     // user has to explicitly toggle live updates on for the operator to
     // make any outbound call to PostHog.
-    const liveUpdates = parsed.liveUpdates === true;
+    const testingFeatures = parsed.testingFeatures === true;
     if (parsed.host && parsed.projectKey && parsed.personalApiKey) {
       cached = {
         config: {
@@ -72,8 +72,8 @@ function resolve(): Resolved {
           projectKey: parsed.projectKey,
           personalApiKey: parsed.personalApiKey,
         },
-        source: liveUpdates ? 'discovery-file' : 'discovery-file-opt-out',
-        liveUpdates,
+        source: testingFeatures ? 'discovery-file' : 'discovery-file-opt-out',
+        testingFeatures,
       };
       return cached;
     }
@@ -81,6 +81,6 @@ function resolve(): Resolved {
     // missing or malformed — fall through to unconfigured
   }
 
-  cached = { config: null, source: 'unconfigured', liveUpdates: false };
+  cached = { config: null, source: 'unconfigured', testingFeatures: false };
   return cached;
 }

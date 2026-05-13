@@ -45,7 +45,7 @@ type FetchState =
 
 type LiveState =
   | { kind: 'loading' }
-  | { kind: 'ok'; liveUpdates: boolean; source: string }
+  | { kind: 'ok'; testingFeatures: boolean; source: string }
   | { kind: 'error'; message: string };
 
 export default function FeatureFlagsPage() {
@@ -55,8 +55,8 @@ export default function FeatureFlagsPage() {
 
   const refreshLive = async () => {
     try {
-      const res = await fetch('/api/flags/live-updates', { cache: 'no-store' });
-      const j = (await res.json()) as { liveUpdates: boolean; source: string };
+      const res = await fetch('/api/flags/testing-features', { cache: 'no-store' });
+      const j = (await res.json()) as { testingFeatures: boolean; source: string };
       setLiveState({ kind: 'ok', ...j });
     } catch (err) {
       setLiveState({
@@ -67,7 +67,7 @@ export default function FeatureFlagsPage() {
   };
 
   const toggleLive = async (next: boolean) => {
-    const res = await fetch('/api/flags/live-updates', {
+    const res = await fetch('/api/flags/testing-features', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ enabled: next }),
@@ -139,7 +139,7 @@ export default function FeatureFlagsPage() {
         ) : null}
       </header>
 
-      <LiveUpdatesCard state={liveState} onToggle={toggleLive} />
+      <TestingFeaturesCard state={liveState} onToggle={toggleLive} />
 
       {state.kind === 'loading' ? <p className="text-sm">Loading...</p> : null}
       {state.kind === 'error' ? (
@@ -207,7 +207,7 @@ function FlagTable({
   );
 }
 
-function LiveUpdatesCard({
+function TestingFeaturesCard({
   state,
   onToggle,
 }: {
@@ -218,11 +218,11 @@ function LiveUpdatesCard({
   if (state.kind === 'error') {
     return (
       <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-        Could not read live-updates state: {state.message}
+        Could not read testing-features state: {state.message}
       </div>
     );
   }
-  const on = state.liveUpdates;
+  const on = state.testingFeatures;
   return (
     <div className="rounded border bg-white p-4">
       <div className="flex items-start justify-between gap-4">
