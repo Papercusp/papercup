@@ -188,6 +188,24 @@ describe('state-channel', () => {
     expect(fired).toEqual([]);
   });
 
+  it('audit3: subscriber mutating openCards does NOT corrupt source-of-truth', () => {
+    // Pre-fix: subscribers received `vs.snapshot` as a shallow-copied
+    // wrapper but the openCards array reference was shared. A buggy
+    // subscriber pushing to vs.snapshot.openCards would mutate the
+    // registry's entry.snapshot.openCards.
+    openRun({ workspaceId: ws, runId: 'r-mut' });
+    subscribe('r-mut', (vs) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (vs.snapshot.openCards as any).push(card('SHOULDNT-LAND'));
+    });
+    setOpenCards('r-mut', [card('a')]);
+    setOpenCards('r-mut', [card('b')]);
+    const final = getSnapshot('r-mut')!;
+    // Only the intended setOpenCards call's value is persisted —
+    // subscriber's mutation is on the per-emit copy, not the source.
+    expect(final.snapshot.openCards.map((c) => c.correlationId)).toEqual(['b']);
+  });
+
   it('throwing workspace subscriber does not block siblings', () => {
     openRun({ workspaceId: ws, runId: 'r1' });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

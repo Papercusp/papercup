@@ -119,7 +119,7 @@ describe('ctx.askUser dispatcher integration', () => {
 
     const result = await dispatchPromise;
     expect(result.ok).toBe(true);
-    if (result.ok) {
+    if (result.ok && result.result) {
       const c = (result.result.content?.[0] as { text?: string })?.text;
       expect(c).toBe('picked:a');
     }
@@ -135,7 +135,7 @@ describe('ctx.askUser dispatcher integration', () => {
       MAKE_DEPS(),
     );
     expect(result.ok).toBe(true);
-    if (result.ok) {
+    if (result.ok && result.result) {
       const c = (result.result.content?.[0] as { text?: string })?.text;
       expect(c).toBe('no-askUser');
     }

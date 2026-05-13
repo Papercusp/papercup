@@ -111,15 +111,21 @@ function registry() {
 }
 
 function emit(entry: RunEntry): void {
-  // Defensive shallow copy of the snapshot wrapper so a buggy subscriber
-  // can't mutate the source-of-truth. openCards / toolState references
-  // are still shared — subscribers MUST treat them as immutable. The
-  // wrapper copy is cheap and catches the most common footgun (e.g.
-  // a subscriber pushing to vs.snapshot.openCards thinking it's local).
+  // Defensive copy so a buggy subscriber can't mutate source-of-truth.
+  // Shallow-copying the wrapper alone isn't enough — subscribers could
+  // still .push() into openCards or mutate toolState properties. We
+  // copy the openCards array (cheap, small) and pass toolState by
+  // reference (callers serialize via JSON.stringify which doesn't
+  // mutate; deep-cloning arbitrary toolState shapes is too expensive).
   const vs: VersionedSnapshot = {
     runId: entry.runId,
     version: entry.version,
-    snapshot: { ...entry.snapshot },
+    snapshot: {
+      openCards: [...entry.snapshot.openCards],
+      ...(entry.snapshot.toolState !== undefined
+        ? { toolState: entry.snapshot.toolState }
+        : {}),
+    },
   };
   for (const cb of entry.subscribers) {
     try {
