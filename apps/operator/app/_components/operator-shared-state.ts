@@ -124,14 +124,50 @@ function saveAutoAccept(v: AutoAcceptLevel): void {
   }).catch(() => { /* offline / no session — localStorage already saved */ });
 }
 
-let _hydrated = false;
+const defaultState: OperatorState = {
+  open: false,
+  iconState: 'idle',
+  paused: false,
+  autoAccept: loadAutoAccept(),
+  cards: [],
+  recentAutoAccepts: [],
+};
+
+type OperatorStateSetter = (s: Partial<OperatorState>) => void;
+interface OperatorStateStore {
+  state: OperatorState;
+  setters: Set<OperatorStateSetter>;
+  hydrated: boolean;
+}
+
+const OPERATOR_STATE_STORE_KEY = '__papercuspOperatorStateStore__';
+
+function createOperatorStateStore(): OperatorStateStore {
+  return {
+    state: { ...defaultState },
+    setters: new Set<OperatorStateSetter>(),
+    hydrated: false,
+  };
+}
+
+function getOperatorStateStore(): OperatorStateStore {
+  if (typeof window === 'undefined') return createOperatorStateStore();
+  const w = window as typeof window & { [OPERATOR_STATE_STORE_KEY]?: OperatorStateStore };
+  w[OPERATOR_STATE_STORE_KEY] ??= createOperatorStateStore();
+  return w[OPERATOR_STATE_STORE_KEY];
+}
+
+const operatorStateStore = getOperatorStateStore();
+export let sharedState: OperatorState = operatorStateStore.state;
+
 /**
  * Async hydrate from PG once per page load. Called from a useEffect in the
- * Operator panel mount. Idempotent and lazy.
+ * Operator chrome mount. Idempotent and shared across dev/HMR chunks.
  */
 export async function hydrateOperatorStateFromPg(): Promise<void> {
-  if (_hydrated || typeof window === 'undefined') return;
-  _hydrated = true;
+  const store = getOperatorStateStore();
+  if (store.hydrated || typeof window === 'undefined') return;
+  store.hydrated = true;
   try {
     const r = await fetch('/api/profile');
     if (!r.ok) return;
@@ -143,30 +179,21 @@ export async function hydrateOperatorStateFromPg(): Promise<void> {
     } else if (typeof profile?.auto_scan === 'boolean') {
       pgValue = profile.auto_scan ? 'medium' : 'off';
     }
-    if (pgValue && pgValue !== sharedState.autoAccept) {
+    if (pgValue && pgValue !== store.state.autoAccept) {
       try { window.localStorage.setItem(AUTO_ACCEPT_KEY, pgValue); } catch { /* ignore */ }
-      sharedState = { ...sharedState, autoAccept: pgValue };
-      for (const fn of setters) fn({ autoAccept: pgValue });
+      store.state = { ...store.state, autoAccept: pgValue };
+      sharedState = store.state;
+      for (const fn of store.setters) fn({ autoAccept: pgValue });
     }
   } catch { /* ignore */ }
 }
 
-const defaultState: OperatorState = {
-  open: false,
-  iconState: 'idle',
-  paused: false,
-  autoAccept: loadAutoAccept(),
-  cards: [],
-  recentAutoAccepts: [],
-};
-
-const setters = new Set<(s: Partial<OperatorState>) => void>();
-export let sharedState: OperatorState = { ...defaultState };
-
 export function broadcastState(partial: Partial<OperatorState>): void {
-  sharedState = { ...sharedState, ...partial };
+  const store = getOperatorStateStore();
+  store.state = { ...store.state, ...partial };
+  sharedState = store.state;
   if (isAutoAcceptLevel(partial.autoAccept)) saveAutoAccept(partial.autoAccept);
-  for (const fn of setters) fn(partial);
+  for (const fn of store.setters) fn(partial);
 }
 
 export function setOperatorState(partial: Partial<OperatorState>): void {
@@ -180,14 +207,16 @@ export function setOperatorState(partial: Partial<OperatorState>): void {
  * the OperatorButton popdown re-renders.
  */
 export function pushAutoAcceptEvent(event: AutoAcceptEvent): void {
-  const existing = sharedState.recentAutoAccepts.filter((e) => e.id !== event.id);
+  const store = getOperatorStateStore();
+  const existing = store.state.recentAutoAccepts.filter((e) => e.id !== event.id);
   const next = [event, ...existing].slice(0, AUTO_ACCEPT_FEED_CAP);
   broadcastState({ recentAutoAccepts: next });
 }
 
-export function subscribeOperatorState(fn: (s: Partial<OperatorState>) => void): () => void {
-  setters.add(fn);
+export function subscribeOperatorState(fn: OperatorStateSetter): () => void {
+  const store = getOperatorStateStore();
+  store.setters.add(fn);
   return () => {
-    setters.delete(fn);
+    store.setters.delete(fn);
   };
 }
