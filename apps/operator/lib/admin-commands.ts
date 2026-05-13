@@ -29,23 +29,54 @@ export const ADMIN_COMMANDS: AdminCommand[] = [
     id: 'build-linux-prod',
     label: 'Linux Prod Build',
     section: 'building',
-    description: 'Builds the Linux .deb / .rpm desktop bundles on this host.',
-    command: 'npm run tauri:build 2>&1',
+    description: 'Builds the Linux .deb / .rpm desktop bundles on this host. Audits the bundle for PostHog leaks at the end.',
+    command: `set -e
+echo "=== npm run build (tauri build)"
+npm run build 2>&1 | tail -200
+echo "=== audit-bundle.sh"
+DEB="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb"
+RPM="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/rpm/Papercusp-0.0.1-1.x86_64.rpm"
+[ -f "$DEB" ] && ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "$DEB"
+[ -f "$RPM" ] && ${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "$RPM"
+echo "=== build + audit complete"`,
     cwd: PAPERCUSP_DESKTOP,
   },
   {
     id: 'build-mac-prod',
     label: 'Mac Prod Build',
     section: 'building',
-    description: 'Builds the macOS .dmg inside the Mac VM. ~30–45 min.',
-    command: `${SSH_MAC} 'bash -lc "export NVM_DIR=\\"\\$HOME/.nvm\\" && [ -s \\"\\$NVM_DIR/nvm.sh\\" ] && . \\"\\$NVM_DIR/nvm.sh\\" && nvm use 22 >/dev/null && cd ~/papercusp-desktop && npm install --legacy-peer-deps && npm run tauri:build"' 2>&1`,
+    description: 'Builds the macOS .dmg inside the Mac VM (~/papercupai/papercusp-desktop). ~30–45 min. Copies the .dmg back to /home/marsh-office/ and runs the privacy auditor.',
+    command: `set -e
+echo "=== mac build via ${SSH_MAC}"
+${SSH_MAC} 'bash -lc "set -e
+   export NVM_DIR=\\$HOME/.nvm
+   [ -s \\$NVM_DIR/nvm.sh ] && . \\$NVM_DIR/nvm.sh
+   nvm use 22 >/dev/null
+   cd ~/papercupai/papercusp-desktop
+   echo === node \\$(node --version) npm \\$(npm --version)
+   NODE_OPTIONS=--max-old-space-size=8192 npm install --legacy-peer-deps 2>&1 | tail -20
+   NODE_OPTIONS=--max-old-space-size=8192 npm run build 2>&1 | tail -200
+   ls -la src-tauri/target/release/bundle/dmg/"' 2>&1
+echo "=== scp dmg back"
+scp -i /home/marsh-office/.ssh/papercup-vm-mac -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'aviweiss@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/dmg/Papercusp_0.0.1_x86_64.dmg' /home/marsh-office/
+echo "=== audit"
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x86_64.dmg
+echo "=== mac build + audit complete"`,
   },
   {
     id: 'build-windows-prod',
     label: 'Windows Prod Build',
     section: 'building',
-    description: 'Builds the Windows .msi / .exe inside the Windows VM. ~30–45 min.',
-    command: `${SSH_WIN} "powershell -NoProfile -Command \\"& { . \\$HOME\\\\AppData\\\\Roaming\\\\nvm\\\\v22.21.1\\\\nvm.exe use 22.21.1 ; cd \\$HOME\\\\papercusp-desktop ; npm install --legacy-peer-deps ; npm run tauri:build }\\"" 2>&1`,
+    description: 'Builds the Windows .msi / .exe inside the Windows VM (C:\\Users\\User\\papercupai\\papercusp-desktop). ~30–45 min. Copies the artifacts back to /home/marsh-office/ and runs the privacy auditor.',
+    command: `set -e
+echo "=== win build via ${SSH_WIN}"
+${SSH_WIN} "powershell -NoProfile -ExecutionPolicy Bypass -File win-build.ps1" 2>&1 | tail -200
+echo "=== scp msi+exe back"
+scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/msi/Papercusp_0.0.1_x64_en-US.msi' /home/marsh-office/
+scp -i /home/marsh-office/.ssh/papercup-vm-win -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null 'User@127.0.0.1:papercupai/papercusp-desktop/src-tauri/target/release/bundle/nsis/Papercusp_0.0.1_x64-setup.exe' /home/marsh-office/
+echo "=== audit"
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh /home/marsh-office/Papercusp_0.0.1_x64_en-US.msi /home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+echo "=== win build + audit complete"`,
   },
   {
     id: 'rebuild-3070',
@@ -92,6 +123,25 @@ export const ADMIN_COMMANDS: AdminCommand[] = [
     description: 'Restarts the operator dev server (papercup-dev systemd user unit) on :3055. The /admin page itself will go offline for ~30s while Next rebuilds.',
     command: 'bin/dev 2>&1',
     cwd: PAPERCUP_REPO,
+  },
+  {
+    id: 'audit-prod-bundles',
+    label: 'Audit prod bundles for PostHog leaks',
+    section: 'running',
+    description: 'Runs bin/audit-bundle.sh against any prod artifacts present in /home/marsh-office/ + the local Linux .deb/.rpm. Fails loud if any artifact contains posthog.json, posthog-personal.json, or PAPERCUSP_POSTHOG_* env vars.',
+    command: `set -e
+ARTIFACTS=()
+DEB="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/deb/Papercusp_0.0.1_amd64.deb"
+RPM="${PAPERCUSP_DESKTOP}/src-tauri/target/release/bundle/rpm/Papercusp-0.0.1-1.x86_64.rpm"
+DMG=/home/marsh-office/Papercusp_0.0.1_x86_64.dmg
+MSI=/home/marsh-office/Papercusp_0.0.1_x64_en-US.msi
+EXE=/home/marsh-office/Papercusp_0.0.1_x64-setup.exe
+for a in "$DEB" "$RPM" "$DMG" "$MSI" "$EXE"; do
+  [ -f "$a" ] && ARTIFACTS+=("$a") && echo "found: $a ($(du -h "$a" | cut -f1))" || echo "missing: $a"
+done
+echo "---"
+if [ \${#ARTIFACTS[@]} -eq 0 ]; then echo "no artifacts to scan"; exit 1; fi
+${PAPERCUSP_DESKTOP}/bin/audit-bundle.sh "\${ARTIFACTS[@]}"`,
   },
   {
     id: 'env-probe',
