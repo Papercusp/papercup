@@ -182,9 +182,16 @@ export default function FeaturePeekPanel({
     return agents.slice(0, 8);
   }, [feature, agents]);
 
-  if (!feature) return null;
+  // Keep the last non-null feature so the drawer can stay mounted and
+  // animate closed without unmounting/remounting on every toggle. The
+  // mount cost (vaul focus-trap setup + body-lock + portal) was the
+  // dominant click-to-paint lag.
+  const [stickyFeature, setStickyFeature] = useState<Feature | null>(feature);
+  useEffect(() => { if (feature) setStickyFeature(feature); }, [feature]);
+  const displayFeature = feature ?? stickyFeature;
+  if (!displayFeature) return null;
 
-  const s = STATUS[feature.status];
+  const s = STATUS[displayFeature.status];
 
   return (
     <Drawer.Root open={!!feature} onOpenChange={(o) => { if (!o) onClose(); }} direction="right">
@@ -269,39 +276,39 @@ export default function FeaturePeekPanel({
             background: '#1d1826',
             boxShadow: '0 16px 34px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02)',
           }}>
-            <div className="h-drawer-eyebrow" aria-label={`Feature ${feature.id}, status ${STATUS[feature.status].label}`} style={{
+            <div className="h-drawer-eyebrow" aria-label={`Feature ${displayFeature.id}, status ${STATUS[displayFeature.status].label}`} style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
               flexWrap: 'wrap',
-              marginBottom: feature.summary ? 8 : 10,
+              marginBottom: displayFeature.summary ? 8 : 10,
             }}>
               <span>Feature</span>
               <span aria-hidden>·</span>
-              <IdPill id={feature.id} onClick={() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }} />
+              <IdPill id={displayFeature.id} onClick={() => { setCopied(true); setTimeout(() => setCopied(false), 1200); }} />
               {copied && <span style={{ fontSize: SIZES.xs, color: COLORS.successText }}>copied</span>}
               <span className="h-drawer-eyebrow-separator" aria-hidden="true">·</span>
-              <StatusPill status={feature.status} />
+              <StatusPill status={displayFeature.status} />
             </div>
             <Drawer.Title style={{
               margin: 0,
-              marginBottom: feature.summary ? 8 : 10,
+              marginBottom: displayFeature.summary ? 8 : 10,
               fontSize: '1.14rem',
               fontWeight: 740,
               letterSpacing: '-0.02em',
               color: COLORS.text,
               lineHeight: 1.4,
             }}>
-              {feature.summary || feature.title}
+              {displayFeature.summary || displayFeature.title}
             </Drawer.Title>
-            {feature.summary && (
+            {displayFeature.summary && (
               <div style={{
                 fontFamily: FONTS.mono,
                 fontSize: '0.76rem',
                 letterSpacing: '0.012em',
                 color: COLORS.textDim,
                 marginBottom: 12,
-              }}>{feature.title}</div>
+              }}>{displayFeature.title}</div>
             )}
             {/* Property rail */}
             <div style={{
@@ -316,14 +323,14 @@ export default function FeaturePeekPanel({
               <span style={{ color: COLORS.textDim }}>Status</span>
               <div className="h-feature-status-controls" role="radiogroup" aria-label="Feature lifecycle status" style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
                 {(['todo','in_progress','validating','failing','blocked','passed'] as HarnessStatus[]).map((st) => {
-                  const active = st === feature.status;
+                  const active = st === displayFeature.status;
                   const ss = STATUS[st];
                   return (
                     <button
                       key={st}
                       type="button"
                       className={`h-feature-status-button${active ? ' is-current' : ''}`}
-                      onClick={() => { if (!active) onSetStatus(feature.id, st); }}
+                      onClick={() => { if (!active) onSetStatus(displayFeature.id, st); }}
                       aria-pressed={active}
                       aria-label={active ? `Current status: ${ss.label}` : `Move feature to ${ss.label}`}
                       title={active ? `Current status: ${ss.label}` : `Move to: ${ss.label}`}
@@ -347,20 +354,20 @@ export default function FeaturePeekPanel({
 
               <span style={{ color: COLORS.textDim }}>Attempts</span>
               <span style={{
-                color: feature.attempts >= 3 ? STATUS.blocked.text : COLORS.text,
+                color: displayFeature.attempts >= 3 ? STATUS.blocked.text : COLORS.text,
                 fontFamily: FONTS.mono,
               }}>
-                {feature.attempts}
-                {feature.attempts >= 3 && <span style={{ color: COLORS.textDim, marginLeft: 6 }}>(stuck)</span>}
+                {displayFeature.attempts}
+                {displayFeature.attempts >= 3 && <span style={{ color: COLORS.textDim, marginLeft: 6 }}>(stuck)</span>}
               </span>
             </div>
           </div>
 
           {/* Claims */}
-          {feature.claims && feature.claims.length > 0 && (
+          {displayFeature.claims && displayFeature.claims.length > 0 && (
             <Section title="Claims">
               <ul style={{ margin: 0, paddingLeft: 18, color: COLORS.text, fontSize: SIZES.sm, lineHeight: 1.6 }}>
-                {feature.claims.map((c, i) => (
+                {displayFeature.claims.map((c, i) => (
                   <li key={i} style={{ marginBottom: 4 }}>{c}</li>
                 ))}
               </ul>
@@ -407,17 +414,17 @@ export default function FeaturePeekPanel({
 
           {/* Phase 2 — tags + see-also editor. */}
           <Section title="Tags & see-also">
-            <FeatureTagsAndSeeAlso slug={slug} featureId={feature.id} />
+            <FeatureTagsAndSeeAlso slug={slug} featureId={displayFeature.id} />
           </Section>
 
           {/* Phase 3 — feature-addressed messages from other features. */}
           <Section title="Messages from other features">
-            <FeatureMessagesList slug={slug} featureId={feature.id} />
+            <FeatureMessagesList slug={slug} featureId={displayFeature.id} />
           </Section>
 
-          {/* Phase 5 — prompt-composition telemetry for this feature. */}
+          {/* Phase 5 — prompt-composition telemetry for this displayFeature. */}
           <Section title="Prompt budget">
-            <PromptBudgetView slug={slug} featureId={feature.id} />
+            <PromptBudgetView slug={slug} featureId={displayFeature.id} />
           </Section>
 
           {/* Debugger notes, if the debugger role has investigated this feature */}
@@ -490,7 +497,7 @@ export default function FeaturePeekPanel({
 
           {/* Worker chunk plan — only renders when the chunk-loop has
               produced one. Empty for legacy single-shot worker runs. */}
-          <ChunkPlanInline slug={slug} featureId={feature.id} />
+          <ChunkPlanInline slug={slug} featureId={displayFeature.id} />
 
           {/* Related runs */}
           <Section title={`Recent agent runs${recentRuns.length ? ` · ${recentRuns.length}` : ''}`}>
@@ -593,7 +600,7 @@ export default function FeaturePeekPanel({
       {showTimeline && (
         <FeatureTimelinePanel
           slug={slug}
-          featureId={feature.id}
+          featureId={displayFeature.id}
           onClose={() => setShowTimeline(false)}
         />
       )}

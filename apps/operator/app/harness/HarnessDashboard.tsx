@@ -4551,23 +4551,27 @@ export default function HarnessDashboard() {
       />
 
       {/* ── Feature peek panel ────────────────────────────── */}
-      {peekFeature && (
-        <FeaturePeekPanel
-          slug={activeSlug ?? ''}
-          feature={peekFeature as any}
-          agents={agents as any}
-          issues={issues}
-          onClose={() => setPeekFeature(null)}
-          onReset={resetFeature}
-          onEdit={() => { setEditingFeature(peekFeature); setPeekFeature(null); }}
-          onInspectRun={loadAgent}
-          onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
-          onSwitchToPi={() => setActivePanel('pi')}
-          notesForFeature={notesByFeatureId.get(peekFeature.id) ?? ''}
-          debugNoteForFeature={debugNotesByFeatureId.get(peekFeature.id) ?? null}
-          prForFeature={prsByFeatureId.get(peekFeature.id) ?? null}
-        />
-      )}
+      {/* Mount unconditionally so the vaul drawer + focus-trap + body-lock
+          setup happens once at dashboard load, not on every open. The panel
+          renders null internally while peekFeature is null (until the first
+          click), then keeps a sticky reference so subsequent open/close
+          cycles just toggle the drawer's `open` prop instead of unmounting
+          the whole tree. Removes the perceptible click-to-paint lag. */}
+      <FeaturePeekPanel
+        slug={activeSlug ?? ''}
+        feature={peekFeature as any}
+        agents={agents as any}
+        issues={issues}
+        onClose={() => setPeekFeature(null)}
+        onReset={resetFeature}
+        onEdit={() => { if (peekFeature) { setEditingFeature(peekFeature); setPeekFeature(null); } }}
+        onInspectRun={loadAgent}
+        onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
+        onSwitchToPi={() => setActivePanel('pi')}
+        notesForFeature={peekFeature ? (notesByFeatureId.get(peekFeature.id) ?? '') : ''}
+        debugNoteForFeature={peekFeature ? (debugNotesByFeatureId.get(peekFeature.id) ?? null) : null}
+        prForFeature={peekFeature ? (prsByFeatureId.get(peekFeature.id) ?? null) : null}
+      />
 
       {/* ── Triage queue ──────────────────────────────────── */}
       {showTriage && status && (

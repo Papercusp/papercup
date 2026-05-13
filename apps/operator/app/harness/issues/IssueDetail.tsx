@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import dynamic from 'next/dynamic';
 import { Drawer } from 'vaul';
@@ -36,25 +36,31 @@ export function IssueDetail({
   slug, issue, onClose, onChange,
 }: {
   slug: string;
-  issue: Issue;
+  issue: Issue | null;
   onClose: () => void;
   onChange: (next: Issue) => void;
 }) {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [showTimeline, setShowTimeline] = useQueryState('issueTimeline', parseAsBoolean.withDefault(false));
+  // Keep the last non-null issue so the drawer can stay mounted across
+  // open/close cycles. Vaul's mount cost (focus-trap, body-lock, portal)
+  // was the dominant click-to-paint lag.
+  const [stickyIssue, setStickyIssue] = useState<Issue | null>(issue);
+  useEffect(() => { if (issue) setStickyIssue(issue); }, [issue]);
+  const displayIssue = issue ?? stickyIssue;
   const { data: agentRows } = useSyncQuery<IssueAgentRun>({
     queryName: 'agentRunsConsolidated.bySlug',
     args: { harnessSlug: slug },
     enabled: !!slug,
   });
-  const recentIssueRuns = Array.isArray(agentRows) && issue.linkedFeatureId
+  const recentIssueRuns = Array.isArray(agentRows) && issue?.linkedFeatureId
     ? agentRows.filter((r) => r.featureId === issue.linkedFeatureId).slice(0, 8)
     : [];
 
 
   const addNote = async () => {
-    if (!note.trim()) return;
+    if (!note.trim() || !issue) return;
     setBusy(true);
     try {
       const next = await call(slug, issue.id, 'update', { note, by: 'human' });
@@ -64,9 +70,11 @@ export function IssueDetail({
     finally { setBusy(false); }
   };
 
+  if (!displayIssue) return null;
+
   return (
     <>
-    <Drawer.Root open onOpenChange={(o) => { if (!o) onClose(); }} direction="right">
+    <Drawer.Root open={!!issue} onOpenChange={(o) => { if (!o) onClose(); }} direction="right">
       <Drawer.Portal>
         <Drawer.Overlay
           className="h-issue-detail-overlay"
@@ -113,7 +121,7 @@ export function IssueDetail({
             background: '#1d1826',
             boxShadow: '0 16px 34px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.02)',
           }}>
-            <div className="h-drawer-eyebrow" aria-label={`Issue ${issue.id}, severity ${issue.severity}, status ${issue.status}${issue.linkedFeatureId ? `, linked feature ${issue.linkedFeatureId}` : ''}`} style={{
+            <div className="h-drawer-eyebrow" aria-label={`Issue ${displayIssue.id}, severity ${displayIssue.severity}, status ${displayIssue.status}${displayIssue.linkedFeatureId ? `, linked feature ${displayIssue.linkedFeatureId}` : ''}`} style={{
               display: 'flex',
               alignItems: 'center',
               gap: 8,
@@ -122,48 +130,48 @@ export function IssueDetail({
             }}>
               <span>Issue</span>
               <span aria-hidden>·</span>
-              <span className="h-issue-id">{issue.id}</span>
+              <span className="h-issue-id">{displayIssue.id}</span>
               <span className="h-drawer-eyebrow-separator" aria-hidden="true">·</span>
-              <span className={`h-issue-sev sev-${issue.severity}`}>{issue.severity}</span>
+              <span className={`h-issue-sev sev-${displayIssue.severity}`}>{displayIssue.severity}</span>
               <span className="h-drawer-eyebrow-separator" aria-hidden="true">·</span>
-              <span className={`h-issue-status st-${issue.status}`}>{issue.status}</span>
-              {issue.linkedFeatureId && <span className="h-drawer-eyebrow-separator" aria-hidden="true">·</span>}
-              {issue.linkedFeatureId && (
-                <span className="h-issue-linked"><ArrowUpRight size={11} /> {issue.linkedFeatureId}</span>
+              <span className={`h-issue-status st-${displayIssue.status}`}>{displayIssue.status}</span>
+              {displayIssue.linkedFeatureId && <span className="h-drawer-eyebrow-separator" aria-hidden="true">·</span>}
+              {displayIssue.linkedFeatureId && (
+                <span className="h-issue-linked"><ArrowUpRight size={11} /> {displayIssue.linkedFeatureId}</span>
               )}
             </div>
             <Drawer.Title style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px', color: 'var(--fg)', lineHeight: 1.35 }}>
-              {issue.title}
+              {displayIssue.title}
             </Drawer.Title>
-            <div className="h-drawer-meta-strip" aria-label={`${issue.source === 'human' ? 'filed by human' : `found by ${issue.source}`}${issue.foundDuring ? ` during ${issue.foundDuring}` : ''}; ${new Date(issue.foundAt).toLocaleString()}${typeof issue.attempts === 'number' ? `; ${issue.attempts} fix attempt${issue.attempts === 1 ? '' : 's'}` : ''}${issue.codePointer ? `; ${issue.codePointer}` : ''}`} style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
-              <span>{issue.source === 'human' ? 'filed by human' : `found by ${issue.source}`}</span>
-              {issue.foundDuring && <span>during {issue.foundDuring}</span>}
-              <span>{new Date(issue.foundAt).toLocaleString()}</span>
-              {typeof issue.attempts === 'number' && <span>{issue.attempts} fix attempt{issue.attempts === 1 ? '' : 's'}</span>}
-              {issue.codePointer && <code style={{ color: 'var(--counter)' }}>{issue.codePointer}</code>}
+            <div className="h-drawer-meta-strip" aria-label={`${displayIssue.source === 'human' ? 'filed by human' : `found by ${displayIssue.source}`}${displayIssue.foundDuring ? ` during ${displayIssue.foundDuring}` : ''}; ${new Date(displayIssue.foundAt).toLocaleString()}${typeof displayIssue.attempts === 'number' ? `; ${displayIssue.attempts} fix attempt${displayIssue.attempts === 1 ? '' : 's'}` : ''}${displayIssue.codePointer ? `; ${displayIssue.codePointer}` : ''}`} style={{ fontSize: 11, color: 'var(--fg-dim)' }}>
+              <span>{displayIssue.source === 'human' ? 'filed by human' : `found by ${displayIssue.source}`}</span>
+              {displayIssue.foundDuring && <span>during {displayIssue.foundDuring}</span>}
+              <span>{new Date(displayIssue.foundAt).toLocaleString()}</span>
+              {typeof displayIssue.attempts === 'number' && <span>{displayIssue.attempts} fix attempt{displayIssue.attempts === 1 ? '' : 's'}</span>}
+              {displayIssue.codePointer && <code style={{ color: 'var(--counter)' }}>{displayIssue.codePointer}</code>}
             </div>
           </div>
 
-          {issue.evidence && (
+          {displayIssue.evidence && (
             <Section title="Evidence">
-              <HarnessMarkdownView value={issue.evidence} className="h-issue-markdown" />
+              <HarnessMarkdownView value={displayIssue.evidence} className="h-issue-markdown" />
             </Section>
           )}
-          {issue.repro && (
+          {displayIssue.repro && (
             <Section title="Reproduction">
-              <HarnessMarkdownView value={issue.repro} className="h-issue-markdown" />
+              <HarnessMarkdownView value={displayIssue.repro} className="h-issue-markdown" />
             </Section>
           )}
-          {issue.suggestedFix && (
+          {displayIssue.suggestedFix && (
             <Section title="Suggested fix">
-              <HarnessMarkdownView value={issue.suggestedFix} className="h-issue-markdown" />
+              <HarnessMarkdownView value={displayIssue.suggestedFix} className="h-issue-markdown" />
             </Section>
           )}
 
-          {issue.notes.length > 0 && (
+          {displayIssue.notes.length > 0 && (
             <Section title="Notes">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {issue.notes.map((n, i) => (
+                {displayIssue.notes.map((n, i) => (
                   <div key={i} style={{ fontSize: 12, color: 'var(--fg)', borderLeft: '2px solid var(--border)', paddingLeft: 10 }}>
                     <div style={{ fontSize: 10, color: 'var(--fg-dim)', marginBottom: 2 }}>
                       {n.by} · {new Date(n.ts).toLocaleString()}
@@ -178,7 +186,7 @@ export function IssueDetail({
           <Section title={`Recent agent runs${recentIssueRuns.length ? ` · ${recentIssueRuns.length}` : ''}`}>
             {recentIssueRuns.length === 0 ? (
               <div style={{ fontSize: 12, color: 'var(--fg-dim)', fontStyle: 'italic' }}>
-                {issue.linkedFeatureId ? 'No runs linked to this issue yet.' : 'No linked feature yet, so runs cannot be correlated.'}
+                {displayIssue.linkedFeatureId ? 'No runs linked to this issue yet.' : 'No linked feature yet, so runs cannot be correlated.'}
               </div>
             ) : (
               <div className="h-feature-run-list" role="list" aria-label="Recent issue agent runs" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -228,9 +236,9 @@ export function IssueDetail({
           <button
             type="button"
             className="h-btn ghost"
-            disabled={!issue.linkedFeatureId}
+            disabled={!displayIssue.linkedFeatureId}
             onClick={() => setShowTimeline(true)}
-            title={issue.linkedFeatureId ? `View timeline for ${issue.linkedFeatureId}` : 'Link this issue to a feature before viewing a timeline'}
+            title={displayIssue.linkedFeatureId ? `View timeline for ${displayIssue.linkedFeatureId}` : 'Link this issue to a feature before viewing a timeline'}
           >
             View timeline
           </button>
@@ -256,10 +264,10 @@ export function IssueDetail({
         </Drawer.Content>
       </Drawer.Portal>
     </Drawer.Root>
-    {showTimeline && issue.linkedFeatureId && (
+    {showTimeline && displayIssue.linkedFeatureId && (
       <FeatureTimelinePanel
         slug={slug}
-        featureId={issue.linkedFeatureId}
+        featureId={displayIssue.linkedFeatureId}
         onClose={() => setShowTimeline(false)}
       />
     )}
