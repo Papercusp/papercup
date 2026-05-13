@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import '../admin.css';
+import '../admin-tables.css';
 
 /**
  * Drizzle-driven CRUD admin UI factory.
