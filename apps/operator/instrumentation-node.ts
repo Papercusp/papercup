@@ -60,6 +60,43 @@ export async function register(): Promise<void> {
     console.warn('[generated-self-repair] non-fatal failure:', (err as Error)?.message ?? err);
   }
 
+  // Apply pending SQL migrations against the harness-admin DB. The
+  // embedded-postgres-server runs this on its own boot for Tauri desktop
+  // bundles, but in dev (operator → native PG at :5432) and in any
+  // deployment where PG is provisioned externally, nothing was applying
+  // them — every new migration since 057 needed a manual apply-NNN.sh
+  // script. Run it here so the operator stays in lock-step with the
+  // SQL dir on every boot. Idempotent (schema_migrations tracker);
+  // non-fatal so a permission-quirk or unreachable PG doesn't block
+  // startup — the route would surface the real error anyway.
+  void (async () => {
+    try {
+      const { applyPendingMigrations } = await import('@restart/embedded-postgres-server');
+      const { getHarnessAdminUrlWithSource } = await import('@/lib/embedded-pg-discovery');
+      const postgres = (await import('postgres')).default;
+      const { createRequire } = await import('node:module');
+      const req = createRequire(import.meta.url);
+      const path = req('node:path') as typeof import('node:path');
+      const sqlDir = path.resolve(process.cwd(), 'libs/papercusp/libs/db/sql');
+      const { url, source } = getHarnessAdminUrlWithSource();
+      const sql = postgres(url, { max: 1, prepare: false });
+      try {
+        const result = await applyPendingMigrations({
+          client: sql,
+          sqlDir,
+          log: (m: string) => console.log(`[migration-runner] ${m}`),
+        });
+        if (result.appliedCount > 0) {
+          console.log(`[migration-runner] applied ${result.appliedCount} pending migration(s) from ${source} (${result.totalKnown} total known)`);
+        }
+      } finally {
+        await sql.end({ timeout: 2 });
+      }
+    } catch (err) {
+      console.warn('[migration-runner] non-fatal failure:', (err as Error)?.message ?? err);
+    }
+  })();
+
   // Pre-warm lazy schema-ensure tables so the first user request doesn't
   // pay for DDL + the first PG connection (~1.1s on a cold pool).
   // Diagnostic 2026-05-06: desktop's first /api/user-actions/<slug> hit
