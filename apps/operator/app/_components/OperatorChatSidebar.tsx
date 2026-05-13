@@ -1085,10 +1085,22 @@ body.has-op-chat .h-header {
   background: rgba(10, 20, 33, 0.99) !important;
 }
 
+.op-chat-sidebar .oracle-input-shell::before {
+  content: none !important;
+  display: none !important;
+}
+
+.op-chat-sidebar .oracle-input-shell:hover {
+  border-color: rgba(125, 211, 252, 0.42) !important;
+  background: rgba(12, 24, 38, 0.99) !important;
+}
+
 .op-chat-sidebar .oracle-input-shell:focus-within {
   border-color: rgba(103, 232, 249, 0.58) !important;
   background: rgba(12, 25, 40, 0.99) !important;
-  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.12) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 16px rgba(56, 189, 248, 0.16) !important;
 }
 
 .op-chat-sidebar .oracle-input-shell input {
@@ -1128,5 +1140,11 @@ body.has-op-chat .h-header {
 .op-chat-sidebar button.op-chat-empty-row:disabled {
   cursor: wait;
   opacity: 0.72;
+}
+
+.op-chat-sidebar .oracle-send-button:disabled {
+  border-color: rgba(148, 163, 184, 0.24) !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: rgba(214, 236, 248, 0.76) !important;
 }
 `;
