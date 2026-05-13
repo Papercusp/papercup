@@ -47,16 +47,17 @@ export interface FlushResult {
 
 const RETENTION_DAYS = Number(process.env.PAPERCUSP_TELEMETRY_RETENTION_DAYS ?? 30);
 
-async function resolvePostHogConfig(): Promise<{ host?: string; projectKey?: string; optedIn: boolean }> {
+async function resolvePostHogConfig(): Promise<{ host?: string; projectKey?: string; distinctId?: string; optedIn: boolean }> {
   const state = await readOperatorState<{
     telemetry_enabled?: boolean;
     telemetry_host?: string;
     telemetry_project_key?: string;
+    install_id?: string;
   }>('setup_wizard_state');
   const optedIn = Boolean(state?.telemetry_enabled);
   const host = state?.telemetry_host || process.env.PAPERCUSP_POSTHOG_HOST;
   const projectKey = state?.telemetry_project_key || process.env.PAPERCUSP_POSTHOG_KEY;
-  return { host, projectKey, optedIn };
+  return { host, projectKey, distinctId: state?.install_id, optedIn };
 }
 
 export async function flushTelemetry(): Promise<FlushResult> {
@@ -125,7 +126,7 @@ export async function flushTelemetry(): Promise<FlushResult> {
       for (const row of pending) {
         try {
           ph.capture({
-            distinctId: workspaceId,
+            distinctId: config.distinctId ?? workspaceId,
             event: `papercusp_${row.kind}`,
             timestamp: row.received_at,
             properties: {

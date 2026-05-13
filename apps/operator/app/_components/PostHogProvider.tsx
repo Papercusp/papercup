@@ -23,6 +23,8 @@ interface TelemetryConfig {
   enabled: boolean;
   host?: string;
   project_key?: string;
+  /** Stable per-install UUID — preferred PostHog distinct id. */
+  distinct_id?: string;
   workspace_id?: string;
 }
 
@@ -48,11 +50,11 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           capture_pageleave: true,
           autocapture: true,
           disable_session_recording: true, // session-replay is a separate consent we don't have
-          // Workspace = distinct id keeps reports anonymous (no email/user id).
-          // workspace_id comes from the server (telemetry-config), not the URL,
-          // because the desktop app's webview has no ?ws= query param.
+          // Per-install UUID = distinct id keeps reports anonymous (no email/user
+          // id) AND stable across workspace creation/deletion. Falls back to
+          // workspace id then 'default' if telemetry-config didn't surface one.
           loaded: (ph) => {
-            ph.identify(cfg.workspace_id ?? 'default');
+            ph.identify(cfg.distinct_id ?? cfg.workspace_id ?? 'default');
           },
         });
         initialized = true;

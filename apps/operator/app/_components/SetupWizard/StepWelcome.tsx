@@ -40,7 +40,7 @@ export function StepWelcome({ onStart }: { onStart: () => void }) {
         <div>
           <h3>What's required</h3>
           <p>
-            A coding agent (Claude or Codex), a workspace folder, and the local database
+            A coding agent (Claude Code or oh-my-pi), a workspace folder, and the local database
             (auto-bootstrapped). Everything else is skippable.
           </p>
         </div>

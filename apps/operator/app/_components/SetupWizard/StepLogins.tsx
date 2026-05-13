@@ -16,7 +16,7 @@ const PROVIDERS: readonly Provider[] = [
     id: 'claude',
     title: 'Claude account',
     summary:
-      "If you have a Claude Pro or Max plan, sign in once and your subscription covers Claude Code usage. No per-token API charges. Routed through Meridian.",
+      "If you have a Claude Pro or Max plan, sign in once and your subscription covers Claude Code usage — no per-token API charges. (Papercusp uses Meridian to route Claude traffic; if your shell isn't already configured for that, the login still works but goes direct to Anthropic.)",
     cmd: 'claude /login',
   },
   {

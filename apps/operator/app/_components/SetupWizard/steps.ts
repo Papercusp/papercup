@@ -22,7 +22,7 @@ export const SETUP_STEPS: readonly StepDef[] = [
   {
     id: 'agents',
     title: 'Coding agents',
-    summary: 'Install Claude Code and/or OpenAI Codex. At least one is required.',
+    summary: 'Install Claude Code and/or oh-my-pi. At least one is required.',
     required: true,
   },
   {

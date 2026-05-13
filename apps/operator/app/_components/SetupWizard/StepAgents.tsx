@@ -32,7 +32,7 @@ const AGENTS: readonly AgentRow[] = [
     id: 'omp',
     title: 'oh-my-pi (OpenAI + multi-provider)',
     description:
-      "OpenAI-backed coding agent that also lets you mix providers (Anthropic, OpenAI, Google, others). Use this if you prefer OpenAI's models or want to switch backends per task. Replaces a separate Codex install — oh-my-pi handles the OpenAI side for you.",
+      "Multi-provider coding agent (Anthropic, OpenAI, Google, others). Use this if you prefer OpenAI's models or want to switch backends per task — oh-my-pi handles the OpenAI side directly, no separate install needed.",
     installCmd: 'npm install -g @oh-my-pi/cli',
     docsHref: 'https://github.com/can1357/oh-my-pi',
     preflightName: 'pi',

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { randomUUID } from 'node:crypto';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 
 export const dynamic = 'force-dynamic';
@@ -30,6 +31,10 @@ export interface SetupWizardState {
   telemetry_host?: string;
   /** PostHog project API key — empty string clears it. */
   telemetry_project_key?: string;
+  /** Per-install random UUID. Set once on first GET, never changes.
+   *  Used as the PostHog distinct id so each installation is one
+   *  "person" in PostHog regardless of workspace creation/deletion. */
+  install_id?: string;
   updated_at?: string;
 }
 
@@ -43,6 +48,14 @@ function defaults(): SetupWizardState {
 export async function GET(req: NextRequest) {
   if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
   const state = (await readOperatorState<SetupWizardState>(KEY)) ?? defaults();
+  // Lazy-mint install_id on first read so every install has a stable,
+  // anonymous PostHog distinct id from boot one — even before the
+  // user creates their first workspace.
+  if (!state.install_id) {
+    state.install_id = randomUUID();
+    state.updated_at = new Date().toISOString();
+    await writeOperatorState(KEY, state);
+  }
   return NextResponse.json(state);
 }
 

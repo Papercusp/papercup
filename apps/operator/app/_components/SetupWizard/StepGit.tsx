@@ -16,17 +16,26 @@ export function StepGit() {
   const [tauri, setTauri] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ghInstalled, setGhInstalled] = useState<boolean | null>(null);
 
   useEffect(() => {
     setTauri(isTauri());
     void (async () => {
       try {
-        const r = await fetch('/api/desktop/git-identity', { cache: 'no-store' });
-        if (r.ok) {
-          const j = (await r.json()) as GitIdentity;
+        const [identRes, pfRes] = await Promise.all([
+          fetch('/api/desktop/git-identity', { cache: 'no-store' }),
+          fetch('/api/desktop/preflight', { cache: 'no-store' }),
+        ]);
+        if (identRes.ok) {
+          const j = (await identRes.json()) as GitIdentity;
           setIdentity(j);
         } else {
           setIdentity({ source: 'none' });
+        }
+        if (pfRes.ok) {
+          const pf = (await pfRes.json()) as { checks: Array<{ name: string; status: string }> };
+          const gh = pf.checks?.find((c) => c.name === 'gh');
+          setGhInstalled(gh?.status === 'ok');
         }
       } catch {
         setIdentity({ source: 'none' });
@@ -104,10 +113,16 @@ git config --global user.email "you@example.com"`}</pre>
             type="button"
             className="pc-btn pc-btn--primary"
             onClick={() => void signInGitHub()}
-            disabled={signingIn}
+            disabled={signingIn || ghInstalled === false}
+            title={ghInstalled === false ? 'Install the GitHub CLI first (see hint below)' : undefined}
           >
             {signingIn ? 'Opening terminal…' : 'Sign in to GitHub'}
           </button>
+          {ghInstalled === false && (
+            <span className="pc-field__hint pc-field__hint--err" style={{ marginLeft: 8 }}>
+              ⚠ GitHub CLI not detected. Install it first: <a href="https://cli.github.com/" target="_blank" rel="noreferrer">cli.github.com</a>
+            </span>
+          )}
         </div>
       ) : (
         <pre className="pc-code">gh auth login</pre>

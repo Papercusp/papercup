@@ -37,6 +37,7 @@ export async function GET(req: NextRequest) {
     telemetry_enabled?: boolean;
     telemetry_host?: string;
     telemetry_project_key?: string;
+    install_id?: string;
   }>('setup_wizard_state');
 
   const enabled = Boolean(state?.telemetry_enabled);
@@ -50,10 +51,11 @@ export async function GET(req: NextRequest) {
     host: state?.telemetry_host || process.env.PAPERCUSP_POSTHOG_HOST || undefined,
     project_key:
       state?.telemetry_project_key || process.env.PAPERCUSP_POSTHOG_KEY || undefined,
-    // Server-side workspace id — the browser doesn't know its own
-    // workspace from the URL on the desktop (no `?ws=…` query param).
-    // Used as the PostHog distinct id so events aggregate per
-    // installation, not all onto one anonymous "default" person.
+    // Stable per-install UUID minted on first GET of setup-wizard-state.
+    // Falls back to workspace id, then 'default', but install_id should
+    // always be set in practice because layouts call setup-wizard-state
+    // on mount.
+    distinct_id: state?.install_id ?? activeWorkspaceId(),
     workspace_id: activeWorkspaceId(),
   });
 }
