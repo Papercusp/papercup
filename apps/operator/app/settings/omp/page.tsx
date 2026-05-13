@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Checkbox } from '../../harness/Checkbox';
 
 interface OmpSetting {
   key: string;
@@ -258,10 +259,10 @@ function ValueControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: un
   if (setting.type === 'boolean') {
     return (
       <label style={S.toggle}>
-        <input
-          type="checkbox"
+        <Checkbox
           checked={setting.parsed === true}
-          onChange={(e) => onSave(e.target.checked)}
+          onChange={(v) => onSave(v)}
+          ariaLabel={setting.key}
         />
         <span>{setting.parsed === true ? 'on' : 'off'}</span>
       </label>

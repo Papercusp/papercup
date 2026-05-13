@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import dynamic from 'next/dynamic';
 import { useSyncQuery } from '@restart/sync';
+import { toast } from 'sonner';
 import { Tooltip } from './Tooltip';
+import { useConfirmDialog } from './useConfirmDialog';
 import { Play, Square, Activity, AlertTriangle, ExternalLink, ChevronDown, Settings } from 'lucide-react';
 
 const BranchActionRunner = dynamic(() => import('../_components/BranchActionRunner'), { ssr: false });
@@ -67,6 +69,7 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
   const [health, setHealth] = useState<Record<Phase, 'up' | 'slow' | 'down' | 'unknown'>>({
     staging: 'unknown', testing: 'unknown', production: 'unknown',
   });
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   // Live-pushed via Zero (harness_shared.harness_branch_actions, mirrored
   // by harness-fs-watcher.ts). Replaces the 30s × 3-branch setInterval poll.
   // Each row's `payload` is the same shape the REST endpoint returns.
@@ -211,15 +214,20 @@ export default function PhaseTabs({ slug, activePhase, onChange }: Props) {
   const showSetup = phases.length > 0 && phases.some((p) => !p.exists && p.phase !== 'staging');
 
   const setup = async () => {
-    if (!confirm('Create testing + production worktrees for this project?')) return;
+    if (!await askConfirm({
+      title: 'Set up testing + production worktrees?',
+      body: 'Creates git worktrees for the testing and production phases of this project. Existing files are not modified.',
+      confirmLabel: 'Set up phases',
+    })) return;
     const res = await fetch(`/api/harness/${slug}/phases/setup`, { method: 'POST' });
     const body = await res.json();
-    if (res.ok) alert('phases created\n\n' + (body.output ?? ''));
-    else alert('setup failed: ' + (body.error ?? res.statusText));
+    if (res.ok) toast.success('Phases created', { description: body.output ?? undefined });
+    else toast.error('Setup failed', { description: body.error ?? res.statusText });
   };
 
   return (
     <>
+    {confirmEl}
     <div className="h-phase-strip" style={{
       display: 'flex', alignItems: 'center', gap: 8,
       padding: '4px 10px',

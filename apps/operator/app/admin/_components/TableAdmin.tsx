@@ -1,7 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { toast } from 'sonner';
 import '../admin-tables.css';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 /**
  * Drizzle-driven CRUD admin UI factory.
@@ -66,6 +68,7 @@ export default function TableAdmin() {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<{ mode: 'create' } | { mode: 'edit'; row: Record<string, unknown> } | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     void fetch('/api/admin/tables')
@@ -109,7 +112,13 @@ export default function TableAdmin() {
       if (!detail || !selected) return;
       const pk: Record<string, unknown> = {};
       for (const k of detail.primaryKey) pk[k] = row[k];
-      if (!confirm(`Delete row with ${Object.entries(pk).map(([k, v]) => `${k}=${String(v)}`).join(', ')}?`)) return;
+      const ok = await askConfirm({
+        title: 'Delete row?',
+        body: Object.entries(pk).map(([k, v]) => `${k}=${String(v)}`).join(', '),
+        confirmLabel: 'Delete',
+        destructive: true,
+      });
+      if (!ok) return;
       setBusy(true);
       try {
         const r = await fetch(
@@ -118,18 +127,19 @@ export default function TableAdmin() {
         );
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
-          alert(`Delete failed: ${d.error ?? r.statusText}`);
+          toast.error(`Delete failed: ${d.error ?? r.statusText}`);
         }
         await refresh(selected, offset);
       } finally {
         setBusy(false);
       }
     },
-    [detail, selected, offset, refresh],
+    [detail, selected, offset, refresh, askConfirm],
   );
 
   return (
     <div className="pc-admin-shell">
+      {confirmEl}
       <aside className="pc-admin-sidebar">
         <div className="pc-admin-title">Admin tables ({tables.length})</div>
         <div className="pc-admin-list">

@@ -4,6 +4,8 @@ import RouteLink from '../../_components/RouteLink';
 import * as Lucide from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { useConfirmDialog } from '../../harness/useConfirmDialog';
+import { usePromptDialog } from '../../harness/usePromptDialog';
 
 interface PublishRecord {
   slug: string;
@@ -58,6 +60,8 @@ export default function MarketplaceSnapshotsClient() {
   const [catalog, setCatalog] = useState<CatalogSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   const publishedCount = useMemo(() => rows.filter((row) => row.publishes.length > 0).length, [rows]);
   const totalBytes = useMemo(() => rows.reduce((sum, row) => sum + row.bytes, 0), [rows]);
@@ -105,7 +109,15 @@ export default function MarketplaceSnapshotsClient() {
       // fall through to fast path
     }
     const proposed = `${row.harnessSlug}-fork-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}`;
-    const name = window.prompt('Name for the new harness? Cancel to use the auto-generated name.', proposed);
+    const name = await askPrompt({
+      title: 'Instantiate snapshot',
+      body: 'Pick a name for the new harness, or submit blank to use the auto-generated name.',
+      label: 'New harness slug',
+      defaultValue: proposed,
+      allowEmpty: true,
+      submitLabel: 'Instantiate',
+    });
+    if (name === null) return;
     setBusyId(row.id);
     try {
       const r = await fetch(`/api/snapshots/${row.id}/instantiate`, {
@@ -128,7 +140,12 @@ export default function MarketplaceSnapshotsClient() {
   };
 
   const onPublish = async (row: SnapshotRow) => {
-    if (!confirm(`Publish “${row.name}” (${formatBytes(row.bytes)}) to the marketplace?`)) return;
+    const ok = await askConfirm({
+      title: `Publish "${row.name}"?`,
+      body: `Snapshot size: ${formatBytes(row.bytes)}.`,
+      confirmLabel: 'Publish',
+    });
+    if (!ok) return;
     setBusyId(row.id);
     try {
       const r = await fetch(`/api/snapshots/${row.id}/publish`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
@@ -146,7 +163,13 @@ export default function MarketplaceSnapshotsClient() {
   };
 
   const onDelete = async (row: SnapshotRow) => {
-    if (!confirm(`Delete local snapshot ${row.id}? Published copies are unaffected.`)) return;
+    const ok = await askConfirm({
+      title: `Delete local snapshot ${row.id}?`,
+      body: 'Published copies are unaffected.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusyId(row.id);
     try {
       const r = await fetch(`/api/snapshots/${row.id}`, { method: 'DELETE' });
@@ -162,6 +185,8 @@ export default function MarketplaceSnapshotsClient() {
 
   return (
     <div className="pc-shell pc-marketplace-shell">
+      {confirmEl}
+      {promptEl}
       <section className="pc-marketplace-pagehead">
         <div>
           <p className="pc-eyebrow">Snapshots</p>

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { Controller } from 'react-hook-form';
 import { SettingsMarkdownEditor } from '../SettingsMarkdownEditor';
 import { useFormWith, SubmitButton } from '@/lib/forms';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 // Form schema — both fields are free-form markdown, allowed to be empty.
 const ConfigSchema = z.object({
@@ -45,6 +46,7 @@ export default function OperatorSettingsPage() {
   const [loading, setLoading] = useState(true);
 
   const [statsOpen, setStatsOpen] = useQueryState('stats', parseAsBoolean.withDefault(false));
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const { control, submit, reset, isSubmitting } = useFormWith(ConfigSchema, {
     defaultValues: { prompt_user: '', preferences: '' },
   });
@@ -135,11 +137,16 @@ export default function OperatorSettingsPage() {
   };
 
   const removeEntry = useCallback(async (key: string) => {
-    if (!confirm('Remove this preference entry?')) return;
+    const ok = await askConfirm({
+      title: 'Remove this preference entry?',
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    if (!ok) return;
     await fetch(`/api/agent-mcp/operator-preferences?key=${encodeURIComponent(key)}`, { method: 'DELETE' });
     await loadAll();
     toast.success('Removed');
-  }, [loadAll]);
+  }, [loadAll, askConfirm]);
 
   const setBudgetCap = useCallback(async (cap: number) => {
     await fetch('/api/agent-mcp/operator-budget', {
@@ -166,6 +173,7 @@ export default function OperatorSettingsPage() {
 
   return (
     <div style={{ padding: '8px 4px', maxWidth: 880 }}>
+      {confirmEl}
       <h1 style={{ fontSize: 22, marginBottom: 4 }}>Operator</h1>
       <p style={{ color: 'var(--fg-mute)', marginBottom: loading ? 8 : 24, fontSize: 14 }}>
         The Operator is the proactive concierge accessed from the top-bar Operator button.

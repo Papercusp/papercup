@@ -27,6 +27,8 @@ import { useFancyEffectsEnabled } from '@/lib/visual-effects';
 import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { MarkdownPreview } from './MarkdownEditor';
+import { Select } from '../harness/Select';
+import { usePromptDialog } from '../harness/usePromptDialog';
 import { speak, onFinalUtterance, getVoiceState } from './voice/voice-mode';
 import { registerVoiceConsumer } from './voice/VoiceAppBridge';
 import { findFuzzyDuplicate } from '../../lib/operator-fuzzy-dedup';
@@ -545,6 +547,7 @@ export function OperatorPanel(): ReactElement | null {
   const [scanStarted, setScanStarted] = useState(false);
   const [firstRun, setFirstRun] = useState(false);
   const [budget, setBudget] = useState<BudgetSnapshot | null>(null);
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   // Eager Zero subscriptions for operator-budget + operator-last-scan.
   // Replaces the lazy REST fetches that fired when the panel opens, so
@@ -1188,14 +1191,13 @@ export function OperatorPanel(): ReactElement | null {
    * Skipping the reason still records the dismissal in card state but
    * leaves preferences.md untouched.
    */
-  const dismissSuggestion = useCallback((id: string) => {
+  const dismissSuggestion = useCallback(async (id: string) => {
     const card = suggestionsRef.current.find((c) => c.id === id);
     setSuggestions((prev) =>
       prev.map((c) =>
         c.id === id ? { ...c, status: 'ignored', undoCancelled: false } : c,
       ),
     );
-    // Record dismissal for the cooldown filter (so re-scans don't re-emit).
     void fetch('/api/agent-mcp/operator-dismissed', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1203,9 +1205,14 @@ export function OperatorPanel(): ReactElement | null {
     });
     void logAudit(id, 'ignored');
     if (!card) return;
-    const reason = typeof window !== 'undefined'
-      ? window.prompt('Why ignore this? (optional — leave blank to skip learning)')
-      : '';
+    const reason = await askPrompt({
+      title: 'Why ignore this?',
+      label: 'Reason (optional)',
+      body: 'Tell Operator why this suggestion isn\'t useful so it can learn. Leave blank to dismiss without logging.',
+      placeholder: 'not relevant to this harness…',
+      submitLabel: 'Dismiss',
+      allowEmpty: true,
+    });
     if (!reason || !reason.trim()) return;
     const entry = `- [USER-TYPED] [DISMISS] "${card.title.replace(/"/g, '\\"')}" — reason: "${reason.trim().replace(/"/g, '\\"')}"`;
     void fetch('/api/agent-mcp/operator-preferences', {
@@ -1213,7 +1220,7 @@ export function OperatorPanel(): ReactElement | null {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ entry }),
     });
-  }, []);
+  }, [askPrompt]);
 
   /**
    * Undo-window cancel — user hit Cancel within 5s of a background
@@ -1639,6 +1646,7 @@ export function OperatorPanel(): ReactElement | null {
           exit={panelMotion.exit}
           style={calmMotion ? undefined : { transformPerspective: 1800 }}
         >
+          {promptEl}
           <svg className="operator-panel__svg-frame" viewBox="0 0 1000 600" preserveAspectRatio="none" aria-hidden="true" focusable="false">
             <defs>
               <linearGradient id="operatorPanelFrameRail" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -1793,18 +1801,13 @@ export function OperatorPanel(): ReactElement | null {
                       )}
                     </div>
                     <div className="operator-feed-harness-filter">
-                      <select
+                      <Select
                         value={harnessFilter ?? '_all'}
-                        onChange={(e) => setHarnessFilter(e.target.value === '_all' ? null : e.target.value)}
-                        aria-label="Filter actions by harness"
-                        className="operator-feed-harness-select"
-                      >
-                        {harnessOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {option.label}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={(v) => setHarnessFilter(v === '_all' ? null : v)}
+                        ariaLabel="Filter actions by harness"
+                        triggerClassName="operator-feed-harness-select"
+                        options={harnessOptions.map((option) => ({ value: option.value, label: option.label }))}
+                      />
                     </div>
                   </div>
                 )}

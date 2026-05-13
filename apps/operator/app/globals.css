@@ -300,9 +300,8 @@ section[aria-label*="Notifications"][aria-live] {
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--bg, #07101d), transparent 0%);
 }
 .notif-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
+  /* Positioning + z-index are handled by Radix Popover (via the
+     harness/Popover wrapper). */
   width: 380px;
   max-height: 70vh;
   display: flex;
@@ -317,7 +316,6 @@ section[aria-label*="Notifications"][aria-live] {
   border: 1px solid color-mix(in oklab, var(--border, #2a3142), white 8%);
   border-radius: 12px;
   box-shadow: 0 22px 60px rgba(0, 0, 0, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.045);
-  z-index: 1400;
   overflow: hidden;
 }
 .notif-panel-head {

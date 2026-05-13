@@ -3,6 +3,7 @@
 import { useState, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { SPEC_CONTENT } from './spec-content';
+import { Checkbox } from '../harness/Checkbox';
 
 const MonacoPane     = dynamic(() => import('./panes/MonacoPane'),     { ssr: false, loading: () => <Loading name="Monaco" /> });
 const CodeMirrorPane = dynamic(() => import('./panes/CodeMirrorPane'), { ssr: false, loading: () => <Loading name="CodeMirror 6" /> });
@@ -64,7 +65,7 @@ export default function EditorDemoPage() {
         </span>
         <span style={{ flex: 1 }} />
         <label style={{ fontSize: 12, color: '#aaa', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          <input type="checkbox" checked={perEditor} onChange={e => setPerEditor(e.target.checked)} />
+          <Checkbox checked={perEditor} onChange={setPerEditor} ariaLabel="Per-editor scratch buffers" />
           Per-editor scratch buffers
         </label>
         <button

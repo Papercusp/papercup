@@ -10,6 +10,7 @@
 import { useEffect, useState, useCallback, useRef, type ReactElement } from 'react';
 import { Settings2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { Tooltip } from '../../harness/Tooltip';
 import {
   getVoiceConfig,
   getVoiceState,
@@ -261,15 +262,16 @@ export function VoiceButton(): ReactElement {
         </span>
         <span className="pc-voice-btn-label">{labelText}</span>
       </button>
-      <a
-        href="/settings/voice"
-        className="pc-voice-settings-link"
-        aria-label="Microphone settings"
-        title="Open microphone settings"
-      >
-        <Settings2 size={14} aria-hidden="true" />
-        <span className="pc-voice-settings-text">Voice</span>
-      </a>
+      <Tooltip label="Open microphone settings">
+        <a
+          href="/settings/voice"
+          className="pc-voice-settings-link"
+          aria-label="Microphone settings"
+        >
+          <Settings2 size={14} aria-hidden="true" />
+          <span className="pc-voice-settings-text">Voice</span>
+        </a>
+      </Tooltip>
       {(showWakeHint || showPttHint || showConnectingHint) && (
         <div className="pc-voice-wake-hint" aria-live="polite">
           {showConnectingHint ? (

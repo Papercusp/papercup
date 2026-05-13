@@ -11,6 +11,8 @@ import { useQueryState, parseAsString } from 'nuqs';
 import { toast } from 'sonner';
 import * as Lucide from 'lucide-react';
 import { Checkbox } from '../harness/Checkbox';
+import { Modal } from '../harness/Modal';
+import { useConfirmDialog } from '../harness/useConfirmDialog';
 import InstallButton from './InstallButton';
 import RouteLink from '../_components/RouteLink';
 import { useSyncQuery } from '@restart/sync';
@@ -79,6 +81,7 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
   const [enablePicker, setEnablePicker] = useState<string | null>(null);
   const [enabledMap, setEnabledMap] = useState<Record<string, string[]>>({});
   const progress = useProgress();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const installedSlugs = useMemo(() => {
     return new Set(isPlugin ? installedPlugins.map((p) => p.name) : installedTemplates.map((h) => h.slug));
@@ -161,7 +164,15 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
   const installedCount = visibleCatalog.filter((entry) => installedSlugs.has(entry.slug)).length;
 
   async function uninstall(slug: string) {
-    if (!confirm(`Remove ${slug}?\n\n${isPlugin ? 'Plugin will be disabled in every harness it was enabled in.' : 'Projects you initialised from this template will be untouched.'}`)) return;
+    const ok = await askConfirm({
+      title: `Remove ${slug}?`,
+      body: isPlugin
+        ? 'Plugin will be disabled in every harness it was enabled in.'
+        : 'Projects you initialised from this template will be untouched.',
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusySlug(slug);
     progress.start(0.08, 0, true);
     let stopProgress = true;
@@ -268,6 +279,7 @@ export default function MarketplaceList({ kind, catalog, installedTemplates, ins
 
   return (
     <section ref={listRef} className="pc-marketplace-list pc-marketplace-list--maximal-hud" data-marketplace-kind={kind}>
+      {confirmEl}
       <div className="pc-marketplace-toolbar">
         <div className="pc-marketplace-toolbar-copy">
           <span>{isPlugin ? 'Plugin catalog' : 'Template catalog'}</span>
@@ -455,10 +467,17 @@ function EnablePicker({ slug, harnesses, enabledIn, onCancel, onApply }: EnableP
   }
 
   return (
-    <div role="dialog" className="pc-marketplace-dialog-backdrop" onClick={onCancel}>
-      <div className="pc-marketplace-dialog" onClick={(e) => e.stopPropagation()}>
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onCancel(); }}
+      title={`Enable ${slug} in…`}
+      srOnlyTitle
+      closeOnOutsideClick={!busy}
+      closeOnEscape={!busy}
+    >
+      <div className="pc-marketplace-dialog">
         <div className="pc-marketplace-dialog-title">Enable {slug} in…</div>
-        <p>Tick the harnesses where this plugin should be active. Per-harness configs use the plugin's defaults.</p>
+        <p>Tick the harnesses where this plugin should be active. Per-harness configs use the plugin&apos;s defaults.</p>
         {harnesses.length === 0 ? (
           <div className="pc-marketplace-empty compact">No harnesses installed yet. Install a template first.</div>
         ) : (
@@ -487,6 +506,6 @@ function EnablePicker({ slug, harnesses, enabledIn, onCancel, onApply }: EnableP
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Modal } from './Modal';
 import { Checkbox } from './Checkbox';
 import { MarkdownPreview } from '../_components/MarkdownEditor';
+import { useConfirmDialog } from './useConfirmDialog';
 
 interface Template {
   id: string;
@@ -27,6 +28,7 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
   const [overwrite, setOverwrite] = useState(false);
   const [working, setWorking] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const load = useCallback(async () => {
     try {
@@ -55,7 +57,14 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
 
   const bootstrap = useCallback(async () => {
     if (!selected) return;
-    if (!confirm(`Bootstrap "${slug}" from template "${selected.name}"?${overwrite ? ' Existing SPEC.md/AGENTS.md/config.json will be overwritten.' : ''}`)) return;
+    if (!await askConfirm({
+      title: `Bootstrap "${slug}" from "${selected.name}"?`,
+      body: overwrite
+        ? 'Existing SPEC.md / AGENTS.md / config.json will be overwritten.'
+        : 'Copies template files into this harness. Existing files are kept.',
+      confirmLabel: 'Bootstrap',
+      destructive: overwrite,
+    })) return;
     setWorking(true);
     try {
       const r = await fetch(`/api/harness/${slug}/bootstrap-from-template`, {
@@ -87,6 +96,7 @@ export default function TemplatesModal({ slug, onClose, onBootstrapped }: Props)
       zIndex={60}
       contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1000, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
+      {confirmEl}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Mission templates</strong>
           <span style={{ color: '#6b7280', fontSize: '0.75rem', fontFamily: 'monospace' }}>→ {slug}</span>

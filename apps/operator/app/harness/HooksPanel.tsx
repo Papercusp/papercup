@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useQueryState, parseAsString } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 
@@ -123,6 +124,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
   const [saving, setSaving] = useState<HookName | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [selectedLog, setSelectedLog] = useState<{ logId: string; content: string } | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Live-pushed via Zero (harness_shared.harness_hook_logs, mirrored from
   // .harness/logs/hooks/*.log file metadata by harness-fs-watcher.ts).
@@ -225,7 +227,12 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
   }, [slug, draft, load]);
 
   const remove = useCallback(async (name: HookName) => {
-    if (!confirm(`Delete ${name}.sh? The hook will no longer fire.`)) return;
+    if (!await askConfirm({
+      title: `Delete ${name}.sh?`,
+      body: 'The hook will no longer fire.',
+      confirmLabel: 'Delete hook',
+      destructive: true,
+    })) return;
     setSaving(name);
     try {
       const r = await fetch(`/api/harness/${slug}/hooks/${name}`, { method: 'DELETE' });
@@ -239,7 +246,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
       setSaving(null);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [slug, load]);
+  }, [slug, load, askConfirm]);
 
   const insertPlaceholder = useCallback((name: HookName) => {
     setDraft((d) => ({ ...d, [name]: PLACEHOLDERS[name] ?? DEFAULT_PLACEHOLDER }));
@@ -270,6 +277,7 @@ function HooksPanelInner({ slug, alive, onClose }: Props) {
       zIndex={60}
       contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '88vw', height: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
     >
+        {confirmEl}
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong style={{ color: '#e5e7eb' }}>Hooks — {slug}</strong>

@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { z } from 'zod';
 import type { UseFormRegisterReturn } from 'react-hook-form';
 import { useFormWith, FormField, SubmitButton } from '@/lib/forms';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface MaskedCoreCredentials {
   anthropic_api_key: string | null;
@@ -228,6 +229,7 @@ function VoiceKeyRow({
 }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const save = async () => {
     if (!draft.trim()) return;
@@ -249,7 +251,12 @@ function VoiceKeyRow({
   };
 
   const clear = async () => {
-    if (!confirm(`Clear the ${label} API key?`)) return;
+    const ok = await askConfirm({
+      title: `Clear the ${label} API key?`,
+      confirmLabel: 'Clear',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const r = await fetch('/api/agent-mcp/operator-credentials', {
@@ -263,6 +270,7 @@ function VoiceKeyRow({
 
   return (
     <div style={{ marginBottom: 12, padding: 12, border: '1px solid var(--border)', borderRadius: 4 }}>
+      {confirmEl}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, marginBottom: 4 }}>
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <strong style={{ fontSize: 13 }}>{label}</strong>

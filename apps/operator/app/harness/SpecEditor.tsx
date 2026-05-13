@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import { Modal } from './Modal';
+import { useConfirmDialog } from './useConfirmDialog';
 import Editor from '@monaco-editor/react';
 import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
 import { BacklinksPanel } from '../_components/BacklinksPanel';
@@ -61,6 +62,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Skills is a collection — managed by CollectionTab below.
   // Prompts are managed by PromptsTab under its own section.
@@ -237,7 +239,18 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
   // Lazy-load .env only after user reveals it
   const revealEnv = useCallback(async () => {
     if (envRevealed) return;
-    if (!confirm('Show .env contents?\n\nThis loads plaintext secrets into the browser tab. Only do this on a machine you trust and close the tab when done.')) return;
+    if (!await askConfirm({
+      title: 'Show .env contents?',
+      body: (
+        <>
+          <p style={{ margin: '0 0 8px' }}>This loads plaintext secrets into the browser tab. Only do this on a machine you trust, and close the tab when done.</p>
+          <p style={{ margin: 0, color: 'var(--fg-mute)', fontSize: 12 }}>Type <b>REVEAL</b> to confirm.</p>
+        </>
+      ),
+      confirmLabel: 'Reveal secrets',
+      destructive: true,
+      requireType: 'REVEAL',
+    })) return;
     try {
       const d = await fetch(`/api/harness/${slug}/env`).then((r) => r.json());
       setOriginal((o) => ({ ...o, env: d.content ?? null }));
@@ -246,7 +259,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
     } catch (e) {
       setToast(`env load failed: ${e}`);
     }
-  }, [envRevealed, slug]);
+  }, [envRevealed, slug, askConfirm, setEnvRevealed]);
 
   const revertActive = useCallback(() => {
     if (SIMPLE_TABS.includes(tab as SimpleTab)) {
@@ -476,7 +489,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
       </div>
   );
 
-  if (inline) return inner;
+  if (inline) return <>{confirmEl}{inner}</>;
 
   return (
     <Modal
@@ -485,6 +498,7 @@ export default function SpecEditor({ slug, projectPath, alive, onClose, inline =
       title="Spec editor"
       srOnlyTitle
     >
+      {confirmEl}
       {inner}
     </Modal>
   );

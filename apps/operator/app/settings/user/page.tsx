@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { toast } from 'sonner';
+import { Checkbox } from '../../harness/Checkbox';
 
 interface User {
   id: string;
@@ -346,10 +347,10 @@ function OverrideInput({ spec, value, onChange }: {
   if (spec.kind === 'bool') {
     return (
       <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-        <input
-          type="checkbox"
+        <Checkbox
           checked={value === true}
-          onChange={(e) => onChange(e.target.checked)}
+          onChange={(v) => onChange(v)}
+          ariaLabel="bool"
         />
         <span>{value === true ? 'On' : 'Off'}</span>
       </label>

@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
@@ -69,6 +70,7 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
   const [includeConfig, setIncludeConfig] = useState(true);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const load = useCallback(async () => {
     // Sync ping — server scans FS + dual-writes to PG. Zero subscription
@@ -92,7 +94,18 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
 
   const restore = useCallback(async () => {
     if (!selected) return;
-    if (!confirm(`Restore mission state from ${selected.id}? Current features (harness_features in Postgres), validation-contract.md${includeNotes ? ', supervisor-notes.md' : ''}${includeConfig ? ', config.json' : ''} will be overwritten.`)) return;
+    const overwriteList = [
+      'harness_features (Postgres)',
+      'validation-contract.md',
+      includeNotes ? 'supervisor-notes.md' : null,
+      includeConfig ? 'config.json' : null,
+    ].filter(Boolean).join(', ');
+    if (!await askConfirm({
+      title: `Restore from snapshot ${selected.id}?`,
+      body: <>Current state will be overwritten: <code style={{ fontSize: 11 }}>{overwriteList}</code></>,
+      confirmLabel: 'Restore',
+      destructive: true,
+    })) return;
     setBusy(true);
     try {
       const r = await fetch(`/api/harness/${slug}/snapshots/${selected.id}/restore`, {
@@ -111,10 +124,15 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [selected, includeNotes, includeConfig, slug, onRestored, onClose]);
+  }, [selected, includeNotes, includeConfig, slug, onRestored, onClose, askConfirm]);
 
   const remove = useCallback(async (id: string) => {
-    if (!confirm(`Delete snapshot ${id}? Cannot be undone.`)) return;
+    if (!await askConfirm({
+      title: `Delete snapshot ${id}?`,
+      body: 'Cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    })) return;
     setBusy(true);
     try {
       const r = await fetch(`/api/harness/${slug}/snapshots/${id}`, { method: 'DELETE' });
@@ -127,7 +145,7 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
     } finally {
       setBusy(false);
     }
-  }, [slug, selected, load]);
+  }, [slug, selected, load, askConfirm]);
 
   return (
     <Modal
@@ -138,6 +156,7 @@ function SnapshotsPanelInner({ slug, onClose, onRestored }: Props) {
       zIndex={60}
       contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '80vw', maxWidth: 1100, height: '75vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
+        {confirmEl}
         {/* Header */}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Snapshots — {slug}</strong>

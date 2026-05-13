@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as Lucide from 'lucide-react';
 import { toast } from 'sonner';
+import { useConfirmDialog } from '../../harness/useConfirmDialog';
+import { usePromptDialog } from '../../harness/usePromptDialog';
 
 interface PublishRecord {
   slug: string;
@@ -79,6 +81,8 @@ export default function InstalledSnapshotsClient() {
   const [rows, setRows] = useState<SnapshotRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -95,10 +99,15 @@ export default function InstalledSnapshotsClient() {
 
   const onDelete = async (s: SnapshotRow) => {
     const has = s.publishes.length > 0;
-    const note = has
-      ? '\n\nThis will not retract the published version on the marketplace — use Retract first if you also want it gone there.'
-      : '';
-    if (!confirm(`Delete snapshot ${s.id}?${note}`)) return;
+    const ok = await askConfirm({
+      title: `Delete snapshot ${s.id}?`,
+      body: has
+        ? 'This will not retract the published version on the marketplace — use Retract first if you also want it gone there.'
+        : 'The local snapshot tarball will be removed.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(s.id);
     try {
       const r = await fetch(`/api/snapshots/${encodeURIComponent(s.id)}`, { method: 'DELETE' });
@@ -121,12 +130,23 @@ export default function InstalledSnapshotsClient() {
     const defaultSlug = prev?.slug ?? `${s.harnessSlug}-snapshot-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
     const defaultVersion = prev ? bumpPatch(prev.version) : '1.0.0';
     const isRepublish = !!prev;
-    const promptLabel = isRepublish
-      ? `Republish ${s.id} as a new version.\n\nThe last publish was ${prev.slug}@${prev.version}.\nPick a marketplace slug + version:`
-      : `Publish ${s.id} to the marketplace.\n\nPick a marketplace slug + version:`;
-    const slug = window.prompt(`${promptLabel}\n\nSlug:`, defaultSlug);
+    const slug = await askPrompt({
+      title: isRepublish ? `Republish ${s.id}` : `Publish ${s.id}`,
+      body: isRepublish
+        ? `The last publish was ${prev.slug}@${prev.version}. Pick a marketplace slug.`
+        : 'Pick a marketplace slug.',
+      label: 'Slug',
+      defaultValue: defaultSlug,
+      submitLabel: 'Next',
+    });
     if (!slug) return;
-    const version = window.prompt(`Version for ${slug}:`, defaultVersion);
+    const version = await askPrompt({
+      title: `Version for ${slug}`,
+      label: 'Version',
+      defaultValue: defaultVersion,
+      validate: (v) => /^\d+\.\d+\.\d+/.test(v) ? null : 'Use semver (e.g. 1.0.0)',
+      submitLabel: 'Publish',
+    });
     if (!version) return;
     setBusy(`publish:${s.id}`);
     try {
@@ -150,7 +170,13 @@ export default function InstalledSnapshotsClient() {
   };
 
   const onRetract = async (s: SnapshotRow, marketplaceSlug: string) => {
-    if (!confirm(`Retract ${marketplaceSlug} from the marketplace?\n\nMarks the published version as withdrawn. The local snapshot stays intact.`)) return;
+    const ok = await askConfirm({
+      title: `Retract ${marketplaceSlug}?`,
+      body: 'Marks the published version as withdrawn. The local snapshot stays intact.',
+      confirmLabel: 'Retract',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(`${s.id}:${marketplaceSlug}`);
     try {
       const r = await fetch(`/api/snapshots/${encodeURIComponent(s.id)}/retract`, {
@@ -176,6 +202,8 @@ export default function InstalledSnapshotsClient() {
 
   return (
     <div className="pc-shell pc-marketplace-shell">
+      {confirmEl}
+      {promptEl}
       {/* Toaster mounted globally in app/layout.tsx. */}
       <section className="pc-marketplace-pagehead">
         <div>

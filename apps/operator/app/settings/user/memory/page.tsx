@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { toast } from 'sonner';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface MemoryRow {
   id: string;
@@ -28,6 +29,7 @@ export default function MemoryPage() {
   const [rows, setRows] = useState<MemoryRow[]>([]);
   const [stats, setStats] = useState<FeedbackStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [reason, setReason] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
 
@@ -69,7 +71,12 @@ export default function MemoryPage() {
   }, [editingDraft]);
 
   const onDelete = useCallback(async (id: string) => {
-    if (!confirm('Delete this memory?')) return;
+    const ok = await askConfirm({
+      title: 'Delete this memory?',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     const r = await fetch(`/api/user/memory?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (r.ok) {
       toast.success('Deleted');
@@ -77,21 +84,33 @@ export default function MemoryPage() {
     } else {
       toast.error('Delete failed');
     }
-  }, []);
+  }, [askConfirm]);
 
   const onForgetAll = useCallback(async () => {
-    if (!confirm('Delete ALL of your memories? Workspace-shared entries are not affected.')) return;
+    const ok = await askConfirm({
+      title: 'Delete ALL of your memories?',
+      body: 'Workspace-shared entries are not affected. Type FORGET to confirm.',
+      confirmLabel: 'Forget all',
+      destructive: true,
+      requireType: 'FORGET',
+    });
+    if (!ok) return;
     const r = await fetch('/api/user/memory?all=1', { method: 'DELETE' });
     if (r.ok) {
       const j = await r.json();
       toast.success(`Deleted ${j.deleted} memories`);
       await refresh();
     }
-  }, [refresh]);
+  }, [refresh, askConfirm]);
 
   const [reembedBusy, setReembedBusy] = useState<null | 'openai-to-local' | 'local-to-openai'>(null);
   const onReembed = useCallback(async (from: 'openai' | 'local', to: 'openai' | 'local') => {
-    if (!confirm(`Re-embed every memory from "${from}" into the "${to}" collection? This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`)) return;
+    const ok = await askConfirm({
+      title: `Re-embed memories from "${from}" → "${to}"?`,
+      description: `This may take 30s-5min depending on size. Existing "${to}" memories with the same id will be overwritten.`,
+      confirmLabel: 'Re-embed',
+    });
+    if (!ok) return;
     setReembedBusy(`${from}-to-${to}` as typeof reembedBusy);
     try {
       const r = await fetch('/api/user/memory/reembed', {
@@ -111,7 +130,7 @@ export default function MemoryPage() {
     } finally {
       setReembedBusy(null);
     }
-  }, [refresh]);
+  }, [refresh, askConfirm]);
 
   const filtered = filter === 'all'
     ? rows
@@ -121,6 +140,7 @@ export default function MemoryPage() {
 
   return (
     <div style={{ padding: 32, maxWidth: 920, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {confirmEl}
       <header>
         <h1 style={{ marginBottom: 8 }}>Operator memory</h1>
         <p style={{ color: 'var(--text-secondary)', margin: 0 }}>

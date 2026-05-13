@@ -1,6 +1,7 @@
 'use client';
 
 import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSyncQuery } from '@restart/sync';
@@ -554,6 +555,7 @@ function ReviewRow({ review, onClick }: { review: PendingReview; onClick: () => 
 }
 
 function ThreadRow({ thread, onClick, onPin, onDelete }: { thread: Thread; onClick: () => void; onPin: () => void; onDelete: () => void }) {
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   return (
     <div
       className={`h-inbox-row h-inbox-thread ${thread.pinned ? 'is-pinned' : ''}`}
@@ -562,6 +564,7 @@ function ThreadRow({ thread, onClick, onPin, onDelete }: { thread: Thread; onCli
       onClick={onClick}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClick(); }}
     >
+      {confirmEl}
       <span className="h-inbox-thread-dot" aria-hidden="true" />
       <span className="h-inbox-row-title">{thread.title}</span>
       <span className="h-inbox-row-sub">Open an Architect conversation about this idea.</span>
@@ -584,9 +587,15 @@ function ThreadRow({ thread, onClick, onPin, onDelete }: { thread: Thread; onCli
         type="button"
         className="h-inbox-row-delete"
         aria-label={`Delete thread ${thread.title}`}
-        onClick={(e) => {
+        onClick={async (e) => {
           e.stopPropagation();
-          if (confirm('Delete this thread?')) onDelete();
+          if (!await askConfirm({
+            title: 'Delete this thread?',
+            body: `"${thread.title}" will be removed from your Architect inbox.`,
+            confirmLabel: 'Delete',
+            destructive: true,
+          })) return;
+          onDelete();
         }}
       >
         ×
@@ -611,6 +620,7 @@ function ChatPane({
 }) {
   const reviewId = target.kind === 'review' ? target.review.id : undefined;
   const threadId = target.kind === 'thread' ? target.thread.id : undefined;
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const title = useMemo(() => {
     if (target.kind === 'review') return `${target.review.featureId || KIND_META[target.review.kind]?.label || 'review'} · ${target.review.kind}`;
@@ -635,6 +645,7 @@ function ChatPane({
 
   return (
     <div className="h-inbox-chat">
+      {confirmEl}
       <div className="h-inbox-chat-head">
         <button type="button" onClick={onClose} className="h-inbox-action ghost">← back</button>
         <div className="h-inbox-chat-title">
@@ -654,7 +665,15 @@ function ChatPane({
         {target.kind === 'thread' && (
           <button
             type="button"
-            onClick={() => { if (confirm('Delete this thread?')) onDeleteThread(target.thread.id); }}
+            onClick={async () => {
+              if (!await askConfirm({
+                title: 'Delete this thread?',
+                body: `"${target.thread.title}" will be removed from your Architect inbox.`,
+                confirmLabel: 'Delete',
+                destructive: true,
+              })) return;
+              onDeleteThread(target.thread.id);
+            }}
             className="h-inbox-action danger"
             title="Delete thread"
           >

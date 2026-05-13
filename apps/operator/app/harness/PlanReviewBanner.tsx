@@ -5,6 +5,7 @@ import { useQueryState, parseAsBoolean } from 'nuqs';
 import { createPortal } from 'react-dom';
 import { useSyncQuery } from '@restart/sync';
 import { MarkdownPreview } from '../_components/MarkdownEditor';
+import { Tooltip } from './Tooltip';
 
 type HarnessPlanReviewRow = {
   harnessSlug: string;
@@ -94,13 +95,15 @@ export default function PlanReviewBanner({ slug, compact = false }: Props) {
             .harness/plan-review.md
           </span>
         )}
-        <button
-          onClick={() => setDismissed(true)}
-          style={{ background: 'transparent', border: 'none', color: tone.fg, cursor: 'pointer', fontSize: '0.9rem', opacity: 0.7 }}
-          title="Dismiss for this session"
-        >
-          ✕
-        </button>
+        <Tooltip label="Dismiss for this session">
+          <button
+            onClick={() => setDismissed(true)}
+            style={{ background: 'transparent', border: 'none', color: tone.fg, cursor: 'pointer', fontSize: '0.9rem', opacity: 0.7 }}
+            aria-label="Dismiss for this session"
+          >
+            ✕
+          </button>
+        </Tooltip>
       </div>
       {open && !compact && (
         <div style={{ margin: '0.5rem 0 0 0', padding: '0.5rem 0.75rem', background: '#0b0e14', borderRadius: 3, maxHeight: '30vh', overflow: 'auto' }}>

@@ -3,12 +3,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { z } from 'zod';
+import { Controller } from 'react-hook-form';
 import { useFormWith, FormField as RhfFormField, SubmitButton } from '@/lib/forms';
 import RouteLink from '@/app/_components/RouteLink';
 import { useParams, useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { ArrowLeft, Save, Loader2, Plus, X, Code2, Sliders } from 'lucide-react';
 import { toast } from 'sonner';
+import { Modal } from '@/app/harness/Modal';
+import { Select } from '@/app/harness/Select';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Tooltip } from '@/app/harness/Tooltip';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 const Editor = dynamic(() => import('@monaco-editor/react'), { ssr: false });
 
@@ -67,6 +73,7 @@ export default function EditTemplateClient() {
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [manifestRawMode, setManifestRawMode] = useQueryState('manifestRaw', parseAsBoolean.withDefault(false));
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [addFileOpen, setAddFileOpen] = useQueryState('addFile', parseAsBoolean.withDefault(false));
 
   // Two-step load: hit /api/templates for the version list (so the
@@ -297,6 +304,7 @@ export default function EditTemplateClient() {
 
   return (
     <div className="pc-shell pc-template-editor-shell" style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      {confirmEl}
       {/* Toaster mounted globally in app/layout.tsx. */}
       {addFileOpen && (
         <AddFileDialog
@@ -312,29 +320,33 @@ export default function EditTemplateClient() {
         </RouteLink>
         <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{tpl.slug}</h1>
         {(tpl.versions?.length ?? 0) > 1 ? (
-          <select
-            className="pc-template-editor-version"
+          <Select
             value={resolvedVersion ?? ''}
-            onChange={(e) => {
-              const next = e.target.value;
-              if (next && next !== resolvedVersion) {
-                if (Object.keys(draft).some((k) => draft[k] !== original[k])) {
-                  if (!confirm('Discard unsaved changes and switch versions?')) return;
-                }
-                window.location.search = `?version=${encodeURIComponent(next)}`;
-              }
-            }}
-            style={{
+            ariaLabel="Template version"
+            triggerClassName="pc-template-editor-version"
+            triggerStyle={{
               fontSize: 12, padding: '4px 8px', background: 'var(--bg-elevated, rgba(255,255,255,0.05))',
               color: 'var(--fg)', border: '1px solid var(--border)', borderRadius: 4,
             }}
-          >
-            {tpl.versions!.map((v) => (
-              <option key={v.version} value={v.version}>
-                v{v.version}{v.publishedSlugs.length > 0 ? ' (published)' : ''}
-              </option>
-            ))}
-          </select>
+            onChange={async (next) => {
+              if (!next || next === resolvedVersion) return;
+              const hasDirty = Object.keys(draft).some((k) => draft[k] !== original[k]);
+              if (hasDirty) {
+                const ok = await askConfirm({
+                  title: 'Discard unsaved changes?',
+                  body: `You have unsaved edits. Switching to v${next} will lose them.`,
+                  confirmLabel: 'Discard and switch',
+                  destructive: true,
+                });
+                if (!ok) return;
+              }
+              window.location.search = `?version=${encodeURIComponent(next)}`;
+            }}
+            options={tpl.versions!.map((v) => ({
+              value: v.version,
+              label: `v${v.version}${v.publishedSlugs.length > 0 ? ' (published)' : ''}`,
+            }))}
+          />
         ) : (
           <code style={{ fontSize: 12, color: 'var(--fg-dim)' }}>v{resolvedVersion}</code>
         )}
@@ -370,14 +382,16 @@ export default function EditTemplateClient() {
             <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.04em', color: 'var(--fg-dim)' }}>
               Files
             </span>
-            <button
-              className="pc-template-editor-add-file"
-              onClick={() => setAddFileOpen(true)}
-              style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 11, background: 'transparent', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}
-              title="Add a new config file to this template"
-            >
-              <Plus size={11} /> new
-            </button>
+            <Tooltip label="Add a new config file to this template">
+              <button
+                className="pc-template-editor-add-file"
+                onClick={() => setAddFileOpen(true)}
+                style={{ marginLeft: 'auto', padding: '2px 6px', fontSize: 11, background: 'transparent', color: 'var(--fg-muted)', border: '1px solid var(--border)', borderRadius: 3, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 3 }}
+                aria-label="Add a new config file to this template"
+              >
+                <Plus size={11} /> new
+              </button>
+            </Tooltip>
           </div>
           <ul className="pc-template-editor-file-list" style={{ listStyle: 'none', padding: 0, margin: 0 }}>
             {allFiles.map((f) => {
@@ -495,7 +509,7 @@ function AddFileDialog({
   onSubmit: (spec: ConfigFileSpec, initialContent: string) => void;
   busy: boolean;
 }) {
-  const { register, submit, watch, setValue, errors, isSubmitting } = useFormWith(AddFileSchema, {
+  const { register, control, submit, watch, setValue, errors, isSubmitting } = useFormWith(AddFileSchema, {
     defaultValues: { path: '', label: '', language: 'markdown', description: '', sensitivity: 'normal' },
   });
   const path = watch('path');
@@ -528,14 +542,16 @@ function AddFileDialog({
   };
 
   return (
-    <div
-      onClick={(e) => { if (e.target === e.currentTarget) onCancel(); }}
-      style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', zIndex: 100,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onCancel(); }}
+      title="Add config file"
+      srOnlyTitle
+      zIndex={100}
+      contentStyle={{
+        background: 'var(--bg, #0c0d10)', border: '1px solid var(--border)', borderRadius: 6, padding: 20, width: 480, maxWidth: '90vw',
       }}
     >
-      <div style={{ background: 'var(--bg, #0c0d10)', border: '1px solid var(--border)', borderRadius: 6, padding: 20, width: 480, maxWidth: '90vw' }}>
         <h2 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 600 }}>Add config file</h2>
         <p style={{ margin: '0 0 16px', fontSize: 12, color: 'var(--fg-dim)' }}>
           Creates the file under the template root and registers it in
@@ -562,19 +578,43 @@ function AddFileDialog({
           </RhfFormField>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <RhfFormField label="language" error={errors.language}>
-              <select {...register('language')} style={{ ...inputStyleSmall, padding: '4px 6px' }}>
-                <option value="markdown">markdown</option>
-                <option value="json">json</option>
-                <option value="yaml">yaml</option>
-                <option value="text">text</option>
-              </select>
+              <Controller
+                control={control}
+                name="language"
+                render={({ field }) => (
+                  <Select
+                    value={field.value ?? 'markdown'}
+                    onChange={field.onChange}
+                    ariaLabel="language"
+                    triggerStyle={{ ...inputStyleSmall, padding: '4px 6px' }}
+                    options={[
+                      { value: 'markdown', label: 'markdown' },
+                      { value: 'json', label: 'json' },
+                      { value: 'yaml', label: 'yaml' },
+                      { value: 'text', label: 'text' },
+                    ]}
+                  />
+                )}
+              />
             </RhfFormField>
             <RhfFormField label="sensitivity" error={errors.sensitivity}>
-              <select {...register('sensitivity')} style={{ ...inputStyleSmall, padding: '4px 6px' }}>
-                <option value="normal">normal</option>
-                <option value="warn">warn</option>
-                <option value="secret">secret</option>
-              </select>
+              <Controller
+                control={control}
+                name="sensitivity"
+                render={({ field }) => (
+                  <Select
+                    value={field.value ?? 'normal'}
+                    onChange={field.onChange}
+                    ariaLabel="sensitivity"
+                    triggerStyle={{ ...inputStyleSmall, padding: '4px 6px' }}
+                    options={[
+                      { value: 'normal', label: 'normal' },
+                      { value: 'warn', label: 'warn' },
+                      { value: 'secret', label: 'secret' },
+                    ]}
+                  />
+                )}
+              />
             </RhfFormField>
           </div>
           <RhfFormField label="description" error={errors.description}>
@@ -594,8 +634,7 @@ function AddFileDialog({
             </SubmitButton>
           </div>
         </form>
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -791,14 +830,14 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
                 style={inputStyle(140)}
               />
               <label className="pc-template-manifest-check" style={{ fontSize: 12, color: 'var(--fg-muted)', display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={!!p.autoEnable}
-                  onChange={(e) => {
+                  onChange={(v) => {
                     const next = plugins.map(pluginToEntry);
-                    next[i] = { ...next[i]!, autoEnable: e.target.checked };
+                    next[i] = { ...next[i]!, autoEnable: v };
                     updatePlugins(next);
                   }}
+                  ariaLabel="auto-enable"
                 />
                 auto-enable
               </label>
@@ -858,35 +897,38 @@ function ManifestStructuredEditor({ jsonText, onChange }: { jsonText: string; on
                   }}
                   style={inputStyle(180)}
                 />
-                <select
+                <Select
                   value={cf.language ?? 'markdown'}
-                  onChange={(e) => {
+                  ariaLabel="language"
+                  triggerStyle={{ ...inputStyle(110), padding: '4px 6px' }}
+                  onChange={(v) => {
                     const next = [...configFiles];
-                    next[i] = { ...next[i]!, language: e.target.value as ConfigFileSpec['language'] };
+                    next[i] = { ...next[i]!, language: v as ConfigFileSpec['language'] };
                     updateConfigFiles(next);
                   }}
-                  style={{ ...inputStyle(110), padding: '4px 6px' }}
-                >
-                  <option value="markdown">markdown</option>
-                  <option value="json">json</option>
-                  <option value="yaml">yaml</option>
-                  <option value="text">text</option>
-                </select>
-                <select
+                  options={[
+                    { value: 'markdown', label: 'markdown' },
+                    { value: 'json', label: 'json' },
+                    { value: 'yaml', label: 'yaml' },
+                    { value: 'text', label: 'text' },
+                  ]}
+                />
+                <Select
                   value={cf.sensitivity ?? 'normal'}
-                  onChange={(e) => {
+                  ariaLabel="Sensitivity"
+                  triggerStyle={{ ...inputStyle(100), padding: '4px 6px' }}
+                  onChange={(raw) => {
                     const next = [...configFiles];
-                    const v = e.target.value as ConfigFileSpec['sensitivity'];
+                    const v = raw as ConfigFileSpec['sensitivity'];
                     next[i] = { ...next[i]!, sensitivity: v === 'normal' ? undefined : v };
                     updateConfigFiles(next);
                   }}
-                  style={{ ...inputStyle(100), padding: '4px 6px' }}
-                  title="Sensitivity"
-                >
-                  <option value="normal">normal</option>
-                  <option value="warn">warn</option>
-                  <option value="secret">secret</option>
-                </select>
+                  options={[
+                    { value: 'normal', label: 'normal' },
+                    { value: 'warn', label: 'warn' },
+                    { value: 'secret', label: 'secret' },
+                  ]}
+                />
                 <button
                   className="pc-template-manifest-remove"
                   onClick={() => {

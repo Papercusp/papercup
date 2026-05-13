@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import { useEventSource } from '@restart/sse/react';
+import { Modal } from '../harness/Modal';
 
 interface Props {
   slug: string;
@@ -155,25 +156,20 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
   }, [esStatus, status]);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      onClick={onClose}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 200,
-        background: 'rgba(0,0,0,0.6)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: 20,
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title={`${branch} / ${name}`}
+      srOnlyTitle
+      zIndex={200}
+      closeOnEscape={status === 'done' || status === 'failed' || status === 'error'}
+      closeOnOutsideClick={status === 'done' || status === 'failed' || status === 'error'}
+      contentStyle={{
+        width: 'min(900px, 100%)', height: 'min(600px, 100%)',
+        background: '#161b22', border: '1px solid var(--border)',
+        borderRadius: 6, display: 'flex', flexDirection: 'column',
       }}
     >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: 'min(900px, 100%)', height: 'min(600px, 100%)',
-          background: '#161b22', border: '1px solid var(--border)',
-          borderRadius: 6, display: 'flex', flexDirection: 'column',
-        }}
-      >
         <div style={{
           display: 'flex', alignItems: 'center', gap: 12,
           padding: '8px 12px', borderBottom: '1px solid var(--border)',
@@ -245,7 +241,6 @@ export default function BranchActionRunner({ slug, branch, name, existingRunId, 
             {error}
           </div>
         )}
-      </div>
-    </div>
+    </Modal>
   );
 }

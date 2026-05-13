@@ -12,6 +12,7 @@
  * Project Manager role synchronously and updates the spec inline.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useConfirmDialog } from '../../../useConfirmDialog';
 import { useQueryState, parseAsStringEnum, parseAsBoolean } from 'nuqs';
 import {
   ArrowLeft, Loader2, AlertTriangle, RefreshCw, Save, X, Pencil,
@@ -86,6 +87,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
   const [regenState, setRegenState] = useState<'idle' | 'running' | { error: string; detail?: string } | { ok: true; summary: string }>('idle');
   const [showRevisions, setShowRevisions] = useQueryState('revisions', parseAsBoolean.withDefault(false));
   const [activeRevision, setActiveRevision] = useState<{ id: number; spec: string } | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const loadProject = useCallback(async () => {
     try {
@@ -191,7 +193,11 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
   }, [slug, projectId, draftSpec, loadProject, loadRevisions]);
 
   const regenerate = useCallback(async () => {
-    if (!confirm('Run Project Manager synchronously? This spawns claude (~30s) and writes a new spec revision.')) return;
+    if (!await askConfirm({
+      title: 'Run Project Manager synchronously?',
+      body: 'This spawns claude (~30s) and writes a new spec revision.',
+      confirmLabel: 'Run PM',
+    })) return;
     setRegenState('running');
     try {
       const r = await fetch(
@@ -208,7 +214,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
     } catch (e) {
       setRegenState({ error: (e as Error).message });
     }
-  }, [slug, projectId, loadProject, loadRevisions]);
+  }, [slug, projectId, loadProject, loadRevisions, askConfirm]);
 
   const loadRevision = useCallback(async (revId: number) => {
     try {
@@ -241,6 +247,7 @@ export default function ProjectDetail({ slug, projectId }: { slug: string; proje
 
   return (
     <div style={{ maxWidth: 1100, margin: '0 auto', padding: '20px 24px 48px', color: COLORS.text }}>
+      {confirmEl}
       {/* Header */}
       <Link href={`/harness/${encodeURIComponent(slug)}/projects`} style={{
         display: 'inline-flex', alignItems: 'center', gap: 6,

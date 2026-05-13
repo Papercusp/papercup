@@ -19,6 +19,8 @@ import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { makeAjvResolver } from '@/lib/forms';
 import { ProvisionPanel } from './ProvisionPanel';
+import { Select } from '../../harness/Select';
+import { Checkbox } from '../../harness/Checkbox';
 
 interface InstalledPlugin {
   name: string;
@@ -200,15 +202,13 @@ export default function PluginSettingsPage() {
         <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', gap: 24 }}>
           <aside>
             <label style={lbl}>Harness</label>
-            <select
+            <Select
               value={activeHarness}
-              onChange={(e) => { setActiveHarness(e.target.value); setActivePlugin(''); }}
-              style={input}
-            >
-              {harnesses.map((h) => (
-                <option key={h.slug} value={h.slug}>{h.slug}</option>
-              ))}
-            </select>
+              onChange={(v) => { setActiveHarness(v); setActivePlugin(''); }}
+              ariaLabel="Harness"
+              options={harnesses.map((h) => ({ value: h.slug, label: h.slug }))}
+              triggerStyle={input}
+            />
 
             <label style={{ ...lbl, marginTop: 16 }}>Plugin</label>
             <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
@@ -325,10 +325,10 @@ function renderInput(
 ): React.ReactElement {
   if (field.type === 'boolean') {
     return (
-      <input
-        type="checkbox"
+      <Checkbox
         checked={!!value}
-        onChange={(e) => onChange(e.target.checked)}
+        onChange={(v) => onChange(v)}
+        ariaLabel={key}
       />
     );
   }
@@ -347,11 +347,13 @@ function renderInput(
   }
   if (field.enum && Array.isArray(field.enum)) {
     return (
-      <select value={String(value ?? '')} onChange={(e) => onChange(e.target.value)} style={input}>
-        {field.enum.map((opt) => (
-          <option key={String(opt)} value={String(opt)}>{String(opt)}</option>
-        ))}
-      </select>
+      <Select
+        value={String(value ?? '')}
+        onChange={(v) => onChange(v)}
+        ariaLabel={key}
+        options={field.enum.map((opt) => ({ value: String(opt), label: String(opt) }))}
+        triggerStyle={input}
+      />
     );
   }
   // Strings — secret-ish keys get type=password.

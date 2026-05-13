@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import RouteLink from '../_components/RouteLink';
+import { useConfirmDialog } from '../harness/useConfirmDialog';
+import { usePromptDialog } from '../harness/usePromptDialog';
 
 interface PublishRecord {
   slug: string;
@@ -45,6 +47,8 @@ export default function SnapshotsClient() {
   const [rows, setRows] = useState<SnapshotRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   const load = async () => {
     setLoading(true);
@@ -64,11 +68,15 @@ export default function SnapshotsClient() {
 
   const onInstantiate = async (row: SnapshotRow) => {
     const proposed = `${row.harnessSlug}-fork-${new Date().toISOString().slice(2, 10).replace(/-/g, '')}`;
-    const name = window.prompt(
-      `Name for the new harness?\n\nLetters, digits, dots, underscores, dashes only.\nPress Cancel to skip and use the auto-generated name.`,
-      proposed,
-    );
-    // null = user cancelled. Empty string = use lib default. Otherwise validate.
+    const name = await askPrompt({
+      title: 'Instantiate snapshot',
+      body: 'Letters, digits, dots, underscores, dashes only. Submit blank to use the auto-generated name.',
+      label: 'New harness slug',
+      defaultValue: proposed,
+      allowEmpty: true,
+      submitLabel: 'Instantiate',
+    });
+    if (name === null) return;
     setBusyId(row.id);
     try {
       const r = await fetch(`/api/snapshots/${row.id}/instantiate`, {
@@ -94,7 +102,12 @@ export default function SnapshotsClient() {
   };
 
   const onPublish = async (row: SnapshotRow) => {
-    if (!confirm(`Publish "${row.name}" (${formatBytes(row.bytes)}) to the marketplace at localhost:3060?`)) return;
+    const ok = await askConfirm({
+      title: `Publish "${row.name}"?`,
+      body: `Size ${formatBytes(row.bytes)} → marketplace at localhost:3060.`,
+      confirmLabel: 'Publish',
+    });
+    if (!ok) return;
     setBusyId(row.id);
     try {
       const r = await fetch(`/api/snapshots/${row.id}/publish`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
@@ -122,21 +135,42 @@ export default function SnapshotsClient() {
     // If multiple publishes, default to the most recent. Operator can edit.
     const last = row.publishes[row.publishes.length - 1]!;
     const defaultSlug = last.slug;
-    const slug = prompt(
-      `Retract published snapshot. Marketplace slug:\n(known: ${row.publishes.map((p) => `${p.slug}@${p.version}`).join(', ')})`,
-      defaultSlug,
-    );
+    const known = row.publishes.map((p) => `${p.slug}@${p.version}`).join(', ');
+    const slug = await askPrompt({
+      title: 'Retract published snapshot',
+      body: `Known publishes: ${known}`,
+      label: 'Marketplace slug',
+      defaultValue: defaultSlug,
+      submitLabel: 'Next',
+    });
     if (!slug) return;
-    const action = prompt(`Action: deprecate (default), withdraw, or yank.\n\n• deprecate: warn on install, still installable\n• withdraw: refuse new installs; existing installs keep working\n• yank: remove a specific version (requires version)`, 'deprecate');
+    const action = await askPrompt({
+      title: 'Retract action',
+      body: 'deprecate: warn on install, still installable. withdraw: refuse new installs. yank: remove a specific version (requires version).',
+      label: 'Action',
+      defaultValue: 'deprecate',
+      validate: (v) => ['deprecate', 'withdraw', 'yank'].includes(v) ? null : 'Must be deprecate, withdraw, or yank',
+      submitLabel: 'Next',
+    });
     if (!action) return;
     let version: string | null = null;
     if (action === 'yank') {
-      // Default to the last-published version for this slug
       const matchingVersion = row.publishes.filter((p) => p.slug === slug).map((p) => p.version).pop();
-      version = prompt('Version to yank:', matchingVersion ?? '');
+      version = await askPrompt({
+        title: `Version to yank`,
+        label: 'Version',
+        defaultValue: matchingVersion ?? '',
+        submitLabel: 'Next',
+      });
       if (!version) return;
     }
-    const reason = prompt('Reason (optional, ≤1000 chars):') ?? '';
+    const reason = (await askPrompt({
+      title: 'Reason (optional)',
+      label: 'Reason',
+      placeholder: '≤1000 chars',
+      allowEmpty: true,
+      submitLabel: 'Retract',
+    })) ?? '';
     setBusyId(row.id);
     try {
       const r = await fetch(`/api/snapshots/${row.id}/retract`, {
@@ -155,7 +189,13 @@ export default function SnapshotsClient() {
   };
 
   const onDelete = async (row: SnapshotRow) => {
-    if (!confirm(`Delete local snapshot ${row.id}? Tarball is removed; published copies on the marketplace are unaffected.`)) return;
+    const ok = await askConfirm({
+      title: `Delete local snapshot ${row.id}?`,
+      body: 'Tarball is removed; published copies on the marketplace are unaffected.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusyId(row.id);
     try {
       const r = await fetch(`/api/snapshots/${row.id}`, { method: 'DELETE' });
@@ -171,6 +211,8 @@ export default function SnapshotsClient() {
 
   return (
     <div className="pc-shell pc-snapshot-forge-shell">
+      {confirmEl}
+      {promptEl}
       <div className="pc-snapshot-forge-topbar" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
         <h1 style={{ margin: 0 }}>Snapshots</h1>
         <button type="button" className="h-btn ghost pc-snapshot-refresh" onClick={() => void load()} disabled={loading}>
