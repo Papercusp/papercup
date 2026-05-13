@@ -20,7 +20,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Radio } from 'lucide-react';
 import { OperatorChat } from './OperatorChat';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -148,15 +147,11 @@ export function OperatorChatSidebar() {
                 subtitle=""
               />
             </div>
-            <span className="op-chat-header-subtitle">
-              Workspace assistant · {statusText}
-            </span>
+            <div className="op-chat-controls" role="group" aria-label={`Operator voice controls — ${statusText}`}>
+              <OperatorActiveToggle />
+              <VoiceButton />
+            </div>
           </div>
-          <Radio className="op-chat-header-signal" aria-hidden="true" />
-        </div>
-        <div className="op-chat-controls" role="group" aria-label="Operator voice controls">
-          <OperatorActiveToggle />
-          <VoiceButton />
         </div>
       </div>
       <OperatorChat
@@ -210,9 +205,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
-  min-height: 118px;
-  padding: 12px 12px 11px;
+  padding: 10px 12px 8px;
   border-bottom: 1px solid rgba(125, 211, 252, 0.14);
   background:
     linear-gradient(180deg, rgba(11, 25, 42, 0.84), rgba(7, 16, 29, 0.94)),
@@ -250,7 +243,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .op-chat-header-title-row {
@@ -267,46 +260,29 @@ const OP_CHAT_SIDEBAR_CSS = `
   letter-spacing: 0.01em;
 }
 
-.op-chat-header-subtitle {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(148, 163, 184, 0.92);
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.op-chat-header-signal {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: rgba(125, 211, 252, 0.52);
-}
-
 .op-chat-controls {
   position: relative;
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   min-width: 0;
   overflow: visible;
 }
 
 .op-chat-controls .op-active-toggle {
   flex: 0 0 auto;
-  min-height: 32px;
-  padding: 5px 10px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
 }
 
 .op-chat-controls .pc-voice-control {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  gap: 5px;
+  gap: 4px;
   margin-left: 0;
   overflow: visible;
 }
@@ -315,25 +291,28 @@ const OP_CHAT_SIDEBAR_CSS = `
   flex: 1 1 auto;
   justify-content: center;
   min-width: 0;
-  min-height: 32px;
-  padding: 5px 10px 5px 8px;
-  gap: 7px;
+  min-height: 26px;
+  padding: 3px 7px 3px 6px;
+  gap: 5px;
 }
 
 .op-chat-controls .pc-voice-btn-orb {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
 }
 
 .op-chat-controls .pc-voice-btn-label {
-  font-size: 11px;
-  letter-spacing: 0.065em;
+  font-size: 10px;
+  letter-spacing: 0.05em;
 }
 
 .op-chat-controls .pc-voice-settings-link {
   flex: 0 0 auto;
-  min-height: 32px;
-  padding: 0 9px;
+  min-height: 26px;
+  padding: 0 6px;
+}
+.op-chat-controls .pc-voice-settings-text {
+  display: none;
 }
 .op-chat-controls .pc-voice-wake-hint {
   z-index: 5;
@@ -503,8 +482,7 @@ body.has-op-chat .h-header {
     #07101d;
   box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.08);
 }
-.op-chat-header-main,
-.op-chat-header-signal {
+.op-chat-header-main {
   position: relative;
   z-index: 1;
 }
@@ -541,11 +519,6 @@ body.has-op-chat .h-header {
 
 .op-chat-header-logo {
   filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.26));
-}
-
-.op-chat-header-signal {
-  opacity: 0.8;
-  animation: op-chat-signal-fade 3.8s ease-in-out infinite;
 }
 
 .op-chat-sidebar .op-chat-banner {
@@ -654,11 +627,6 @@ body.has-op-chat .h-header {
   0%, 12%, 100% { transform: translateX(-160%) skewX(-20deg); opacity: 0; }
   18%, 32% { transform: translateX(280%) skewX(-20deg); opacity: 1; }
   36% { opacity: 0; }
-}
-
-@keyframes op-chat-signal-fade {
-  0%, 100% { opacity: 0.42; transform: scale(1); }
-  50% { opacity: 0.92; transform: scale(1.08); }
 }
 
 @keyframes op-chat-banner-sheen {
