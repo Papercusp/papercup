@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
+import { Select } from '@/app/harness/Select';
 
 interface Entry {
   id: string;
@@ -70,49 +72,46 @@ export default function AuditTab({ workspaceIds }: Props) {
         <h2>Audit log</h2>
         <label className="pc-dev-muted">
           window
-          <select
+          <Select
             value={hoursParam}
-            onChange={(e) => setHoursParam(e.target.value as '1' | '6' | '24' | '168' | '720')}
-            className="pc-dev-input pc-dev-input-inline"
-          >
-            <option value={1}>1h</option>
-            <option value={6}>6h</option>
-            <option value={24}>24h</option>
-            <option value={168}>7d</option>
-            <option value={720}>30d</option>
-          </select>
+            onChange={(v) => setHoursParam(v as '1' | '6' | '24' | '168' | '720')}
+            ariaLabel="Audit log time window"
+            options={[
+              { value: '1', label: '1h' },
+              { value: '6', label: '6h' },
+              { value: '24', label: '24h' },
+              { value: '168', label: '7d' },
+              { value: '720', label: '30d' },
+            ]}
+          />
         </label>
       </header>
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
       {!loading && !error && (
-        <table className="pc-dev-table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Workspace</th>
-              <th>Actor</th>
-              <th>Action</th>
-              <th>Subject</th>
-              <th>Details</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e.id}>
-                <td className="pc-dev-muted">{fmtTs(e.ts)}</td>
-                <td className="pc-dev-muted">{e.workspace_id}</td>
-                <td>{e.actor ?? '—'}</td>
-                <td className="pc-dev-slug">{e.action}</td>
-                <td>{e.subject ?? '—'}</td>
-                <td className="pc-dev-muted pc-dev-details">
-                  {e.details ? JSON.stringify(e.details).slice(0, 100) : '—'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ height: Math.min(640, 32 + entries.length * 28 + 4) }}>
+          <RichGrid<Entry>
+            columns={AUDIT_COLUMNS}
+            rows={entries}
+            getRowId={(r) => r.id}
+            rowMinHeight={28}
+            headerHeight={32}
+          />
+        </div>
       )}
     </div>
   );
 }
+
+const AUDIT_COLUMNS: ColumnDef<Entry>[] = [
+  { key: 'time', header: 'Time', width: 1.5, toCopyText: (r) => new Date(r.ts).toISOString(), render: ({ row }) => <span className="pc-dev-muted">{fmtTs(row.ts)}</span> },
+  { key: 'workspace', header: 'Workspace', width: 1.5, toCopyText: (r) => r.workspace_id, render: ({ row }) => <span className="pc-dev-muted">{row.workspace_id}</span> },
+  { key: 'actor', header: 'Actor', width: 1, toCopyText: (r) => r.actor ?? '', render: ({ row }) => <>{row.actor ?? '—'}</> },
+  { key: 'action', header: 'Action', width: 1.5, toCopyText: (r) => r.action, render: ({ row }) => <span className="pc-dev-slug">{row.action}</span> },
+  { key: 'subject', header: 'Subject', width: 1.5, toCopyText: (r) => r.subject ?? '', render: ({ row }) => <>{row.subject ?? '—'}</> },
+  {
+    key: 'details', header: 'Details', width: 3,
+    toCopyText: (r) => r.details ? JSON.stringify(r.details) : '',
+    render: ({ row }) => <span className="pc-dev-muted pc-dev-details">{row.details ? JSON.stringify(row.details).slice(0, 100) : '—'}</span>,
+  },
+];
