@@ -283,6 +283,17 @@ async function readConfig() {
 }
 
 export function registerOracle(app: Hono) {
+  // V1 ship-state gate: when FLAGS.ORACLE is off (default), all
+  // /oracle/* endpoints return 404 — keeps Oracle backend dark for
+  // production builds while preserving the route surface for dev.
+  app.use('/oracle/*', async (c, next) => {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    const enabled = await getFlag(FLAGS.ORACLE, 'system');
+    if (!enabled) return c.notFound();
+    return next();
+  });
+
   app.get('/oracle/config', async (c) => c.json(await readConfig()));
 
   app.put('/oracle/config', async (c) => {

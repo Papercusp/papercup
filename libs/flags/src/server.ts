@@ -6,7 +6,7 @@
 // (fail-safe-closed — V1 ship state is "everything off").
 
 import { PostHog } from "posthog-node";
-import { resolveTestOverrides } from "./test.js";
+import { resolveTestOverrides } from "./test";
 import {
   ALL_FLAG_KEYS,
   FLAG_DEFAULTS,
@@ -14,7 +14,7 @@ import {
   type FlagPayload,
   type FlagValues,
   resolveWithDefaults,
-} from "./types.js";
+} from "./types";
 
 export type PostHogConfig = {
   host: string;

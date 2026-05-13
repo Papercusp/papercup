@@ -2,8 +2,8 @@
 // Server-side: `initFlagBackend(null)` then `setFlagOverridesForTest({...})`.
 // Client-side: assign `globalThis.__PAPERCUSP_FLAGS__` before importing client.
 
-import type { FlagKey, FlagValues } from "./types.js";
-import { FLAG_DEFAULTS } from "./types.js";
+import type { FlagKey, FlagValues } from "./types";
+import { FLAG_DEFAULTS } from "./types";
 
 let overrides: Partial<Record<FlagKey, boolean>> | null = null;
 

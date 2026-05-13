@@ -11,7 +11,7 @@ import {
   type FlagPayload,
   type FlagValues,
   resolveWithDefaults,
-} from "./types.js";
+} from "./types";
 
 declare global {
   // eslint-disable-next-line no-var
