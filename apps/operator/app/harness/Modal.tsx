@@ -90,11 +90,16 @@ export function Modal({
             ) : (
               <Dialog.Title style={{ display: 'none' }}>{title}</Dialog.Title>
             )}
-            {description !== undefined && (
-              <Dialog.Description style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
-                {description}
-              </Dialog.Description>
-            )}
+            {/*
+             * Always render Dialog.Description (sr-only when no description
+             * passed). Radix emits an a11y warning whenever the rendered
+             * Dialog.Content has no descendant Description and no explicit
+             * aria-describedby. Empty string is fine for screen readers —
+             * Title carries the meaning.
+             */}
+            <Dialog.Description style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>
+              {description ?? ''}
+            </Dialog.Description>
             {children}
           </Dialog.Content>
         </div>
