@@ -21,6 +21,10 @@
 
 import './operator/stats';
 import './operator/last_scan';
+import './operator/scan';
+import './operator/converse';
+import './operator/delegate';
+import './architect/chat';
 import './operator/scans_list';
 import './operator/audit';
 import './operator/nudge';
@@ -45,6 +49,7 @@ import './ui/get_state';
 import './ui/dispatch';
 import './chat/ask_choice';
 import './search/fulltext';
+import './search/semantic';
 import './memory/remember';
 import './memory/search';
 import './memory/list';
@@ -116,10 +121,16 @@ import './dev/pg_health';
 import './dev/pg_active_queries';
 import './dev/pg_table_sizes';
 import './dev/build_status';
+import './dev/ipc_echo';
+import './dev/state_counter';
 import './dev/processes';
 import './dev/session_detail';
 import './processes/kill';
 import './dev/omp_session';
+
+import './flags/list';
+import './flags/get';
+import './flags/set';
 
 import './backup/snapshot_create';
 import './backup/snapshot_list';

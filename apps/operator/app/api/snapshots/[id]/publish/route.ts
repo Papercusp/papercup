@@ -19,6 +19,8 @@ import { withSnapshotLock } from '@/lib/snapshot-locks';
 import { recordUserAction } from '@/lib/user-actions';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
@@ -34,6 +36,8 @@ interface Body {
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  if (blocked) return blocked;
   const { id } = await params;
   const body = (await req.json().catch(() => ({}))) as Body;
   return withSnapshotLock(id, async () => {

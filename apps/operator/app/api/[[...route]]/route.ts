@@ -33,14 +33,19 @@ export const dynamic = 'force-dynamic';
 const app = new Hono().basePath('/api');
 
 // CORS — preview origins (admin tooling). Tightens on production.
+//
+// IMPORTANT: do NOT set Access-Control-Allow-Credentials together with
+// ACAO:* — the next.config.js global headers add ACAO:* for the WebKitGTK
+// Tauri-window workaround. ACAO:* + ACAC:true is spec-invalid and WebKit
+// rejects the whole response (symptom: EventSource and fetch under
+// /api/harness/* hit "access control checks" in the Tauri dev window).
+//
+// Cookies on /api/harness/* don't add real auth here — the operator binds
+// 127.0.0.1 only, and there's no real cross-origin frontend that hits these.
+// Dropping ACAC:true is safe.
 const adminPreviewCors = async (c: any, next: any) => {
-  const origin = c.req.header('origin');
-  if (origin) {
-    c.header('Access-Control-Allow-Origin', origin);
-    c.header('Access-Control-Allow-Credentials', 'true');
-    c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    c.header('Access-Control-Allow-Headers', 'content-type, x-actor');
-  }
+  // ACAO/methods/headers are set globally by next.config.js. Hono only owns
+  // the OPTIONS short-circuit + the OPTIONS preflight response code.
   if (c.req.method === 'OPTIONS') return c.body(null, 204);
   await next();
 };
@@ -51,7 +56,7 @@ const adminPreviewCors = async (c: any, next: any) => {
 // gzipped (7.3x), and Zero polls it every 3 s — enabling compression here
 // saves ~1.4 MB/min of bandwidth on a typical dashboard session.
 // `threshold: 1024` skips small responses where gzip overhead exceeds the
-// payload (e.g. /api/auth/status at 151 B).
+// payload (e.g. /api/auth/me at 151 B).
 app.use('*', compress({ threshold: 1024 }));
 
 app.use('/harness/*', adminPreviewCors);

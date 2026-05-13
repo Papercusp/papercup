@@ -121,6 +121,8 @@ import TestsTab from './TestsTab';
 // keeps the component mounted so subsequent tab switches stay instant.
 const ProposalsPanel = dynamic(() => import('./ProposalsPanel'), { ssr: false });
 import HarnessHudOverlay from './HarnessHudOverlay';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 
 /**
  * Wrap a `dynamic()` import with retry + visible loading state so that a
@@ -2392,6 +2394,10 @@ const tagStyle: React.CSSProperties = {
 export default function HarnessDashboard() {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const reducedMotion = useReducedMotion() ?? false;
+  const snapshotsEnabled = useFlag(FLAGS.SNAPSHOTS);
+  const templatesEnabled = useFlag(FLAGS.TEMPLATES);
+  const harnessPhasesEnabled = useFlag(FLAGS.HARNESS_PHASES);
+  const designEnabled = useFlag(FLAGS.DESIGN);
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
@@ -3595,7 +3601,7 @@ export default function HarnessDashboard() {
       cs.push({ id: 'hooks', section: 'Control', title: 'Hooks — edit pre/post lifecycle scripts', icon: '⚡', keywords: 'hook script pre post worker validator escalate', perform: () => setShowHooks(true) });
       cs.push({ id: 'intervene', section: 'Control', title: 'Intervene — send note to orchestrator', icon: '💬', keywords: 'note supervisor guidance', perform: () => setShowIntervention(true) });
       cs.push({ id: 'usage', section: 'Control', title: 'Usage — per-role cost breakdown', icon: '💵', keywords: 'cost tokens money spend', perform: () => setShowUsage(true) });
-      cs.push({ id: 'snapshots', section: 'Control', title: 'Snapshots — rollback mission state', icon: '⟲', keywords: 'checkpoint rollback history restore', perform: () => setShowSnapshots(true) });
+      if (snapshotsEnabled) cs.push({ id: 'snapshots', section: 'Control', title: 'Snapshots — rollback mission state', icon: '⟲', keywords: 'checkpoint rollback history restore', perform: () => setShowSnapshots(true) });
       cs.push({ id: 'decisions', section: 'Control', title: 'Decisions — orchestrator verb timeline', icon: '🧠', keywords: 'decision orchestrator verb ghost parser', perform: () => setShowDecisions(true) });
       cs.push({ id: 'smoke', section: 'Control', title: 'Smoke test — service gate (claudecode-orchestrator)', icon: '💨', keywords: 'smoke test gate service url check', perform: () => setShowSmokeTest(true) });
       cs.push({ id: 'identity', section: 'Control', title: 'Identity — cross-mission role memory (Agent-Swarm)', icon: '🧬', keywords: 'identity role memory cross mission learned patterns', perform: () => setShowIdentity(true) });
@@ -3623,7 +3629,7 @@ export default function HarnessDashboard() {
       });
       cs.push({ id: 'screenshots', section: 'Control', title: 'Screenshots — visual history', icon: '📸', keywords: 'screenshot image visual capture', perform: () => setShowScreenshots(true) });
       cs.push({ id: 'newfeat', section: 'Control', title: 'Create new feature', icon: '＋', keywords: 'add feature', perform: () => setEditingFeature('new') });
-      cs.push({ id: 'templates', section: 'Control', title: 'Start from template — seed SPEC.md + AGENTS.md', icon: '📋', keywords: 'template starter bootstrap spec', perform: () => setShowTemplates(true) });
+      if (templatesEnabled) cs.push({ id: 'templates', section: 'Control', title: 'Start from template — seed SPEC.md + AGENTS.md', icon: '📋', keywords: 'template starter bootstrap spec', perform: () => setShowTemplates(true) });
       cs.push({ id: 'archives', section: 'Control', title: 'Archives — snapshot / restore mission state', icon: '📦', keywords: 'archive restore backup reset', perform: () => setShowArchives(true) });
       cs.push({ id: 'intel', section: 'Control', title: 'Intel — tool-invocation telemetry', icon: '🔭', keywords: 'intel telemetry spawn tool invocation gitnexus repomix code2prompt diff pack', perform: () => setShowIntel(true) });
       cs.push({
@@ -3829,7 +3835,7 @@ export default function HarnessDashboard() {
           <div className="h-header-main">
           <div className="h-project-card">
             <div className="h-project-topline">
-              {activeSlug && (
+              {activeSlug && harnessPhasesEnabled && (
                 <div className="h-project-phases">
                   <PhaseTabs slug={activeSlug} activePhase={activePhase} onChange={setActivePhase} />
                 </div>
@@ -4022,12 +4028,12 @@ export default function HarnessDashboard() {
                     <Wrench size={13} /> cleanup
                   </button>
                 </Tooltip>
-                {activeSlug && (
+                {activeSlug && templatesEnabled && (
                   <Tooltip label="Save current harness as a reusable template (recipe; no in-flight state)">
                     <SaveTemplateButton slug={activeSlug} />
                   </Tooltip>
                 )}
-                {activeSlug && <SaveSnapshotButton slug={activeSlug} />}
+                {activeSlug && snapshotsEnabled && <SaveSnapshotButton slug={activeSlug} />}
               </div>
             )}
 
@@ -4124,11 +4130,13 @@ export default function HarnessDashboard() {
               <LayoutDashboard size={13} /> dashboard
             </Tabs.Trigger>
           </Tooltip>
+          {designEnabled && (
           <Tooltip label={activeSlug ? 'Design — IR specs, registry, tokens, sketches, regressions' : 'Select a project to enter the design tab'}>
             <Tabs.Trigger value="design" className="h-tab h-tab--design" disabled={!activeSlug}>
               <Palette size={13} /> design
             </Tabs.Trigger>
           </Tooltip>
+          )}
           <Tooltip label={activeSlug ? 'Project summary — high-level changelog of what has been built' : 'Select a project to view summary'}>
             <Tabs.Trigger value="summary" className="h-tab h-tab--summary" disabled={!activeSlug}>
               <FileText size={13} /> summary
@@ -4234,8 +4242,8 @@ export default function HarnessDashboard() {
             />
           )}
         </ReactActivity>
-        <ReactActivity mode={resolvedPanel === 'design' ? 'visible' : 'hidden'}>
-          {activeSlug && <DesignDashboard slug={activeSlug} />}
+        <ReactActivity mode={resolvedPanel === 'design' && designEnabled ? 'visible' : 'hidden'}>
+          {activeSlug && designEnabled && <DesignDashboard slug={activeSlug} />}
         </ReactActivity>
         {/* Plugin-mounted tabs: pick whichever plugin matches the active panel
             via the plugin:<id> prefix. iframeUrl is null when the plugin's
@@ -4543,23 +4551,27 @@ export default function HarnessDashboard() {
       />
 
       {/* ── Feature peek panel ────────────────────────────── */}
-      {peekFeature && (
-        <FeaturePeekPanel
-          slug={activeSlug ?? ''}
-          feature={peekFeature as any}
-          agents={agents as any}
-          issues={issues}
-          onClose={() => setPeekFeature(null)}
-          onReset={resetFeature}
-          onEdit={() => { setEditingFeature(peekFeature); setPeekFeature(null); }}
-          onInspectRun={loadAgent}
-          onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
-          onSwitchToPi={() => setActivePanel('pi')}
-          notesForFeature={notesByFeatureId.get(peekFeature.id) ?? ''}
-          debugNoteForFeature={debugNotesByFeatureId.get(peekFeature.id) ?? null}
-          prForFeature={prsByFeatureId.get(peekFeature.id) ?? null}
-        />
-      )}
+      {/* Mount unconditionally so the vaul drawer + focus-trap + body-lock
+          setup happens once at dashboard load, not on every open. The panel
+          renders null internally while peekFeature is null (until the first
+          click), then keeps a sticky reference so subsequent open/close
+          cycles just toggle the drawer's `open` prop instead of unmounting
+          the whole tree. Removes the perceptible click-to-paint lag. */}
+      <FeaturePeekPanel
+        slug={activeSlug ?? ''}
+        feature={peekFeature as any}
+        agents={agents as any}
+        issues={issues}
+        onClose={() => setPeekFeature(null)}
+        onReset={resetFeature}
+        onEdit={() => { if (peekFeature) { setEditingFeature(peekFeature); setPeekFeature(null); } }}
+        onInspectRun={loadAgent}
+        onSetStatus={(id, s) => setFeatureStatus(id, s as FeatureStatus)}
+        onSwitchToPi={() => setActivePanel('pi')}
+        notesForFeature={peekFeature ? (notesByFeatureId.get(peekFeature.id) ?? '') : ''}
+        debugNoteForFeature={peekFeature ? (debugNotesByFeatureId.get(peekFeature.id) ?? null) : null}
+        prForFeature={peekFeature ? (prsByFeatureId.get(peekFeature.id) ?? null) : null}
+      />
 
       {/* ── Triage queue ──────────────────────────────────── */}
       {showTriage && status && (
@@ -4619,7 +4631,7 @@ export default function HarnessDashboard() {
       )}
 
       {/* ── Snapshots panel ───────────────────────────────── */}
-      {showSnapshots && activeSlug && (
+      {showSnapshots && activeSlug && snapshotsEnabled && (
         <div data-harness-modal="true">
           <SnapshotsPanel
             slug={activeSlug}
@@ -4703,7 +4715,7 @@ export default function HarnessDashboard() {
       )}
 
       {/* ── Templates modal ───────────────────────────────── */}
-      {showTemplates && activeSlug && (
+      {showTemplates && activeSlug && templatesEnabled && (
         <div data-harness-modal="true">
           <TemplatesModal
             slug={activeSlug}
@@ -4863,6 +4875,7 @@ export function SingleSubpanelHeader({ id, label }: { id: 'inbox' | 'git'; label
 function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string; phase: Phase }) {
   const [tab, setTab] = useQueryState('validationTab', parseAsStringEnum<'issues' | 'report' | 'tests'>(['issues', 'report', 'tests']).withDefault('issues'));
   const [issueCount, setIssueCount] = useState<number | null>(null);
+  const harnessPhasesEnabled = useFlag(FLAGS.HARNESS_PHASES);
 
   // Wrap with `<Panel>` so the maximize/restore button (provided by
   // `Panel` and styled via `.h-panel-maximize`) shows up consistently
@@ -4881,14 +4894,16 @@ function IssuesPanel({ slug, reportMd, phase }: { slug: string; reportMd: string
           {issueCount !== null && <span className="h-tab-count">{issueCount}</span>}
         </button>
       </Tooltip>
-      <Tooltip label="Show test claims and validator outcomes">
-        <button
-          className={`h-tab${tab === 'tests' ? ' on' : ''}`}
-          onClick={() => setTab('tests')}
-        >
-          tests
-        </button>
-      </Tooltip>
+      {harnessPhasesEnabled ? (
+        <Tooltip label="Show test claims and validator outcomes">
+          <button
+            className={`h-tab${tab === 'tests' ? ' on' : ''}`}
+            onClick={() => setTab('tests')}
+          >
+            tests
+          </button>
+        </Tooltip>
+      ) : null}
       <Tooltip label="Show the validator's prose report for the latest run">
         <button
           className={`h-tab${tab === 'report' ? ' on' : ''}`}

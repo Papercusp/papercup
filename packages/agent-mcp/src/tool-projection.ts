@@ -18,14 +18,233 @@
  * Spec: apps/operator/docs/plugin-mcp-host-design.md.
  */
 
+import { z, type ZodTypeAny } from 'zod';
 import type {
   AgentRole,
   Capability,
+  EmitCallback,
   PluginSpawn,
   ProgressCallback,
   RolesQuota,
   ToolResult,
 } from '@papercusp/plugin-sdk';
+
+/* ─── Event schema types ─────────────────────────────────────────────── */
+
+/** Schema for a tool's typed event channel. Keys are wire-level event names. */
+export type EventsSchema = Record<string, ZodTypeAny>;
+
+/**
+ * Reserved event names — names the framework emits internally OR has
+ * semantics around. Tools declaring an `events` schema must not use
+ * these as keys. The TS-level guard `UserEvents<T>` enforces this at
+ * compile time on `defineTool`'s generic parameter.
+ *
+ * - `done`: framework auto-emits when the handler returns successfully.
+ * - `progress`: emitted via `ctx.progress` (the alias); reserved so
+ *   tools don't redefine its payload shape.
+ * - `heartbeat`: @restart/sse emits this every 15s to keep the
+ *   connection alive; never a tool event.
+ * - `result`: legacy pre-2026-05-12 terminal-event name; reserved for
+ *   collision avoidance even though the framework no longer emits it.
+ *
+ * `error` is intentionally NOT reserved — the framework auto-emits it
+ * on handler throw, but tools may also emit it mid-stream for non-fatal
+ * errors (dual-mode; canonical example is runAgentChat's mid-stream
+ * 'error' yields). See ToolContext.emit doc for the contract.
+ */
+export type ReservedEventNames = 'done' | 'heartbeat' | 'result' | 'chunk' | 'card';
+
+/** Compile-time guard: a user-declared events schema cannot contain reserved names. */
+export type UserEvents<T extends EventsSchema> = T & { [K in ReservedEventNames]?: never };
+
+/**
+ * Runtime list of reserved event names. The compile-time `UserEvents<T>`
+ * guard rejects them in TS, but the projection registry also checks at
+ * register time so plugins (which can bypass the TS layer via JSON
+ * manifests) get a loud failure. Phase 4 T2.3.
+ */
+export const RESERVED_EVENT_NAMES: readonly ReservedEventNames[] = [
+  // Truly framework-only events. Tools MUST NOT redeclare them.
+  'done',       // dispatcher emits at successful completion with ToolResult.content
+  'heartbeat',  // transport pings to keep idle connections alive
+  'result',     // MCP-shaped result envelope on the wire
+  'chunk',      // framework-emitted binary-stream chunks for tools with largeOutput:true
+  'card',       // framework-emitted card payloads (ctx.askUser flow — bespoke-card-improvements H1).
+                // Cards ride the STATE channel, not the event channel; reserving the name here
+                // prevents a plugin from declaring events:{card} and intercepting other tools'
+                // askUser flow on the wire.
+  // NOTE: 'error' and 'progress' are NOT reserved.
+  // 'progress' is documented as user-emittable via ctx.progress(pct, msg) sugar,
+  // which itself routes through ctx.emit('progress', ...). Tools declare a
+  // schema for it so the wire kind is inferred (dev:ipc_echo does this).
+  // 'error' is dispatcher auto-emit on uncaught handler throws AND tools
+  // actively emit it mid-stream for non-fatal errors (architect:chat,
+  // brainstorm:chat, operator:scan, operator:delegate all declare it).
+  // Reserving either would break production tools at register time.
+] as const;
+
+/**
+ * How an event's payload is encoded on the SSE wire:
+ *  - `'string'`: the payload IS a string; emit as `data: <text>\n` (multi-line `data:`
+ *    when text contains newlines, joined back by parseSseStream per SSE spec).
+ *    Use for token streams (LLM deltas, log lines) where the event payload
+ *    has no inherent structure and JSON-wrapping is overhead.
+ *  - `'json'`: emit as `data: <JSON.stringify(payload)>\n`. Use for everything
+ *    structured (suggestions, tool_calls, progress payloads).
+ *
+ * Inferred from the declared Zod schema at tool registration:
+ *  - `z.string()` schemas → 'string'
+ *  - everything else → 'json'
+ *
+ * The MCP transport always JSON-serializes (JSON-RPC carries strings as
+ * JSON-quoted strings inside notifications/papercusp/event); the
+ * classification only affects the HTTP/SSE wire shape.
+ */
+/**
+ * On-wire encoding for a single event name.
+ *
+ * - `'string'` — payload is the raw text of the event (no JSON wrapping).
+ *   Picked when the event schema is `z.string()`. SSE `data:` line, IPC
+ *   EVENT_JSON frame with the string as the `data` field.
+ * - `'json'` — payload is `JSON.stringify(data)`. The default for object
+ *   / number / array event schemas.
+ * - `'binary'` — payload is raw bytes (Uint8Array). On SSE this falls
+ *   back to base64 + a `content-encoding: base64` header (not currently
+ *   implemented; would be a separate addition). On the IPC transport,
+ *   this triggers an EVENT_BIN self-describing frame. Picked when the
+ *   event schema is `z.instanceof(Uint8Array)`.
+ *
+ * See `apps/operator/content/docs/endpoint-system/transports.mdx`
+ * § "Schema-inferred wire format".
+ */
+export type EventWireKind = 'string' | 'json' | 'binary';
+
+/**
+ * Inspect a Zod schema and decide whether the wire payload for events
+ * of that shape should be raw text (`'string'`) or JSON-encoded (`'json'`).
+ *
+ * Cheap one-time call per declared event at register time; result is
+ * cached on the tool entry so emit-time has no schema-introspection cost.
+ */
+export function classifyEventWire(schema: ZodTypeAny): EventWireKind {
+  // Binary check: detect `z.instanceof(Uint8Array)` by probing the
+  // schema with a real Uint8Array. Zod 4 represents instanceof as
+  // `{ type: 'custom', fn }` with the Class captured in the fn closure,
+  // so structural _def sniffing isn't reliable. The probe is cheap
+  // (one parse) and runs once per declared event at register time.
+  //
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const def = (schema as any)?._def;
+  if (def?.type === 'custom') {
+    try {
+      const probe = schema.safeParse(new Uint8Array(0));
+      const rejectsObject = !schema.safeParse({}).success;
+      if (probe.success && rejectsObject) return 'binary';
+    } catch {
+      /* fall through to JSON */
+    }
+  }
+
+  try {
+    // Zod 4: built-in toJSONSchema — same path as inputSchema serialization.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const json = (z as any).toJSONSchema(schema) as { type?: string };
+    return json.type === 'string' ? 'string' : 'json';
+  } catch {
+    // Schema rejected json conversion; default to JSON on the wire so
+    // the dispatcher never produces an under-defined string fallback.
+    return 'json';
+  }
+}
+
+/**
+ * Wire-kind-aware sink dispatch — the single source of truth for
+ * "given a ctx.emit(name, data) and a tool's declared events schema,
+ * how does that land on the SSE wire?"
+ *
+ * Used by:
+ *   - HTTP transport adapter (`handleHttpToolRequestStreaming`).
+ *   - Route shims that bypass the HTTP transport and call
+ *     `dispatchProjectedToolStream` themselves (architect/brainstorm
+ *     in `apps/operator/app/api/_hono/harness.ts`, operator-scan /
+ *     operator-converse / delegate-chat).
+ *
+ * Centralizing here prevents the wire-format-drift class of bug:
+ *   - z.string() events going through JSON.stringify (round-2 silent
+ *     mis-encoding for tools added new z.string() events post-pilot).
+ *   - z.instanceof(Uint8Array) → JSON.stringify producing
+ *     `{"0":..., "1":..., ...}` corruption (round-5 HTTP, round-6 MCP).
+ *
+ * Mirrored emit-shape per transport:
+ *   - HTTP/SSE (this helper):           z.string() → sink.eventRaw raw text
+ *                                       z.instanceof(Uint8Array) → sink.eventRaw base64
+ *                                       else → sink.event JSON
+ *   - MCP (notifications/papercusp/event in [transport]/route.ts):
+ *                                       Uint8Array → {$papercuspBinary, encoding, data}
+ *                                       else → params.data
+ *   - IPC (server.ts):                  string event kind: EVENT_JSON with data as string
+ *                                       binary: EVENT_BIN raw bytes
+ *                                       else: EVENT_JSON JSON
+ *
+ * The shape of the SSE sink interface is the @restart/sse SseSink; we
+ * don't import the type here to keep this file dependency-free, so
+ * we declare a structural minimum: `eventRaw(name, string)` for raw-text
+ * payloads and `event(name, value)` for JSON-encoded ones.
+ */
+export interface MinimalEventSink {
+  event(name: string, value: unknown): void;
+  eventRaw(name: string, value: string): void;
+}
+
+/**
+ * Self-describing binary envelope. Same shape as the MCP transport's
+ * notifications/papercusp/event params.data field for binary events.
+ * Cross-transport unification (audit item 14) — consumers can use one
+ * decoder regardless of wire format.
+ */
+export interface PapercuspBinaryEnvelope {
+  $papercuspBinary: true;
+  encoding: 'base64';
+  /** Base64-encoded payload bytes. */
+  data: string;
+}
+
+export function isPapercuspBinaryEnvelope(v: unknown): v is PapercuspBinaryEnvelope {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { $papercuspBinary?: unknown }).$papercuspBinary === true &&
+    typeof (v as { data?: unknown }).data === 'string'
+  );
+}
+
+export function emitToSseSink(
+  sink: MinimalEventSink,
+  tool: Pick<ProjectedTool, 'eventWireKinds'>,
+  name: string,
+  data: unknown,
+): void {
+  const kind = tool.eventWireKinds?.[name];
+  if (kind === 'string') {
+    sink.eventRaw(name, typeof data === 'string' ? data : String(data));
+  } else if (kind === 'binary' && data instanceof Uint8Array) {
+    // Emit the same self-describing envelope as the MCP transport
+    // (notifications/papercusp/event params.data). Consumers see a
+    // uniform shape regardless of wire; HTTP consumer detects via
+    // isPapercuspBinaryEnvelope. Slightly more bytes than raw base64
+    // (~35-byte envelope tax) but consumers don't need out-of-band
+    // schema info to know it's binary.
+    const envelope: PapercuspBinaryEnvelope = {
+      $papercuspBinary: true,
+      encoding: 'base64',
+      data: Buffer.from(data).toString('base64'),
+    };
+    sink.event(name, envelope);
+  } else {
+    sink.event(name, data);
+  }
+}
 
 /* ─── Unified context ────────────────────────────────────────────────── */
 
@@ -52,8 +271,30 @@ export interface UnifiedToolContext {
   log: (msg: string) => void;
   /** Aborts on per-tool timeout, parent cancellation, or shutdown. */
   signal: AbortSignal;
-  /** Stream progress events. No-op when transport doesn't support streaming. */
+  /**
+   * Stream progress events. Thin alias over `emit('progress', { progress, total, message? })`.
+   * Tools using the standard pct/msg shape should prefer this; tools
+   * emitting richer typed events should use `emit` directly.
+   * No-op when transport doesn't support streaming.
+   */
   progress: ProgressCallback;
+  /**
+   * Emit a typed named event. The active transport adapter decides what
+   * happens:
+   *   - HTTP/SSE → `event: <name>\ndata: <JSON(data)>` via @restart/sse.
+   *   - MCP → `notifications/papercusp/event` with `{ event: name, data }`.
+   *   - In-process (`fnStream`) → next value of the async iterator.
+   *   - Non-streaming HTTP → no-op.
+   *
+   * Reserved names: 'done' | 'progress' | 'heartbeat' | 'result'. The
+   * framework emits 'done' automatically when the handler returns and
+   * 'error' automatically when it throws. Handlers may also emit 'error'
+   * mid-stream for non-fatal errors (dual-mode by design — preserves
+   * runAgentChat's non-terminal error event semantics).
+   *
+   * Always populated; transport adapter installs the right impl.
+   */
+  emit: EmitCallback;
 
   /* ── Auth / db (typically built-in tools) ─────────────────────────── */
   /** Auth principal resolved from bearer. Null when caller is anonymous. */
@@ -74,6 +315,17 @@ export interface UnifiedToolContext {
    * when a principal is attached.
    */
   isSuperuser?: boolean;
+
+  /**
+   * Which transport adapter built this context. Recorded on the
+   * `tool_invocations.transport` column so /dev → Sessions / Telemetry
+   * can filter by transport.
+   *
+   * Set by transport adapters (HTTP, MCP, IPC). Left undefined for
+   * in-process / shim callers that build a ctx directly without going
+   * through an adapter — `recordInvocation` writes null in that case.
+   */
+  transport?: 'http' | 'mcp' | 'ipc' | 'in_process';
 
   /* ── Spawn context (typically agent-driven calls) ─────────────────── */
   workspaceId?: string;
@@ -97,7 +349,62 @@ export interface UnifiedToolContext {
   /* ── Capability-gated helpers ─────────────────────────────────────── */
   spawn?: PluginSpawn;
   secret?: (name: string) => Promise<string | null>;
+
+  /**
+   * Mid-run interactive prompt — opens a card on the STATE channel
+   * and resolves when the user submits/declines/cancels (or the
+   * timeoutMs fires).
+   *
+   * Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md §4
+   *
+   * Returns:
+   *   {action:'submit',  payload}   — user picked, Zod-validated against spec.dataSchema
+   *   {action:'decline', reason?}   — user explicitly declined (allowDecline≠false)
+   *   {action:'cancel'}             — run cancelled, workspace switched, or timeout
+   *
+   * Cards live on the STATE channel — they are NOT in the event ring
+   * buffer, so reconnect-after-answer does NOT re-prompt (H2 from review).
+   *
+   * Available when the transport supports it (HTTP/SSE, IPC, in-process).
+   * Falls back to immediate {action:'cancel'} when the transport has
+   * no client to ask (e.g. non-streaming HTTP).
+   */
+  askUser?: AskUserCallback;
+
+  /**
+   * Publish the tool's current state snapshot to the state channel.
+   *
+   * Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md §5
+   *
+   * The snapshot is validated against the tool's `state` schema and
+   * replaces the run's current snapshot. Clients reconnecting receive
+   * the latest snapshot — never event history (that's the whole point
+   * of being on the state channel).
+   *
+   * v1: snapshot-only. Passing anything other than a full snapshot
+   * throws. v1.1 will accept JSON-Patch arrays for delta updates
+   * once we measure full-snapshot perf on real tools.
+   *
+   * Throws if the tool has no `state` schema declared, or if the
+   * snapshot fails Zod validation.
+   *
+   * Installed by the dispatcher when (a) ctx has workspaceId + runId
+   * and (b) the tool declared a `state` schema at register time.
+   * Tools should check `if (ctx.publishState)` before calling.
+   */
+  publishState?: PublishStateCallback;
 }
+
+/** ctx.publishState — snapshot-only in v1. */
+export type PublishStateCallback = (snapshot: unknown) => void;
+
+/**
+ * `ctx.askUser(spec)` — mid-run interactive prompt. Returns a `CardResponse`
+ * shaped per the discriminated union in `./types`.
+ */
+export type AskUserCallback = <TSchema extends ZodTypeAny>(
+  spec: import('./types').CardSpec<TSchema>,
+) => Promise<import('./types').CardResponse<TSchema>>;
 
 /** A tool function — one shape for every transport. */
 export type ToolFn<TInput = unknown> = (
@@ -165,6 +472,88 @@ export interface ProjectedTool {
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   /** Per-call wall-clock timeout, default 60s. */
   timeoutSec?: number;
+  /**
+   * Idle timeout — abort if no event has been emitted for this many
+   * seconds. Augments `timeoutSec` (the wall-clock cap). 0 or undefined
+   * disables idle-watchdog. Default off. Useful for streaming tools that
+   * spawn child processes — wedged children stop emitting; this catches
+   * them sooner than the wall-clock cap.
+   */
+  idleTimeoutSec?: number;
+  /**
+   * Per-call replay ring-buffer size. When > 0, the dispatcher keeps
+   * the last N emitted events keyed on (workspaceId, toolName, runId)
+   * for ~5 min past stream-end. A reconnecting client sending
+   * `Last-Event-ID` + `X-Papercusp-Run-Id` headers gets the buffered
+   * tail replayed before the cold sink continues. Eviction is FIFO
+   * with a one-line warn log per evicted event. Phase 4 T2.2.
+   *
+   * Disconnect semantics: tool ABORTS on disconnect; replay serves
+   * only the pre-disconnect buffer (model "(b)" in the plan). See
+   * phase-4-endpoint-system-2026-05-12.md § T2.2 for the rationale.
+   */
+  replayBufferSize?: number;
+  /**
+   * Surfaces this tool is meaningful from. Phase 4 T3.1. The prompt-
+   * assembly catalog renderer filters by the caller's modality so
+   * voice surfaces only see voice-capable tools. Absent → callers
+   * treat it as "both surfaces" so legacy tools surface in either
+   * catalog without an explicit opt-in. Use ['text'] or ['voice']
+   * when a tool genuinely doesn't make sense in the other surface
+   * (e.g. chat:ask_choice renders clickable buttons that are
+   * invisible to a voice user).
+   */
+  modality?: ReadonlyArray<'text' | 'voice'>;
+  /**
+   * State-shaped tool schema (bespoke-card-improvements #1 / T4.3).
+   *
+   * When set, the tool is on the STATE channel: it publishes its
+   * current snapshot via `ctx.publishState(snapshot)`, and clients
+   * reconnecting receive the latest snapshot rather than an event-
+   * history replay. State-shaped tools opt OUT of the replay ring
+   * buffer (M5 — declared at register time, no per-call branch).
+   *
+   * Reconnect semantics fall out for free: state outlives any single
+   * connection while the run is open (5-min retention after run-end).
+   * This is what absorbs the original T4.3 "long-lived disconnected"
+   * design — declare a state schema and reconnect-resilience is
+   * automatic.
+   *
+   * v1 ships SNAPSHOT-ONLY publishState. JSON Patch deltas are
+   * deferred to v1.1 once we measure snapshot-only perf on real tools.
+   */
+  state?: ZodTypeAny;
+  /**
+   * Typed event channel — Zod schemas keyed by event name. Surfaced
+   * via tools/list as JSON-Schema for client discovery. No runtime
+   * validation of outgoing events (trusted code path). Undefined for
+   * tools that don't stream typed events; they may still call
+   * `ctx.progress` (the alias) which goes through the 'progress' wire
+   * event reserved for that purpose.
+   *
+   * Plugins declaring this on their JSON manifest go through
+   * `eventsJsonSchema` below — the plugin loader populates that
+   * field after validating the JSON-Schema subset (T3.2).
+   */
+  events?: EventsSchema;
+  /**
+   * Plugin-side event schemas declared as raw JSON-Schema. Used by
+   * plugin tools that ship their `papercusp.json` manifest with an
+   * `events` block. The plugin loader validates against the
+   * supported subset (`packages/agent-mcp/src/plugin-events.ts`),
+   * classifies wire kinds, and populates this field alongside the
+   * computed `eventWireKinds`. Built-in tools (via `defineTool`)
+   * use `events` (Zod) above; the two fields are mutually exclusive.
+   * Phase 4 T3.2.
+   */
+  eventsJsonSchema?: Record<string, Record<string, unknown>>;
+  /**
+   * Per-event wire classification — `'string'` for z.string() schemas
+   * (raw text on SSE), `'json'` for everything else. Computed once at
+   * register time from `events` OR `eventsJsonSchema`; cached so
+   * emit-time is constant-cost. Absent when neither is declared.
+   */
+  eventWireKinds?: Record<string, EventWireKind>;
   /** Where to project this function — at least one of http/mcp required. */
   expose: ToolExposure;
   /** The function. Source of truth. */
@@ -242,6 +631,41 @@ export function registerProjectedTool(tool: ProjectedTool): void {
       `tool from plugin "${tool.pluginName}" must declare at least one of expose.http / expose.mcp`,
     );
   }
+  // Reject reserved event names at register time. The compile-time
+  // UserEvents<T> guard catches them in TS for built-ins, but plugins
+  // bypass TS via JSON manifests — this is the runtime backstop.
+  // Phase 4 T2.3 (built-ins) + T3.2 (plugin manifests).
+  const declaredEventNames: string[] = [
+    ...(tool.events ? Object.keys(tool.events) : []),
+    ...(tool.eventsJsonSchema ? Object.keys(tool.eventsJsonSchema) : []),
+  ];
+  for (const name of declaredEventNames) {
+    if (RESERVED_EVENT_NAMES.includes(name as ReservedEventNames)) {
+      throw new ToolRegistrationError(
+        `tool "${tool.expose.mcp?.name ?? tool.expose.http?.path}" declared the reserved event name "${name}". ` +
+          `Reserved names (auto-emitted by the framework): ${RESERVED_EVENT_NAMES.join(', ')}.` +
+          (name === 'chunk' ? ' Declare `largeOutput: true` instead and return outputRef from the handler.' : ''),
+      );
+    }
+  }
+  // Reject conflicting declarations — a tool must use ONE of the two
+  // event-schema forms, not both.
+  if (tool.events && tool.eventsJsonSchema) {
+    throw new ToolRegistrationError(
+      `tool "${tool.expose.mcp?.name ?? tool.expose.http?.path}" declared both \`events\` (Zod) AND \`eventsJsonSchema\` (plugin JSON). Use one — built-ins via defineTool use Zod; plugin manifests use JSON-Schema.`,
+    );
+  }
+  // Pre-classify event wire kinds so emit-time is constant-cost.
+  // Caller might set eventWireKinds explicitly (some tests do, and
+  // the plugin loader does after running validateAndClassifyPluginEvents);
+  // only compute when absent.
+  if (tool.events && !tool.eventWireKinds) {
+    const kinds: Record<string, EventWireKind> = {};
+    for (const [name, schema] of Object.entries(tool.events)) {
+      kinds[name] = classifyEventWire(schema);
+    }
+    tool.eventWireKinds = kinds;
+  }
   if (tool.expose.mcp) {
     const name = tool.expose.mcp.name;
     // Require a namespace separator (dot or colon) to prevent collisions
@@ -316,11 +740,71 @@ export function listAllProjectedTools(): readonly ProjectedTool[] {
  * MCP-protocol tool listings, optionally filtered by calling role.
  * Returns only tools with `expose.mcp` set; tools that are HTTP-only are
  * invisible to the agent.
+ *
+ * The `events` field surfaces the tool's typed event vocabulary as
+ * JSON-Schema entries — discoverable by any MCP client. This is the
+ * Papercusp MCP extension that lets clients render typed event streams
+ * (deltas, suggestions, etc.) without out-of-band knowledge of each
+ * tool. Standard MCP clients that don't know about this field simply
+ * ignore it.
  */
 export interface McpToolListing {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  /** Map of event-name → JSON-Schema. Absent when the tool declares no events. */
+  events?: Record<string, Record<string, unknown>>;
+  /**
+   * Surfaces this tool is meaningful from. Absent → callers treat
+   * it as `['text', 'voice']` so legacy tools surface in either
+   * catalog. Phase 4 T3.1; clients can filter by their caller
+   * modality.
+   */
+  modality?: ReadonlyArray<'text' | 'voice'>;
+}
+
+/**
+ * Memoise the JSON-Schema serialization per ProjectedTool reference.
+ * Same `events` object identity means same serialized output, so the
+ * weak-keyed cache avoids re-running `z.toJSONSchema` on every
+ * `tools/list` call.
+ */
+const EVENTS_JSON_CACHE = new WeakMap<EventsSchema, Record<string, Record<string, unknown>>>();
+
+function serializeEventsSchema(events: EventsSchema): Record<string, Record<string, unknown>> {
+  const cached = EVENTS_JSON_CACHE.get(events);
+  if (cached) return cached;
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [name, schema] of Object.entries(events)) {
+    const kind = classifyEventWire(schema);
+    if (kind === 'binary') {
+      // z.toJSONSchema throws on z.instanceof(Uint8Array) ("Custom types
+      // cannot be represented in JSON Schema"). Surface binary events
+      // explicitly so MCP clients can decode the EVENT_BIN wire frame.
+      out[name] = {
+        type: 'string',
+        contentEncoding: 'base64',
+        description: 'Binary payload — base64 over JSON transports; raw bytes over IPC EVENT_BIN.',
+      };
+      continue;
+    }
+    try {
+      // Zod 4: use built-in z.toJSONSchema (zod-to-json-schema@3 returns
+      // empty schemas on zod 4 — same reason define-tool uses this path).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const json = (z as any).toJSONSchema(schema) as Record<string, unknown>;
+      // Drop $schema — MCP clients don't need it and it's noise in tools/list.
+      delete json.$schema;
+      out[name] = json;
+    } catch {
+      // Any other unrepresentable schema (custom check, lazy refs to
+      // self, etc.) → emit a permissive placeholder so tools/list never
+      // 500s. The tool still works; clients just lose the typed view.
+      out[name] = { description: 'Schema not representable in JSON Schema.' };
+    }
+  }
+  EVENTS_JSON_CACHE.set(events, out);
+  return out;
 }
 
 export function listMcpProjections(role?: AgentRole): McpToolListing[] {
@@ -328,11 +812,22 @@ export function listMcpProjections(role?: AgentRole): McpToolListing[] {
   for (const tool of REGISTRY.values()) {
     if (!tool.expose.mcp) continue;
     if (role && tool.roles && !tool.roles.includes(role)) continue;
-    out.push({
+    const listing: McpToolListing = {
       name: tool.expose.mcp.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
-    });
+    };
+    if (tool.events && Object.keys(tool.events).length > 0) {
+      listing.events = serializeEventsSchema(tool.events);
+    } else if (tool.eventsJsonSchema && Object.keys(tool.eventsJsonSchema).length > 0) {
+      // Plugin tools (T3.2): the JSON-Schema is the source of truth;
+      // no conversion needed.
+      listing.events = tool.eventsJsonSchema;
+    }
+    if (tool.modality && tool.modality.length > 0) {
+      listing.modality = tool.modality;
+    }
+    out.push(listing);
   }
   return out;
 }

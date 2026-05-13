@@ -283,6 +283,17 @@ async function readConfig() {
 }
 
 export function registerOracle(app: Hono) {
+  // V1 ship-state gate: when FLAGS.ORACLE is off (default), all
+  // /oracle/* endpoints return 404 — keeps Oracle backend dark for
+  // production builds while preserving the route surface for dev.
+  app.use('/oracle/*', async (c, next) => {
+    const { getFlag } = await import('@papercusp/flags/server');
+    const { FLAGS } = await import('@papercusp/flags');
+    const enabled = await getFlag(FLAGS.ORACLE, 'system');
+    if (!enabled) return c.notFound();
+    return next();
+  });
+
   app.get('/oracle/config', async (c) => c.json(await readConfig()));
 
   app.put('/oracle/config', async (c) => {
@@ -417,13 +428,17 @@ export function registerOracle(app: Hono) {
         // doesn't need an explicit client_id arg or a preceding
         // ui:list_clients call to drive the user's open Oracle tab.
         const clientParam = uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '';
+        // workspace= required for state-channel scoping —
+        // see operator/converse.ts audit4 comment.
+        const oracleWorkspaceId = activeWorkspaceId();
+        const workspaceParam = `&workspace=${encodeURIComponent(oracleWorkspaceId)}`;
         const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
           agentmcp: {
             command: 'npx',
             args: [
               '-y',
               'mcp-remote@latest',
-              `${oracleBase}/api/mcp?superuser=1${clientParam}`,
+              `${oracleBase}/api/mcp?superuser=1${workspaceParam}${clientParam}`,
               '--header',
               `Authorization:Bearer ${superuserToken}`,
             ],

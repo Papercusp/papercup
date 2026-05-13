@@ -23,15 +23,21 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'all'] as const;
+const SCOPE_CHOICES = ['escalations', 'brainstorm', 'turns', 'decisions', 'all'] as const;
 
 interface FullTextHit {
   source: string;       // 'escalations' | 'brainstorm' | 'turns'
   source_id: string;
   harness_slug?: string;
   excerpt: string;      // first 200 chars
+  /** ts_headline-derived snippet with <mark> around matched terms. */
+  highlight: string;
   rank: number;
 }
+
+/** Standard ts_headline options for our 3 surfaces. */
+const HEADLINE_OPTS =
+  'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, FragmentDelimiter=" … ", MaxWords=18, MinWords=5, ShortWord=2';
 
 const ALL_ROLES = [
   'scoper', 'architect', 'worker', 'validator',
@@ -62,7 +68,7 @@ export default defineTool({
   async handler(args, ctx) {
     const limit = args.limit ?? 5;
     const scope = args.scope?.includes('all') || !args.scope?.length
-      ? ['escalations', 'brainstorm', 'turns']
+      ? ['escalations', 'brainstorm', 'turns', 'decisions']
       : args.scope;
 
     const hits: FullTextHit[] = [];
@@ -82,14 +88,19 @@ export default defineTool({
           rank: number;
         }>`
           SELECT harness_slug, phase, escalation, supervisor_notes,
-                 ts_rank_cd(body_tsv, plainto_tsquery('english', ${args.query})) AS rank
+                 ts_rank_cd(body_tsv, plainto_tsquery('english', ${args.query})) AS rank,
+                 ts_headline('english',
+                   COALESCE(escalation, '') || E'\n' || COALESCE(supervisor_notes, ''),
+                   plainto_tsquery('english', ${args.query}),
+                   ${HEADLINE_OPTS}
+                 ) AS highlight
             FROM harness_shared.harness_escalations
            WHERE workspace_id = ${ctx.workspaceId}
              AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
              AND body_tsv @@ plainto_tsquery('english', ${args.query})
         ORDER BY rank DESC
            LIMIT ${limit}
-        `;
+        ` as unknown as Array<{ harness_slug: string; phase: string; escalation: string|null; supervisor_notes: string|null; rank: number; highlight: string }>;
         for (const r of rows) {
           const body = `${r.escalation ?? ''}\n${r.supervisor_notes ?? ''}`.trim();
           hits.push({
@@ -97,6 +108,7 @@ export default defineTool({
             source_id: `${r.harness_slug}:${r.phase}`,
             harness_slug: r.harness_slug,
             excerpt: body.slice(0, 200) + (body.length > 200 ? '…' : ''),
+            highlight: r.highlight,
             rank: r.rank,
           });
         }
@@ -116,20 +128,25 @@ export default defineTool({
           rank: number;
         }>`
           SELECT harness_slug, phase, content,
-                 ts_rank_cd(content_tsv, plainto_tsquery('english', ${args.query})) AS rank
+                 ts_rank_cd(content_tsv, plainto_tsquery('english', ${args.query})) AS rank,
+                 ts_headline('english', content,
+                   plainto_tsquery('english', ${args.query}),
+                   ${HEADLINE_OPTS}
+                 ) AS highlight
             FROM harness_shared.harness_brainstorm
            WHERE workspace_id = ${ctx.workspaceId}
              AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
              AND content_tsv @@ plainto_tsquery('english', ${args.query})
         ORDER BY rank DESC
            LIMIT ${limit}
-        `;
+        ` as unknown as Array<{ harness_slug: string; phase: string; content: string; rank: number; highlight: string }>;
         for (const r of rows) {
           hits.push({
             source: 'brainstorm',
             source_id: `${r.harness_slug}:${r.phase}`,
             harness_slug: r.harness_slug,
             excerpt: r.content.slice(0, 200) + (r.content.length > 200 ? '…' : ''),
+            highlight: r.highlight,
             rank: r.rank,
           });
         }
@@ -149,7 +166,11 @@ export default defineTool({
           rank: number;
         }>`
           SELECT t.id, t.role, t.text,
-                 ts_rank_cd(t.text_tsv, plainto_tsquery('english', ${args.query})) AS rank
+                 ts_rank_cd(t.text_tsv, plainto_tsquery('english', ${args.query})) AS rank,
+                 ts_headline('english', t.text,
+                   plainto_tsquery('english', ${args.query}),
+                   ${HEADLINE_OPTS}
+                 ) AS highlight
             FROM harness_shared.operator_turns t
             JOIN harness_shared.operator_conversations c
               ON c.id = t.conversation_id
@@ -157,17 +178,58 @@ export default defineTool({
              AND t.text_tsv @@ plainto_tsquery('english', ${args.query})
         ORDER BY rank DESC
            LIMIT ${limit}
-        `;
+        ` as unknown as Array<{ id: string; role: string; text: string; rank: number; highlight: string }>;
         for (const r of rows) {
           hits.push({
             source: 'turns',
             source_id: r.id,
             excerpt: `[${r.role}] ${r.text.slice(0, 200)}${r.text.length > 200 ? '…' : ''}`,
+            highlight: `[${r.role}] ${r.highlight}`,
             rank: r.rank,
           });
         }
       } catch (err) {
         ctx.log?.(`search:fulltext turns skipped: ${(err as Error).message}`);
+      }
+    }
+
+    if (scope.includes('decisions')) {
+      try {
+        const rows = await ctx.tx<{
+          harness_slug: string;
+          line_hash: string;
+          verb: string;
+          args: string;
+          iso: string;
+          rank: number;
+        }>`
+          SELECT harness_slug, line_hash, verb, args, iso,
+                 ts_rank_cd(body_tsv, plainto_tsquery('english', ${args.query})) AS rank,
+                 ts_headline('english',
+                   coalesce(verb, '') || ' ' || coalesce(args, ''),
+                   plainto_tsquery('english', ${args.query}),
+                   ${HEADLINE_OPTS}
+                 ) AS highlight
+            FROM harness_shared.harness_decisions
+           WHERE workspace_id = ${ctx.workspaceId}
+             AND (${harnessFilter}::text IS NULL OR harness_slug = ${harnessFilter})
+             AND body_tsv @@ plainto_tsquery('english', ${args.query})
+        ORDER BY rank DESC
+           LIMIT ${limit}
+        ` as unknown as Array<{ harness_slug: string; line_hash: string; verb: string; args: string; iso: string; rank: number; highlight: string }>;
+        for (const r of rows) {
+          const body = `${r.verb} ${r.args}`.trim();
+          hits.push({
+            source: 'decisions',
+            source_id: `${r.harness_slug}:${r.line_hash}`,
+            harness_slug: r.harness_slug,
+            excerpt: `[${r.iso}] ${body.slice(0, 200)}${body.length > 200 ? '…' : ''}`,
+            highlight: r.highlight,
+            rank: r.rank,
+          });
+        }
+      } catch (err) {
+        ctx.log?.(`search:fulltext decisions skipped: ${(err as Error).message}`);
       }
     }
 

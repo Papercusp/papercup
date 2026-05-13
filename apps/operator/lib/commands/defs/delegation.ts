@@ -6,6 +6,7 @@
  * + the session-management decisions in §10 (#17).
  */
 import { z } from 'zod';
+import { parseSseStream, type ParsedSseEvent } from '@restart/sse';
 import { register } from '../registry';
 import type { CommandDef, QueryDef } from '../types';
 
@@ -190,12 +191,10 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
     const SYNC_DEADLINE_MS = 10_000;
     const deadline = Date.now() + SYNC_DEADLINE_MS;
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
+    const iter = parseSseStream(res.body)[Symbol.asyncIterator]();
 
     /** State accumulated as the SSE stream progresses. */
     const state = {
-      buf: '',
       fullText: '',
       cost: 0,
       agentSessionId: null as string | null,
@@ -203,25 +202,23 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
       errored: null as string | null,
     };
 
-    /** Process whatever the reader has emitted so far. Pure on `state`. */
-    const processChunk = (chunk: Uint8Array | undefined) => {
-      if (chunk) state.buf += decoder.decode(chunk, { stream: true });
-      const events = state.buf.split(/\n\n/);
-      state.buf = events.pop() ?? '';
-      for (const block of events) {
-        const event = parseEventBlock(block);
-        if (!event) continue;
-        if (event.event === 'session') {
-          state.agentSessionId = (event.data as any)?.agentSessionId ?? null;
-        } else if (event.event === 'delta') {
-          state.fullText += (event.data as any)?.text ?? '';
-        } else if (event.event === 'done') {
-          state.fullText = (event.data as any)?.fullText ?? state.fullText;
-          state.cost = (event.data as any)?.costUsd ?? 0;
-          state.done = true;
-        } else if (event.event === 'error') {
-          state.errored = (event.data as any)?.message ?? 'unknown';
-        }
+    /** Apply one parsed SSE event to `state`. */
+    const applyEvent = (ev: ParsedSseEvent) => {
+      // parseSseStream gives us spec-compliant events with `data: string`;
+      // each producer JSON-encodes the data, so we parse here.
+      if (ev.event === 'heartbeat') return;
+      let data: any = null;
+      try { data = ev.data ? JSON.parse(ev.data) : null; } catch { /* ignore non-JSON */ }
+      if (ev.event === 'session') {
+        state.agentSessionId = data?.agentSessionId ?? null;
+      } else if (ev.event === 'delta') {
+        state.fullText += data?.text ?? '';
+      } else if (ev.event === 'done') {
+        state.fullText = data?.fullText ?? state.fullText;
+        state.cost = data?.costUsd ?? 0;
+        state.done = true;
+      } else if (ev.event === 'error') {
+        state.errored = data?.message ?? 'unknown';
       }
     };
 
@@ -257,20 +254,19 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
     // ── Sync window: pump events until done OR deadline ──────────────
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
-      const readP = reader.read();
+      const nextP = iter.next();
       const timeoutP = new Promise<{ timeout: true }>((res) =>
         setTimeout(() => res({ timeout: true }), Math.max(0, remaining)),
       );
-      const winner = await Promise.race([readP, timeoutP]);
+      const winner = await Promise.race([nextP, timeoutP]);
       if ('timeout' in winner) break;
-      const { value, done } = winner;
-      if (done) {
+      if (winner.done) {
         // Stream closed before a 'done' event — treat as error if we
         // haven't already captured one.
         if (!state.done && !state.errored) state.errored = 'stream closed unexpectedly';
         break;
       }
-      processChunk(value);
+      applyEvent(winner.value);
       if (state.errored) throw new Error(`Claude error: ${state.errored}`);
       if (state.done) break;
     }
@@ -281,13 +277,13 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
     // ── Async path: drain in the background, return ack now ───────────
     void (async () => {
       try {
-        while (true) {
-          const { value, done } = await reader.read();
+        for (;;) {
+          const { value, done } = await iter.next();
           if (done) {
             if (!state.done && !state.errored) state.errored = 'stream closed unexpectedly';
             break;
           }
-          processChunk(value);
+          applyEvent(value);
           if (state.errored || state.done) break;
         }
         if (state.errored) {
@@ -316,19 +312,6 @@ const delegateToClaude: CommandDef<z.infer<typeof DelegateArgs>> = {
     };
   },
 };
-
-function parseEventBlock(block: string): { event: string; data: unknown } | null {
-  let event = 'message';
-  let data: unknown = null;
-  for (const line of block.split('\n')) {
-    if (line.startsWith('event: ')) event = line.slice(7).trim();
-    else if (line.startsWith('data: ')) {
-      try { data = JSON.parse(line.slice(6)); } catch { /* ignore */ }
-    }
-  }
-  if (data == null) return null;
-  return { event, data };
-}
 
 register(claudeSessionsList);
 register(claudeSessionsGet);

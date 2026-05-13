@@ -21,6 +21,8 @@
  */
 import { NextResponse } from 'next/server';
 import { getOrgPg } from '@restart/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -31,6 +33,8 @@ interface SketchPayload {
 }
 
 export async function GET(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.DESIGN);
+  if (blocked) return blocked;
   const url = new URL(req.url);
   const harness = url.searchParams.get('harness') ?? '';
   const feature = url.searchParams.get('feature') ?? '';
@@ -76,6 +80,8 @@ export async function GET(req: Request) {
 const MAX_PNG_BYTES = 5 * 1024 * 1024; // 5 MB upper bound on data URL size
 
 export async function POST(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.DESIGN);
+  if (blocked) return blocked;
   let body: { harness?: string; feature?: string; png?: string; label?: string; workspace?: string };
   try {
     body = await req.json();

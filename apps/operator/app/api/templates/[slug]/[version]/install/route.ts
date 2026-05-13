@@ -24,6 +24,8 @@ import { existsSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -59,6 +61,8 @@ export async function POST(
   req: Request,
   ctx: { params: Promise<{ slug: string; version: string }> },
 ) {
+  const blocked = await gateApiRoute(req, FLAGS.TEMPLATES);
+  if (blocked) return blocked;
   const { slug, version } = await ctx.params;
   const body = (await req.json().catch(() => ({}))) as Body;
 

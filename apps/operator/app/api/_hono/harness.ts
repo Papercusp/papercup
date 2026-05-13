@@ -12,6 +12,13 @@
  */
 import { Hono } from 'hono';
 import { sseResponse } from '@restart/sse';
+// Side-effect: registers architect:chat + brainstorm:chat etc. so the
+// projected-tool catch-all at /api/agent-tools/[...path] can resolve
+// them. The 2 Hono shims at /:slug/architect/chat and
+// /:slug/brainstorm/chat were retired in Phase 4 T1.2; consumers
+// (useHarnessChatRuntime) now POST the projected URL directly with
+// harnessSlug in the body.
+import '@/lib/agent-tools/index';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
 import { getKnownHooks } from '@/lib/known-hooks';
@@ -3755,18 +3762,84 @@ harness.post('/:slug/replan', async (c) => {
   const slug = c.req.param('slug');
   const project = await resolveProject(slug);
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
-  // and the OperatorActionLog component. The action represents the *kickoff*;
-  // the replan's completion is observable via /scoper-result/<invocationId>.
-  const invocationId = await recordUserAction(slug, 'replan', async () => {
-    const r = invokeScoperBackground(project, 'replan');
-    return {
-      summary: `Replan kicked off (invocation ${r.invocationId})`,
-      invocationId: r.invocationId,
-      result: r.invocationId,
-    };
-  });
-  return c.json({ ok: true, invocationId, mode: 'replan' });
+  // Two modes, distinguished by `{overwrite: true}` in the body:
+  //   default — non-destructive: scoper MODE=replan as a background
+  //     invocation. Delta-merges new SPEC.md bullets into the existing
+  //     queue. Completion observable via /scoper-result/<invocationId>.
+  //   overwrite — destructive: wipe features (PG) + validation-contract.md
+  //     (file), then invoke scoper MODE=initial inline. Used by the
+  //     proposals "Replan now" flow after the user accepts bullets that
+  //     materially reshape the spec.
+  const body = await c.req.json().catch(() => ({})) as { overwrite?: boolean };
+  if (!body.overwrite) {
+    // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
+    // and the OperatorActionLog component. The action represents the *kickoff*;
+    // the replan's completion is observable via /scoper-result/<invocationId>.
+    const invocationId = await recordUserAction(slug, 'replan', async () => {
+      const r = invokeScoperBackground(project, 'replan');
+      return {
+        summary: `Replan kicked off (invocation ${r.invocationId})`,
+        invocationId: r.invocationId,
+        result: r.invocationId,
+      };
+    });
+    return c.json({ ok: true, invocationId, mode: 'replan' });
+  }
+
+  // Destructive path: wipe features in PG (with snapshot), move
+  // validation-contract.md to a backup dir, then invoke scoper
+  // MODE=initial inline (MAX_ITERATIONS=0 skips the orchestration loop).
+  const specPath = join(project.path, 'SPEC.md');
+  if (!existsSync(specPath)) return c.json({ error: 'SPEC.md not found' }, 400);
+  const contractPath = join(harnessDir(project), 'validation-contract.md');
+
+  await mkdir(harnessDir(project), { recursive: true });
+  const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
+  await mkdir(backupDir, { recursive: true });
+  for (const f of STATE_FILES_FOR_BACKUP) {
+    const p = join(harnessDir(project), f);
+    if (existsSync(p)) {
+      const { rename } = await import('node:fs/promises');
+      await rename(p, join(backupDir, f));
+    }
+  }
+  try {
+    const prior = await parseFeatures(project);
+    if (prior.length > 0) {
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(join(backupDir, 'features.pg.json'), JSON.stringify(prior, null, 2));
+      const dbc = dbcFor(project.slug);
+      await dbc.prepare('DELETE FROM harness_features WHERE harness_slug = ?').run(project.slug);
+    }
+  } catch (e: any) {
+    console.warn('[replan] PG feature clear failed:', e?.message ?? e);
+  }
+
+  const orchBin = orchestratorRunBin();
+  const logPath = `/tmp/harness-replan-${project.slug}.log`;
+  return new Promise((resolve) => {
+    const { execFile } = require('node:child_process');
+    execFile('bash', ['-c', `MAX_ITERATIONS=0 npx --no-install tsx ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
+      cwd: project.path,
+      env: {
+        ...process.env,
+        AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+        CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+        HARNESS_DIR: harnessPackageDir(),
+        PROJECT_DIR: project.path,
+        HARNESS_SLUG: project.slug,
+      },
+      maxBuffer: 1024 * 1024,
+      timeout: 5 * 60_000,
+    }, async (err: any, stdout: string, stderr: string) => {
+      const produced = (await parseFeatures(project)).length > 0 && existsSync(contractPath);
+      if (err && !produced) {
+        resolve(c.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, 500));
+        return;
+      }
+      resolve(c.json({ ok: true, mode: 'initial', produced, logPath, stdout: stdout.slice(-2048), stderr: stderr.slice(-1024), backupDir }));
+    });
+  }) as Promise<Response>;
 });
 
 /**
@@ -4012,9 +4085,11 @@ harness.post('/:slug/archive', async (c) => {
       }
       let resetRemoved: string[] = [];
       if (body.reset) {
-        // Remove features.json, validation-contract.md, issues.md, worker-log.md,
+        // Remove validation-contract.md, issues.md, worker-log.md,
         // escalation.md, supervisor-notes.md, lanes.json, prs.json, logs/*, snapshots/*,
         // screenshots/*. Keep config.json, hooks/, knowledge.md, archives/.
+        // features.json is in the list for legacy harnesses but features
+        // moved to PG in 2026-04-26; we also DELETE from harness_features below.
         for (const f of STATE_FILES_FOR_RESET) {
           try { await unlink(join(dir, f)); resetRemoved.push(f); } catch {}
         }
@@ -4022,72 +4097,17 @@ harness.post('/:slug/archive', async (c) => {
         for (const d of ['logs', 'snapshots', 'screenshots']) {
           try { await rm(join(dir, d), { recursive: true, force: true }); resetRemoved.push(`${d}/`); } catch {}
         }
+        try {
+          const dbc = dbcFor(project.slug);
+          await dbc.prepare('DELETE FROM harness_features WHERE harness_slug = ?').run(project.slug);
+          resetRemoved.push('harness_features (PG)');
+        } catch (e: any) {
+          console.warn('[archive-reset] PG features clear failed:', e?.message ?? e);
+        }
       }
       let sizeBytes = 0;
       try { sizeBytes = statSync(archivePath).size; } catch {}
       resolve(c.json({ ok: true, id: archiveName, sizeBytes, reset: !!body.reset, resetRemoved }));
-    });
-  }) as Promise<Response>;
-});
-
-harness.post('/:slug/replan', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const specPath = join(project.path, 'SPEC.md');
-  if (!existsSync(specPath)) return c.json({ error: 'SPEC.md not found' }, 400);
-
-  // Allow overwriting existing plan only when body.overwrite: true. Otherwise reject
-  // if features.json exists (avoids blowing away active mission state).
-  const body = await c.req.json().catch(() => ({})) as { overwrite?: boolean };
-  const featuresPath = join(harnessDir(project), 'features.json');
-  const contractPath = join(harnessDir(project), 'validation-contract.md');
-  if ((existsSync(featuresPath) || existsSync(contractPath)) && !body.overwrite) {
-    return c.json({ error: 'scoper output already exists; pass {overwrite: true} to replan' }, 409);
-  }
-
-  // Ensure harness dir exists, then temporarily move existing scoper output so
-  // run.sh's plan step (scoper MODE=initial) fires.
-  await mkdir(harnessDir(project), { recursive: true });
-  const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
-  if (body.overwrite) {
-    await mkdir(backupDir, { recursive: true });
-    for (const f of STATE_FILES_FOR_BACKUP) {
-      const p = join(harnessDir(project), f);
-      if (existsSync(p)) {
-        const { rename } = await import('node:fs/promises');
-        await rename(p, join(backupDir, f));
-      }
-    }
-  }
-
-  const orchBin = orchestratorRunBin();
-  const logPath = `/tmp/harness-replan-${project.slug}.log`;
-  // We don't want to run the full orchestration loop — just the
-  // pre-loop / initial scoper. The TS orchestrator's pre-loop gate
-  // ("if missing features.json + contract, invoke scoper MODE=initial")
-  // runs before the main iteration loop; MAX_ITERATIONS=0 prevents the
-  // loop body from entering.
-  return new Promise((resolve) => {
-    const { execFile } = require('node:child_process');
-    execFile('bash', ['-c', `MAX_ITERATIONS=0 npx --no-install tsx ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
-      cwd: project.path,
-      env: {
-        ...process.env,
-        AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-        CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-        HARNESS_DIR: harnessPackageDir(),
-        PROJECT_DIR: project.path,
-        HARNESS_SLUG: project.slug,
-      },
-      maxBuffer: 1024 * 1024,
-      timeout: 5 * 60_000,
-    }, (err: any, stdout: string, stderr: string) => {
-      const produced = existsSync(featuresPath) && existsSync(contractPath);
-      if (err && !produced) {
-        resolve(c.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, 500));
-        return;
-      }
-      resolve(c.json({ ok: true, produced, logPath, stdout: stdout.slice(-2048), stderr: stderr.slice(-1024), backupDir: body.overwrite ? backupDir : null }));
     });
   }) as Promise<Response>;
 });
@@ -4932,17 +4952,14 @@ harness.get('/:slug/git/show/:sha', async (c) => {
   const sha = c.req.param('sha');
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return c.json({ error: 'bad sha' }, 400);
   try {
-    const [meta, patch] = await Promise.all([
+    const PATCH_LIMIT = 8 * 1024 * 1024; // 8 MB — enough for typical commits, bounded so multi-GB diffs don't OOM the operator.
+    const [meta, { patch, truncated, totalBytes }] = await Promise.all([
       execFileP(
         'git',
         ['-C', project.path, 'show', '--no-patch', '--format=%H%n%an%n%ae%n%at%n%P%n%s%n%n%b', sha],
         { maxBuffer: 4 * 1024 * 1024, timeout: 10_000 },
       ).then((r) => r.stdout),
-      execFileP(
-        'git',
-        ['-C', project.path, 'show', '--format=', '--patch', '--stat', '-M', sha],
-        { maxBuffer: 32 * 1024 * 1024, timeout: 15_000 },
-      ).then((r) => r.stdout),
+      streamGitPatch(project.path, sha, PATCH_LIMIT),
     ]);
     const [hash, author, email, ts, parents, subject, ...bodyLines] = meta.split('\n');
     return c.json({
@@ -4954,11 +4971,74 @@ harness.get('/:slug/git/show/:sha', async (c) => {
       subject,
       body: bodyLines.join('\n').trim(),
       patch,
+      patchTruncated: truncated,
+      patchTotalBytes: totalBytes,
     });
   } catch (err: any) {
     return c.json({ error: err?.message ?? String(err) }, 500);
   }
 });
+
+function streamGitPatch(
+  cwd: string,
+  sha: string,
+  byteLimit: number,
+): Promise<{ patch: string; truncated: boolean; totalBytes: number }> {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('node:child_process') as typeof import('node:child_process');
+    const child = spawn('git', ['-C', cwd, 'show', '--format=', '--patch', '--stat', '-M', sha], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const chunks: Buffer[] = [];
+    let collected = 0;
+    let totalBytes = 0;
+    let truncated = false;
+    let stderr = '';
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch {}
+      reject(new Error(`git show timed out after 30s (sha=${sha})`));
+    }, 30_000);
+
+    child.stdout!.on('data', (buf: Buffer) => {
+      totalBytes += buf.length;
+      if (collected >= byteLimit) {
+        if (!truncated) {
+          truncated = true;
+          // Kill the git process — for multi-GB diffs (binary blobs,
+          // mass-file commits) draining stdout to completion takes
+          // minutes. We have enough; stop the producer.
+          try { child.kill('SIGTERM'); } catch {}
+        }
+        return;
+      }
+      const remaining = byteLimit - collected;
+      if (buf.length <= remaining) {
+        chunks.push(buf);
+        collected += buf.length;
+      } else {
+        chunks.push(buf.subarray(0, remaining));
+        collected += remaining;
+        truncated = true;
+        try { child.kill('SIGTERM'); } catch {}
+      }
+    });
+    child.stderr!.on('data', (buf: Buffer) => { stderr += buf.toString('utf8'); });
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      // SIGTERM is our own truncation kill; treat as success.
+      if (code !== 0 && signal !== 'SIGTERM' && !truncated) {
+        reject(new Error(`git show exited ${code}: ${stderr.slice(0, 400)}`));
+        return;
+      }
+      const patch = Buffer.concat(chunks).toString('utf8');
+      const display = truncated
+        ? patch + `\n\n[…truncated at ${byteLimit.toLocaleString()} bytes — full diff exceeds limit; open the commit externally to see all changes]\n`
+        : patch;
+      resolve({ patch: display, truncated, totalBytes: truncated ? -1 : totalBytes });
+    });
+  });
+}
 
 harness.get('/:slug/git/log', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
@@ -5641,145 +5721,18 @@ harness.post('/:slug/reviews/:id/resolve', async (c) => {
     await writeFile(path, JSON.stringify(review, null, 2), 'utf8');
   }
 
-  // Unblock the feature in features.json so the orchestrator can pick it up again.
+  // Unblock the feature in PG so the orchestrator can pick it up again.
   if (review.featureId) {
     try {
-      const fp = join(harnessDir(project), 'features.json');
-      const rawF = safeRead(fp);
-      if (rawF) {
-        const parsed = JSON.parse(rawF);
-        const feats = parsed.features ?? [];
-        const feat = feats.find((f: any) => f.id === review.featureId);
-        if (feat && feat.status === 'blocked') {
-          feat.status = 'todo';
-        }
-        await writeFile(fp, JSON.stringify(parsed, null, 2), 'utf8');
-      }
+      const dbc = dbcFor(project.slug);
+      await dbc.prepare(
+        `UPDATE harness_features SET status = 'todo', updated_ts = ?
+          WHERE harness_slug = ? AND feature_id = ? AND status = 'blocked'`,
+      ).run(Date.now(), project.slug, review.featureId);
     } catch {}
   }
 
   return c.json({ ok: true, review });
-});
-
-// Architect chat — streams a single turn via runAgentChat (backend-aware:
-// `omp -p` by default, `claude -p` when AGENT_BACKEND=claude-code).
-// Body: { history: [{role:'user'|'assistant',content:string}], message: string, reviewId?: string }
-// Response: text/event-stream; events are `delta` with a text chunk, then `done`.
-
-harness.post('/:slug/architect/chat', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json() as {
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>;
-    message: string;
-    reviewId?: string;
-  };
-  if (!body.message || typeof body.message !== 'string') {
-    return c.json({ error: 'message required' }, 400);
-  }
-
-  // Compose a compact prompt: system instructions + current spec grounding +
-  // conversation history + the new user message. The assistant is told to
-  // stream text and, when ready, emit a diff block with a special marker.
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
-  const contract = safeRead(join(harnessDir(project), 'validation-contract.md')) ?? '';
-  // Features live in Postgres (harness_features) post-2026-04-27 migration.
-  // Render a compact summary for the prompt — same shape the agents used to
-  // read out of features.json, just sourced from the DB now.
-  const featuresList = await parseFeatures(project);
-  const features = JSON.stringify(
-    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status, attempts: f.attempts })) },
-    null,
-    2,
-  );
-  const issues = safeRead(join(harnessDir(project), 'issues.md')) ?? '';
-  let reviewContext = '';
-  if (body.reviewId) {
-    const rpath = join(reviewsDir(project), `${body.reviewId.replace(/[^A-Za-z0-9_.-]/g, '')}.json`);
-    const rraw = safeRead(rpath);
-    if (rraw) reviewContext = `\n\n## Pending review in context\n\n${rraw}\n`;
-  }
-
-  const systemPrompt = `You are the ARCHITECT in an autonomous coding harness, chatting with the human supervisor through the /harness Inbox.
-
-Your job is to help them clarify the spec: ask Socratic questions about any vagueness until the user's intent is precise and testable, then propose a concrete change to SPEC.md or .harness/validation-contract.md.
-
-Current state:
-
-## SPEC.md
-${spec.slice(0, 8000)}
-
-## validation-contract.md
-${contract.slice(0, 6000)}
-
-## features (harness_features in Postgres — summary)
-${features.slice(0, 3000)}
-
-## issues.md tail
-${issues.slice(-3000)}
-${reviewContext}
-
-Rules:
-- Prefer short, pointed clarifying questions over long speeches.
-- When you're ready to propose a change, emit a fenced block. The UI shows the user a summary + Accept button; they trust you on the mechanical details.
-
-Format for file replacements:
-\`\`\`proposal:SPEC.md
-SUMMARY: <1–3 sentences in plain English: what will change and why. This is the ONLY text the user reads by default.>
----
-<complete replacement file contents — verbatim, nothing elided>
-\`\`\`
-
-Use \`proposal:SPEC.md\` or \`proposal:contract\` as the fence language. First line after the fence MUST start with \`SUMMARY:\` then human-facing text; then a line \`---\`; then the full replacement body.
-
-For a supervisor note (short message appended, not replacing a file):
-\`\`\`note:supervisor
-<text that appends to supervisor-notes.md>
-\`\`\`
-
-Rules for proposals:
-- The summary is what the user sees. Make it precise and plain-English. No jargon without definition.
-- The body must be complete — do not elide. The UI writes it verbatim on Accept.
-- Be decisive but never fabricate facts. If you don't know a constraint, ask instead of proposing.`;
-
-  const history = (body.history ?? []).slice(-10);
-  const fullPrompt = [
-    ...history.map((m) => `${m.role === 'user' ? 'User' : 'Architect'}: ${m.content}`),
-    `User: ${body.message}`,
-    'Architect:',
-  ].join('\n\n');
-
-  // Stream the response via runAgentChat (backend-aware: claude-code
-  // or omp). Migrated 2026-05-12 from Hono streamSSE → @restart/sse
-  // sseResponse after verifying that ReadableStream-based streaming no
-  // longer buffers under Next 16/Turbopack (architect/chat probe showed
-  // TTFB=10.8s/total=11.6s with incremental token delivery, matching the
-  // model's token-emit cadence rather than a single end-of-response
-  // flush). The eventRaw path skips JSON.stringify on the delta payload;
-  // parseSseStream on the consumer side joins multi-line data: spec-
-  // compliantly so newlines round-trip without the prior \\n escape.
-  return sseResponse({
-    signal: c.req.raw.signal,
-    setup: async (sink) => {
-      try {
-        for await (const ev of runAgentChat({
-          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-          cwd: project.path,
-        })) {
-          if (ev.type === 'delta') {
-            sink.eventRaw('delta', ev.text);
-          } else if (ev.type === 'result') {
-            sink.event('done', { cost: ev.costUsd, input: ev.tokensIn, output: ev.tokensOut });
-            sink.close();
-          } else if (ev.type === 'error') {
-            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
-          }
-        }
-      } catch (err) {
-        sink.eventRaw('error', `architect chat failed: ${(err as Error).message}`);
-      }
-    },
-  });
 });
 
 // Accept an Architect-proposed patch — write it to the target file.
@@ -5943,85 +5896,6 @@ harness.put('/:slug/brainstorm-mindmap', async (c) => {
   await saveBrainstorm(slug, { mindmap: body.tree });
   await writeFile(brainstormMindmapPath(project), JSON.stringify(body.tree, null, 2), 'utf8').catch(() => {});
   return c.json({ ok: true });
-});
-
-// Brainstorm chat — reuses the same Claude CLI pipe as architect/chat
-// but with a different system prompt focused on expansive ideation.
-harness.post('/:slug/brainstorm/chat', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json() as {
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>;
-    message: string;
-  };
-  if (!body.message || typeof body.message !== 'string') {
-    return c.json({ error: 'message required' }, 400);
-  }
-
-  const spec = safeRead(join(project.path, 'SPEC.md')) ?? '';
-  const brainstorm = safeRead(brainstormPath(project)) ?? '';
-  // Same as the Architect chat: features live in harness_features (PG).
-  const featuresList = await parseFeatures(project);
-  const features = JSON.stringify(
-    { features: featuresList.map((f) => ({ id: f.id, title: f.title, status: f.status })) },
-    null,
-    2,
-  );
-
-  const systemPrompt = `You are a BRAINSTORM PARTNER for a software project. You're chatting with the human supervisor of a coding harness to help them explore ideas before they become features.
-
-Your job: expand the space of possibilities. Suggest analogues, probe "have you considered…", challenge hidden assumptions. You are expansive, not reductive. This is pre-SPEC ideation — nothing needs to be final yet.
-
-Current state:
-
-## SPEC.md
-${spec.slice(0, 6000)}
-
-## Existing features (harness_features in Postgres — summary)
-${features.slice(0, 2000)}
-
-## Brainstorm scratchpad (what the user is working on)
-${brainstorm.slice(0, 8000)}
-
-Rules:
-- Lead with ideas, tradeoffs, analogues from other domains. Be concrete.
-- When an idea matures enough to be acted on, emit a fenced action block:
-  - \`\`\`promote:feature — create a new todo feature in harness_features. Put a short title on the first line, then markdown body explaining intent + optional claims.
-  - \`\`\`promote:spec — insert into SPEC.md under a "## Brainstormed" section.
-  - \`\`\`promote:issue — file as an issue in issues.json. First line is title; rest is evidence/context.
-- Don't promote too eagerly. Wait until the user signals the idea is ready, or ask them first.
-- Keep responses short and punchy. Long speeches kill brainstorming.`;
-
-  const history = (body.history ?? []).slice(-10);
-  const fullPrompt = [
-    ...history.map((m) => `${m.role === 'user' ? 'User' : 'Partner'}: ${m.content}`),
-    `User: ${body.message}`,
-    'Partner:',
-  ].join('\n\n');
-
-  // Migrated 2026-05-12 to @restart/sse — see architect/chat above.
-  return sseResponse({
-    signal: c.req.raw.signal,
-    setup: async (sink) => {
-      try {
-        for await (const ev of runAgentChat({
-          promptText: `${systemPrompt}\n\n---\n\n${fullPrompt}\n`,
-          cwd: project.path,
-        })) {
-          if (ev.type === 'delta') {
-            sink.eventRaw('delta', ev.text);
-          } else if (ev.type === 'result') {
-            sink.event('done', { cost: ev.costUsd });
-            sink.close();
-          } else if (ev.type === 'error') {
-            sink.eventRaw('error', `${ev.message}${ev.stderr ? `: ${ev.stderr.slice(0, 500)}` : ''}`);
-          }
-        }
-      } catch (err) {
-        sink.eventRaw('error', `brainstorm chat failed: ${(err as Error).message}`);
-      }
-    },
-  });
 });
 
 // Brainstorm promote — takes content from chat or a selection and
@@ -7199,6 +7073,23 @@ async function writeTests(project: ProjectEntry, phase: Phase, tests: TestItem[]
   await writeFile(tmp, JSON.stringify({ tests }, null, 2), 'utf8');
   await rename(tmp, f);
 }
+
+// V1 ship-state gate: tests tab is phase-coupled (per harness-phases plan),
+// so the /tests endpoints return 404 when FLAGS.HARNESS_PHASES is off.
+harness.use('/:slug/tests/*', async (c, next) => {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const enabled = await getFlag(FLAGS.HARNESS_PHASES, 'system');
+  if (!enabled) return c.notFound();
+  return next();
+});
+harness.use('/:slug/tests', async (c, next) => {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const enabled = await getFlag(FLAGS.HARNESS_PHASES, 'system');
+  if (!enabled) return c.notFound();
+  return next();
+});
 
 harness.get('/:slug/tests', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));

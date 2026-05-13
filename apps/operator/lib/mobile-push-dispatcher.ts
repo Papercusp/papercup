@@ -5,7 +5,7 @@
  *   - A proposal is awaiting plan-review
  *   - User-defined notification rules fire (future)
  *
- * Registered tokens live in harness_shared.mobile_push_tokens (TODO: migration).
+ * Registered tokens live in harness_shared.mobile_push_tokens (migration 009).
  *
  * Provider selection:
  *   - APNs: HTTP/2 to api.push.apple.com using a P8 auth key

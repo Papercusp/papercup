@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { existsSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { dispatchWorkspaceSwitch } from '@papercusp/agent-mcp';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -45,7 +46,22 @@ export async function POST(req: Request) {
   if (reg.current === id) {
     return NextResponse.json({ ok: true, id, alreadyCurrent: true });
   }
+  // Capture the leaving workspace BEFORE writing the new current so we
+  // can fan the workspace-switch hook to drop its in-memory state
+  // (audit6 — wiring up H4 from the bespoke-card-improvements plan).
+  // Without this call: replay buffers, card-correlator PENDING entries,
+  // and state-channel run snapshots for the leaving workspace stay
+  // alive until their natural TTL — wastes memory and risks stale
+  // state leaking across workspaces.
+  const leaving = reg.current;
   reg.current = id;
   await fs.writeFile(REGISTRY_PATH, JSON.stringify(reg, null, 2) + '\n', 'utf8');
+  // Fire-and-forget — cleanup is best-effort and a subscriber failure
+  // must not break the workspace switch itself. dispatchWorkspaceSwitch
+  // already isolates subscriber throws via console.warn.
+  void dispatchWorkspaceSwitch(leaving).catch((e) => {
+    // eslint-disable-next-line no-console
+    console.warn('[workspaces/switch] dispatchWorkspaceSwitch failed:', e);
+  });
   return NextResponse.json({ ok: true, id });
 }

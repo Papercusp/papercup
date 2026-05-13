@@ -5,7 +5,10 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { findSnapshot } from '@/lib/snapshot-discovery';
+import { resolveDistinctId } from '@/lib/flag-distinct-id';
 
 const ALL_ROLES = [
   'scoper',
@@ -34,6 +37,15 @@ export default defineTool({
     id: z.string().min(1),
   }),
   async handler(args) {
+    const enabled = await getFlag(FLAGS.SNAPSHOTS, resolveDistinctId(new Request('http://localhost/')));
+    if (!enabled) {
+      return {
+        content: [
+          { type: 'text', text: JSON.stringify({ ok: false, reason: 'feature-disabled', flag: FLAGS.SNAPSHOTS }) },
+        ],
+        isError: true,
+      };
+    }
     const snapshot = await findSnapshot(args.id);
     return {
       content: [{ type: 'text', text: JSON.stringify({ id: args.id, found: snapshot !== null, snapshot }) }],

@@ -369,17 +369,17 @@ function IssuesListInner({ slug, onCount }: { slug: string; onCount?: (n: number
           rowMinHeight={58}
         />
       )}
-      {selected && (
-        <IssueDetail
-          slug={slug}
-          issue={selected}
-          onClose={() => setSelectedId(null)}
-          onChange={(next) => {
-            setIssues((prev) => prev?.map((i) => (i.id === next.id ? next : i)) ?? null);
-            if (next.linkedFeatureId) toast.success(`Promoted to ${next.linkedFeatureId}`);
-          }}
-        />
-      )}
+      {/* Mount unconditionally so the vaul drawer is set up once and just
+          toggles open/close on click — eliminates click-to-paint mount lag. */}
+      <IssueDetail
+        slug={slug}
+        issue={selected ?? null}
+        onClose={() => setSelectedId(null)}
+        onChange={(next) => {
+          setIssues((prev) => prev?.map((i) => (i.id === next.id ? next : i)) ?? null);
+          if (next.linkedFeatureId) toast.success(`Promoted to ${next.linkedFeatureId}`);
+        }}
+      />
     </>
   );
 }

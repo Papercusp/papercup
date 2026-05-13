@@ -5,8 +5,15 @@
  * tab in the operator panel can show the past N. The latest row is
  * the same content `last-scan.json` carries; this table adds history.
  *
- * Server-only.
+ * Server-only — file imports sync-sse which opens PG LISTEN. The
+ * `server-only` import below is enforced by Next so any client-bundle
+ * leak fails compile rather than crashing dev at render time (see the
+ * duplicate-dashboard incident in docs/duplicate-dashboard-report-2026-05-12.md).
+ *
+ * Any client-side caller must go through `/api/agent-mcp/operator-scans`
+ * (HTTP) instead of importing this module directly.
  */
+import 'server-only';
 import { withWorkspace } from '@restart/db-org';
 import { ensureOperatorScansTable } from './ensure-schema';
 import { notifySyncInvalidate } from './sync-sse';

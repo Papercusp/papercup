@@ -33,6 +33,34 @@ export {
 } from './resource-registry';
 export { getPromptCatalog, lookupPrompt } from './prompt-registry';
 export { resolveBearer } from './auth';
+export {
+  onWorkspaceSwitch,
+  dispatchWorkspaceSwitch,
+} from './workspace-lifecycle';
+export type { WorkspaceSwitchCallback } from './workspace-lifecycle';
+export {
+  openRun,
+  closeRun,
+  setOpenCards,
+  setToolState,
+  getSnapshot,
+  subscribe as subscribeStateChannel,
+  subscribeWorkspace,
+  snapshotWorkspace,
+  dropStateSnapshotsForWorkspaceSwitch,
+} from './state-channel';
+export type {
+  StateSnapshot,
+  VersionedSnapshot,
+} from './state-channel';
+export {
+  registerCard,
+  resolveCardResponse,
+  cancelPendingCardsForRun,
+  cancelPendingCardsForWorkspaceSwitch,
+  _resetCardCorrelatorForTests,
+} from './card-correlator';
+export { _resetStateChannelForTests } from './state-channel';
 export { tierFor } from './capability-tiers';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
@@ -54,6 +82,8 @@ export {
   listAllProjectedTools,
   listMcpProjections,
   ToolRegistrationError,
+  emitToSseSink,
+  isPapercuspBinaryEnvelope,
   _resetProjectionRegistryForTests,
   type ProjectedTool,
   type ToolFn,
@@ -61,15 +91,19 @@ export {
   type ToolExposureHttp,
   type ToolExposureMcp,
   type UnifiedToolContext,
+  type MinimalEventSink,
+  type PapercuspBinaryEnvelope,
 } from './tool-projection';
 
 export {
   dispatchProjectedTool,
+  dispatchProjectedToolStream,
   computeProjectedQuotaWindowKey,
   UnauthorizedToolError,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
   type DispatchProjectedErrorCode,
+  type DispatchStreamEvent,
 } from './dispatch-projected';
 
 export {
@@ -98,6 +132,27 @@ export type {
   PromptDefinition,
   PromptMessage,
   PromptResult,
+  CardSpec,
+  CardResponse,
+  CardPresentation,
+  CardOption,
+  OpenCardSnapshot,
 } from './types';
+
+export {
+  readBuffer as readReplayBuffer,
+  closeBuffer as closeReplayBuffer,
+  replayBufferStats,
+  type BufferedEvent as ReplayBufferedEvent,
+} from './replay-buffer';
+
+export {
+  validatePluginEventSchema,
+  validateAndClassifyPluginEvents,
+  classifyEventWireFromJsonSchema,
+  PluginEventSchemaError,
+  SUPPORTED_KEYWORDS as PLUGIN_EVENT_SUPPORTED_KEYWORDS,
+  REJECTED_KEYWORDS as PLUGIN_EVENT_REJECTED_KEYWORDS,
+} from './plugin-events';
 
 import './bootstrap';

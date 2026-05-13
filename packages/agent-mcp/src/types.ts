@@ -5,7 +5,7 @@
 import type { AgentRole, RolesQuota, ToolResult } from '@papercusp/plugin-sdk';
 import type { Sql } from 'postgres';
 import type { z, ZodTypeAny } from 'zod';
-import type { UnifiedToolContext } from './tool-projection';
+import type { EventsSchema, UnifiedToolContext, UserEvents } from './tool-projection';
 
 /** A Papercusp capability tier per spec/capabilities §10.6.1. */
 export type CapabilityTier = 'low' | 'medium' | 'high';
@@ -183,7 +183,10 @@ export interface ToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
  * plugin (that would mix removable third-party plugins with core papercusp
  * code in the catalog forever).
  */
-export interface RoleToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
+export interface RoleToolDefinition<
+  TArgs extends ZodTypeAny = ZodTypeAny,
+  TEvents extends EventsSchema = EventsSchema,
+> {
   name: string;
   description: string;
   /** Capability string for tier classification + descriptive listings. Not enforced. */
@@ -197,7 +200,31 @@ export interface RoleToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   /** Per-call wall-clock timeout, default 60s. */
   timeoutSec?: number;
+  /** Idle timeout — abort if no event emitted for this many seconds. See ProjectedTool.idleTimeoutSec. */
+  idleTimeoutSec?: number;
+  /**
+   * Replay ring-buffer size, 0/undefined to disable (default).
+   * When set, the dispatcher keeps the last N emitted events for the
+   * call so a client reconnecting with `Last-Event-ID + X-Papercusp-Run-Id`
+   * can pick up where it left off. Buffer evicted FIFO when full
+   * (warn log fires); buffer survives 5 minutes past stream-end.
+   * Per-tool sizing should target 1.5× p99 event_count from production
+   * telemetry (Phase 4 T2.2 — see plan).
+   */
+  replayBufferSize?: number;
+  /**
+   * Surfaces this tool is meaningful from. Phase 4 T3.1. The prompt-
+   * assembly catalog renderer filters by the caller's modality so voice
+   * surfaces only see voice-capable tools. Default — when absent — is
+   * `['text', 'voice']` (visible everywhere) so legacy tools surface
+   * in both catalogs without a code change; opt out via `['text']` or
+   * `['voice']` only when the tool genuinely doesn't make sense in
+   * the other surface.
+   */
+  modality?: ReadonlyArray<'text' | 'voice'>;
   args: TArgs;
+  /** Typed event channel. See ProjectedTool.events. */
+  events?: TEvents;
   /**
    * Handler receives the unified context (no principal). May return either
    * a raw `ToolResult` (MCP shape) or a `ToolResponse` envelope; the
@@ -212,7 +239,10 @@ export interface RoleToolDefinition<TArgs extends ZodTypeAny = ZodTypeAny> {
 }
 
 /** Input shape for role-gated `defineTool` — same as RoleToolDefinition minus derived fields. */
-export interface RoleToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> {
+export interface RoleToolDefinitionInput<
+  TArgs extends ZodTypeAny = ZodTypeAny,
+  TEvents extends EventsSchema = EventsSchema,
+> {
   name?: string;
   description?: string;
   capability: string;
@@ -220,7 +250,19 @@ export interface RoleToolDefinitionInput<TArgs extends ZodTypeAny = ZodTypeAny> 
   roles?: AgentRole[];
   rolesQuota?: Partial<Record<AgentRole, RolesQuota>>;
   timeoutSec?: number;
+  /** See RoleToolDefinition.idleTimeoutSec. */
+  idleTimeoutSec?: number;
+  /** See RoleToolDefinition.replayBufferSize. */
+  replayBufferSize?: number;
+  /** See RoleToolDefinition.modality. */
+  modality?: ReadonlyArray<'text' | 'voice'>;
   args: TArgs;
+  /**
+   * Typed event channel — Zod schemas keyed by event name. The
+   * `UserEvents` guard rejects reserved names at compile time.
+   * Reserved names: 'done' | 'progress' | 'heartbeat' | 'result'.
+   */
+  events?: UserEvents<TEvents>;
   handler: (
     args: z.infer<TArgs>,
     ctx: UnifiedToolContext,
@@ -343,6 +385,74 @@ export interface PromptDefinition {
 }
 
 export type { UIResourceContent as UIResource };
+
+// ──────────────────────────────────────────────────────────────────────
+// Cards — interactive prompts a tool can issue mid-run.
+//
+// Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md
+//
+// `ctx.askUser(spec)` server-side. Cards live on the STATE channel, NOT
+// the event ring buffer (H2). Renderer reads schema/UI separately (#3).
+// Response actions: submit | decline | cancel (#2 / L4).
+// ──────────────────────────────────────────────────────────────────────
+
+/** Visual presentation hint. Voice surfaces ignore this. */
+export type CardPresentation =
+  | { kind: 'radio'; options: CardOption[] }
+  | { kind: 'checkbox'; options: CardOption[] }
+  | { kind: 'text'; placeholder?: string; multiline?: boolean }
+  | { kind: 'date'; min?: string; max?: string }
+  | { kind: 'slider'; min: number; max: number; step?: number };
+
+export interface CardOption {
+  id: string;
+  label: string;
+  hint?: string;
+  style?: 'default' | 'primary' | 'danger';
+}
+
+/** Card specification passed to `ctx.askUser`. */
+export interface CardSpec<TSchema extends ZodTypeAny = ZodTypeAny> {
+  /** Human-readable prompt. Voice surfaces read this verbatim. */
+  prompt: string;
+  /** Zod schema for the response payload. Validated server-side before resolving. */
+  dataSchema: TSchema;
+  /** Optional visual presentation hint. Voice surfaces ignore. */
+  presentation?: CardPresentation;
+  /** Plain-text fallback for voice / MCP elicitation bridge. */
+  fallbackText?: string;
+  /** Wall-clock timeout. Rejects with `{action:'cancel'}` if user does not respond. */
+  timeoutMs?: number;
+  /** Per-run idempotency key. Same key returns cached response within the run. */
+  idempotencyKey?: string;
+  /** When false, the renderer hides any decline affordance. Default true. */
+  allowDecline?: boolean;
+}
+
+/**
+ * Response from a card.
+ *   submit  — user provided a payload matching dataSchema.
+ *   decline — user explicitly skipped this card (allowDecline must be ≠ false).
+ *   cancel  — run was cancelled OR user dismissed OR timeoutMs fired.
+ */
+export type CardResponse<TSchema extends ZodTypeAny = ZodTypeAny> =
+  | { action: 'submit'; payload: z.infer<TSchema> }
+  | { action: 'decline'; reason?: string }
+  | { action: 'cancel' };
+
+/**
+ * The wire-serializable form of an open card, included in `state-snapshot`
+ * payloads under `openCards[]`. Zod schemas are serialized as JSON Schema.
+ */
+export interface OpenCardSnapshot {
+  correlationId: string;
+  prompt: string;
+  dataSchemaJson: Record<string, unknown>;
+  presentation?: CardPresentation;
+  fallbackText?: string;
+  allowDecline?: boolean;
+  createdAt: number;
+}
 
 export interface PromptDefinitionInput {
   name?: string;

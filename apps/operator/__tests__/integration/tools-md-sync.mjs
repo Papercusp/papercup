@@ -268,6 +268,19 @@ function checkRole(role, allowedNames, label) {
   if (missingGuidance > 3) note(`...and ${missingGuidance - 3} more without guidance.when`);
   if (missingGuidance === 0) ok(`every tool in ${role}'s surface has guidance.when`);
 
+  // Tools mentioned in tools.md but NOT in allowedTools — covered by
+  // the prose-references-real-surface check below.
+  //
+  // Note: we intentionally do NOT check "every catalog tool with
+  // roles[].${role} is in allowedTools" — roles[] is broader than the
+  // chat-surface allowlist by design (worker can theoretically call
+  // a tool that operator-converse doesn't expose). The right
+  // bidirectional gate is the prose check: if tools.md or persona.md
+  // mentions a tool, it MUST be in allowedTools. Bug #10
+  // (search:semantic missing from operator allowedTools) is caught
+  // by the mention check after the corresponding mention lands in
+  // operator.tools.md.
+
   /**
    * Is a tool name from prose (playbook / persona) considered present
    * in the role's surface? Tolerates `.`↔`_` divergence the same way

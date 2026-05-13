@@ -476,7 +476,10 @@ function buildClientTools(opts: {
  * the failure as a verbatim error to the user. A graceful "I had trouble
  * just then" is far better.
  */
-async function askOperatorViaSse(params: { text?: string; trigger?: string }): Promise<string> {
+// Exported for unit-test coverage (plan §4.9 / §6.5 voice path).
+// Voice clients reach this via clientTools.ask_operator — that thin
+// wrapper at line ~465 is the only production caller.
+export async function askOperatorViaSse(params: { text?: string; trigger?: string }): Promise<string> {
   const userText = (params?.text ?? '').toString().trim();
   const trigger = typeof params?.trigger === 'string' ? params.trigger : null;
   // No user text + no explicit trigger = nothing to do.
@@ -557,6 +560,16 @@ async function askOperatorViaSse(params: { text?: string; trigger?: string }): P
     const decoder = new TextDecoder();
     let buf = '';
     let assembled = '';
+    // Voice cards (plan §6.3): when a tool calls ctx.askUser during this
+    // voice turn, the state-channel forwards a state-snapshot event on
+    // the same SSE stream (operator-converse route subscribes the sink
+    // to subscribeWorkspace). We collect fallbackText per card so we
+    // can append it to the spoken response — the user still has to
+    // submit via the chat surface (voice can't yet send a card-response
+    // payload structured enough to validate against dataSchema). Today
+    // chat:ask_choice is modality:['text'] so it's filtered out before
+    // reaching voice; this path is for future voice-capable card tools.
+    const voiceCards: Array<{ correlationId: string; fallbackText: string; prompt: string }> = [];
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
@@ -565,17 +578,69 @@ async function askOperatorViaSse(params: { text?: string; trigger?: string }): P
       while ((idx = buf.indexOf('\n\n')) !== -1) {
         const evt = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
+        // Parse the event name (typed-events lines: 'event: <name>')
+        // so we can branch on state-snapshot vs delta.
+        let eventName: string | null = null;
+        let dataLine: string | null = null;
         for (const line of evt.split('\n')) {
-          if (!line.startsWith('data: ')) continue;
-          try {
-            const payload = JSON.parse(line.slice(6));
-            if (typeof payload?.text === 'string') assembled += payload.text;
-          } catch { /* ignore non-JSON */ }
+          if (line.startsWith('event: ')) eventName = line.slice(7).trim();
+          else if (line.startsWith('data: ')) dataLine = line.slice(6);
         }
+        if (!dataLine) continue;
+        try {
+          const payload = JSON.parse(dataLine);
+          if (eventName === 'state-snapshot') {
+            // Snapshot shape: { runId, version, snapshot: { openCards, toolState? } }
+            const openCards = payload?.snapshot?.openCards;
+            if (Array.isArray(openCards)) {
+              for (const c of openCards) {
+                if (!c || typeof c.correlationId !== 'string') continue;
+                if (voiceCards.some((seen) => seen.correlationId === c.correlationId)) continue;
+                const fallback = typeof c.fallbackText === 'string' ? c.fallbackText : '';
+                const prompt = typeof c.prompt === 'string' ? c.prompt : '';
+                if (!fallback && !prompt) continue;
+                voiceCards.push({
+                  correlationId: c.correlationId,
+                  fallbackText: fallback,
+                  prompt,
+                });
+              }
+            }
+          } else if (typeof payload?.text === 'string') {
+            // delta path (text-streaming).
+            assembled += payload.text;
+          }
+        } catch { /* ignore non-JSON */ }
       }
     }
     const sayMatch = assembled.match(/<say(?:\s[^>]*)?>([\s\S]*?)<\/say>/i);
-    const out = (sayMatch ? sayMatch[1] : assembled).trim();
+    // Phase 4 T3.1 sanitizer: when the brain returns a non-empty
+    // assembled but NO `<say>` tag, the consumer's TTS speaks the
+    // raw text including any `<set_mode>` / `<spawn>` / `<sleep>`
+    // tags literally. Warn-log so this regression class doesn't
+    // ship silently — the brain's voice-mode prompt should ALWAYS
+    // wrap voice turns in `<say>…</say>` per the persona contract.
+    if (!sayMatch && assembled.trim().length > 0) {
+      console.warn(
+        '[el-conv:ask_operator] voice turn returned without <say> tag; the raw body will be spoken via TTS:',
+        assembled.trim().slice(0, 200),
+      );
+    }
+    let out = (sayMatch ? sayMatch[1] : assembled).trim();
+    // If any voice-visible card appeared this turn, append its fallbackText
+    // (or prompt) to the spoken response so the TTS reads it. Appended
+    // AFTER the <say> extraction so the card prompt isn't stripped along
+    // with stray non-say content. The user still has to click through on
+    // the chat surface — voice acknowledgement is just "here's what was
+    // asked." Idempotent across cards (deduped at collection time).
+    if (voiceCards.length > 0) {
+      const cardLines = voiceCards
+        .map((c) => c.fallbackText || c.prompt)
+        .filter((s) => s.length > 0);
+      if (cardLines.length > 0) {
+        out += (out.length > 0 ? ' ' : '') + cardLines.join(' ');
+      }
+    }
     return out || '...';
   } catch (err) {
     console.warn('[el-conv:ask_operator]', err);

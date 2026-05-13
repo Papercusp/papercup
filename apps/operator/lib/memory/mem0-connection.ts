@@ -33,3 +33,26 @@ export async function pgFields(): Promise<Mem0PgConnection> {
     dbname: u.pathname.replace(/^\//, '') || 'papercusp',
   };
 }
+
+/**
+ * Same fields shaped for node-postgres' `new Client()` — which keys
+ * on `database` instead of mem0's `dbname`. Use this in any route or
+ * worker that opens its own pg.Client; use pgFields() only when
+ * passing to mem0ai.
+ */
+export async function pgClientFields(): Promise<{
+  host: string;
+  port: number;
+  user: string;
+  password: string;
+  database: string;
+}> {
+  const f = await pgFields();
+  return {
+    host: f.host,
+    port: f.port,
+    user: f.user,
+    password: f.password,
+    database: f.dbname,
+  };
+}

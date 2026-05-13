@@ -508,59 +508,26 @@ app.post('/voice-tool/:name', async (c) => {
   if (elName === 'ask_operator') {
     const p = params as { text?: string; trigger?: string };
     const userText = (p?.text ?? '').toString().trim();
-    const trigger = typeof p?.trigger === 'string' ? p.trigger : 'user_message';
-    if (!userText && !trigger) return c.json('');
-    const VALID = new Set([
-      'user_message', 'silence_after_question', 'quiet_wait_resume',
-      'open_canvas', 'user_says_ready',
-    ]);
-    const effective = (trigger === 'silence_nudge' || trigger === 'silence_check')
-      ? 'silence_after_question'
-      : (VALID.has(trigger) ? trigger : 'user_message');
+    const triggerRaw = typeof p?.trigger === 'string' ? p.trigger : 'user_message';
+    if (!userText && !triggerRaw) return c.json('');
     const base = process.env.MOBILE_SELF_BASE ?? `http://localhost:${process.env.PORT ?? 3055}`;
-    try {
-      const res = await fetch(`${base}/api/agent-mcp/operator-converse`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          messages: userText ? [{ role: 'user', content: userText }] : [],
-          trigger: effective,
-          mayAskActive: false,
-        }),
-      });
-      if (!res.ok || !res.body) {
-        return c.json('I had trouble just then — say that again?');
-      }
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '';
-      let assembled = '';
-      // Drain SSE.
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx: number;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const evt = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          for (const line of evt.split('\n')) {
-            if (!line.startsWith('data: ')) continue;
-            try {
-              const payload = JSON.parse(line.slice(6));
-              if (typeof payload?.text === 'string') assembled += payload.text;
-            } catch { /* skip non-JSON */ }
-          }
-        }
-      }
-      const sayMatch = assembled.match(/<say(?:\s[^>]*)?>([\s\S]*?)<\/say>/i);
-      const out = (sayMatch ? sayMatch[1] : assembled).trim() || '...';
-      return c.json(out);
-    } catch (err) {
-      console.warn('[mobile:ask_operator]', err);
-      return c.json('I had trouble just then — say that again?');
+    const { askOperatorViaConverse } = await import('../../../lib/mobile-ask-operator');
+    const result = await askOperatorViaConverse({
+      baseUrl: base,
+      userText,
+      trigger: triggerRaw,
+    });
+    // Per-kind logging so we can correlate against operator-converse server logs.
+    if (result.kind === 'empty') {
+      console.warn(`[mobile:ask_operator] empty — events=${result.eventCount} trigger=${result.trigger} userText.length=${userText.length}`);
+    } else if (result.kind === 'timeout') {
+      console.warn(`[mobile:ask_operator] TIMEOUT after ${result.timeoutMs}ms`);
+    } else if (result.kind === 'bad-status') {
+      console.warn(`[mobile:ask_operator] bad-status status=${result.status}`);
+    } else if (result.kind === 'error') {
+      console.warn(`[mobile:ask_operator] error: ${result.error}`);
     }
+    return c.json(result.text);
   }
 
   // EL normalizes registry ids by replacing dots+dashes with underscores
@@ -570,25 +537,15 @@ app.post('/voice-tool/:name', async (c) => {
   // sees an empty registry because mobile.ts itself doesn't pull defs.
   await import('../../../lib/commands/defs');
   const { get, list, runCommand, runQuery } = await import('../../../lib/commands/registry');
-  let def: ReturnType<typeof get> | undefined;
-  let resolvedId: string | undefined;
-  // Fast paths: literal + underscore-to-dot (covers most cases).
-  for (const candidate of [elName, elName.replace(/_/g, '.')]) {
-    const d = get(candidate);
-    if (d) { def = d; resolvedId = candidate; break; }
-  }
-  // Fallback: search all registered defs by normalized form.
-  if (!def) {
-    const all = [
+  const { resolveRegistryToolId } = await import('../../../lib/mobile-tool-resolver');
+  const resolvedId = resolveRegistryToolId(elName, {
+    get: (id) => get(id),
+    list: () => [
       ...list({ kind: 'command', agent: 'operator' }),
       ...list({ kind: 'query', agent: 'operator' }),
-    ];
-    for (const d of all) {
-      if (d.id.replace(/[.-]/g, '_') === elName) {
-        def = d; resolvedId = d.id; break;
-      }
-    }
-  }
+    ],
+  });
+  const def = resolvedId ? get(resolvedId) : undefined;
   if (!def || !resolvedId) {
     return c.json({ ok: false, error: { code: 'unknown-tool', message: `no such registry tool: ${elName}`, retryable: false } }, 404);
   }
@@ -598,12 +555,9 @@ app.post('/voice-tool/:name', async (c) => {
     workspace: claims.workspace_id,
     sessionId: claims.sub,
     requestId: `el-mobile-${randomUUID()}`,
-    surface: ((): 'mobile-android' | 'mobile-ios' | 'mobile-unknown' => {
-      const ua = c.req.header('user-agent') ?? '';
-      return ua.includes('Android') ? 'mobile-android'
-        : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
-        : 'mobile-unknown';
-    })(),
+    surface: (await import('../../../lib/mobile-surface')).detectSurface({
+      userAgent: c.req.header('user-agent'),
+    }),
     deviceId: claims.sub,
   };
   try {
@@ -722,17 +676,14 @@ app.get('/voice-session-init', async (c) => {
 
   // Detect platform up front — we need to pass an allowed `source` to EL
   // (their API rejects arbitrary strings). Their enum has android_sdk +
-  // swift_sdk; default unknown.
-  const ua = c.req.header('user-agent') ?? '';
-  let surface = c.req.query('surface');
-  if (!surface) {
-    surface = ua.includes('Android') ? 'mobile-android'
-            : ua.includes('Darwin') || ua.includes('iPhone') ? 'mobile-ios'
-            : 'mobile-unknown';
-  }
-  const elSource = surface === 'mobile-android' ? 'android_sdk'
-                 : surface === 'mobile-ios' ? 'swift_sdk'
-                 : 'unknown';
+  // swift_sdk; default unknown. Shared logic in mobile-surface.ts so the
+  // voice-tool proxy uses the same detection.
+  const { detectSurface, surfaceToElSource } = await import('../../../lib/mobile-surface');
+  const surface = detectSurface({
+    query: c.req.query('surface'),
+    userAgent: c.req.header('user-agent'),
+  });
+  const elSource = surfaceToElSource(surface);
 
   // In-flight dedupe: parallel pair-retries on the same agentId share
   // one outstanding mint promise. Keyed by agentId so concurrent
@@ -773,24 +724,15 @@ app.get('/voice-session-init', async (c) => {
   // passes them as query params. Server falls back to workspace
   // defaults from PG. Sent back in the payload so the client uses
   // the same values it asked for (or workspace default if absent).
-  const validModes = ['continuous', 'hybrid', 'single-utterance'] as const;
-  type VoiceMode = (typeof validModes)[number];
-  const modeQ = c.req.query('mode');
-  const resolvedMode: VoiceMode = validModes.includes(modeQ as VoiceMode)
-    ? (modeQ as VoiceMode)
-    : prefs.fullAgentVoiceMode;
-  const idleQ = Number(c.req.query('idleMin'));
-  const maxQ = Number(c.req.query('sessionMaxMin'));
-  const resolvedIdle = Number.isFinite(idleQ) && idleQ >= 0
-    ? idleQ : prefs.fullAgentIdleTimeoutMin;
-  const resolvedSessionMax = Number.isFinite(maxQ) && maxQ >= 0
-    ? maxQ : prefs.fullAgentSessionMaxMin;
-  // single-utterance forces an aggressive 1-min cap so the session
-  // ends right after the first response, regardless of what the
-  // device requested.
-  const finalIdle = resolvedMode === 'single-utterance'
-    ? Math.min(resolvedIdle || 1, 1)
-    : resolvedIdle;
+  const { resolveVoiceInit } = await import('../../../lib/mobile-voice-init-prefs');
+  const resolved = resolveVoiceInit(
+    {
+      mode: c.req.query('mode'),
+      idleMin: c.req.query('idleMin'),
+      sessionMaxMin: c.req.query('sessionMaxMin'),
+    },
+    prefs,
+  );
 
   return c.json({
     conversationToken: result.token,
@@ -805,9 +747,9 @@ app.get('/voice-session-init', async (c) => {
     //     0 = never auto-disconnect.
     //   - sessionMaxMin: hard ceiling regardless of activity. Armed
     //     once at session-start, not reset. 0 = no max.
-    idleTimeoutMin: finalIdle,
-    sessionMaxMin: resolvedSessionMax,
-    voiceMode: resolvedMode,
+    idleTimeoutMin: resolved.idleTimeoutMin,
+    sessionMaxMin: resolved.sessionMaxMin,
+    voiceMode: resolved.voiceMode,
     dynamicVariables: {
       device_id: claims.sub,
       workspace_id: claims.workspace_id,
@@ -816,7 +758,7 @@ app.get('/voice-session-init', async (c) => {
       // EL agent's system prompt branches on this — one prompt, 3
       // behaviors. The end_conversation client tool is always
       // registered; the prompt instructs WHEN to use it per mode.
-      voice_mode: resolvedMode,
+      voice_mode: resolved.voiceMode,
     },
   });
 });

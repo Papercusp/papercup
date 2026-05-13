@@ -1,10 +1,14 @@
 import { NextResponse } from 'next/server';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 import { listAllSnapshots } from '@/lib/snapshot-discovery';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET() {
+export async function GET(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  if (blocked) return blocked;
   const all = await listAllSnapshots();
   return NextResponse.json({
     snapshots: all.map((s) => ({

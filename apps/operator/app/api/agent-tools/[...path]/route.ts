@@ -14,11 +14,15 @@
 import {
   handleHttpToolRequest,
   handleHttpToolRequestStreaming,
+  lookupByHttpPath,
   resolveBearer,
   type HttpToolHostExtras,
+  readReplayBuffer,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
+import { sseResponse } from '@restart/sse';
 import { getOrgPg } from '@restart/db-org';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 // Register operator-side first-party tools (D1a, role-gated). Module
 // import is side-effect: each tool calls defineTool() which auto-
@@ -158,24 +162,81 @@ async function dispatchHttp(req: Request): Promise<Response> {
   const wantsStream = (headerMap['accept'] ?? '').includes('text/event-stream');
 
   if (wantsStream) {
-    const stringStream = handleHttpToolRequestStreaming(transportReq, HOST_EXTRAS);
-    const encoder = new TextEncoder();
-    const reader = stringStream.getReader();
-    const byteStream = new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        const { value, done } = await reader.read();
-        if (done) controller.close();
-        else controller.enqueue(encoder.encode(value));
-      },
-      cancel(reason) { reader.cancel(reason).catch(() => {}); },
-    });
-    return new Response(byteStream, {
-      status: 200,
-      headers: {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-cache',
-        connection: 'keep-alive',
-      },
+    // Strict-streamable: only honor SSE when the resolved tool declares
+    // typed events OR opts in via expose.mcp.streaming. Prevents clients
+    // from opening an SSE connection against a tool that will only emit
+    // a single 'done' event — wastes a TCP connection on data the JSON
+    // path would have returned in one round-trip.
+    const tool = lookupByHttpPath(url.pathname);
+    const streamable =
+      !!tool &&
+      ((tool.events && Object.keys(tool.events).length > 0) ||
+        tool.expose.mcp?.streaming === true);
+    if (!streamable) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 'not_acceptable',
+            message: 'tool does not stream; retry with Accept: application/json',
+          },
+        }),
+        { status: 406, headers: { 'content-type': 'application/json' } },
+      );
+    }
+
+    // Phase 4 T2.2 — runId + replay/Last-Event-ID resume.
+    //
+    // runId provenance: client either echoes a prior runId via
+    // X-Papercusp-Run-Id (for resume) OR we generate a fresh UUID.
+    // The chosen runId is surfaced back on X-Papercusp-Run-Id so
+    // consumers retain it for any future reconnect.
+    //
+    // Resume logic: when both Last-Event-ID and X-Papercusp-Run-Id
+    // are sent AND the tool has a replay buffer hit, sseResponse's
+    // replay() callback re-emits the buffered tail. Per the locked-in
+    // (b) semantics, the original call already aborted on disconnect
+    // (today's behavior); we serve only the pre-disconnect buffer.
+    // The cold sink will close after replay (no more events coming).
+    const clientRunId = (headerMap['x-papercusp-run-id'] ?? '').trim();
+    const runId = clientRunId.length > 0
+      ? clientRunId
+      : (globalThis.crypto?.randomUUID?.() ?? `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    // Propagate runId via the searchParams (the spawn-context reader
+    // already understands `run` as a synonym). Avoids mutating headers
+    // (which Next's Headers may be immutable on some runtimes).
+    url.searchParams.set('run', runId);
+    transportReq.searchParams = url.searchParams;
+
+    const leiRaw = (headerMap['last-event-id'] ?? '').trim();
+    const lei = Number.parseInt(leiRaw, 10);
+    const hasResumeRequest = Number.isFinite(lei) && lei > 0 && clientRunId.length > 0;
+
+    let replayCb: undefined | (() => Iterable<{ id: number; name: string; data: unknown }>);
+    if (hasResumeRequest && tool && (tool.replayBufferSize ?? 0) > 0) {
+      // Look up the buffer. activeWorkspaceId() matches what the
+      // dispatcher used as ctx.workspaceId (operator-scope tools).
+      // The buffer name matches tool.expose.mcp?.name OR the
+      // tool's url-derived display name; we use mcp name to align
+      // with what dispatchProjectedTool sees.
+      const ws = activeWorkspaceId();
+      const toolName = tool.expose.mcp?.name ?? '';
+      const buffered = readReplayBuffer({
+        workspaceId: ws,
+        toolName,
+        runId: clientRunId,
+        sinceId: lei,
+      });
+      if (buffered && buffered.length > 0) {
+        replayCb = () => buffered;
+      }
+    }
+
+    return sseResponse({
+      signal: req.signal,
+      headers: { 'X-Papercusp-Run-Id': runId },
+      lastEventId: hasResumeRequest ? lei : null,
+      replay: replayCb,
+      setup: (sink) => handleHttpToolRequestStreaming(transportReq, HOST_EXTRAS, sink),
     });
   }
 

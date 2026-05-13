@@ -1,0 +1,227 @@
+'use client';
+
+/**
+ * PendingCardsBar — renders cards from the state-channel SSE stream.
+ *
+ * Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md
+ *
+ * Renders one card at a time (L3 from the review: queue indicator
+ * surfaces the count, no multi-card cliff). On user response, POSTs
+ * to /card-response — the deferred resolves server-side; the next
+ * snapshot drops the resolved card from openCards and the bar shows
+ * the next one (or hides entirely).
+ *
+ * Dispatch by presentation kind:
+ *   - radio / checkbox → AskChoiceCard
+ *   - text / date / slider → InputCard
+ *   - unknown / missing → fallbackText
+ *
+ * Submit payload is shape-specific. The card author's dataSchema
+ * tells the framework what the value-key looks like; the runtime
+ * here keeps the convention:
+ *   - choice → { picks: [option_id, ...] }
+ *   - input  → { value: ... }
+ *
+ * Optimistic-dismiss (audit): on successful POST, the correlationId
+ * is added to a local dismissed set so the card hides immediately
+ * even if the state-snapshot SSE update doesn't arrive (disconnected
+ * mid-flow). The server's PENDING map is already cleared at this
+ * point — the dismiss is purely a UI bridge.
+ */
+
+import { useState, type ReactNode } from 'react';
+
+import {
+  AskChoiceCard,
+  type AskChoiceArgs,
+  type AskChoiceResponse,
+} from './AskChoiceCard';
+import { InputCard, type InputCardResponse } from './InputCard';
+import { useStateSnapshots, type OpenCardWithRun } from '@/lib/use-state-snapshots';
+import { postCardResponse, postRunCancel } from '@/lib/post-card-response';
+
+interface Props {
+  /** Active conversation id — passed into /card-response URL for audit. */
+  conversationId: string;
+  /** Active workspace id — POST body needs it for defense-in-depth. */
+  workspaceId: string;
+}
+
+function toAskChoiceArgs(card: OpenCardWithRun): AskChoiceArgs | null {
+  const p = card.presentation;
+  if (!p) return null;
+  if (p.kind !== 'radio' && p.kind !== 'checkbox') return null;
+  return {
+    question: card.prompt,
+    options: p.options.map((o) => ({
+      id: o.id,
+      label: o.label,
+      hint: o.hint,
+      style: o.style,
+    })),
+    multi: p.kind === 'checkbox',
+  };
+}
+
+export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNode {
+  const { cards, connected } = useStateSnapshots();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+
+  const visibleCards = cards.filter((c) => !dismissed.has(c.correlationId));
+  if (visibleCards.length === 0) return null;
+  const head = visibleCards[0];
+  const remaining = visibleCards.length - 1;
+
+  const post = async (
+    body:
+      | { action: 'submit'; payload: unknown }
+      | { action: 'decline'; reason?: string }
+      | { action: 'cancel' },
+  ): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    const correlationId = head.correlationId;
+    try {
+      const r = await postCardResponse(conversationId, {
+        correlationId,
+        workspaceId,
+        ...body,
+      });
+      if (!r.ok) {
+        setError(r.error ?? `card-response failed (${r.status})`);
+      } else {
+        setDismissed((prev) => {
+          const next = new Set(prev);
+          next.add(correlationId);
+          return next;
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onChoiceResponse = (response: AskChoiceResponse): void => {
+    if (response.action === 'submit') {
+      void post({
+        action: 'submit',
+        payload: { picks: response.picks.map((p) => p.option_id) },
+      });
+    } else if (response.action === 'decline') {
+      void post({ action: 'decline', reason: response.reason });
+    } else {
+      void post({ action: 'cancel' });
+    }
+  };
+
+  const onInputResponse = (response: InputCardResponse): void => {
+    if (response.action === 'submit') {
+      void post({ action: 'submit', payload: { value: response.value } });
+    } else {
+      void post({ action: 'decline', reason: response.reason });
+    }
+  };
+
+  /**
+   * Chat-level "Cancel" — cancels every pending card under the head's
+   * runId. Server cascade resolves each deferred with action:'cancel'.
+   * Optimistically dismisses ALL cards from this run in the local
+   * dismissed set so the bar hides immediately even if SSE is down.
+   */
+  const onCancelRun = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    const runId = head.runId;
+    const correlationIdsForRun = visibleCards
+      .filter((c) => c.runId === runId)
+      .map((c) => c.correlationId);
+    try {
+      const r = await postRunCancel(conversationId, { runId, workspaceId });
+      if (!r.ok) {
+        setError(r.error ?? `run-cancel failed (${r.status})`);
+      } else {
+        setDismissed((prev) => {
+          const next = new Set(prev);
+          for (const cid of correlationIdsForRun) next.add(cid);
+          return next;
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const choiceArgs = toAskChoiceArgs(head);
+  const inputKinds = head.presentation?.kind;
+  const isInput =
+    inputKinds === 'text' || inputKinds === 'date' || inputKinds === 'slider';
+
+  let body: ReactNode;
+  if (choiceArgs) {
+    body = (
+      <AskChoiceCard
+        args={choiceArgs}
+        onResponse={onChoiceResponse}
+        allowDecline={head.allowDecline ?? true}
+      />
+    );
+  } else if (isInput && head.presentation) {
+    body = (
+      <InputCard
+        prompt={head.prompt}
+        presentation={head.presentation as Parameters<typeof InputCard>[0]['presentation']}
+        fallbackText={head.fallbackText}
+        allowDecline={head.allowDecline ?? true}
+        onResponse={onInputResponse}
+      />
+    );
+  } else {
+    body = (
+      <div className="pending-cards-bar pending-cards-bar--fallback" role="status">
+        <p>{head.prompt}</p>
+        <p className="pending-cards-bar-hint">
+          {head.fallbackText ?? 'No renderer for this card type yet.'}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="pending-cards-bar" data-busy={busy ? 'true' : 'false'}>
+      {body}
+      <div className="pending-cards-bar-meta">
+        {remaining > 0 && (
+          <p className="pending-cards-bar-queue" aria-live="polite">
+            {remaining} more {remaining === 1 ? 'card' : 'cards'} after this
+          </p>
+        )}
+        <button
+          type="button"
+          className="pending-cards-bar-cancel-run"
+          onClick={() => void onCancelRun()}
+          disabled={busy}
+          aria-label="Cancel this run"
+          title="Cancel — abort all pending prompts under this run"
+        >
+          Cancel
+        </button>
+      </div>
+      {!connected && (
+        <p className="pending-cards-bar-disconnected" role="status">
+          Live updates disconnected — submitted answers still apply.
+        </p>
+      )}
+      {error && (
+        <p className="pending-cards-bar-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}

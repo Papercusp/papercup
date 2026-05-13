@@ -1,5 +1,7 @@
 import Link from 'next/link';
 import { getOrgPg } from '@restart/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { requireFlag } from '@/lib/require-flag';
 
 /**
  * /design index — lists harnesses with at least one feature flagged
@@ -59,6 +61,7 @@ async function loadHarnesses(): Promise<HarnessRow[]> {
 }
 
 export default async function DesignIndexPage() {
+  await requireFlag(FLAGS.DESIGN);
   const harnesses = await loadHarnesses();
   return (
     <div style={{ padding: 24, maxWidth: 720 }}>

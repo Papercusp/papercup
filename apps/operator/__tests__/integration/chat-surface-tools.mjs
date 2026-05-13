@@ -30,7 +30,7 @@ const REQUIRED = [
   'mcp__agentmcp__chat:ask_choice',
 ];
 
-// Each surface: route file + a label + a `kind`.
+// Each surface: route file + a label + a `kind` + optional `tool` file.
 //   kind='chat'      — interactive: REQUIRED tools (including chat:*)
 //                       MUST be present.
 //   kind='oneshot'   — one-shot scanner: NON-interactive tools may be
@@ -39,12 +39,16 @@ const REQUIRED = [
 //                       comes; suggestion stream incompletes).
 //   kind='url-bridge'— hands an MCP server config out; no allowedTools
 //                       of its own. Test verifies the bridge URL/transport.
+// `tool` (optional)  — for Phase-3-migrated surfaces, the chat route
+//                       is a thin shim that dispatchProjectedToolStream's
+//                       into the named tool file; that tool file is
+//                       where allowedTools actually lives. The drift
+//                       test reads both files concatenated.
 const SURFACES = [
-  { label: 'operator-converse', kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/operator-converse/route.ts' },
-  { label: 'operator-chat',     kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/operator-chat/route.ts' },
-  { label: 'delegate-chat',     kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/delegate-chat/route.ts' },
+  { label: 'operator-converse', kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/operator-converse/route.ts', tool: 'apps/operator/lib/agent-tools/operator/converse.ts' },
+  { label: 'delegate-chat',     kind: 'chat',       file: 'apps/operator/app/api/agent-mcp/delegate-chat/route.ts',     tool: 'apps/operator/lib/agent-tools/operator/delegate.ts' },
   { label: 'oracle',            kind: 'chat',       file: 'apps/operator/app/api/_hono/oracle.ts' },
-  { label: 'operator-scan',     kind: 'oneshot',    file: 'apps/operator/app/api/agent-mcp/operator-scan/route.ts' },
+  { label: 'operator-scan',     kind: 'oneshot',    file: 'apps/operator/app/api/agent-mcp/operator-scan/route.ts',     tool: 'apps/operator/lib/agent-tools/operator/scan.ts' },
   { label: 'spawn-pi',          kind: 'url-bridge', file: 'apps/operator/app/api/agent-mcp/spawn-pi/route.ts' },
 ];
 
@@ -71,7 +75,12 @@ function effectiveSourceFor(src) {
 
 for (const surface of SURFACES) {
   console.log(`--- ${surface.label} (${surface.kind}) ---`);
-  const src = readFileSync(join(REPO, surface.file), 'utf8');
+  // For Phase-3-migrated chat surfaces, the route is a thin shim that
+  // dispatches into a tool file; allowedTools lives on the tool side.
+  // Concatenate both files so the drift grep sees the full source.
+  const routeSrc = readFileSync(join(REPO, surface.file), 'utf8');
+  const toolSrc = surface.tool ? readFileSync(join(REPO, surface.tool), 'utf8') : '';
+  const src = toolSrc ? `${routeSrc}\n/* --- tool side --- */\n${toolSrc}` : routeSrc;
 
   if (surface.kind === 'url-bridge') {
     // spawn-pi hands an MCP server config to the pi process. It doesn't
@@ -132,6 +141,39 @@ for (const surface of SURFACES) {
       src.includes('mcp__agentmcp__agent_chats:create') &&
       src.includes('mcp__agentmcp__agent_chats:send_message'));
   }
+}
+
+// Phase-4 T1.2: the 2 legacy Hono shims at /:slug/architect/chat and
+// /:slug/brainstorm/chat were retired. useHarnessChatRuntime now POSTs
+// the projected-tool URL directly with harnessSlug in the body. Lock
+// the legacy URL patterns out of the source so they can't regress.
+console.log(`--- T1.2 legacy URL retirement ---`);
+{
+  const harnessRoute = readFileSync(
+    join(REPO, 'apps/operator/app/api/_hono/harness.ts'),
+    'utf8',
+  );
+  const consumer = readFileSync(
+    join(REPO, 'libs/agent-chat/src/useHarnessChatRuntime.ts'),
+    'utf8',
+  );
+  check(
+    `no harness.post('/:slug/architect/chat', ...) in harness.ts`,
+    !/harness\.post\(['"]\/:?slug\/architect\/chat['"]/.test(harnessRoute),
+  );
+  check(
+    `no harness.post('/:slug/brainstorm/chat', ...) in harness.ts`,
+    !/harness\.post\(['"]\/:?slug\/brainstorm\/chat['"]/.test(harnessRoute),
+  );
+  check(
+    `useHarnessChatRuntime POSTs /api/agent-tools/ (not /api/harness/<slug>/)`,
+    /\/api\/agent-tools\//.test(consumer) &&
+      !/\/api\/harness\/\$\{slug\}\/\$\{endpoint\}/.test(consumer),
+  );
+  check(
+    `useHarnessChatRuntime sends harnessSlug in body`,
+    /harnessSlug:\s*slug/.test(consumer),
+  );
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

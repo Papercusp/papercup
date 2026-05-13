@@ -36,6 +36,7 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__hindsight:recall',
   'mcp__agentmcp__search:query',
   'mcp__agentmcp__search:fulltext',
+  'mcp__agentmcp__search:semantic',
 
   // Persistent memory layer (Plan 3 — mem0ai/oss in library mode).
   // 5-kind schema: identity / preference / project / correction / ephemeral.

@@ -1,0 +1,7 @@
+{
+  "title": "PostHog",
+  "pages": [
+    "index",
+    "feature-flags"
+  ]
+}

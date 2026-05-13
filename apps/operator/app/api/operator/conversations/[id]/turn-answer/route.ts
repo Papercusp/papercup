@@ -1,7 +1,22 @@
 /**
  * POST /api/operator/conversations/:id/turn-answer
  *
- * Atomically:
+ * Historical-replay surface only. NEW chat:ask_choice flow uses
+ * /card-response (bespoke-card-improvements arc, PRs #80-#83): the
+ * tool BLOCKS on ctx.askUser, the card lives on the state channel,
+ * the user submits via PendingCardsBar → POST /card-response → the
+ * deferred resolves → chat:ask_choice returns picks → operator:converse
+ * continues. No /turn-answer call in that flow.
+ *
+ * This endpoint stays alive to serve HISTORICAL conversations: turn
+ * records persisted before the migration carry unanswered chat:ask_choice
+ * tool_calls. Opening one of those conversations renders the card via
+ * the legacy chat-cards path, and clicking POSTs here. The "legacy
+ * adapter" framing in the plan turned out to be a misnomer — there's
+ * nothing to translate forward; the two endpoints serve different
+ * surfaces (in-flight vs historical) and both stay.
+ *
+ * Atomic behavior on this surface:
  *   1. Marks an assistant turn's tool-call entry as `answered` (jsonb
  *      path update) — records option_id + label + timestamp.
  *   2. Appends a user turn with the option's label as the visible
@@ -16,8 +31,8 @@
  * second call returns 409 with the current state (so the client knows
  * not to double-send the user message).
  *
- * Used by chat:ask_choice cards in the operator chat sidebar. Oracle
- * is in-memory only and doesn't hit this endpoint.
+ * Used by historical chat:ask_choice cards in the operator chat sidebar.
+ * Oracle is in-memory only and doesn't hit this endpoint.
  */
 
 import { NextRequest, NextResponse } from 'next/server';

@@ -22,7 +22,7 @@ import { Tooltip } from '../harness/Tooltip';
 import RouteLink from './RouteLink';
 import { HudFrameCorners, HudReticleGlyph } from './hud/HudPrimitives';
 import { ChatConversation, type ChatIconComponent } from './chat/ChatConversation';
-import { AskChoiceCard, type AskChoiceArgs } from './chat/AskChoiceCard';
+import { renderCard } from '@/lib/chat-cards';
 import { OracleLogoMark } from './OracleLogoMark';
 import {
   Activity,
@@ -1339,39 +1339,34 @@ export function OracleDock() {
                   );
                 }}
                 renderToolCard={(t, _msg, ti) => {
-                  // chat:ask_choice → AskChoiceCard. Other tools fall
-                  // through to renderToolChip.
-                  if (t.name !== 'chat:ask_choice') return null;
-                  const args = (t.input ?? {}) as Partial<AskChoiceArgs>;
-                  if (!args.question || !Array.isArray(args.options) || args.options.length === 0) {
-                    return null;
-                  }
-                  return (
-                    <AskChoiceCard
-                      args={args as AskChoiceArgs}
-                      answered={t.answered}
-                      onAnswer={({ picks }) => {
-                        // Oracle is ephemeral (no transcript table) —
-                        // local state mutation in-component, then send
-                        // the joined labels as a normal user message.
-                        // Mark the local tool entry's `answered` so
-                        // re-renders show the disabled/picked state.
-                        const tab = active;
-                        if (!tab || picks.length === 0) return;
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        const tools = (tab.messages.find((m) => m.tools)?.tools ?? []) as any[];
-                        if (tools[ti]) {
-                          tools[ti].answered = {
-                            picks,
-                            at: Date.now(),
-                          };
-                        }
-                        const joined = picks.map((p) => p.label).join(' · ');
-                        setInput(joined);
-                        void send(tab.id);
-                      }}
-                    />
-                  );
+                  // Tool-card dispatch via the chat-cards registry
+                  // (phase-4 T2.1). The registry maps tool names →
+                  // renderers; Oracle supplies its own onAnswer
+                  // because it's ephemeral (no transcript table) and
+                  // mutates local tab state instead of POSTing to
+                  // a turn-answer endpoint.
+                  return renderCard(t.name, {
+                    args: t.input ?? {},
+                    answered: t.answered,
+                    onAnswer: (payload) => {
+                      const tab = active;
+                      const { picks } = payload as { picks: Array<{ option_id: string; label: string }> };
+                      if (!tab || picks.length === 0) return;
+                      // Mark the local tool entry's `answered` so
+                      // re-renders show the disabled/picked state.
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      const tools = (tab.messages.find((m) => m.tools)?.tools ?? []) as any[];
+                      if (tools[ti]) {
+                        tools[ti].answered = {
+                          picks,
+                          at: Date.now(),
+                        };
+                      }
+                      const joined = picks.map((p) => p.label).join(' · ');
+                      setInput(joined);
+                      void send(tab.id);
+                    },
+                  });
                 }}
                 inputValue={input}
                 onInputChange={setInput}

@@ -625,6 +625,32 @@ export async function registerPluginTools(
         const expose = def.expose ?? {};
         const mcpName = expose.mcp?.name ?? `${shortName}.${def.name}`;
         const httpPath = expose.http?.path ?? `/api/plugins/${shortName}/${def.name}`;
+        // Phase 4 T3.2: plugin manifests can now declare typed events
+        // as JSON-Schema. Validate the schema against our supported
+        // subset (see packages/agent-mcp/src/plugin-events.ts) and
+        // compute wire kinds in one pass; pass both into the
+        // projection registry alongside the rest of the tool.
+        let eventsJsonSchema: Record<string, Record<string, unknown>> | undefined;
+        let eventWireKinds: Record<string, 'string' | 'json' | 'binary'> | undefined;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const declaredEvents = (def as any).events as Record<string, Record<string, unknown>> | undefined;
+        if (declaredEvents !== undefined) {
+          try {
+            // Plugin-loader uses dynamic imports for agent-mcp (cf.
+            // line above where registerProjectedTool is loaded the
+            // same way) so the build stays decoupled.
+            const { validateAndClassifyPluginEvents } = await import('@papercusp/agent-mcp');
+            eventWireKinds = validateAndClassifyPluginEvents(declaredEvents);
+            eventsJsonSchema = declaredEvents;
+          } catch (err) {
+            errors.push({
+              plugin: lp.plugin.name,
+              tool: def.name,
+              error: `events validation failed: ${err instanceof Error ? err.message : String(err)}`,
+            });
+            continue;
+          }
+        }
         registerProjectedTool({
           pluginName: lp.plugin.name,
           description: def.description,
@@ -645,6 +671,7 @@ export async function registerPluginTools(
           // `agent_tools:list` + `assembleRolePrompt` surface it.
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           guidance: (def as any).guidance,
+          ...(eventsJsonSchema ? { eventsJsonSchema, eventWireKinds } : {}),
         });
         registered += 1;
       } catch (err) {

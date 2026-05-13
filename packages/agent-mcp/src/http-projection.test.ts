@@ -3,6 +3,7 @@
  * Run with: npx vitest run packages/agent-mcp/src/http-projection.test.ts
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import {
   handleHttpToolRequest,
   handleHttpToolRequestStreaming,
@@ -201,44 +202,51 @@ describe('handleHttpToolRequest', () => {
 
 /* ─── Streaming variant ──────────────────────────────────────────────── */
 
-async function readAllSse(stream: ReadableStream<string>): Promise<string> {
-  const reader = stream.getReader();
-  let out = '';
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    out += value;
-  }
-  return out;
-}
+import type { SseSink } from '@restart/sse';
 
-function parseSseEvents(raw: string): Array<{ event: string; data: unknown }> {
-  const events: Array<{ event: string; data: unknown }> = [];
-  for (const block of raw.split('\n\n').filter((b) => b.trim().length > 0)) {
-    const lines = block.split('\n');
-    let event = 'message';
-    let dataStr = '';
-    for (const line of lines) {
-      if (line.startsWith('event: ')) event = line.slice('event: '.length);
-      else if (line.startsWith('data: ')) dataStr += line.slice('data: '.length);
-    }
-    try { events.push({ event, data: JSON.parse(dataStr) }); }
-    catch { events.push({ event, data: dataStr }); }
-  }
-  return events;
+interface RecordedEvent { event: string; data: unknown }
+
+function recordingSink(): { sink: SseSink; events: RecordedEvent[]; closed: () => boolean } {
+  const events: RecordedEvent[] = [];
+  let isClosed = false;
+  const closeHandlers: Array<() => void> = [];
+  const sink: SseSink = {
+    event(name, data) { if (!isClosed) events.push({ event: name, data }); },
+    eventRaw(name, data) { if (!isClosed) events.push({ event: name, data }); },
+    comment() { /* ignored in tests */ },
+    heartbeat() { if (!isClosed) events.push({ event: 'heartbeat', data: { tsMs: Date.now() } }); },
+    done(payload) {
+      if (isClosed) return;
+      events.push({ event: 'done', data: payload ?? null });
+      isClosed = true;
+      for (const fn of closeHandlers) try { fn(); } catch { /* ignore */ }
+    },
+    close() {
+      if (isClosed) return;
+      isClosed = true;
+      for (const fn of closeHandlers) try { fn(); } catch { /* ignore */ }
+    },
+    onClose(fn) {
+      if (isClosed) { try { fn(); } catch { /* ignore */ } return; }
+      closeHandlers.push(fn);
+    },
+    get closed() { return isClosed; },
+  };
+  return { sink, events, closed: () => isClosed };
 }
 
 describe('handleHttpToolRequestStreaming', () => {
-  it('emits a single result event for non-streaming tools', async () => {
+  it('emits a single done event for non-streaming tools', async () => {
     registerProjectedTool(makeTool());
-    const stream = handleHttpToolRequestStreaming(MAKE_REQ({ body: { x: 1 } }), MAKE_EXTRAS());
-    const events = parseSseEvents(await readAllSse(stream));
+    const { sink, events, closed } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ({ body: { x: 1 } }), MAKE_EXTRAS(), sink);
     expect(events).toHaveLength(1);
-    expect(events[0]?.event).toBe('result');
-    expect(events[0]?.data).toMatchObject({ content: expect.any(Array) });
+    expect(events[0]?.event).toBe('done');
+    expect(events[0]?.data).toEqual(expect.any(Array));
+    expect(closed()).toBe(true);
   });
 
-  it('emits progress events when the function calls ctx.progress(), then a final result', async () => {
+  it('emits progress events when the function calls ctx.progress(), then a final done', async () => {
     registerProjectedTool(makeTool({
       fn: async (_input, ctx) => {
         ctx.progress(0, 'starting');
@@ -247,25 +255,75 @@ describe('handleHttpToolRequestStreaming', () => {
         return { content: [{ type: 'text', text: 'finished' }] };
       },
     }));
-    const stream = handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS());
-    const events = parseSseEvents(await readAllSse(stream));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
     const progressEvents = events.filter((e) => e.event === 'progress');
-    const resultEvents = events.filter((e) => e.event === 'result');
+    const doneEvents = events.filter((e) => e.event === 'done');
     expect(progressEvents).toHaveLength(3);
-    expect(resultEvents).toHaveLength(1);
+    expect(doneEvents).toHaveLength(1);
     expect(progressEvents[0]?.data).toMatchObject({ progress: 0, message: 'starting' });
     expect(progressEvents[2]?.data).toMatchObject({ progress: 100, message: 'done' });
-    expect(resultEvents[0]?.data).toMatchObject({
-      content: [{ type: 'text', text: 'finished' }],
-    });
+    expect(doneEvents[0]?.data).toEqual([{ type: 'text', text: 'finished' }]);
+  });
+
+  it('emits each ctx.emit call as a wire event, then done with result.content', async () => {
+    registerProjectedTool(makeTool({
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'hello' });
+        ctx.emit('delta', { text: ' world' });
+        ctx.emit('cost', { usd: 0.0012 });
+        return { content: [{ type: 'text', text: 'hello world' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    const order = events.map((e) => e.event);
+    expect(order).toEqual(['delta', 'delta', 'cost', 'done']);
+    expect(events[0]?.data).toEqual({ text: 'hello' });
+    expect(events[2]?.data).toEqual({ usd: 0.0012 });
+    expect(events[3]?.data).toEqual([{ type: 'text', text: 'hello world' }]);
+  });
+
+  it('emits z.string() events as raw text via sink.eventRaw', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { z } = require('zod') as typeof import('zod');
+    registerProjectedTool(makeTool({
+      events: { delta: z.string() },
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', 'hello');
+        ctx.emit('delta', 'world');
+        return { content: [{ type: 'text', text: 'hello world' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    expect(events[0]).toEqual({ event: 'delta', data: 'hello' });
+    expect(events[1]).toEqual({ event: 'delta', data: 'world' });
+    expect(events[2]).toMatchObject({ event: 'done' });
+  });
+
+  it('emits object-schema events JSON-stringified via sink.event', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { z } = require('zod') as typeof import('zod');
+    registerProjectedTool(makeTool({
+      events: { cost: z.object({ usd: z.number() }) },
+      fn: async (_input, ctx) => {
+        ctx.emit('cost', { usd: 0.5 });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    expect(events[0]).toEqual({ event: 'cost', data: { usd: 0.5 } });
   });
 
   it('emits an error event when the tool fails (404 / 405 / handler error)', async () => {
-    const stream = handleHttpToolRequestStreaming(
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(
       MAKE_REQ({ pathname: '/api/plugins/missing/tool' }),
       MAKE_EXTRAS(),
+      sink,
     );
-    const events = parseSseEvents(await readAllSse(stream));
     expect(events).toHaveLength(1);
     expect(events[0]?.event).toBe('error');
     expect(events[0]?.data).toMatchObject({ code: 'unknown_tool' });
@@ -273,10 +331,165 @@ describe('handleHttpToolRequestStreaming', () => {
 
   it('emits an error event for handler error during dispatch', async () => {
     registerProjectedTool(makeTool({ fn: async () => { throw new Error('boom'); } }));
-    const stream = handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS());
-    const events = parseSseEvents(await readAllSse(stream));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
     const error = events.find((e) => e.event === 'error');
     expect(error).toBeDefined();
     expect((error!.data as { code: string }).code).toBe('handler_error');
+  });
+
+  it('emits binary events as base64 over SSE (HTTP transport)', async () => {
+    // Regression: ctx.emit(name, Uint8Array) used to fall into the
+    // generic else branch → sink.event() → JSON.stringify(Uint8Array)
+    // which produces {"0":222,"1":173,...} — useless to any consumer.
+    // The HTTP path now base64-encodes binary events to match the
+    // tools/list discoverability hint (contentEncoding: 'base64'). The
+    // IPC path stays raw via EVENT_BIN frames; same emit, different
+    // wire per transport.
+    registerProjectedTool(makeTool({
+      events: { bin: z.instanceof(Uint8Array) },
+      eventWireKinds: { bin: 'binary' },
+      fn: async (_input, ctx) => {
+        ctx.emit('bin', new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    const bin = events.find((e) => e.event === 'bin');
+    expect(bin).toBeDefined();
+    // PR F unification (audit item 14): HTTP and MCP transports both
+    // emit the same self-describing PapercuspBinaryEnvelope shape so
+    // consumers can normalize without out-of-band schema info.
+    // 3q2+7w== is hex deadbeef.
+    expect(bin!.data).toEqual({
+      $papercuspBinary: true,
+      encoding: 'base64',
+      data: '3q2+7w==',
+    });
+  });
+
+  it('Phase 4 T2.2 — replays the buffered tail when client reconnects with X-Papercusp-Run + Last-Event-ID', async () => {
+    // Setup: register a streaming tool with replayBufferSize.
+    // First connect emits 5 events into the buffer; we capture them
+    // via dispatchProjectedTool which the streaming entrypoint wraps.
+    const { dispatchProjectedTool: dispatch } = await import('./dispatch-projected');
+    const tool = makeTool({
+      events: { delta: z.object({ text: z.string() }) },
+      replayBufferSize: 10,
+      fn: async (_input, ctx) => {
+        for (let i = 1; i <= 5; i++) ctx.emit('delta', { text: `chunk ${i}` });
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    registerProjectedTool(tool);
+    // First connect — populate the buffer via direct dispatch.
+    const firstCtx = {
+      log: () => {}, emit: () => {}, progress: () => {},
+      workspaceId: 'ws-1', role: 'operator',
+      runId: 'run-abc', spawnId: 'spawn-1',
+    } as never;
+    await dispatch(tool, 'fix.tool', { x: 1 }, firstCtx, {});
+
+    // Reconnect: same runId, Last-Event-ID = 2 → expect events 3,4,5 + done(resumed).
+    registerProjectedTool(tool); // re-register so dispatcher accessible
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(
+      MAKE_REQ({
+        headers: {
+          'x-papercusp-workspace': 'ws-1',
+          'x-papercusp-run': 'run-abc',
+          'last-event-id': '2',
+        },
+      }),
+      MAKE_EXTRAS(),
+      sink,
+    );
+    const deltas = events.filter((e) => e.event === 'delta');
+    expect(deltas).toHaveLength(3);
+    expect(deltas[0]?.data).toEqual({ text: 'chunk 3' });
+    expect(deltas[2]?.data).toEqual({ text: 'chunk 5' });
+    const done = events.find((e) => e.event === 'done');
+    expect(done?.data).toMatchObject({ resumed: true, replayed: 3 });
+  });
+
+  it('Phase 4 T2.2 — first connect (no Last-Event-ID) skips replay, runs the tool normally', async () => {
+    let runCount = 0;
+    registerProjectedTool(makeTool({
+      events: { delta: z.object({ text: z.string() }) },
+      replayBufferSize: 10,
+      fn: async (_input, ctx) => {
+        runCount++;
+        ctx.emit('delta', { text: 'fresh' });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(
+      MAKE_REQ({
+        headers: { 'x-papercusp-workspace': 'ws-1', 'x-papercusp-run': 'never-seen' },
+        // NO last-event-id header
+      }),
+      MAKE_EXTRAS(),
+      sink,
+    );
+    expect(runCount).toBe(1);
+    const delta = events.find((e) => e.event === 'delta');
+    expect(delta?.data).toEqual({ text: 'fresh' });
+  });
+
+  it('audit5: superuser path generates a UNIQUE runId per request (not shared "standalone" sentinel)', async () => {
+    // Pre-fix: http-projection defaulted runId to "standalone" when no
+    // ?run= param was provided. claude-code spawned via mcp-remote
+    // reuses ONE URL for many tool calls → all calls share runId →
+    // first-finishing tool's cancelPendingCardsForRun wipes others'
+    // pending askUser cards. Cross-cancellation hazard.
+    //
+    // Post-fix: per-request UUID. Each tool invocation under the same
+    // claude-code subprocess gets its own runId.
+    const seenRunIds: string[] = [];
+    registerProjectedTool(makeTool({
+      requirePrincipal: false,
+      fn: async (_input, ctx) => {
+        seenRunIds.push(ctx.runId ?? 'MISSING');
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const reqA = MAKE_REQ({
+      searchParams: new URLSearchParams('superuser=1'),
+    });
+    const reqB = MAKE_REQ({
+      searchParams: new URLSearchParams('superuser=1'),
+    });
+    const extras = MAKE_EXTRAS({ validateSuperuser: () => true });
+    await handleHttpToolRequest(reqA, extras);
+    await handleHttpToolRequest(reqB, extras);
+    expect(seenRunIds).toHaveLength(2);
+    // Both UUIDs, distinct.
+    expect(seenRunIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(seenRunIds[1]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(seenRunIds[0]).not.toBe(seenRunIds[1]);
+    // Confirm we're NOT defaulting to the old 'standalone' sentinel.
+    expect(seenRunIds).not.toContain('standalone');
+  });
+
+  it('auto-error honors schema-inferred wire kind (raw text for z.string())', async () => {
+    // Regression: tools declaring `error: z.string()` (architect/brainstorm)
+    // expect raw text on the wire so the submodule consumer can do
+    // accum += data. The framework's auto-error path was always emitting
+    // JSON envelope until round-3 audit. Verify the eventWireKinds.error
+    // === 'string' branch produces a raw-string sink event.
+    registerProjectedTool(makeTool({
+      events: { error: z.string() },
+      eventWireKinds: { error: 'string' },
+      fn: async () => { throw new Error('raw-text-message'); },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
+    const error = events.find((e) => e.event === 'error');
+    expect(error).toBeDefined();
+    // Data is the raw message text, not a {code, message} envelope.
+    expect(typeof error!.data).toBe('string');
+    expect(error!.data).toContain('raw-text-message');
   });
 });

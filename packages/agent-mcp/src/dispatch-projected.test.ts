@@ -5,8 +5,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   dispatchProjectedTool,
+  dispatchProjectedToolStream,
   computeProjectedQuotaWindowKey,
   type DispatchProjectedDeps,
+  type DispatchStreamEvent,
 } from './dispatch-projected';
 import {
   _resetProjectionRegistryForTests,
@@ -19,6 +21,7 @@ const MAKE_CTX = (over: Partial<UnifiedToolContext> = {}): UnifiedToolContext =>
   log: vi.fn(),
   signal: new AbortController().signal,
   progress: vi.fn(),
+  emit: vi.fn(),
   workspaceId: 'default',
   harnessSlug: 'sheets',
   role: 'worker',
@@ -168,7 +171,124 @@ describe('dispatchProjectedTool', () => {
     expect(recorded).toEqual(['timeout']);
   });
 
-  it('routes ctx.progress() to the unified context (handler can call it)', async () => {
+  it('aborts the handler when idleTimeoutSec elapses without an emit', async () => {
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1, // 1s idle cap
+      fn: (_input, ctx) =>
+        new Promise<ToolResult>((resolve, reject) => {
+          // Emit immediately, then go silent for 4s. Idle watchdog should
+          // abort around 1s.
+          ctx.emit('delta', { text: 'hi' });
+          ctx.signal.addEventListener('abort', () => reject(new Error('aborted by idle')));
+          setTimeout(() => resolve({ content: [{ type: 'text', text: 'never' }] }), 4_000);
+        }),
+    });
+    const start = Date.now();
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    const elapsed = Date.now() - start;
+    expect(r.ok).toBe(false);
+    // Idle check interval is max(1s, idleSec/4). With idleSec=1 that's 1s,
+    // so abort fires somewhere in [1s, 2s]. Generous upper bound for CI noise.
+    expect(elapsed).toBeLessThan(3_500);
+    expect(elapsed).toBeGreaterThanOrEqual(1_000);
+    // Reported as timeout since the abort signal fired.
+    expect(r.error?.code).toBe('timeout');
+  }, 10_000);
+
+  it('does NOT abort when emits keep arriving inside idleTimeoutSec', async () => {
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        // Emit every 300ms for ~1.5s — well inside the 1s idle gap.
+        for (let i = 0; i < 5; i++) {
+          ctx.emit('delta', { text: `chunk-${i}` });
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(true);
+  }, 10_000);
+
+  it('ctx.transport is plumbed through to recordInvocation deps', async () => {
+    // PR for migration 058-tool-invocations-transport: every transport
+    // (HTTP / MCP / IPC / in_process) sets ctx.transport on its ctx so
+    // the shared PROJECTED_DEPS.recordInvocation can persist it on
+    // harness_shared.tool_invocations.transport. Verify the dispatcher
+    // doesn't strip the field on its way through wrappedEmit + the
+    // success-path record call.
+    const tool = makeTool({
+      fn: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
+    });
+    const recorded: Array<{ transport?: 'http' | 'mcp' | 'ipc' | 'in_process' }> = [];
+    const deps: DispatchProjectedDeps = {
+      recordInvocation: async (input) => {
+        recorded.push({ transport: input.ctx.transport });
+      },
+    };
+    const ctx = MAKE_CTX({ transport: 'ipc' });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, deps);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].transport).toBe('ipc');
+  });
+
+  it('ok-on-abort: handler returns ok despite signal aborted → surfaces as timeout error', async () => {
+    // Round-7 follow-up: the watchdog used to fire but if the handler
+    // returned normally without observing ctx.signal.aborted, the
+    // dispatcher would emit `ok: true` + the partial result. That hid
+    // wedged-but-non-throwing handlers from the consumer (they saw a
+    // bogus `done` instead of `error: timeout`). The fix treats
+    // abort.signal.aborted as authoritative.
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        // Handler IGNORES ctx.signal and sleeps WELL past the idle cap.
+        // The idle timer's setInterval first fires at checkMs (1000ms);
+        // the > comparison means we need to sleep > 2× checkMs to
+        // reliably catch the abort before the handler returns.
+        await new Promise((r) => setTimeout(r, 3000));
+        // Returns ok despite the abort having fired.
+        return { content: [{ type: 'text', text: 'should-not-surface' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(false);
+    expect(r.error?.code).toBe('timeout');
+  }, 10_000);
+
+  it('ctx.progress refreshes idleTimeoutSec deadline (alias parity)', async () => {
+    // Regression: a tool that calls ctx.progress() exclusively (no
+    // direct ctx.emit) used to trip the idle watchdog because the
+    // dispatcher only wrapped emit. Plan decision D2 says progress is
+    // an alias of emit('progress', ...); the dispatcher must re-bind
+    // progress so it refreshes lastEmitMs too.
+    const tool = makeTool({
+      timeoutSec: 60,
+      idleTimeoutSec: 1,
+      fn: async (_input, ctx) => {
+        for (let i = 0; i < 5; i++) {
+          ctx.progress(i * 20, `step ${i}`);
+          await new Promise((r) => setTimeout(r, 300));
+        }
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    const r = await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS());
+    expect(r.ok).toBe(true);
+  }, 10_000);
+
+  it('routes ctx.progress() through ctx.emit (D2 alias unified — Phase 4 T2.2)', async () => {
+    // Per D2 of the original plan, ctx.progress IS ctx.emit('progress', ...).
+    // The dispatcher's wrappedProgress (always installed post-T2.2) routes
+    // every progress() call through wrappedEmit so it also lands in the
+    // replay buffer + bumps the idle deadline. The transport-supplied
+    // `ctx.progress` callback is shadowed by this wrapper; only the emit
+    // path receives the call.
+    const emitCalls: Array<{ name: string; data: unknown }> = [];
     const progressCalls: Array<[number | undefined, string | undefined]> = [];
     const tool = makeTool({
       fn: async (_input, ctx) => {
@@ -179,9 +299,171 @@ describe('dispatchProjectedTool', () => {
       },
     });
     const ctx = MAKE_CTX({
+      emit: (name, data) => emitCalls.push({ name, data }),
       progress: (pct, msg) => progressCalls.push([pct, msg]),
     });
     await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
-    expect(progressCalls).toEqual([[0, 'starting'], [50, undefined], [100, 'done']]);
+    // progress() no longer reaches the transport-supplied callback —
+    // it's shadowed by wrappedProgress which goes through emit.
+    expect(progressCalls).toEqual([]);
+    // Instead, each progress() landed as a 'progress' event on the emit channel.
+    expect(emitCalls).toEqual([
+      { name: 'progress', data: { progress: 0, total: 100, message: 'starting' } },
+      { name: 'progress', data: { progress: 50, total: 100 } },
+      { name: 'progress', data: { progress: 100, total: 100, message: 'done' } },
+    ]);
+  });
+});
+
+describe('dispatchProjectedToolStream', () => {
+  it('yields each ctx.emit call as an event, then done with the ToolResult', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'hi' });
+        ctx.emit('delta', { text: ' world' });
+        ctx.emit('cost', { usd: 0.0042 });
+        return { content: [{ type: 'text', text: 'hi world' }] };
+      },
+    });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events.map((e) => e.kind)).toEqual(['event', 'event', 'event', 'done']);
+    expect(events[0]).toEqual({ kind: 'event', name: 'delta', data: { text: 'hi' } });
+    expect(events[2]).toEqual({ kind: 'event', name: 'cost', data: { usd: 0.0042 } });
+    expect(events[3]).toMatchObject({ kind: 'done', result: { content: [{ type: 'text', text: 'hi world' }] } });
+  });
+
+  it('yields role_not_allowed when the calling role is not in the tool roles allowlist', async () => {
+    const tool = makeTool({ roles: ['operator'] });
+    const ctx = MAKE_CTX({ role: 'worker' });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, ctx, MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'error', error: { code: 'role_not_allowed' } });
+  });
+
+  it('routes ctx.progress through the same emit channel', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.progress(50, 'halfway');
+        return { content: [] };
+      },
+    });
+    const events: DispatchStreamEvent[] = [];
+    for await (const ev of dispatchProjectedToolStream(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS())) {
+      events.push(ev);
+    }
+    expect(events).toHaveLength(2);
+    expect(events[0]).toEqual({
+      kind: 'event',
+      name: 'progress',
+      data: { progress: 50, total: 100, message: 'halfway' },
+    });
+    expect(events[1]?.kind).toBe('done');
+  });
+});
+
+describe('replay buffer (Phase 4 T2.2)', () => {
+  // Tests are colocated with dispatch-projected so they exercise the
+  // real wrappedEmit. The buffer's own unit tests live in
+  // replay-buffer.test.ts.
+
+  it('captures each emit into the per-call buffer when replayBufferSize > 0', async () => {
+    const { clearAllBuffersForTests, readBuffer } = await import('./replay-buffer');
+    clearAllBuffersForTests();
+
+    const tool = makeTool({
+      replayBufferSize: 100,
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'one' });
+        ctx.emit('delta', { text: 'two' });
+        ctx.emit('cost', { usd: 0.001 });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    const ctx = MAKE_CTX({ workspaceId: 'ws-buf', runId: 'run-buf-1' });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
+
+    const out = readBuffer({ workspaceId: 'ws-buf', toolName: 'fix.tool', runId: 'run-buf-1', sinceId: 0 });
+    expect(out).not.toBeNull();
+    expect(out!.map((e) => ({ id: e.id, name: e.name, data: e.data }))).toEqual([
+      { id: 1, name: 'delta', data: { text: 'one' } },
+      { id: 2, name: 'delta', data: { text: 'two' } },
+      { id: 3, name: 'cost', data: { usd: 0.001 } },
+    ]);
+  });
+
+  it('NO buffer is opened when replayBufferSize is 0/undefined', async () => {
+    const { clearAllBuffersForTests, readBuffer } = await import('./replay-buffer');
+    clearAllBuffersForTests();
+
+    const tool = makeTool({
+      // replayBufferSize omitted (default disabled)
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'one' });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    const ctx = MAKE_CTX({ workspaceId: 'ws-nobuf', runId: 'run-nobuf-1' });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
+
+    expect(readBuffer({ workspaceId: 'ws-nobuf', toolName: 'fix.tool', runId: 'run-nobuf-1', sinceId: 0 })).toBeNull();
+  });
+
+  it('event_count is reported to recordInvocation on completion', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'a' });
+        ctx.emit('delta', { text: 'b' });
+        ctx.progress(50, 'half');
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    let recordedEventCount: number | undefined;
+    await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({
+      recordInvocation: vi.fn(async (i) => { recordedEventCount = i.eventCount; }),
+    }));
+    // 2 emits + 1 progress (which goes through wrappedEmit per D2) = 3
+    expect(recordedEventCount).toBe(3);
+  });
+
+  it('eventCount = 0 on role-not-allowed gate-failure path', async () => {
+    const tool = makeTool({ roles: ['architect'] });
+    let recordedEventCount: number | undefined;
+    await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX({ role: 'worker' }), MAKE_DEPS({
+      recordInvocation: vi.fn(async (i) => { recordedEventCount = i.eventCount; }),
+    }));
+    expect(recordedEventCount).toBe(0);
+  });
+
+  it('concurrent calls do not cross-contaminate buffers (reviewer concern #4)', async () => {
+    const { clearAllBuffersForTests, readBuffer } = await import('./replay-buffer');
+    clearAllBuffersForTests();
+
+    const tool = makeTool({
+      replayBufferSize: 100,
+      fn: async (input, ctx) => {
+        const label = (input as { label: string }).label;
+        ctx.emit('delta', { text: `from-${label}-1` });
+        ctx.emit('delta', { text: `from-${label}-2` });
+        return { content: [{ type: 'text', text: label }] };
+      },
+    });
+
+    // Two concurrent invocations with different runIds.
+    await Promise.all([
+      dispatchProjectedTool(tool, 'fix.tool', { label: 'A' }, MAKE_CTX({ runId: 'run-cc-A' }), MAKE_DEPS()),
+      dispatchProjectedTool(tool, 'fix.tool', { label: 'B' }, MAKE_CTX({ runId: 'run-cc-B' }), MAKE_DEPS()),
+    ]);
+
+    const outA = readBuffer({ workspaceId: 'default', toolName: 'fix.tool', runId: 'run-cc-A', sinceId: 0 })!;
+    const outB = readBuffer({ workspaceId: 'default', toolName: 'fix.tool', runId: 'run-cc-B', sinceId: 0 })!;
+
+    expect(outA.map((e) => e.data)).toEqual([{ text: 'from-A-1' }, { text: 'from-A-2' }]);
+    expect(outB.map((e) => e.data)).toEqual([{ text: 'from-B-1' }, { text: 'from-B-2' }]);
   });
 });

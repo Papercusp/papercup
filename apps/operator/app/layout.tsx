@@ -91,6 +91,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body suppressHydrationWarning>
         <script dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
         <script dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
+        <div id="papercusp-app">
           {/* Tooltip.Provider hoisted to the root so ChromeShell-rendered
               children (OperatorPanel, OracleDock) can use the harness/Tooltip
               wrapper without each route layout having to install its own
@@ -153,6 +154,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </RouteProgressProvider>
             </RootSyncProvider>
           </Tooltip.Provider>
+        </div>
       </body>
       </html>
   );

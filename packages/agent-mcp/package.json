@@ -9,8 +9,10 @@
     "./server": "./src/server.ts",
     "./define-tool": "./src/define-tool.ts",
     "./registry": "./src/registry.ts",
+    "./tool-projection": "./src/tool-projection.ts",
     "./provisioning": "./src/provisioning.ts",
-    "./auth": "./src/auth.ts"
+    "./auth": "./src/auth.ts",
+    "./plugin-events": "./src/plugin-events.ts"
   },
   "scripts": {
     "test": "vitest",
@@ -19,6 +21,7 @@
   "dependencies": {
     "@mcp-ui/server": "^6.1.0",
     "@modelcontextprotocol/sdk": "*",
+    "@restart/sse": "file:../../libs/sse",
     "postgres": "*",
     "zod": "*",
     "zod-to-json-schema": "*"

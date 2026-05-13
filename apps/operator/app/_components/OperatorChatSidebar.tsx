@@ -20,9 +20,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Radio } from 'lucide-react';
 import { OperatorChat } from './OperatorChat';
+import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
@@ -110,6 +111,7 @@ export function OperatorChatSidebar() {
   // timers + tag dispatch; this component is a presentational thin
   // wrapper around <OperatorChat> with the provider's value.
   const conv = useOperatorConversation();
+  const workspaceId = useWorkspaceId();
 
   // Pre-hydration: render the sidebar at default width so the layout
   // doesn't jump after JS evaluates. The body padding-left is set by
@@ -146,15 +148,11 @@ export function OperatorChatSidebar() {
                 subtitle=""
               />
             </div>
-            <span className="op-chat-header-subtitle">
-              Workspace assistant · {statusText}
-            </span>
+            <div className="op-chat-controls" role="group" aria-label={`Operator voice controls — ${statusText}`}>
+              <OperatorActiveToggle />
+              <VoiceButton />
+            </div>
           </div>
-          <Radio className="op-chat-header-signal" aria-hidden="true" />
-        </div>
-        <div className="op-chat-controls" role="group" aria-label="Operator voice controls">
-          <OperatorActiveToggle />
-          <VoiceButton />
         </div>
       </div>
       <OperatorChat
@@ -168,7 +166,15 @@ export function OperatorChatSidebar() {
         hasMoreEarlier={conv.hasMoreEarlier}
         loadingEarlier={conv.loadingEarlier}
         onAnswerChoice={conv.answerChoice}
+        conversationId={conv.conversationId ?? undefined}
+        workspaceId={workspaceId}
       />
+      {/* M6: askUserLocal renderer host. Mounted once per sidebar so any
+          client-side caller of askUserLocal has a slot to render into.
+          Cards render here when triggered by render-time UI affordances
+          (tab pickers, confirms) rather than server-side tool flows
+          which go through PendingCardsBar instead. */}
+      <LocalCardHost />
       <div
         className="op-chat-resize-handle"
         role="separator"
@@ -206,9 +212,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 10px;
-  min-height: 118px;
-  padding: 12px 12px 11px;
+  padding: 10px 12px 8px;
   border-bottom: 1px solid rgba(125, 211, 252, 0.14);
   background:
     linear-gradient(180deg, rgba(11, 25, 42, 0.84), rgba(7, 16, 29, 0.94)),
@@ -246,7 +250,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .op-chat-header-title-row {
@@ -263,46 +267,29 @@ const OP_CHAT_SIDEBAR_CSS = `
   letter-spacing: 0.01em;
 }
 
-.op-chat-header-subtitle {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: rgba(148, 163, 184, 0.92);
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.op-chat-header-signal {
-  width: 16px;
-  height: 16px;
-  flex: 0 0 auto;
-  margin-left: auto;
-  color: rgba(125, 211, 252, 0.52);
-}
-
 .op-chat-controls {
   position: relative;
   z-index: 2;
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   min-width: 0;
   overflow: visible;
 }
 
 .op-chat-controls .op-active-toggle {
   flex: 0 0 auto;
-  min-height: 32px;
-  padding: 5px 10px;
-  font-size: 11px;
-  letter-spacing: 0.06em;
+  min-height: 26px;
+  padding: 3px 7px;
+  font-size: 10px;
+  letter-spacing: 0.05em;
 }
 
 .op-chat-controls .pc-voice-control {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  gap: 5px;
+  gap: 4px;
   margin-left: 0;
   overflow: visible;
 }
@@ -311,25 +298,28 @@ const OP_CHAT_SIDEBAR_CSS = `
   flex: 1 1 auto;
   justify-content: center;
   min-width: 0;
-  min-height: 32px;
-  padding: 5px 10px 5px 8px;
-  gap: 7px;
+  min-height: 26px;
+  padding: 3px 7px 3px 6px;
+  gap: 5px;
 }
 
 .op-chat-controls .pc-voice-btn-orb {
-  width: 20px;
-  height: 20px;
+  width: 16px;
+  height: 16px;
 }
 
 .op-chat-controls .pc-voice-btn-label {
-  font-size: 11px;
-  letter-spacing: 0.065em;
+  font-size: 10px;
+  letter-spacing: 0.05em;
 }
 
 .op-chat-controls .pc-voice-settings-link {
   flex: 0 0 auto;
-  min-height: 32px;
-  padding: 0 9px;
+  min-height: 26px;
+  padding: 0 6px;
+}
+.op-chat-controls .pc-voice-settings-text {
+  display: none;
 }
 .op-chat-controls .pc-voice-wake-hint {
   z-index: 5;
@@ -499,8 +489,7 @@ body.has-op-chat .h-header {
     #07101d;
   box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.08);
 }
-.op-chat-header-main,
-.op-chat-header-signal {
+.op-chat-header-main {
   position: relative;
   z-index: 1;
 }
@@ -537,11 +526,6 @@ body.has-op-chat .h-header {
 
 .op-chat-header-logo {
   filter: drop-shadow(0 0 10px rgba(125, 211, 252, 0.26));
-}
-
-.op-chat-header-signal {
-  opacity: 0.8;
-  animation: op-chat-signal-fade 3.8s ease-in-out infinite;
 }
 
 .op-chat-sidebar .op-chat-banner {
@@ -652,11 +636,6 @@ body.has-op-chat .h-header {
   36% { opacity: 0; }
 }
 
-@keyframes op-chat-signal-fade {
-  0%, 100% { opacity: 0.42; transform: scale(1); }
-  50% { opacity: 0.92; transform: scale(1.08); }
-}
-
 @keyframes op-chat-banner-sheen {
   0%, 72%, 100% { transform: translateX(-150%); opacity: 0; }
   78%, 92% { transform: translateX(140%); opacity: 1; }
@@ -665,5 +644,347 @@ body.has-op-chat .h-header {
 @keyframes op-chat-button-sheen {
   from { transform: translateX(-150%); }
   to { transform: translateX(150%); }
+}
+
+/* Simplicity/readability pass: flatten decorative motion, tighten message
+   rhythm, and give the composer more useful text space. */
+.op-chat-sidebar {
+  background:
+    linear-gradient(180deg, rgba(6, 14, 24, 0.99), rgba(3, 8, 15, 0.99)) !important;
+  box-shadow:
+    inset -1px 0 0 rgba(255,255,255,0.035),
+    14px 0 34px rgba(0, 0, 0, 0.18) !important;
+}
+
+.op-chat-sidebar::after,
+.op-chat-header::after,
+.op-chat-sidebar .op-chat-banner::after,
+.op-chat-sidebar .oracle-form::before,
+.op-chat-sidebar .oracle-send-button::after,
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::before,
+.op-chat-sidebar .oracle-msg-assistant .oracle-msg-content::after {
+  display: none !important;
+}
+
+.op-chat-sidebar::before {
+  opacity: 0.42 !important;
+  background: none !important;
+}
+
+.op-chat-header {
+  padding: 8px 10px 7px !important;
+  background: rgba(5, 13, 23, 0.96) !important;
+  box-shadow: inset 0 -1px 0 rgba(125, 211, 252, 0.10) !important;
+  backdrop-filter: none !important;
+}
+
+.op-chat-header-main {
+  gap: 9px !important;
+}
+
+.op-chat-header-orb {
+  width: 34px !important;
+  height: 34px !important;
+  flex-basis: 34px !important;
+  border-radius: 12px !important;
+  background: rgba(56, 189, 248, 0.10) !important;
+  box-shadow: none !important;
+}
+
+.op-chat-header-orb::after {
+  inset: 2px !important;
+  border-radius: 10px !important;
+}
+
+.op-chat-header-logo {
+  width: 26px !important;
+  height: 26px !important;
+  filter: none !important;
+}
+
+.op-chat-header-copy {
+  gap: 3px !important;
+}
+
+.op-chat-header-title-row strong {
+  font-size: 13.5px !important;
+}
+
+.op-chat-controls .op-active-toggle,
+.op-chat-controls .pc-voice-btn,
+.op-chat-controls .pc-voice-settings-link {
+  min-height: 27px !important;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-body {
+  padding: 8px 8px 9px !important;
+  gap: 7px !important;
+  background: rgba(3, 8, 15, 0.98) !important;
+}
+
+.op-chat-sidebar .oracle-msg {
+  padding-inline: 0 !important;
+  column-gap: 7px !important;
+}
+
+.op-chat-sidebar .oracle-msg-avatar {
+  width: 20px !important;
+  height: 20px !important;
+  flex-basis: 20px !important;
+  margin-top: 3px;
+  opacity: 0.66;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-msg-icon {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.op-chat-sidebar .oracle-msg-stack {
+  max-width: calc(100% - 28px) !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
+  max-width: min(84%, 286px) !important;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  padding: 9px 10px !important;
+  border-radius: 12px !important;
+  background: rgba(7, 15, 27, 0.94) !important;
+  box-shadow: none !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  background: rgba(14, 45, 70, 0.96) !important;
+}
+
+.op-chat-sidebar .oracle-tool-chip {
+  min-height: 22px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  opacity: 0.74;
+  font-size: 10.5px;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .op-chat-banner {
+  margin: 8px 9px 0 !important;
+  padding: 8px 9px !important;
+  border-radius: 10px !important;
+  background: rgba(56, 189, 248, 0.075) !important;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-form {
+  padding: 8px !important;
+  gap: 6px !important;
+  background: rgba(5, 12, 22, 0.98) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell {
+  min-height: 38px !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input {
+  padding-right: 12px !important;
+  font-size: 13px !important;
+}
+
+.op-chat-sidebar .oracle-input-meta {
+  display: none !important;
+}
+
+.op-chat-sidebar .oracle-send-button {
+  min-width: 58px !important;
+  min-height: 38px !important;
+  border-radius: 12px !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+/* Contrast follow-up: separate chat surfaces from the sidebar background so
+   reading requires less effort at a glance. */
+.op-chat-sidebar .oracle-body {
+  background: rgba(2, 7, 13, 0.99) !important;
+}
+
+.op-chat-controls .op-active-toggle,
+.op-chat-controls .pc-voice-btn,
+.op-chat-controls .pc-voice-settings-link {
+  border-color: rgba(125, 211, 252, 0.26) !important;
+  background: rgba(9, 19, 31, 0.96) !important;
+  color: #eef8ff !important;
+}
+
+.op-chat-controls .pc-voice-btn-orb {
+  background: rgba(56, 189, 248, 0.14) !important;
+}
+
+.op-chat-sidebar .op-chat-banner {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(56, 189, 248, 0.11) !important;
+  color: #e6f6ff !important;
+}
+
+.op-chat-sidebar .oracle-tool-chip {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(56, 189, 248, 0.12) !important;
+  color: #c5edff !important;
+  opacity: 0.92;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  background: linear-gradient(180deg, rgba(14, 27, 41, 0.98), rgba(9, 17, 29, 0.99)) !important;
+  color: #f3f9ff !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  border-color: rgba(125, 211, 252, 0.40) !important;
+  background: linear-gradient(180deg, rgba(25, 67, 99, 0.99), rgba(13, 43, 68, 0.99)) !important;
+  color: #f7fbff !important;
+}
+
+.op-chat-sidebar .oracle-input-shell {
+  border-color: rgba(125, 211, 252, 0.24) !important;
+  background: rgba(9, 18, 30, 0.98) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input {
+  color: #eff8ff !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input::placeholder {
+  color: rgba(186, 230, 253, 0.56) !important;
+}
+
+.op-chat-sidebar .oracle-send-button {
+  border-color: rgba(125, 211, 252, 0.34) !important;
+  background: rgba(56, 189, 248, 0.17) !important;
+  color: #f6fbff !important;
+}
+
+.op-chat-sidebar .oracle-send-button:disabled {
+  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: rgba(191, 219, 254, 0.72) !important;
+}
+
+.op-chat-sidebar .ask-choice-card {
+  border-color: rgba(125, 211, 252, 0.18) !important;
+  background: rgba(8, 18, 31, 0.98) !important;
+}
+
+.op-chat-sidebar .ask-choice-option {
+  border-color: rgba(125, 211, 252, 0.14) !important;
+  background: rgba(255, 255, 255, 0.028) !important;
+}
+
+/* Readability follow-up: clarify utility text and affordances without adding
+   chrome. These are the surfaces users scan before typing or responding. */
+.op-chat-sidebar .oracle-load-earlier {
+  padding: 7px 0 8px !important;
+  color: rgba(203, 238, 255, 0.54) !important;
+  font-size: 10px !important;
+  font-weight: 760 !important;
+  letter-spacing: 0.11em !important;
+}
+
+.op-chat-sidebar .oracle-load-earlier-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(203, 238, 255, 0.58) !important;
+}
+
+.op-chat-sidebar .oracle-load-earlier-end::before,
+.op-chat-sidebar .oracle-load-earlier-end::after {
+  content: "";
+  width: 42px;
+  height: 1px;
+  background: rgba(125, 211, 252, 0.14);
+}
+
+.op-chat-sidebar .oracle-tool-chip {
+  font-size: 11px;
+  line-height: 1.25;
+  letter-spacing: 0.01em;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  border-color: rgba(148, 163, 184, 0.30) !important;
+  font-size: 13.25px !important;
+  line-height: 1.54 !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  border-color: rgba(125, 211, 252, 0.50) !important;
+}
+
+.op-chat-sidebar .oracle-empty-state-title {
+  color: #f4f9ff !important;
+}
+
+.op-chat-sidebar .oracle-empty-state-text {
+  color: rgba(214, 235, 247, 0.78) !important;
+}
+
+.op-chat-sidebar .op-chat-empty-panel {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(8, 18, 31, 0.98) !important;
+}
+
+.op-chat-sidebar .op-chat-empty-panel-label {
+  color: rgba(203, 238, 255, 0.82) !important;
+}
+
+.op-chat-sidebar .op-chat-empty-row {
+  border-color: rgba(125, 211, 252, 0.16) !important;
+  background: rgba(255, 255, 255, 0.035) !important;
+}
+
+.op-chat-sidebar .op-chat-empty-row-hint {
+  color: rgba(205, 226, 240, 0.78) !important;
+}
+
+.op-chat-sidebar .oracle-input-icon {
+  color: rgba(186, 230, 253, 0.76) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input::placeholder {
+  color: rgba(214, 236, 248, 0.66) !important;
+}
+
+.op-chat-sidebar .oracle-send-button:disabled {
+  opacity: 0.86 !important;
+}
+
+.op-chat-sidebar .ask-choice-question {
+  color: #f7fbff !important;
+}
+
+.op-chat-sidebar .ask-choice-picked {
+  color: rgba(203, 238, 255, 0.86) !important;
+}
+
+.op-chat-sidebar .ask-choice-picked span {
+  color: #f7fbff !important;
+  font-weight: 720 !important;
+}
+
+.op-chat-sidebar .ask-choice-option[data-picked="true"] {
+  border-color: rgba(125, 211, 252, 0.38) !important;
+  background: rgba(56, 189, 248, 0.14) !important;
+}
+
+.op-chat-sidebar .ask-choice-submit-hint {
+  color: rgba(205, 226, 240, 0.80) !important;
 }
 `;

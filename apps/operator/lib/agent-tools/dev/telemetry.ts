@@ -22,12 +22,17 @@ export default defineTool({
   roles: ['operator', 'architect', 'debugger'],
   args: z.object({
     workspaceIds: z.array(z.string()).nullable().optional(),
+    /** Filter by which transport drove the dispatch. 'unknown' matches
+     *  rows pre-migration 058 (transport=NULL). null/omitted = no filter. */
+    transports: z.array(z.enum(['http', 'mcp', 'ipc', 'in_process', 'unknown']))
+      .nullable().optional(),
     hours: z.number().int().positive().max(168).optional(),
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args) {
     const result = await telemetryRollup({
       workspaceIds: args.workspaceIds ?? null,
+      transports: args.transports ?? null,
       hours: args.hours,
       limit: args.limit,
     });

@@ -24,6 +24,12 @@ export async function register(): Promise<void> {
   // the boot-time DDL warming.
   await maybeStartPtyWsServer();
 
+  // Endpoint IPC server (opt-in). Tauri launches the sidecar with
+  // PAPERCUSP_IPC_ENABLE=1; the bootstrap then watches the stdout
+  // ready line and connects from Rust. Without the env var, this
+  // is a no-op so the webapp and non-Tauri dev path are unchanged.
+  await maybeStartEndpointIpcServer();
+
   // Boot-time self-repair: drizzle-kit pull periodically truncates the
   // PG default `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint`
   // at the type-cast colon, producing unbalanced parens that crash
@@ -54,6 +60,48 @@ export async function register(): Promise<void> {
     console.warn('[generated-self-repair] non-fatal failure:', (err as Error)?.message ?? err);
   }
 
+  // Apply pending SQL migrations against the harness-admin DB. The
+  // embedded-postgres-server runs this on its own boot for Tauri desktop
+  // bundles, but in dev (operator → native PG at :5432) and in any
+  // deployment where PG is provisioned externally, nothing was applying
+  // them — every new migration since 057 needed a manual apply-NNN.sh
+  // script. Run it here so the operator stays in lock-step with the
+  // SQL dir on every boot. Idempotent (schema_migrations tracker);
+  // non-fatal so a permission-quirk or unreachable PG doesn't block
+  // startup — the route would surface the real error anyway.
+  void (async () => {
+    try {
+      // Subpath import — the package's main entry re-exports
+      // applyPendingMigrations on tip of libs/papercusp, but the
+      // submodule pointer on papercup main may lag that export. The
+      // src/migration-runner.js file has been stable since the runner
+      // was added, so importing it directly is robust to submodule drift.
+      const { applyPendingMigrations } = await import('@restart/embedded-postgres-server/src/migration-runner.js');
+      const { getHarnessAdminUrlWithSource } = await import('@/lib/embedded-pg-discovery');
+      const postgres = (await import('postgres')).default;
+      const { createRequire } = await import('node:module');
+      const req = createRequire(import.meta.url);
+      const path = req('node:path') as typeof import('node:path');
+      const sqlDir = path.resolve(process.cwd(), 'libs/papercusp/libs/db/sql');
+      const { url, source } = getHarnessAdminUrlWithSource();
+      const sql = postgres(url, { max: 1, prepare: false });
+      try {
+        const result = await applyPendingMigrations({
+          client: sql,
+          sqlDir,
+          log: (m: string) => console.log(`[migration-runner] ${m}`),
+        });
+        if (result.appliedCount > 0) {
+          console.log(`[migration-runner] applied ${result.appliedCount} pending migration(s) from ${source} (${result.totalKnown} total known)`);
+        }
+      } finally {
+        await sql.end({ timeout: 2 });
+      }
+    } catch (err) {
+      console.warn('[migration-runner] non-fatal failure:', (err as Error)?.message ?? err);
+    }
+  })();
+
   // Pre-warm lazy schema-ensure tables so the first user request doesn't
   // pay for DDL + the first PG connection (~1.1s on a cold pool).
   // Diagnostic 2026-05-06: desktop's first /api/user-actions/<slug> hit
@@ -68,6 +116,21 @@ export async function register(): Promise<void> {
   void prewarmSchema().catch((err) => {
     console.warn('[ensure-schema-prewarm] non-fatal failure:', err?.message ?? err);
   });
+
+  // Phase 4 T2.3: schedule the scratch-storage GC sweep so stale
+  // tool-output dirs get cleaned every 1h. Idempotent; safe across
+  // HMR reloads. Reads the workspace registry on each sweep so
+  // dead-workspace dirs get reaped.
+  try {
+    const { startScratchGcScheduler } = await import('@/lib/scratch-gc');
+    const { readRegistry } = await import('@/lib/workspace-registry');
+    startScratchGcScheduler({
+      getWorkspaceRegistry: () => readRegistry().workspaces.map((w) => w.id),
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[scratch-gc] scheduler init failed (non-fatal):', (err as Error).message);
+  }
 
   // One-shot grants backfill — Batch B3. After Migration 051 ships, every
   // existing (plugin, harness) pair in `enabled-plugins.json` needs a
@@ -108,6 +171,19 @@ export async function register(): Promise<void> {
       startMemoryCleanup();
     } catch (err) {
       console.warn('[memory-cleanup] failed to start:', (err as Error).message);
+    }
+  })();
+
+  // Plan 2B+C — one-shot embed-backfill sweep ~10s after boot. Fills
+  // body_embedding / content_embedding / text_embedding columns for
+  // any rows missing them. No-ops if pgvector ext missing OR
+  // memoryEmbedderMode=disabled.
+  void (async () => {
+    try {
+      const { startEmbedBackfillWorker } = await import('@/lib/search/embed-backfill');
+      startEmbedBackfillWorker();
+    } catch (err) {
+      console.warn('[embed-backfill] failed to start:', (err as Error).message);
     }
   })();
 
@@ -182,6 +258,79 @@ async function backfillGrantsOnce(): Promise<void> {
   }
   const r = await backfillGrantsFromEnabledPluginsAndLegacyFile(enabledHarnesses);
   console.log(`[plugin-grants-backfill] inserted ${r.inserted} grant rows across ${enabledHarnesses.length} harness(es)`);
+}
+
+/**
+ * Endpoint IPC server — webview→Tauri→Node fast path. Opt-in via
+ * `PAPERCUSP_IPC_ENABLE=1`. The Tauri sidecar bootstrap sets this
+ * before launching the operator and watches stdout for the
+ * `PAPERCUSP_IPC_READY socket=<path>` handshake line.
+ *
+ * In dev (non-Tauri), the env stays unset and this is a no-op.
+ * In the webapp prod surface, the env stays unset and this is a no-op.
+ * In Tauri prod, the env is set + Rust connects post-handshake.
+ */
+async function maybeStartEndpointIpcServer(): Promise<void> {
+  if (process.env.PAPERCUSP_IPC_ENABLE !== '1') return;
+  try {
+    const [{ startEndpointIpcServer }, { PROJECTED_DEPS }] = await Promise.all([
+      import('./lib/endpoint-ipc/server'),
+      import('./lib/projected-tool-deps'),
+    ]);
+    await startEndpointIpcServer({
+      // Default path: ~/.papercusp/sockets/<pid>.sock (Linux/macOS) or
+      // \\\\.\\pipe\\papercusp-<pid> (Windows). The Rust client reads
+      // the resolved path from the stdout PAPERCUSP_IPC_READY line.
+      socketPath: process.env.PAPERCUSP_IPC_SOCKET || undefined,
+      // Same telemetry + quota implementation the HTTP catch-all
+      // route uses. Without this, IPC calls were invisible to
+      // /dev → Sessions and /dev → Telemetry. Audit deferred item 4.
+      deps: PROJECTED_DEPS,
+      // IPC allowlist. Each tool here must be self-contained — every
+      // safety check + persistence side-effect lives in the tool
+      // handler, NOT the route. Adding a tool to this list without
+      // verifying that property is the bug class the audit caught.
+      //
+      // dev:ipc_echo — liveness probe (/dev → IPC tab).
+      // operator:scan — self-contained as of the post-deferred refactor:
+      //                 budget check + scan lock + scan tracker + plugin
+      //                 merge + snapshot + session bump all run inside
+      //                 the tool. Route layer keeps only rate-limit
+      //                 (DoS protection — irrelevant for in-boundary IPC)
+      //                 and the idle-cache short-circuit (cheap cache
+      //                 hit — IPC can pay the LLM cost; no harm).
+      //
+      // architect:chat / brainstorm:chat — self-contained as of
+      //                 the prompts.ts extraction: tool resolves the
+      //                 project + composes SPEC.md/features/brainstorm
+      //                 prompt internally. Args are just the slug +
+      //                 history + message.
+      // operator:delegate — self-contained: principal load, session
+      //                 pick/resume, mcpConfig assembly, post-stream
+      //                 appendDelegateTurn + generateSessionTitle all
+      //                 inside the handler. Route is a 100-line shim.
+      // operator:converse — self-contained: buildOperatorPrompt
+      //                 (role+memory+history+trigger), checkBudget,
+      //                 mcpConfig assembly, recordSpend, post-turn
+      //                 mem0.add, and <spawn>-tag dispatch all inside
+      //                 the handler. Route is a ~130-line shim whose
+      //                 only HTTP-specific step is resolving
+      //                 sessionUser from cookies and passing it
+      //                 through as an arg.
+      //
+      // All Phase-3 streaming tools are IPC-eligible.
+      allowedTools: [
+        'dev:ipc_echo',
+        'operator:scan',
+        'architect:chat',
+        'brainstorm:chat',
+        'operator:delegate',
+        'operator:converse',
+      ],
+    });
+  } catch (err) {
+    console.error('[endpoint-ipc] failed to start:', err);
+  }
 }
 
 async function maybeStartPtyWsServer(): Promise<void> {

@@ -27,16 +27,19 @@
  */
 
 import type { AgentRole } from '@papercusp/plugin-sdk';
+import type { SseSink } from '@restart/sse';
 import {
   dispatchProjectedTool,
   type DispatchProjectedDeps,
   type DispatchProjectedResult,
 } from './dispatch-projected';
 import {
+  emitToSseSink,
   lookupByHttpPath,
   type ProjectedTool,
   type UnifiedToolContext,
 } from './tool-projection';
+import { readBuffer as readReplayBuffer } from './replay-buffer';
 
 /* ─── Request context derivation ─────────────────────────────────────── */
 
@@ -227,7 +230,19 @@ async function resolveToolAndContext(
     if (!spawnCtx.workspaceId) spawnCtx.workspaceId = '*';
     if (!spawnCtx.harnessSlug) spawnCtx.harnessSlug = '*';
     if (!spawnCtx.role) spawnCtx.role = 'operator' as AgentRole;
-    if (!spawnCtx.runId) spawnCtx.runId = 'standalone';
+    // Per-request UUID rather than a shared 'standalone' sentinel.
+    // Audit5: when claude-code spawned via mcp-remote calls multiple
+    // tools concurrently from one subprocess, the URL is static — so
+    // all those calls share whatever runId is in the URL (or the
+    // default). Sub-tool A's dispatcher finally calling
+    // cancelPendingCardsForRun(runId) would wipe sub-tool B's still-
+    // pending askUser cards. Unique runIds per request fix that.
+    //
+    // Replay-buffer (T2.2) is keyed on (workspace, tool, runId); per-
+    // request UUIDs disable accidental cross-request replay coalescing.
+    // Clients explicitly resuming via X-Papercusp-Run header still get
+    // matched against the right buffer.
+    if (!spawnCtx.runId) spawnCtx.runId = globalThis.crypto.randomUUID();
     if (!spawnCtx.spawnId) {
       const buf = new Uint8Array(8);
       globalThis.crypto.getRandomValues(buf);
@@ -251,16 +266,21 @@ async function resolveToolAndContext(
     } catch { /* leave undefined; tool will surface a clear error */ }
   }
   const abort = new AbortController();
+  // Default `emit` is a no-op for the JSON path; the streaming path
+  // (`handleHttpToolRequestStreaming`) overwrites this with a sink writer.
+  const noopEmit = () => { /* non-streaming http transport */ };
   const ctx: UnifiedToolContext = {
     log: (msg) => {
-      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {} };
+      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {}, emit: noopEmit };
       extras.log?.(msg, fullCtx);
     },
     signal: abort.signal,
     progress: (pct, msg) => {
-      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {} };
+      const fullCtx: UnifiedToolContext = { ...spawnCtx, log: () => {}, signal: abort.signal, progress: () => {}, emit: noopEmit };
       extras.progress?.(pct, msg, fullCtx);
     },
+    emit: noopEmit,
+    transport: 'http',
     ...spawnCtx,
     isSuperuser,
     ...(extras.spawn ? { spawn: extras.spawn } : {}),
@@ -319,67 +339,116 @@ export async function handleHttpToolRequest(
 
 /**
  * Handle a streaming tool request — same flow as `handleHttpToolRequest`
- * but instead of returning a JSON body, emits Server-Sent Events:
+ * but writes Server-Sent Events into the caller-supplied `SseSink`.
  *
- *   event: progress
- *   data: { "progress": 50, "total": 100, "message": "..." }
+ * Wire events the framework emits automatically:
+ *   event: done    data: <ToolResult.content as JSON>  (on handler return)
+ *   event: error   data: { code, message }             (on dispatch failure)
  *
- *   event: result
- *   data: { "content": [...] }
+ * Plus whatever the handler emits via `ctx.emit` and `ctx.progress`.
  *
- *   event: error
- *   data: { "code": "...", "message": "..." }
+ * The `ctx.emit` passed to the handler is wired here to fan each
+ * call to a sink event. The legacy `ctx.progress` is reshaped as
+ * a thin alias over `ctx.emit('progress', { progress, total, message? })`.
  *
- * Caller wraps the returned `Response` in their framework's streaming
- * response (Next.js Response with ReadableStream, Hono c.body(stream),
- * etc.). The caller is responsible for setting Content-Type:
- * text/event-stream and the matching headers.
- *
- * Returns a ReadableStream<string> producing the SSE event text. The
- * stream emits at least one `result` or `error` event before closing.
+ * Caller is responsible for opening the SSE response (via @restart/sse's
+ * `sseResponse({ setup: (sink) => handleHttpToolRequestStreaming(...) })`).
+ * This function closes the sink before returning.
  */
-export function handleHttpToolRequestStreaming(
+export async function handleHttpToolRequestStreaming(
   req: HttpToolRequest,
   extras: HttpToolHostExtras,
-): ReadableStream<string> {
-  return new ReadableStream<string>({
-    async start(controller) {
-      const enqueue = (event: string, data: unknown) => {
-        controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-      };
+  sink: SseSink,
+): Promise<void> {
+  const resolved = await resolveToolAndContext(req, extras);
+  if (!resolved.ok) {
+    const body = resolved.body as { error: { code: string; message: string } };
+    sink.event('error', { code: body.error.code, message: body.error.message });
+    sink.close();
+    return;
+  }
 
-      const resolved = await resolveToolAndContext(req, extras);
-      if (!resolved.ok) {
-        const body = resolved.body as { error: { code: string; message: string } };
-        enqueue('error', { code: body.error.code, message: body.error.message });
-        controller.close();
+  // Phase 4 T2.2 — replay-on-reconnect. Browsers auto-set Last-Event-ID
+  // on SSE reconnect; callers pass X-Papercusp-Run (mapped to ctx.runId)
+  // to identify the original call. When both are present AND the tool
+  // declared replayBufferSize, serve buffered events past sinceId then
+  // close — the original tool aborted on disconnect, so we don't
+  // re-dispatch (which would duplicate events + may have side effects).
+  // First-time connects skip this path because runId differs.
+  const runIdForReplay = resolved.ctx.runId;
+  const lastEventIdRaw = req.headers['last-event-id'];
+  const wantsReplay =
+    !!runIdForReplay &&
+    !!lastEventIdRaw &&
+    !!resolved.tool.replayBufferSize &&
+    !!resolved.ctx.workspaceId;
+  if (wantsReplay) {
+    const sinceId = Number.parseInt(lastEventIdRaw, 10);
+    if (Number.isFinite(sinceId) && sinceId >= 0) {
+      const toolName = resolved.tool.expose.mcp?.name ?? req.pathname;
+      const buffered = readReplayBuffer({
+        workspaceId: resolved.ctx.workspaceId!,
+        toolName,
+        runId: runIdForReplay,
+        sinceId,
+      });
+      if (buffered !== null) {
+        // Buffer hit (may be empty if client is already caught up).
+        // Either way, treat this as a successful resume — replay
+        // remaining tail, signal done, close. We don't re-run the
+        // tool: the original call aborted on disconnect by design.
+        for (const ev of buffered) {
+          // Honor the tool's wire kind so resumed events look identical
+          // to their original transmission.
+          emitToSseSink(sink, resolved.tool, ev.name, ev.data);
+        }
+        sink.event('done', { resumed: true, replayed: buffered.length });
+        sink.close();
         return;
       }
+      // Buffer miss: original buffer expired (>5min) or the tuple was
+      // never opened. Fall through to normal dispatch — caller will
+      // see a fresh stream from event id 1, which is the documented
+      // behavior when the resume window has elapsed.
+    }
+  }
 
-      // Override progress to fan SSE events to the client.
-      resolved.ctx.progress = (pct, msg) => {
-        try {
-          enqueue('progress', {
-            progress: typeof pct === 'number' ? pct : 0,
-            total: 100,
-            ...(msg ? { message: msg } : {}),
-          });
-        } catch { /* controller closed */ }
-      };
+  // Wire emit → sink. Each ctx.emit(name, data) becomes one SSE event.
+  // The wire-kind dispatch lives in emitToSseSink so transports and
+  // route shims share one source of truth — see its doc comment.
+  resolved.ctx.emit = (name, data) => emitToSseSink(sink, resolved.tool, name, data);
+  resolved.ctx.progress = (pct, msg) => {
+    resolved.ctx.emit('progress', {
+      progress: typeof pct === 'number' ? pct : 0,
+      total: 100,
+      ...(msg ? { message: msg } : {}),
+    });
+  };
 
-      const r = await dispatchProjectedTool(
-        resolved.tool,
-        resolved.tool.expose.mcp?.name ?? req.pathname,
-        req.body,
-        resolved.ctx,
-        extras.deps,
-      );
-      if (!r.ok) {
-        enqueue('error', r.error!);
-      } else {
-        enqueue('result', { content: r.result?.content ?? [] });
-      }
-      controller.close();
-    },
-  });
+  const r = await dispatchProjectedTool(
+    resolved.tool,
+    resolved.tool.expose.mcp?.name ?? req.pathname,
+    req.body,
+    resolved.ctx,
+    extras.deps,
+  );
+  if (!r.ok) {
+    // Dispatch failure: auto-error. Honor the tool's schema-inferred
+    // wire kind for `error` — if the tool declared `error: z.string()`,
+    // emit the raw message so the wire shape matches handler-emitted
+    // 'error' events. Otherwise default to the JSON envelope.
+    const errorKind = resolved.tool.eventWireKinds?.error;
+    if (errorKind === 'string') {
+      sink.eventRaw('error', r.error!.message);
+    } else {
+      sink.event('error', r.error!);
+    }
+  } else {
+    // Auto-done: handler returned successfully. Payload is the ToolResult
+    // content array — same shape MCP transport returns via tools/call.
+    // Handler-emitted events (delta, tool_call, …) have already streamed
+    // through ctx.emit; this is the terminal event consumers wait for.
+    sink.event('done', r.result?.content ?? []);
+  }
+  sink.close();
 }

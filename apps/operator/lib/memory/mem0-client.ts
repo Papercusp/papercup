@@ -60,6 +60,7 @@ type MemoryListResult = {
 type MemoryClient = {
   add(content: string | unknown[], opts: Record<string, unknown>): Promise<unknown>;
   delete(id: string): Promise<unknown>;
+  get(id: string): Promise<MemoryEntry | null>;
   getAll(opts: Record<string, unknown>): Promise<MemoryListResult>;
   search(query: string, opts: Record<string, unknown>): Promise<MemoryListResult>;
   update(id: string, content: string): Promise<unknown>;
@@ -88,6 +89,15 @@ const TRANSFORMERS_PACKAGE = '@huggingface/transformers';
 
 let _client: MemoryClient | null = null;
 let _clientMode: ResolvedMode | null = null;
+let _clientBuiltAt = 0;
+/**
+ * mem0's customInstructions is set at construction time and the
+ * Memory class doesn't expose a mutator. We refresh by tearing the
+ * client down after this TTL so the next call rebuilds with current
+ * learning-loop instructions. Cheap — no network, just JS object
+ * construction.
+ */
+const _clientTtlMs = 60 * 60 * 1000; // 1 hour
 /**
  * "Permanent" failure cache — only set when the failure is from a
  * truly fixed cause (mem0ai npm package missing). For recoverable
@@ -197,7 +207,12 @@ async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>
  * installed, mode is 'disabled', or config can't be assembled.
  */
 async function tryLoad(): Promise<MemoryClient | null> {
-  if (_client) return _client;
+  if (_client && Date.now() - _clientBuiltAt < _clientTtlMs) return _client;
+  if (_client) {
+    // TTL expired — drop and rebuild so learning-loop instructions
+    // refresh. mem0 doesn't ship a mutator for customInstructions.
+    _client = null;
+  }
   if (_clientPermanentFailure) return null;
 
   const preference = await readEmbedderPreference();
@@ -323,15 +338,41 @@ async function tryLoad(): Promise<MemoryClient | null> {
     };
   }
 
+  // mem0 tracks add/update/delete event history in SQLite. Default was
+  // `:memory:` (lost on restart). Persist under ~/.papercusp/ so the
+  // event log survives so /settings/user/memory can show it.
+  let historyDbPath = ':memory:';
+  try {
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const fs = await import('node:fs/promises');
+    const dir = path.join(os.homedir(), '.papercusp');
+    await fs.mkdir(dir, { recursive: true });
+    historyDbPath = path.join(dir, 'mem0-history.db');
+  } catch {
+    /* fall back to in-memory if we can't write */
+  }
+
+  // Feed user-feedback patterns into mem0's extraction prompt so it
+  // adapts over time. Best-effort: if the table doesn't exist or PG is
+  // unreachable, we just don't pass customInstructions.
+  let customInstructions: string | undefined;
+  try {
+    const { buildLearningInstructions } = await import('./learning');
+    customInstructions = (await buildLearningInstructions()) ?? undefined;
+  } catch { /* best-effort */ }
+
   try {
     const { Memory } = await dynamicImport<Mem0Module>(MEM0_PACKAGE);
     _client = new Memory({
       embedder: embedderConfig,
       vectorStore: vectorStoreConfig,
       llm: llmConfig,
-      historyDbPath: ':memory:',
+      historyDbPath,
+      ...(customInstructions ? { customInstructions } : {}),
     });
     _clientMode = resolution.mode;
+    _clientBuiltAt = Date.now();
     return _client;
   } catch (e) {
     const msg = (e as Error).message ?? String(e);
@@ -360,5 +401,16 @@ export async function getMemoryClient(): Promise<MemoryClient | null> {
  */
 export function getResolvedMode(): ResolvedMode | null {
   return _clientMode;
+}
+
+/**
+ * Force the cached client to be rebuilt on next access. Called by the
+ * feedback path after high-impact mutations (forget_all) so the
+ * learning-loop instructions apply immediately rather than waiting
+ * for the 1-hour TTL.
+ */
+export function invalidateMemoryClient(): void {
+  _client = null;
+  _clientBuiltAt = 0;
 }
 

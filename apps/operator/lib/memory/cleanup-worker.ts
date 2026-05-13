@@ -26,26 +26,46 @@ async function sweep(): Promise<void> {
   try {
     const client = await getMemoryClient();
     if (!client) return;
-    const all = await client.getAll({});
+    // mem0's getAll({}) defaults to topK=20 — if more than 20 memories
+    // exist, the unbounded "sweep all ephemerals" intent silently caps
+    // out and we never see the older expired ones. Use a high topK and
+    // iterate if needed. 5000 is way above what any workspace should
+    // hit; if it does, we'll loop.
+    const PAGE = 5000;
     const now = Date.now();
     let purged = 0;
-    for (const entry of all.results ?? []) {
-      const meta = (entry.metadata ?? {}) as Record<string, unknown>;
-      const expiresAt = meta.expires_at;
-      if (typeof expiresAt !== 'string') continue;
-      const t = Date.parse(expiresAt);
-      if (!Number.isFinite(t)) continue;
-      if (t < now) {
-        try {
-          await client.delete(entry.id);
-          purged += 1;
-        } catch {
-          /* best-effort */
+    let scanned = 0;
+    let lastSize = -1;
+    let pass = 0;
+    while (lastSize !== 0 && pass < 10) {
+      const all = await client.getAll({ topK: PAGE });
+      lastSize = (all.results ?? []).length;
+      scanned += lastSize;
+      let purgedThisPass = 0;
+      for (const entry of all.results ?? []) {
+        const meta = (entry.metadata ?? {}) as Record<string, unknown>;
+        const expiresAt = meta.expires_at;
+        if (typeof expiresAt !== 'string') continue;
+        const t = Date.parse(expiresAt);
+        if (!Number.isFinite(t)) continue;
+        if (t < now) {
+          try {
+            await client.delete(entry.id);
+            purged += 1;
+            purgedThisPass += 1;
+          } catch {
+            /* best-effort */
+          }
         }
       }
+      // If this pass purged nothing AND we got a full page, the next
+      // page would re-return the same rows (mem0's getAll doesn't
+      // page deterministically) — break to avoid infinite loop.
+      if (purgedThisPass === 0) break;
+      pass += 1;
     }
     if (purged > 0) {
-      console.log(`[memory-cleanup] purged ${purged} expired ephemeral memories`);
+      console.log(`[memory-cleanup] purged ${purged} expired ephemeral memories (scanned ${scanned})`);
     }
   } catch (err) {
     console.warn('[memory-cleanup] sweep failed:', (err as Error).message);

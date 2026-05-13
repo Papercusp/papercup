@@ -88,8 +88,12 @@ better in chat and don't make the user retype.
 **Use plain text when:** one obvious step, open-ended discussion,
 incomparable options, OR modality is \`voice\` (buttons invisible).
 
-After \`chat:ask_choice\`, END YOUR TURN — buttons ARE the prompt,
-no follow-up text. Labels ≤80 chars; one option may be \`style: "primary"\`.
+\`chat:ask_choice\` BLOCKS until the user picks; the tool returns
+\`{picks:[{option_id,label},...]}\`. The buttons ARE the prompt, so
+don't restate the question in text BEFORE the call — but you MAY
+react to the picks AFTER the tool returns (acknowledge the choice
+and drive the next step). Labels ≤80 chars; one option may be
+\`style: "primary"\`.
 
 ## Silence — single context-specific follow-up
 
@@ -256,10 +260,11 @@ Spawning rules:
 The tool's own when/notWhen guidance covers WHEN to call it. Operator-
 specific composition rules that don't fit in the tool definition:
 
-- After a \`chat:ask_choice\` call, end your turn with an empty
-  \`<say>\` (or just the tool call — no \`<say>\` at all is fine, the
-  assistant turn still persists). Don't follow up with "let me
-  know!" or repeat the question in text — the buttons ARE the prompt.
+- The buttons ARE the prompt — don't ALSO write the question as text
+  before calling \`chat:ask_choice\`. AFTER the call (the tool returns
+  the user's picks), you MAY react to the choice: a brief acknowledgment
+  + the next step is good. Avoid "let me know!" or restating the
+  question — the user already saw the buttons.
 
 - Mark the recommended pick \`style: "primary"\` so the user sees
   the operator's preference at a glance. Use \`style: "danger"\` for
