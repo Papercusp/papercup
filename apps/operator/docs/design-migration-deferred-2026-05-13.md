@@ -102,14 +102,9 @@ Surface-organized push through the rest of the code-ready batches.
 
 These are *not* code work — they're calls the user needs to make before the next batch lands.
 
-### D1. `/dev/*` carve-out (decides ~25 sites)
+### ~~D1. `/dev/*` carve-out~~ — **REJECTED 2026-05-13**
 
-`/dev` tabs contain the heaviest concentration of native primitives in the app: 13 raw `<table>`, 11 raw checkboxes, 4 raw `<select>`, 2 raw `<details>`, plus confirms in `BackupsTab`. The carve-out option is:
-
-> "Agent/admin diagnostic tabs (`/dev/*`) may use native primitives where the native control communicates 'this is debug.'"
-
-If the user agrees, add the carve-out to `content/docs/design/gotchas.mdx` and skip all `/dev/*` migrations.
-If the user rejects, the `/dev` sites are migrated last (highest churn, lowest user-visible impact).
+User decision: `/dev/*` migrates like everything else. Once RichGrid gains print + copy fidelity (D4 resolution), the diagnostic-table needs are covered by the canonical primitives. No carve-out.
 
 ### D2. `<details>` content-disclosure carve-out
 
@@ -131,9 +126,11 @@ Options:
 - Keep these as `<details>` (carve-out per D2)
 - Wrap a custom `<HiddenUntilFound>` primitive in the wrapper
 
-### D4. `<table>` print + copy-paste fidelity
+### ~~D4. `<table>` print + copy-paste fidelity~~ — **RESOLVED 2026-05-13**
 
-Native `<table>` prints cleanly with grid structure and copies as TSV (Excel-pasteable). `RichGrid`/`GridTable` are div-based; neither is true. If any admin workflow depends on Ctrl-A → paste into a spreadsheet, that's a hard blocker for HR8 migrations of:
+`RichGrid` is being extended with a print-only `<table>` mirror (Pattern A) + `copy` event handler that writes both `text/plain` (TSV) and `text/html` (`<table>`) clipboard payloads. Both features land in Phase 3 of the deferred-backlog drain; no carve-out needed.
+
+Originally-deferred sites (now scheduled for HR8 migration):
 - `app/admin/_components/TableAdmin.tsx:168`
 - `app/settings/plugin-runtime/RuntimeView.tsx` (3 tables)
 - `app/installed/plugins/page.tsx:183`
@@ -151,13 +148,11 @@ When `<select>` → `<Select>` lands on `/login`, `/settings/voice`, `/installed
 
 If the mobile-Hono path is in scope for these forms, the Select migration is **not** strictly an improvement.
 
-### D6. Auto-save vs submit-driven on `/settings/voice` + `/settings/backups` + `/settings/mobile`
+### ~~D6. Auto-save vs submit-driven on `/settings/voice` + `/settings/backups` + `/settings/mobile`~~ — **RESOLVED 2026-05-13**
 
-Current pages have **debounced auto-save** (every keystroke → 300ms debounce → POST). RHF defaults to submit-driven. Decisions:
-- Preserve auto-save during RHF migration (`watch()` + debounce + `handleSubmit` triggered manually)
-- Switch to explicit Save buttons (user-visible change)
+Spec was wrong, not the code. HR7 has been revised to recognize **per-field auto-save settings pages** as a first-class peer of single-submit forms. `useDebouncedSave` is the canonical primitive. Test buttons read state vars directly — no `getValues()` indirection. See [`docs/design/libraries.mdx#form-patterns`](../content/docs/design/libraries.mdx).
 
-Plus: "Test microphone" / "Test connection" buttons in `/settings/voice` use *current in-memory state*, not persisted state. Post-RHF this needs `getValues()` plumbing.
+Migration of these pages is now control-wrapper swaps only — state management is correct as-is.
 
 ---
 

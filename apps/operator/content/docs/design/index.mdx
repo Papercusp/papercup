@@ -34,7 +34,8 @@ The library set documented here was chosen, installed, and applied across the ha
 | Toast / notification | `sonner` | `import { toast } from 'sonner'` — `toast.success()`, `toast.error()` |
 | Hover card (rich content on hover) | `@radix-ui/react-hover-card` | Direct import — used in `FeatureLink.tsx` |
 | Icons | `lucide-react` | `import { ChevronRight } from 'lucide-react'` |
-| Form with validation, dirty tracking, async submit | `react-hook-form` + `zod` (or `ajv` for plugin schemas) | `useFormWith(schema)` + `<FormField>` + `<SubmitButton>` from `@/lib/forms` |
+| Single-submit form (one Submit button, atomic persist) | `react-hook-form` + `zod` (or `ajv` for plugin schemas) | `useFormWith(schema)` + `<FormField>` + `<SubmitButton>` from `@/lib/forms` |
+| Per-field auto-save settings page (no Submit button) | Independent `useState` + debounced save | `useDebouncedSave(value, persist)` from `app/harness/useDebouncedSave.tsx` |
 | Tabular list with custom-styled rows (status pills, action buttons, hover popovers, expand-to-detail) | `@restart/grid-core` `RichGrid` | `<RichGrid<Row> rows columns={[{key, header, render: ({ row }) => …}]} getRowId />` |
 | Static admin table with declarative cell types (text, stepper, price, checkbox, expand) | `@restart/grid-core` `GridTable` | `<GridTable headers data columnTypes={{ qty: 'stepper' }} />` |
 | 5000+ rows of mostly-scalar data, performance is the constraint | `@restart/grid-core` `DataGridShell` (canvas) | `<DataGridShell headers data formatters />` |
@@ -53,7 +54,15 @@ The library set documented here was chosen, installed, and applied across the ha
 
 6. **Never write a `<details>` block in a tsx file.** Use `<Collapsible.Root>`. Native `<details>` works but doesn't share the focus styles or animation system the rest of the harness uses; if you need a disclosure, use the same primitive everyone else uses.
 
-7. **Never hand-roll `useState<string>` chains for form fields.** Use `react-hook-form` via `useFormWith(zodSchema)` (or the AJV resolver for plugin-author JSON Schemas). The wrappers live in `apps/operator/lib/forms/` and the migration recipe is in [the libraries reference](/docs/design/libraries#react-hook-form--hookformresolvers--ajv--zod). Exceptions: single-textarea chat composers and Monaco code editors — both explicitly out of scope for RHF.
+7. **Pick the form pattern that matches the page's submission model.** There is no single "use RHF for forms" rule — that conflates two genuinely different submission models. Pick by how the page persists:
+
+   - **Single-submit forms** (one Submit button, atomic persist, validation on submit, dirty tracking, redirect-or-stay on success): use `react-hook-form` via `useFormWith(zodSchema)` — or the AJV resolver for plugin-author JSON Schemas. Wrappers live in `apps/operator/lib/forms/`. *Canonical sites: `/login`, `/signup`, `/installed/templates/<slug>/edit`, `/snapshots/<id>/fork`.*
+
+   - **Per-field auto-save settings pages** (each control persists independently — toggle a switch, it saves — there is no "Submit"): use independent `useState` per field and `useDebouncedSave(value, persist)` from `app/harness/useDebouncedSave.tsx`. This is the right model for the macOS-System-Preferences / iOS-Settings shape of page. HR1/HR2/HR3/HR6 still apply — only the centralized form-state model from RHF is dropped. Test/preview buttons read the state vars directly (no `getValues()` bridge). *Canonical sites: `/settings/voice`, `/settings/backups`, `/settings/operator`.*
+
+   - **Wizard flows** (multi-step with progress, each step its own slice of state): RHF per step with the step's local Zod slice, plus a parent state coordinator. *Canonical site: `app/_components/SetupWizard`.*
+
+   Exceptions to all three: single-textarea chat composers and Monaco code editors — both explicitly out of scope; use plain `useState`.
 
 8. **Never hand-roll a `<table>` for tabular data.** Use the appropriate component from `@restart/grid-core` — see the next section for which one. Hand-rolled tables miss out on consistent dark-theme styling, shared sort UX (`applySort`), virtualization (free in `RichGrid` and `DataGridShell`), and the conventions other panels follow (sticky header, alt-row striping, hover state). Exception: Markdown content rendering (`MarkdownPreview`) — those are content-author tables, not UI tables.
 
@@ -140,7 +149,8 @@ For full sort, virtualization, multi-row expand, and theme-token reference, see 
 | Radix Checkbox in grid render | `FeatureList.tsx`, `ProposalsPanel.tsx` |
 | Radix Checkbox indeterminate | `ProposalsPanel.tsx` (select-all checkbox) |
 | Sonner toast.success / toast.error | `PhaseTabs.tsx`, `DepartmentHarnessDashboard.tsx` |
-| `useFormWith` + Zod (settings page) | `app/settings/oracle/page.tsx`, `app/login/page.tsx`, `app/settings/api-keys/page.tsx` |
+| `useFormWith` + Zod (single-submit form) | `app/login/page.tsx`, `app/settings/oracle/page.tsx`, `app/settings/api-keys/page.tsx` |
+| `useDebouncedSave` (per-field settings) | `app/settings/voice/page.tsx`, `app/settings/backups/page.tsx`, `app/settings/operator/page.tsx` |
 | `useForm` + `makeAjvResolver` (plugin JSON Schema) | `app/harness/HarnessDashboard.tsx` (PluginConfigEditor), `app/settings/plugins/page.tsx` |
 | `Controller` for non-native widgets (MarkdownEditor, etc.) | `app/settings/oracle/page.tsx` |
 | Radix Collapsible (per-row state) | `CheckpointBanner.tsx` |

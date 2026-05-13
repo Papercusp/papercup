@@ -134,6 +134,75 @@ toast('quote draft saved');
 
 **Brand logos kept as inline SVG:** Google, Facebook, Apple, Visa, Mastercard, Amex, Discover. Not in lucide; can't be replaced by a generic icon.
 
+## Form patterns — picking the right model
+
+Three submission models, three corresponding patterns. Pick by **how the page persists**, not "does it have validation."
+
+### 1. Single-submit form
+
+The user fills N fields, clicks one Submit button, the whole form is validated and persisted as one atomic transaction. Use **`react-hook-form` + `useFormWith(zodSchema)`** (or `makeAjvResolver` for plugin JSON Schemas).
+
+*Canonical sites:* `/login`, `/signup`, `/installed/templates/<slug>/edit`, `/snapshots/<id>/fork`.
+
+See [`react-hook-form` below](#react-hook-form--hookformresolvers--ajv--zod) for the wrappers, schema dialect choice, and migration recipe.
+
+### 2. Per-field auto-save settings page
+
+Each control is its own atomic unit. Toggle a switch → it saves. Pick a select value → it saves. There is no "Submit." This is the **macOS System Preferences / iOS Settings / GitHub user-settings** shape — the right model for a collection of independent preferences.
+
+Use independent `useState` per field and **`useDebouncedSave(value, persist)`** from `app/harness/useDebouncedSave.tsx`.
+
+```tsx
+'use client';
+import { useState } from 'react';
+import { useDebouncedSave } from '@/app/harness/useDebouncedSave';
+import { Checkbox } from '@/app/harness/Checkbox';
+import { Select } from '@/app/harness/Select';
+
+export function VoiceSettings({ initial }: { initial: VoiceConfig }) {
+  const [engine, setEngine]       = useState(initial.engine);
+  const [autoSubmit, setAutoSubmit] = useState(initial.autoSubmit);
+
+  const { saving, lastSavedAt } = useDebouncedSave(
+    { engine, autoSubmit },
+    async (v) => { await fetch('/api/voice/config', { method: 'POST', body: JSON.stringify(v) }); },
+  );
+
+  const testMic = () => {
+    // Reads draft state directly — no getValues() bridge needed.
+    runMicTest({ engine, autoSubmit });
+  };
+
+  return (
+    <>
+      <Select value={engine} onChange={setEngine} options={ENGINE_OPTS} />
+      <Checkbox checked={autoSubmit} onChange={setAutoSubmit} />
+      <button onClick={testMic}>Test microphone</button>
+      <SaveIndicator saving={saving} lastSavedAt={lastSavedAt} />
+    </>
+  );
+}
+```
+
+*Canonical sites:* `/settings/voice`, `/settings/backups`, `/settings/operator`, `/settings/personalization`.
+
+**HR1/HR2/HR3/HR6 still apply.** The wrappers (`<Modal>`, `<Checkbox>`, `<Select>`, `<Collapsible>`) are still required — you're only opting out of RHF's centralized form-state model, not the harness primitives.
+
+**Why not RHF here?** Forcing RHF onto this pattern means re-creating with `watch()` + debounce + manual `handleSubmit` what `useState` + `useDebouncedSave` does in one line. `isDirty` is meaningless when every change is its own atomic save. Test/preview buttons would need `getValues()` indirection to read what's already sitting in plain state vars. The model fights you.
+
+### 3. Wizard flow
+
+Multi-step with progress, each step its own slice of state, the whole flow persisted at the end (or in chunks at step boundaries). Use **RHF per step**, with the step's local Zod slice, plus a parent state coordinator.
+
+*Canonical site:* `app/_components/SetupWizard`.
+
+### Exceptions (none of the three patterns)
+
+- **Single-textarea chat composers** (`ChatPanel`, `OracleDock`, `SupportAgentPanel`, `ArchitectInbox` idea draft, `OperatorNoteForm`). One field with custom IME/keyboard handling — plain `useState`.
+- **Monaco code editors** (`SpecEditor`, `ManifestSpecEditor`). They edit text files, not form fields.
+
+---
+
 ## `react-hook-form` + `@hookform/resolvers` + `ajv` + `zod`
 
 **What:** Form-state management. RHF owns input registration / dirty tracking / submit handling; the resolvers package bridges to Zod (for forms whose schema we control) or Ajv (for forms whose schema is plugin-author-supplied JSON Schema).
@@ -155,8 +224,9 @@ toast('quote draft saved');
 | Schema is a Zod schema already imported from `lib/validators.ts` (server-side) | `zodResolver` | `useFormWith(SharedZod)` — single source of truth, no client/server drift |
 | Schema is JSON Schema from a third party (plugin manifests in `papercusp.json`) | `ajvResolver` | `useForm({ resolver: makeAjvResolver(schema) })` |
 
-**When NOT to migrate to RHF:**
+**When NOT to use RHF:**
 
+- **Per-field auto-save settings pages.** Use `useDebouncedSave` — see [Form patterns above](#form-patterns--picking-the-right-model).
 - **Single textarea + Cmd-Enter chat composers** (`ChatPanel`, `OracleDock`, `SupportAgentPanel`, `ArchitectInbox` idea draft, `OperatorNoteForm`). One field with custom IME/keyboard handling — RHF adds boilerplate without buying validation, dirty tracking, or perf.
 - **Monaco code editors** (`SpecEditor`, `ManifestSpecEditor`). Those edit text files, not form fields. RHF doesn't model code editors.
 - **Radix native form primitives** when there's no validation logic. A plain `<select>` with one option doesn't need a form library.

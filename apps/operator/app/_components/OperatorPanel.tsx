@@ -163,6 +163,32 @@ function autoDispatchSeconds(card: SuggestionCard, now: number): number {
   return Math.max(0, Math.ceil((card.autoDispatchAt - now) / 1000));
 }
 
+/**
+ * Inform-card bodies often start with a markdown header that duplicates
+ * `s.title` — rendered full-size by Vditor with an anchor link, this
+ * dominates the compact card layout. Strip leading `# ...` lines and any
+ * line that matches the card's own title so the body reads as prose.
+ */
+function stripLeadingHeading(body: string, title?: string): string {
+  let out = body.replace(/^\s+/, '');
+  // Strip any contiguous run of leading markdown headers.
+  while (true) {
+    const m = out.match(/^(#{1,6})\s+([^\n]*)\n?/);
+    if (!m) break;
+    const headingText = m[2].trim();
+    const isDup = title && headingText.replace(/\s+/g, ' ') === title.replace(/\s+/g, ' ');
+    // Strip duplicate-of-title unconditionally; otherwise only strip the
+    // first leading H1 (so deeper structured docs survive).
+    if (isDup || m[1].length === 1) {
+      out = out.slice(m[0].length).replace(/^\s+/, '');
+      if (!isDup) break;
+    } else {
+      break;
+    }
+  }
+  return out;
+}
+
 const TIER_SORT_RANK: Record<SuggestionCard['actualTier'], number> = {
   high: 3,
   medium: 2,
@@ -573,7 +599,34 @@ export function OperatorPanel(): ReactElement | null {
   const lastScanPayloadRef = useRef<unknown>(null);
   useEffect(() => {
     if (!Array.isArray(lastScanRows) || lastScanRows.length === 0) return;
-    lastScanPayloadRef.current = lastScanRows[0].payload;
+    const payload = lastScanRows[0].payload as {
+      cards?: (ParsedSuggestion & {
+        _status?: string;
+        _dispatchedAt?: number;
+        _undoCancelled?: boolean;
+      })[];
+    } | null;
+    lastScanPayloadRef.current = payload;
+    // Seed `suggestions` from the Zero subscription so the top-bar Deck
+    // count widget reflects pending/accepted/ignored counts before the
+    // panel has ever been opened. The full REST-based hydrate still runs
+    // on open as a backstop, but cards is the canonical source.
+    const cards = payload?.cards;
+    if (!cards?.length) return;
+    setSuggestions((prev) => {
+      if (prev.length > 0) return prev;
+      return dedupePendingSuggestionCards(cards.map((c) => {
+        const { _status, _dispatchedAt, _undoCancelled, ...rest } = c;
+        const status = normalizeLifecycleState(_status);
+        return {
+          ...rest,
+          status,
+          acceptedAt: status === 'accepted' ? _dispatchedAt : undefined,
+          autoDispatchAt: undefined,
+          undoCancelled: _undoCancelled,
+        };
+      }));
+    });
   }, [lastScanRows]);
 
   // Eager Zero subscription for the Decisions rail. Replaces the lazy
@@ -713,7 +766,7 @@ export function OperatorPanel(): ReactElement | null {
     setStreamLog([]);
     setScanError(null);
     setScanStatus('scanning');
-    setState((s) => ({ ...s, iconState: 'scanning' }));
+    broadcastState({ iconState: 'scanning' });
     setScanStarted(true);
     const url =
       `/api/agent-mcp/operator-scan?request=${encodeURIComponent(request ?? '')}`;
@@ -736,10 +789,10 @@ export function OperatorPanel(): ReactElement | null {
               return next.slice(-5);
             });
           } catch { /* ignore */ }
-          setState((s) => ({ ...s, iconState: 'thinking' }));
+          broadcastState({ iconState: 'thinking' });
         },
         tool_call: () => {
-          setState((s) => ({ ...s, iconState: 'scanning' }));
+          broadcastState({ iconState: 'scanning' });
         },
         idle_status: (data) => {
           try {
@@ -862,7 +915,7 @@ export function OperatorPanel(): ReactElement | null {
         (c) => c.status === 'pending' && !c.auto_dispatch,
       );
       setScanStatus('complete');
-      setState((s) => ({ ...s, iconState: askFirstPending ? 'awaiting-input' : 'idle' }));
+      broadcastState({ iconState: askFirstPending ? 'awaiting-input' : 'idle' });
       source.close();
       evtSrcRef.current = null;
       void refreshDecisions();
@@ -872,7 +925,7 @@ export function OperatorPanel(): ReactElement | null {
       setStreamLog((log) => [...log, `error: ${detail}`]);
       setScanError(detail);
       setScanStatus('error');
-      setState((s) => ({ ...s, iconState: 'idle' }));
+      broadcastState({ iconState: 'idle' });
       source.close();
       evtSrcRef.current = null;
     }
@@ -1010,6 +1063,19 @@ export function OperatorPanel(): ReactElement | null {
     void refreshBudget();
     void refreshDecisions();
     void hydrateFromLastScan();
+    // Cards pre-seeded by the lastScan Zero subscription (so the top-bar
+    // count widget renders pre-open) intentionally skip setting
+    // autoDispatchAt. Start their undo windows now that the panel is
+    // actually visible.
+    setSuggestions((prev) => {
+      let touched = false;
+      const next = prev.map((c) => {
+        if (c.status !== 'pending' || !c.auto_dispatch || c.autoDispatchAt) return c;
+        touched = true;
+        return { ...c, autoDispatchAt: Date.now() + 5_000 };
+      });
+      return touched ? next : prev;
+    });
     // Don't auto-scan until the user has confirmed a budget cap.
     if (!scanStarted && !state.paused && budget?.configured && !budget.exceeded) {
       startScan();
@@ -1041,7 +1107,7 @@ export function OperatorPanel(): ReactElement | null {
       const { [id]: _removed, ...rest } = prev;
       return rest;
     });
-    setState((s) => ({ ...s, iconState: 'acting' }));
+    broadcastState({ iconState: 'acting' });
 
     // Side-effect by kind. On any failure we stay pending and bump the
     // failure counters; on success we flip to 'accepted' once.
@@ -1160,7 +1226,7 @@ export function OperatorPanel(): ReactElement | null {
     } catch (err) {
       recordFailure(err instanceof Error ? err.message : String(err));
     } finally {
-      setState((s) => ({ ...s, iconState: 'idle' }));
+      broadcastState({ iconState: 'idle' });
       void refreshDecisions();
     }
   }, [refreshDecisions, logAudit]);
@@ -1445,37 +1511,40 @@ export function OperatorPanel(): ReactElement | null {
   ));
   const filteredEmpty = filterActive && hasCardEntries && !hasFeedEntries;
   const streamMuted = scanStatus === 'complete' && suggestions.length > 0;
+  // Per-tab empty states are independent of scanStatus: a scan-in-progress
+  // does not change whether the Accepted/Ignored lists are empty, so don't
+  // overwrite their copy with "Scanning workspace…".
   const emptyTitle = filteredEmpty
     ? (mainView === 'accepted' ? 'No accepted actions match your filter' : mainView === 'ignored' ? 'No ignored actions match your filter' : 'No pending actions match your filter')
-    : scanStatus === 'error'
-      ? 'Operator scan needs setup'
-      : scanStatus === 'scanning'
-        ? 'Scanning workspace…'
-        : state.paused
-          ? 'Operator is paused'
-          : scanStatus === 'complete' && suggestions.length === 0
-            ? 'No suggestions found'
-            : mainView === 'accepted'
-              ? 'No accepted actions yet'
-              : mainView === 'ignored'
-                ? 'No ignored actions yet'
+    : mainView === 'accepted'
+      ? 'No accepted actions yet'
+      : mainView === 'ignored'
+        ? 'No ignored actions yet'
+        : scanStatus === 'error'
+          ? 'Operator scan needs setup'
+          : scanStatus === 'scanning'
+            ? 'Scanning workspace…'
+            : state.paused
+              ? 'Operator is paused'
+              : scanStatus === 'complete' && suggestions.length === 0
+                ? 'No suggestions found'
                 : scanStarted
                   ? "Operator hasn't surfaced any pending actions"
                   : 'Operator has not scanned yet';
   const emptyBody = filteredEmpty
     ? 'Filters are narrowing this view. Clear the active filters or choose a different harness.'
-    : scanStatus === 'error'
-      ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
-      : scanStatus === 'scanning'
-        ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
-        : state.paused
-          ? 'Resume Operator before automatic scans continue. You can still run a manual scan from the controls above.'
-          : scanStatus === 'complete' && suggestions.length === 0
-            ? `Last scan completed ${lastScanAgeLabel ?? 'recently'} and found no actions. Run Scan again when the workspace changes.`
-            : mainView === 'accepted'
-              ? 'Accepted actions will appear here after you accept them.'
-              : mainView === 'ignored'
-                ? 'Ignored actions will appear here after you ignore them.'
+    : mainView === 'accepted'
+      ? 'Accepted actions will appear here after you accept them.'
+      : mainView === 'ignored'
+        ? 'Ignored actions will appear here after you ignore them.'
+        : scanStatus === 'error'
+          ? 'The scan did not complete. Check Operator settings or provision the substrate before scanning again.'
+          : scanStatus === 'scanning'
+            ? 'Operator is checking workspace state, recent decisions, and pending harness work.'
+            : state.paused
+              ? 'Resume Operator before automatic scans continue. You can still run a manual scan from the controls above.'
+              : scanStatus === 'complete' && suggestions.length === 0
+                ? `Last scan completed ${lastScanAgeLabel ?? 'recently'} and found no actions. Run Scan again when the workspace changes.`
                 : scanStarted
                   ? `Last scan completed ${lastScanAgeLabel ?? 'recently'} without pending actions. Run Scan to reassess the workspace.`
                   : 'Click Scan to check workspace state, recent decisions, and pending harness work.';
@@ -2009,8 +2078,8 @@ export function OperatorPanel(): ReactElement | null {
                           </details>
                         )}
                         {s.action === 'inform' && s.body && (
-                          <div className="operator-entry__markdown">
-                            <MarkdownPreview value={s.body} outline="left" />
+                          <div className="operator-entry__markdown operator-entry__markdown--compact">
+                            <MarkdownPreview value={stripLeadingHeading(s.body, s.title)} />
                           </div>
                         )}
                         {s.action === 'navigate' && s.target_resource && (

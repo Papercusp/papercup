@@ -159,6 +159,17 @@ The original migration added ~55 KB gzipped to the harness route's JS payload. L
 
 If you find yourself reaching for a NEW library not in this list, ask first. Most cases the existing set covers — see the [decision matrix](/docs/design).
 
+## Per-field-settings pages — don't reach for RHF
+
+If you're looking at `/settings/voice`, `/settings/backups`, `/settings/operator`, or any other settings page where each control persists independently (no Submit button, no atomic "save the whole form" gesture), **do not migrate it to `useFormWith`**. That conflates the page's model with what RHF was built for. Use `useDebouncedSave(value, persist)` per field instead — full pattern is in [libraries: Form patterns](/docs/design/libraries#form-patterns--picking-the-right-model).
+
+Symptoms that mean you've picked the wrong pattern:
+- You're calling `getValues()` from a "Test microphone" / "Test connection" button just to read the user's current draft.
+- You wrote a custom `watch()` + debounce on top of RHF to re-create auto-save semantics.
+- `isDirty` is permanently `false` even though the user clearly made changes (because you've manually flushed each one).
+
+If any of those, stop and switch to `useDebouncedSave`. HR1/HR2/HR3/HR6 still apply — the `<Modal>` / `<Checkbox>` / `<Select>` / `<Collapsible>` wrappers are still required. You're only opting out of RHF's central form-state model.
+
 ## Migration anti-patterns
 
 Things we did wrong during the migration and had to back out — don't repeat:
