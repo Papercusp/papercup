@@ -319,6 +319,24 @@ let _bootTimer: NodeJS.Timeout | null = null;
 let _periodicTimer: NodeJS.Timeout | null = null;
 
 async function _runSweepLogged(label: string): Promise<void> {
+  // Step B2 (Tier-3 follow-up arc): battery-aware pause. Skip the
+  // sweep when the device is on battery and below threshold; the
+  // next periodic tick re-checks. Servers + AC-powered desktops
+  // → always 'run'.
+  try {
+    const { shouldRun } = await import('./battery-policy');
+    if (shouldRun() === 'pause') {
+      console.log(
+        `[embed-backfill] ${label} sweep skipped: on-battery + low-charge ` +
+          `(set BATTERY_POLICY_OVERRIDE=always_run to disable, or lower ` +
+          `BATTERY_POLICY_MIN_PCT)`,
+      );
+      return;
+    }
+  } catch {
+    // battery-policy import failed — fall through to running the sweep.
+  }
+
   try {
     const r = await runBackfillSweep();
     if (Array.isArray(r)) {

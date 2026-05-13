@@ -78,6 +78,16 @@ export function startOrphanSweepWorker(): void {
 
   const runOnce = async (): Promise<void> => {
     if (_orphanSweepRunning) return;
+    // Step B2 (Tier-3 follow-up arc): battery-aware pause. The sweep
+    // hits a single indexed range scan + UPDATE on N≈0 rows in steady
+    // state — cheap — but defer when the user's on battery and below
+    // threshold to avoid waking the disk.
+    try {
+      const { shouldRun } = await import('../search/battery-policy');
+      if (shouldRun() === 'pause') return;
+    } catch {
+      // battery-policy unavailable — proceed.
+    }
     _orphanSweepRunning = true;
     try {
       const { swept } = await sweepOrphanSnapshots();

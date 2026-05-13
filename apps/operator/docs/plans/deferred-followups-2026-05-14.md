@@ -116,15 +116,21 @@ Main thread is now non-blocking during local-mode embedding. The worker holds th
 
 ---
 
-### B2. Battery-aware embed worker pause
+### B2. Battery-aware embed worker pause — ✅ closed 2026-05-14
 
-**Status:** `engineering deferred`
+**Status:** `closed` (was `engineering deferred`)
 
-**Context.** The 5-minute embed-backfill sweep runs unconditionally. On battery-powered Tauri desktop installs this is wasted energy when the device is unplugged.
+**Context.** Periodic sweeps (embed-backfill every 5 min, backup orphan sweep every 5 min) ran unconditionally regardless of power state. On battery-powered Tauri desktop installs, that's wasted energy when the device is unplugged.
 
-**Trigger to revisit:** any Tauri/desktop user report of the embed worker affecting battery life.
+**Resolution (2026-05-14).** Shipped a battery-policy gate:
+- `apps/operator/lib/search/battery-policy.ts` — `shouldRun()` returns `'pause'` only when the device is **Discharging AND below threshold** (default 30%, configurable via `BATTERY_POLICY_MIN_PCT`). Otherwise `'run'`. Unknown / no-battery / AC-power all return `'run'` (safer default — servers and AC-powered desktops never pause).
+- Env override `BATTERY_POLICY_OVERRIDE=force_pause|always_run` for tests and admins.
+- Source: `/sys/class/power_supply/BAT[N]/{status,capacity}` (Linux/Tauri-on-Linux). macOS + Windows native probes deferred — battery-conscious users on those platforms can use the env override.
+- Wired into two periodic workers:
+  - `embed-backfill._runSweepLogged` (skip when paused, next 5-min tick re-checks)
+  - `backup/orphan-cleanup.runOnce` (same pattern)
 
-**Estimated effort when revisited:** ~1.5 hours. `navigator.getBattery()` or Tauri's `power_monitor`; gate the 5-min sweep on `!isOnBattery || batteryLevel > 0.5`.
+10 unit tests covering all decision paths + env override + threshold customization. Real-host reading test soft-skips on machines without a battery.
 
 ---
 
