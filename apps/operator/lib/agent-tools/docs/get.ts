@@ -70,10 +70,22 @@ export default defineTool({
     );
 
     // Emit per-call telemetry signal. Schema:
-    //   { requested, found, not_found, truncated, sliced, has_heading }
+    //   { requested, found, not_found, truncated, sliced, has_heading,
+    //     jsx_literals_present }
     // Persists into harness_shared.tool_invocations.metadata_json
     // (migration 068). Drives Phase 2 trigger predicates documented
     // in apps/operator/docs/plans/docs-retrieval-phase1.md.
+    //
+    // jsx_literals_present detects raw `<ComponentName>` tags that
+    // slipped through remark-mdx-to-markdown — used to monitor for
+    // new MDX components that need an UNWRAP_NAMES entry. The regex
+    // skips code-fenced JSX (any backticked spans) for accuracy.
+    const jsxLiteralsPresent = response.results.some((r) => {
+      if (!r.found) return false;
+      const stripped = r.content.replace(/```[\s\S]*?```/g, '').replace(/`[^`]*`/g, '');
+      return /<[A-Z][A-Za-z]+\b/.test(stripped);
+    });
+
     ctx.metadata?.({
       requested: response.results.length,
       found: response.results.filter((r) => r.found).length,
@@ -81,6 +93,7 @@ export default defineTool({
       truncated: response.results.filter((r) => 'truncated' in r && r.truncated).length,
       sliced: response.results.filter((r) => 'sliced' in r && r.sliced).length,
       has_heading: Boolean(args.heading),
+      jsx_literals_present: jsxLiteralsPresent,
     });
 
     return {

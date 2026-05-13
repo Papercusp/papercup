@@ -14,8 +14,13 @@ import remarkMdx from 'remark-mdx';
 import { remarkInclude } from 'fumadocs-mdx/config';
 import type { InferPageType } from 'fumadocs-core/source';
 import type { source } from '@/lib/source';
+import remarkMdxToMarkdown from './remark-mdx-to-markdown';
 
-const processor = remark().use(remarkMdx).use(remarkInclude).use(remarkGfm);
+const processor = remark()
+  .use(remarkMdx)
+  .use(remarkInclude)
+  .use(remarkGfm)
+  .use(remarkMdxToMarkdown);
 
 export async function getLLMText(page: InferPageType<typeof source>): Promise<string> {
   // page.data.getText('raw') returns the original .mdx file content from disk.
