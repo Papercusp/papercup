@@ -51,6 +51,12 @@ export type {
   StateSnapshot,
   VersionedSnapshot,
 } from './state-channel';
+export {
+  registerCard,
+  resolveCardResponse,
+  cancelPendingCardsForRun,
+  cancelPendingCardsForWorkspaceSwitch,
+} from './card-correlator';
 export { tierFor } from './capability-tiers';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
