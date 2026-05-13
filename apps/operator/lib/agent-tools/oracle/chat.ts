@@ -42,6 +42,13 @@ const ArgsSchema = z.object({
   currentPath: z.string().default(''),
   tutorialMode: z.boolean().default(false),
   uiClientId: z.string().optional(),
+  /**
+   * Session user id, populated by HTTP shims via getSessionUserOrDefault().
+   * Optional because the tool can also be reached from MCP/IPC paths that
+   * have no Next cookie context. When present, mem0 memory is fetched at
+   * both user-scope AND workspace-scope; when absent, workspace-scope only.
+   */
+  userId: z.string().optional(),
 });
 
 type Args = z.infer<typeof ArgsSchema>;
@@ -64,7 +71,11 @@ interface ChatCtx {
 async function oracleHandler(input: Args, ctx: ChatCtx) {
   const { promptText, tutorialIsFinalStep } = await composeOraclePrompt(
     input.messages as OracleMessage[],
-    { currentPath: input.currentPath, tutorialMode: input.tutorialMode },
+    {
+      currentPath: input.currentPath,
+      tutorialMode: input.tutorialMode,
+      userId: input.userId,
+    },
   );
 
   if (tutorialIsFinalStep) ctx.emit('tutorial_end', {});

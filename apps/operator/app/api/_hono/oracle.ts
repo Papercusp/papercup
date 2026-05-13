@@ -26,6 +26,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { readOracleConfig, writeOracleConfig } from '@/lib/agent-tools/oracle/prompts';
+import { getSessionUserOrDefault } from '@/lib/auth';
 import '@/lib/agent-tools/index';
 
 export function registerOracle(app: Hono) {
@@ -58,6 +59,17 @@ export function registerOracle(app: Hono) {
     const messages = Array.isArray(body.messages) ? body.messages : [];
     if (messages.length === 0) return c.json({ error: 'messages required' }, 400);
 
+    // Resolve the session user (or fall through to seeded `default`) so
+    // mem0 dual-scope memory injection inside composeOraclePrompt has
+    // a userId to scope user-side memories with.
+    let userId: string | undefined;
+    try {
+      const u = await getSessionUserOrDefault();
+      userId = u.id;
+    } catch {
+      userId = undefined;
+    }
+
     const input = {
       messages,
       currentPath: typeof body.currentPath === 'string' ? body.currentPath : '',
@@ -66,6 +78,7 @@ export function registerOracle(app: Hono) {
         typeof body.uiClientId === 'string' && body.uiClientId.length > 0
           ? body.uiClientId
           : undefined,
+      userId,
     };
 
     const tool = lookupByMcpName('oracle:chat');

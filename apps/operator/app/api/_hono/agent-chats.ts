@@ -29,6 +29,7 @@ import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { buildMemoryContextBlock } from '@/lib/memory/injection';
 import '@/lib/agent-tools/index';
 import {
   readFeatureLockState,
@@ -270,7 +271,20 @@ export function registerAgentChats(harness: Hono): void {
           baseTranscript.slice(0, -1).map((t) => `${t.role === 'user' ? 'User' : 'You (assistant)'}: ${t.content}`).join('\n\n') +
           '\n'
         : '';
-      const promptText = `${r.text}${lockNotice}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
+
+      // mem0 workspace-scope memory injection. The role is folded into
+      // `queryContext` so retrievals favor role-relevant memories without
+      // requiring a helper-level role parameter. Failure modes (no client
+      // or search throws) degrade silently — chat still runs.
+      const memBlock = await buildMemoryContextBlock({
+        userId: null,
+        workspaceId: activeWorkspaceId(),
+        queryContext: `${chat.role} agent: ${userContent}`,
+        heading: 'Agent memory (relevant entries)',
+      }).catch(() => null);
+      const memorySection = memBlock ? `\n---\n\n${memBlock}\n` : '';
+
+      const promptText = `${r.text}${lockNotice}${memorySection}${historyBlock}\n---\n\n## User\n\n${userContent}\n`;
       assembled = { text: promptText, runId: r.meta.runId };
     } catch (e) {
       return c.json({ error: `failed to assemble prompt: ${(e as Error).message}` }, 500);

@@ -22,6 +22,7 @@ import {
   renderToolsCatalog,
 } from '@/lib/prompt-assembly';
 import { listAgentsAcrossWorkspace } from '@/lib/agents-list';
+import { buildMemoryContextBlock } from '@/lib/memory/injection';
 
 const ORACLE_PROMPT_TABLE = 'harness_shared.operator_oracle_prompt';
 const ORACLE_MEMORY_TABLE = 'harness_shared.operator_oracle_memory';
@@ -202,7 +203,7 @@ export interface AssembledOracleTurn {
 
 export async function composeOraclePrompt(
   messages: OracleMessage[],
-  opts: { currentPath: string; tutorialMode: boolean },
+  opts: { currentPath: string; tutorialMode: boolean; userId?: string },
 ): Promise<AssembledOracleTurn> {
   const { prompt, memory } = await readOracleConfig();
 
@@ -216,6 +217,18 @@ export async function composeOraclePrompt(
   const toolBlock = renderToolsCatalog('oracle', ORACLE_TOOL_NAMES);
   const playbook = loadRoleToolsMd('oracle') ?? '';
   const inventoryBlock = await buildOracleInventoryBlock().catch(() => '');
+
+  // mem0 dual-scope memory injection. buildMemoryContextBlock already
+  // pulls user-scope + workspace-shared memories and merges them when
+  // a userId is provided; when userId is undefined it returns
+  // workspace-shared only. Either failure mode (no client, search throws)
+  // returns null and degrades gracefully.
+  const memInjected = await buildMemoryContextBlock({
+    userId: opts.userId ?? null,
+    workspaceId: activeWorkspaceId(),
+    queryContext: userContent,
+    heading: 'Oracle memory (relevant entries)',
+  }).catch(() => null);
 
   const ctxBlock = opts.currentPath
     ? `\n\n## Runtime context\n\nThe user is currently on path: ${opts.currentPath}\n`
@@ -239,6 +252,7 @@ export async function composeOraclePrompt(
     ctxBlock,
     tutorialBlock,
     memory.trim() ? `\n---\n\n## Persistent memory\n\n${memory.trim()}\n` : '',
+    memInjected ? `\n---\n\n${memInjected}\n` : '',
     history ? `\n---\n\n## Conversation history\n\n${history}\n` : '',
     `\n---\n\n## User\n\n${userContent}\n`,
   ].join('');
