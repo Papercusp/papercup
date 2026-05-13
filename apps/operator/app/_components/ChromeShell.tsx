@@ -18,6 +18,8 @@ import UpdateChip from './UpdateChip';
 import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
 import TutorialButton from './TutorialButton';
+import { FLAGS } from '@papercusp/flags';
+import { useFlag } from '@/lib/flag-hooks';
 
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
@@ -82,6 +84,9 @@ export default function ChromeShell() {
   // non-link span with `is-current` styling so it's visibly distinct from
   // the active CTA elsewhere in the app.
   const onHarness = pathname === '/harness' || pathname.startsWith('/harness/');
+  const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
+  const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
+  const oracleFlag = useFlag(FLAGS.ORACLE);
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
     const active = pathname === href || pathname.startsWith(`${href}/`);
@@ -166,10 +171,14 @@ export default function ChromeShell() {
           <ConsoleLauncherButton />
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
-          <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
+          {marketplaceFlag ? (
+            <a href="/marketplace/" {...navLinkProps('/marketplace')}>Marketplace</a>
+          ) : null}
           <a href="/installed/harnesses" {...navLinkProps('/installed/harnesses')}>Harnesses</a>
           <a href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</a>
-          <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
+          {snapshotsFlag ? (
+            <a href="/installed/snapshots" {...navLinkProps('/installed/snapshots')}>Snapshots</a>
+          ) : null}
           <a href="/support" {...navLinkProps('/support')}>Support</a>
           <a href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</a>
           {(() => {
@@ -177,7 +186,7 @@ export default function ChromeShell() {
             return <a href="/dev" {...p} className={`${p.className} is-dev`}>DEV</a>;
           })()}
           <a href="https://github.com/papercupai" target="_blank" rel="noopener noreferrer" className="pc-header-nav-link">GitHub</a>
-          <TutorialButton />
+          {oracleFlag ? <TutorialButton /> : null}
           <UpdateChip />
           <NotificationCenter />
           <RecentActionsCenter />
@@ -220,6 +229,7 @@ export default function ChromeShell() {
 // chains, polling, and event-listener registration.
 function DeferredDocks() {
   const [ready, setReady] = useState(false);
+  const oracleEnabled = useFlag(FLAGS.ORACLE);
   useEffect(() => {
     const idle = (window as any).requestIdleCallback as undefined | ((cb: () => void, opts?: { timeout: number }) => number);
     let idleId: number | undefined;
@@ -253,7 +263,7 @@ function DeferredDocks() {
   return (
     <Suspense fallback={null}>
       <ChatwootWidget />
-      <OracleDock />
+      {oracleEnabled ? <OracleDock /> : null}
       <OperatorBackgroundScanner />
       <VoiceAppBridge />
       <OperatorDelegationListener />

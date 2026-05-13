@@ -127,6 +127,10 @@ import './dev/session_detail';
 import './processes/kill';
 import './dev/omp_session';
 
+import './flags/list';
+import './flags/get';
+import './flags/set';
+
 import './backup/snapshot_create';
 import './backup/snapshot_list';
 import './backup/restore';

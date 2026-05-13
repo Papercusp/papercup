@@ -16,6 +16,8 @@ import { existsSync, promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 import { loadHarnessRegistry } from '@/lib/harness-registry';
 
 export const dynamic = 'force-dynamic';
@@ -93,6 +95,8 @@ async function readEnabledPlugins(harnessSlug: string): Promise<{ slug: string; 
 }
 
 export async function POST(req: Request, ctx: { params: Promise<{ slug: string }> }) {
+  const blocked = await gateApiRoute(req, FLAGS.TEMPLATES);
+  if (blocked) return blocked;
   const { slug: harnessSlug } = await ctx.params;
   if (!SLUG_RE.test(harnessSlug)) {
     return NextResponse.json({ ok: false, error: 'invalid harness slug' }, { status: 400 });

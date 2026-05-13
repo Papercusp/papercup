@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 import { spawn } from 'node:child_process';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +24,8 @@ function isValidSlug(s: string): boolean {
 }
 
 export async function POST(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.MARKETPLACE);
+  if (blocked) return blocked;
   let body: { slug?: string; version?: string };
   try { body = await req.json(); } catch { return NextResponse.json({ ok: false, error: 'invalid json' }, { status: 400 }); }
   const slug = String(body.slug ?? '').trim();

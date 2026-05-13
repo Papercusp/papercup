@@ -13,6 +13,8 @@ import { extractShape, type ConfigSchema } from '@/lib/snapshot-shape';
 
 import { papercuspPath } from '@/lib/papercusp-root';
 import { recordUserAction } from '@/lib/user-actions';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 600;
@@ -34,6 +36,8 @@ interface CreateBody {
 function HARNESSES_DIR() { return papercuspPath('harnesses'); }
 
 export async function POST(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  if (blocked) return blocked;
   let body: CreateBody;
   try {
     body = (await req.json()) as CreateBody;

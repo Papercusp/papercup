@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 import { withSnapshotLock } from '@/lib/snapshot-locks';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  if (blocked) return blocked;
   const { id } = await params;
   const snap = await findSnapshot(id);
   if (!snap) return NextResponse.json({ ok: false, error: 'not found' }, { status: 404 });
@@ -39,7 +43,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   });
 }
 
-export async function DELETE(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  if (blocked) return blocked;
   const { id } = await params;
   return withSnapshotLock(id, async () => {
     // Re-resolve inside the lock — a concurrent Instantiate may have

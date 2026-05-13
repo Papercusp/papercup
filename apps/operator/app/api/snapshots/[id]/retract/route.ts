@@ -30,6 +30,8 @@ import { join } from 'node:path';
 import { findSnapshot } from '@/lib/snapshot-discovery';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -49,6 +51,8 @@ interface Body {
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const blocked = await gateApiRoute(req, FLAGS.SNAPSHOTS);
+  if (blocked) return blocked;
   const { id } = await params;
 
   // Sanity-check the snapshot exists locally — protects operators from

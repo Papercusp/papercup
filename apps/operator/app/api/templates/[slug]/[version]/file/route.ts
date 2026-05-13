@@ -14,6 +14,8 @@ import { NextResponse } from 'next/server';
 import { existsSync, promises as fs } from 'node:fs';
 import { join, normalize, relative, dirname } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -66,6 +68,8 @@ export async function GET(
   req: Request,
   ctx: { params: Promise<{ slug: string; version: string }> },
 ) {
+  const blocked = await gateApiRoute(req, FLAGS.TEMPLATES);
+  if (blocked) return blocked;
   const { slug, version } = await ctx.params;
   const url = new URL(req.url);
   const rel = url.searchParams.get('path') ?? '';
@@ -83,6 +87,8 @@ export async function PUT(
   req: Request,
   ctx: { params: Promise<{ slug: string; version: string }> },
 ) {
+  const blocked = await gateApiRoute(req, FLAGS.TEMPLATES);
+  if (blocked) return blocked;
   const { slug, version } = await ctx.params;
   let body: { path?: string; content?: unknown };
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'invalid json' }, { status: 400 }); }

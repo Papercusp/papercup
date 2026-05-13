@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 import FALLBACK_CATALOG from './fallback-catalog.json';
 import { getOrgPg, generated } from '@restart/db-org';
 
@@ -77,7 +79,9 @@ async function fetchPopularity(base: string): Promise<Map<string, number>> {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.MARKETPLACE);
+  if (blocked) return blocked;
   const isHidden = makeIsHidden(await getHiddenBasenames());
   const base = process.env.PAPERCUSP_MARKETPLACE_URL ?? 'http://localhost:3057';
   // Try DB-backed `/v1/catalog` first (sees R2-only publishes). Fall back to

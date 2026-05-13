@@ -11,14 +11,18 @@ import { NextResponse } from 'next/server';
 import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(
-  _req: Request,
+  req: Request,
   ctx: { params: Promise<{ slug: string; version: string }> },
 ) {
+  const blocked = await gateApiRoute(req, FLAGS.TEMPLATES);
+  if (blocked) return blocked;
   const { slug, version } = await ctx.params;
   if (!/^[a-z0-9][a-z0-9._-]{0,63}$/i.test(slug)) {
     return NextResponse.json({ ok: false, error: 'invalid slug' }, { status: 400 });

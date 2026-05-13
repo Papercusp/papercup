@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 import {
   maskPublishCredentials,
   readPublishCredentials,
@@ -14,7 +16,9 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export async function POST() {
+export async function POST(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.CLOUDFLARE_PUBLISH);
+  if (blocked) return blocked;
   const c = await readPublishCredentials();
   if (!c) return NextResponse.json({ error: 'not registered' }, { status: 404 });
 
