@@ -256,6 +256,20 @@ async function resolveToolAndContext(
   // Skip path resolution for superuser wildcards ('*') — tools that
   // need a real workspace path will fail loud with their own per-tool
   // fallback ("workspace= arg required").
+  // Ensure every HTTP-projected tool call has a runId. ctx.askUser /
+  // ctx.publishState only install when both workspaceId + runId are
+  // present; tools relying on either silently no-op (chat:ask_choice
+  // returns "no_chat_surface", state-shaped tools return
+  // "no_state_channel") when the JSON path doesn't supply one. The
+  // SSE route (apps/operator/.../agent-tools/route.ts) already injects
+  // a runId via `url.searchParams.set('run', ...)`; the superuser
+  // branch above also defaults one. Mirror that here so the bearer-
+  // auth JSON path has parity. Found during pass-9 E2E audit.
+  if (!spawnCtx.runId) {
+    spawnCtx.runId = globalThis.crypto?.randomUUID?.() ??
+      `run-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   const realWorkspace = spawnCtx.workspaceId && spawnCtx.workspaceId !== '*';
   const realHarness = spawnCtx.harnessSlug && spawnCtx.harnessSlug !== '*';
   if (extras.resolveHarnessPaths && realHarness && realWorkspace) {

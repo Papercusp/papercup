@@ -124,6 +124,45 @@ describe('handleHttpToolRequest', () => {
     expect((res.body as { content: Array<{ type: string; text: string }> }).content[0]?.text).toContain('echo');
   });
 
+  it('JSON path defaults a runId when caller did not supply one (askUser/publishState gate)', async () => {
+    // Pre-fix: bearer-auth JSON callers got ctx.runId === undefined, so
+    // ctx.askUser and ctx.publishState were never installed by the
+    // dispatcher (both gated on workspaceId + runId). chat:ask_choice
+    // returned "no_chat_surface"; state-shaped tools returned
+    // "no_state_channel". Found during pass-9 E2E audit.
+    let seenRunId: string | undefined;
+    registerProjectedTool(makeTool({
+      fn: async (_input, ctx) => {
+        seenRunId = ctx.runId;
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const res = await handleHttpToolRequest(
+      MAKE_REQ({ headers: { 'x-papercusp-workspace': 'default' } }),
+      MAKE_EXTRAS(),
+    );
+    expect(res.status).toBe(200);
+    expect(seenRunId).toBeTruthy();
+    // Should be a fresh UUID-shaped string, not 'standalone' or undefined.
+    expect(seenRunId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$|^run-/);
+  });
+
+  it('JSON path respects explicitly-supplied runId (resume / cross-tool correlation)', async () => {
+    let seenRunId: string | undefined;
+    registerProjectedTool(makeTool({
+      fn: async (_input, ctx) => {
+        seenRunId = ctx.runId;
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const res = await handleHttpToolRequest(
+      MAKE_REQ({ headers: { 'x-papercusp-run': 'caller-supplied-run-id-1234' } }),
+      MAKE_EXTRAS(),
+    );
+    expect(res.status).toBe(200);
+    expect(seenRunId).toBe('caller-supplied-run-id-1234');
+  });
+
   it('returns 403 for role_not_allowed', async () => {
     registerProjectedTool(makeTool({ roles: ['architect'] }));
     const res = await handleHttpToolRequest(
