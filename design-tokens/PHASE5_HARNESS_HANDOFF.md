@@ -11,19 +11,28 @@ Phases 1-4 (shipped 2026-05-13) established the workspace's DTCG design-token sp
 
 Today the harness app has its own DTCG-aware spine in `apps/operator/lib/design-adapter*/` that's independent of the workspace token store. Phase 5 unifies them.
 
+## Design intent — what to PRESERVE
+
+**The harness Design tab uses per-harness DTCG stores by design.** Each harness owns its own design exploration scratchpad; that separation is intentional and confirmed correct (2026-05-13). Phase 5 does NOT unify the stores or rewire `list_tokens` to point at workspace tokens. Phase 5 only **augments** the harness designer-agent's awareness of the workspace brand palette so it doesn't reinvent primitives.
+
+The flow is:
+- **Per-harness store** = mission-scoped scratchpad (designer agent proposes; user accepts)
+- **Workspace store** = brand canon (accepted designs may eventually graduate here)
+
 ## Recommended scope
 
-Two changes, both small and isolated.
+Two augmentations, both small and isolated.
 
-### 5a. Wire the harness Design tab to surface workspace tokens
+### 5a. Add a read-only "Workspace brand palette" reference pane
 
-The "Tokens" pane in `app/design/[slug]/DesignDashboard.tsx` currently queries `/api/plugins/design-phase/list_tokens` (per-harness DTCG store). Extend it to also surface the workspace brand-palette tokens.
+The "Tokens" pane in `app/design/[slug]/DesignDashboard.tsx` keeps querying `/api/plugins/design-phase/list_tokens` (per-harness, primary). **Add a secondary read-only reference section** showing workspace brand tokens so the user can compare proposals against canon without leaving the page.
 
 Concretely:
 
-- Add `/api/agent-mcp/list_workspace_tokens` (or similar) that reads `papercup/design-tokens/*.tokens.json` + `papercup-rust-mobile/design-tokens/mobile.*.tokens.json` (if reachable) and returns a flattened `DtcgToken[]`.
-- Add a tab/filter in the Tokens pane: "Workspace (brand)" vs "Harness (proposed)".
+- Add `/api/agent-mcp/list_workspace_tokens` that reads `papercup/design-tokens/*.tokens.json` + `papercup-rust-mobile/design-tokens/mobile.*.tokens.json` (if reachable) and returns a flattened `DtcgToken[]`.
+- Add a collapsed "Brand reference" sub-section below the per-harness Tokens list.
 - The shared loader can live in `apps/operator/lib/design-adapter/workspace-tokens.ts`.
+- **Do NOT** replace or merge the per-harness store — these are two distinct stores with different lifecycles.
 
 ### 5b. Wire the designer-agent prompt to ingest workspace tokens
 
