@@ -370,7 +370,33 @@ export interface UnifiedToolContext {
    * no client to ask (e.g. non-streaming HTTP).
    */
   askUser?: AskUserCallback;
+
+  /**
+   * Publish the tool's current state snapshot to the state channel.
+   *
+   * Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md §5
+   *
+   * The snapshot is validated against the tool's `state` schema and
+   * replaces the run's current snapshot. Clients reconnecting receive
+   * the latest snapshot — never event history (that's the whole point
+   * of being on the state channel).
+   *
+   * v1: snapshot-only. Passing anything other than a full snapshot
+   * throws. v1.1 will accept JSON-Patch arrays for delta updates
+   * once we measure full-snapshot perf on real tools.
+   *
+   * Throws if the tool has no `state` schema declared, or if the
+   * snapshot fails Zod validation.
+   *
+   * Installed by the dispatcher when (a) ctx has workspaceId + runId
+   * and (b) the tool declared a `state` schema at register time.
+   * Tools should check `if (ctx.publishState)` before calling.
+   */
+  publishState?: PublishStateCallback;
 }
+
+/** ctx.publishState — snapshot-only in v1. */
+export type PublishStateCallback = (snapshot: unknown) => void;
 
 /**
  * `ctx.askUser(spec)` — mid-run interactive prompt. Returns a `CardResponse`
@@ -478,6 +504,25 @@ export interface ProjectedTool {
    * invisible to a voice user).
    */
   modality?: ReadonlyArray<'text' | 'voice'>;
+  /**
+   * State-shaped tool schema (bespoke-card-improvements #1 / T4.3).
+   *
+   * When set, the tool is on the STATE channel: it publishes its
+   * current snapshot via `ctx.publishState(snapshot)`, and clients
+   * reconnecting receive the latest snapshot rather than an event-
+   * history replay. State-shaped tools opt OUT of the replay ring
+   * buffer (M5 — declared at register time, no per-call branch).
+   *
+   * Reconnect semantics fall out for free: state outlives any single
+   * connection while the run is open (5-min retention after run-end).
+   * This is what absorbs the original T4.3 "long-lived disconnected"
+   * design — declare a state schema and reconnect-resilience is
+   * automatic.
+   *
+   * v1 ships SNAPSHOT-ONLY publishState. JSON Patch deltas are
+   * deferred to v1.1 once we measure snapshot-only perf on real tools.
+   */
+  state?: ZodTypeAny;
   /**
    * Typed event channel — Zod schemas keyed by event name. Surfaced
    * via tools/list as JSON-Schema for client discovery. No runtime
