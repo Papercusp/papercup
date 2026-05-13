@@ -33,6 +33,32 @@ export {
 } from './resource-registry';
 export { getPromptCatalog, lookupPrompt } from './prompt-registry';
 export { resolveBearer } from './auth';
+export {
+  onWorkspaceSwitch,
+  dispatchWorkspaceSwitch,
+} from './workspace-lifecycle';
+export type { WorkspaceSwitchCallback } from './workspace-lifecycle';
+export {
+  openRun,
+  closeRun,
+  setOpenCards,
+  setToolState,
+  getSnapshot,
+  subscribe as subscribeStateChannel,
+  dropStateSnapshotsForWorkspaceSwitch,
+} from './state-channel';
+export type {
+  StateSnapshot,
+  VersionedSnapshot,
+} from './state-channel';
+export {
+  registerCard,
+  resolveCardResponse,
+  cancelPendingCardsForRun,
+  cancelPendingCardsForWorkspaceSwitch,
+  _resetCardCorrelatorForTests,
+} from './card-correlator';
+export { _resetStateChannelForTests } from './state-channel';
 export { tierFor } from './capability-tiers';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
@@ -104,6 +130,11 @@ export type {
   PromptDefinition,
   PromptMessage,
   PromptResult,
+  CardSpec,
+  CardResponse,
+  CardPresentation,
+  CardOption,
+  OpenCardSnapshot,
 } from './types';
 
 export {

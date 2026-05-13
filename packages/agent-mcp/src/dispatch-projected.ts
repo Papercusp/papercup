@@ -20,6 +20,13 @@
 import type { AgentRole, ToolResult } from '@papercusp/plugin-sdk';
 import type { ProjectedTool, UnifiedToolContext } from './tool-projection';
 import { openBuffer as openReplayBuffer } from './replay-buffer';
+import {
+  cancelPendingCardsForRun,
+  registerCard,
+} from './card-correlator';
+import { openRun, closeRun } from './state-channel';
+import type { CardResponse, CardSpec } from './types';
+import type { ZodTypeAny } from 'zod';
 
 /* ─── Quota window keying ────────────────────────────────────────────── */
 
@@ -314,11 +321,44 @@ export async function dispatchProjectedTool(
       ...(msg ? { message: msg } : {}),
     });
   };
+  // ctx.askUser — installed when the call has both a workspace and a run
+  // identity, which is what the card-correlator needs to scope cleanup.
+  let askUser: UnifiedToolContext['askUser'] | undefined;
+  if (ctx.workspaceId && ctx.runId) {
+    const wsId = ctx.workspaceId;
+    const runId = ctx.runId;
+    openRun({ workspaceId: wsId, runId });
+    askUser = async <TSchema extends ZodTypeAny>(
+      spec: CardSpec<TSchema>,
+    ): Promise<CardResponse<TSchema>> => {
+      const { result } = registerCard({
+        workspaceId: wsId,
+        runId,
+        spec,
+      });
+      // Race the response against the run's abort signal so a cancel/timeout
+      // resolves with {action:'cancel'} without leaking the deferred.
+      return await new Promise<CardResponse<TSchema>>((resolve) => {
+        const onAbort = () => {
+          abort.signal.removeEventListener('abort', onAbort);
+          resolve({ action: 'cancel' } as CardResponse<TSchema>);
+        };
+        if (abort.signal.aborted) return onAbort();
+        abort.signal.addEventListener('abort', onAbort);
+        void result.then((r) => {
+          abort.signal.removeEventListener('abort', onAbort);
+          resolve(r);
+        });
+      });
+    };
+  }
+
   const handlerCtx: UnifiedToolContext = {
     ...ctx,
     signal: abort.signal,
     emit: wrappedEmit,
     progress: wrappedProgress,
+    ...(askUser ? { askUser } : {}),
   };
 
   try {
@@ -426,6 +466,13 @@ export async function dispatchProjectedTool(
   } finally {
     clearTimeout(timer);
     if (idleTimer) clearInterval(idleTimer);
+    // Cancel any pending askUser cards for this run + close the
+    // state-channel run entry (keeps the snapshot for 5min for late
+    // reconnects, then GCs).
+    if (ctx.runId) {
+      cancelPendingCardsForRun(ctx.runId);
+      closeRun(ctx.runId);
+    }
   }
 }
 
