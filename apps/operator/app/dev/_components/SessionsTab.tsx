@@ -1,8 +1,9 @@
 'use client';
 
-import { Fragment, useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Entry {
   spawn_id: string;
@@ -205,74 +206,49 @@ export default function SessionsTab({ workspaceIds, onRerun }: Props) {
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
       {!loading && !error && (
-        <table className="pc-dev-table">
-          <thead>
-            <tr>
-              <th></th>
-              <th>Spawn</th>
-              <th>Started</th>
-              <th>Workspace</th>
-              <th>Harness</th>
-              <th>Role</th>
-              <th>Tools</th>
-              <th>Errors</th>
-              <th>Duration</th>
-              <th>Parent</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => {
-              const isOpen = expanded === e.spawn_id;
-              const detail = details[e.spawn_id];
+        <div style={{ height: Math.min(720, 32 + entries.length * 28 + 4) }}>
+          <RichGrid<Entry>
+            columns={[
+              {
+                key: 'expand', header: '', width: 0.4, align: 'center',
+                render: ({ row }) => <span className="pc-dev-muted">{expanded === row.spawn_id ? '▾' : '▸'}</span>,
+              },
+              { key: 'spawn', header: 'Spawn', width: 1.2, toCopyText: (r) => r.spawn_id, render: ({ row }) => <span className="pc-dev-slug" title={row.spawn_id}>{row.spawn_id.slice(0, 12)}…</span> },
+              { key: 'started', header: 'Started', width: 1, toCopyText: (r) => r.started_at, render: ({ row }) => <span className="pc-dev-muted" title={row.started_at}>{fmtRelTime(row.started_at)}</span> },
+              { key: 'ws', header: 'Workspace', width: 1, toCopyText: (r) => r.workspace_id, render: ({ row }) => <span className="pc-dev-muted">{row.workspace_id}</span> },
+              { key: 'harness', header: 'Harness', width: 1.2, toCopyText: (r) => r.harness_slug ?? '', render: ({ row }) => <>{row.harness_slug ?? '—'}</> },
+              { key: 'role', header: 'Role', width: 1, toCopyText: (r) => r.role ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.role ?? '—'}</span> },
+              { key: 'tools', header: 'Tools', width: 0.6, align: 'right', toCopyText: (r) => String(r.tool_count), render: ({ row }) => <>{row.tool_count}</> },
+              {
+                key: 'err', header: 'Errors', width: 0.7, align: 'right',
+                toCopyText: (r) => r.error_count > 0 ? String(r.error_count) : '',
+                render: ({ row }) => <span className={row.error_count ? 'pc-dev-api-err' : ''}>{row.error_count > 0 ? row.error_count : ''}</span>,
+              },
+              { key: 'dur', header: 'Duration', width: 0.9, align: 'right', toCopyText: (r) => fmtDuration(r.total_duration_ms), render: ({ row }) => <span className="pc-dev-muted">{fmtDuration(row.total_duration_ms)}</span> },
+              {
+                key: 'parent', header: 'Parent', width: 1,
+                toCopyText: (r) => r.parent_spawn_id ?? '',
+                render: ({ row }) => <span className="pc-dev-muted" title={row.parent_spawn_id ?? ''}>{row.parent_spawn_id ? `${row.parent_spawn_id.slice(0, 8)}…` : '—'}</span>,
+              },
+            ]}
+            rows={entries}
+            getRowId={(r) => r.spawn_id}
+            rowMinHeight={28}
+            headerHeight={32}
+            expandedRowKey={expanded}
+            onRowClick={(row) => toggleExpand(row.spawn_id)}
+            renderExpandedRow={(row) => {
+              const detail = details[row.spawn_id];
               return (
-                <Fragment key={e.spawn_id}>
-                  <tr
-                    className="pc-dev-row-expand"
-                    onClick={() => toggleExpand(e.spawn_id)}
-                  >
-                    <td className="pc-dev-muted">{isOpen ? '▾' : '▸'}</td>
-                    <td className="pc-dev-slug" title={e.spawn_id}>
-                      {e.spawn_id.slice(0, 12)}…
-                    </td>
-                    <td className="pc-dev-muted" title={e.started_at}>
-                      {fmtRelTime(e.started_at)}
-                    </td>
-                    <td className="pc-dev-muted">{e.workspace_id}</td>
-                    <td>{e.harness_slug ?? '—'}</td>
-                    <td className="pc-dev-muted">{e.role ?? '—'}</td>
-                    <td>{e.tool_count}</td>
-                    <td className={e.error_count ? 'pc-dev-api-err' : ''}>
-                      {e.error_count > 0 ? e.error_count : ''}
-                    </td>
-                    <td className="pc-dev-muted">{fmtDuration(e.total_duration_ms)}</td>
-                    <td className="pc-dev-muted" title={e.parent_spawn_id ?? ''}>
-                      {e.parent_spawn_id ? `${e.parent_spawn_id.slice(0, 8)}…` : '—'}
-                    </td>
-                  </tr>
-                  {isOpen && (
-                    <tr className="pc-dev-detail-row">
-                      <td colSpan={10}>
-                        {detailLoading[e.spawn_id] && (
-                          <div className="pc-dev-muted">loading detail…</div>
-                        )}
-                        {!detailLoading[e.spawn_id] && !detail && (
-                          <div className="pc-dev-muted">no detail available</div>
-                        )}
-                        {detail && (
-                          <DetailPanel
-                            detail={detail}
-                            entry={e}
-                            onRerun={onRerun}
-                          />
-                        )}
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
+                <div className="pc-dev-detail-row" style={{ padding: 12 }}>
+                  {detailLoading[row.spawn_id] && <div className="pc-dev-muted">loading detail…</div>}
+                  {!detailLoading[row.spawn_id] && !detail && <div className="pc-dev-muted">no detail available</div>}
+                  {detail && <DetailPanel detail={detail} entry={row} onRerun={onRerun} />}
+                </div>
               );
-            })}
-          </tbody>
-        </table>
+            }}
+          />
+        </div>
       )}
     </div>
   );
@@ -380,58 +356,53 @@ function DetailPanel({
         </h4>
         {detail.invocations.length === 0 && <div className="pc-dev-muted">none</div>}
         {detail.invocations.length > 0 && (
-          <table className="pc-dev-table pc-dev-table-inner">
-            <thead>
-              <tr>
-                <th>At</th>
-                <th>Tool</th>
-                <th>Status</th>
-                <th>Duration</th>
-                <th>Error</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.invocations.map((i) => (
-                <tr key={i.id}>
-                  <td className="pc-dev-muted">{fmtRelTime(i.invoked_at)}</td>
-                  <td className="pc-dev-slug">{i.tool_name}</td>
-                  <td className={i.status !== 'ok' ? 'pc-dev-api-err' : 'pc-dev-ok'}>
-                    {i.status}
-                  </td>
-                  <td className="pc-dev-muted">
-                    {i.duration_ms != null ? fmtDuration(i.duration_ms) : '—'}
-                  </td>
-                  <td className="pc-dev-muted pc-dev-details" title={i.error_message ?? ''}>
-                    {i.error_message ?? '—'}
-                  </td>
-                  <td>
+          <div style={{ height: Math.min(360, 32 + detail.invocations.length * 28 + 4) }}>
+            <RichGrid<Detail['invocations'][number]>
+              columns={[
+                { key: 'at', header: 'At', width: 1.2, toCopyText: (r) => r.invoked_at, render: ({ row }) => <span className="pc-dev-muted">{fmtRelTime(row.invoked_at)}</span> },
+                { key: 'tool', header: 'Tool', width: 2, toCopyText: (r) => r.tool_name, render: ({ row }) => <span className="pc-dev-slug">{row.tool_name}</span> },
+                {
+                  key: 'status', header: 'Status', width: 0.8,
+                  toCopyText: (r) => r.status,
+                  render: ({ row }) => <span className={row.status !== 'ok' ? 'pc-dev-api-err' : 'pc-dev-ok'}>{row.status}</span>,
+                },
+                { key: 'dur', header: 'Duration', width: 0.8, align: 'right', toCopyText: (r) => r.duration_ms != null ? fmtDuration(r.duration_ms) : '', render: ({ row }) => <span className="pc-dev-muted">{row.duration_ms != null ? fmtDuration(row.duration_ms) : '—'}</span> },
+                {
+                  key: 'err', header: 'Error', width: 2,
+                  toCopyText: (r) => r.error_message ?? '',
+                  render: ({ row }) => <span className="pc-dev-muted pc-dev-details" title={row.error_message ?? ''}>{row.error_message ?? '—'}</span>,
+                },
+                {
+                  key: 'open', header: '', width: 0.5, align: 'center',
+                  render: ({ row }) => (
                     <button
                       type="button"
                       className="pc-dev-btn-mini"
                       title="Open in API tab with this tool + spawn context"
                       onClick={() =>
                         onRerun({
-                          toolName: i.tool_name,
+                          toolName: row.tool_name,
                           workspace: entry.workspace_id,
                           harness: entry.harness_slug ?? '',
                           role: entry.role ?? 'architect',
                           run: entry.run_id ?? 'dev-page',
                           spawn: entry.spawn_id,
                           args:
-                            i.args_json && typeof i.args_json === 'object' && !('_truncated' in (i.args_json as Record<string, unknown>))
-                              ? (i.args_json as Record<string, unknown>)
+                            row.args_json && typeof row.args_json === 'object' && !('_truncated' in (row.args_json as Record<string, unknown>))
+                              ? (row.args_json as Record<string, unknown>)
                               : undefined,
                         })
                       }
-                    >
-                      ↗
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    >↗</button>
+                  ),
+                },
+              ]}
+              rows={detail.invocations}
+              getRowId={(r) => r.id}
+              rowMinHeight={28}
+              headerHeight={32}
+            />
+          </div>
         )}
       </section>
 
@@ -440,34 +411,29 @@ function DetailPanel({
           <h4 className="pc-dev-rail-h">
             Child spawns <span className="pc-dev-muted">{detail.children.length}</span>
           </h4>
-          <table className="pc-dev-table pc-dev-table-inner">
-            <thead>
-              <tr>
-                <th>Spawn</th>
-                <th>Role</th>
-                <th>Status</th>
-                <th>Tools</th>
-                <th>Errors</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.children.map((c) => (
-                <tr key={c.spawn_id}>
-                  <td className="pc-dev-slug" title={c.spawn_id}>
-                    {c.spawn_id.slice(0, 12)}…
-                  </td>
-                  <td className="pc-dev-muted">{c.child_role ?? '—'}</td>
-                  <td className={c.status === 'failed' ? 'pc-dev-api-err' : 'pc-dev-ok'}>
-                    {c.status ?? '—'}
-                  </td>
-                  <td>{c.tool_count}</td>
-                  <td className={c.error_count ? 'pc-dev-api-err' : ''}>
-                    {c.error_count > 0 ? c.error_count : ''}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(240, 32 + detail.children.length * 28 + 4) }}>
+            <RichGrid<Detail['children'][number]>
+              columns={[
+                { key: 'spawn', header: 'Spawn', width: 1.5, toCopyText: (r) => r.spawn_id, render: ({ row }) => <span className="pc-dev-slug" title={row.spawn_id}>{row.spawn_id.slice(0, 12)}…</span> },
+                { key: 'role', header: 'Role', width: 1, toCopyText: (r) => r.child_role ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.child_role ?? '—'}</span> },
+                {
+                  key: 'status', header: 'Status', width: 1,
+                  toCopyText: (r) => r.status ?? '',
+                  render: ({ row }) => <span className={row.status === 'failed' ? 'pc-dev-api-err' : 'pc-dev-ok'}>{row.status ?? '—'}</span>,
+                },
+                { key: 'tools', header: 'Tools', width: 0.7, align: 'right', toCopyText: (r) => String(r.tool_count), render: ({ row }) => <>{row.tool_count}</> },
+                {
+                  key: 'err', header: 'Errors', width: 0.7, align: 'right',
+                  toCopyText: (r) => r.error_count > 0 ? String(r.error_count) : '',
+                  render: ({ row }) => <span className={row.error_count ? 'pc-dev-api-err' : ''}>{row.error_count > 0 ? row.error_count : ''}</span>,
+                },
+              ]}
+              rows={detail.children}
+              getRowId={(r) => r.spawn_id}
+              rowMinHeight={28}
+              headerHeight={32}
+            />
+          </div>
         </section>
       )}
 
