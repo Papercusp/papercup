@@ -3762,18 +3762,84 @@ harness.post('/:slug/replan', async (c) => {
   const slug = c.req.param('slug');
   const project = await resolveProject(slug);
   if (!project) return c.json({ error: 'unknown project' }, 404);
-  // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
-  // and the OperatorActionLog component. The action represents the *kickoff*;
-  // the replan's completion is observable via /scoper-result/<invocationId>.
-  const invocationId = await recordUserAction(slug, 'replan', async () => {
-    const r = invokeScoperBackground(project, 'replan');
-    return {
-      summary: `Replan kicked off (invocation ${r.invocationId})`,
-      invocationId: r.invocationId,
-      result: r.invocationId,
-    };
-  });
-  return c.json({ ok: true, invocationId, mode: 'replan' });
+  // Two modes, distinguished by `{overwrite: true}` in the body:
+  //   default — non-destructive: scoper MODE=replan as a background
+  //     invocation. Delta-merges new SPEC.md bullets into the existing
+  //     queue. Completion observable via /scoper-result/<invocationId>.
+  //   overwrite — destructive: wipe features (PG) + validation-contract.md
+  //     (file), then invoke scoper MODE=initial inline. Used by the
+  //     proposals "Replan now" flow after the user accepts bullets that
+  //     materially reshape the spec.
+  const body = await c.req.json().catch(() => ({})) as { overwrite?: boolean };
+  if (!body.overwrite) {
+    // Logged in harness_shared.user_actions; surfaced via /api/user-actions/<slug>
+    // and the OperatorActionLog component. The action represents the *kickoff*;
+    // the replan's completion is observable via /scoper-result/<invocationId>.
+    const invocationId = await recordUserAction(slug, 'replan', async () => {
+      const r = invokeScoperBackground(project, 'replan');
+      return {
+        summary: `Replan kicked off (invocation ${r.invocationId})`,
+        invocationId: r.invocationId,
+        result: r.invocationId,
+      };
+    });
+    return c.json({ ok: true, invocationId, mode: 'replan' });
+  }
+
+  // Destructive path: wipe features in PG (with snapshot), move
+  // validation-contract.md to a backup dir, then invoke scoper
+  // MODE=initial inline (MAX_ITERATIONS=0 skips the orchestration loop).
+  const specPath = join(project.path, 'SPEC.md');
+  if (!existsSync(specPath)) return c.json({ error: 'SPEC.md not found' }, 400);
+  const contractPath = join(harnessDir(project), 'validation-contract.md');
+
+  await mkdir(harnessDir(project), { recursive: true });
+  const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
+  await mkdir(backupDir, { recursive: true });
+  for (const f of STATE_FILES_FOR_BACKUP) {
+    const p = join(harnessDir(project), f);
+    if (existsSync(p)) {
+      const { rename } = await import('node:fs/promises');
+      await rename(p, join(backupDir, f));
+    }
+  }
+  try {
+    const prior = await parseFeatures(project);
+    if (prior.length > 0) {
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(join(backupDir, 'features.pg.json'), JSON.stringify(prior, null, 2));
+      const dbc = dbcFor(project.slug);
+      await dbc.prepare('DELETE FROM harness_features WHERE harness_slug = ?').run(project.slug);
+    }
+  } catch (e: any) {
+    console.warn('[replan] PG feature clear failed:', e?.message ?? e);
+  }
+
+  const orchBin = orchestratorRunBin();
+  const logPath = `/tmp/harness-replan-${project.slug}.log`;
+  return new Promise((resolve) => {
+    const { execFile } = require('node:child_process');
+    execFile('bash', ['-c', `MAX_ITERATIONS=0 npx --no-install tsx ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
+      cwd: project.path,
+      env: {
+        ...process.env,
+        AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+        CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+        HARNESS_DIR: harnessPackageDir(),
+        PROJECT_DIR: project.path,
+        HARNESS_SLUG: project.slug,
+      },
+      maxBuffer: 1024 * 1024,
+      timeout: 5 * 60_000,
+    }, async (err: any, stdout: string, stderr: string) => {
+      const produced = (await parseFeatures(project)).length > 0 && existsSync(contractPath);
+      if (err && !produced) {
+        resolve(c.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, 500));
+        return;
+      }
+      resolve(c.json({ ok: true, mode: 'initial', produced, logPath, stdout: stdout.slice(-2048), stderr: stderr.slice(-1024), backupDir }));
+    });
+  }) as Promise<Response>;
 });
 
 /**
@@ -4033,68 +4099,6 @@ harness.post('/:slug/archive', async (c) => {
       let sizeBytes = 0;
       try { sizeBytes = statSync(archivePath).size; } catch {}
       resolve(c.json({ ok: true, id: archiveName, sizeBytes, reset: !!body.reset, resetRemoved }));
-    });
-  }) as Promise<Response>;
-});
-
-harness.post('/:slug/replan', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const specPath = join(project.path, 'SPEC.md');
-  if (!existsSync(specPath)) return c.json({ error: 'SPEC.md not found' }, 400);
-
-  // Allow overwriting existing plan only when body.overwrite: true. Otherwise reject
-  // if features.json exists (avoids blowing away active mission state).
-  const body = await c.req.json().catch(() => ({})) as { overwrite?: boolean };
-  const featuresPath = join(harnessDir(project), 'features.json');
-  const contractPath = join(harnessDir(project), 'validation-contract.md');
-  if ((existsSync(featuresPath) || existsSync(contractPath)) && !body.overwrite) {
-    return c.json({ error: 'scoper output already exists; pass {overwrite: true} to replan' }, 409);
-  }
-
-  // Ensure harness dir exists, then temporarily move existing scoper output so
-  // run.sh's plan step (scoper MODE=initial) fires.
-  await mkdir(harnessDir(project), { recursive: true });
-  const backupDir = join(harnessDir(project), `.replan-backup-${Date.now()}`);
-  if (body.overwrite) {
-    await mkdir(backupDir, { recursive: true });
-    for (const f of STATE_FILES_FOR_BACKUP) {
-      const p = join(harnessDir(project), f);
-      if (existsSync(p)) {
-        const { rename } = await import('node:fs/promises');
-        await rename(p, join(backupDir, f));
-      }
-    }
-  }
-
-  const orchBin = orchestratorRunBin();
-  const logPath = `/tmp/harness-replan-${project.slug}.log`;
-  // We don't want to run the full orchestration loop — just the
-  // pre-loop / initial scoper. The TS orchestrator's pre-loop gate
-  // ("if missing features.json + contract, invoke scoper MODE=initial")
-  // runs before the main iteration loop; MAX_ITERATIONS=0 prevents the
-  // loop body from entering.
-  return new Promise((resolve) => {
-    const { execFile } = require('node:child_process');
-    execFile('bash', ['-c', `MAX_ITERATIONS=0 npx --no-install tsx ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
-      cwd: project.path,
-      env: {
-        ...process.env,
-        AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-        CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-        HARNESS_DIR: harnessPackageDir(),
-        PROJECT_DIR: project.path,
-        HARNESS_SLUG: project.slug,
-      },
-      maxBuffer: 1024 * 1024,
-      timeout: 5 * 60_000,
-    }, (err: any, stdout: string, stderr: string) => {
-      const produced = existsSync(featuresPath) && existsSync(contractPath);
-      if (err && !produced) {
-        resolve(c.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, 500));
-        return;
-      }
-      resolve(c.json({ ok: true, produced, logPath, stdout: stdout.slice(-2048), stderr: stderr.slice(-1024), backupDir: body.overwrite ? backupDir : null }));
     });
   }) as Promise<Response>;
 });
