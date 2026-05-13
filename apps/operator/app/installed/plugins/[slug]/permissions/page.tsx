@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import RouteLink from '../../../../_components/RouteLink';
 import { Checkbox } from '../../../../harness/Checkbox';
 import { explainCapability, tierBadgeColor } from '@/lib/capability-explain';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface ManifestResp {
   name: string;
@@ -140,56 +141,62 @@ export default function PluginPermissionsPage({
         <div className="pc-card">This plugin declares no capabilities.</div>
       ) : harnesses.length === 0 ? (
         <div className="pc-card">No harnesses registered. Create a harness first to manage grants.</div>
-      ) : (
-        <div className="pc-card" style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr>
-                <th style={{ textAlign: 'left', padding: '8px 12px', borderBottom: '1px solid var(--border, #2a2a2a)' }}>Capability</th>
-                {harnesses.map((h) => (
-                  <th key={h.slug} style={{ textAlign: 'center', padding: '8px 12px', borderBottom: '1px solid var(--border, #2a2a2a)' }}>
-                    <code>{h.slug}</code>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {explained.map(({ cap, label, tier }) => (
-                <tr key={cap}>
-                  <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border, #1a1a1a)' }}>
-                    <div style={{ fontWeight: 500 }}>{label}</div>
-                    <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
-                      <code style={{ fontSize: 11, opacity: 0.7 }}>{cap}</code>
-                      <span style={{
-                        fontSize: 10,
-                        textTransform: 'uppercase',
-                        padding: '1px 6px',
-                        borderRadius: 3,
-                        background: tierBadgeColor(tier),
-                        color: 'white',
-                      }}>{tier}</span>
-                    </div>
-                  </td>
-                  {harnesses.map((h) => {
-                    const granted = grants[h.slug]?.has(cap) ?? false;
-                    const key = `${h.slug}:${cap}`;
-                    return (
-                      <td key={h.slug} style={{ textAlign: 'center', padding: '10px 12px', borderBottom: '1px solid var(--border, #1a1a1a)' }}>
-                        <Checkbox
-                          checked={granted}
-                          disabled={busy === key}
-                          onChange={() => toggle(h.slug, cap, granted)}
-                          ariaLabel={`Grant ${cap} to ${h.slug}`}
-                        />
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      ) : (() => {
+        type CapRow = (typeof explained)[number];
+        const columns: ColumnDef<CapRow>[] = [
+          {
+            key: 'capability', header: 'Capability', width: 3,
+            toCopyText: (r) => `${r.label} (${r.cap}) [${r.tier}]`,
+            render: ({ row }) => (
+              <div>
+                <div style={{ fontWeight: 500 }}>{row.label}</div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 2 }}>
+                  <code style={{ fontSize: 11, opacity: 0.7 }}>{row.cap}</code>
+                  <span style={{
+                    fontSize: 10,
+                    textTransform: 'uppercase',
+                    padding: '1px 6px',
+                    borderRadius: 3,
+                    background: tierBadgeColor(row.tier),
+                    color: 'white',
+                  }}>{row.tier}</span>
+                </div>
+              </div>
+            ),
+          },
+          ...harnesses.map<ColumnDef<CapRow>>((h) => ({
+            key: `g:${h.slug}`,
+            header: <code>{h.slug}</code>,
+            headerText: h.slug,
+            width: 1,
+            align: 'center',
+            toCopyText: (r) => (grants[h.slug]?.has(r.cap) ? '✓' : ''),
+            render: ({ row }) => {
+              const granted = grants[h.slug]?.has(row.cap) ?? false;
+              const key = `${h.slug}:${row.cap}`;
+              return (
+                <Checkbox
+                  checked={granted}
+                  disabled={busy === key}
+                  onChange={() => toggle(h.slug, row.cap, granted)}
+                  ariaLabel={`Grant ${row.cap} to ${h.slug}`}
+                />
+              );
+            },
+          })),
+        ];
+        return (
+          <div className="pc-card" style={{ height: Math.min(640, 36 + explained.length * 56 + 4) }}>
+            <RichGrid<CapRow>
+              columns={columns}
+              rows={explained}
+              getRowId={(r) => r.cap}
+              rowMinHeight={56}
+              headerHeight={36}
+            />
+          </div>
+        );
+      })()}
     </div>
   );
 }
