@@ -766,7 +766,7 @@ Subscribers wired in:
 - `card-correlator.ts`: `onWorkspaceSwitch(cancelPendingCardsForWorkspaceSwitch)`.
 - `state-publisher.ts` (PR 2): `onWorkspaceSwitch(dropStateSnapshotsForWorkspaceSwitch)`.
 
-Caller (operator on session/workspace change) invokes `dispatchWorkspaceSwitch(newWorkspaceId)`.
+Caller (operator on session/workspace change) invokes `dispatchWorkspaceSwitch(leavingWorkspaceId)`. The argument is the workspace whose state to drop — the one being switched AWAY from, not the new active one. Wired in `apps/operator/app/api/workspaces/switch/route.ts` (audit6 — pass 7 corrected the plan-doc wording to match).
 
 ---
 

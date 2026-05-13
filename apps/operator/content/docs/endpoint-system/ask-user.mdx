@@ -149,6 +149,24 @@ If the run aborts at any point, every open card under the run is resolved `{acti
 
 If the user switches workspaces, every open card in the prior workspace is resolved `{action:'cancel'}` via the `onWorkspaceSwitch` hook.
 
+## Cancelling an entire run
+
+A user can dismiss every pending card under a run with one click. The chat surface (`PendingCardsBar`) renders a "Cancel" button alongside the head card. Click → `POST /api/operator/conversations/:id/run-cancel`:
+
+```
+POST /api/operator/conversations/:convId/run-cancel
+Cookie: <session>
+Content-Type: application/json
+
+{ "runId": "<run-uuid>", "workspaceId": "<workspace-id>" }
+```
+
+The server calls `cancelPendingCardsForRun(runId)` — every pending card's deferred resolves `{action:'cancel'}`. Tools awaiting those cards see cancel and (typically) throw an "operation cancelled" error that the dispatcher catches.
+
+Same auth + rate-limit contract as `/card-response`: session-cookie required (401 if missing), 30 RPS per session user, 404 on cross-workspace runId.
+
+The client-side `PendingCardsBar` also optimistically dismisses ALL cards from the cancelled run (not just the head) — even if the SSE state-snapshot update is delayed, the local UI clears immediately.
+
 ## Auth, defense in depth, rate limit
 
 The `/card-response` endpoint requires a session cookie (401 if missing). Beyond that, the card-correlator validates `expectedWorkspaceId` against the card's stored workspace — even if a caller bypasses the session check, cross-workspace replay returns 404.
@@ -169,7 +187,24 @@ const r = await askUserLocal({
 });
 ```
 
-Same `CardSpec` / `CardResponse` types. Different transport: a global subscriber registry in the React tree. The host component (OracleDock, ChatPane) subscribes and renders the card; the first resolver wins.
+Same `CardSpec` / `CardResponse` types. Different transport: a global subscriber registry in the React tree.
+
+To **render** an `askUserLocal` prompt, mount a `LocalCardHost` somewhere in the React tree:
+
+```tsx
+import { LocalCardHost } from '@/app/_components/chat/LocalCardHost';
+
+function MyLayout() {
+  return (
+    <>
+      {/* …app chrome… */}
+      <LocalCardHost />
+    </>
+  );
+}
+```
+
+`LocalCardHost` subscribes to the `askUserLocal` registry on mount, queues incoming cards, and reuses the same `AskChoiceCard` / `InputCard` renderer dispatch as `PendingCardsBar` (so cards look identical regardless of which path emitted them). The operator chat sidebar already mounts one `LocalCardHost`; without any host mounted, every `askUserLocal` call immediately resolves `{action:'cancel'}`.
 
 `askUserLocal` and `ctx.askUser` are **not interchangeable**. Use `ctx.askUser` when the prompt is in flight inside a tool execution; use `askUserLocal` when the prompt is purely a UI affordance.
 

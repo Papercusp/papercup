@@ -98,6 +98,25 @@ The client-side `askOperatorViaSse` warn-logs when a voice turn arrives without 
 
 If you see this in production, the brain's voice-mode prompt regressed.
 
+## Cards on voice — `fallbackText`
+
+The bespoke-card-improvements arc (`ctx.askUser`) added a state channel that delivers card payloads to chat surfaces. Voice doesn't render cards — there are no buttons to click — but a tool that emits a card during a voice turn still wants the user to hear *something*.
+
+The `CardSpec.fallbackText` field bridges this gap. When set, the operator-converse SSE forwarder picks up `state-snapshot` events and appends each card's `fallbackText` (or `prompt` as a fallback) to the spoken response:
+
+```ts
+ctx.askUser({
+  prompt: 'Did you mean X or Y?',
+  dataSchema: z.object({ choice: z.enum(['x', 'y']) }),
+  presentation: { kind: 'radio', options: [...] },
+  fallbackText: 'Did you mean X or Y?',   // voice surfaces speak this
+});
+```
+
+Gating (audit5+): the `operator-converse` SSE only forwards `state-snapshot` events when `body.modality === 'voice'`, and only forwards snapshots with at least one openCard carrying `fallbackText`. This avoids cross-conversation leak (a text turn's card would otherwise be spoken in a concurrent voice turn) and keeps state-shaped tools (`ctx.publishState` without cards) off the voice path.
+
+Today `chat:ask_choice` is `modality: ['text']` so it never reaches voice via the catalog. The `fallbackText` plumbing is for **future voice-capable card tools**. Voice still can't *send* a structured `/card-response` payload — that requires intent extraction the framework doesn't do today. The user must click the card via the chat surface to actually respond.
+
 ## See also
 
 - [Transports](./transports.mdx) — how typed events project across HTTP / MCP / IPC
