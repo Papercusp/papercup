@@ -269,3 +269,150 @@ describe('All five tools — common framework integration', () => {
     }
   });
 });
+
+describe('oracle:chat (JSON-shape delta wire)', () => {
+  it('declares delta as z.object (JSON wire), not z.string', async () => {
+    vi.doMock('@/lib/agent-chat-stream', () => ({
+      runAgentChat: () => mockAgentChat([]),
+    }));
+    vi.doMock('@/lib/agent-tools/oracle/prompts', () => ({
+      composeOraclePrompt: async () => ({ promptText: 'PROMPT', tutorialIsFinalStep: false }),
+      buildOracleMcpConfig: async () => ({ mcpServers: {} }),
+      oracleToolEventFilter: () => null,
+      ORACLE_ALLOWED_TOOLS: [],
+    }));
+    await import('@/lib/agent-tools/oracle/chat');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+
+    const tool = lookupByMcpName('oracle:chat');
+    expect(tool, 'oracle:chat registered').toBeTruthy();
+    // Unlike architect:chat (raw text delta), oracle's consumer at
+    // OracleDock.tsx:840 does JSON.parse(data).text — wire must be JSON.
+    expect(tool!.eventWireKinds?.delta).toBe('json');
+    expect(tool!.eventWireKinds?.error).toBe('json');
+    expect(tool!.eventWireKinds?.tool_call).toBe('json');
+    expect(tool!.eventWireKinds?.cost).toBe('json');
+  });
+
+  it('emits delta/cost via JSON wire + returns final text', async () => {
+    vi.doMock('@/lib/agent-chat-stream', () => ({
+      runAgentChat: () =>
+        mockAgentChat([
+          { type: 'delta', text: 'Hello ' },
+          { type: 'delta', text: 'world' },
+          { type: 'result', costUsd: 0.0012, tokensIn: 30, tokensOut: 5 },
+        ]),
+    }));
+    vi.doMock('@/lib/agent-tools/oracle/prompts', () => ({
+      composeOraclePrompt: async () => ({ promptText: 'PROMPT', tutorialIsFinalStep: false }),
+      buildOracleMcpConfig: async () => ({ mcpServers: {} }),
+      oracleToolEventFilter: () => null,
+      ORACLE_ALLOWED_TOOLS: [],
+    }));
+    const { default: oracle } = await import('@/lib/agent-tools/oracle/chat');
+    const { events, ctx } = recordingCtx();
+
+    const result = (await oracle.handler(
+      { messages: [{ role: 'user', content: 'hi' }], currentPath: '', tutorialMode: false },
+      ctx,
+    )) as { content: Array<{ type: 'text'; text: string }> };
+
+    const deltas = events.filter((e) => e.name === 'delta');
+    expect(deltas).toHaveLength(2);
+    expect((deltas[0]!.data as { text: string }).text).toBe('Hello ');
+    expect((deltas[1]!.data as { text: string }).text).toBe('world');
+
+    const costEv = events.find((e) => e.name === 'cost');
+    expect(costEv).toBeTruthy();
+    expect((costEv!.data as { usd: number }).usd).toBe(0.0012);
+
+    expect(result.content[0]!.text).toBe('Hello world');
+  });
+
+  it('emits tutorial_end when composeOraclePrompt flags final step', async () => {
+    vi.doMock('@/lib/agent-chat-stream', () => ({
+      runAgentChat: () => mockAgentChat([]),
+    }));
+    vi.doMock('@/lib/agent-tools/oracle/prompts', () => ({
+      composeOraclePrompt: async () => ({ promptText: 'PROMPT', tutorialIsFinalStep: true }),
+      buildOracleMcpConfig: async () => ({ mcpServers: {} }),
+      oracleToolEventFilter: () => null,
+      ORACLE_ALLOWED_TOOLS: [],
+    }));
+    const { default: oracle } = await import('@/lib/agent-tools/oracle/chat');
+    const { events, ctx } = recordingCtx();
+
+    await oracle.handler(
+      { messages: [{ role: 'user', content: 'stop' }], currentPath: '', tutorialMode: true },
+      ctx,
+    );
+
+    expect(events.find((e) => e.name === 'tutorial_end')).toBeTruthy();
+  });
+});
+
+describe('agent_chats:chat (thin-slice JSON-shape delta wire)', () => {
+  it('declares delta + error as JSON wire (consumer at ChatPanel.tsx parses)', async () => {
+    vi.doMock('@/lib/agent-chat-stream', () => ({
+      runAgentChat: () => mockAgentChat([]),
+    }));
+    await import('@/lib/agent-tools/agent_chats/chat');
+    const { lookupByMcpName } = await import('@papercusp/agent-mcp/tool-projection');
+
+    const tool = lookupByMcpName('agent_chats:chat');
+    expect(tool, 'agent_chats:chat registered').toBeTruthy();
+    expect(tool!.eventWireKinds?.delta).toBe('json');
+    expect(tool!.eventWireKinds?.error).toBe('json');
+  });
+
+  it('streams deltas and returns rollup as JSON-encoded ToolResult content', async () => {
+    vi.doMock('@/lib/agent-chat-stream', () => ({
+      runAgentChat: () =>
+        mockAgentChat([
+          { type: 'delta', text: 'one ' },
+          { type: 'delta', text: 'two' },
+          { type: 'result', costUsd: 0.005, tokensIn: 100, tokensOut: 50, finalText: 'one two' },
+        ]),
+    }));
+    const { default: chat } = await import('@/lib/agent-tools/agent_chats/chat');
+    const { events, ctx } = recordingCtx();
+
+    const result = (await chat.handler(
+      { promptText: 'PROMPT', cwd: '/tmp' },
+      ctx,
+    )) as { content: Array<{ type: 'text'; text: string }> };
+
+    const deltas = events.filter((e) => e.name === 'delta');
+    expect(deltas).toHaveLength(2);
+
+    // Rollup is JSON-stringified in content[0].text — route shim parses.
+    const rollup = JSON.parse(result.content[0]!.text) as {
+      finalText: string;
+      tokensIn: number;
+      tokensOut: number;
+      costUsd: number;
+    };
+    expect(rollup.finalText).toBe('one two');
+    expect(rollup.tokensIn).toBe(100);
+    expect(rollup.tokensOut).toBe(50);
+    expect(rollup.costUsd).toBe(0.005);
+  });
+
+  it('emits error event when runAgentChat yields a mid-stream error', async () => {
+    vi.doMock('@/lib/agent-chat-stream', () => ({
+      runAgentChat: () =>
+        mockAgentChat([
+          { type: 'delta', text: 'partial' },
+          { type: 'error', message: 'agent crashed', stderr: 'oops' },
+        ]),
+    }));
+    const { default: chat } = await import('@/lib/agent-tools/agent_chats/chat');
+    const { events, ctx } = recordingCtx();
+
+    await chat.handler({ promptText: 'PROMPT' }, ctx);
+
+    const errorEv = events.find((e) => e.name === 'error');
+    expect(errorEv).toBeTruthy();
+    expect((errorEv!.data as { message: string }).message).toBe('agent crashed');
+  });
+});

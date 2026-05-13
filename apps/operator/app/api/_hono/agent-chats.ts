@@ -21,13 +21,16 @@
  *   DELETE /:slug/agent-chats/:chatId               → archive (sets archived_at)
  */
 import type { Hono } from 'hono';
-import { stream, streamSSE } from 'hono/streaming';
+import { stream } from 'hono/streaming';
+import { sseResponse } from '@restart/sse';
+import { dispatchProjectedToolStream, lookupByMcpName } from '@papercusp/agent-mcp';
 import { existsSync, readFileSync } from 'node:fs';
 import { notifySyncInvalidate } from '@/lib/sync-sse';
 import { join } from 'node:path';
 import { getLegacyClient } from '@restart/db-org';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
-import { runAgentChat } from '@/lib/agent-chat-stream';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
+import '@/lib/agent-tools/index';
 import {
   readFeatureLockState,
   rowToChat,
@@ -276,99 +279,142 @@ export function registerAgentChats(harness: Hono): void {
 
     activeChats.set(chatId, { startedAt: Date.now() });
 
-    return streamSSE(c, async (sseStream) => {
-      const send = async (event: string, data: Record<string, unknown>) => {
-        try { await sseStream.writeSSE({ event, data: JSON.stringify(data) }); }
-        catch { /* client disconnected — best effort */ }
-      };
+    // Spawn claude with cwd set to the harness project directory so its
+    // session-scoped path restriction allows reading harness state and
+    // feature docs. Without this, claude is locked to the dev-server's
+    // cwd and cannot read any of the inputs the role prompt references.
+    const projectDir = await projectDirForSlug(slug);
 
-      // Spawn claude with cwd set to the harness project directory so its
-      // session-scoped path restriction allows reading harness state and
-      // feature docs. Without this, claude is locked to the dev-server's
-      // cwd and cannot read any of the inputs the role prompt references.
-      const projectDir = await projectDirForSlug(slug);
+    const tool = lookupByMcpName('agent_chats:chat');
+    if (!tool) {
+      activeChats.delete(chatId);
+      return c.json({ error: 'agent_chats:chat tool not registered' }, 500);
+    }
 
-      let assistantText = '';
-      let tokensIn = 0;
-      let tokensOut = 0;
-      let costUsd = 0;
-      let lastErrorMessage: string | null = null;
-      let lastErrorStderr: string | undefined;
+    return sseResponse({
+      signal: c.req.raw.signal,
+      setup: async (sink) => {
+        let assistantText = '';
+        let tokensIn = 0;
+        let tokensOut = 0;
+        let costUsd = 0;
+        let lastErrorMessage: string | null = null;
+        let lastErrorStderr: string | undefined;
+        let toolError: { code: string; message: string } | null = null;
 
-      try {
-        const stream = runAgentChat({
-          promptText: assembled.text,
-          cwd: projectDir ?? undefined,
-        });
-        for await (const ev of stream) {
-          if (ev.type === 'delta') {
-            assistantText += ev.text;
-            await send('delta', { text: ev.text });
-          } else if (ev.type === 'result') {
-            tokensIn = ev.tokensIn;
-            tokensOut = ev.tokensOut;
-            costUsd = ev.costUsd;
-            if (ev.finalText.length > assistantText.length) {
-              assistantText = ev.finalText;
+        try {
+          const ctx = {
+            workspaceId: activeWorkspaceId(),
+            harnessSlug: slug,
+            role: 'operator' as const,
+            runId: assembled.runId,
+            spawnId: `agent_chats-${chatId}`,
+            log: () => { /* */ },
+            progress: () => { /* */ },
+            emit: () => { /* overridden by dispatcher */ },
+            signal: c.req.raw.signal,
+            spawn: async () => { throw new Error('spawn not available in agent_chats shim'); },
+            secret: async () => null,
+            projectDir: projectDir ?? '',
+            stateDir: '',
+          };
+
+          for await (const ev of dispatchProjectedToolStream(
+            tool,
+            'agent_chats:chat',
+            { promptText: assembled.text, cwd: projectDir ?? undefined },
+            ctx as never,
+            undefined as never,
+          )) {
+            if (ev.kind === 'event') {
+              if (ev.name === 'delta') {
+                const text = (ev.data as { text?: string })?.text ?? '';
+                assistantText += text;
+                sink.event('delta', { text });
+              } else if (ev.name === 'error') {
+                const d = ev.data as { message?: string; stderr?: string };
+                lastErrorMessage = d.message ?? 'unknown error';
+                lastErrorStderr = d.stderr;
+              }
+            } else if (ev.kind === 'done') {
+              // ToolResult.content carries the rollup the route needs to persist.
+              try {
+                const blob = ev.result?.content?.[0];
+                if (blob && 'text' in blob && typeof blob.text === 'string') {
+                  const parsed = JSON.parse(blob.text) as {
+                    finalText?: string;
+                    tokensIn?: number;
+                    tokensOut?: number;
+                    costUsd?: number;
+                  };
+                  if (parsed.finalText && parsed.finalText.length > assistantText.length) {
+                    assistantText = parsed.finalText;
+                  }
+                  tokensIn = parsed.tokensIn ?? 0;
+                  tokensOut = parsed.tokensOut ?? 0;
+                  costUsd = parsed.costUsd ?? 0;
+                }
+              } catch { /* malformed tool result; fall through to whatever we accumulated */ }
+            } else if (ev.kind === 'error') {
+              toolError = ev.error;
             }
-          } else if (ev.type === 'error') {
-            lastErrorMessage = ev.message;
-            lastErrorStderr = ev.stderr;
           }
-          // tool_call events from agent-chats are not surfaced today —
-          // role-scoped agents don't have an MCP config attached. If a
-          // future role spawns with tools, add a forwarder here.
+        } finally {
+          activeChats.delete(chatId);
         }
-      } finally {
-        activeChats.delete(chatId);
-      }
 
-      if (lastErrorMessage) {
-        await send('error', { message: lastErrorMessage, stderr: lastErrorStderr });
-        await sseStream.close();
-        return;
-      }
+        if (toolError) {
+          sink.event('error', { message: toolError.message });
+          sink.close();
+          return;
+        }
+        if (lastErrorMessage) {
+          sink.event('error', { message: lastErrorMessage, stderr: lastErrorStderr });
+          sink.close();
+          return;
+        }
 
-      const finalAssistantTurn: TranscriptTurn = {
-        role: 'assistant',
-        content: assistantText,
-        ts: new Date().toISOString(),
-        tokens_in: tokensIn,
-        tokens_out: tokensOut,
-        cost_cents: Math.round(costUsd * 100),
-      };
-      const finalTranscript = [...baseTranscript, finalAssistantTurn];
+        const finalAssistantTurn: TranscriptTurn = {
+          role: 'assistant',
+          content: assistantText,
+          ts: new Date().toISOString(),
+          tokens_in: tokensIn,
+          tokens_out: tokensOut,
+          cost_cents: Math.round(costUsd * 100),
+        };
+        const finalTranscript = [...baseTranscript, finalAssistantTurn];
 
-      try {
-        const db = dbForSlug(slug);
-        await db.prepare(
-          `UPDATE agent_chats
-             SET transcript = ?::jsonb,
-                 total_input_tokens = total_input_tokens + ?,
-                 total_output_tokens = total_output_tokens + ?,
-                 total_cost_usd_cents = total_cost_usd_cents + ?,
-                 updated_at = now()
-           WHERE id = ?`,
-        ).run(
-          JSON.stringify(finalTranscript),
-          tokensIn,
-          tokensOut,
-          finalAssistantTurn.cost_cents ?? 0,
-          chatId,
-        );
-      } catch (e) {
-        await send('error', { message: `failed to persist assistant turn: ${(e as Error).message}` });
-        await sseStream.close();
-        return;
-      }
+        try {
+          const db = dbForSlug(slug);
+          await db.prepare(
+            `UPDATE agent_chats
+               SET transcript = ?::jsonb,
+                   total_input_tokens = total_input_tokens + ?,
+                   total_output_tokens = total_output_tokens + ?,
+                   total_cost_usd_cents = total_cost_usd_cents + ?,
+                   updated_at = now()
+             WHERE id = ?`,
+          ).run(
+            JSON.stringify(finalTranscript),
+            tokensIn,
+            tokensOut,
+            finalAssistantTurn.cost_cents ?? 0,
+            chatId,
+          );
+        } catch (e) {
+          sink.event('error', { message: `failed to persist assistant turn: ${(e as Error).message}` });
+          sink.close();
+          return;
+        }
 
-      await send('done', {
-        run_id: assembled.runId,
-        tokens_in: tokensIn,
-        tokens_out: tokensOut,
-        cost_cents: finalAssistantTurn.cost_cents,
-      });
-      await sseStream.close();
+        sink.event('done', {
+          run_id: assembled.runId,
+          tokens_in: tokensIn,
+          tokens_out: tokensOut,
+          cost_cents: finalAssistantTurn.cost_cents,
+        });
+        sink.close();
+      },
     });
   });
 }
