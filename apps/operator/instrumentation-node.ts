@@ -82,7 +82,17 @@ export async function register(): Promise<void> {
       const { createRequire } = await import('node:module');
       const req = createRequire(import.meta.url);
       const path = req('node:path') as typeof import('node:path');
-      const sqlDir = path.resolve(process.cwd(), 'libs/papercusp/libs/db/sql');
+      const fs = req('node:fs') as typeof import('node:fs');
+      // Resolve relative to *repo root*, not process.cwd(). Next dev runs
+      // from apps/operator/, monorepo scripts run from the root — both
+      // must find libs/papercusp/libs/db/sql. Try cwd first, then walk up
+      // to find the libs/papercusp marker.
+      const candidates = [
+        path.resolve(process.cwd(), 'libs/papercusp/libs/db/sql'),
+        path.resolve(process.cwd(), '../../libs/papercusp/libs/db/sql'),
+        path.resolve(process.cwd(), '../../../libs/papercusp/libs/db/sql'),
+      ];
+      const sqlDir = candidates.find((p) => fs.existsSync(p)) ?? candidates[0];
       const { url, source } = getHarnessAdminUrlWithSource();
       const sql = postgres(url, { max: 1, prepare: false });
       try {
