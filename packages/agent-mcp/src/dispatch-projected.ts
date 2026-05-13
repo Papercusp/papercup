@@ -24,7 +24,7 @@ import {
   cancelPendingCardsForRun,
   registerCard,
 } from './card-correlator';
-import { openRun, closeRun } from './state-channel';
+import { openRun, closeRun, setToolState } from './state-channel';
 import type { CardResponse, CardSpec } from './types';
 import type { ZodTypeAny } from 'zod';
 
@@ -283,7 +283,10 @@ export async function dispatchProjectedTool(
   // framework's auto-`done` use their own paths. eventCount is
   // declared at the top of this function so gate-failure paths
   // record it as 0 without a forward reference.
-  const replayCap = tool.replayBufferSize ?? 0;
+  // M5: state-shaped tools (those declaring `state` schema) skip the
+  // ring buffer entirely. Their reconnect strategy is "latest snapshot,"
+  // not "event history" — keeping a buffer would be dead weight.
+  const replayCap = tool.state ? 0 : (tool.replayBufferSize ?? 0);
   const bufferWriter =
     replayCap > 0 && ctx.workspaceId && ctx.runId
       ? openReplayBuffer({
@@ -353,12 +356,40 @@ export async function dispatchProjectedTool(
     };
   }
 
+  // ctx.publishState — installed when (a) the tool declared a state
+  // schema and (b) ctx has a workspaceId + runId. State-shaped tools
+  // get a state channel; tools without `state` see ctx.publishState
+  // undefined and must use ctx.emit instead.
+  let publishState: UnifiedToolContext['publishState'] | undefined;
+  if (tool.state && ctx.workspaceId && ctx.runId) {
+    const stateSchema = tool.state;
+    const runIdLocal = ctx.runId;
+    publishState = (snapshot: unknown) => {
+      // v1: snapshot-only. JSON-Patch deltas (Array shape) deferred to v1.1.
+      if (Array.isArray(snapshot)) {
+        throw new Error(
+          'ctx.publishState v1 is snapshot-only; pass a full state object, not a JSON-Patch array',
+        );
+      }
+      const parsed = stateSchema.safeParse(snapshot);
+      if (!parsed.success) {
+        throw new Error(
+          `ctx.publishState: snapshot does not match tool.state schema: ${parsed.error.issues
+            .map((i) => `${i.path.join('.')}: ${i.message}`)
+            .join('; ')}`,
+        );
+      }
+      setToolState(runIdLocal, parsed.data);
+    };
+  }
+
   const handlerCtx: UnifiedToolContext = {
     ...ctx,
     signal: abort.signal,
     emit: wrappedEmit,
     progress: wrappedProgress,
     ...(askUser ? { askUser } : {}),
+    ...(publishState ? { publishState } : {}),
   };
 
   try {
