@@ -157,8 +157,17 @@ export default defineTool({
       typeof input.uiClientId === 'string' && /^[0-9a-fA-F-]{16,128}$/.test(input.uiClientId)
         ? input.uiClientId
         : null;
+    // workspace= is REQUIRED for state-channel scoping: chat:ask_choice
+    // sub-tool calls (via claude-code → MCP HTTP) need ctx.workspaceId
+    // to match what the chat surface subscribed to (subscribeWorkspace).
+    // Without it, http-projection defaults to workspaceId='*' for the
+    // superuser path and cards from chat:ask_choice never reach the
+    // PendingCardsBar (registers under '*', surface subscribed to real
+    // workspaceId — no overlap). Tool blocks until 60s timeoutSec.
+    //
+    // Plan ref: bespoke-card-improvements-2026-05-13.md §4.4 wire shape.
     const mcpUrl =
-      'http://127.0.0.1:3055/api/mcp?superuser=1' +
+      `http://127.0.0.1:3055/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}` +
       (uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '');
     const superuserToken = readSuperuserToken();
     const mcpConfig =
