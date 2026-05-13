@@ -31,6 +31,7 @@ import {
   dispatchProjectedToolStream,
   emitToSseSink,
   lookupByMcpName,
+  subscribeWorkspace,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 // Side-effect: registers operator:converse + the other operator-side tools.
@@ -100,6 +101,20 @@ export async function POST(req: NextRequest) {
     signal: req.signal,
     setup: async (sink) => {
       sink.onClose(() => ctrl.abort());
+
+      // Forward state-channel snapshots (ctx.askUser cards + ctx.publishState
+      // toolState) onto the same SSE stream as operator:converse's typed
+      // events. Voice consumers (askOperatorViaSse) read `state-snapshot`
+      // events to surface card fallbackText in the spoken response; the
+      // chat surface uses /api/operator/state-snapshot separately and
+      // doesn't need this fan-out.
+      //
+      // Plan: bespoke-card-improvements-2026-05-13.md §4.8 + §6.3
+      const offStateChannel = subscribeWorkspace(workspaceId, (vs) => {
+        if (sink.closed) return;
+        sink.event('state-snapshot', vs);
+      });
+      sink.onClose(offStateChannel);
 
       const ctxBase: UnifiedToolContext = {
         log: (msg) => { console.log(`[operator:converse][tool] ${msg}`); },
