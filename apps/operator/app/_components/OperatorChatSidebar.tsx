@@ -987,4 +987,122 @@ body.has-op-chat .h-header {
 .op-chat-sidebar .ask-choice-submit-hint {
   color: rgba(205, 226, 240, 0.80) !important;
 }
+
+/* Usability follow-up: make the first-run panel, composer, and selectable
+   choices read as practical controls rather than decorative HUD pieces. */
+.op-chat-sidebar .oracle-body {
+  overflow-x: hidden !important;
+}
+
+.op-chat-sidebar .oracle-empty-state {
+  gap: 11px !important;
+}
+
+.op-chat-sidebar .oracle-empty-state-icon {
+  border-color: rgba(125, 211, 252, 0.34) !important;
+  background: rgba(21, 51, 75, 0.98) !important;
+}
+
+.op-chat-sidebar .op-chat-empty-panel {
+  width: min(100%, 284px) !important;
+  padding: 13px !important;
+}
+
+.op-chat-sidebar .op-chat-empty-panel-head {
+  margin-bottom: 10px !important;
+}
+
+.op-chat-sidebar .op-chat-empty-panel-label {
+  letter-spacing: 0.115em !important;
+}
+
+.op-chat-sidebar .op-chat-empty-row {
+  gap: 3px !important;
+  padding: 9px 10px !important;
+  border-color: rgba(125, 211, 252, 0.20) !important;
+  background: rgba(12, 24, 38, 0.98) !important;
+}
+
+.op-chat-sidebar .op-chat-empty-row-title {
+  color: #f7fbff !important;
+  font-size: 12.5px !important;
+  line-height: 1.28 !important;
+}
+
+.op-chat-sidebar .op-chat-empty-row-hint {
+  line-height: 1.42 !important;
+}
+
+.op-chat-sidebar .oracle-msg-content,
+.op-chat-sidebar .oracle-tool-chip,
+.op-chat-sidebar .ask-choice-question,
+.op-chat-sidebar .ask-choice-option-label,
+.op-chat-sidebar .ask-choice-option-hint {
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-option {
+  border-color: rgba(125, 211, 252, 0.18) !important;
+  background: rgba(10, 22, 36, 0.92) !important;
+}
+
+.op-chat-sidebar .ask-choice-option:hover:not([data-disabled="true"]) {
+  border-color: rgba(125, 211, 252, 0.32) !important;
+  background: rgba(15, 34, 53, 0.96) !important;
+}
+
+.op-chat-sidebar .ask-choice-option-label {
+  color: #f6fbff !important;
+  line-height: 1.28 !important;
+  white-space: normal !important;
+}
+
+.op-chat-sidebar .ask-choice-option-hint {
+  color: rgba(205, 226, 240, 0.80) !important;
+  line-height: 1.34 !important;
+  white-space: normal !important;
+}
+
+.op-chat-sidebar .ask-choice-option-icon {
+  border-color: rgba(125, 211, 252, 0.24) !important;
+  background: rgba(56, 189, 248, 0.15) !important;
+}
+
+.op-chat-sidebar .ask-choice-option-chevron {
+  color: rgba(203, 238, 255, 0.82) !important;
+}
+
+.op-chat-sidebar .oracle-form {
+  position: relative;
+  z-index: 4;
+  border-top-color: rgba(125, 211, 252, 0.24) !important;
+  background: rgba(6, 13, 24, 0.99) !important;
+  box-shadow: 0 -14px 26px rgba(0, 0, 0, 0.24) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell {
+  border-color: rgba(125, 211, 252, 0.30) !important;
+  background: rgba(10, 20, 33, 0.99) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell:focus-within {
+  border-color: rgba(103, 232, 249, 0.58) !important;
+  background: rgba(12, 25, 40, 0.99) !important;
+  box-shadow: 0 0 0 1px rgba(103, 232, 249, 0.12) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input {
+  caret-color: #67e8f9;
+}
+
+.op-chat-sidebar .oracle-send-button:not(:disabled) {
+  border-color: rgba(103, 232, 249, 0.48) !important;
+  background: rgba(56, 189, 248, 0.24) !important;
+  color: #f8fdff !important;
+}
+
+.op-chat-sidebar .oracle-send-button:hover:not(:disabled) {
+  border-color: rgba(103, 232, 249, 0.66) !important;
+  background: rgba(56, 189, 248, 0.30) !important;
+}
 `;
