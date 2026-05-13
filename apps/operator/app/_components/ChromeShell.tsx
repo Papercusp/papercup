@@ -14,6 +14,7 @@ import { VoiceLeaderBootstrap } from './voice/VoiceLeaderBootstrap';
 import { HostCheckBanner } from './HostCheckBanner';
 import WorkspaceSwitcher from './WorkspaceSwitcher';
 import UserPicker from './UserPicker';
+import AutoLoginWelcomeToast from './AutoLoginWelcomeToast';
 import UpdateChip from './UpdateChip';
 import { NotificationCenter } from './NotificationCenter';
 import { RecentActionsCenter } from './RecentActionsCenter';
@@ -198,6 +199,7 @@ export default function ChromeShell() {
       <HostCheckBanner />
       <VoiceLeaderBootstrap />
       <AriaLiveRegions />
+      <AutoLoginWelcomeToast />
       {/* OperatorPanel mounts on every page (including /settings/*) so
           clicking the chrome-bar Deck button always opens it. The
           panel returns null when its open state is false, so mounting

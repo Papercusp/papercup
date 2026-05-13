@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getSessionUser, listUsers, updateDisplayName } from '@/lib/auth';
+import { getSessionUser, getSessionUserOrDefault, listUsers, updateDisplayName } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -8,13 +8,22 @@ export const runtime = 'nodejs';
  * GET /api/auth/me — returns the current session user + the list of
  * available users (for the login page's username dropdown).
  *
- * Single endpoint by design: the login page needs both, and the navbar
- * user picker uses the `available` array.
+ * Falls through to the seeded `default` user when no session cookie is
+ * present. This matches the semantics every memory tool +
+ * operator-converse uses via `getSessionUserOrDefault` — the UserPicker,
+ * the welcome toast, and any code that asks "who is signed in?" all
+ * get a consistent answer on auto-login installs.
+ *
+ * Returns `{ user, autoLogin }`. `autoLogin: true` means there was no
+ * cookie and the response is from the default fallback; client code
+ * uses this to suppress "Sign in" CTAs on routes that don't strictly
+ * require explicit auth.
  */
 export async function GET() {
-  const user = await getSessionUser();
+  const sessionUser = await getSessionUser();
+  const user = sessionUser ?? (await getSessionUserOrDefault());
   const available = await listUsers();
-  return NextResponse.json({ user, available });
+  return NextResponse.json({ user, autoLogin: sessionUser === null, available });
 }
 
 /**
