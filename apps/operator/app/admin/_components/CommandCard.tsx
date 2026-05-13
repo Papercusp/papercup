@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createResilientEventSource } from '@restart/sse';
 
 export interface CommandSpec {
   id: string;
@@ -30,19 +31,17 @@ export default function CommandCard({ spec }: { spec: CommandSpec }) {
   const [pid, setPid] = useState<number | null>(null);
   const [showCommand, setShowCommand] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
-  const esRef = useRef<EventSource | null>(null);
+  const esRef = useRef<{ close: () => void } | null>(null);
   const logBoxRef = useRef<HTMLDivElement | null>(null);
 
   const stop = useCallback(() => {
-    if (esRef.current) {
-      esRef.current.close();
-      esRef.current = null;
-    }
+    esRef.current?.close();
+    esRef.current = null;
     setStatus((s) => (s === 'running' ? 'cancelled' : s));
   }, []);
 
   const start = useCallback(() => {
-    if (esRef.current) esRef.current.close();
+    esRef.current?.close();
     setLines([]);
     setStatus('running');
     setExitCode(null);
@@ -50,60 +49,54 @@ export default function CommandCard({ spec }: { spec: CommandSpec }) {
     setStartedAt(Date.now());
     setPid(null);
 
-    const es = new EventSource(`/api/admin/run?cmd=${encodeURIComponent(spec.id)}`);
-    esRef.current = es;
-
-    es.addEventListener('meta', (ev) => {
-      try {
-        const meta = JSON.parse((ev as MessageEvent).data);
-        setPid(meta.pid);
-        if (typeof meta.startedAt === 'number') setStartedAt(meta.startedAt);
-      } catch { /* ignore */ }
+    const source = createResilientEventSource({
+      url: `/api/admin/run?cmd=${encodeURIComponent(spec.id)}`,
+      handlers: {
+        meta: (data) => {
+          try {
+            const meta = JSON.parse(data);
+            setPid(meta.pid);
+            if (typeof meta.startedAt === 'number') setStartedAt(meta.startedAt);
+          } catch { /* ignore */ }
+        },
+        log: (data) => {
+          try {
+            const { stream, line } = JSON.parse(data);
+            setLines((prev) => {
+              const next = prev.length >= MAX_LINES ? prev.slice(-(MAX_LINES - 1)) : prev.slice();
+              next.push({ stream, line, ts: Date.now() });
+              return next;
+            });
+          } catch { /* ignore */ }
+        },
+        exit: (data) => {
+          try {
+            const { code, signal } = JSON.parse(data);
+            setExitCode(code);
+            setExitSignal(signal);
+            setStatus(code === 0 ? 'done' : 'error');
+          } catch { /* ignore */ }
+        },
+        error: (data) => {
+          if (typeof data === 'string' && data.length > 0) {
+            try {
+              const { message } = JSON.parse(data);
+              setLines((prev) => [...prev, { stream: 'stderr', line: `[server-error] ${message}`, ts: Date.now() }]);
+            } catch { /* ignore */ }
+          }
+        },
+        done: () => {
+          source.close();
+          esRef.current = null;
+          setStatus((s) => (s === 'running' ? 'done' : s));
+        },
+      },
     });
-
-    es.addEventListener('log', (ev) => {
-      try {
-        const { stream, line } = JSON.parse((ev as MessageEvent).data);
-        setLines((prev) => {
-          const next = prev.length >= MAX_LINES ? prev.slice(-(MAX_LINES - 1)) : prev.slice();
-          next.push({ stream, line, ts: Date.now() });
-          return next;
-        });
-      } catch { /* ignore */ }
-    });
-
-    es.addEventListener('exit', (ev) => {
-      try {
-        const { code, signal } = JSON.parse((ev as MessageEvent).data);
-        setExitCode(code);
-        setExitSignal(signal);
-        setStatus(code === 0 ? 'done' : 'error');
-      } catch { /* ignore */ }
-    });
-
-    es.addEventListener('error', (ev) => {
-      const data = (ev as MessageEvent).data;
-      if (typeof data === 'string' && data.length > 0) {
-        try {
-          const { message } = JSON.parse(data);
-          setLines((prev) => [...prev, { stream: 'stderr', line: `[server-error] ${message}`, ts: Date.now() }]);
-        } catch { /* ignore */ }
-      }
-    });
-
-    es.addEventListener('done', () => {
-      es.close();
-      esRef.current = null;
-      setStatus((s) => (s === 'running' ? 'done' : s));
-    });
-
-    es.onerror = () => {
-      // Native onerror fires on done close too; we treat exit/done as terminal.
-    };
+    esRef.current = source;
   }, [spec.id]);
 
   useEffect(() => () => {
-    if (esRef.current) esRef.current.close();
+    esRef.current?.close();
   }, []);
 
   useEffect(() => {
