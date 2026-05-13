@@ -58,11 +58,13 @@ function bootIfNeeded(): void {
  * ~/.papercusp/posthog.json changes on disk.
  */
 export function reinitFlagBackend(): void {
-  if (isBackendConfigured() && !isTestingFeaturesEnabled()) {
-    // testingFeatures was just turned off — tear down the PostHog
-    // client so we stop polling and fall back to FLAG_DEFAULTS.
-    initFlagBackend(null);
-  } else if (!isBackendConfigured() && isTestingFeaturesEnabled()) {
+  // Unconditionally tear down + rebuild so callers can use this as
+  // a "force resync" primitive — fixes the silent-drift case where
+  // the SDK client died (HMR / OOM / network reset) but
+  // isBackendConfigured() returns stale state. initFlagBackend(null)
+  // safely no-ops when client is already null.
+  initFlagBackend(null);
+  if (isTestingFeaturesEnabled()) {
     initFlagBackend(getPosthogConfig());
   }
   booted = true;
