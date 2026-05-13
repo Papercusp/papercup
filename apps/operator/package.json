@@ -133,8 +133,8 @@
     "cloudflare": "^6.1.0",
     "cmdk": "^1.1.1",
     "compromise": "^14.15.0",
-    "dockview": "^5.2.0",
-    "dockview-react": "^5.2.0",
+    "dockview": "^6.2.2",
+    "dockview-react": "^6.2.2",
     "drizzle-orm": "^0.45.2",
     "fumadocs-core": "^16.8.5",
     "fumadocs-mdx": "^14.3.2",
@@ -156,6 +156,7 @@
     "ollama": "^0.5.18",
     "openwakeword-js": "^0.1.27",
     "postgres": "^3.4.9",
+    "posthog-js": "^1.219.0",
     "posthog-node": "^5.34.1",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",
@@ -176,8 +177,7 @@
     "vditor": "^3.11.2",
     "verdict-cli": "^0.1.1",
     "ws": "^8.18.0",
-    "zod": "^4.4.2",
-    "posthog-js": "^1.219.0"
+    "zod": "^4.4.2"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.11.3",
