@@ -140,3 +140,4 @@ import './backup/promote';
 import './backup/rollback';
 import './backup/settings_get';
 import './backup/settings_set';
+import './docs/outline';
