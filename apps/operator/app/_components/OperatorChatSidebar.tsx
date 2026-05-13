@@ -808,4 +808,82 @@ body.has-op-chat .h-header {
   box-shadow: none !important;
   transform: none !important;
 }
+
+/* Contrast follow-up: separate chat surfaces from the sidebar background so
+   reading requires less effort at a glance. */
+.op-chat-sidebar .oracle-body {
+  background: rgba(2, 7, 13, 0.99) !important;
+}
+
+.op-chat-controls .op-active-toggle,
+.op-chat-controls .pc-voice-btn,
+.op-chat-controls .pc-voice-settings-link {
+  border-color: rgba(125, 211, 252, 0.26) !important;
+  background: rgba(9, 19, 31, 0.96) !important;
+  color: #eef8ff !important;
+}
+
+.op-chat-controls .pc-voice-btn-orb {
+  background: rgba(56, 189, 248, 0.14) !important;
+}
+
+.op-chat-sidebar .op-chat-banner {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(56, 189, 248, 0.11) !important;
+  color: #e6f6ff !important;
+}
+
+.op-chat-sidebar .oracle-tool-chip {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(56, 189, 248, 0.12) !important;
+  color: #c5edff !important;
+  opacity: 0.92;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  border: 1px solid rgba(148, 163, 184, 0.22) !important;
+  background: linear-gradient(180deg, rgba(14, 27, 41, 0.98), rgba(9, 17, 29, 0.99)) !important;
+  color: #f3f9ff !important;
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-content {
+  border-color: rgba(125, 211, 252, 0.40) !important;
+  background: linear-gradient(180deg, rgba(25, 67, 99, 0.99), rgba(13, 43, 68, 0.99)) !important;
+  color: #f7fbff !important;
+}
+
+.op-chat-sidebar .oracle-input-shell {
+  border-color: rgba(125, 211, 252, 0.24) !important;
+  background: rgba(9, 18, 30, 0.98) !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input {
+  color: #eff8ff !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input::placeholder {
+  color: rgba(186, 230, 253, 0.56) !important;
+}
+
+.op-chat-sidebar .oracle-send-button {
+  border-color: rgba(125, 211, 252, 0.34) !important;
+  background: rgba(56, 189, 248, 0.17) !important;
+  color: #f6fbff !important;
+}
+
+.op-chat-sidebar .oracle-send-button:disabled {
+  border-color: rgba(148, 163, 184, 0.18) !important;
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: rgba(191, 219, 254, 0.72) !important;
+}
+
+.op-chat-sidebar .ask-choice-card {
+  border-color: rgba(125, 211, 252, 0.18) !important;
+  background: rgba(8, 18, 31, 0.98) !important;
+}
+
+.op-chat-sidebar .ask-choice-option {
+  border-color: rgba(125, 211, 252, 0.14) !important;
+  background: rgba(255, 255, 255, 0.028) !important;
+}
 `;
