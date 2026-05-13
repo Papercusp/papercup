@@ -25,7 +25,6 @@ const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.RUST_PORT_UI]: 'Rust-port surfaces (dev)',
   [FLAGS.HARNESS_PHASES]: 'Harness phases',
   [FLAGS.DESIGN]: 'Design tab',
-
 };
 
 const FLAG_BLURBS: Record<FlagKey, string> = {
@@ -37,7 +36,6 @@ const FLAG_BLURBS: Record<FlagKey, string> = {
   [FLAGS.RUST_PORT_UI]: 'Reserved for Tauri build-time gating (no operator UI surface yet).',
   [FLAGS.HARNESS_PHASES]: 'Multi-phase harness (staging / testing / production). Cut for V1 ship.',
   [FLAGS.DESIGN]: 'In-harness design tab + /design route. Cut for V1 ship.',
-
 };
 
 type LoadState =
