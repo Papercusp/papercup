@@ -5,6 +5,7 @@ import { useQueryState, parseAsBoolean } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 import { Tooltip } from './Tooltip';
 import { MarkdownEditor } from '../_components/MarkdownEditor';
+import { useConfirmDialog } from './useConfirmDialog';
 
 interface EscalationPayload {
   escalation: string | null;
@@ -24,6 +25,7 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
   const [busy, setBusy] = useState<null | 'respond' | 'clear' | 'keep'>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showNotes, setShowNotes] = useQueryState('escalationNotes', parseAsBoolean.withDefault(false));
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Escalation content streams from harness_escalations (Zero) — chokidar
   // watcher mirrors .harness/escalation.md + supervisor-notes.md into PG.
@@ -97,7 +99,12 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
 
   const clearWithoutResponse = useCallback(async () => {
     if (busy) return;
-    if (!confirm('Clear escalation.md without leaving a note and resume the run?')) return;
+    if (!await askConfirm({
+      title: 'Clear escalation without responding?',
+      body: 'Clears escalation.md without leaving a note, then resumes the run.',
+      confirmLabel: 'Clear & resume',
+      destructive: true,
+    })) return;
     setBusy('clear');
     try {
       const r = await fetch(`/api/harness/${slug}/escalation/resolve`, {
@@ -117,7 +124,7 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
       setBusy(null);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [busy, slug, onResumed]);
+  }, [busy, slug, onResumed, askConfirm]);
 
   if (!escalated || !payload || !payload.escalation) return null;
 
@@ -131,6 +138,7 @@ export default function EscalationBanner({ slug, escalated, onResumed }: Props) 
       marginBottom: '1rem',
       fontFamily: 'system-ui, sans-serif',
     }}>
+      {confirmEl}
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
         <span style={{ color: '#fbbf24', fontWeight: 700, fontSize: '0.85rem' }}>⚠ ESCALATION — mission halted, awaiting human</span>
         {payload.mtimeMs && (

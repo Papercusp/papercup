@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 
@@ -42,6 +43,7 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
   const [uploading, setUploading] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Live-pushed via Zero (harness_shared.harness_screenshots, mirrored from
   // .harness/screenshots/* by harness-fs-watcher.ts). Replaces
@@ -74,7 +76,12 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
   }, [slug]);
 
   const remove = useCallback(async (id: string) => {
-    if (!confirm(`Delete ${id}?`)) return;
+    if (!await askConfirm({
+      title: `Delete screenshot ${id}?`,
+      body: 'The image is removed from .harness/screenshots/.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    })) return;
     try {
       const r = await fetch(`/api/harness/${slug}/screenshots/${id}`, { method: 'DELETE' });
       if (!r.ok) throw new Error(`${r.status}: ${await r.text()}`);
@@ -84,9 +91,11 @@ export default function ScreenshotsPanel({ slug, onClose }: Props) {
       setToast(`delete failed: ${e}`);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [slug, selected]);
+  }, [slug, selected, askConfirm]);
 
   return (
+    <>
+    {confirmEl}
     <Modal
       open
       onOpenChange={(o) => { if (!o) onClose(); }}
@@ -217,5 +226,6 @@ verdict screenshot http://localhost:5173 {'>'} "$STATE_DIR/screenshots/$FEATURE_
           </div>
         </div>
       </Modal>
+    </>
   );
 }

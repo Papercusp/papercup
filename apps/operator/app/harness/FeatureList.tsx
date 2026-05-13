@@ -2,6 +2,7 @@
 
 import dynamic from 'next/dynamic';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Tooltip } from './Tooltip';
@@ -88,6 +89,7 @@ function FeatureListInner({
   const searchRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [isCompact, setIsCompact] = useState(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const view = BUILT_IN_VIEWS.find((v) => v.id === viewId) ?? BUILT_IN_VIEWS[0];
 
@@ -218,6 +220,7 @@ function FeatureListInner({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {confirmEl}
       {/* Header: filters + search + view mode + actions */}
       <div className="h-feature-toolbar">
         <span className="h-feature-toolbar-title">
@@ -337,7 +340,16 @@ function FeatureListInner({
         }}>
           <span>{selectedArr.length} selected</span>
           <IconButton onClick={() => { onBatchReset(selectedArr); setSelected(new Set()); }} variant="subtle">Reset all</IconButton>
-          <IconButton onClick={() => { if (confirm(`Delete ${selectedArr.length} features?`)) { onBatchDelete(selectedArr); setSelected(new Set()); }}} variant="danger">Delete</IconButton>
+          <IconButton onClick={async () => {
+            if (!await askConfirm({
+              title: `Delete ${selectedArr.length} feature${selectedArr.length === 1 ? '' : 's'}?`,
+              body: 'Deleted features cannot be recovered.',
+              confirmLabel: 'Delete',
+              destructive: true,
+            })) return;
+            onBatchDelete(selectedArr);
+            setSelected(new Set());
+          }} variant="danger">Delete</IconButton>
           <IconButton onClick={() => setSelected(new Set())} variant="ghost">Clear</IconButton>
         </div>
       )}

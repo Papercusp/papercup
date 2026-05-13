@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useSyncQuery } from '@restart/sync';
 import { Modal } from './Modal';
 import { RichGrid, type ColumnDef } from '@restart/grid-core';
@@ -41,6 +42,7 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [resetOnArchive, setResetOnArchive] = useState(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Live-pushed via Zero (harness_shared.harness_archives, mirrored from
   // .harness/archives/*.tar.gz by harness-fs-watcher.ts). Replaces the
@@ -56,7 +58,12 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
   );
 
   const archive = useCallback(async () => {
-    if (resetOnArchive && !confirm('Archive current .harness/ AND reset it for a fresh mission? Transient files will be removed (config.json, hooks/, knowledge.md preserved).')) return;
+    if (resetOnArchive && !await askConfirm({
+      title: 'Archive AND reset .harness/?',
+      body: 'Archives the current mission state, then resets .harness/ for a fresh mission. Transient files are removed (config.json, hooks/, knowledge.md preserved).',
+      confirmLabel: 'Archive & reset',
+      destructive: true,
+    })) return;
     setBusy(true);
     try {
       const r = await fetch(`/api/harness/${slug}/archive`, {
@@ -75,10 +82,15 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, resetOnArchive, onChanged]);
+  }, [slug, resetOnArchive, onChanged, askConfirm]);
 
   const restore = useCallback(async (id: string) => {
-    if (!confirm(`Restore mission state from ${id}? Current .harness/ will be overwritten (a pre-restore snapshot will be created).`)) return;
+    if (!await askConfirm({
+      title: `Restore from archive ${id}?`,
+      body: 'Current .harness/ will be overwritten. A pre-restore snapshot is created first.',
+      confirmLabel: 'Restore',
+      destructive: true,
+    })) return;
     setBusy(true);
     try {
       const r = await fetch(`/api/harness/${slug}/archives/${id}/restore`, {
@@ -97,7 +109,7 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, onChanged]);
+  }, [slug, onChanged, askConfirm]);
 
   return (
     <Modal
@@ -108,6 +120,7 @@ export default function ArchivesPanel({ slug, onClose, onChanged }: Props) {
       zIndex={60}
       contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 900, height: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif', color: '#e5e7eb' }}
     >
+        {confirmEl}
         <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong>Archives — {slug}</strong>
           <span style={{ fontFamily: 'monospace', color: '#6b7280', fontSize: '0.75rem' }}>.harness/archives/</span>

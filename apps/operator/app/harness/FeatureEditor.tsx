@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Modal } from './Modal';
 import { Select } from './Select';
@@ -39,6 +40,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
   const [deprecationReason, setDeprecationReason] = useState<string>(feature?.deprecation_reason ?? '');
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     if (feature) {
@@ -89,7 +91,12 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
 
   const remove = useCallback(async () => {
     if (!feature) return;
-    if (!confirm(`Delete feature ${feature.id}? This cannot be undone.`)) return;
+    if (!await askConfirm({
+      title: `Delete feature ${feature.id}?`,
+      body: 'This cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    })) return;
     setSaving(true);
     try {
       const r = await fetch(`/api/harness/${slug}/features/${feature.id}`, { method: 'DELETE' });
@@ -102,7 +109,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
     } finally {
       setSaving(false);
     }
-  }, [slug, feature, onClose, onSaved]);
+  }, [slug, feature, onClose, onSaved, askConfirm]);
 
   // Audit history — eager via the cross-harness audit subscription.
   // Replaces the lazy /audit fetch when the History section was expanded.
@@ -157,6 +164,7 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
       zIndex={120}
       contentStyle={{ background: '#0b0e14', border: '1px solid #374151', borderRadius: 6, width: '70vw', maxWidth: 720, height: '65vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', fontFamily: 'system-ui, sans-serif' }}
     >
+        {confirmEl}
         {/* Header */}
         <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid #1f2937', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <strong style={{ color: '#e5e7eb' }}>{isCreate ? 'New feature' : `Edit ${feature!.id}`}</strong>

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import Editor from '@monaco-editor/react';
@@ -55,6 +56,7 @@ export function CollectionTab({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Default to first item
   useEffect(() => {
@@ -116,7 +118,13 @@ export function CollectionTab({
 
   const remove = useCallback(async () => {
     if (!selectedId) return;
-    if (!confirm(`Delete ${collection === 'skills' ? 'skill' : 'override'} "${selectedId}"?`)) return;
+    const kind = collection === 'skills' ? 'skill' : 'override';
+    if (!await askConfirm({
+      title: `Delete ${kind} "${selectedId}"?`,
+      body: `The ${kind} will be removed from this collection.`,
+      confirmLabel: 'Delete',
+      destructive: true,
+    })) return;
     setDeleting(true);
     try {
       const r = await fetch(itemUrl(selectedId), { method: 'DELETE' });
@@ -132,7 +140,7 @@ export function CollectionTab({
     } finally {
       setDeleting(false);
     }
-  }, [selectedId, itemUrl, items, reloadItems, collection]);
+  }, [selectedId, itemUrl, items, reloadItems, collection, askConfirm]);
 
   const createNew = useCallback(async () => {
     const name = prompt(`New ${collection === 'skills' ? 'skill' : 'override'} name (lowercase-dash, no extension):`);
@@ -161,6 +169,7 @@ export function CollectionTab({
 
   return (
     <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
+      {confirmEl}
       {/* Sidebar */}
       <div style={{
         width: 220, flexShrink: 0,

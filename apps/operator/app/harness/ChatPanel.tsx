@@ -15,6 +15,7 @@
  * active, a banner makes that visible to the user too.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useConfirmDialog } from './useConfirmDialog';
 import { Send, Archive, Loader2, AlertTriangle, Coins, RotateCcw } from 'lucide-react';
 import { COLORS, FONTS, RADIUS, SIZES } from './theme';
 import { Tooltip } from './Tooltip';
@@ -70,6 +71,7 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
   const [sendState, setSendState] = useState<SendState>({ kind: 'idle' });
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Eager via Zero — subscribe to all chats for this harness; pick out
   // the one matching chatId. Replaces the per-chatId REST fetch so the
@@ -231,12 +233,16 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
   }, [chat, chatId, draft, loadChat, sendState.kind, slug]);
 
   const onArchiveClick = useCallback(async () => {
-    if (!confirm('Archive this chat? The transcript is retained but it disappears from the active list.')) return;
+    if (!await askConfirm({
+      title: 'Archive this chat?',
+      body: 'The transcript is retained but the chat disappears from the active list.',
+      confirmLabel: 'Archive',
+    })) return;
     try {
       await fetch(`/api/harness/${encodeURIComponent(slug)}/agent-chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' });
       onArchive?.();
     } catch { /* best effort */ }
-  }, [slug, chatId, onArchive]);
+  }, [slug, chatId, onArchive, askConfirm]);
 
   const costUsd = useMemo(() => (chat?.total_cost_usd_cents ?? 0) / 100, [chat?.total_cost_usd_cents]);
   const tokensTotal = (chat?.total_input_tokens ?? 0) + (chat?.total_output_tokens ?? 0);
@@ -259,6 +265,7 @@ export default function ChatPanel({ slug, chatId, onArchive }: ChatPanelProps) {
 
   return (
     <div className="chat-panel">
+      {confirmEl}
       <div className="chat-panel__header">
         <span className="chat-panel__role">{chat.role}</span>
         {chat.feature_id && <span className="chat-panel__feature">{chat.feature_id}</span>}
