@@ -33,6 +33,11 @@ export {
 } from './resource-registry';
 export { getPromptCatalog, lookupPrompt } from './prompt-registry';
 export { resolveBearer } from './auth';
+export {
+  onWorkspaceSwitch,
+  dispatchWorkspaceSwitch,
+} from './workspace-lifecycle';
+export type { WorkspaceSwitchCallback } from './workspace-lifecycle';
 export { tierFor } from './capability-tiers';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
