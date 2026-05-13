@@ -3,6 +3,8 @@
 import { useCallback, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useQueryState, parseAsStringEnum } from 'nuqs';
+import { Select } from '@/app/harness/Select';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 /**
  * /dev SQL tab — Monaco-backed read-only SQL playground.
@@ -85,10 +87,15 @@ export default function SqlTab() {
         </button>
         <label className="pc-sql-role">
           Role:
-          <select value={role} onChange={(e) => setRole(e.target.value as 'admin' | 'app')}>
-            <option value="admin">admin (RLS bypass)</option>
-            <option value="app">app (workspace-scoped)</option>
-          </select>
+          <Select
+            value={role}
+            onChange={(v) => setRole(v as 'admin' | 'app')}
+            ariaLabel="SQL role"
+            options={[
+              { value: 'admin', label: 'admin (RLS bypass)' },
+              { value: 'app', label: 'app (workspace-scoped)' },
+            ]}
+          />
         </label>
         {result && !result.error && (
           <span className="pc-sql-stats">
@@ -138,28 +145,26 @@ export default function SqlTab() {
           <>
             {result.rows.length === 0 ? (
               <div className="pc-sql-empty">No rows returned.</div>
-            ) : (
-              <div className="pc-sql-grid-scroll">
-                <table className="pc-sql-grid">
-                  <thead>
-                    <tr>
-                      {(result.columns ?? []).map((c) => (
-                        <th key={c}>{c}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {result.rows.map((r, i) => (
-                      <tr key={i}>
-                        {(result.columns ?? []).map((c) => (
-                          <td key={c}>{renderCell(r[c])}</td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            ) : (() => {
+              const cols: ColumnDef<Record<string, unknown>>[] = (result.columns ?? []).map((c) => ({
+                key: `col:${c}`,
+                header: c,
+                width: 1,
+                toCopyText: (r) => renderCell(r[c]),
+                render: ({ row }) => <>{renderCell(row[c])}</>,
+              }));
+              return (
+                <div style={{ height: Math.min(560, 32 + result.rows.length * 28 + 4) }}>
+                  <RichGrid<Record<string, unknown>>
+                    columns={cols}
+                    rows={result.rows}
+                    getRowId={(r) => JSON.stringify(r)}
+                    rowMinHeight={28}
+                    headerHeight={32}
+                  />
+                </div>
+              );
+            })()}
           </>
         )}
       </div>
