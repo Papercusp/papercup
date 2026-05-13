@@ -1119,7 +1119,9 @@ body.has-op-chat .h-header {
 }
 
 .op-chat-sidebar button.op-chat-empty-row {
+  position: relative;
   width: 100%;
+  padding-right: 58px !important;
   appearance: none;
   color: inherit;
   font: inherit;
@@ -1127,9 +1129,38 @@ body.has-op-chat .h-header {
   cursor: pointer;
 }
 
+.op-chat-sidebar button.op-chat-empty-row::after {
+  content: "Draft";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  height: 19px;
+  padding: 0 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(125, 211, 252, 0.24);
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  color: rgba(224, 247, 255, 0.90);
+  font-size: 9.5px;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+  transform: translateY(-50%);
+}
+
 .op-chat-sidebar button.op-chat-empty-row:hover:not(:disabled) {
   border-color: rgba(103, 232, 249, 0.36) !important;
   background: rgba(16, 35, 55, 0.99) !important;
+}
+
+.op-chat-sidebar button.op-chat-empty-row:hover:not(:disabled)::after,
+.op-chat-sidebar button.op-chat-empty-row:focus-visible::after {
+  border-color: rgba(103, 232, 249, 0.46);
+  background: rgba(56, 189, 248, 0.18);
+  color: #f7fdff;
 }
 
 .op-chat-sidebar button.op-chat-empty-row:focus-visible {

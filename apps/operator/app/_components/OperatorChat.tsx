@@ -150,10 +150,10 @@ export function OperatorChat({
           : 'Tell me what you want to inspect, scan, or unblock.',
         icon: OperatorLogoMark,
         extra: (
-          <div className="op-chat-empty-panel" aria-label="Common starting points">
+          <div className="op-chat-empty-panel" aria-label="Quick draft prompts">
             <div className="op-chat-empty-panel-head">
               <OperatorLogoMark variant="compact" className="op-chat-empty-panel-logo" />
-              <div className="op-chat-empty-panel-label">Common starting points</div>
+              <div className="op-chat-empty-panel-label">Quick draft prompts</div>
             </div>
             <div className="op-chat-empty-panel-list">
               {STARTING_PROMPTS.map(({ title, hint, prompt }) => (
