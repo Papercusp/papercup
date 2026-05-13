@@ -24,6 +24,7 @@ import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/Ch
 import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
 import { OperatorLogoMark } from './OperatorLogoMark';
+import { Tooltip } from '../harness/Tooltip';
 
 interface Props {
   /** Conversation messages, oldest first. */
@@ -205,15 +206,25 @@ function renderOperatorToolChip(t: ChatToolCall, i: number): ReactNode {
     typeof input.featureId === 'string' ? input.featureId :
     typeof input.scope === 'string' ? input.scope :
     null;
+  const label = `${formatOperatorToolName(t.name)}${detail ? ` (${detail})` : ''}`;
+  const tooltip = (
+    <span className="op-chat-tool-tooltip">
+      <strong>{t.name}{detail ? ` (${detail})` : ''}</strong>
+      <span>{JSON.stringify(input).slice(0, 240)}</span>
+    </span>
+  );
+
   return (
-    <div
-      key={i}
-      className="oracle-tool-chip"
-      title={`${t.name}${detail ? ` (${detail})` : ''}\n${JSON.stringify(input).slice(0, 240)}`}
-    >
-      <Wrench size={12} />
-      <span>{formatOperatorToolName(t.name)}{detail ? ` (${detail})` : ''}</span>
-    </div>
+    <Tooltip key={i} label={tooltip} side="right" align="start">
+      <span
+        className="oracle-tool-chip"
+        tabIndex={0}
+        aria-label={`Tool call: ${label}. Raw id: ${t.name}`}
+      >
+        <Wrench size={12} />
+        <span>{label}</span>
+      </span>
+    </Tooltip>
   );
 }
 

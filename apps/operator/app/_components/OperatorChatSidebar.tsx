@@ -1198,4 +1198,29 @@ body.has-op-chat .h-header {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.op-chat-sidebar .oracle-tool-chip:focus-visible {
+  outline: 2px solid rgba(103, 232, 249, 0.62);
+  outline-offset: 3px;
+}
+
+.op-chat-tool-tooltip {
+  display: grid;
+  gap: 4px;
+  max-width: 280px;
+  overflow-wrap: anywhere;
+}
+
+.op-chat-tool-tooltip strong {
+  color: #f7fdff;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.op-chat-tool-tooltip span {
+  color: rgba(214, 236, 248, 0.78);
+  font-family: var(--font-mono, "SFMono-Regular", Consolas, monospace);
+  font-size: 10px;
+  line-height: 1.35;
+}
 `;
