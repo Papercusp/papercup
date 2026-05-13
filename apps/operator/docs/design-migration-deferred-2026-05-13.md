@@ -438,8 +438,22 @@ D1, D4, D6, WslOnboarding all resolved. Sequencing followed the dependency-graph
 - `a4ea4756` 5 tabs (ApiTab, TelemetryTab, ProcessesTab, IpcTab, SessionsTab) — 6 raw checkboxes → `<Checkbox>`.
 - `f317ad0b` SqlTab role select, BackupsTab snapshot-pick select, SchemaForm boolean checkbox.
 
-**Still open (next-session work).**
-- `/dev` HR8 raw `<table>` migrations — 12 tables across AuditTab, BackupsTab, HarnessesTab, PgTab×2, ProcessesTab, SessionsTab×3, SqlTab, TablesTab×2, TelemetryTab. Each is straightforward (consistent `pc-dev-table` CSS shape) but bespoke columns per tab. Suggested cadence: one commit per file. SqlTab is the trickiest — dynamic column shape per query — may need a "infer columns from first row" pass.
-- `/dev/TablesTab` HR3 ×2 selects + HR6 ×2 `<details>` — bundled with that file's HR8 migration since the row-expansion `<details>` is structurally fused with the table.
-- Two design-judgment redesigns (out-of-scope per user direction): `/installed/harnesses` C1–C10, `/marketplace` C2–C9.
+**Phase 5+6 final pass — 2026-05-14 (cont.).**
+
+All 12 `/dev` raw `<table>` migrated to `RichGrid`, plus the trailing HR3 selects in TablesTab + AuditTab. Per-file commits to dodge paperclip rebases:
+
+  - `31639e4a` HarnessesTab (13 cols incl. ARIA + Verdict).
+  - `274d04e0` AuditTab (6 cols + window <Select>).
+  - `1a8ffdd3` TelemetryTab (8 cols incl. action button).
+  - `91efb914` ProcessesTab (8 cols incl. kill-button via Modal).
+  - `f9ef0fbb` PgTab (×2 — active queries + largest tables).
+  - `a1a070f9` BackupsTab event log.
+  - `5a8cbd25` SqlTab (dynamic columns from `result.columns` at runtime, plus role <Select>).
+  - `5b40ac38` SessionsTab (×3 — top sessions with expandedRowKey + renderExpandedRow; inner tool-invocations and child-spawns).
+  - `5a1a53e4` TablesTab (×2 — columns table + dynamic rows table; primary-key rows tinted via `getRowBg`; role + filter-col + filter-op selects → `<Select>`; FK/index `<details>` kept native as content-disclosure carve-out).
+
+**HR-fix backlog drained.** App-wide scan: zero raw `<table>`, zero raw `<select>`, zero raw `<input type=checkbox>` outside of the wrapper-helper source files themselves.
+
+**Still open (out of scope or intentional carve-out):**
+- Two design-judgment redesigns: `/installed/harnesses` C1–C10, `/marketplace` C2–C9.
 - StepAutoUpdate release-notes `<details>` — kept as content-disclosure carve-out per spec (`gotchas.mdx`).
