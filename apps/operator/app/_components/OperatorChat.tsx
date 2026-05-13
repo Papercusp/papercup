@@ -193,10 +193,9 @@ export function OperatorChat({
 export type { ChatMessage as OperatorChatMessage } from './chat/ChatConversation';
 
 /**
- * Compact chip for an MCP tool call the operator made during the
- * preceding turn. Format: "→ orchestrator.spawn (worker)" — name first,
- * then the most-load-bearing arg (role / featureId / spawnId) when
- * present. Renders above the assistant text bubble.
+ * Compact chip for an MCP/tool call the operator made during the preceding
+ * turn. Keep the raw technical tool id in the title, but show a cleaned label
+ * in the transcript so the left rail stays scannable.
  */
 function renderOperatorToolChip(t: ChatToolCall, i: number): ReactNode {
   const input = (t.input ?? {}) as Record<string, unknown>;
@@ -207,9 +206,26 @@ function renderOperatorToolChip(t: ChatToolCall, i: number): ReactNode {
     typeof input.scope === 'string' ? input.scope :
     null;
   return (
-    <div key={i} className="oracle-tool-chip" title={JSON.stringify(input).slice(0, 240)}>
+    <div
+      key={i}
+      className="oracle-tool-chip"
+      title={`${t.name}${detail ? ` (${detail})` : ''}\n${JSON.stringify(input).slice(0, 240)}`}
+    >
       <Wrench size={12} />
-      <span>→ {t.name}{detail ? ` (${detail})` : ''}</span>
+      <span>{formatOperatorToolName(t.name)}{detail ? ` (${detail})` : ''}</span>
     </div>
   );
+}
+
+function formatOperatorToolName(name: string): string {
+  const compact = name
+    .replace(/^mcp__agentmcp_/, '')
+    .replace(/^mcp__/, '')
+    .replace(/^agentmcp_/, '')
+    .replace(/^search_tool_/, 'search_')
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return compact.length > 0 ? compact : name;
 }

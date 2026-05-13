@@ -1178,4 +1178,24 @@ body.has-op-chat .h-header {
   background: rgba(255, 255, 255, 0.06) !important;
   color: rgba(214, 236, 248, 0.76) !important;
 }
+
+.op-chat-sidebar .oracle-tool-chip {
+  max-width: min(100%, 286px);
+  display: inline-flex !important;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.op-chat-sidebar .oracle-tool-chip svg {
+  flex: 0 0 auto;
+  opacity: 0.78;
+}
+
+.op-chat-sidebar .oracle-tool-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 `;
