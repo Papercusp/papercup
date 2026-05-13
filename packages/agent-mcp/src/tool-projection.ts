@@ -53,7 +53,7 @@ export type EventsSchema = Record<string, ZodTypeAny>;
  * errors (dual-mode; canonical example is runAgentChat's mid-stream
  * 'error' yields). See ToolContext.emit doc for the contract.
  */
-export type ReservedEventNames = 'done' | 'heartbeat' | 'result' | 'chunk';
+export type ReservedEventNames = 'done' | 'heartbeat' | 'result' | 'chunk' | 'card';
 
 /** Compile-time guard: a user-declared events schema cannot contain reserved names. */
 export type UserEvents<T extends EventsSchema> = T & { [K in ReservedEventNames]?: never };
@@ -70,6 +70,10 @@ export const RESERVED_EVENT_NAMES: readonly ReservedEventNames[] = [
   'heartbeat',  // transport pings to keep idle connections alive
   'result',     // MCP-shaped result envelope on the wire
   'chunk',      // framework-emitted binary-stream chunks for tools with largeOutput:true
+  'card',       // framework-emitted card payloads (ctx.askUser flow — bespoke-card-improvements H1).
+                // Cards ride the STATE channel, not the event channel; reserving the name here
+                // prevents a plugin from declaring events:{card} and intercepting other tools'
+                // askUser flow on the wire.
   // NOTE: 'error' and 'progress' are NOT reserved.
   // 'progress' is documented as user-emittable via ctx.progress(pct, msg) sugar,
   // which itself routes through ctx.emit('progress', ...). Tools declare a
@@ -345,7 +349,36 @@ export interface UnifiedToolContext {
   /* ── Capability-gated helpers ─────────────────────────────────────── */
   spawn?: PluginSpawn;
   secret?: (name: string) => Promise<string | null>;
+
+  /**
+   * Mid-run interactive prompt — opens a card on the STATE channel
+   * and resolves when the user submits/declines/cancels (or the
+   * timeoutMs fires).
+   *
+   * Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md §4
+   *
+   * Returns:
+   *   {action:'submit',  payload}   — user picked, Zod-validated against spec.dataSchema
+   *   {action:'decline', reason?}   — user explicitly declined (allowDecline≠false)
+   *   {action:'cancel'}             — run cancelled, workspace switched, or timeout
+   *
+   * Cards live on the STATE channel — they are NOT in the event ring
+   * buffer, so reconnect-after-answer does NOT re-prompt (H2 from review).
+   *
+   * Available when the transport supports it (HTTP/SSE, IPC, in-process).
+   * Falls back to immediate {action:'cancel'} when the transport has
+   * no client to ask (e.g. non-streaming HTTP).
+   */
+  askUser?: AskUserCallback;
 }
+
+/**
+ * `ctx.askUser(spec)` — mid-run interactive prompt. Returns a `CardResponse`
+ * shaped per the discriminated union in `./types`.
+ */
+export type AskUserCallback = <TSchema extends ZodTypeAny>(
+  spec: import('./types').CardSpec<TSchema>,
+) => Promise<import('./types').CardResponse<TSchema>>;
 
 /** A tool function — one shape for every transport. */
 export type ToolFn<TInput = unknown> = (
