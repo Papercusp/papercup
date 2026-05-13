@@ -208,6 +208,18 @@ export async function register(): Promise<void> {
     console.warn('[backup-scheduler] failed to start:', err instanceof Error ? err.message : err);
   }
 
+  // Backup orphan-snapshot sweep. Marks `running` rows stuck >1h as
+  // failed so the UI stops showing them as in-progress indefinitely
+  // (round-13 collateral; step D of the Tier-1/Tier-2 follow-up arc).
+  // Idempotent. Independent of the main scheduler so it runs even if
+  // kopia is missing.
+  try {
+    const { startOrphanSweepWorker } = await import('@/lib/backup/orphan-cleanup');
+    startOrphanSweepWorker();
+  } catch (err) {
+    console.warn('[backup-orphan-sweep] failed to start:', err instanceof Error ? err.message : err);
+  }
+
   // Telemetry flush worker. Hourly drain of the in-app ring buffer
   // into the archive + (when configured) forward to remote sink.
   // Idempotent across re-registrations.
