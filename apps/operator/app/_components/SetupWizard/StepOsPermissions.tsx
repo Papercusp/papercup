@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { isTauri, wslStatus, type WslStatus } from '@/lib/wsl-tauri';
 
 type PermState = 'unknown' | 'granted' | 'denied' | 'prompt' | 'unsupported';
 
@@ -101,6 +102,7 @@ const PERMS: readonly PermDef[] = [
 
 export function StepOsPermissions() {
   const [states, setStates] = useState<Record<string, PermState>>({});
+  const [wsl, setWsl] = useState<WslStatus | null>(null);
 
   const probeAll = useCallback(async () => {
     const next: Record<string, PermState> = {};
@@ -110,6 +112,15 @@ export function StepOsPermissions() {
       }),
     );
     setStates(next);
+    // WSL probe — only meaningful inside the Tauri shell. The
+    // WslOnboardingGate in the root layout owns the install flow; we
+    // just surface the resolved state for visibility.
+    if (isTauri()) {
+      try {
+        const s = await wslStatus();
+        if (s) setWsl(s);
+      } catch { /* leave null */ }
+    }
   }, []);
 
   useEffect(() => {
@@ -127,6 +138,28 @@ export function StepOsPermissions() {
         Papercusp asks your operating system for these on first use. You can grant any of them now
         or skip and grant later.
       </p>
+      {wsl && wsl.state.kind !== 'NotSupported' && (
+        <div className="pc-perm" data-state={wsl.state.kind === 'Ready' ? 'granted' : 'denied'}>
+          <div className="pc-perm__head">
+            <span className="pc-perm__title">WSL2 environment (Windows only)</span>
+            <span className="pc-perm__platforms">
+              <span
+                className="pc-perm__badge"
+                data-state={wsl.state.kind === 'Ready' ? 'granted' : 'denied'}
+              >
+                {wsl.state.kind === 'Ready' ? '✓ ready' : `⚠ ${wsl.state.kind}`}
+              </span>
+              <span>windows</span>
+            </span>
+          </div>
+          <p className="pc-perm__why">
+            Papercusp's harness runs inside a WSL2 distro on Windows because the toolchain assumes
+            POSIX. {wsl.state.kind === 'Ready'
+              ? `Distro is set up and ready (WSL version ${wsl.defaultVersion || 2}).`
+              : 'Set up by the install gate before the wizard loads — if you see this in a non-ready state, restart the app.'}
+          </p>
+        </div>
+      )}
       <div className="pc-perm-list">
         {PERMS.map((p) => {
           const state = states[p.id] ?? 'unknown';
