@@ -48,7 +48,7 @@ The validator already explained what failed. Your job is WHY.
 
 ### Find architectural context
 
-1. `docs:outline` — see what the project documents (cached per run; cheap).
+1. `docs:outline` — see what the project documents (cached per run; cheap). For a keyword lookup when you know the term, use `docs:search` instead.
 2. `docs:get { slugs: ['<picked>'] }` — fetch one or several pages.
 3. If a page is long and only one section is relevant: `docs:get { slugs: ['<slug>'], heading: '<anchor-id>' }`.
 4. Cite the slug URLs in any artifact you save.
