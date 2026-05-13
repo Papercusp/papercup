@@ -36,7 +36,7 @@ The endpoint system has two channels:
 | Channel | Used by | Wire event | Replay on reconnect |
 |---|---|---|---|
 | **Events** | `ctx.emit('progress', …)`, `ctx.emit('text-delta', …)` | typed events | Ring buffer history (T2.2) |
-| **State** | `ctx.askUser`, `ctx.publishState` (v1.1) | `state-snapshot` | Current snapshot only |
+| **State** | `ctx.askUser`, `ctx.publishState` | `state-snapshot` | Current snapshot only |
 
 **Cards live on the state channel.** A reconnecting client receives the latest snapshot of `openCards[]` — already-answered cards are gone, so the user is never re-prompted for something they already answered. (This is the bespoke-card-improvements H2 fix; if cards lived on the event ring buffer, the replay-on-reconnect would re-emit them.)
 
@@ -147,7 +147,7 @@ The handler picks one branch for each. `decline` is for "this card isn't relevan
 
 If the run aborts at any point, every open card under the run is resolved `{action:'cancel'}`.
 
-If the user switches workspaces, every open card in the prior workspace is resolved `{action:'cancel'}` via the `onWorkspaceSwitch` hook.
+If the user switches workspaces, every open card in the **leaving** workspace is resolved `{action:'cancel'}` via the `onWorkspaceSwitch` hook. `POST /api/workspaces/switch` captures `leaving = reg.current` *before* writing the new current, then fires `dispatchWorkspaceSwitch(leaving)` so the card-correlator's `cancelPendingCardsForWorkspaceSwitch(leaving)` resolves every deferred under that workspace; the state-channel drops all snapshots in the same pass.
 
 ## Cancelling an entire run
 
@@ -169,9 +169,9 @@ The client-side `PendingCardsBar` also optimistically dismisses ALL cards from t
 
 ## Auth, defense in depth, rate limit
 
-The `/card-response` endpoint requires a session cookie (401 if missing). Beyond that, the card-correlator validates `expectedWorkspaceId` against the card's stored workspace — even if a caller bypasses the session check, cross-workspace replay returns 404.
+The `/card-response` endpoint requires a session cookie (401 if missing). Beyond that, the card-correlator validates `expectedWorkspaceId` against the card's stored workspace — even if a caller bypasses the session check, cross-workspace replay returns 404 (`card not found`).
 
-Rate limit: 30 RPS per workspace, sliding window. Bursts past that return 429.
+Rate limit: **30 RPS per session user**, sliding window. Bursts past that return 429. The bucket key is the session's user id (not the caller-supplied `workspaceId`, which is untrusted) so a single workspace-hopping client cannot evade the limit.
 
 ## Client-side companion: `askUserLocal`
 
@@ -234,7 +234,7 @@ The tool's own `timeoutSec` is independent — it aborts the entire run, which c
 
 - **In-process only.** The PENDING map lives in the operator's Node process. Dev-mode HMR drops it; a server restart drops it. v1 accepts this — the same bound applies to `/turn-answer` today. PG-backed persistence is a v1.x follow-up.
 - **One card visible at a time.** The renderer shows `openCards[0]`; additional concurrent cards queue behind it with an indicator. This avoids the multi-card chat-surface cliff. If you need a multi-question flow, prefer one card with a multi-field `dataSchema` instead of multiple sequential `ctx.askUser` calls.
-- **No bidirectional state sync.** `ctx.publishState` (v1.1) handles server-to-client state; the reverse (client-edits-server-state) is not in scope.
+- **No bidirectional state sync.** `ctx.publishState` handles server-to-client state (snapshot-only in v1; JSON-Patch deltas deferred to v1.1). The reverse (client-edits-server-state) is not in scope — it's the same shape as a regular tool call, which already covers that direction.
 
 ## See also
 

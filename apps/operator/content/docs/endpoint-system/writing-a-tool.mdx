@@ -64,12 +64,15 @@ export async function fetchSomething(
 ```
 
 What the `ctx` argument has:
-- `workspaceId, harnessSlug, role, runId, spawnId` — URL spawn context
+- `workspaceId, harnessSlug, role, runId, spawnId` — URL spawn context. `runId` is always present for HTTP-projected calls (defaulted by the catch-all when no `?run=` is supplied) so the state-channel hooks below always install.
 - `featureId?, chunkId?, parentSpawnId?` — optional spawn context
 - `projectDir, stateDir` — resolved by the framework via `loadHarnessRegistry()`
 - `log(msg)` — appends to run.log.jsonl with plugin attribution
-- `progress(pct, msg)` — emits MCP `notifications/progress` or HTTP SSE `event: progress`
-- `signal` — `AbortSignal` for the dispatcher's timeout
+- `signal` — `AbortSignal` for the dispatcher's timeout / cancellation
+- `progress(pct, msg)` — alias over the typed-event channel; emits MCP `notifications/progress` (always) AND `notifications/papercusp/event` (always) on MCP, plus `event: progress` on HTTP SSE
+- `emit(name, payload)` — typed event channel. Declare the vocab via `defineTool({ events: { ... } })`. See [Typed event streams](./transports.mdx#typed-event-streams).
+- `askUser(spec)` — mid-run interactive prompt; blocks until the user submits/declines/cancels. Returns the validated user payload. Installed when `workspaceId + runId` are set. See [ctx.askUser](./ask-user.mdx).
+- `publishState(snapshot)` — push the current tool state to the state-channel SSE. Installed when the tool declared `state: ZodType<S>` AND ctx has `workspaceId + runId`. Validated against the declared schema. See [state-shaped tools](./state-tools.mdx).
 - `spawn?(bin, argv, opts)` — capability-gated subprocess
 - `secret?(name)` — async secret resolver (env vars, encrypted PG)
 - `principal?, tx?` — only set for built-in tools called with a bearer
@@ -175,11 +178,12 @@ The projection registry is module-level state. HMR is unreliable. If you don't r
 
 ## Don't write tools for these
 
-- Voice WSS (true bidirectional stream — agent ↔ user mid-call)
-- Anything where the server needs to ask the client a question mid-stream and wait for a response on the same connection (cards work by ending the LLM turn — the click is the next user message — not by mid-stream Q&A)
+- Voice WSS (true bidirectional stream — agent ↔ user audio mid-call). Use the ElevenLabs Conv AI integration.
 - File uploads >5MB (multipart isn't wired)
-- Browser-state actions (no server function to project)
+- Browser-state actions (no server function to project; use `ui:dispatch` instead — those are client commands, not tools)
 
 LLM streaming output *is* fine — declare typed events on the manifest and the framework projects them over HTTP/SSE and MCP. See [Typed event streams](/docs/endpoint-system/transports#typed-event-streams).
 
-If you find yourself wanting to wrap one of the four above, stop and ask. The contract was deliberately kept narrow.
+Mid-run server-asks-client is *also* fine — use `ctx.askUser(spec)` (the state channel ships the prompt out-of-band; the handler blocks on a deferred until the user clicks). See [ctx.askUser](./ask-user.mdx).
+
+If you find yourself wanting to wrap one of the three remaining above, stop and ask. The contract was deliberately kept narrow.

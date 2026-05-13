@@ -53,8 +53,9 @@ defineTool({
 ```
 
 Tools that declare `state` automatically:
-- Get `ctx.publishState` installed.
-- Opt **out** of the replay ring buffer (no double-storage).
+- Get `ctx.publishState` installed (when the call has both `workspaceId` and `runId` — the HTTP catch-all defaults a `runId` per-request, so plain JSON / SSE callers both work).
+- Opt **out** of the replay ring buffer (no double-storage — state snapshots replace events on the wire).
+- Become **streamable** — the HTTP catch-all's strict-streamable predicate recognizes `tool.state` as a valid trigger for `Accept: text/event-stream`, so the runId-bearing SSE path is reachable even when no `events` are declared.
 - Persist snapshots for 5 minutes after run-end (reconnect window).
 
 ## Handler API

@@ -21,12 +21,12 @@ The catch-all routes are stupidly simple:
 1. `apps/operator/app/api/plugins/[...path]/route.ts` receives the request
 2. Looks up the tool by `lookupByHttpPath(req.pathname)` — if not found, 404
 3. Validates the HTTP method against the manifest's `expose.http.methods` (default `['POST']`) — if not allowed, 405
-4. Builds a `UnifiedToolContext` from URL spawn params + headers + the host's resolver impls (spawn, secret, projectDir resolver)
+4. Builds a `UnifiedToolContext` from URL spawn params + headers + the host's resolver impls (spawn, secret, projectDir resolver). If no `run` param/header was supplied, a fresh `runId` is generated server-side so `ctx.askUser` / `ctx.publishState` can install — they gate on `workspaceId + runId`. SSE callers had this since T2.2; the JSON path got parity in the pass-9 audit.
 5. If `Authorization: Bearer ...` present, resolves it to a principal and tx (no-op for plugins; required for built-ins)
 6. Hands off to `dispatchProjectedTool`
 7. Maps the resulting `DispatchProjectedResult` to status code + JSON body
 
-The streaming path is the same except step 7 — when `Accept: text/event-stream` is on the request, the response is a `ReadableStream` of SSE events. Each `ctx.progress(pct, msg)` call from the function emits one event.
+The streaming path is the same except step 7 — when `Accept: text/event-stream` is on the request, the response is a `ReadableStream` of SSE events. Each `ctx.progress(pct, msg)` call from the function emits one event. **Replay-on-reconnect** (Last-Event-ID + X-Papercusp-Run-Id) is handled in `handleHttpToolRequestStreaming` (http-projection.ts): when both headers are present and the tool has a replay-buffer hit, it serves the buffered tail, emits `event: done` with `{resumed: true, replayed: N}`, and closes the sink — no re-dispatch (the original run already aborted on disconnect, by design).
 
 ## How MCP requests reach a function
 
@@ -235,11 +235,36 @@ Standard MCP clients that don't know about the `events` field simply ignore it.
 
 ### Strict-streamable
 
-The HTTP catch-all returns `406 Not Acceptable` if a client sends `Accept: text/event-stream` against a tool that declares no `events` and isn't `expose.mcp.streaming === true`. Prevents clients from opening an SSE connection for a one-shot result.
+The HTTP catch-all returns `406 Not Acceptable` if a client sends `Accept: text/event-stream` against a tool that has **none** of:
 
-### Cards (render-into-chat tools)
+- declared `events` (typed event channel), or
+- declared `state` (state-shaped, see [`ctx.publishState`](./state-tools.mdx)), or
+- `expose.mcp.streaming === true` (explicit opt-in).
 
-The card-rendering pattern uses two tools at different layers. The **inner** tool (e.g. `chat:ask_choice`) is a vanilla projected tool — the agent calls it like any other and the result is its echoed args. The **outer** chat tool (e.g. `architect.chat`, `operator.chat`) declares `tool_call: z.object({ name: z.string(), input: z.unknown() })` in its `events` schema and emits `ctx.emit('tool_call', ...)` whenever its inner LLM invokes an MCP tool. The browser side reads `t.name` from the persisted tool-call payload and substitutes a custom React component for the default chip. No additional framework primitive is required — cards are an emergent product of `ctx.emit` + a client-side `renderToolCard` dispatcher.
+Prevents clients from opening an SSE connection for a one-shot result. The `state` trigger matters because state-shaped tools need a `runId`-bearing ctx (`ctx.publishState` only installs when `workspaceId + runId` are both present), and the SSE branch is the path that injects a fresh `runId` via `searchParams.set('run', ...)`. State tools that fell through this predicate before the pass-9 fix returned 406 in spite of having a perfectly valid wire shape.
+
+### Cards (interactive mid-run prompts)
+
+Cards are first-class framework primitives — **not** an emergent pattern that piggybacks on `ctx.emit`. The handler calls `ctx.askUser(spec)` and blocks until the user submits, declines, or the run is cancelled. The card payload travels on the **state channel** (`state-snapshot` events on `GET /api/operator/state-snapshot`), not on the per-tool event ring buffer.
+
+```ts
+const r = await ctx.askUser({
+  prompt: 'Apples or bananas?',
+  dataSchema: z.object({ picks: z.tuple([z.enum(['apples', 'bananas'])]) }),
+  presentation: { kind: 'radio', options: [
+    { id: 'apples', label: 'Apples' },
+    { id: 'bananas', label: 'Bananas' },
+  ]},
+});
+// r.action: 'submit' | 'decline' | 'cancel'
+// r.payload (when submit): validated against dataSchema
+```
+
+The user's click `POST`s to `/api/operator/conversations/:id/card-response`; the card-correlator resolves the deferred and the handler returns the response value to its caller. Tools no longer echo their args back to the client — the response value IS the user's pick.
+
+The wire-level event name `'card'` is reserved at `registerProjectedTool` (`packages/agent-mcp/src/tool-projection.ts:RESERVED_EVENT_NAMES`); a tool declaring `events: { card: ... }` throws at register time. This prevents plugins from intercepting `ctx.askUser` flow by name collision on the events channel.
+
+Full reference: [ctx.askUser](./ask-user.mdx). Implementation files: `packages/agent-mcp/src/{card-correlator,state-channel,ask-user,workspace-lifecycle}.ts` + `apps/operator/app/api/operator/{state-snapshot,conversations/[id]/card-response,conversations/[id]/run-cancel}/route.ts`.
 
 ## The three context types
 

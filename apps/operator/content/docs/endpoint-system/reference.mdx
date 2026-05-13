@@ -18,6 +18,21 @@ description: Manifest schema, error codes, file map, capability conventions. Loo
   "rolesQuota":   { "worker": { "perChunk": 1 } },  // Per-window quota; reads usually don't need this
   "timeoutSec":   60,                          // Default 60 if omitted
 
+  // Streaming + state
+  "events": {                                  // Typed event vocabulary; surfaced on tools/list
+    "delta":     { "type": "string" },         // z.string() → raw text on the SSE wire
+    "tool_call": { "type": "object", "..." }   // any object → JSON-encoded
+  },
+  "replayBufferSize":  100,                    // Ring-buffer size for Last-Event-ID resume. Default 0 = no replay.
+  "idleTimeoutSec":    120,                    // Abort if no event emitted for N seconds. Default unset.
+  "state":             { /* JSON-Schema for ctx.publishState payload */ },  // Declares state-shaped tool (auto opt-out of replay buffer; auto-streamable)
+  "modality":          ["text", "voice"],      // Surface filter for prompt-assembly catalog. Default ["text"].
+  "guidance": {                                // Rendered into prompt-assembly tools catalog
+    "when":      "User asks to <X>; pair with <Y> for the chained-list case.",
+    "notWhen":   "Not for <Z> — use <other_tool> instead.",
+    "chaining":  "After <prerequisite_tool>; before <successor_tool>."
+  },
+
   // Optional — exposure overrides
   "expose": {
     "http": {
@@ -26,7 +41,7 @@ description: Manifest schema, error codes, file map, capability conventions. Loo
     },
     "mcp": {
       "name":         "my-plugin.do_thing",          // Default: <short-name>.<tool.name>
-      "streaming":    true,                          // Hint to clients; doesn't affect dispatch
+      "streaming":    true,                          // Explicit streamability opt-in. Also implied by declared events or state.
       "largeOutput":  true                           // Hint that output may be written to scratch dir
     }
   }
@@ -34,6 +49,8 @@ description: Manifest schema, error codes, file map, capability conventions. Loo
 ```
 
 If `expose.*` is omitted entirely, the framework picks defaults for both. If you want only one transport, declare only that one.
+
+Built-in `defineTool` calls accept the same fields as TS/Zod (`state: z.object({...})`, `events: { delta: z.string(), ... }`, etc.). The `RoleToolDefinitionInput` shape is the canonical authority — see `packages/agent-mcp/src/types.ts`.
 
 ## Error codes
 
@@ -95,6 +112,8 @@ Null window means no quota check (and no telemetry insert path that requires the
 
 ## File map
 
+### Dispatcher / projection / transports
+
 | Concern | Module |
 |---|---|
 | Projection registry (3 Maps) | `packages/agent-mcp/src/tool-projection.ts` |
@@ -106,17 +125,44 @@ Null window means no quota check (and no telemetry insert path that requires the
 | MCP transport (both pipelines) | `apps/operator/app/api/[transport]/route.ts` |
 | Dispatcher (gates + record) | `packages/agent-mcp/src/dispatch-projected.ts` |
 | HTTP request → context builder | `packages/agent-mcp/src/http-projection.ts` |
+| Replay buffer (Last-Event-ID resume) | `packages/agent-mcp/src/replay-buffer.ts` |
 | Spawn-mcp `.mcp.json` writer | `libs/papercusp/packages/orchestrator/src/spawn-mcp.ts` |
 | Per-spawn URL → ctx parser | `packages/agent-mcp/src/spawn-context.ts` |
 | Shared subprocess + secret impls | `apps/operator/lib/plugin-spawn-impl.ts` |
 | Harness path resolver (PG-backed) | `apps/operator/lib/resolve-harness-paths.ts` |
+| Desktop Tauri IPC sidecar (Unix socket / named pipe) | `apps/operator/lib/endpoint-ipc/` (`server.ts`, `framing.ts`, `PROTOCOL.md`) |
+
+### Cards + state channel (bespoke-card-improvements arc)
+
+| Concern | Module |
+|---|---|
+| State channel (per-run snapshot map + subscribers) | `packages/agent-mcp/src/state-channel.ts` |
+| Card correlator (PENDING map + deferred lifecycle) | `packages/agent-mcp/src/card-correlator.ts` |
+| `ctx.askUser` install + abort race | `packages/agent-mcp/src/ask-user.ts` (+ install site in `dispatch-projected.ts`) |
+| Workspace-switch lifecycle hook | `packages/agent-mcp/src/workspace-lifecycle.ts` |
+| State-snapshot SSE route | `apps/operator/app/api/operator/state-snapshot/route.ts` |
+| Card-response endpoint | `apps/operator/app/api/operator/conversations/[id]/card-response/route.ts` |
+| Run-cancel endpoint | `apps/operator/app/api/operator/conversations/[id]/run-cancel/route.ts` |
+| Workspace-switch endpoint (fires lifecycle hook) | `apps/operator/app/api/workspaces/switch/route.ts` |
+| Rate-limit bucket (30 RPS per session user) | `apps/operator/lib/card-response-rate-limit.ts` |
+| Client-side state-snapshot hook | `apps/operator/lib/use-state-snapshots.ts` |
+| Client-side card renderers (radio/checkbox/text/date/slider) | `apps/operator/app/_components/chat/{AskChoiceCard,InputCard,PendingCardsBar,LocalCardHost}.tsx` |
+| `askUserLocal` client transport | `apps/operator/lib/chat-cards/ask-user-local.ts` |
+
+### Secrets / telemetry / catalog
+
+| Concern | Module |
+|---|---|
 | Search-provider key reader (orchestrator-side) | `libs/papercusp/packages/orchestrator/src/spawn-env-from-pg.ts` |
 | Search-provider key reader (operator-side) | `apps/operator/lib/search-provider-credentials.ts` |
 | Telemetry schema | `libs/papercusp/libs/db/sql/046-tool-invocations.sql` |
+| Telemetry — `event_count` column | `libs/papercusp/libs/db/sql/066-tool-invocations-event-count.sql` |
 | Search-provider keys schema | `libs/papercusp/libs/db/sql/047-operator-search-provider-credentials.sql` |
+| `system:operator` `chat:write` backfill | `libs/papercusp/libs/db/sql/067-operator-chat-write-cap.sql` |
 | Read-only catalog page | `app/(docs)/internal/settings/plugins/tools/page.tsx` (and `/settings/plugins/tools`) |
 | Host status / refresh endpoint | `apps/operator/app/api/plugins/host/refresh/route.ts` |
 | Tool catalog endpoint | `apps/operator/app/api/plugins/tools/route.ts` |
+| Provision system principals | `apps/operator/app/api/agent-mcp/provision/route.ts` (calls `provisionSystemPrincipal` in `packages/agent-mcp/src/provisioning.ts`) |
 
 ## URL spawn params
 
@@ -147,6 +193,10 @@ Header form takes precedence over query form when both are present. The orchestr
 | `POST /api/plugins/<plugin>/<tool>` | Plugin tool catch-all (HTTP). |
 | `GET/POST /api/mcp` | MCP transport (Streamable HTTP). |
 | `GET /api/sse` | MCP transport (SSE). Same handler. |
+| `GET /api/operator/state-snapshot` | SSE stream of `state-snapshot` events for the active workspace. Carries `openCards` (from `ctx.askUser`) + `toolState` (from `ctx.publishState`). Session-cookie required (401). |
+| `POST /api/operator/conversations/:id/card-response` | Resolves a pending `ctx.askUser` card. Body: `{ correlationId, action: 'submit'\|'decline'\|'cancel', workspaceId, payload?, reason? }`. 30 RPS per session user. 404 on cross-workspace replay (defense-in-depth). |
+| `POST /api/operator/conversations/:id/run-cancel` | Cancels every pending card under a `runId`. Body: `{ runId, workspaceId }`. Same auth + rate limit + cross-workspace gate as `/card-response`. |
+| `POST /api/workspaces/switch` | Body `{ id }`. Captures `leaving = reg.current`, writes new current, fires `dispatchWorkspaceSwitch(leaving)` — drops state snapshots + cancels every pending card under the leaving workspace. |
 
 ## Result envelope
 
