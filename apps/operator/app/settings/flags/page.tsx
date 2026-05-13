@@ -43,9 +43,43 @@ type FetchState =
   | { kind: 'ok'; payload: FlagPayload }
   | { kind: 'error'; message: string };
 
+type LiveState =
+  | { kind: 'loading' }
+  | { kind: 'ok'; liveUpdates: boolean; source: string }
+  | { kind: 'error'; message: string };
+
 export default function FeatureFlagsPage() {
   const [state, setState] = useState<FetchState>({ kind: 'loading' });
+  const [liveState, setLiveState] = useState<LiveState>({ kind: 'loading' });
   const [dashboardUrl, setDashboardUrl] = useState<string | null>(null);
+
+  const refreshLive = async () => {
+    try {
+      const res = await fetch('/api/flags/live-updates', { cache: 'no-store' });
+      const j = (await res.json()) as { liveUpdates: boolean; source: string };
+      setLiveState({ kind: 'ok', ...j });
+    } catch (err) {
+      setLiveState({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'unknown',
+      });
+    }
+  };
+
+  const toggleLive = async (next: boolean) => {
+    const res = await fetch('/api/flags/live-updates', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled: next }),
+    });
+    if (res.ok) {
+      void refreshLive();
+    }
+  };
+
+  useEffect(() => {
+    void refreshLive();
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -104,6 +138,8 @@ export default function FeatureFlagsPage() {
           </a>
         ) : null}
       </header>
+
+      <LiveUpdatesCard state={liveState} onToggle={toggleLive} />
 
       {state.kind === 'loading' ? <p className="text-sm">Loading...</p> : null}
       {state.kind === 'error' ? (
@@ -167,6 +203,57 @@ function FlagTable({
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function LiveUpdatesCard({
+  state,
+  onToggle,
+}: {
+  state: LiveState;
+  onToggle: (next: boolean) => void;
+}) {
+  if (state.kind === 'loading') return null;
+  if (state.kind === 'error') {
+    return (
+      <div className="rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        Could not read live-updates state: {state.message}
+      </div>
+    );
+  }
+  const on = state.liveUpdates;
+  return (
+    <div className="rounded border bg-white p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <div className="font-medium">
+            Live feature-flag updates:{' '}
+            <span className={on ? 'text-emerald-600' : 'text-neutral-500'}>
+              {on ? 'on' : 'off (offline)'}
+            </span>
+          </div>
+          <p className="text-sm text-neutral-600">
+            {on
+              ? 'Your operator is fetching flag definitions from flags.papercuspai.com. No analytics, replay, or telemetry are sent.'
+              : 'No network calls to PostHog are being made. The bundled defaults (V1 ship state) are in effect.'}
+          </p>
+          <p className="text-xs text-neutral-400">
+            Discovery source: <span className="font-mono">{state.source}</span>
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => onToggle(!on)}
+          className={
+            on
+              ? 'rounded border bg-neutral-100 px-3 py-1.5 text-sm hover:bg-neutral-200'
+              : 'rounded bg-emerald-600 px-3 py-1.5 text-sm text-white hover:bg-emerald-700'
+          }
+        >
+          {on ? 'Disable live updates' : 'Enable live updates'}
+        </button>
+      </div>
     </div>
   );
 }

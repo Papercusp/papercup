@@ -16,16 +16,19 @@ import * as path from 'node:path';
 
 import type { PostHogConfig } from '@papercusp/flags/server';
 
-let cached: { config: PostHogConfig | null; source: string } | null = null;
+type Resolved = { config: PostHogConfig | null; source: string; liveUpdates: boolean };
+
+let cached: Resolved | null = null;
 
 export function getPosthogConfig(): PostHogConfig | null {
   return resolve().config;
 }
 
-export function getPosthogConfigWithSource(): {
-  config: PostHogConfig | null;
-  source: string;
-} {
+export function isLiveUpdatesEnabled(): boolean {
+  return resolve().liveUpdates;
+}
+
+export function getPosthogConfigWithSource(): Resolved {
   return resolve();
 }
 
@@ -33,16 +36,19 @@ export function resetPosthogConfigForTest(): void {
   cached = null;
 }
 
-function resolve(): { config: PostHogConfig | null; source: string } {
+function resolve(): Resolved {
   if (cached) return cached;
 
+  // env override path — for CI/test or explicit dev opt-in
   const envHost = process.env.PAPERCUSP_POSTHOG_HOST;
   const envKey = process.env.PAPERCUSP_POSTHOG_KEY;
   const envPersonal = process.env.PAPERCUSP_POSTHOG_PERSONAL_KEY ?? envKey;
+  const envLive = process.env.PAPERCUSP_POSTHOG_LIVE_UPDATES === 'true';
   if (envHost && envKey) {
     cached = {
       config: { host: envHost, projectKey: envKey, personalApiKey: envPersonal ?? envKey },
       source: 'env',
+      liveUpdates: envLive,
     };
     return cached;
   }
@@ -50,7 +56,15 @@ function resolve(): { config: PostHogConfig | null; source: string } {
   const discoveryPath = path.join(os.homedir(), '.papercusp', 'posthog.json');
   try {
     const raw = fs.readFileSync(discoveryPath, 'utf8');
-    const parsed = JSON.parse(raw) as Partial<PostHogConfig> & { host?: string };
+    const parsed = JSON.parse(raw) as Partial<PostHogConfig> & {
+      host?: string;
+      liveUpdates?: boolean;
+    };
+    // Default `liveUpdates` to FALSE: with PostHog discovered but not
+    // opted in, we still serve flags from FLAG_DEFAULTS (bundled). The
+    // user has to explicitly toggle live updates on for the operator to
+    // make any outbound call to PostHog.
+    const liveUpdates = parsed.liveUpdates === true;
     if (parsed.host && parsed.projectKey && parsed.personalApiKey) {
       cached = {
         config: {
@@ -58,7 +72,8 @@ function resolve(): { config: PostHogConfig | null; source: string } {
           projectKey: parsed.projectKey,
           personalApiKey: parsed.personalApiKey,
         },
-        source: 'discovery-file',
+        source: liveUpdates ? 'discovery-file' : 'discovery-file-opt-out',
+        liveUpdates,
       };
       return cached;
     }
@@ -66,6 +81,6 @@ function resolve(): { config: PostHogConfig | null; source: string } {
     // missing or malformed — fall through to unconfigured
   }
 
-  cached = { config: null, source: 'unconfigured' };
+  cached = { config: null, source: 'unconfigured', liveUpdates: false };
   return cached;
 }

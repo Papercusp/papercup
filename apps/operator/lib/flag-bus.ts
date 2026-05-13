@@ -19,7 +19,7 @@ import {
 } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
 
-import { getPosthogConfig } from './posthog-config';
+import { getPosthogConfig, isLiveUpdatesEnabled } from './posthog-config';
 
 export type FlagChangeEnvelope = {
   type: 'flag_changed';
@@ -34,7 +34,11 @@ let booted = false;
 function bootIfNeeded(): void {
   if (booted) return;
   booted = true;
-  if (!isBackendConfigured()) {
+  // Privacy-first opt-in: only initialize the PostHog client when the
+  // user (or CI) has explicitly enabled live updates. Otherwise we
+  // never touch the network and getAllFlags() returns FLAG_DEFAULTS,
+  // which IS the V1 ship state.
+  if (!isBackendConfigured() && isLiveUpdatesEnabled()) {
     initFlagBackend(getPosthogConfig());
   }
 }
