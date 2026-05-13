@@ -111,10 +111,15 @@ function registry() {
 }
 
 function emit(entry: RunEntry): void {
+  // Defensive shallow copy of the snapshot wrapper so a buggy subscriber
+  // can't mutate the source-of-truth. openCards / toolState references
+  // are still shared — subscribers MUST treat them as immutable. The
+  // wrapper copy is cheap and catches the most common footgun (e.g.
+  // a subscriber pushing to vs.snapshot.openCards thinking it's local).
   const vs: VersionedSnapshot = {
     runId: entry.runId,
     version: entry.version,
-    snapshot: entry.snapshot,
+    snapshot: { ...entry.snapshot },
   };
   for (const cb of entry.subscribers) {
     try {

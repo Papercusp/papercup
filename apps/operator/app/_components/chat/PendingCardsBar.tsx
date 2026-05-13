@@ -57,13 +57,23 @@ function toAskChoiceArgs(card: OpenCardWithRun): AskChoiceArgs | null {
 }
 
 export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNode {
-  const { cards } = useStateSnapshots();
+  const { cards, connected } = useStateSnapshots();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Optimistic-dismiss: once /card-response returns ok:true, the
+   * server has resolved the deferred and dropped the card from PENDING.
+   * Normally the state-snapshot SSE pushes the updated openCards array
+   * and this set is irrelevant. But if the SSE is disconnected mid-flow,
+   * the snapshot update never arrives — the card would stay rendered
+   * forever. Tracking dismissed correlationIds locally bridges that gap.
+   */
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
 
-  if (cards.length === 0) return null;
-  const head = cards[0];
-  const remaining = cards.length - 1;
+  const visibleCards = cards.filter((c) => !dismissed.has(c.correlationId));
+  if (visibleCards.length === 0) return null;
+  const head = visibleCards[0];
+  const remaining = visibleCards.length - 1;
   const args = toAskChoiceArgs(head);
 
   if (!args) {
@@ -82,11 +92,12 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
   const respond = async (response: AskChoiceResponse): Promise<void> => {
     setBusy(true);
     setError(null);
+    const correlationId = head.correlationId;
     try {
       const body =
         response.action === 'submit'
           ? {
-              correlationId: head.correlationId,
+              correlationId,
               workspaceId,
               action: 'submit' as const,
               payload: {
@@ -95,19 +106,27 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
             }
           : response.action === 'decline'
           ? {
-              correlationId: head.correlationId,
+              correlationId,
               workspaceId,
               action: 'decline' as const,
               reason: response.reason,
             }
           : {
-              correlationId: head.correlationId,
+              correlationId,
               workspaceId,
               action: 'cancel' as const,
             };
       const r = await postCardResponse(conversationId, body);
       if (!r.ok) {
         setError(r.error ?? `card-response failed (${r.status})`);
+      } else {
+        // Optimistic-dismiss covers the SSE-disconnected case where the
+        // server resolved the card but the snapshot update can't reach us.
+        setDismissed((prev) => {
+          const next = new Set(prev);
+          next.add(correlationId);
+          return next;
+        });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -126,6 +145,11 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
       {remaining > 0 && (
         <p className="pending-cards-bar-queue" aria-live="polite">
           {remaining} more {remaining === 1 ? 'card' : 'cards'} after this
+        </p>
+      )}
+      {!connected && (
+        <p className="pending-cards-bar-disconnected" role="status">
+          Live updates disconnected — submitted answers still apply.
         </p>
       )}
       {error && (

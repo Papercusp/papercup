@@ -36,6 +36,16 @@ export interface OpenCardWithRun extends OpenCardSnapshot {
   runId: string;
 }
 
+function isValidSnapshotEnvelope(data: unknown): data is SnapshotEnvelope {
+  if (!data || typeof data !== 'object') return false;
+  const d = data as Partial<SnapshotEnvelope>;
+  if (typeof d.runId !== 'string' || d.runId.length === 0) return false;
+  if (typeof d.version !== 'number' || !Number.isFinite(d.version)) return false;
+  if (!d.snapshot || typeof d.snapshot !== 'object') return false;
+  if (!Array.isArray(d.snapshot.openCards)) return false;
+  return true;
+}
+
 /**
  * Subscribes to /api/operator/state-snapshot. Returns:
  *   - cards: flattened OpenCardWithRun[] across all runs, ordered by
@@ -59,8 +69,16 @@ export function useStateSnapshots(): {
       onError: () => setConnected(false),
       handlers: {
         snapshot: (data: unknown) => {
-          const env = data as SnapshotEnvelope;
-          if (!env || typeof env.runId !== 'string') return;
+          // Defensive validation: any field-level malformation here
+          // would crash the React render downstream when it iterates
+          // openCards. Drop the event on a shape mismatch — server-side
+          // bugs shouldn't take the chat surface offline.
+          if (!isValidSnapshotEnvelope(data)) {
+            // eslint-disable-next-line no-console
+            console.warn('[useStateSnapshots] dropping malformed snapshot', data);
+            return;
+          }
+          const env = data;
           setByRun((prev) => {
             const existing = prev.get(env.runId);
             // Versions are monotonic per run; later wins.

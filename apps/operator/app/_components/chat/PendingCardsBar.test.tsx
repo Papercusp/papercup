@@ -44,6 +44,32 @@ describe('PendingCardsBar', () => {
     vi.mocked(postCardResponse).mockResolvedValue({ ok: true, status: 200 });
   });
 
+  it('audit: optimistic-dismiss — card hides immediately after a successful submit, even if SSE never sends snapshot update', async () => {
+    // Pre-fix: if the SSE stream dropped right after a successful POST,
+    // the card stayed visible indefinitely because the snapshot-update
+    // event never arrived.
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [makeCard()],
+      connected: true,
+    });
+    const { container } = render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    fireEvent.click(screen.getByRole('button', { name: /^Option A$/i }));
+    await waitFor(() => {
+      // After submit resolves, the card should be optimistically dismissed
+      // even though the mocked useStateSnapshots still returns it.
+      expect(container.querySelector('.ask-choice-card')).toBeNull();
+    });
+  });
+
+  it('audit: disconnected indicator surfaces when SSE is closed', () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [makeCard()],
+      connected: false,
+    });
+    render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    expect(screen.getByText(/Live updates disconnected/)).toBeTruthy();
+  });
+
   it('renders nothing when no cards', () => {
     vi.mocked(useStateSnapshots).mockReturnValue({ cards: [], connected: true });
     const { container } = render(
