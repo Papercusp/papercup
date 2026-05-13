@@ -12,13 +12,12 @@
  */
 import { Hono } from 'hono';
 import { sseResponse } from '@restart/sse';
-import {
-  dispatchProjectedToolStream,
-  emitToSseSink,
-  lookupByMcpName,
-  type UnifiedToolContext,
-} from '@papercusp/agent-mcp';
-// Side-effect: registers architect:chat + the other operator-side tools.
+// Side-effect: registers architect:chat + brainstorm:chat etc. so the
+// projected-tool catch-all at /api/agent-tools/[...path] can resolve
+// them. The 2 Hono shims at /:slug/architect/chat and
+// /:slug/brainstorm/chat were retired in Phase 4 T1.2; consumers
+// (useHarnessChatRuntime) now POST the projected URL directly with
+// harnessSlug in the body.
 import '@/lib/agent-tools/index';
 import { readFileSync, readlinkSync, existsSync, readdirSync, statSync, openSync, readSync, closeSync, constants as fsConstants } from 'node:fs';
 import { getKnownRoles } from '@/lib/known-roles';
@@ -5669,100 +5668,6 @@ harness.post('/:slug/reviews/:id/resolve', async (c) => {
   return c.json({ ok: true, review });
 });
 
-// Architect chat — streams a single turn via runAgentChat (backend-aware:
-// `omp -p` by default, `claude -p` when AGENT_BACKEND=claude-code).
-// Body: { history: [{role:'user'|'assistant',content:string}], message: string, reviewId?: string }
-// Response: text/event-stream; events are `delta` with a text chunk, then `done`.
-
-harness.post('/:slug/architect/chat', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json() as {
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>;
-    message: string;
-    reviewId?: string;
-  };
-  if (!body.message || typeof body.message !== 'string') {
-    return c.json({ error: 'message required' }, 400);
-  }
-
-  // Prompt composition + history slicing now happen inside the
-  // architect:chat tool (lib/agent-tools/architect/chat.ts).
-
-  // Pilot 2 of typed-event channel migration (2026-05-12 → Phase 3):
-  // the route now composes the prompt and dispatches into the
-  // `architect:chat` projected tool. Wire format unchanged — the tool
-  // declares `delta: z.string()` and `error: z.string()` so the
-  // framework's schema-inferred wire-format keeps both as raw text
-  // (matches the previous sink.eventRaw shape; submodule consumer at
-  // libs/agent-chat's useHarnessChatRuntime.ts unaffected).
-  const architectChatTool = lookupByMcpName('architect:chat');
-  if (!architectChatTool) {
-    return c.json({ error: 'architect:chat tool not registered' }, 500);
-  }
-  return sseResponse({
-    signal: c.req.raw.signal,
-    setup: async (sink) => {
-      const ctxBase: UnifiedToolContext = {
-        log: (msg) => { console.log(`[architect:chat][tool] ${msg}`); },
-        signal: c.req.raw.signal,
-        progress: () => {},
-        emit: () => { /* installed by dispatchProjectedToolStream */ },
-        workspaceId: activeWorkspaceId(),
-        role: 'operator',
-        runId: `architect-${project.slug}-${Date.now()}`,
-        spawnId: `architect-${project.slug}`,
-        projectDir: project.path,
-        harnessSlug: project.slug,
-        transport: 'in_process',
-      };
-      // Tool is now self-contained: it resolves the project + composes
-      // the prompt itself. The route just forwards the raw chat args.
-      // See apps/operator/lib/agent-tools/architect/chat.ts for why.
-      for await (const ev of dispatchProjectedToolStream(
-        architectChatTool,
-        'architect:chat',
-        {
-          harnessSlug: project.slug,
-          phase: c.req.query('phase'),
-          history: body.history ?? [],
-          message: body.message,
-          reviewId: body.reviewId,
-        },
-        ctxBase,
-        {},
-      )) {
-        if (ev.kind === 'event') {
-          // Schema-driven wire-kind dispatch via the shared helper —
-          // same source of truth as the framework's HTTP transport.
-          emitToSseSink(sink, architectChatTool, ev.name, ev.data);
-        } else if (ev.kind === 'error') {
-          // Dispatcher-level failure (role gate, quota, timeout, throw).
-          // Surface as a raw-text `error` event so the submodule consumer
-          // (useHarnessChatRuntime.ts) shows it inline. Previously dropped
-          // silently — the user just saw an empty response.
-          sink.eventRaw('error', ev.error.message);
-        } else if (ev.kind === 'done') {
-          // Emit terminal `done` for symmetry with the catch-all
-          // /api/agent-tools/architect/chat URL (where the framework
-          // auto-emits done). useHarnessChatRuntime.ts ignores done
-          // and detects turn-end via stream-EOF, so we MUST close after
-          // emitting so the consumer's reader.read() returns
-          // { done: true } and setIsRunning(false) actually fires.
-          sink.event('done', ev.result.content);
-        }
-      }
-      // Always close — for done, error, AND the case where the
-      // for-await falls through without yielding done/error (signal
-      // abort mid-stream). Without this, useHarnessChatRuntime.ts
-      // hangs reading heartbeats forever and the chat UI stays in
-      // 'Running' state until the user navigates away. Was broken
-      // since the Pilot-2 migration (commit 1512ae2b).
-      sink.close();
-    },
-  });
-});
-
 // Accept an Architect-proposed patch — write it to the target file.
 // Body: { target: 'SPEC.md' | 'contract' | 'supervisor-notes', content: string }
 harness.post('/:slug/architect/apply', async (c) => {
@@ -5924,73 +5829,6 @@ harness.put('/:slug/brainstorm-mindmap', async (c) => {
   await saveBrainstorm(slug, { mindmap: body.tree });
   await writeFile(brainstormMindmapPath(project), JSON.stringify(body.tree, null, 2), 'utf8').catch(() => {});
   return c.json({ ok: true });
-});
-
-// Brainstorm chat — reuses the same Claude CLI pipe as architect/chat
-// but with a different system prompt focused on expansive ideation.
-harness.post('/:slug/brainstorm/chat', async (c) => {
-  const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
-  if (!project) return c.json({ error: 'unknown project' }, 404);
-  const body = await c.req.json() as {
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>;
-    message: string;
-  };
-  if (!body.message || typeof body.message !== 'string') {
-    return c.json({ error: 'message required' }, 400);
-  }
-
-  // Prompt composition + history slicing now happen inside the
-  // brainstorm:chat tool (lib/agent-tools/architect/chat.ts).
-
-  const brainstormChatTool = lookupByMcpName('brainstorm:chat');
-  if (!brainstormChatTool) {
-    return c.json({ error: 'brainstorm:chat tool not registered' }, 500);
-  }
-  return sseResponse({
-    signal: c.req.raw.signal,
-    setup: async (sink) => {
-      const ctxBase: UnifiedToolContext = {
-        log: (msg) => { console.log(`[brainstorm:chat][tool] ${msg}`); },
-        signal: c.req.raw.signal,
-        progress: () => {},
-        emit: () => { /* installed by dispatchProjectedToolStream */ },
-        workspaceId: activeWorkspaceId(),
-        role: 'operator',
-        runId: `brainstorm-${project.slug}-${Date.now()}`,
-        spawnId: `brainstorm-${project.slug}`,
-        projectDir: project.path,
-        harnessSlug: project.slug,
-        transport: 'in_process',
-      };
-      for await (const ev of dispatchProjectedToolStream(
-        brainstormChatTool,
-        'brainstorm:chat',
-        {
-          harnessSlug: project.slug,
-          phase: c.req.query('phase'),
-          history: body.history ?? [],
-          message: body.message,
-        },
-        ctxBase,
-        {},
-      )) {
-        if (ev.kind === 'event') {
-          // Schema-driven wire-kind dispatch via the shared helper —
-          // see architect/chat above.
-          emitToSseSink(sink, brainstormChatTool, ev.name, ev.data);
-        } else if (ev.kind === 'error') {
-          // Dispatcher-level failure — see architect/chat above.
-          sink.eventRaw('error', ev.error.message);
-        } else if (ev.kind === 'done') {
-          // Terminal `done` — see architect/chat above.
-          sink.event('done', ev.result.content);
-        }
-      }
-      // Close so useHarnessChatRuntime's reader returns { done: true }.
-      // See architect/chat above for the bug history.
-      sink.close();
-    },
-  });
 });
 
 // Brainstorm promote — takes content from chat or a selection and

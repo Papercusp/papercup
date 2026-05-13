@@ -143,5 +143,38 @@ for (const surface of SURFACES) {
   }
 }
 
+// Phase-4 T1.2: the 2 legacy Hono shims at /:slug/architect/chat and
+// /:slug/brainstorm/chat were retired. useHarnessChatRuntime now POSTs
+// the projected-tool URL directly with harnessSlug in the body. Lock
+// the legacy URL patterns out of the source so they can't regress.
+console.log(`--- T1.2 legacy URL retirement ---`);
+{
+  const harnessRoute = readFileSync(
+    join(REPO, 'apps/operator/app/api/_hono/harness.ts'),
+    'utf8',
+  );
+  const consumer = readFileSync(
+    join(REPO, 'libs/agent-chat/src/useHarnessChatRuntime.ts'),
+    'utf8',
+  );
+  check(
+    `no harness.post('/:slug/architect/chat', ...) in harness.ts`,
+    !/harness\.post\(['"]\/:?slug\/architect\/chat['"]/.test(harnessRoute),
+  );
+  check(
+    `no harness.post('/:slug/brainstorm/chat', ...) in harness.ts`,
+    !/harness\.post\(['"]\/:?slug\/brainstorm\/chat['"]/.test(harnessRoute),
+  );
+  check(
+    `useHarnessChatRuntime POSTs /api/agent-tools/ (not /api/harness/<slug>/)`,
+    /\/api\/agent-tools\//.test(consumer) &&
+      !/\/api\/harness\/\$\{slug\}\/\$\{endpoint\}/.test(consumer),
+  );
+  check(
+    `useHarnessChatRuntime sends harnessSlug in body`,
+    /harnessSlug:\s*slug/.test(consumer),
+  );
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail > 0 ? 1 : 0);
