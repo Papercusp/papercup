@@ -64,6 +64,7 @@ async function recordInvocationImpl(input: {
   errorMessage?: string | null;
   args?: unknown;
   eventCount?: number;
+  metadataJson?: Record<string, unknown> | null;
 }): Promise<void> {
   if (!input.ctx.workspaceId) return;
   try {
@@ -75,9 +76,9 @@ async function recordInvocationImpl(input: {
            (workspace_id, harness_slug, plugin_name, tool_name, role,
             feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
             window_key, duration_ms, status, output_ref, output_size,
-            error_message, args_json, transport, event_count)
+            error_message, args_json, transport, event_count, metadata_json)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-                 $16,$17::jsonb,$18,$19)`,
+                 $16,$17::jsonb,$18,$19,$20::jsonb)`,
         [
           input.ctx.workspaceId,
           input.ctx.harnessSlug ?? '',
@@ -112,6 +113,7 @@ async function recordInvocationImpl(input: {
           // transport is actually involved at dispatch time.
           input.ctx.transport ?? null,
           input.eventCount ?? null,
+          input.metadataJson ? JSON.stringify(input.metadataJson) : null,
         ],
       );
     });

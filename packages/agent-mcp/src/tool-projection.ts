@@ -393,6 +393,27 @@ export interface UnifiedToolContext {
    * Tools should check `if (ctx.publishState)` before calling.
    */
   publishState?: PublishStateCallback;
+
+  /**
+   * Attach per-call structured metadata for telemetry. The dispatcher
+   * captures whatever payload the handler set MOST RECENTLY before the
+   * call ends and persists it into `harness_shared.tool_invocations
+   * .metadata_json` (added by migration 068).
+   *
+   * Used for shape-specific telemetry that doesn't fit the fixed
+   * columns — e.g. docs:get emits `{ requested, found, truncated,
+   * sliced }`, search:* emits `{ result_count, ranker }`. Lets
+   * Phase-2 trigger predicates query specific JSONB paths without
+   * adding new columns per tool.
+   *
+   * Best-effort: implementations that haven't run the migration
+   * (older operator versions, IPC dev sandboxes) drop the payload
+   * silently. Tools should NOT rely on this for correctness — only
+   * for telemetry.
+   *
+   * Always installed by the dispatcher (no opt-out).
+   */
+  metadata?: (data: Record<string, unknown>) => void;
 }
 
 /** ctx.publishState — snapshot-only in v1. */

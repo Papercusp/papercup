@@ -103,6 +103,14 @@ export interface DispatchProjectedDeps {
      * .event_count (migration 066).
      */
     eventCount?: number;
+    /**
+     * Per-call structured metadata set by the handler via
+     * ctx.metadata({...}). The dispatcher captures the last payload
+     * before completion and passes it here. Hosts persist into
+     * harness_shared.tool_invocations.metadata_json (migration 068).
+     * Null when handler never called ctx.metadata.
+     */
+    metadataJson?: Record<string, unknown> | null;
   }): Promise<void>;
 }
 
@@ -383,11 +391,21 @@ export async function dispatchProjectedTool(
     };
   }
 
+  // Per-call metadata accumulator. The handler may call ctx.metadata
+  // multiple times; we keep the most recent payload (overwrite, not
+  // merge) and hand it to recordInvocation at completion. NULL when
+  // the handler never called it.
+  let metadataJson: Record<string, unknown> | null = null;
+  const metadataCallback = (data: Record<string, unknown>): void => {
+    metadataJson = { ...data };
+  };
+
   const handlerCtx: UnifiedToolContext = {
     ...ctx,
     signal: abort.signal,
     emit: wrappedEmit,
     progress: wrappedProgress,
+    metadata: metadataCallback,
     ...(askUser ? { askUser } : {}),
     ...(publishState ? { publishState } : {}),
   };
@@ -415,6 +433,7 @@ export async function dispatchProjectedTool(
             args: input,
 
             eventCount,
+            metadataJson,
           });
         } catch { /* best-effort */ }
       }
@@ -455,6 +474,7 @@ export async function dispatchProjectedTool(
           args: input,
 
           eventCount,
+          metadataJson,
         });
       } catch { /* best-effort */ }
     }
@@ -475,6 +495,7 @@ export async function dispatchProjectedTool(
           args: input,
 
           eventCount,
+          metadataJson,
         });
       } catch { /* best-effort */ }
     }
