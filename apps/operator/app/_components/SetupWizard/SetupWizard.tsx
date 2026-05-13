@@ -1,7 +1,8 @@
 'use client';
 
 import { useQueryState } from 'nuqs';
-import { useEffect, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import { SETUP_STEPS, findStep } from './steps';
 import type { StepStatus } from './types';
 import { StepAgents } from './StepAgents';
@@ -16,6 +17,7 @@ import { StepOsPermissions } from './StepOsPermissions';
 import { StepPlaceholder } from './StepPlaceholder';
 import { StepTelemetry } from './StepTelemetry';
 import { StepVoiceDevices } from './StepVoiceDevices';
+import { StepWelcome } from './StepWelcome';
 import { StepWorkspace } from './StepWorkspace';
 import { useWizardStatuses } from './useWizardStatuses';
 
@@ -24,11 +26,11 @@ interface Props {
 }
 
 export function SetupWizard({ mode }: Props) {
+  const router = useRouter();
   const { statuses, persisted, refreshAll, setStepPersistedStatus, setLastVisitedStep } =
     useWizardStatuses();
-  const [stepId, setStepId] = useQueryState('step', {
-    defaultValue: persisted.last_visited_step ?? SETUP_STEPS[0].id,
-  });
+  const [stepId, setStepId] = useQueryState('step');
+  const [finishing, setFinishing] = useState(false);
 
   useEffect(() => {
     refreshAll();
@@ -38,14 +40,56 @@ export function SetupWizard({ mode }: Props) {
     if (stepId) void setLastVisitedStep(stepId);
   }, [stepId, setLastVisitedStep]);
 
-  const active = useMemo(() => findStep(stepId) ?? SETUP_STEPS[0], [stepId]);
+  // In first-run mode with no ?step= and no prior visit, show the
+  // welcome card. In settings mode, jump straight to the first step
+  // (the welcome card is meant for the un-onboarded user, not someone
+  // dipping in from Settings).
+  const showWelcome = mode === 'first-run' && !stepId && !persisted.last_visited_step;
+  const active = useMemo(
+    () => findStep(stepId) ?? findStep(persisted.last_visited_step) ?? SETUP_STEPS[0],
+    [stepId, persisted.last_visited_step],
+  );
+
   const isDismissed = persisted.step_status?.[active.id] === 'dismissed';
   const isCompleted = persisted.step_status?.[active.id] === 'completed';
 
+  const requiredMet =
+    statuses['embedded-pg'] === 'ok' &&
+    statuses['agents'] === 'ok' &&
+    // workspace + git can be either ok-by-detection or completed-by-user
+    (persisted.step_status?.['workspace'] === 'completed' ||
+      persisted.step_status?.['workspace'] === 'dismissed' ||
+      false);
+  // Detection of "workspace folder set" isn't part of preflight, so we
+  // treat "user clicked Mark as done OR Save" as the proxy. Required:
+  // ≥1 agent installed AND embedded-pg ready. (Per the design contract
+  // the user accepted earlier — workspace + agents required, rest opt.)
+  const minimumMet =
+    statuses['embedded-pg'] === 'ok' && statuses['agents'] === 'ok';
+
+  const idx = SETUP_STEPS.findIndex((s) => s.id === active.id);
   const goNext = () => {
-    const idx = SETUP_STEPS.findIndex((s) => s.id === active.id);
     const next = SETUP_STEPS[idx + 1];
     if (next) setStepId(next.id);
+  };
+  const goPrev = () => {
+    const prev = SETUP_STEPS[idx - 1];
+    if (prev) setStepId(prev.id);
+  };
+
+  const finishWizard = async () => {
+    setFinishing(true);
+    try {
+      await fetch('/api/desktop/setup-wizard-state', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ finished_at: new Date().toISOString() }),
+      });
+      if (mode === 'first-run') router.push('/harness');
+      else setFinishing(false);
+    } catch {
+      setFinishing(false);
+    }
   };
 
   return (
@@ -58,9 +102,9 @@ export function SetupWizard({ mode }: Props) {
             : 'Configure or revisit any step. Detection runs automatically.'}
         </p>
         <ol className="pc-setup-wizard__steps">
-          {SETUP_STEPS.map((s, idx) => {
+          {SETUP_STEPS.map((s, i) => {
             const status: StepStatus = statuses[s.id] ?? 'unknown';
-            const isActive = s.id === active.id;
+            const isActive = !showWelcome && s.id === active.id;
             return (
               <li
                 key={s.id}
@@ -73,7 +117,7 @@ export function SetupWizard({ mode }: Props) {
                   className="pc-setup-wizard__step-btn"
                   onClick={() => setStepId(s.id)}
                 >
-                  <span className="pc-setup-wizard__step-num">{idx + 1}</span>
+                  <span className="pc-setup-wizard__step-num">{i + 1}</span>
                   <span className="pc-setup-wizard__step-text">
                     <span className="pc-setup-wizard__step-title">{s.title}</span>
                     <span className="pc-setup-wizard__step-summary">{s.summary}</span>
@@ -84,65 +128,108 @@ export function SetupWizard({ mode }: Props) {
             );
           })}
         </ol>
+        <div className="pc-setup-wizard__sidebar-footer">
+          <div className="pc-setup-wizard__min" data-met={minimumMet ? 'true' : 'false'}>
+            <span className="pc-setup-wizard__min-dot" />
+            <span>
+              {minimumMet
+                ? 'Minimum setup complete — you can finish any time.'
+                : 'Required: ≥1 coding agent + local database ready.'}
+            </span>
+          </div>
+        </div>
       </aside>
 
       <main className="pc-setup-wizard__main">
-        <header className="pc-setup-wizard__main-header">
-          <h1>{active.title}</h1>
-          <p>{active.summary}</p>
-        </header>
-        <section className="pc-setup-wizard__main-body">{renderStep(active.id)}</section>
-        <footer className="pc-setup-wizard__main-footer">
-          <div className="pc-setup-wizard__main-footer-left">
-            {!active.required && !isDismissed && !isCompleted && (
-              <button
-                type="button"
-                className="pc-btn"
-                onClick={() => void setStepPersistedStatus(active.id, 'dismissed')}
-              >
-                Skip this step
-              </button>
-            )}
-            {isDismissed && (
-              <span className="pc-setup-wizard__skip-note">
-                Skipped.{' '}
+        {showWelcome ? (
+          <StepWelcome onStart={() => setStepId(SETUP_STEPS[0].id)} />
+        ) : (
+          <>
+            <header className="pc-setup-wizard__main-header">
+              <h1>{active.title}</h1>
+              <p>{active.summary}</p>
+            </header>
+            <section className="pc-setup-wizard__main-body">{renderStep(active.id)}</section>
+            <footer className="pc-setup-wizard__main-footer">
+              <div className="pc-setup-wizard__main-footer-left">
+                {idx > 0 && (
+                  <button type="button" className="pc-btn" onClick={goPrev}>
+                    ← Back
+                  </button>
+                )}
+                {!active.required && !isDismissed && !isCompleted && (
+                  <button
+                    type="button"
+                    className="pc-btn"
+                    onClick={() => void setStepPersistedStatus(active.id, 'dismissed')}
+                  >
+                    Skip this step
+                  </button>
+                )}
+                {isDismissed && (
+                  <span className="pc-setup-wizard__skip-note">
+                    Skipped.{' '}
+                    <button
+                      type="button"
+                      className="pc-link-btn"
+                      onClick={() => void setStepPersistedStatus(active.id, null)}
+                    >
+                      Un-skip
+                    </button>
+                  </span>
+                )}
+                {!isCompleted &&
+                  active.id !== 'embedded-pg' &&
+                  active.id !== 'agents' &&
+                  active.id !== 'telemetry' && (
+                    <button
+                      type="button"
+                      className="pc-btn"
+                      onClick={() => void setStepPersistedStatus(active.id, 'completed')}
+                    >
+                      Mark as done
+                    </button>
+                  )}
+                {isCompleted && (
+                  <span className="pc-setup-wizard__skip-note">
+                    Done.{' '}
+                    <button
+                      type="button"
+                      className="pc-link-btn"
+                      onClick={() => void setStepPersistedStatus(active.id, null)}
+                    >
+                      Reset
+                    </button>
+                  </span>
+                )}
+              </div>
+              <div className="pc-setup-wizard__main-footer-right">
+                {idx < SETUP_STEPS.length - 1 && (
+                  <button type="button" className="pc-btn" onClick={goNext}>
+                    Continue →
+                  </button>
+                )}
                 <button
                   type="button"
-                  className="pc-link-btn"
-                  onClick={() => void setStepPersistedStatus(active.id, null)}
+                  className="pc-btn pc-btn--primary"
+                  onClick={() => void finishWizard()}
+                  disabled={!minimumMet || finishing}
+                  title={
+                    !minimumMet
+                      ? 'Install a coding agent + wait for the local database before finishing'
+                      : undefined
+                  }
                 >
-                  Un-skip
+                  {finishing
+                    ? 'Finishing…'
+                    : mode === 'first-run'
+                      ? 'Finish setup'
+                      : 'Mark setup complete'}
                 </button>
-              </span>
-            )}
-            {!isCompleted && active.id !== 'embedded-pg' && active.id !== 'agents' && (
-              <button
-                type="button"
-                className="pc-btn"
-                onClick={() => void setStepPersistedStatus(active.id, 'completed')}
-              >
-                Mark as done
-              </button>
-            )}
-            {isCompleted && (
-              <span className="pc-setup-wizard__skip-note">
-                Done.{' '}
-                <button
-                  type="button"
-                  className="pc-link-btn"
-                  onClick={() => void setStepPersistedStatus(active.id, null)}
-                >
-                  Reset
-                </button>
-              </span>
-            )}
-          </div>
-          <div className="pc-setup-wizard__main-footer-right">
-            <button type="button" className="pc-btn pc-btn--primary" onClick={goNext}>
-              Continue →
-            </button>
-          </div>
-        </footer>
+              </div>
+            </footer>
+          </>
+        )}
       </main>
     </div>
   );
