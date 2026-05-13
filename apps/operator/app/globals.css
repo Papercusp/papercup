@@ -25055,6 +25055,26 @@ body:has(.operator-panel) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  animation: pc-step-fade-in 220ms ease-out both;
+}
+
+@keyframes pc-step-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pc-step { animation: none; }
+}
+
+/* Sidebar progress chip — green when wizard is fully finished, neutral otherwise. */
+.pc-settings-nav-chip--progress {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.pc-settings-nav-chip--progress[data-finished="true"] {
+  background: rgba(34, 197, 94, 0.16);
+  color: rgb(110, 231, 165);
 }
 .pc-step__lead {
   font-size: 14px;
@@ -25403,6 +25423,135 @@ body:has(.operator-panel) {
 .pc-setup-wizard__min[data-met="true"] .pc-setup-wizard__min-dot { background: var(--good); }
 .pc-setup-wizard__min[data-met="true"] { color: var(--fg-dim); }
 
+/* Setup wizard simplicity/usability pass: compact settings-mode picker. */
+.pc-setup-wizard[data-mode="settings"] {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  max-width: min(100%, 860px);
+  padding: 0;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__sidebar {
+  position: relative;
+  top: auto;
+  border-radius: 14px;
+  padding: 16px;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 6px;
+  overflow: visible;
+  padding: 0;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step-btn {
+  min-height: 44px;
+  grid-template-columns: 20px minmax(0, 1fr) 18px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 9px;
+  border-radius: 10px;
+  box-shadow: none;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step-summary {
+  display: none;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step-num,
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__status {
+  width: 18px;
+  height: 18px;
+  font-size: 10px;
+  line-height: 18px;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step[data-active="true"] .pc-setup-wizard__step-btn {
+  background: rgba(30, 41, 59, 0.52);
+  border-color: rgba(125, 211, 252, 0.46);
+  box-shadow: none;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step[data-active="true"] .pc-setup-wizard__step-btn::before {
+  inset: 8px auto 8px 0;
+  box-shadow: none;
+}
+
+.pc-setup-wizard__eyebrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.pc-setup-wizard__pill {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.12);
+  color: var(--fg-dim);
+}
+
+.pc-setup-wizard__progress {
+  height: 4px;
+  margin-top: 14px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--bg-2);
+}
+
+.pc-setup-wizard__progress span {
+  display: block;
+  height: 100%;
+  min-width: 8px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--good));
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main {
+  border-radius: 16px;
+  padding: 24px 24px 28px;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main-header {
+  margin: 0 0 18px;
+  padding: 0 0 16px;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main-header h1 {
+  font-size: clamp(26px, 3.2vw, 36px);
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+}
+
+.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main-footer {
+  margin: 22px 0 0;
+  padding: 16px 0 0;
+  background: transparent;
+}
+
+.pc-setup-wizard__finish-hint {
+  max-width: 260px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-mute);
+}
+
+@media (max-width: 900px) {
+  .pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__steps {
+    grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  }
+}
+
 .pc-divider { height: 1px; background: var(--border); margin: 16px 0 8px; }
 
 .pc-field__hint--ok { color: var(--good); }
@@ -25451,6 +25600,7 @@ body:has(.operator-panel) {
   padding: 1px 5px;
   border-radius: 4px;
   font-variant-numeric: tabular-nums;
+}
 /* ── Operator chat card usability/readability pass ───────────────────
  * The ask_choice card fixtures intentionally stress every state. Keep these
  * cards compact enough for the 360px sidebar, make multi-select controls read
