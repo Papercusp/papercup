@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { randomUUID } from 'node:crypto';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
+import { ensureInstallId } from '@/lib/setup-wizard-install-id';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -47,15 +47,11 @@ function defaults(): SetupWizardState {
 
 export async function GET(req: NextRequest) {
   if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
+  // Mint install_id if missing — shared with telemetry-config so the
+  // first event after a fresh boot always has a stable distinct id
+  // regardless of which route is hit first.
+  await ensureInstallId();
   const state = (await readOperatorState<SetupWizardState>(KEY)) ?? defaults();
-  // Lazy-mint install_id on first read so every install has a stable,
-  // anonymous PostHog distinct id from boot one — even before the
-  // user creates their first workspace.
-  if (!state.install_id) {
-    state.install_id = randomUUID();
-    state.updated_at = new Date().toISOString();
-    await writeOperatorState(KEY, state);
-  }
   return NextResponse.json(state);
 }
 

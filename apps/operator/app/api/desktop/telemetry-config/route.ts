@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readOperatorState } from '@/lib/operator-state-pg';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
+import { ensureInstallId } from '@/lib/setup-wizard-install-id';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -33,6 +34,9 @@ export async function GET(req: NextRequest) {
   if (!isLoopback(req)) {
     return NextResponse.json({ error: 'loopback only' }, { status: 403 });
   }
+  // Mint install_id if missing so PostHog distinct_id is stable from
+  // event one, even when this route is hit before setup-wizard-state.
+  const installId = await ensureInstallId();
   const state = await readOperatorState<{
     telemetry_enabled?: boolean;
     telemetry_host?: string;
@@ -55,7 +59,7 @@ export async function GET(req: NextRequest) {
     // Falls back to workspace id, then 'default', but install_id should
     // always be set in practice because layouts call setup-wizard-state
     // on mount.
-    distinct_id: state?.install_id ?? activeWorkspaceId(),
+    distinct_id: installId,
     workspace_id: activeWorkspaceId(),
   });
 }
