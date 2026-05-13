@@ -47,6 +47,31 @@ The "no native title=" rule is a soft rule, not a hard one.
 
 A tell that you should use native `title=`: the value is dynamic and per-row (`title={row.title}`), not a static label. Static action-button hints almost always belong in `<Tooltip>`.
 
+## Native `<details>` is fine for content disclosure, NOT for interactive components
+
+The HR6 "never `<details>`" rule is for *interactive* disclosure widgets — the kind that need shared focus styles, animation, and ARIA state with the rest of the harness. For **content disclosure** (prose, diagnostic dumps, debug help text — anything the user reads but doesn't act on), native `<details>` is the better primitive:
+
+- It lazy-mounts its `<summary>` content until first open. Radix `<Collapsible>` mounts children eagerly, so wrapping a heavy renderer (Monaco, MarkdownPreview, JSON tree) in Collapsible pays the render cost on every page load even when collapsed.
+- Browser Ctrl+F finds text inside collapsed `<details>` on modern Chromium (`hidden-until-found`). Collapsible content is `display:none` and invisible to find-in-page.
+- Browsers auto-expand all `<details>` on print. Collapsible needs JS to expand before print.
+
+Approved content-disclosure `<details>` sites:
+- `app/_components/WslOnboardingGate.tsx` — diagnostics dump on the setup overlay
+- `app/support/page.tsx` — help text
+- `app/settings/api-keys/page.tsx` — provider help text
+- `app/settings/user/memory/page.tsx` — embed-mode help
+- `app/settings/voice/page.tsx` — debug precedence matrix
+- `app/_components/OperatorPanel.tsx` — directive-body preview inside suggestion cards
+- `app/harness/LazyDetails.tsx` — explicit lazy-mount wrapper, by design
+
+A tell that `<details>` is correct: the content is prose (or auto-generated text), the user doesn't tab/select inside it, and rendering it costs real work (Monaco, MarkdownPreview, a long log dump). Interactive disclosures — collapsible form sections, per-row expanders inside lists where you want shared animation and focus management — still use `<Collapsible>`.
+
+## Floating widgets that pin to a viewport corner are NOT centered Modals
+
+A few surfaces — `OperatorPanel` (the Deck) and `OracleDock` (the chat dock) — are floating, viewport-anchored panels with their own bespoke animations (GSAP, framer-motion `AnimatePresence`, HUD overlays). They're not centered modals (Modal would yank them to screen-center and add a backdrop), not anchored Popovers (no trigger to align to), and not side Drawers (they don't slide in from the edge).
+
+For these, the correct pattern is a hand-written `role="dialog"` + `aria-label` on the container, with positioning + animation owned by the component. HR1 doesn't apply here; the rule's intent ("focus management + escape handling come from the wrapper") doesn't fit a panel that lives forever on screen and toggles open/closed via its own state machine. Treat OperatorPanel and OracleDock as the canonical exceptions; if you add a new floating-corner-widget pattern, document it next to them.
+
 ## Radix Select doesn't allow empty-string values
 
 `<Select value="">` is reserved by Radix Select to mean "no value selected" — same as `<Select value={undefined}>`. If your business logic uses `''` as a real value (e.g., "default mode"), Radix Select will display the placeholder when you actually mean to display "default".

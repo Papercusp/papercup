@@ -3,6 +3,8 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { toast } from 'sonner';
+import { Select } from '../harness/Select';
+import { Checkbox } from '../harness/Checkbox';
 
 interface AvailableUser {
   id: string;
@@ -130,18 +132,16 @@ function LoginForm() {
         {mode === 'login' && available.length > 1 ? (
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <span>User</span>
-            <select
+            <Select
               value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            >
-              <option value="">Pick a user…</option>
-              {available.map((u) => (
-                <option key={u.id} value={u.username}>
-                  {u.display_name} ({u.username})
-                </option>
-              ))}
-            </select>
+              onChange={setUsername}
+              placeholder="Pick a user…"
+              ariaLabel="User"
+              options={available.map((u) => ({
+                value: u.username,
+                label: `${u.display_name} (${u.username})`,
+              }))}
+            />
           </label>
         ) : (
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -172,11 +172,11 @@ function LoginForm() {
         )}
 
         <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input
-            type="checkbox"
+          <Checkbox
             checked={usePassword}
-            onChange={(e) => setUsePassword(e.target.checked)}
+            onChange={setUsePassword}
             disabled={mode === 'login' && !!available.find((a) => a.username === username && a.has_password)}
+            ariaLabel={mode === 'signup' ? 'Set a password (optional)' : 'Use password'}
           />
           <span>{mode === 'signup' ? 'Set a password (optional)' : 'Use password'}</span>
         </label>

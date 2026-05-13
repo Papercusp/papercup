@@ -16,6 +16,7 @@ export default function PublishingClient() {
   const [creds, setCreds] = useState<MaskedCreds | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const load = async () => {
     setLoading(true);
@@ -32,7 +33,12 @@ export default function PublishingClient() {
   useEffect(() => { void load(); }, []);
 
   const onRotate = async () => {
-    if (!confirm('Rotate the publish secret? The old secret stops working immediately.')) return;
+    if (!await askConfirm({
+      title: 'Rotate the publish secret?',
+      body: 'The old secret stops working immediately. Anything storing the old value (CI, deploy scripts) will need to be updated.',
+      confirmLabel: 'Rotate',
+      destructive: true,
+    })) return;
     setBusy(true);
     try {
       const r = await fetch('/api/publish-credentials/rotate', { method: 'POST' });
@@ -48,7 +54,12 @@ export default function PublishingClient() {
   };
 
   const onForget = async () => {
-    if (!confirm('Delete local publish credentials? Future publishes will register a fresh tenant.')) return;
+    if (!await askConfirm({
+      title: 'Delete local publish credentials?',
+      body: 'Future publishes will register a fresh tenant. The marketplace-side record is not affected.',
+      confirmLabel: 'Delete credentials',
+      destructive: true,
+    })) return;
     setBusy(true);
     try {
       const r = await fetch('/api/publish-credentials', { method: 'DELETE' });
@@ -68,6 +79,7 @@ export default function PublishingClient() {
 
   return (
     <div className="pc-settings-section">
+      {confirmEl}
       <h1>Publishing</h1>
       <p>
         One-click public publishing for coding harnesses, hosted on{' '}

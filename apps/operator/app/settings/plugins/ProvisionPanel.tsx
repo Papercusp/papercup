@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import * as Collapsible from '@radix-ui/react-collapsible';
 
 interface ProvisionDecl {
   setup?: { path: string; timeoutSec?: number };
@@ -152,35 +153,47 @@ export function ProvisionPanel({ harness, plugin, provision }: Props) {
       </div>
 
       {state?.createdResources && state.createdResources.length > 0 && (
-        <details style={{ marginBottom: 12 }} open>
-          <summary style={summary}>Recorded resources ({state.createdResources.length})</summary>
-          <ul style={list}>
-            {state.createdResources.map((r) => (
-              <li key={`${r.kind}:${r.externalId}`} style={li}>
-                <code style={{ color: '#7faaff' }}>{r.kind}</code>{' '}
-                <code>{r.externalId}</code>
-                <span style={{ float: 'right', fontSize: 11, color: 'var(--fg-mute, #888)' }}>
-                  {new Date(r.recordedAt).toLocaleString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </details>
+        <Collapsible.Root defaultOpen style={{ marginBottom: 12 }}>
+          <Collapsible.Trigger asChild>
+            <button type="button" style={{ ...summary, background: 'transparent', border: 0, padding: 0, cursor: 'pointer', textAlign: 'left' }}>
+              Recorded resources ({state.createdResources.length})
+            </button>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <ul style={list}>
+              {state.createdResources.map((r) => (
+                <li key={`${r.kind}:${r.externalId}`} style={li}>
+                  <code style={{ color: '#7faaff' }}>{r.kind}</code>{' '}
+                  <code>{r.externalId}</code>
+                  <span style={{ float: 'right', fontSize: 11, color: 'var(--fg-mute, #888)' }}>
+                    {new Date(r.recordedAt).toLocaleString()}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </Collapsible.Content>
+        </Collapsible.Root>
       )}
 
       {audit.length > 0 && (
-        <details>
-          <summary style={summary}>Audit log ({audit.length})</summary>
-          <ul style={{ ...list, fontFamily: 'monospace', fontSize: 11 }}>
-            {audit.map((e, i) => (
-              <li key={i} style={li}>
-                <span style={{ color: 'var(--fg-mute, #888)' }}>{new Date(e.ts).toLocaleTimeString()}</span>{' '}
-                <strong style={{ color: kindColor(e.kind) }}>{e.kind}</strong>
-                {e.data && <span style={{ marginLeft: 6, color: 'var(--fg-mute, #999)' }}>{shortJson(e.data)}</span>}
-              </li>
-            ))}
-          </ul>
-        </details>
+        <Collapsible.Root>
+          <Collapsible.Trigger asChild>
+            <button type="button" style={{ ...summary, background: 'transparent', border: 0, padding: 0, cursor: 'pointer', textAlign: 'left' }}>
+              Audit log ({audit.length})
+            </button>
+          </Collapsible.Trigger>
+          <Collapsible.Content>
+            <ul style={{ ...list, fontFamily: 'monospace', fontSize: 11 }}>
+              {audit.map((e, i) => (
+                <li key={i} style={li}>
+                  <span style={{ color: 'var(--fg-mute, #888)' }}>{new Date(e.ts).toLocaleTimeString()}</span>{' '}
+                  <strong style={{ color: kindColor(e.kind) }}>{e.kind}</strong>
+                  {e.data && <span style={{ marginLeft: 6, color: 'var(--fg-mute, #999)' }}>{shortJson(e.data)}</span>}
+                </li>
+              ))}
+            </ul>
+          </Collapsible.Content>
+        </Collapsible.Root>
       )}
 
       {state?.hashes && (
