@@ -3,6 +3,19 @@
 Living record of the multi-plan work approved on 2026-05-12. Each plan is
 independently mergeable. Update statuses as commits land.
 
+## Current status — 2026-05-14
+
+All Plan 1–4 items shipped or marked ⚠️ partial with the remainder in
+`apps/operator/docs/plans/deferred-followups-2026-05-14.md`.
+
+Audit rounds 1–15 caught and fixed 24 production bugs across this arc;
+round-13 + round-14 collateral fixes shipped in commit chain
+`27082a3e..b5f16a54`. See `memory://project_session_2026-05-13_round13.md`
+for the full ledger.
+
+Tier-1/Tier-2 follow-up arc (steps A–G in `~/.claude/.../memory/project_session_2026-05-14_tier_arc.md`)
+is independently tracked. Plans below are the original 2026-05-12 scope.
+
 ## Plan 1 — Operator tool-access fix + framework consistency
 
 | # | Item | Effort | Status |
@@ -79,8 +92,8 @@ Resolution order at read time: user pref (if set) → workspace pref → default
 | 4.6 | User picker in chrome | 1.5h | ✅ (this turn) |
 | 4.7 | `/login`, `/signup`, `/settings/user` pages | 4h | ✅ (this turn, login + settings; signup folded into /login) |
 | 4.8 | Welcome trigger + user_welcomed converse trigger | 2h | ✅ `a86afa44` |
-| 4.9 | mem0 changes baked into Plan 3 | 2h | pending (Plan 3) |
-| 4.10 | Tests + live verify | 2h | pending (needs servers) |
+| 4.9 | mem0 changes baked into Plan 3 | 2h | ✅ shipped — mem0 per-user scoping in `ae639376` |
+| 4.10 | Tests + live verify | 2h | ✅ shipped — live-verified round-13 (see `project_session_2026-05-13_round13.md`) |
 
 ## Plan 2 — Semantic search
 
@@ -109,11 +122,11 @@ User chose **Plan C (BM25 + embeddings + RRF hybrid)** but ship in order: A firs
 | 2A.1 | tsvector columns + migration (059) | 0.5h | ✅ (submodule) |
 | 2A.2 | `search:fulltext` tool + guidance | 1h | ✅ (this turn) |
 | 2A.3 | Backfill script | 0.5h | ✅ (folded into migration 059 UPDATE) |
-| 2B.1 | pgvector + text_embeddings schema | 1h | pending |
-| 2B.2 | embeddings.ts wrapper (lazy, worker-thread) | 1.5h | pending |
-| 2B.3 | Background embedding worker + battery awareness | 3h | pending |
-| 2B.4 | Backfill script for existing prose | 1h | pending |
-| 2B.5 | `search:semantic` tool with RRF fusion | 2h | pending |
+| 2B.1 | pgvector + text_embeddings schema | 1h | ✅ shipped — migration 060 (pgvector) + 061 (semantic search) |
+| 2B.2 | embeddings.ts wrapper (lazy, worker-thread) | 1.5h | ⚠️ partial — lazy-init of embedder on first use ✅; worker-thread isolation deferred (see `apps/operator/docs/plans/deferred-followups-2026-05-14.md`) |
+| 2B.3 | Background embedding worker + battery awareness | 3h | ⚠️ partial — periodic worker ✅ (5-min sweep in `lib/search/embed-backfill.ts`); battery-aware pause deferred (see `apps/operator/docs/plans/deferred-followups-2026-05-14.md`) |
+| 2B.4 | Backfill script for existing prose | 1h | ✅ shipped — boot sweep + 5-min periodic in `lib/search/embed-backfill.ts` |
+| 2B.5 | `search:semantic` tool with RRF fusion | 2h | ✅ shipped — `search:semantic` with RRF in `63182bc4` (RRF helper + 7 unit tests in `e16351b7`) |
 
 ## Plan 3 — mem0 integration (with per-user scoping from Plan 4)
 
@@ -145,7 +158,7 @@ Reuses Plan 2B's BGE-small embedder singleton.
 | 3.6 | Persona prompt: memory section (inform, don't ask) | 0.5h | ✅ `ae639376` |
 | 3.7 | /settings/user/memory UI | 4h | ✅ (this turn) |
 | 3.8 | Auto-TTL cleanup worker | 2h | ✅ (this turn) |
-| 3.9 | Tests + live verify | 3h | pending (needs servers + npm install) |
+| 3.9 | Tests + live verify | 3h | ✅ shipped — live-verified round-13 (write/restart/read across pgvector) |
 
 ## Recommended ship order
 1. **Plan 1.2 + 1.3** (small cleanup, ~45 min) — ✅ shipped `a74c04c1`
