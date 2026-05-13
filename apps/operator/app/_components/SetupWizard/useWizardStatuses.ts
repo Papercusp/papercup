@@ -41,12 +41,14 @@ function mergeWithPersisted(
 export function useWizardStatuses() {
   const [statuses, setStatuses] = useState<Record<string, StepStatus>>({});
   const [persisted, setPersisted] = useState<PersistentState>({ step_status: {} });
+  const [voiceConfigured, setVoiceConfigured] = useState(false);
 
   const refreshAll = useCallback(async () => {
     try {
-      const [preflightRes, persistedRes] = await Promise.all([
+      const [preflightRes, persistedRes, voiceRes] = await Promise.all([
         fetch('/api/desktop/preflight', { cache: 'no-store' }),
         fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' }),
+        fetch('/api/desktop/voice-configured', { cache: 'no-store' }),
       ]);
       const preflight = (await preflightRes.json()) as PreflightResponse;
       const persistedJson = persistedRes.ok
@@ -76,6 +78,10 @@ export function useWizardStatuses() {
       }
       setStatuses(merged);
       setPersisted(persistedJson);
+      if (voiceRes.ok) {
+        const j = (await voiceRes.json()) as { configured?: boolean };
+        setVoiceConfigured(Boolean(j.configured));
+      }
     } catch {
       // network failures leave statuses unchanged
     }
@@ -110,5 +116,5 @@ export function useWizardStatuses() {
     }
   }, []);
 
-  return { statuses, persisted, refreshAll, setStepPersistedStatus, setLastVisitedStep };
+  return { statuses, persisted, voiceConfigured, refreshAll, setStepPersistedStatus, setLastVisitedStep };
 }

@@ -23,6 +23,7 @@ interface TelemetryConfig {
   enabled: boolean;
   host?: string;
   project_key?: string;
+  workspace_id?: string;
 }
 
 let initialized = false;
@@ -48,12 +49,10 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
           autocapture: true,
           disable_session_recording: true, // session-replay is a separate consent we don't have
           // Workspace = distinct id keeps reports anonymous (no email/user id).
+          // workspace_id comes from the server (telemetry-config), not the URL,
+          // because the desktop app's webview has no ?ws= query param.
           loaded: (ph) => {
-            const wsParam =
-              typeof window !== 'undefined'
-                ? new URLSearchParams(window.location.search).get('ws') ?? 'default'
-                : 'default';
-            ph.identify(wsParam);
+            ph.identify(cfg.workspace_id ?? 'default');
           },
         });
         initialized = true;

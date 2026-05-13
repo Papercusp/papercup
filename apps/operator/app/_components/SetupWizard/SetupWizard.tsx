@@ -27,7 +27,7 @@ interface Props {
 
 export function SetupWizard({ mode }: Props) {
   const router = useRouter();
-  const { statuses, persisted, refreshAll, setStepPersistedStatus, setLastVisitedStep } =
+  const { statuses, persisted, voiceConfigured, refreshAll, setStepPersistedStatus, setLastVisitedStep } =
     useWizardStatuses();
   const [stepId, setStepId] = useQueryState('step');
   const [finishing, setFinishing] = useState(false);
@@ -61,13 +61,30 @@ export function SetupWizard({ mode }: Props) {
     statuses['embedded-pg'] === 'ok' && statuses['agents'] === 'ok';
 
   const idx = SETUP_STEPS.findIndex((s) => s.id === active.id);
+  // Step 8 (voice-devices) is only useful when the user actually
+  // plans to use voice. We treat "ElevenLabs key is set" as the proxy
+  // for that — the Next button skips voice-devices when not
+  // configured (it stays reachable from the sidebar). Settings-mode
+  // never auto-skips.
+  const shouldSkip = (stepId: string): boolean =>
+    mode === 'first-run' && stepId === 'voice-devices' && !voiceConfigured;
   const goNext = () => {
-    const next = SETUP_STEPS[idx + 1];
-    if (next) setStepId(next.id);
+    for (let i = idx + 1; i < SETUP_STEPS.length; i++) {
+      const next = SETUP_STEPS[i];
+      if (!shouldSkip(next.id)) {
+        setStepId(next.id);
+        return;
+      }
+    }
   };
   const goPrev = () => {
-    const prev = SETUP_STEPS[idx - 1];
-    if (prev) setStepId(prev.id);
+    for (let i = idx - 1; i >= 0; i--) {
+      const prev = SETUP_STEPS[i];
+      if (!shouldSkip(prev.id)) {
+        setStepId(prev.id);
+        return;
+      }
+    }
   };
 
   const finishWizard = async () => {

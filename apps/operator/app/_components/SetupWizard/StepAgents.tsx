@@ -24,15 +24,15 @@ const AGENTS: readonly AgentRow[] = [
     title: 'Claude Code',
     description:
       "Anthropic's coding agent. The default backend; if you have a Claude Pro/Max plan, sign in once and your subscription covers usage.",
-    installCmd: 'npm install -g @anthropic-ai/claude-cli',
+    installCmd: 'npm install -g @anthropic-ai/claude-code',
     docsHref: 'https://docs.anthropic.com/claude/docs/claude-code',
     preflightName: 'claude',
   },
   {
     id: 'omp',
-    title: 'OpenAI Codex (via oh-my-pi)',
+    title: 'oh-my-pi (OpenAI + multi-provider)',
     description:
-      "OpenAI's coding agent — also supports mixing providers (Anthropic, OpenAI, others). Use this if you prefer OpenAI's models or want multi-provider flexibility.",
+      "OpenAI-backed coding agent that also lets you mix providers (Anthropic, OpenAI, Google, others). Use this if you prefer OpenAI's models or want to switch backends per task. Replaces a separate Codex install — oh-my-pi handles the OpenAI side for you.",
     installCmd: 'npm install -g @oh-my-pi/cli',
     docsHref: 'https://github.com/can1357/oh-my-pi',
     preflightName: 'pi',

@@ -14,6 +14,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { readOperatorState } from '@/lib/operator-state-pg';
+import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -49,5 +50,10 @@ export async function GET(req: NextRequest) {
     host: state?.telemetry_host || process.env.PAPERCUSP_POSTHOG_HOST || undefined,
     project_key:
       state?.telemetry_project_key || process.env.PAPERCUSP_POSTHOG_KEY || undefined,
+    // Server-side workspace id — the browser doesn't know its own
+    // workspace from the URL on the desktop (no `?ws=…` query param).
+    // Used as the PostHog distinct id so events aggregate per
+    // installation, not all onto one anonymous "default" person.
+    workspace_id: activeWorkspaceId(),
   });
 }
