@@ -4952,17 +4952,14 @@ harness.get('/:slug/git/show/:sha', async (c) => {
   const sha = c.req.param('sha');
   if (!/^[0-9a-f]{4,64}$/i.test(sha)) return c.json({ error: 'bad sha' }, 400);
   try {
-    const [meta, patch] = await Promise.all([
+    const PATCH_LIMIT = 8 * 1024 * 1024; // 8 MB — enough for typical commits, bounded so multi-GB diffs don't OOM the operator.
+    const [meta, { patch, truncated, totalBytes }] = await Promise.all([
       execFileP(
         'git',
         ['-C', project.path, 'show', '--no-patch', '--format=%H%n%an%n%ae%n%at%n%P%n%s%n%n%b', sha],
         { maxBuffer: 4 * 1024 * 1024, timeout: 10_000 },
       ).then((r) => r.stdout),
-      execFileP(
-        'git',
-        ['-C', project.path, 'show', '--format=', '--patch', '--stat', '-M', sha],
-        { maxBuffer: 32 * 1024 * 1024, timeout: 15_000 },
-      ).then((r) => r.stdout),
+      streamGitPatch(project.path, sha, PATCH_LIMIT),
     ]);
     const [hash, author, email, ts, parents, subject, ...bodyLines] = meta.split('\n');
     return c.json({
@@ -4974,11 +4971,74 @@ harness.get('/:slug/git/show/:sha', async (c) => {
       subject,
       body: bodyLines.join('\n').trim(),
       patch,
+      patchTruncated: truncated,
+      patchTotalBytes: totalBytes,
     });
   } catch (err: any) {
     return c.json({ error: err?.message ?? String(err) }, 500);
   }
 });
+
+function streamGitPatch(
+  cwd: string,
+  sha: string,
+  byteLimit: number,
+): Promise<{ patch: string; truncated: boolean; totalBytes: number }> {
+  return new Promise((resolve, reject) => {
+    const { spawn } = require('node:child_process') as typeof import('node:child_process');
+    const child = spawn('git', ['-C', cwd, 'show', '--format=', '--patch', '--stat', '-M', sha], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const chunks: Buffer[] = [];
+    let collected = 0;
+    let totalBytes = 0;
+    let truncated = false;
+    let stderr = '';
+    const timer = setTimeout(() => {
+      try { child.kill('SIGTERM'); } catch {}
+      reject(new Error(`git show timed out after 30s (sha=${sha})`));
+    }, 30_000);
+
+    child.stdout!.on('data', (buf: Buffer) => {
+      totalBytes += buf.length;
+      if (collected >= byteLimit) {
+        if (!truncated) {
+          truncated = true;
+          // Kill the git process — for multi-GB diffs (binary blobs,
+          // mass-file commits) draining stdout to completion takes
+          // minutes. We have enough; stop the producer.
+          try { child.kill('SIGTERM'); } catch {}
+        }
+        return;
+      }
+      const remaining = byteLimit - collected;
+      if (buf.length <= remaining) {
+        chunks.push(buf);
+        collected += buf.length;
+      } else {
+        chunks.push(buf.subarray(0, remaining));
+        collected += remaining;
+        truncated = true;
+        try { child.kill('SIGTERM'); } catch {}
+      }
+    });
+    child.stderr!.on('data', (buf: Buffer) => { stderr += buf.toString('utf8'); });
+    child.on('error', (err) => { clearTimeout(timer); reject(err); });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      // SIGTERM is our own truncation kill; treat as success.
+      if (code !== 0 && signal !== 'SIGTERM' && !truncated) {
+        reject(new Error(`git show exited ${code}: ${stderr.slice(0, 400)}`));
+        return;
+      }
+      const patch = Buffer.concat(chunks).toString('utf8');
+      const display = truncated
+        ? patch + `\n\n[…truncated at ${byteLimit.toLocaleString()} bytes — full diff exceeds limit; open the commit externally to see all changes]\n`
+        : patch;
+      resolve({ patch: display, truncated, totalBytes: truncated ? -1 : totalBytes });
+    });
+  });
+}
 
 harness.get('/:slug/git/log', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
