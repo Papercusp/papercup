@@ -42,6 +42,10 @@ const IGNORE_PATTERNS = [
   '.gradle', '.terraform',
   'tmp', '.tmp', '*.swp', '*.swo', '.DS_Store', 'Thumbs.db',
   'proc-macro-srv*', '*.log',
+  // Self-exclude: the kopia repo, dumps, and recovery scratch dirs all
+  // live inside the workspace root we snapshot. Without these the repo
+  // gobbles itself recursively and blows up toward 1TB. Don't remove.
+  'backups', 'db-dumps', '.restored', '.broken-*', '.rolled-back-*',
 ];
 
 export interface WorkspaceBackupOpts {
@@ -227,6 +231,10 @@ export class WorkspaceBackup {
       });
 
     try {
+      // Defense-in-depth: refuse to snapshot if the active policy doesn't
+      // self-exclude the repo dir. Without this guard the snapshot would
+      // recursively include kopia-repo/ and balloon toward 1TB.
+      await this.assertSelfExclusionPolicy(env);
       await this.event(snapshotRowId, 'progress', { phase: 'kopia_snapshot' });
       const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
       const parsed = parseKopiaSnapshotJson(out);
@@ -652,6 +660,31 @@ export class WorkspaceBackup {
       ...ignores.map((p) => `--add-ignore=${p}`),
     ];
     await this.kopia(args, { env });
+  }
+
+  /**
+   * Read the global policy and assert that `backups` is in the ignore
+   * rules. We snapshot workspaceRoot, which contains the kopia repo
+   * itself at backups/kopia-repo — without this rule each snapshot
+   * recursively re-includes the previous repo and the store balloons.
+   * If the rule is missing we reapply the policy and re-check; if still
+   * missing we fail loudly rather than silently producing a recursive
+   * snapshot.
+   */
+  private async assertSelfExclusionPolicy(env: NodeJS.ProcessEnv): Promise<void> {
+    const check = async () => {
+      const raw = await this.kopia(['policy', 'show', '--global', '--json'], { env });
+      const parsed = JSON.parse(raw) as { files?: { ignore?: string[] } };
+      const rules = parsed.files?.ignore ?? [];
+      return rules.includes('backups');
+    };
+    if (await check()) return;
+    await this.applyGlobalPolicy(env);
+    if (await check()) return;
+    throw new Error(
+      `[backup] refusing to snapshot ${this.workspaceId}: global policy is missing self-exclusion for 'backups'. ` +
+      `This would cause the kopia repo at ${this.repoPath} to be included recursively in its own snapshot.`,
+    );
   }
 
   private kopia(args: string[], opts: { env: NodeJS.ProcessEnv }): Promise<string> {
