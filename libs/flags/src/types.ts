@@ -11,7 +11,6 @@ export const FLAGS = {
   RUST_PORT_UI: "papercusp-rust-port-ui",
   HARNESS_PHASES: "papercusp-harness-phases",
   DESIGN: "papercusp-design",
-  ADMIN: "papercusp-admin",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
@@ -25,7 +24,6 @@ export const FLAG_DEFAULTS: Record<FlagKey, boolean> = {
   [FLAGS.RUST_PORT_UI]: false,
   [FLAGS.HARNESS_PHASES]: false,
   [FLAGS.DESIGN]: false,
-  [FLAGS.ADMIN]: false,
 };
 
 export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);

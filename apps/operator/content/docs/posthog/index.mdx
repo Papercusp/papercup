@@ -101,7 +101,7 @@ File permissions are `0600` so it's not world-readable.
 
 ## Admin access
 
-Admins use the **Admin → Features** tab in the operator (`/admin/features`) to flip flags, including the master switch. The route is gated behind the `papercusp-admin` flag, which means a fresh install can't reach it without first bootstrapping `testingFeatures: true` on the machine.
+Admins use the **Admin → Features** tab in the operator (`/admin/features`) to flip flags, including the master switch. The admin section is loopback-only (operator binds `127.0.0.1:3055` by default) and intentionally unlinked from the nav — reach it by typing the URL.
 
 See [feature-flags](./feature-flags) for the full UI walkthrough.
 

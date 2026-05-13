@@ -25,7 +25,7 @@ const FLAG_LABELS: Record<FlagKey, string> = {
   [FLAGS.RUST_PORT_UI]: 'Rust-port surfaces (dev)',
   [FLAGS.HARNESS_PHASES]: 'Harness phases',
   [FLAGS.DESIGN]: 'Design tab',
-  [FLAGS.ADMIN]: 'Admin section',
+
 };
 
 const FLAG_BLURBS: Record<FlagKey, string> = {
@@ -37,7 +37,7 @@ const FLAG_BLURBS: Record<FlagKey, string> = {
   [FLAGS.RUST_PORT_UI]: 'Reserved for Tauri build-time gating (no operator UI surface yet).',
   [FLAGS.HARNESS_PHASES]: 'Multi-phase harness (staging / testing / production). Cut for V1 ship.',
   [FLAGS.DESIGN]: 'In-harness design tab + /design route. Cut for V1 ship.',
-  [FLAGS.ADMIN]: 'This admin section. Disabling hides it from the nav (you can still reach it by URL while still on).',
+
 };
 
 type LoadState =

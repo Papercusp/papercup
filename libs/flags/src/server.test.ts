@@ -62,7 +62,7 @@ describe('setFlagOverridesForTest', () => {
     expect(payload.flags[FLAGS.SNAPSHOTS]).toBe(true);
     expect(payload.flags[FLAGS.MARKETPLACE]).toBe(true);
     expect(payload.flags[FLAGS.TEMPLATES]).toBe(false);
-    expect(payload.flags[FLAGS.ADMIN]).toBe(false);
+    expect(payload.flags[FLAGS.DESIGN]).toBe(false);
   });
 
   it('null override clears back to defaults', async () => {
@@ -75,11 +75,11 @@ describe('setFlagOverridesForTest', () => {
   });
 
   it('partial overrides do not affect un-listed flags', async () => {
-    setFlagOverridesForTest({ [FLAGS.ADMIN]: true });
+    setFlagOverridesForTest({ [FLAGS.DESIGN]: true });
     const payload = await getAllFlags('x');
-    expect(payload.flags[FLAGS.ADMIN]).toBe(true);
+    expect(payload.flags[FLAGS.DESIGN]).toBe(true);
     for (const key of ALL_FLAG_KEYS) {
-      if (key === FLAGS.ADMIN) continue;
+      if (key === FLAGS.DESIGN) continue;
       expect(payload.flags[key]).toBe(false);
     }
   });

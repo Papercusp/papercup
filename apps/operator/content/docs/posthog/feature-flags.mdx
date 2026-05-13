@@ -17,7 +17,6 @@ Feature flags are how Papercusp ships V1 with a minimal feature set while keepin
 | `papercusp-rust-port-ui` | `FLAGS.RUST_PORT_UI` | `false` | **Reserved**. Intended for Tauri build-time gating of Rust-port surfaces; no operator UI consumes it today. |
 | `papercusp-harness-phases` | `FLAGS.HARNESS_PHASES` | `false` | Multi-phase harness (staging / testing / production). Top phase strip in HarnessDashboard, the IssuesPanel "tests" tab, the two `harness.use('/:slug/tests*')` Hono endpoints. |
 | `papercusp-design` | `FLAGS.DESIGN` | `false` | In-harness "design" tab + DesignDashboard render, `/design` index, `/design/[slug]`, 4 `/api/design/*` routes. |
-| `papercusp-admin` | `FLAGS.ADMIN` | `false` | The admin section itself. Top-nav "Admin" entry + `/admin/*` routes. Disabling hides the entry from chrome and 404s the route. |
 
 All keys also live in `libs/flags/src/types.ts` as the single source of truth — adding a new flag means editing **one file**, then creating the matching definition in PostHog. The TypeScript `FlagKey` type is derived from the object, so call sites get autocomplete and any rename is a compile error at every site.
 
@@ -271,7 +270,7 @@ The Admin section is structured like Restart's `DashboardShell` (separate routes
 
 `AdminShell` is the chrome (header with title + tabs + host pill). Each tab is a `<Link>` so navigations are full route transitions. URL is the source of truth for the active tab; no `useState` for tab selection.
 
-The whole `/admin/*` tree is wrapped in `await requireFlag(FLAGS.ADMIN)`. If the flag is off, every page returns 404. The nav entry in ChromeShell is also gated, so an end-user without admin access never sees the link.
+The `/admin/*` tree is loopback-only (operator binds `127.0.0.1:3055`) and intentionally not linked from the nav. Reach it by URL. Earlier versions had a `requireFlag(FLAGS.ADMIN)` gate; it was removed 2026-05-13 in favor of the URL-only convention.
 
 ## Wire-up gotchas
 
