@@ -103,6 +103,60 @@ Radix Select reserves `value=""` to mean "no value selected". If your business l
 
 **Why this one:** Same Radix family. Used in `FeatureLink.tsx` for the on-hover feature info card. If you find yourself wanting a Tooltip but with non-text content, switch to HoverCard.
 
+## `@restart/grid-core` — `RichGrid`, `GridTable`, `DataGridShell`
+
+**What:** Three grid components for tabular data. Pick by what cells need to do — see the [decision matrix](/docs/design#grids--richgrid-vs-gridtable-vs-datagridshell).
+
+**Built-in print + copy support** (RichGrid, default-on):
+
+- **Print fidelity** — RichGrid renders a hidden native `<table>` next to the grid (`data-rg-print-mirror`). On `@media print`, the virtualized div tree is hidden and the table mirror shows. Browser handles pagination + repeating `<thead>`. No virtualization-snapshot truncation, full dataset prints.
+- **Ctrl+C → TSV + HTML payload** — when the grid root has keyboard focus, Ctrl+C copies the current row selection (or all rows if none selected) to the clipboard as both TSV (`text/plain`) and `<table>` markup (`text/html`). Excel / Sheets / Numbers paste it as cells; plain text editors get TSV.
+- **Ctrl+A** — selects every row (so the next Ctrl+C copies everything).
+
+To make this work, provide a `toCopyText: (row) => string` on each `ColumnDef` whose cell has meaningful text. For columns that are pure affordance (action buttons, icons), omit `toCopyText` — the column copies empty for each row.
+
+If a column's `header` is JSX, also provide `headerText: 'Plain header'` so the print mirror and the TSV/HTML payloads have a string to use.
+
+```tsx
+<RichGrid
+  columns={[
+    {
+      key: 'name',
+      header: 'Name',
+      width: 2,
+      toCopyText: (r) => r.name,    // ← required for print/copy fidelity
+      render: ({ row }) => <strong>{row.name}</strong>,
+    },
+    {
+      key: 'status',
+      header: <span>● Status</span>,  // JSX header
+      headerText: 'Status',           // ← string for print + TSV header
+      width: 1,
+      toCopyText: (r) => r.status,
+      render: ({ row }) => <StatusPill status={row.status} />,
+    },
+    {
+      key: 'actions',
+      header: '',
+      width: 1,
+      // No toCopyText — column copies empty (it's pure affordance).
+      render: ({ row }) => <button>Edit</button>,
+    },
+  ]}
+  rows={rows}
+  getRowId={(r) => r.id}
+/>
+```
+
+**Opting out:**
+
+- `disablePrintMirror` — skip the print mirror entirely. Use for grids where Ctrl+P printing isn't a real workflow and you want to skip the extra render.
+- `disableCopySupport` — fall back to native browser text selection on Ctrl+C. Use for grids where rich-content cells (custom inputs, multi-line cells) make TSV mapping meaningless.
+
+**Virtual mode caveat:** in `virtualMode` the print mirror needs the full dataset, which the virtualizer doesn't have. Pass `printRows={fullDataset}` to enable; otherwise the print mirror is skipped silently.
+
+**Internals:** print mirror CSS is injected once globally per page on first mount; the helpers live in `libs/papergrid/grid-core/src/copy-payloads.ts` and have unit tests covering header text resolution, HTML escaping, TSV escaping, and the full payload build.
+
 ## `sonner`
 
 **What:** Toast notification system. Lightweight, accessible, themeable.
