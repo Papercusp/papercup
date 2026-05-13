@@ -10,15 +10,20 @@ interface FlushResult {
   forwardFailed: number;
   retentionDeleted: number;
   posthogConfigured: boolean;
+  testingFeatures: boolean;
   optedIn: boolean;
+}
+
+interface TelemetryConfig {
+  enabled: boolean;
+  reason?: 'user-opt-out' | 'posthog-testing-features-off' | 'posthog-unconfigured';
 }
 
 type Choice = 'undecided' | 'yes' | 'no';
 
 export function StepTelemetry() {
   const [choice, setChoice] = useState<Choice>('undecided');
-  const [host, setHost] = useState('');
-  const [projectKey, setProjectKey] = useState('');
+  const [config, setConfig] = useState<TelemetryConfig | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [tauri, setTauri] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -31,13 +36,15 @@ export function StepTelemetry() {
     setTauri(isTauri());
     void (async () => {
       try {
-        const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
+        const [r, c] = await Promise.all([
+          fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' }),
+          fetch('/api/desktop/telemetry-config', { cache: 'no-store' }),
+        ]);
         const j = await r.json();
         if (j.telemetry_enabled === true) setChoice('yes');
         else if (j.telemetry_enabled === false) setChoice('no');
         else setChoice('undecided');
-        setHost(j.telemetry_host ?? '');
-        setProjectKey(j.telemetry_project_key ?? '');
+        if (c.ok) setConfig((await c.json()) as TelemetryConfig);
       } finally {
         setLoaded(true);
       }
@@ -64,13 +71,6 @@ export function StepTelemetry() {
 
   const reconsider = () => {
     setChoice('undecided');
-  };
-
-  const saveConfig = async () => {
-    await patch({
-      telemetry_host: host || null,
-      telemetry_project_key: projectKey || null,
-    });
   };
 
   const sendTest = async () => {
@@ -223,15 +223,37 @@ export function StepTelemetry() {
   }
 
   // ── 3. User opted in ─────────────────────────────────────────────
+  // Whether forwarding actually happens depends on the shared PostHog
+  // setup. config.enabled reflects (user opt-in) AND (testingFeatures
+  // === true) AND (PostHog host configured). When user opted in but
+  // testingFeatures is off, the wizard says "telemetry is queued but
+  // not phoning home."
+  const phReason = config?.reason;
+  const phLive = config?.enabled ?? false;
+
   return (
     <div className="pc-step">
-      <div className="pc-step__progress" data-status="ok">
-        <div className="pc-step__progress-dot" />
-        <div className="pc-step__progress-text">
-          <strong>Telemetry is on.</strong>
-          <span>Crash reports + autocapture are forwarded on each hourly flush.</span>
+      {phLive ? (
+        <div className="pc-step__progress" data-status="ok">
+          <div className="pc-step__progress-dot" />
+          <div className="pc-step__progress-text">
+            <strong>Telemetry is on.</strong>
+            <span>Crash reports + autocapture are forwarded on each hourly flush.</span>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="pc-step__progress" data-status="missing">
+          <div className="pc-step__progress-dot" />
+          <div className="pc-step__progress-text">
+            <strong>You're opted in, but nothing is being sent yet.</strong>
+            <span>
+              {phReason === 'posthog-testing-features-off'
+                ? 'PostHog is reachable but the master testingFeatures switch is off. Ask an admin to enable it at /admin/features.'
+                : 'PostHog isn\'t configured on this machine. An admin needs to drop ~/.papercusp/posthog.json with testingFeatures: true. Until then, reports archive locally and nothing leaves your machine.'}
+            </span>
+          </div>
+        </div>
+      )}
 
       <div className="pc-step__actions">
         <button type="button" className="pc-btn" onClick={() => void decline()}>
@@ -239,42 +261,17 @@ export function StepTelemetry() {
         </button>
       </div>
 
-      <details className="pc-consent__details">
-        <summary>Advanced: point at a different PostHog instance</summary>
-        <p className="pc-step__hint">
-          By default we send to the host configured at build time. Override per-workspace here if
-          you want reports to land in your own PostHog instance instead of ours.
-        </p>
-        <label className="pc-field">
-          <span className="pc-field__label">PostHog host URL</span>
-          <input
-            type="url"
-            className="pc-input"
-            placeholder="https://app.posthog.com"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-        </label>
-        <label className="pc-field">
-          <span className="pc-field__label">Project API key</span>
-          <input
-            type="text"
-            className="pc-input"
-            placeholder="phc_..."
-            value={projectKey}
-            onChange={(e) => setProjectKey(e.target.value)}
-          />
-          <span className="pc-field__hint">
-            Project-level "Public API Key" from PostHog Project Settings. Safe to embed
-            (capture-only).
-          </span>
-        </label>
-        <div className="pc-step__actions">
-          <button type="button" className="pc-btn" onClick={() => void saveConfig()}>
-            Save
-          </button>
-        </div>
-      </details>
+      <p className="pc-step__hint">
+        <strong>Privacy moat.</strong> Two switches must both be on for any data to leave your
+        machine: (1) your opt-in on this screen, and (2) the per-machine{' '}
+        <code>testingFeatures</code> flag in <code>~/.papercusp/posthog.json</code>. On a freshly
+        installed binary there is no discovery file — meaning your opt-in alone never causes an
+        outbound request. See the{' '}
+        <a href="https://docs.papercupai.com/posthog" target="_blank" rel="noreferrer">
+          PostHog docs
+        </a>{' '}
+        for the full architecture.
+      </p>
 
       <details className="pc-consent__details">
         <summary>Diagnostics</summary>
@@ -298,7 +295,8 @@ export function StepTelemetry() {
               <span>
                 archived={lastFlush.archived} forwarded={lastFlush.forwarded} failed=
                 {lastFlush.forwardFailed} retention-deleted={lastFlush.retentionDeleted}{' '}
-                opted-in={String(lastFlush.optedIn)} posthog-configured=
+                opted-in={String(lastFlush.optedIn)} testing-features=
+                {String(lastFlush.testingFeatures)} posthog-configured=
                 {String(lastFlush.posthogConfigured)}
               </span>
             </div>

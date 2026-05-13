@@ -3,27 +3,30 @@
  *
  * Moves reports out of the in-app ring buffer (operator-state-pg key
  * 'telemetry_reports') into the long-term local archive
- * (harness_shared.telemetry_reports_archive), and — when PostHog is
- * configured AND telemetry is opted-in — emits one PostHog event per
- * archive row that hasn't been forwarded yet.
+ * (harness_shared.telemetry_reports_archive), and — when ALL of the
+ * following are true — emits one PostHog event per archive row that
+ * hasn't been forwarded yet:
  *
- * Telemetry is OFF by default. The user opts in via the Setup Wizard
- * (Step 12). When opt-in is false (or unset) this worker still
- * archives locally so the user can see their own reports, but it
- * forwards nothing.
+ *   1. PostHog discovery file or env vars are configured AND
+ *      testingFeatures === true (shared posthog-config.ts resolver).
+ *      This is the privacy moat — shipped binaries are unconfigured by
+ *      default so they make ZERO outbound PostHog calls regardless of
+ *      what the user does in the Setup Wizard.
+ *   2. setup_wizard_state.telemetry_enabled === true (user opted in
+ *      via the wizard's Step 12).
  *
- * PostHog config priority:
- *   1. setup_wizard_state.telemetry_host + .telemetry_project_key (PG)
- *   2. PAPERCUSP_POSTHOG_HOST + PAPERCUSP_POSTHOG_KEY (env)
+ * Both must be true. The wizard's opt-in is a no-op unless an admin
+ * has bootstrapped the discovery file with testingFeatures: true.
  *
- * If neither is set, archived rows are kept locally and retried on
- * future flushes once config lands.
+ * When either gate fails this worker still archives locally so the
+ * user can see their own reports — it just doesn't forward.
  */
 import { getOrgPg } from '@restart/db-org';
 import { PostHog } from 'posthog-node';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
 import { ensureInstallId } from './setup-wizard-install-id';
+import { getPosthogConfigWithSource } from './posthog-config';
 
 interface BufferedReport {
   received_at: string;
@@ -43,22 +46,37 @@ export interface FlushResult {
   forwardFailed: number;
   retentionDeleted: number;
   posthogConfigured: boolean;
+  testingFeatures: boolean;
   optedIn: boolean;
 }
 
 const RETENTION_DAYS = Number(process.env.PAPERCUSP_TELEMETRY_RETENTION_DAYS ?? 30);
 
-async function resolvePostHogConfig(): Promise<{ host?: string; projectKey?: string; distinctId: string; optedIn: boolean }> {
-  const state = await readOperatorState<{
-    telemetry_enabled?: boolean;
-    telemetry_host?: string;
-    telemetry_project_key?: string;
-  }>('setup_wizard_state');
+async function resolveTelemetryConfig(): Promise<{
+  host?: string;
+  projectKey?: string;
+  distinctId: string;
+  optedIn: boolean;
+  testingFeatures: boolean;
+}> {
+  const state = await readOperatorState<{ telemetry_enabled?: boolean }>('setup_wizard_state');
   const optedIn = Boolean(state?.telemetry_enabled);
-  const host = state?.telemetry_host || process.env.PAPERCUSP_POSTHOG_HOST;
-  const projectKey = state?.telemetry_project_key || process.env.PAPERCUSP_POSTHOG_KEY;
+  // Use the shared resolver — never read PAPERCUSP_POSTHOG_* env vars
+  // directly. testingFeatures is the master privacy switch; if it's
+  // false we don't even pull the host/key, so an opt-in user on an
+  // unconfigured machine still phones home to nothing.
+  const phResolved = getPosthogConfigWithSource();
   const distinctId = await ensureInstallId();
-  return { host, projectKey, distinctId, optedIn };
+  if (!phResolved.testingFeatures || !phResolved.config) {
+    return { distinctId, optedIn, testingFeatures: phResolved.testingFeatures };
+  }
+  return {
+    host: phResolved.config.host,
+    projectKey: phResolved.config.projectKey,
+    distinctId,
+    optedIn,
+    testingFeatures: true,
+  };
 }
 
 export async function flushTelemetry(): Promise<FlushResult> {
@@ -70,6 +88,7 @@ export async function flushTelemetry(): Promise<FlushResult> {
     forwardFailed: 0,
     retentionDeleted: 0,
     posthogConfigured: false,
+    testingFeatures: false,
     optedIn: false,
   };
 
@@ -97,10 +116,13 @@ export async function flushTelemetry(): Promise<FlushResult> {
     await writeOperatorState('telemetry_reports', { reports: [] });
   }
 
-  // 2. Forward to PostHog, but ONLY if the user opted in.
-  const config = await resolvePostHogConfig();
+  // 2. Forward to PostHog. Requires BOTH:
+  //      a) testingFeatures === true (admin opted the machine in)
+  //      b) telemetry_enabled === true (user opted in via wizard Step 12)
+  const config = await resolveTelemetryConfig();
   result.optedIn = config.optedIn;
-  if (config.optedIn && config.host && config.projectKey) {
+  result.testingFeatures = config.testingFeatures;
+  if (config.optedIn && config.testingFeatures && config.host && config.projectKey) {
     result.posthogConfigured = true;
     const ph = new PostHog(config.projectKey, {
       host: config.host,

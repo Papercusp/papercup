@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { readOperatorState } from '@/lib/operator-state-pg';
 import { activeWorkspaceId } from '@/lib/workspace-registry';
 import { ensureInstallId } from '@/lib/setup-wizard-install-id';
+import { getPosthogConfigWithSource } from '@/lib/posthog-config';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,31 +35,31 @@ export async function GET(req: NextRequest) {
   if (!isLoopback(req)) {
     return NextResponse.json({ error: 'loopback only' }, { status: 403 });
   }
-  // Mint install_id if missing so PostHog distinct_id is stable from
-  // event one, even when this route is hit before setup-wizard-state.
   const installId = await ensureInstallId();
-  const state = await readOperatorState<{
-    telemetry_enabled?: boolean;
-    telemetry_host?: string;
-    telemetry_project_key?: string;
-    install_id?: string;
-  }>('setup_wizard_state');
+  const state = await readOperatorState<{ telemetry_enabled?: boolean }>('setup_wizard_state');
 
-  const enabled = Boolean(state?.telemetry_enabled);
+  const userOptedIn = Boolean(state?.telemetry_enabled);
+  // PostHog must also be admin-bootstrapped via the shared resolver +
+  // testingFeatures: true. This is the same privacy moat as feature
+  // flags (see docs.papercupai.com/posthog). A shipped binary on a
+  // fresh install has no discovery file → testingFeatures is false →
+  // browser SDK never loads regardless of user opt-in.
+  const phResolved = getPosthogConfigWithSource();
+  const enabled = userOptedIn && phResolved.testingFeatures && Boolean(phResolved.config);
   if (!enabled) {
-    // Don't leak the project key when telemetry is off — return only
-    // the flag.
-    return NextResponse.json({ enabled: false });
+    return NextResponse.json({
+      enabled: false,
+      reason: !userOptedIn
+        ? 'user-opt-out'
+        : !phResolved.testingFeatures
+          ? 'posthog-testing-features-off'
+          : 'posthog-unconfigured',
+    });
   }
   return NextResponse.json({
     enabled: true,
-    host: state?.telemetry_host || process.env.PAPERCUSP_POSTHOG_HOST || undefined,
-    project_key:
-      state?.telemetry_project_key || process.env.PAPERCUSP_POSTHOG_KEY || undefined,
-    // Stable per-install UUID minted on first GET of setup-wizard-state.
-    // Falls back to workspace id, then 'default', but install_id should
-    // always be set in practice because layouts call setup-wizard-state
-    // on mount.
+    host: phResolved.config!.host,
+    project_key: phResolved.config!.projectKey,
     distinct_id: installId,
     workspace_id: activeWorkspaceId(),
   });
