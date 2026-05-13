@@ -545,7 +545,7 @@ export default function HarnessSettingsPanel({
             <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>workers / feature</span>
             <Select
               value={parallel.workerCountMode}
-              onValueChange={(v) =>
+              onChange={(v) =>
                 setParallel((p) => ({ ...p, workerCountMode: v as WorkerCountMode }))
               }
               options={[
