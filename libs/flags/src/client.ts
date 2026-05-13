@@ -5,6 +5,7 @@
 // SSR pages may inject the initial payload via window.__PAPERCUSP_FLAGS__.
 // Live updates arrive on /api/flags/stream (SSE).
 
+import { createResilientEventSource } from "@restart/sse";
 import {
   FLAG_DEFAULTS,
   type FlagKey,
@@ -79,21 +80,26 @@ export function subscribeToFlagStream(
   if (typeof EventSource === "undefined") {
     return { close: () => {} };
   }
-  const es = new EventSource(endpoint, { withCredentials: true });
-  es.addEventListener("flag_changed", () => {
-    void loadFlags().catch(() => {
-      // network errors are non-fatal; we keep using the cached payload
-    });
-  });
-  es.addEventListener("flags_payload", (ev) => {
-    try {
-      const payload = JSON.parse((ev as MessageEvent).data) as FlagPayload;
-      setFlagPayload(payload);
-    } catch {
-      // ignore malformed events
-    }
+  const source = createResilientEventSource({
+    url: endpoint,
+    withCredentials: true,
+    handlers: {
+      flag_changed: () => {
+        void loadFlags().catch(() => {
+          // network errors are non-fatal; we keep using the cached payload
+        });
+      },
+      flags_payload: (data) => {
+        try {
+          const payload = JSON.parse(data) as FlagPayload;
+          setFlagPayload(payload);
+        } catch {
+          // ignore malformed events
+        }
+      },
+    },
   });
   return {
-    close: () => es.close(),
+    close: () => source.close(),
   };
 }

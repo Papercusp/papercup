@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { createResilientEventSource } from '@restart/sse';
 import { ALL_FLAG_KEYS, FLAGS, type FlagKey, type FlagValues } from '@papercusp/flags';
 
 /**
@@ -77,10 +78,15 @@ export default function FeaturesAdmin() {
   // Subscribe to the flag-bus SSE so this page reflects live flag flips
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
-    const es = new EventSource('/api/flags/stream', { withCredentials: true });
-    es.addEventListener('flag_changed', () => void refresh());
-    es.addEventListener('flags_payload', () => void refresh());
-    return () => es.close();
+    const source = createResilientEventSource({
+      url: '/api/flags/stream',
+      withCredentials: true,
+      handlers: {
+        flag_changed: () => void refresh(),
+        flags_payload: () => void refresh(),
+      },
+    });
+    return () => source.close();
   }, [refresh]);
 
   async function applyPreset(name: 'production' | 'testing') {
