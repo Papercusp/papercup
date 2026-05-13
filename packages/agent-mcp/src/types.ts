@@ -202,6 +202,16 @@ export interface RoleToolDefinition<
   timeoutSec?: number;
   /** Idle timeout — abort if no event emitted for this many seconds. See ProjectedTool.idleTimeoutSec. */
   idleTimeoutSec?: number;
+  /**
+   * Replay ring-buffer size, 0/undefined to disable (default).
+   * When set, the dispatcher keeps the last N emitted events for the
+   * call so a client reconnecting with `Last-Event-ID + X-Papercusp-Run-Id`
+   * can pick up where it left off. Buffer evicted FIFO when full
+   * (warn log fires); buffer survives 5 minutes past stream-end.
+   * Per-tool sizing should target 1.5× p99 event_count from production
+   * telemetry (Phase 4 T2.2 — see plan).
+   */
+  replayBufferSize?: number;
   args: TArgs;
   /** Typed event channel. See ProjectedTool.events. */
   events?: TEvents;
@@ -232,6 +242,8 @@ export interface RoleToolDefinitionInput<
   timeoutSec?: number;
   /** See RoleToolDefinition.idleTimeoutSec. */
   idleTimeoutSec?: number;
+  /** See RoleToolDefinition.replayBufferSize. */
+  replayBufferSize?: number;
   args: TArgs;
   /**
    * Typed event channel — Zod schemas keyed by event name. The

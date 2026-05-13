@@ -170,8 +170,10 @@ export async function GET(req: NextRequest) {
         emit: () => { /* installed by dispatchProjectedToolStream */ },
         workspaceId,
         role: 'operator',
-        runId: `scan-${Date.now()}`,
-        spawnId: `scan-${Date.now()}`,
+        // Phase 4 T2.2: UUIDs eliminate the Date.now() collision risk
+        // (reviewer concern #4 from the v1 plan review).
+        runId: globalThis.crypto.randomUUID(),
+        spawnId: globalThis.crypto.randomUUID(),
         transport: 'in_process',
       };
 

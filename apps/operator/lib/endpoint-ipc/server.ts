@@ -297,8 +297,12 @@ function handleConnection(socket: net.Socket, deps: PerConnectionDeps): void {
       transport: 'ipc',
       workspaceId: activeWorkspaceId(),
       role: 'operator',
-      runId: `ipc-${id}`,
-      spawnId: `ipc-${id}`,
+      // Phase 4 T2.2: UUIDs match the HTTP-side decision (reviewer
+      // concern #4 in v1 plan review). The per-connection `id` is
+      // already unique within one socket but multiple webviews to
+      // one sidecar could conflict on `ipc-1` etc; UUIDs sidestep.
+      runId: globalThis.crypto.randomUUID(),
+      spawnId: globalThis.crypto.randomUUID(),
     };
 
     const wireKinds = tool.eventWireKinds ?? {};

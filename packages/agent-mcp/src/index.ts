@@ -106,4 +106,11 @@ export type {
   PromptResult,
 } from './types';
 
+export {
+  readBuffer as readReplayBuffer,
+  closeBuffer as closeReplayBuffer,
+  replayBufferStats,
+  type BufferedEvent as ReplayBufferedEvent,
+} from './replay-buffer';
+
 import './bootstrap';

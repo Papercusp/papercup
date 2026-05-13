@@ -127,4 +127,38 @@ describe('catch-all route strict-streamable behavior', () => {
     const res = await GET(req);
     expect(res.status).toBe(200);
   });
+
+  describe('runId + replay headers (Phase 4 T2.2)', () => {
+    it('sets X-Papercusp-Run-Id response header on streaming response', async () => {
+      registerProjectedTool(makeStreamingTool());
+      const req = new Request('http://x.test/api/agent-tools/fix/stream', {
+        method: 'POST',
+        headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      const runId = res.headers.get('X-Papercusp-Run-Id');
+      expect(runId).toBeTruthy();
+      // Format: UUID-ish (8-4-4-4-12 hex) — crypto.randomUUID() shape.
+      expect(runId!).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    });
+
+    it('echoes the client-provided X-Papercusp-Run-Id on response (for resume)', async () => {
+      registerProjectedTool(makeStreamingTool());
+      const clientRunId = 'fa11b6c7-aaaa-bbbb-cccc-ddeeff001122';
+      const req = new Request('http://x.test/api/agent-tools/fix/stream', {
+        method: 'POST',
+        headers: {
+          Accept: 'text/event-stream',
+          'Content-Type': 'application/json',
+          'X-Papercusp-Run-Id': clientRunId,
+        },
+        body: '{}',
+      });
+      const res = await POST(req);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('X-Papercusp-Run-Id')).toBe(clientRunId);
+    });
+  });
 });
