@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean } from 'nuqs';
 import { Modal } from './Modal';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 /**
  * IntelPanel — surfaces what the projected-tool registry has produced
@@ -320,58 +321,84 @@ function SpawnsTab({
         </div>
       )}
 
-      <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-        <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-          <thead style={{ position: 'sticky', top: 0, background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
-            <tr>
-              <th style={th}>when</th>
-              <th style={th}>tool</th>
-              <th style={th}>role</th>
-              <th style={th}>status</th>
-              <th style={th}>dur</th>
-              <th style={th}>output</th>
-              <th style={th}>feat / chunk</th>
-              <th style={th}>spawn</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.id} style={{ borderBottom: '1px solid var(--border-2, var(--border))' }}>
-                <td style={td}>{fmtTs(r.invokedAtMs)}</td>
-                <td style={{ ...td, fontFamily: 'monospace' }}>
-                  {r.depth > 0 && <span style={{ opacity: 0.5 }}>{'·'.repeat(r.depth)} </span>}
-                  {r.toolName}
-                </td>
-                <td style={td}>{r.role}</td>
-                <td style={{ ...td, color: STATUS_COLOR[r.status] }}>
-                  {STATUS_LABEL[r.status] ?? r.status}
-                  {r.errorMessage && (
-                    <span title={r.errorMessage} style={{ marginLeft: 4, opacity: 0.6 }}>ⓘ</span>
-                  )}
-                </td>
-                <td style={td}>{fmtDuration(r.durationMs)}</td>
-                <td style={td}>
-                  {r.outputRef ? (
-                    <span title={r.outputRef} style={{ fontFamily: 'monospace', opacity: 0.8 }}>
-                      📄 {fmtBytes(r.outputSize)}
-                    </span>
-                  ) : '—'}
-                </td>
-                <td style={{ ...td, fontFamily: 'monospace', opacity: 0.7 }}>
-                  {r.featureId ?? '—'}
-                  {r.chunkId ? <span style={{ opacity: 0.5 }}> / {r.chunkId}</span> : null}
-                </td>
-                <td style={{ ...td, fontFamily: 'monospace', opacity: 0.7 }} title={r.spawnId}>
-                  {r.spawnId.length > 12 ? r.spawnId.slice(0, 12) + '…' : r.spawnId}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+        <RichGrid<Row>
+          columns={SPAWNS_COLUMNS}
+          rows={rows}
+          getRowId={(r) => String(r.id)}
+          rowMinHeight={28}
+          headerHeight={28}
+        />
       </div>
     </div>
   );
 }
+
+const SPAWNS_COLUMNS: ColumnDef<Row>[] = [
+  {
+    key: 'when', header: 'when', width: 1.2,
+    toCopyText: (r) => new Date(r.invokedAtMs).toISOString(),
+    render: ({ row }) => <>{fmtTs(row.invokedAtMs)}</>,
+  },
+  {
+    key: 'tool', header: 'tool', width: 2,
+    toCopyText: (r) => `${'·'.repeat(r.depth)}${r.toolName}`,
+    render: ({ row }) => (
+      <span style={{ fontFamily: 'monospace' }}>
+        {row.depth > 0 && <span style={{ opacity: 0.5 }}>{'·'.repeat(row.depth)} </span>}
+        {row.toolName}
+      </span>
+    ),
+  },
+  {
+    key: 'role', header: 'role', width: 1,
+    toCopyText: (r) => r.role,
+    render: ({ row }) => <>{row.role}</>,
+  },
+  {
+    key: 'status', header: 'status', width: 1.2,
+    toCopyText: (r) => STATUS_LABEL[r.status] ?? r.status,
+    render: ({ row }) => (
+      <span style={{ color: STATUS_COLOR[row.status] }}>
+        {STATUS_LABEL[row.status] ?? row.status}
+        {row.errorMessage && <span title={row.errorMessage} style={{ marginLeft: 4, opacity: 0.6 }}>ⓘ</span>}
+      </span>
+    ),
+  },
+  {
+    key: 'dur', header: 'dur', width: 0.8,
+    toCopyText: (r) => fmtDuration(r.durationMs),
+    render: ({ row }) => <>{fmtDuration(row.durationMs)}</>,
+  },
+  {
+    key: 'output', header: 'output', width: 1,
+    toCopyText: (r) => r.outputRef ? `${fmtBytes(r.outputSize)} ${r.outputRef}` : '',
+    render: ({ row }) => row.outputRef ? (
+      <span title={row.outputRef} style={{ fontFamily: 'monospace', opacity: 0.8 }}>
+        📄 {fmtBytes(row.outputSize)}
+      </span>
+    ) : <>—</>,
+  },
+  {
+    key: 'feat', header: 'feat / chunk', width: 1.5,
+    toCopyText: (r) => `${r.featureId ?? ''}${r.chunkId ? ` / ${r.chunkId}` : ''}`,
+    render: ({ row }) => (
+      <span style={{ fontFamily: 'monospace', opacity: 0.7 }}>
+        {row.featureId ?? '—'}
+        {row.chunkId ? <span style={{ opacity: 0.5 }}> / {row.chunkId}</span> : null}
+      </span>
+    ),
+  },
+  {
+    key: 'spawn', header: 'spawn', width: 1,
+    toCopyText: (r) => r.spawnId,
+    render: ({ row }) => (
+      <span title={row.spawnId} style={{ fontFamily: 'monospace', opacity: 0.7 }}>
+        {row.spawnId.length > 12 ? row.spawnId.slice(0, 12) + '…' : row.spawnId}
+      </span>
+    ),
+  },
+];
 
 function ArtifactsTab({
   kind,
@@ -405,42 +432,31 @@ function ArtifactsTab({
   }
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-      <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
-        <thead style={{ position: 'sticky', top: 0, background: 'var(--bg)', borderBottom: '1px solid var(--border)' }}>
-          <tr>
-            <th style={th}>when</th>
-            <th style={th}>tool</th>
-            <th style={th}>role</th>
-            <th style={th}>feat</th>
-            <th style={th}>size</th>
-            <th style={th}>dur</th>
-            <th style={th}>artifact</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} style={{ borderBottom: '1px solid var(--border-2, var(--border))' }}>
-              <td style={td}>{fmtTs(r.invokedAtMs)}</td>
-              <td style={{ ...td, fontFamily: 'monospace' }}>{r.toolName}</td>
-              <td style={td}>{r.role}</td>
-              <td style={{ ...td, fontFamily: 'monospace', opacity: 0.7 }}>{r.featureId ?? '—'}</td>
-              <td style={td}>{fmtBytes(r.outputSize)}</td>
-              <td style={td}>{fmtDuration(r.durationMs)}</td>
-              <td style={td}>
-                {r.outputRef ? (
-                  <ArtifactLink path={r.outputRef} />
-                ) : (
-                  <span style={{ opacity: 0.5 }}>(inline result; no scratch file)</span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+      <RichGrid<ArtifactRow>
+        columns={ARTIFACTS_COLUMNS}
+        rows={rows}
+        getRowId={(r) => String(r.id)}
+        rowMinHeight={28}
+        headerHeight={28}
+      />
     </div>
   );
 }
+
+const ARTIFACTS_COLUMNS: ColumnDef<ArtifactRow>[] = [
+  { key: 'when', header: 'when', width: 1.2, toCopyText: (r) => new Date(r.invokedAtMs).toISOString(), render: ({ row }) => <>{fmtTs(row.invokedAtMs)}</> },
+  { key: 'tool', header: 'tool', width: 2, toCopyText: (r) => r.toolName, render: ({ row }) => <span style={{ fontFamily: 'monospace' }}>{row.toolName}</span> },
+  { key: 'role', header: 'role', width: 1, toCopyText: (r) => r.role, render: ({ row }) => <>{row.role}</> },
+  { key: 'feat', header: 'feat', width: 1.5, toCopyText: (r) => r.featureId ?? '', render: ({ row }) => <span style={{ fontFamily: 'monospace', opacity: 0.7 }}>{row.featureId ?? '—'}</span> },
+  { key: 'size', header: 'size', width: 0.8, toCopyText: (r) => fmtBytes(r.outputSize), render: ({ row }) => <>{fmtBytes(row.outputSize)}</> },
+  { key: 'dur', header: 'dur', width: 0.8, toCopyText: (r) => fmtDuration(r.durationMs), render: ({ row }) => <>{fmtDuration(row.durationMs)}</> },
+  {
+    key: 'artifact', header: 'artifact', width: 2.5,
+    toCopyText: (r) => r.outputRef ?? '(inline)',
+    render: ({ row }) => row.outputRef ? <ArtifactLink path={row.outputRef} /> : <span style={{ opacity: 0.5 }}>(inline result; no scratch file)</span>,
+  },
+];
 
 function ArtifactLink({ path }: { path: string }) {
   const [copied, setCopied] = useState(false);
@@ -664,17 +680,15 @@ function GraphResultView({ result }: { result: GraphResult }) {
                 {typeof p.score === 'number' && <span style={{ marginLeft: 8, fontSize: 11, color: '#9ca3af' }}>score {p.score.toFixed(2)}</span>}
               </div>
               {Array.isArray(p.symbols) && p.symbols.length > 0 && (
-                <table style={{ width: '100%', fontSize: 11, marginTop: 4 }}>
-                  <tbody>
-                    {p.symbols.map((s, j) => (
-                      <tr key={j}>
-                        <td style={{ ...td, fontFamily: 'monospace', color: '#a78bfa', width: '20%' }}>{s.kind ?? '?'}</td>
-                        <td style={{ ...td, fontFamily: 'monospace', color: '#e5e7eb' }}>{s.name ?? s.uid ?? '?'}</td>
-                        <td style={{ ...td, fontFamily: 'monospace', color: '#6b7280', fontSize: 10 }}>{s.file ?? ''}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div role="list" style={{ display: 'grid', gridTemplateColumns: '20% 1fr auto', columnGap: 8, rowGap: 2, fontSize: 11, marginTop: 4 }}>
+                  {p.symbols.map((s, j) => (
+                    <div key={j} role="listitem" style={{ display: 'contents' }}>
+                      <span style={{ ...td, fontFamily: 'monospace', color: '#a78bfa' }}>{s.kind ?? '?'}</span>
+                      <span style={{ ...td, fontFamily: 'monospace', color: '#e5e7eb' }}>{s.name ?? s.uid ?? '?'}</span>
+                      <span style={{ ...td, fontFamily: 'monospace', color: '#6b7280', fontSize: 10 }}>{s.file ?? ''}</span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           ))}
@@ -686,17 +700,15 @@ function GraphResultView({ result }: { result: GraphResult }) {
           <div style={{ fontSize: 11, textTransform: 'uppercase', color: '#9ca3af', letterSpacing: 0.5, marginBottom: 6 }}>
             definitions ({definitions.length}) — types/interfaces not in any process
           </div>
-          <table style={{ width: '100%', fontSize: 11 }}>
-            <tbody>
-              {definitions.map((d, i) => (
-                <tr key={i}>
-                  <td style={{ ...td, fontFamily: 'monospace', color: '#a78bfa', width: '15%' }}>{d.kind ?? '?'}</td>
-                  <td style={{ ...td, fontFamily: 'monospace', color: '#e5e7eb' }}>{d.name ?? '?'}</td>
-                  <td style={{ ...td, fontFamily: 'monospace', color: '#6b7280', fontSize: 10 }}>{d.file ?? ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div role="list" style={{ display: 'grid', gridTemplateColumns: '15% 1fr auto', columnGap: 8, rowGap: 2, fontSize: 11 }}>
+            {definitions.map((d, i) => (
+              <div key={i} role="listitem" style={{ display: 'contents' }}>
+                <span style={{ ...td, fontFamily: 'monospace', color: '#a78bfa' }}>{d.kind ?? '?'}</span>
+                <span style={{ ...td, fontFamily: 'monospace', color: '#e5e7eb' }}>{d.name ?? '?'}</span>
+                <span style={{ ...td, fontFamily: 'monospace', color: '#6b7280', fontSize: 10 }}>{d.file ?? ''}</span>
+              </div>
+            ))}
+          </div>
         </section>
       )}
     </div>
