@@ -23,6 +23,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Radio } from 'lucide-react';
 import { OperatorChat } from './OperatorChat';
 import { useOperatorConversation } from './OperatorConversationProvider';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { OperatorLogoMark } from './OperatorLogoMark';
 import { OperatorWordmarkLockup } from './OperatorWordmarkLockup';
 import { OperatorActiveToggle } from './OperatorActiveToggle';
@@ -110,6 +111,7 @@ export function OperatorChatSidebar() {
   // timers + tag dispatch; this component is a presentational thin
   // wrapper around <OperatorChat> with the provider's value.
   const conv = useOperatorConversation();
+  const workspaceId = useWorkspaceId();
 
   // Pre-hydration: render the sidebar at default width so the layout
   // doesn't jump after JS evaluates. The body padding-left is set by
@@ -168,6 +170,8 @@ export function OperatorChatSidebar() {
         hasMoreEarlier={conv.hasMoreEarlier}
         loadingEarlier={conv.loadingEarlier}
         onAnswerChoice={conv.answerChoice}
+        conversationId={conv.conversationId ?? undefined}
+        workspaceId={workspaceId}
       />
       <div
         className="op-chat-resize-handle"
