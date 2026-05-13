@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import '../admin-tables.css';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 /**
  * Drizzle-driven CRUD admin UI factory.
@@ -175,35 +176,36 @@ export default function TableAdmin() {
 
             <div className="pc-admin-grid-scroll">
               {rows && rows.rows.length > 0 ? (
-                <table className="pc-admin-grid">
-                  <thead>
-                    <tr>
-                      {Object.keys(rows.rows[0]).map((k) => (
-                        <th key={k}>{k}</th>
-                      ))}
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.rows.map((r, i) => (
-                      <tr key={i}>
-                        {Object.keys(rows.rows[0]).map((k) => (
-                          <td key={k}>{renderCell(r[k])}</td>
-                        ))}
-                        <td>
+                <div style={{ height: Math.min(560, 36 + rows.rows.length * 32 + 4) }}>
+                  <RichGrid<Record<string, unknown>>
+                    columns={[
+                      ...Object.keys(rows.rows[0]).map<ColumnDef<Record<string, unknown>>>((k) => ({
+                        key: `col:${k}`,
+                        header: k,
+                        width: 1,
+                        toCopyText: (r) => renderCell(r[k]),
+                        render: ({ row }) => <>{renderCell(row[k])}</>,
+                      })),
+                      {
+                        key: 'actions',
+                        header: 'Actions',
+                        width: 1,
+                        render: ({ row }) => (
                           <div className="pc-admin-actions">
-                            <button onClick={() => setModal({ mode: 'edit', row: r })}>Edit</button>
+                            <button onClick={() => setModal({ mode: 'edit', row })}>Edit</button>
                             {entry.allowDelete && (
-                              <button className="is-danger" onClick={() => onDelete(r)}>
-                                Del
-                              </button>
+                              <button className="is-danger" onClick={() => onDelete(row)}>Del</button>
                             )}
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                        ),
+                      },
+                    ]}
+                    rows={rows.rows}
+                    getRowId={(r) => JSON.stringify(r['id'] ?? r)}
+                    rowMinHeight={32}
+                    headerHeight={32}
+                  />
+                </div>
               ) : (
                 <div style={{ padding: 24, color: 'var(--fg-mute, #94a3b8)', fontStyle: 'italic' }}>No rows.</div>
               )}
