@@ -21,6 +21,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
+import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
 import { OperatorLogoMark } from './OperatorLogoMark';
 
@@ -55,11 +56,21 @@ interface Props {
     toolIndex: number;
     picks: Array<{ option_id: string; label: string }>;
   }) => Promise<void> | void;
+
+  /**
+   * Active conversation id. When provided alongside `workspaceId`,
+   * the chat renders a PendingCardsBar that subscribes to the
+   * state-snapshot SSE stream and shows ctx.askUser cards above the
+   * composer. Omit either to disable the new-card surface.
+   */
+  conversationId?: string;
+  workspaceId?: string;
 }
 
 export function OperatorChat({
   messages, busy, passive, onSend, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
+  conversationId, workspaceId,
 }: Props) {
   const [input, setInput] = useState('');
 
@@ -106,7 +117,14 @@ export function OperatorChat({
       messages={messages}
       busy={busy}
       error={error}
-      banner={banner}
+      banner={
+        <>
+          {banner}
+          {conversationId && workspaceId && (
+            <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
+          )}
+        </>
+      }
       emptyState={{
         title: 'Operator',
         body: passive
