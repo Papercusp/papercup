@@ -113,4 +113,13 @@ export {
   type BufferedEvent as ReplayBufferedEvent,
 } from './replay-buffer';
 
+export {
+  validatePluginEventSchema,
+  validateAndClassifyPluginEvents,
+  classifyEventWireFromJsonSchema,
+  PluginEventSchemaError,
+  SUPPORTED_KEYWORDS as PLUGIN_EVENT_SUPPORTED_KEYWORDS,
+  REJECTED_KEYWORDS as PLUGIN_EVENT_REJECTED_KEYWORDS,
+} from './plugin-events';
+
 import './bootstrap';

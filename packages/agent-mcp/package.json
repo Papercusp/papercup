@@ -11,7 +11,8 @@
     "./registry": "./src/registry.ts",
     "./tool-projection": "./src/tool-projection.ts",
     "./provisioning": "./src/provisioning.ts",
-    "./auth": "./src/auth.ts"
+    "./auth": "./src/auth.ts",
+    "./plugin-events": "./src/plugin-events.ts"
   },
   "scripts": {
     "test": "vitest",
