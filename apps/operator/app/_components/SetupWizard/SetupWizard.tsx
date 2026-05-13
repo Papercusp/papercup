@@ -31,6 +31,7 @@ export function SetupWizard({ mode }: Props) {
     useWizardStatuses();
   const [stepId, setStepId] = useQueryState('step');
   const [finishing, setFinishing] = useState(false);
+  const [recap, setRecap] = useState<null | { dest: string }>(null);
 
   useEffect(() => {
     refreshAll();
@@ -61,13 +62,18 @@ export function SetupWizard({ mode }: Props) {
     statuses['embedded-pg'] === 'ok' && statuses['agents'] === 'ok';
 
   const idx = SETUP_STEPS.findIndex((s) => s.id === active.id);
+
+  const stepCount = SETUP_STEPS.length;
+  const currentStepNumber = Math.max(idx, 0) + 1;
+  const progressPct = Math.round((currentStepNumber / stepCount) * 100);
+  const hasNextStep = idx < SETUP_STEPS.length - 1;
   // Step 8 (voice-devices) is only useful when the user actually
   // plans to use voice. We treat "ElevenLabs key is set" as the proxy
   // for that — the Next button skips voice-devices when not
   // configured (it stays reachable from the sidebar). Settings-mode
   // never auto-skips.
-  const shouldSkip = (stepId: string): boolean =>
-    mode === 'first-run' && stepId === 'voice-devices' && !voiceConfigured;
+  const shouldSkip = (id: string): boolean =>
+    mode === 'first-run' && id === 'voice-devices' && !voiceConfigured;
   const goNext = () => {
     for (let i = idx + 1; i < SETUP_STEPS.length; i++) {
       const next = SETUP_STEPS[i];
@@ -110,7 +116,11 @@ export function SetupWizard({ mode }: Props) {
         } catch {
           // Network failure → fall through to /harness.
         }
-        router.push(dest);
+        // Show a recap card before redirecting so the user sees a
+        // confirmation of what just got set up. The card's CTA is what
+        // actually does the router.push.
+        setRecap({ dest });
+        setFinishing(false);
       } else {
         setFinishing(false);
       }
@@ -118,6 +128,47 @@ export function SetupWizard({ mode }: Props) {
       setFinishing(false);
     }
   };
+
+  if (recap) {
+    const okCount = SETUP_STEPS.filter(
+      (s) =>
+        statuses[s.id] === 'ok' || persisted.step_status?.[s.id] === 'completed',
+    ).length;
+    return (
+      <div className="pc-setup-wizard pc-setup-wizard--recap" data-mode={mode}>
+        <div className="pc-step pc-step--recap">
+          <h2 className="pc-step__lead" style={{ fontSize: 24, marginBottom: 8 }}>
+            You're all set.
+          </h2>
+          <p className="pc-step__lead">
+            Setup finished — {okCount} of {SETUP_STEPS.length} steps confirmed ready. Anything you
+            skipped, you can revisit any time from Settings → Setup Wizard.
+          </p>
+          <ul className="pc-bullets">
+            {SETUP_STEPS.filter(
+              (s) =>
+                statuses[s.id] === 'ok' || persisted.step_status?.[s.id] === 'completed',
+            )
+              .slice(0, 6)
+              .map((s) => (
+                <li key={s.id}>{s.title}</li>
+              ))}
+          </ul>
+          <div className="pc-step__actions">
+            <button
+              type="button"
+              className="pc-btn pc-btn--primary"
+              onClick={() => router.push(recap.dest)}
+            >
+              {recap.dest === '/marketplace'
+                ? 'Continue to marketplace →'
+                : 'Continue to harness →'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="pc-setup-wizard" data-mode={mode}>
@@ -173,8 +224,15 @@ export function SetupWizard({ mode }: Props) {
         ) : (
           <>
             <header className="pc-setup-wizard__main-header">
+              <div className="pc-setup-wizard__eyebrow">
+                <span>Step {currentStepNumber} of {stepCount}</span>
+                <span className="pc-setup-wizard__pill">{active.required ? 'Required' : 'Optional'}</span>
+              </div>
               <h1>{active.title}</h1>
               <p>{active.summary}</p>
+              <div className="pc-setup-wizard__progress" aria-hidden="true">
+                <span style={{ width: `${progressPct}%` }} />
+              </div>
             </header>
             <section className="pc-setup-wizard__main-body">{renderStep(active.id)}</section>
             <footer className="pc-setup-wizard__main-footer">
@@ -205,7 +263,8 @@ export function SetupWizard({ mode }: Props) {
                     </button>
                   </span>
                 )}
-                {!isCompleted &&
+                {!active.required &&
+                  !isCompleted &&
                   active.id !== 'embedded-pg' &&
                   active.id !== 'agents' &&
                   active.id !== 'telemetry' && (
@@ -231,28 +290,29 @@ export function SetupWizard({ mode }: Props) {
                 )}
               </div>
               <div className="pc-setup-wizard__main-footer-right">
-                {idx < SETUP_STEPS.length - 1 && (
-                  <button type="button" className="pc-btn" onClick={goNext}>
+                {hasNextStep && (
+                  <button type="button" className="pc-btn pc-btn--primary" onClick={goNext}>
                     Continue →
                   </button>
                 )}
-                <button
-                  type="button"
-                  className="pc-btn pc-btn--primary"
-                  onClick={() => void finishWizard()}
-                  disabled={!minimumMet || finishing}
-                  title={
-                    !minimumMet
-                      ? 'Install a coding agent + wait for the local database before finishing'
-                      : undefined
-                  }
-                >
-                  {finishing
-                    ? 'Finishing…'
-                    : mode === 'first-run'
-                      ? 'Finish setup'
-                      : 'Mark setup complete'}
-                </button>
+                {minimumMet ? (
+                  <button
+                    type="button"
+                    className={`pc-btn${hasNextStep ? '' : ' pc-btn--primary'}`}
+                    onClick={() => void finishWizard()}
+                    disabled={finishing}
+                  >
+                    {finishing
+                      ? 'Finishing…'
+                      : mode === 'first-run'
+                        ? 'Finish setup'
+                        : 'Mark setup complete'}
+                  </button>
+                ) : (
+                  <span className="pc-setup-wizard__finish-hint">
+                    Finish unlocks after the database and a coding agent are ready.
+                  </span>
+                )}
               </div>
             </footer>
           </>

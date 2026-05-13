@@ -79,8 +79,8 @@ export function useWizardStatuses() {
       setStatuses(merged);
       setPersisted(persistedJson);
       if (voiceRes.ok) {
-        const j = (await voiceRes.json()) as { configured?: boolean };
-        setVoiceConfigured(Boolean(j.configured));
+        const j = (await voiceRes.json()) as { configured?: boolean; intent?: boolean };
+        setVoiceConfigured(Boolean(j.configured) || Boolean(j.intent));
       }
     } catch {
       // network failures leave statuses unchanged
