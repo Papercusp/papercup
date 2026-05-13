@@ -14,6 +14,19 @@ import { getHarnessAdminUrl } from './embedded-pg-discovery';
 
 export const CURRENT_LAYOUT_SCHEMA_VERSION = 1 as const;
 
+/**
+ * schemaVersion = 0 is the OPAQUE escape hatch. Used by pi-tab persistence
+ * (raw dockview JSON, not the logical LayoutDoc shape). The PG row still
+ * tracks the value; the LayoutDoc adapter is bypassed. Callers must
+ * remember which schemaVersion they wrote — pi-tab reads back its own
+ * opaque body and feeds it directly to dockview's fromJSON.
+ *
+ * For the eventual whole-app dock (Phase 5), the adapter at the boundary
+ * converts between LayoutDoc and dockview JSON, so schemaVersion=1 is
+ * the canonical path.
+ */
+export const OPAQUE_SCHEMA_VERSION = 0 as const;
+
 // ───────── Logical layout schema (storage shape) ─────────
 
 export type PanelInstance = {
@@ -205,21 +218,27 @@ export function validateLayoutDoc(doc: unknown): asserts doc is LayoutDoc {
   if (!doc || typeof doc !== 'object') {
     throw new LayoutValidationError('layout must be an object');
   }
-  const d = doc as LayoutDoc;
-  if (d.schemaVersion !== CURRENT_LAYOUT_SCHEMA_VERSION) {
+  const d = doc as { schemaVersion?: number };
+  if (d.schemaVersion === OPAQUE_SCHEMA_VERSION) {
+    // Opaque body: no structural validation. The PG row preserves the
+    // schemaVersion so readers know they wrote it.
+    return;
+  }
+  const ld = doc as LayoutDoc;
+  if (ld.schemaVersion !== CURRENT_LAYOUT_SCHEMA_VERSION) {
     throw new LayoutValidationError(
-      `unsupported schemaVersion ${d.schemaVersion} (expected ${CURRENT_LAYOUT_SCHEMA_VERSION})`,
+      `unsupported schemaVersion ${ld.schemaVersion} (expected ${CURRENT_LAYOUT_SCHEMA_VERSION} or ${OPAQUE_SCHEMA_VERSION})`,
     );
   }
-  if (!d.root || typeof d.root !== 'object') {
+  if (!ld.root || typeof ld.root !== 'object') {
     throw new LayoutValidationError('layout.root required');
   }
-  validateNode(d.root);
-  if (d.floating !== undefined) {
-    if (!Array.isArray(d.floating)) {
+  validateNode(ld.root);
+  if (ld.floating !== undefined) {
+    if (!Array.isArray(ld.floating)) {
       throw new LayoutValidationError('layout.floating must be array');
     }
-    for (const f of d.floating) validateFloating(f);
+    for (const f of ld.floating) validateFloating(f);
   }
 }
 
@@ -320,9 +339,13 @@ export async function getLayout(
   if (rows.length > 0) {
     return rowToLayout(rows[0]);
   }
-  // Seed
-  const seed =
-    name === 'pi' ? defaultPiTerminalsLayout() : defaultDashboardLayout();
+  // Seed. Pi-tab layouts (any `pi:<slug>` name) get an opaque empty body
+  // — pi-tab's persistence stores raw dockview JSON and reads back its
+  // own writes, so the seed is just a placeholder that won't be parsed.
+  const isPi = name === 'pi' || name.startsWith('pi:');
+  const seed = isPi
+    ? ({ schemaVersion: OPAQUE_SCHEMA_VERSION, dockviewJson: null } as unknown as LayoutDoc)
+    : defaultDashboardLayout();
   return saveLayout(principal, name, seed);
 }
 

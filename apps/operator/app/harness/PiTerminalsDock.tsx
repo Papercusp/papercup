@@ -294,14 +294,76 @@ export default function PiTerminalsDock({ slug, initialLaneId }: PiTerminalsDock
       // the queue and adds the panel but persist isn't wired yet, so
       // localStorage stays stale; round 2 restores from stale storage
       // and finds the queue already drained.
+      //
+      // Phase 2 of dockview-migration: dual-write to PG. localStorage
+      // stays as the fast-path sync cache (preserves zero-flicker reads);
+      // PG is the cross-device source of truth. Read prefers localStorage
+      // for instant restore, then a background fetch overlays PG state
+      // (handles "I rearranged on another machine" without sacrificing
+      // first-paint latency).
+      const layoutNameForPg = `pi:${slug}`;
       const persist = () => {
         try {
-          window.localStorage.setItem(layoutKey(slug), JSON.stringify(event.api.toJSON()));
+          const body = JSON.stringify(event.api.toJSON());
+          window.localStorage.setItem(layoutKey(slug), body);
+          // Best-effort PG write. Coalesced via debounce below to avoid
+          // hammering on rapid drags.
+          schedulePgWrite(body);
         } catch { /* quota / private mode — ignore */ }
+      };
+      let pgWriteTimer: ReturnType<typeof setTimeout> | null = null;
+      let pgWritePending: string | null = null;
+      const flushPgWrite = async () => {
+        if (!pgWritePending) return;
+        const body = pgWritePending;
+        pgWritePending = null;
+        try {
+          await fetch(`/api/dock-layouts/${encodeURIComponent(layoutNameForPg)}`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              layout: { schemaVersion: 0, dockviewJson: JSON.parse(body) },
+            }),
+          });
+        } catch { /* operator unreachable — localStorage already saved */ }
+      };
+      const schedulePgWrite = (body: string) => {
+        pgWritePending = body;
+        if (pgWriteTimer) clearTimeout(pgWriteTimer);
+        pgWriteTimer = setTimeout(flushPgWrite, 800);
       };
       event.api.onDidLayoutChange(persist);
       event.api.onDidAddPanel(persist);
       event.api.onDidRemovePanel(persist);
+
+      // Background PG overlay: if PG has a NEWER snapshot than the
+      // localStorage we restored from, swap to it. Triggered once
+      // per mount, after the sync restore + initial seed run.
+      void (async () => {
+        try {
+          const resp = await fetch(
+            `/api/dock-layouts/${encodeURIComponent(layoutNameForPg)}`,
+          );
+          if (!resp.ok) return;
+          const row = await resp.json();
+          const body = row?.layoutJson;
+          if (
+            body &&
+            body.schemaVersion === 0 &&
+            body.dockviewJson &&
+            // Only overlay if PG has been written to (not just seeded).
+            // The seed has schemaVersion=1 (LayoutDoc), so this check
+            // implicitly skips first-touch reads.
+            row.updatedTs > (row.createdTs ?? 0)
+          ) {
+            // Avoid clobbering an in-flight pending op; check still mounted.
+            if (!apiRef.current) return;
+            try {
+              event.api.fromJSON(body.dockviewJson);
+            } catch { /* malformed PG body; localStorage stays authoritative */ }
+          }
+        } catch { /* operator unreachable; localStorage stays authoritative */ }
+      })();
 
       // Race fix: drain any pending chat opens that arrived before this
       // mount. Without this, clicking "chat" on the dashboard tab silently
