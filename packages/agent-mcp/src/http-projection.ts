@@ -39,6 +39,7 @@ import {
   type ProjectedTool,
   type UnifiedToolContext,
 } from './tool-projection';
+import { readBuffer as readReplayBuffer } from './replay-buffer';
 
 /* ─── Request context derivation ─────────────────────────────────────── */
 
@@ -353,6 +354,51 @@ export async function handleHttpToolRequestStreaming(
     sink.event('error', { code: body.error.code, message: body.error.message });
     sink.close();
     return;
+  }
+
+  // Phase 4 T2.2 — replay-on-reconnect. Browsers auto-set Last-Event-ID
+  // on SSE reconnect; callers pass X-Papercusp-Run (mapped to ctx.runId)
+  // to identify the original call. When both are present AND the tool
+  // declared replayBufferSize, serve buffered events past sinceId then
+  // close — the original tool aborted on disconnect, so we don't
+  // re-dispatch (which would duplicate events + may have side effects).
+  // First-time connects skip this path because runId differs.
+  const runIdForReplay = resolved.ctx.runId;
+  const lastEventIdRaw = req.headers['last-event-id'];
+  const wantsReplay =
+    !!runIdForReplay &&
+    !!lastEventIdRaw &&
+    !!resolved.tool.replayBufferSize &&
+    !!resolved.ctx.workspaceId;
+  if (wantsReplay) {
+    const sinceId = Number.parseInt(lastEventIdRaw, 10);
+    if (Number.isFinite(sinceId) && sinceId >= 0) {
+      const toolName = resolved.tool.expose.mcp?.name ?? req.pathname;
+      const buffered = readReplayBuffer({
+        workspaceId: resolved.ctx.workspaceId!,
+        toolName,
+        runId: runIdForReplay,
+        sinceId,
+      });
+      if (buffered !== null) {
+        // Buffer hit (may be empty if client is already caught up).
+        // Either way, treat this as a successful resume — replay
+        // remaining tail, signal done, close. We don't re-run the
+        // tool: the original call aborted on disconnect by design.
+        for (const ev of buffered) {
+          // Honor the tool's wire kind so resumed events look identical
+          // to their original transmission.
+          emitToSseSink(sink, resolved.tool, ev.name, ev.data);
+        }
+        sink.event('done', { resumed: true, replayed: buffered.length });
+        sink.close();
+        return;
+      }
+      // Buffer miss: original buffer expired (>5min) or the tuple was
+      // never opened. Fall through to normal dispatch — caller will
+      // see a fresh stream from event id 1, which is the documented
+      // behavior when the resume window has elapsed.
+    }
   }
 
   // Wire emit → sink. Each ctx.emit(name, data) becomes one SSE event.

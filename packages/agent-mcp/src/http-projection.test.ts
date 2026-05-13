@@ -369,6 +369,75 @@ describe('handleHttpToolRequestStreaming', () => {
     });
   });
 
+  it('Phase 4 T2.2 — replays the buffered tail when client reconnects with X-Papercusp-Run + Last-Event-ID', async () => {
+    // Setup: register a streaming tool with replayBufferSize.
+    // First connect emits 5 events into the buffer; we capture them
+    // via dispatchProjectedTool which the streaming entrypoint wraps.
+    const { dispatchProjectedTool: dispatch } = await import('./dispatch-projected');
+    const tool = makeTool({
+      events: { delta: z.object({ text: z.string() }) },
+      replayBufferSize: 10,
+      fn: async (_input, ctx) => {
+        for (let i = 1; i <= 5; i++) ctx.emit('delta', { text: `chunk ${i}` });
+        return { content: [{ type: 'text', text: 'done' }] };
+      },
+    });
+    registerProjectedTool(tool);
+    // First connect — populate the buffer via direct dispatch.
+    const firstCtx = {
+      log: () => {}, emit: () => {}, progress: () => {},
+      workspaceId: 'ws-1', role: 'operator',
+      runId: 'run-abc', spawnId: 'spawn-1',
+    } as never;
+    await dispatch(tool, 'fix.tool', { x: 1 }, firstCtx, {});
+
+    // Reconnect: same runId, Last-Event-ID = 2 → expect events 3,4,5 + done(resumed).
+    registerProjectedTool(tool); // re-register so dispatcher accessible
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(
+      MAKE_REQ({
+        headers: {
+          'x-papercusp-workspace': 'ws-1',
+          'x-papercusp-run': 'run-abc',
+          'last-event-id': '2',
+        },
+      }),
+      MAKE_EXTRAS(),
+      sink,
+    );
+    const deltas = events.filter((e) => e.event === 'delta');
+    expect(deltas).toHaveLength(3);
+    expect(deltas[0]?.data).toEqual({ text: 'chunk 3' });
+    expect(deltas[2]?.data).toEqual({ text: 'chunk 5' });
+    const done = events.find((e) => e.event === 'done');
+    expect(done?.data).toMatchObject({ resumed: true, replayed: 3 });
+  });
+
+  it('Phase 4 T2.2 — first connect (no Last-Event-ID) skips replay, runs the tool normally', async () => {
+    let runCount = 0;
+    registerProjectedTool(makeTool({
+      events: { delta: z.object({ text: z.string() }) },
+      replayBufferSize: 10,
+      fn: async (_input, ctx) => {
+        runCount++;
+        ctx.emit('delta', { text: 'fresh' });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const { sink, events } = recordingSink();
+    await handleHttpToolRequestStreaming(
+      MAKE_REQ({
+        headers: { 'x-papercusp-workspace': 'ws-1', 'x-papercusp-run': 'never-seen' },
+        // NO last-event-id header
+      }),
+      MAKE_EXTRAS(),
+      sink,
+    );
+    expect(runCount).toBe(1);
+    const delta = events.find((e) => e.event === 'delta');
+    expect(delta?.data).toEqual({ text: 'fresh' });
+  });
+
   it('auto-error honors schema-inferred wire kind (raw text for z.string())', async () => {
     // Regression: tools declaring `error: z.string()` (architect/brainstorm)
     // expect raw text on the wire so the submodule consumer can do

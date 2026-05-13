@@ -435,6 +435,17 @@ export interface ProjectedTool {
    */
   replayBufferSize?: number;
   /**
+   * Surfaces this tool is meaningful from. Phase 4 T3.1. The prompt-
+   * assembly catalog renderer filters by the caller's modality so
+   * voice surfaces only see voice-capable tools. Absent → callers
+   * treat it as "both surfaces" so legacy tools surface in either
+   * catalog without an explicit opt-in. Use ['text'] or ['voice']
+   * when a tool genuinely doesn't make sense in the other surface
+   * (e.g. chat:ask_choice renders clickable buttons that are
+   * invisible to a voice user).
+   */
+  modality?: ReadonlyArray<'text' | 'voice'>;
+  /**
    * Typed event channel — Zod schemas keyed by event name. Surfaced
    * via tools/list as JSON-Schema for client discovery. No runtime
    * validation of outgoing events (trusted code path). Undefined for
@@ -666,8 +677,9 @@ export interface McpToolListing {
   /** Map of event-name → JSON-Schema. Absent when the tool declares no events. */
   events?: Record<string, Record<string, unknown>>;
   /**
-   * Surfaces this tool is meaningful from. Absent → defaults to
-   * `['text']`. Phase 4 T3.1; clients can filter by their caller
+   * Surfaces this tool is meaningful from. Absent → callers treat
+   * it as `['text', 'voice']` so legacy tools surface in either
+   * catalog. Phase 4 T3.1; clients can filter by their caller
    * modality.
    */
   modality?: ReadonlyArray<'text' | 'voice'>;

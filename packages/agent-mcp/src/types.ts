@@ -212,6 +212,16 @@ export interface RoleToolDefinition<
    * telemetry (Phase 4 T2.2 — see plan).
    */
   replayBufferSize?: number;
+  /**
+   * Surfaces this tool is meaningful from. Phase 4 T3.1. The prompt-
+   * assembly catalog renderer filters by the caller's modality so voice
+   * surfaces only see voice-capable tools. Default — when absent — is
+   * `['text', 'voice']` (visible everywhere) so legacy tools surface
+   * in both catalogs without a code change; opt out via `['text']` or
+   * `['voice']` only when the tool genuinely doesn't make sense in
+   * the other surface.
+   */
+  modality?: ReadonlyArray<'text' | 'voice'>;
   args: TArgs;
   /** Typed event channel. See ProjectedTool.events. */
   events?: TEvents;
@@ -244,6 +254,8 @@ export interface RoleToolDefinitionInput<
   idleTimeoutSec?: number;
   /** See RoleToolDefinition.replayBufferSize. */
   replayBufferSize?: number;
+  /** See RoleToolDefinition.modality. */
+  modality?: ReadonlyArray<'text' | 'voice'>;
   args: TArgs;
   /**
    * Typed event channel — Zod schemas keyed by event name. The

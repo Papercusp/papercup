@@ -205,9 +205,12 @@ export function renderToolsCatalog(
     const tool = byMcpName.get(name);
     if (!tool) continue; // silently skip — caller's list may include legacy or transient names
     // Modality filter: a tool's `modality: readonly ('text'|'voice')[]`
-    // declares which surfaces it makes sense from. Default ['text']
-    // when absent — voice catalogs drop tools that don't opt in.
-    const toolModality = tool.modality ?? ['text'];
+    // declares which surfaces it makes sense from. Default
+    // `['text', 'voice']` when absent — most tools are usable in
+    // either surface, and the previous text-only default silently
+    // emptied the voice catalog for any tool that didn't opt in
+    // (round-13 E2E bug #36).
+    const toolModality = tool.modality ?? ['text', 'voice'];
     if (!toolModality.includes(modality)) continue;
     rendered += 1;
     lines.push(`- \`${name}\``);

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install-pgvector-into-embedded.sh
+# install-pgvector-into-embedded.sh [embedded-postgres-native-dir]
 #
 # Copy a system-installed pgvector (Postgres 18 build) into the
 # @embedded-postgres/linux-x64 binary tree so embedded-pg can load the
@@ -9,6 +9,13 @@
 #
 # Prerequisites on the host:
 #   sudo apt install postgresql-18-pgvector
+#
+# Argument (optional): path to the `native/` dir of the target
+# embedded-postgres install — e.g.
+#   /path/to/checkout/node_modules/@embedded-postgres/linux-x64/native
+# When omitted, defaults to this script's repo root.
+# (E2E round-13 bug #29: an alternate-worktree caller passing an arg
+# was silently ignored and the script overwrote the WRONG node_modules.)
 #
 # Idempotent: skips files that already exist with identical contents.
 #
@@ -34,7 +41,14 @@ case "$(uname -s)-$(uname -m)" in
   *) echo "Unsupported platform: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
 
-DEST_BASE="${REPO_ROOT}/node_modules/@embedded-postgres/${PLAT}/native"
+# Honor explicit target arg (the `native/` dir of an alternate
+# embedded-postgres install — common when multiple worktrees share
+# a parent dir). Fall back to repo-relative default.
+if [[ $# -ge 1 && -n "$1" ]]; then
+  DEST_BASE="$1"
+else
+  DEST_BASE="${REPO_ROOT}/node_modules/@embedded-postgres/${PLAT}/native"
+fi
 DEST_LIB="${DEST_BASE}/lib/postgresql"
 DEST_EXT="${DEST_BASE}/share/postgresql/extension"
 

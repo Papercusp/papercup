@@ -164,16 +164,16 @@ describe('renderToolsCatalog', () => {
       expect(voiceOut).toContain('operator:converse');
     });
 
-    it('tools without declared modality default to text-only (filtered out of voice catalog)', async () => {
+    it('tools without declared modality appear in BOTH catalogs (default = both surfaces, regression for E2E bug #36)', async () => {
       mockTools.push({
         expose: { mcp: { name: 'legacy:tool' } },
         description: 'Has no modality field.',
         capabilities: [],
-        // modality intentionally absent
+        // modality intentionally absent — default is now ['text','voice']
       });
       const { renderToolsCatalog } = await import('./prompt-assembly');
       const voiceOut = renderToolsCatalog('operator', ['legacy:tool'], 'voice');
-      expect(voiceOut).toBe('');
+      expect(voiceOut).toContain('legacy:tool');
       const textOut = renderToolsCatalog('operator', ['legacy:tool'], 'text');
       expect(textOut).toContain('legacy:tool');
     });

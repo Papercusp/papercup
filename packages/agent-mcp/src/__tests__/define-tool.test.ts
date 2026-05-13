@@ -246,4 +246,49 @@ describe('JSON schema flattening for OpenAI compat', () => {
     expect(props.foo).toBeTruthy();
     expect(props.bar).toBeTruthy();
   });
+
+  // Phase 4 T3.1 — E2E bug #36 regression. The role-gated defineTool path
+  // was silently dropping the `modality` field between input and the
+  // projection registry, so voice users got an empty tool catalog.
+  // Lock the pipeline so future field additions get tested at the seam,
+  // not just by the downstream filter mock.
+  it('forwards modality from defineTool to the projected tool', () => {
+    defineTool({
+      name: 'test:voice_only',
+      description: 'voice surface only',
+      capability: 'test:read',
+      requirePrincipal: false,
+      roles: ['operator'],
+      modality: ['voice'],
+      args: z.object({}),
+      async handler() { return { content: [{ type: 'text', text: 'ok' }] }; },
+    });
+    defineTool({
+      name: 'test:both_surfaces',
+      description: 'visible on both surfaces',
+      capability: 'test:read',
+      requirePrincipal: false,
+      roles: ['operator'],
+      modality: ['text', 'voice'],
+      args: z.object({}),
+      async handler() { return { content: [{ type: 'text', text: 'ok' }] }; },
+    });
+    defineTool({
+      name: 'test:no_modality_declared',
+      description: 'absent modality — defaults to both at the filter layer',
+      capability: 'test:read',
+      requirePrincipal: false,
+      roles: ['operator'],
+      args: z.object({}),
+      async handler() { return { content: [{ type: 'text', text: 'ok' }] }; },
+    });
+    const voiceTool = lookupByMcpName('test:voice_only');
+    const bothTool = lookupByMcpName('test:both_surfaces');
+    const absentTool = lookupByMcpName('test:no_modality_declared');
+    expect(voiceTool?.modality).toEqual(['voice']);
+    expect(bothTool?.modality).toEqual(['text', 'voice']);
+    // Absent on the projection — the catalog layer applies the
+    // ['text','voice'] default when reading.
+    expect(absentTool?.modality).toBeUndefined();
+  });
 });
