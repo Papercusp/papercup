@@ -1,8 +1,20 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, usePathname } from 'next/navigation';
 import { toast } from 'sonner';
+
+/**
+ * Paths where the welcome toast should NOT fire. A user landing on
+ * /login or /signup is explicitly trying to authenticate — telling them
+ * they're auto-signed-in as someone else while they're trying to switch
+ * is confusing and wrong.
+ *
+ * The /login submit path is also covered by the sessionStorage flag
+ * check inside the effect, but suppression here is the simpler signal
+ * for the "user navigated to /login to switch" case.
+ */
+const SUPPRESSED_PATHS: readonly string[] = ['/login', '/signup'];
 
 /**
  * Mounts in the chrome and fires a toast when the user is silently
@@ -42,8 +54,17 @@ function lastReset4amLocalMs(now: number): number {
 
 export default function AutoLoginWelcomeToast() {
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
+    // Pathname suppression — user on /login or /signup is trying to
+    // authenticate, the toast would race their intent. ChromeShell
+    // does mount on these paths (not in CHROMELESS_PATH_PREFIXES) so
+    // we have to suppress here.
+    if (pathname && SUPPRESSED_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`))) {
+      return;
+    }
+
     // Don't fire if the explicit-login flow just ran — /login set this
     // flag and the OperatorConversationProvider will consume it for the
     // brain greeting. Chrome toast would be a duplicate.
@@ -104,9 +125,11 @@ export default function AutoLoginWelcomeToast() {
     return () => {
       cancelled = true;
     };
-    // Empty dep array — fire once per chrome mount (= once per app load).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // pathname-dependent — re-run when the user navigates between
+    // chromed routes. The 4am boundary check inside ensures we
+    // don't double-toast within a window even if pathname changes
+    // multiple times.
+  }, [pathname, router]);
 
   return null;
 }

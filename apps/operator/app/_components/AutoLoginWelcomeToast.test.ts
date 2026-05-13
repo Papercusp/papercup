@@ -71,6 +71,23 @@ describe('AutoLoginWelcomeToast — 4am-local boundary', () => {
     expect(lastReset4amLocalMs(before4am)).not.toBe(lastReset4amLocalMs(after4am));
   });
 
+  describe('path-based suppression (round-14 audit follow-up)', () => {
+    const SUPPRESSED_PATHS = ['/login', '/signup'];
+    const isSuppressed = (pathname: string | null): boolean => {
+      if (!pathname) return false;
+      return SUPPRESSED_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+    };
+    it('suppresses on /login (exact)', () => expect(isSuppressed('/login')).toBe(true));
+    it('suppresses on /login?switch=1 (subpath via search would be handled by browser; just the path)', () => expect(isSuppressed('/login')).toBe(true));
+    it('suppresses on /signup', () => expect(isSuppressed('/signup')).toBe(true));
+    it('suppresses on /login/something (defensive prefix match)', () => expect(isSuppressed('/login/whatever')).toBe(true));
+    it('does NOT suppress /harness', () => expect(isSuppressed('/harness')).toBe(false));
+    it('does NOT suppress /', () => expect(isSuppressed('/')).toBe(false));
+    it('does NOT suppress /settings/user', () => expect(isSuppressed('/settings/user')).toBe(false));
+    it('does NOT suppress unrelated /loginish', () => expect(isSuppressed('/loginish')).toBe(false));
+    it('does not suppress on null pathname (router transitioning)', () => expect(isSuppressed(null)).toBe(false));
+  });
+
   describe('suppression contract (the same predicate the component uses)', () => {
     const shouldFire = (now: number, lastWelcomedMs: number): boolean => {
       const boundary = lastReset4amLocalMs(now);
