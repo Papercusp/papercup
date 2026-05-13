@@ -11,11 +11,12 @@ vi.mock('@/lib/use-state-snapshots', () => ({
 }));
 vi.mock('@/lib/post-card-response', () => ({
   postCardResponse: vi.fn(),
+  postRunCancel: vi.fn(),
 }));
 
 import { PendingCardsBar } from './PendingCardsBar';
 import { useStateSnapshots, type OpenCardWithRun } from '@/lib/use-state-snapshots';
-import { postCardResponse } from '@/lib/post-card-response';
+import { postCardResponse, postRunCancel } from '@/lib/post-card-response';
 
 afterEach(() => cleanup());
 
@@ -41,6 +42,8 @@ describe('PendingCardsBar', () => {
   beforeEach(() => {
     vi.mocked(useStateSnapshots).mockReset();
     vi.mocked(postCardResponse).mockReset();
+    vi.mocked(postRunCancel).mockReset();
+    vi.mocked(postRunCancel).mockResolvedValue({ ok: true, status: 200 });
     vi.mocked(postCardResponse).mockResolvedValue({ ok: true, status: 200 });
   });
 
@@ -253,7 +256,10 @@ describe('PendingCardsBar', () => {
     });
     render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
     expect(screen.getByText('No renderer for this')).toBeTruthy();
-    expect(screen.queryByRole('button')).toBeNull();
+    // The Cancel-run button is always rendered (chat-level affordance);
+    // assert only that no interactive renderer button exists for the
+    // unknown presentation kind itself.
+    expect(screen.queryByRole('button', { name: /^(Submit|Skip|Option)/i })).toBeNull();
   });
 
   it('error from postCardResponse renders inline alert', async () => {
@@ -271,6 +277,64 @@ describe('PendingCardsBar', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Option A$/i }));
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(/dataSchema/);
+    });
+  });
+
+  it('Cancel button calls /run-cancel with head runId + workspaceId', async () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [
+        makeCard({ correlationId: 'a', runId: 'r-a' }),
+        makeCard({ correlationId: 'b', runId: 'r-a' }),
+        makeCard({ correlationId: 'c', runId: 'r-b' }),
+      ],
+      connected: true,
+      byRun: new Map(),
+    });
+    render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    fireEvent.click(screen.getByRole('button', { name: /Cancel this run/i }));
+    await waitFor(() => {
+      expect(postRunCancel).toHaveBeenCalledWith('c1', {
+        runId: 'r-a',
+        workspaceId: 'w1',
+      });
+    });
+  });
+
+  it('Cancel optimistically dismisses ALL cards in the head run (not other runs)', async () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [
+        makeCard({ correlationId: 'a', runId: 'r-a', prompt: 'prompt-a' }),
+        makeCard({ correlationId: 'b', runId: 'r-a', prompt: 'prompt-b' }),
+        makeCard({ correlationId: 'c', runId: 'r-b', prompt: 'prompt-c' }),
+      ],
+      connected: true,
+      byRun: new Map(),
+    });
+    const { container } = render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    fireEvent.click(screen.getByRole('button', { name: /Cancel this run/i }));
+    await waitFor(() => {
+      // r-a cards (a, b) dismissed; r-b card (c) still visible as head.
+      expect(container.textContent).toContain('prompt-c');
+      expect(container.textContent).not.toContain('prompt-a');
+      expect(container.textContent).not.toContain('prompt-b');
+    });
+  });
+
+  it('Cancel error surfaces in alert; cards stay visible', async () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [makeCard()],
+      connected: true,
+      byRun: new Map(),
+    });
+    vi.mocked(postRunCancel).mockResolvedValue({
+      ok: false,
+      status: 404,
+      error: 'run not found in workspace',
+    });
+    render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    fireEvent.click(screen.getByRole('button', { name: /Cancel this run/i }));
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/run not found/);
     });
   });
 });

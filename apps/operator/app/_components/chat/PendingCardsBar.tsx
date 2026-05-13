@@ -38,7 +38,7 @@ import {
 } from './AskChoiceCard';
 import { InputCard, type InputCardResponse } from './InputCard';
 import { useStateSnapshots, type OpenCardWithRun } from '@/lib/use-state-snapshots';
-import { postCardResponse } from '@/lib/post-card-response';
+import { postCardResponse, postRunCancel } from '@/lib/post-card-response';
 
 interface Props {
   /** Active conversation id — passed into /card-response URL for audit. */
@@ -126,6 +126,37 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
     }
   };
 
+  /**
+   * Chat-level "Cancel" — cancels every pending card under the head's
+   * runId. Server cascade resolves each deferred with action:'cancel'.
+   * Optimistically dismisses ALL cards from this run in the local
+   * dismissed set so the bar hides immediately even if SSE is down.
+   */
+  const onCancelRun = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    const runId = head.runId;
+    const correlationIdsForRun = visibleCards
+      .filter((c) => c.runId === runId)
+      .map((c) => c.correlationId);
+    try {
+      const r = await postRunCancel(conversationId, { runId, workspaceId });
+      if (!r.ok) {
+        setError(r.error ?? `run-cancel failed (${r.status})`);
+      } else {
+        setDismissed((prev) => {
+          const next = new Set(prev);
+          for (const cid of correlationIdsForRun) next.add(cid);
+          return next;
+        });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const choiceArgs = toAskChoiceArgs(head);
   const inputKinds = head.presentation?.kind;
   const isInput =
@@ -164,11 +195,23 @@ export function PendingCardsBar({ conversationId, workspaceId }: Props): ReactNo
   return (
     <div className="pending-cards-bar" data-busy={busy ? 'true' : 'false'}>
       {body}
-      {remaining > 0 && (
-        <p className="pending-cards-bar-queue" aria-live="polite">
-          {remaining} more {remaining === 1 ? 'card' : 'cards'} after this
-        </p>
-      )}
+      <div className="pending-cards-bar-meta">
+        {remaining > 0 && (
+          <p className="pending-cards-bar-queue" aria-live="polite">
+            {remaining} more {remaining === 1 ? 'card' : 'cards'} after this
+          </p>
+        )}
+        <button
+          type="button"
+          className="pending-cards-bar-cancel-run"
+          onClick={() => void onCancelRun()}
+          disabled={busy}
+          aria-label="Cancel this run"
+          title="Cancel — abort all pending prompts under this run"
+        >
+          Cancel
+        </button>
+      </div>
       {!connected && (
         <p className="pending-cards-bar-disconnected" role="status">
           Live updates disconnected — submitted answers still apply.

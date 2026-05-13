@@ -50,3 +50,36 @@ export async function postCardResponse(
     details: parsed.details,
   };
 }
+
+/**
+ * postRunCancel — cancels every pending ctx.askUser card under a runId.
+ * Server-side this resolves each card's deferred with action:'cancel'.
+ * Used by the chat-level "Cancel" affordance in PendingCardsBar.
+ */
+export async function postRunCancel(
+  conversationId: string,
+  body: { runId: string; workspaceId: string },
+): Promise<CardResponseResult> {
+  const res = await fetch(
+    `/api/operator/conversations/${encodeURIComponent(conversationId)}/run-cancel`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      credentials: 'same-origin',
+    },
+  );
+  if (res.ok) return { ok: true, status: res.status };
+  let parsed: { error?: string; details?: unknown } = {};
+  try {
+    parsed = (await res.json()) as { error?: string; details?: unknown };
+  } catch {
+    /* non-JSON error body */
+  }
+  return {
+    ok: false,
+    status: res.status,
+    error: parsed.error,
+    details: parsed.details,
+  };
+}

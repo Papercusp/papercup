@@ -79,3 +79,38 @@ describe('postCardResponse', () => {
     expect(r).toEqual({ ok: false, status: 401, error: undefined, details: undefined });
   });
 });
+
+describe('postRunCancel', () => {
+  const fetchSpy = vi.fn();
+  beforeEach(() => {
+    fetchSpy.mockReset();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+  });
+  afterEach(() => fetchSpy.mockReset());
+
+  it('POSTs runId + workspaceId to /run-cancel and returns ok:true', async () => {
+    const { postRunCancel } = await import('./post-card-response');
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200 }),
+    );
+    const r = await postRunCancel('conv-1', { runId: 'r-1', workspaceId: 'ws-A' });
+    expect(r).toEqual({ ok: true, status: 200 });
+    const args = fetchSpy.mock.calls[0];
+    expect(args[0]).toContain('/api/operator/conversations/conv-1/run-cancel');
+    expect(JSON.parse(args[1].body as string)).toEqual({
+      runId: 'r-1',
+      workspaceId: 'ws-A',
+    });
+  });
+
+  it('returns ok:false with parsed error on 404', async () => {
+    const { postRunCancel } = await import('./post-card-response');
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: 'run not found in workspace' }), { status: 404 }),
+    );
+    const r = await postRunCancel('conv-1', { runId: 'r-1', workspaceId: 'w' });
+    expect(r.ok).toBe(false);
+    expect(r.status).toBe(404);
+    expect(r.error).toMatch(/run not found/);
+  });
+});
