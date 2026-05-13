@@ -370,9 +370,30 @@ Practical test impact: just rewrite the engine-dropdown locator in `e2e/voice-mo
 
 ---
 
+## 2026-05-13 followup — re-apply pass in worktree
+
+**Background.** First pass of Waves 1–4 was made in-place on the main `papercup` checkout. A Paperclip agent then ran `git pull --rebase origin main` against that checkout (memory entry `feedback_paperclip_collision_race`), which discarded most of the uncommitted in-place edits. ~68 of ~80 migrated sites were reverted to their pre-migration state on disk.
+
+**Recovery.** Re-applied everything in a separate worktree at `~/papercupai-workspace/papercup-design-migration/` on branch `design-migration-2026-05-13`. Commits (oldest → newest):
+
+- `c44a9ea5` — helpers (ConfirmModal, Popover, PromptModal, useConfirmDialog, usePromptDialog) + Wave-4 survivors (EditTemplateClient, login, settings/plugins, settings/plugins/ProvisionPanel, settings/publishing) + gotchas.mdx carve-out + this doc.
+- `04a1e688` — Wave-1 top-level chrome (Notifs, RecentActions, BranchActionRunner, Operator, Oracle picker semantic fix, WorkspaceSwitcher, Update, MarketplaceList, Support, Tutorial, Voice, HarnessSettings checkboxes, permissions checkbox, editor-demo cb, omp cb, user cb). `.notif-panel` CSS positioning removed (Radix Popover now handles placement).
+- `d9bc8c2d` — Wave-2 harness chrome (HarnessDashboard reset/cleanup/SIGTERM/plugin-disable + 2-step checkpoint prompt, PhaseTabs, PlanReviewBanner, PromptsTab, SpecEditor reveal-.env typed confirm).
+- `0a0295af` — Wave-3 Tier-2 harness panels (ArchitectInbox, ArchivesPanel, ChatPanel, CollectionTab confirm, EscalationBanner, FeatureEditor, FeatureList, HooksPanel, ScreenshotsPanel, SnapshotsPanel, TemplatesModal, ProjectDetail).
+- `77bcb8ab` — Wave-3 settings + admin (shortcuts, mobile, operator, api-keys, user/memory ×3 incl. requireType="FORGET", admin/TableAdmin confirm + alert→toast, installed/plugins page ×2).
+- `9d29ad8f` — Wave-4 surface push (ExpertsPanel modal+select+×3 confirm, ProposalsPanel ×4 confirm incl. replan typed-style, CollectionTab create-prompt, MarketplaceList uninstall, InstalledTemplatesClient delete + install-prompt, InstalledSnapshotsClient delete/retract + publish 2-step prompt, MarketplaceSnapshotsClient instantiate-prompt + publish + delete, SnapshotsClient densest file — 4-step retract prompt chain + publish + delete + instantiate).
+
+Branch is on origin: `https://github.com/papercupai/papercup/pull/new/design-migration-2026-05-13`.
+
+**Verification.** `npx tsc --noEmit` clean across the operator app (only the pre-existing `baseUrl` deprecation warning). Audit complete: zero `confirm(` / `alert(` / `prompt(` left in scope. The only remaining call sites are the four explicitly-deferred surfaces (WslOnboardingGate, `/dev/*`, `/settings/voice`, `operator-mock`).
+
+**Lesson learned.** Whenever Paperclip is running in the same repo, work in a worktree on its own branch. The Paperclip collision-race memory entry will be amended to recommend this as the default.
+
+---
+
 ## Where to start next session
 
-Waves 1–4 shipped: ConfirmModal + Popover + PromptModal infra (with imperative `useConfirmDialog` + `usePromptDialog` hooks), HR2/HR3/HR4/HR5/HR6 swaps across **every** code-ready surface in the audit. The HR-fix backlog is essentially drained. All `:3055` routes I touched serve 200 OK as of this session.
+Waves 1–4 shipped: ConfirmModal + Popover + PromptModal infra (with imperative `useConfirmDialog` + `usePromptDialog` hooks), HR2/HR3/HR4/HR5/HR6 swaps across **every** code-ready surface in the audit. The HR-fix backlog is essentially drained.
 
 Next batches are either **design-judgment redesigns** or **blocked on user decisions** — not HR fixes:
 
