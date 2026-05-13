@@ -1,0 +1,498 @@
+/**
+ * Dock layouts persistence — Phase 0 / Phase 2 of the dockview migration.
+ *
+ * Stores per-user named dock layouts in PG. The on-disk shape is the
+ * LOGICAL layout (LayoutDoc), not raw dockview JSON — we control schema
+ * versioning, validation, and dockview-API portability at the adapter.
+ *
+ * Spec: apps/operator/docs/dockview-migration-plan-v4.md §4
+ */
+
+import 'server-only';
+import postgres from 'postgres';
+import { getHarnessAdminUrl } from './embedded-pg-discovery';
+
+export const CURRENT_LAYOUT_SCHEMA_VERSION = 1 as const;
+
+// ───────── Logical layout schema (storage shape) ─────────
+
+export type PanelInstance = {
+  id: string;
+  type: string;
+  title?: string;
+  params?: Record<string, unknown>;
+  keepAlive?: boolean;
+};
+
+export type TabStrip = {
+  kind: 'tabs';
+  id: string;
+  activePanelId: string;
+  panels: PanelInstance[];
+};
+
+export type GroupNode = {
+  kind: 'group';
+  id: string;
+  direction?: 'row' | 'col';
+  children: Array<GroupNode | TabStrip>;
+  size?: number;
+};
+
+export type FloatingGroup = {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  panels: PanelInstance[];
+  activePanelId: string;
+};
+
+export type LayoutDoc = {
+  schemaVersion: 1;
+  root: GroupNode | TabStrip;
+  floating?: FloatingGroup[];
+};
+
+// ───────── Auth resolver ─────────
+
+export type LayoutPrincipal = { workspaceId: string; userId: string };
+
+/**
+ * Returns the (workspaceId, userId) tuple to scope a layout request.
+ * Loopback dev: workspace='default', user='_local'.
+ * Webapp: pulled from authenticated session (Phase 5+ work).
+ */
+export function getUserIdForLayouts(_req?: Request): LayoutPrincipal {
+  // Phase 0/2: loopback. The webapp auth pull happens in Phase 5 when
+  // we wire ui:dispatch and need cross-user isolation.
+  return {
+    workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? 'default',
+    userId: process.env.PAPERCUSP_USER_ID ?? '_local',
+  };
+}
+
+// ───────── Default layout seed ─────────
+
+/**
+ * The static seed used on first read miss. Recreates today's UX:
+ * Git rail | (Dashboard tabs) | (Agents+Logs).
+ *
+ * Layout v1: nested-dock pi tab layout is single-panel (pi-terminals
+ * itself is a nested dock). Phase 3+ expands as new panels register.
+ */
+export function defaultDashboardLayout(harnessSlug = ''): LayoutDoc {
+  return {
+    schemaVersion: 1,
+    root: {
+      kind: 'group',
+      id: 'root',
+      direction: 'row',
+      children: [
+        {
+          kind: 'group',
+          id: 'context-rail',
+          direction: 'col',
+          size: 0.18,
+          children: [
+            {
+              kind: 'tabs',
+              id: 'context-tabs',
+              activePanelId: 'p-git',
+              panels: [
+                {
+                  id: 'p-git',
+                  type: 'data:git',
+                  params: { harnessSlug },
+                },
+                {
+                  id: 'p-overview',
+                  type: 'view:harness-overview',
+                  params: { harnessSlug, phase: 'staging' },
+                },
+              ],
+            },
+          ],
+        },
+        {
+          kind: 'tabs',
+          id: 'main',
+          activePanelId: 'p-dashboard',
+          panels: [
+            {
+              id: 'p-dashboard',
+              type: 'view:dashboard-overview',
+              params: { harnessSlug },
+            },
+            {
+              id: 'p-features',
+              type: 'data:features',
+              params: { harnessSlug },
+            },
+            {
+              id: 'p-issues',
+              type: 'data:issues',
+              params: { harnessSlug },
+            },
+          ],
+        },
+        {
+          kind: 'group',
+          id: 'telemetry-rail',
+          direction: 'col',
+          size: 0.22,
+          children: [
+            {
+              kind: 'tabs',
+              id: 'telemetry-tabs',
+              activePanelId: 'p-agents',
+              panels: [
+                {
+                  id: 'p-agents',
+                  type: 'data:agents',
+                  params: { harnessSlug },
+                },
+                {
+                  id: 'p-logs',
+                  type: 'data:logs',
+                  params: { harnessSlug },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+    floating: [],
+  };
+}
+
+/**
+ * Pi-tab-specific seed for Phase 2. The pi tab today owns its own
+ * localStorage layout; this seeds the PG-backed replacement.
+ */
+export function defaultPiTerminalsLayout(): LayoutDoc {
+  return {
+    schemaVersion: 1,
+    root: {
+      kind: 'tabs',
+      id: 'pi-root',
+      activePanelId: 'p-terminal-1',
+      panels: [
+        {
+          id: 'p-terminal-1',
+          type: 'pi:terminal',
+          title: 'Terminal 1',
+          params: { sessionId: 'default' },
+        },
+      ],
+    },
+    floating: [],
+  };
+}
+
+// ───────── Validation ─────────
+
+export class LayoutValidationError extends Error {
+  constructor(message: string) {
+    super(`LayoutValidationError: ${message}`);
+    this.name = 'LayoutValidationError';
+  }
+}
+
+export function validateLayoutDoc(doc: unknown): asserts doc is LayoutDoc {
+  if (!doc || typeof doc !== 'object') {
+    throw new LayoutValidationError('layout must be an object');
+  }
+  const d = doc as LayoutDoc;
+  if (d.schemaVersion !== CURRENT_LAYOUT_SCHEMA_VERSION) {
+    throw new LayoutValidationError(
+      `unsupported schemaVersion ${d.schemaVersion} (expected ${CURRENT_LAYOUT_SCHEMA_VERSION})`,
+    );
+  }
+  if (!d.root || typeof d.root !== 'object') {
+    throw new LayoutValidationError('layout.root required');
+  }
+  validateNode(d.root);
+  if (d.floating !== undefined) {
+    if (!Array.isArray(d.floating)) {
+      throw new LayoutValidationError('layout.floating must be array');
+    }
+    for (const f of d.floating) validateFloating(f);
+  }
+}
+
+function validateNode(n: GroupNode | TabStrip): void {
+  if (n.kind === 'group') {
+    if (!Array.isArray(n.children)) {
+      throw new LayoutValidationError(`group ${n.id} missing children`);
+    }
+    for (const child of n.children) validateNode(child);
+  } else if (n.kind === 'tabs') {
+    if (!Array.isArray(n.panels)) {
+      throw new LayoutValidationError(`tabs ${n.id} missing panels`);
+    }
+    if (n.panels.length > 0) {
+      const ids = new Set(n.panels.map((p) => p.id));
+      if (!ids.has(n.activePanelId)) {
+        throw new LayoutValidationError(
+          `tabs ${n.id} activePanelId ${n.activePanelId} not in panels`,
+        );
+      }
+    }
+    for (const p of n.panels) validatePanel(p);
+  } else {
+    throw new LayoutValidationError(`unknown node kind`);
+  }
+}
+
+function validatePanel(p: PanelInstance): void {
+  if (!p.id || typeof p.id !== 'string') {
+    throw new LayoutValidationError('panel missing id');
+  }
+  if (!p.type || typeof p.type !== 'string') {
+    throw new LayoutValidationError(`panel ${p.id} missing type`);
+  }
+}
+
+function validateFloating(f: FloatingGroup): void {
+  if (typeof f.x !== 'number' || typeof f.y !== 'number') {
+    throw new LayoutValidationError(`floating ${f.id} bad x/y`);
+  }
+  if (typeof f.width !== 'number' || typeof f.height !== 'number') {
+    throw new LayoutValidationError(`floating ${f.id} bad w/h`);
+  }
+  for (const p of f.panels) validatePanel(p);
+}
+
+// ───────── DB plumbing ─────────
+
+let pool: ReturnType<typeof postgres> | null = null;
+function db() {
+  if (!pool) {
+    pool = postgres(getHarnessAdminUrl(), { max: 4, prepare: false });
+  }
+  return pool;
+}
+
+export type LayoutRow = {
+  workspaceId: string;
+  userId: string;
+  layoutName: string;
+  schemaVersion: number;
+  layoutJson: LayoutDoc;
+  updatedTs: number;
+  createdTs: number;
+};
+
+// ───────── CRUD ─────────
+
+/**
+ * Returns the named layout for (workspaceId, userId). On miss, seeds
+ * `defaultDashboardLayout()` (or pi-terminals seed when `name === 'pi'`),
+ * INSERTs the row, and returns it. Subsequent calls hit the row.
+ */
+export async function getLayout(
+  principal: LayoutPrincipal,
+  name = 'default',
+): Promise<LayoutRow> {
+  const sql = db();
+  const rows = await sql<
+    Array<{
+      workspace_id: string;
+      user_id: string;
+      layout_name: string;
+      schema_version: number;
+      layout_json: LayoutDoc;
+      updated_ts: bigint;
+      created_ts: bigint;
+    }>
+  >`
+    SELECT workspace_id, user_id, layout_name, schema_version, layout_json,
+           updated_ts, created_ts
+      FROM harness_shared.harness_dock_layouts
+     WHERE workspace_id = ${principal.workspaceId}
+       AND user_id = ${principal.userId}
+       AND layout_name = ${name}
+     LIMIT 1
+  `;
+  if (rows.length > 0) {
+    return rowToLayout(rows[0]);
+  }
+  // Seed
+  const seed =
+    name === 'pi' ? defaultPiTerminalsLayout() : defaultDashboardLayout();
+  return saveLayout(principal, name, seed);
+}
+
+/**
+ * Inserts or updates a layout. If `expectedUpdatedTs` is given, the
+ * UPDATE is conditional (optimistic concurrency) — returns null on stale.
+ */
+export async function saveLayout(
+  principal: LayoutPrincipal,
+  name: string,
+  doc: LayoutDoc,
+  expectedUpdatedTs?: number,
+): Promise<LayoutRow> {
+  validateLayoutDoc(doc);
+  const sql = db();
+  const now = Date.now();
+  if (typeof expectedUpdatedTs === 'number') {
+    const updated = await sql<
+      Array<{
+        workspace_id: string;
+        user_id: string;
+        layout_name: string;
+        schema_version: number;
+        layout_json: LayoutDoc;
+        updated_ts: bigint;
+        created_ts: bigint;
+      }>
+    >`
+      UPDATE harness_shared.harness_dock_layouts
+         SET layout_json = ${sql.json(doc as unknown as Record<string, unknown>)},
+             schema_version = ${doc.schemaVersion},
+             updated_ts = ${now}
+       WHERE workspace_id = ${principal.workspaceId}
+         AND user_id = ${principal.userId}
+         AND layout_name = ${name}
+         AND updated_ts = ${expectedUpdatedTs}
+       RETURNING *
+    `;
+    if (updated.length === 0) {
+      throw new LayoutConflictError(
+        `stale write: expected updated_ts ${expectedUpdatedTs}`,
+      );
+    }
+    return rowToLayout(updated[0]);
+  }
+  const upserted = await sql<
+    Array<{
+      workspace_id: string;
+      user_id: string;
+      layout_name: string;
+      schema_version: number;
+      layout_json: LayoutDoc;
+      updated_ts: bigint;
+      created_ts: bigint;
+    }>
+  >`
+    INSERT INTO harness_shared.harness_dock_layouts
+      (workspace_id, user_id, layout_name, schema_version, layout_json, updated_ts, created_ts)
+    VALUES
+      (${principal.workspaceId}, ${principal.userId}, ${name}, ${doc.schemaVersion},
+       ${sql.json(doc as unknown as Record<string, unknown>)}, ${now}, ${now})
+    ON CONFLICT (workspace_id, user_id, layout_name) DO UPDATE
+      SET layout_json    = EXCLUDED.layout_json,
+          schema_version = EXCLUDED.schema_version,
+          updated_ts     = EXCLUDED.updated_ts
+    RETURNING *
+  `;
+  return rowToLayout(upserted[0]);
+}
+
+export async function deleteLayout(
+  principal: LayoutPrincipal,
+  name: string,
+): Promise<void> {
+  const sql = db();
+  await sql`
+    DELETE FROM harness_shared.harness_dock_layouts
+     WHERE workspace_id = ${principal.workspaceId}
+       AND user_id = ${principal.userId}
+       AND layout_name = ${name}
+  `;
+}
+
+export async function listLayouts(
+  principal: LayoutPrincipal,
+): Promise<Array<{ name: string; updatedTs: number }>> {
+  const sql = db();
+  const rows = await sql<
+    Array<{ layout_name: string; updated_ts: bigint }>
+  >`
+    SELECT layout_name, updated_ts
+      FROM harness_shared.harness_dock_layouts
+     WHERE workspace_id = ${principal.workspaceId}
+       AND user_id = ${principal.userId}
+     ORDER BY updated_ts DESC
+  `;
+  return rows.map((r) => ({
+    name: r.layout_name,
+    updatedTs: Number(r.updated_ts),
+  }));
+}
+
+export async function resetLayout(
+  principal: LayoutPrincipal,
+  name = 'default',
+): Promise<LayoutRow> {
+  const seed =
+    name === 'pi' ? defaultPiTerminalsLayout() : defaultDashboardLayout();
+  return saveLayout(principal, name, seed);
+}
+
+export class LayoutConflictError extends Error {
+  constructor(msg: string) {
+    super(msg);
+    this.name = 'LayoutConflictError';
+  }
+}
+
+function rowToLayout(r: {
+  workspace_id: string;
+  user_id: string;
+  layout_name: string;
+  schema_version: number;
+  layout_json: LayoutDoc;
+  updated_ts: bigint;
+  created_ts: bigint;
+}): LayoutRow {
+  return {
+    workspaceId: r.workspace_id,
+    userId: r.user_id,
+    layoutName: r.layout_name,
+    schemaVersion: r.schema_version,
+    layoutJson: r.layout_json,
+    updatedTs: Number(r.updated_ts),
+    createdTs: Number(r.created_ts),
+  };
+}
+
+// ───────── Last-used phase per harness (Phase 4) ─────────
+
+export async function getLastUsedPhase(
+  principal: LayoutPrincipal,
+  harnessSlug: string,
+): Promise<string | null> {
+  const sql = db();
+  const rows = await sql<Array<{ phase: string }>>`
+    SELECT phase
+      FROM harness_shared.harness_phase_last_used
+     WHERE workspace_id = ${principal.workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND user_id = ${principal.userId}
+     LIMIT 1
+  `;
+  return rows[0]?.phase ?? null;
+}
+
+export async function setLastUsedPhase(
+  principal: LayoutPrincipal,
+  harnessSlug: string,
+  phase: string,
+): Promise<void> {
+  const sql = db();
+  const now = Date.now();
+  await sql`
+    INSERT INTO harness_shared.harness_phase_last_used
+      (workspace_id, harness_slug, user_id, phase, updated_ts)
+    VALUES
+      (${principal.workspaceId}, ${harnessSlug}, ${principal.userId}, ${phase}, ${now})
+    ON CONFLICT (workspace_id, harness_slug, user_id) DO UPDATE
+      SET phase = EXCLUDED.phase,
+          updated_ts = EXCLUDED.updated_ts
+  `;
+}

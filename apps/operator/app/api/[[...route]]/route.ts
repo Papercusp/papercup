@@ -19,6 +19,7 @@ import { registerProjects } from '../_hono/projects';
 import { registerOracle } from '../_hono/oracle';
 import { registerCrossHarness } from '../_hono/cross-harness';
 import { registerMobile } from '../_hono/mobile';
+import { registerDockLayouts } from '../_hono/dock-layouts';
 import { mountPluginApiRoutes, installPluginApiDispatcher } from '../../../lib/plugin-api-mount';
 import { startAutoLoopOnce } from '../../../lib/autoloop';
 import { ensureHarnessFsWatcher } from '../../../lib/harness-fs-watcher';
@@ -70,6 +71,7 @@ registerProjects(harness);
 registerCrossHarness(harness);
 app.route('/harness', harness);
 registerOracle(app);
+registerDockLayouts(app);
 
 // Phase 6b item 2 — discover plugin apiRoutes and dispatch them through
 // the `plugins` sub-app. We register a single catch-all route on
