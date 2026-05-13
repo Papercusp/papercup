@@ -104,6 +104,11 @@ export type {
   PromptDefinition,
   PromptMessage,
   PromptResult,
+  CardSpec,
+  CardResponse,
+  CardPresentation,
+  CardOption,
+  OpenCardSnapshot,
 } from './types';
 
 export {

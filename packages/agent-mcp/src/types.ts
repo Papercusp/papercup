@@ -386,6 +386,74 @@ export interface PromptDefinition {
 
 export type { UIResourceContent as UIResource };
 
+// ──────────────────────────────────────────────────────────────────────
+// Cards — interactive prompts a tool can issue mid-run.
+//
+// Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md
+//
+// `ctx.askUser(spec)` server-side. Cards live on the STATE channel, NOT
+// the event ring buffer (H2). Renderer reads schema/UI separately (#3).
+// Response actions: submit | decline | cancel (#2 / L4).
+// ──────────────────────────────────────────────────────────────────────
+
+/** Visual presentation hint. Voice surfaces ignore this. */
+export type CardPresentation =
+  | { kind: 'radio'; options: CardOption[] }
+  | { kind: 'checkbox'; options: CardOption[] }
+  | { kind: 'text'; placeholder?: string; multiline?: boolean }
+  | { kind: 'date'; min?: string; max?: string }
+  | { kind: 'slider'; min: number; max: number; step?: number };
+
+export interface CardOption {
+  id: string;
+  label: string;
+  hint?: string;
+  style?: 'default' | 'primary' | 'danger';
+}
+
+/** Card specification passed to `ctx.askUser`. */
+export interface CardSpec<TSchema extends ZodTypeAny = ZodTypeAny> {
+  /** Human-readable prompt. Voice surfaces read this verbatim. */
+  prompt: string;
+  /** Zod schema for the response payload. Validated server-side before resolving. */
+  dataSchema: TSchema;
+  /** Optional visual presentation hint. Voice surfaces ignore. */
+  presentation?: CardPresentation;
+  /** Plain-text fallback for voice / MCP elicitation bridge. */
+  fallbackText?: string;
+  /** Wall-clock timeout. Rejects with `{action:'cancel'}` if user does not respond. */
+  timeoutMs?: number;
+  /** Per-run idempotency key. Same key returns cached response within the run. */
+  idempotencyKey?: string;
+  /** When false, the renderer hides any decline affordance. Default true. */
+  allowDecline?: boolean;
+}
+
+/**
+ * Response from a card.
+ *   submit  — user provided a payload matching dataSchema.
+ *   decline — user explicitly skipped this card (allowDecline must be ≠ false).
+ *   cancel  — run was cancelled OR user dismissed OR timeoutMs fired.
+ */
+export type CardResponse<TSchema extends ZodTypeAny = ZodTypeAny> =
+  | { action: 'submit'; payload: z.infer<TSchema> }
+  | { action: 'decline'; reason?: string }
+  | { action: 'cancel' };
+
+/**
+ * The wire-serializable form of an open card, included in `state-snapshot`
+ * payloads under `openCards[]`. Zod schemas are serialized as JSON Schema.
+ */
+export interface OpenCardSnapshot {
+  correlationId: string;
+  prompt: string;
+  dataSchemaJson: Record<string, unknown>;
+  presentation?: CardPresentation;
+  fallbackText?: string;
+  allowDecline?: boolean;
+  createdAt: number;
+}
+
 export interface PromptDefinitionInput {
   name?: string;
   description?: string;
