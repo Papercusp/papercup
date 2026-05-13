@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
+import { Checkbox } from '@/app/harness/Checkbox';
 
 interface Entry {
   tool_name: string;
@@ -99,11 +100,7 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
           <span>transport:</span>
           {(['http', 'mcp', 'ipc', 'in_process', 'unknown'] as const).map((t) => (
             <label key={t} style={{ display: 'inline-flex', gap: 3, fontSize: 12 }}>
-              <input
-                type="checkbox"
-                checked={transportSet.has(t)}
-                onChange={() => toggleTransport(t)}
-              />
+              <Checkbox checked={transportSet.has(t)} onChange={() => toggleTransport(t)} />
               {t}
             </label>
           ))}

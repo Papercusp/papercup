@@ -13,6 +13,7 @@ import {
   dispatchEndpointStream,
   type EndpointStreamEvent,
 } from '@/lib/transport-adapters';
+import { Checkbox } from '@/app/harness/Checkbox';
 
 interface LogEntry {
   ts: number;
@@ -101,11 +102,7 @@ export default function IpcTab(): JSX.Element {
           style={{ font: 'inherit' }}
         />
         <label>Emit binary:</label>
-        <input
-          type="checkbox"
-          checked={emitBinary}
-          onChange={(e) => setEmitBinary(e.target.checked)}
-        />
+        <Checkbox checked={emitBinary} onChange={setEmitBinary} />
       </div>
 
       <button

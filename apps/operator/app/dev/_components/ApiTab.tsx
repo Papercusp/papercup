@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsBoolean, parseAsStringEnum } from 'nuqs';
 import SchemaForm from './SchemaForm';
+import { Checkbox } from '@/app/harness/Checkbox';
 
 interface Tool {
   name: string;
@@ -207,19 +208,11 @@ export default function ApiTab({ workspaceIds, rerun, onRerunConsumed }: Props) 
           />
           <div className="pc-dev-toggles">
             <label className="pc-dev-toggle">
-              <input
-                type="checkbox"
-                checked={showBuiltins}
-                onChange={(e) => setShowBuiltins(e.target.checked)}
-              />
+              <Checkbox checked={showBuiltins} onChange={setShowBuiltins} />
               <span>Built-ins</span>
             </label>
             <label className="pc-dev-toggle">
-              <input
-                type="checkbox"
-                checked={showPlugins}
-                onChange={(e) => setShowPlugins(e.target.checked)}
-              />
+              <Checkbox checked={showPlugins} onChange={setShowPlugins} />
               <span>Plugins</span>
             </label>
           </div>

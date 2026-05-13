@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
+import { Checkbox } from '@/app/harness/Checkbox';
 
 interface Process {
   pid: number;
@@ -128,11 +129,7 @@ export default function ProcessesTab() {
       <div className="pc-dev-toggles" style={{ marginBottom: 12 }}>
         {ALL_KINDS.map((k) => (
           <label key={k} className="pc-dev-toggle">
-            <input
-              type="checkbox"
-              checked={kinds.has(k)}
-              onChange={() => toggleKind(k)}
-            />
+            <Checkbox checked={kinds.has(k)} onChange={() => toggleKind(k)} />
             <span>
               {k} <span className="pc-dev-muted">{byKind[k] ?? 0}</span>
             </span>
