@@ -38,6 +38,19 @@ export {
   dispatchWorkspaceSwitch,
 } from './workspace-lifecycle';
 export type { WorkspaceSwitchCallback } from './workspace-lifecycle';
+export {
+  openRun,
+  closeRun,
+  setOpenCards,
+  setToolState,
+  getSnapshot,
+  subscribe as subscribeStateChannel,
+  dropStateSnapshotsForWorkspaceSwitch,
+} from './state-channel';
+export type {
+  StateSnapshot,
+  VersionedSnapshot,
+} from './state-channel';
 export { tierFor } from './capability-tiers';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
