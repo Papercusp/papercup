@@ -17,8 +17,9 @@
  */
 
 import { useDeferredValue, useEffect, useMemo, useState, useCallback, useRef, type ReactElement } from 'react';
+import { Search } from 'lucide-react';
 import { usePathname } from 'next/navigation';
-import { useQueryState, parseAsStringLiteral } from 'nuqs';
+import { useQueryState, parseAsString, parseAsStringLiteral } from 'nuqs';
 import { useSyncQuery } from '@restart/sync';
 import { createResilientEventSource } from '@restart/sse';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
@@ -514,20 +515,20 @@ function OperatorCountBubble({
   );
 }
 
-// Auto-accept threshold cycler. Single click steps Off → Low → Medium → High → Off.
-// Tooltip explains what each level means; the visible label is the current level.
+// Auto-accept threshold control — explicit dropdown instead of an opaque
+// cycle-on-click toggle so the current policy stays obvious.
 const AUTO_ACCEPT_LEVELS_ORDER: readonly AutoAcceptLevel[] = ['off', 'low', 'medium', 'high'];
 const AUTO_ACCEPT_LABEL: Record<AutoAcceptLevel, string> = {
-  off: 'off',
-  low: 'low',
-  medium: 'med',
-  high: 'high',
+  off: 'Auto: Off',
+  low: 'Auto: Low',
+  medium: 'Auto: Med',
+  high: 'Auto: High',
 };
 const AUTO_ACCEPT_TOOLTIP: Record<AutoAcceptLevel, string> = {
-  off: 'Auto-accept: OFF. Every suggestion waits for your decision. Background scans still run; cards just queue up. Click to cycle: Off → Low → Medium → High.',
-  low: 'Auto-accept: LOW. Only low-risk cards auto-accept after a 5s undo window. Medium and high still wait for you. Click to cycle.',
-  medium: 'Auto-accept: MEDIUM. Low and medium-risk cards auto-accept after the undo window. High-risk still waits for you. Click to cycle.',
-  high: 'Auto-accept: HIGH. Every card auto-fires after the 5s undo countdown — INCLUDING high-risk ones (secrets, dispatches, code execution). Use with care. Click to cycle.',
+  off: 'Auto-accept is off. Every suggestion waits for your decision.',
+  low: 'Auto-accept is set to low. Only low-risk cards auto-accept after a 10s review window.',
+  medium: 'Auto-accept is set to medium. Low- and medium-risk cards auto-accept after a 10s review window.',
+  high: 'Auto-accept is set to high. Every card auto-fires after a 10s review window, including high-risk actions.',
 };
 
 export function OperatorAutoScanToggle(): ReactElement {
@@ -537,24 +538,22 @@ export function OperatorAutoScanToggle(): ReactElement {
       if (s.autoAccept) setAutoAcceptState(s.autoAccept);
     });
   }, []);
-  const cycle = useCallback(() => {
-    const i = AUTO_ACCEPT_LEVELS_ORDER.indexOf(sharedState.autoAccept);
-    const next = AUTO_ACCEPT_LEVELS_ORDER[(i + 1) % AUTO_ACCEPT_LEVELS_ORDER.length];
-    broadcastState({ autoAccept: next });
-  }, []);
-  const title = AUTO_ACCEPT_TOOLTIP[autoAccept];
   return (
-    <button
-      type="button"
-      className={`pc-header-cta-mini pc-header-cta-mini--auto pc-header-cta-mini--auto-${autoAccept}${autoAccept !== 'off' ? ' is-on' : ''}`}
-      aria-label={title}
-      title={title}
-      onClick={cycle}
-      style={{ marginLeft: 4 }}
-    >
-      <span className="pc-header-cta-mini-dot" aria-hidden="true" />
-      <span className="pc-header-cta-mini-label">auto: {AUTO_ACCEPT_LABEL[autoAccept]}</span>
-    </button>
+    <span className="pc-header-cta-select-shell" style={{ marginLeft: 4 }}>
+      <Select
+        value={autoAccept}
+        onChange={(value) => {
+          if (!(AUTO_ACCEPT_LEVELS_ORDER as readonly string[]).includes(value)) return;
+          broadcastState({ autoAccept: value as AutoAcceptLevel });
+        }}
+        ariaLabel={AUTO_ACCEPT_TOOLTIP[autoAccept]}
+        triggerClassName={`pc-header-cta-select${autoAccept !== 'off' ? ' is-on' : ''}`}
+        options={AUTO_ACCEPT_LEVELS_ORDER.map((value) => ({
+          value,
+          label: AUTO_ACCEPT_LABEL[value],
+        }))}
+      />
+    </span>
   );
 }
 
@@ -676,14 +675,15 @@ export function OperatorPanel(): ReactElement | null {
   }, []);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const evtSrcRef = useRef<{ close: () => void } | null>(null);
-  const [feedQuery, setFeedQuery] = useState('');
+  const [feedQuery, setFeedQuery] = useQueryState('deckQ', parseAsString.withDefault(''));
   const [mainView, setMainView] = useQueryState<MainView>(
-    'view',
+    'deckView',
     parseAsStringLiteral(['cards', 'accepted', 'ignored', 'scan-history'] as const).withDefault('cards'),
   );
   // Active harness filter — selected from the card toolbar dropdown.
-  // null = all harnesses.
-  const [harnessFilter, setHarnessFilter] = useState<string | null>(null);
+  // Empty string = all harnesses.
+  const [harnessFilterValue, setHarnessFilterValue] = useQueryState('deckHarness', parseAsString.withDefault(''));
+  const harnessFilter = harnessFilterValue || null;
   const [harnessRows, setHarnessRows] = useState<HarnessOneLiner[]>([]);
   const [scanStatus, setScanStatus] = useState<ScanStatus>('idle');
   const [scanError, setScanError] = useState<string | null>(null);
@@ -750,10 +750,6 @@ export function OperatorPanel(): ReactElement | null {
     return () => window.clearInterval(t);
   }, [state.open]);
 
-  useEffect(() => {
-    if (state.open) return;
-    setFeedQuery('');
-  }, [state.open]);
 
 
   // Kick off a scan when the panel opens.
@@ -1848,7 +1844,7 @@ export function OperatorPanel(): ReactElement | null {
                 {mainView !== 'scan-history' && (
                   <div className="operator-feed-tools">
                     <div className={`operator-feed-search${textFilterActive ? ' has-value' : ''}`}>
-                      <span className="operator-feed-search__icon" aria-hidden="true">⌕</span>
+                      <span className="operator-feed-search__icon" aria-hidden="true"><Search size={14} /></span>
                       <input
                         type="search"
                         value={feedQuery}
@@ -1871,8 +1867,8 @@ export function OperatorPanel(): ReactElement | null {
                     </div>
                     <div className="operator-feed-harness-filter">
                       <Select
-                        value={harnessFilter ?? '_all'}
-                        onChange={(v) => setHarnessFilter(v === '_all' ? null : v)}
+                        value={harnessFilterValue || '_all'}
+                        onChange={(value) => setHarnessFilterValue(value === '_all' ? '' : value)}
                         ariaLabel="Filter actions by harness"
                         triggerClassName="operator-feed-harness-select"
                         options={harnessOptions.map((option) => ({ value: option.value, label: option.label }))}
@@ -1891,7 +1887,7 @@ export function OperatorPanel(): ReactElement | null {
                     type="button"
                     onClick={() => {
                       setFeedQuery('');
-                      setHarnessFilter(null);
+                      setHarnessFilterValue('');
                     }}
                   >
                     Clear

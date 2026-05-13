@@ -4220,7 +4220,7 @@ body.papercusp-chromeless .oracle-dock,
 body.papercusp-chromeless .oracle-fab {
   display: none !important;
 }
-body.papercusp-chromeless main {
+body.papercusp-chromeless #papercusp-app > main {
   margin: 0;
   padding: 0;
   height: 100vh;
@@ -25473,6 +25473,14 @@ body:has(.operator-panel) {
   max-width: min(100%, 860px);
   min-height: auto;
   padding: 0;
+}
+
+.pc-setup-wizard[data-view="welcome"] {
+  max-width: min(100%, 760px);
+}
+
+.pc-setup-wizard[data-view="welcome"] .pc-setup-wizard__main {
+  min-height: auto;
 }
 
 .pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__sidebar {
