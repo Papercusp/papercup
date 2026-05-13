@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface RuntimeStatus {
   loaded: number;
@@ -11,6 +12,36 @@ interface RuntimeStatus {
   initializedPairs: string[];
   registeredActions: { key: string; declared: string[]; registered: string[] }[];
 }
+
+type Plugin = RuntimeStatus['plugins'][number];
+type Action = RuntimeStatus['registeredActions'][number];
+type Hook = RuntimeStatus['hookRegistrations'][number];
+
+const PLUGIN_COLUMNS: ColumnDef<Plugin>[] = [
+  { key: 'name', header: 'Name', width: 2, toCopyText: (r) => r.name, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.name}</span> },
+  { key: 'version', header: 'Version', width: 1, toCopyText: (r) => r.version, render: ({ row }) => <>{row.version}</> },
+  { key: 'source', header: 'Source', width: 2, toCopyText: (r) => r.source, render: ({ row }) => <>{row.source}</> },
+];
+
+const ACTION_COLUMNS: ColumnDef<Action>[] = [
+  { key: 'key', header: 'Plugin :: Harness', width: 2, toCopyText: (r) => r.key, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.key}</span> },
+  {
+    key: 'declared', header: 'Declared', width: 2,
+    toCopyText: (r) => r.declared.join(', '),
+    render: ({ row }) => row.declared.length ? <span style={{ fontFamily: 'var(--font-mono)' }}>{row.declared.join(', ')}</span> : <span style={{ color: 'var(--fg-mute)' }}>—</span>,
+  },
+  {
+    key: 'registered', header: 'Registered', width: 2,
+    toCopyText: (r) => r.registered.join(', '),
+    render: ({ row }) => row.registered.length ? <span style={{ fontFamily: 'var(--font-mono)' }}>{row.registered.join(', ')}</span> : <span style={{ color: 'var(--fg-mute)' }}>—</span>,
+  },
+];
+
+const HOOK_COLUMNS: ColumnDef<Hook>[] = [
+  { key: 'event', header: 'Event', width: 2, toCopyText: (r) => r.event, render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.event}</span> },
+  { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.kind, render: ({ row }) => <>{row.kind}</> },
+  { key: 'plugins', header: 'Plugins', width: 3, toCopyText: (r) => r.plugins.join(', '), render: ({ row }) => <span style={{ fontFamily: 'var(--font-mono)' }}>{row.plugins.join(', ')}</span> },
+];
 
 export default function RuntimeView({ status: initial }: { status: RuntimeStatus }) {
   const [status, setStatus] = useState(initial);
@@ -47,24 +78,9 @@ export default function RuntimeView({ status: initial }: { status: RuntimeStatus
         {status.plugins.length === 0 ? (
           <Empty>No plugins loaded.</Empty>
         ) : (
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Name</th>
-                <th style={thStyle}>Version</th>
-                <th style={thStyle}>Source</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status.plugins.map((p) => (
-                <tr key={p.name}>
-                  <td style={tdMono}>{p.name}</td>
-                  <td style={tdStyle}>{p.version}</td>
-                  <td style={tdStyle}>{p.source}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(360, 36 + status.plugins.length * 28 + 4) }}>
+            <RichGrid<Plugin> columns={PLUGIN_COLUMNS} rows={status.plugins} getRowId={(r) => r.name} rowMinHeight={28} headerHeight={28} />
+          </div>
         )}
       </Card>
 
@@ -80,29 +96,18 @@ export default function RuntimeView({ status: initial }: { status: RuntimeStatus
 
       <Card title={`Registered actions — ${status.registeredActions.length}`}>
         {status.registeredActions.length === 0 ? (
-          <Empty>No action registries built yet (plugins haven't been initialized for any harness).</Empty>
+          <Empty>No action registries built yet (plugins haven&apos;t been initialized for any harness).</Empty>
         ) : (
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Plugin :: Harness</th>
-                <th style={thStyle}>Declared</th>
-                <th style={thStyle}>Registered</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status.registeredActions.map((r) => {
-                const incomplete = r.declared.length !== r.registered.length;
-                return (
-                  <tr key={r.key} style={incomplete ? { background: 'var(--bg-warn, transparent)' } : undefined}>
-                    <td style={tdMono}>{r.key}</td>
-                    <td style={tdMono}>{r.declared.join(', ') || <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
-                    <td style={tdMono}>{r.registered.join(', ') || <span style={{ color: 'var(--fg-mute)' }}>—</span>}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(360, 36 + status.registeredActions.length * 28 + 4) }}>
+            <RichGrid<Action>
+              columns={ACTION_COLUMNS}
+              rows={status.registeredActions}
+              getRowId={(r) => r.key}
+              rowMinHeight={28}
+              headerHeight={28}
+              getRowBg={(row) => row.declared.length !== row.registered.length ? 'var(--bg-warn, transparent)' : undefined}
+            />
+          </div>
         )}
       </Card>
 
@@ -110,24 +115,15 @@ export default function RuntimeView({ status: initial }: { status: RuntimeStatus
         {status.hookRegistrations.length === 0 ? (
           <Empty>No plugin has subscribed to free-form events via <code>ctx.api.hooks.addAction</code> or <code>addFilter</code>.</Empty>
         ) : (
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Event</th>
-                <th style={thStyle}>Kind</th>
-                <th style={thStyle}>Plugins</th>
-              </tr>
-            </thead>
-            <tbody>
-              {status.hookRegistrations.map((h, i) => (
-                <tr key={`${h.event}:${h.kind}:${i}`}>
-                  <td style={tdMono}>{h.event}</td>
-                  <td style={tdStyle}>{h.kind}</td>
-                  <td style={tdMono}>{h.plugins.join(', ')}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(360, 36 + status.hookRegistrations.length * 28 + 4) }}>
+            <RichGrid<Hook>
+              columns={HOOK_COLUMNS}
+              rows={status.hookRegistrations}
+              getRowId={(r) => `${r.event}:${r.kind}`}
+              rowMinHeight={28}
+              headerHeight={28}
+            />
+          </div>
         )}
       </Card>
 
@@ -180,7 +176,4 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ color: 'var(--fg-mute)', fontSize: 13 }}>{children}</div>;
 }
 
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', fontSize: 13 };
-const thStyle: React.CSSProperties = { textAlign: 'left', padding: '4px 8px', borderBottom: '1px solid var(--border)', fontWeight: 500, color: 'var(--fg-mute)' };
-const tdStyle: React.CSSProperties = { padding: '4px 8px', borderBottom: '1px solid var(--border)' };
-const tdMono: React.CSSProperties = { ...tdStyle, fontFamily: 'var(--font-mono)' };
+
