@@ -1,7 +1,18 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { readOperatorState, writeOperatorState } from '@/lib/operator-state-pg';
 
 export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
+
+function isLoopback(req: NextRequest): boolean {
+  const host = req.headers.get('host') ?? '';
+  return (
+    host.startsWith('127.0.0.1:') ||
+    host.startsWith('localhost:') ||
+    host === '127.0.0.1' ||
+    host === 'localhost'
+  );
+}
 
 const KEY = 'setup_wizard_state';
 
@@ -29,12 +40,14 @@ function defaults(): SetupWizardState {
   return { step_status: {} };
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
   const state = (await readOperatorState<SetupWizardState>(KEY)) ?? defaults();
   return NextResponse.json(state);
 }
 
-export async function PATCH(req: Request) {
+export async function PATCH(req: NextRequest) {
+  if (!isLoopback(req)) return NextResponse.json({ error: 'loopback only' }, { status: 403 });
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object') {
     return NextResponse.json({ error: 'invalid body' }, { status: 400 });

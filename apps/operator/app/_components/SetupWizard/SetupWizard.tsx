@@ -53,17 +53,10 @@ export function SetupWizard({ mode }: Props) {
   const isDismissed = persisted.step_status?.[active.id] === 'dismissed';
   const isCompleted = persisted.step_status?.[active.id] === 'completed';
 
-  const requiredMet =
-    statuses['embedded-pg'] === 'ok' &&
-    statuses['agents'] === 'ok' &&
-    // workspace + git can be either ok-by-detection or completed-by-user
-    (persisted.step_status?.['workspace'] === 'completed' ||
-      persisted.step_status?.['workspace'] === 'dismissed' ||
-      false);
-  // Detection of "workspace folder set" isn't part of preflight, so we
-  // treat "user clicked Mark as done OR Save" as the proxy. Required:
-  // ≥1 agent installed AND embedded-pg ready. (Per the design contract
-  // the user accepted earlier — workspace + agents required, rest opt.)
+  // Minimum to finish setup: ≥1 coding agent installed + embedded-pg
+  // ready. Workspace path is recorded server-side regardless of
+  // wizard interaction (default `~/.papercusp/projects/` always
+  // works), so it isn't part of the gate.
   const minimumMet =
     statuses['embedded-pg'] === 'ok' && statuses['agents'] === 'ok';
 

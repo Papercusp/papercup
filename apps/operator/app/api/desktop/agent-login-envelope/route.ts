@@ -17,6 +17,10 @@ export const runtime = 'nodejs';
 const PROVIDER_COMMANDS: Record<string, string> = {
   claude: 'claude /login',
   openai: 'omp /login',
+  // `gh auth login` is the GitHub CLI's interactive OAuth flow. Same
+  // console-launch pattern as the others — opens a real terminal so
+  // the device-code prompt + paste-token UX works.
+  github: 'gh auth login',
 };
 
 function isLoopback(req: NextRequest): boolean {

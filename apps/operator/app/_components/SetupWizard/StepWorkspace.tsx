@@ -8,12 +8,25 @@ interface Profile {
   default_project_dir?: string;
 }
 
+interface ValidateOk {
+  ok: true;
+  normalized: string;
+  exists: boolean;
+  writable: boolean;
+}
+interface ValidateErr {
+  ok: false;
+  reason: string;
+}
+type Validation = ValidateOk | ValidateErr;
+
 export function StepWorkspace() {
   const [dir, setDir] = useState<string>('');
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [tauri, setTauri] = useState(false);
+  const [validation, setValidation] = useState<Validation | null>(null);
 
   useEffect(() => {
     setTauri(isTauri());
@@ -31,6 +44,30 @@ export function StepWorkspace() {
     })();
   }, []);
 
+  // Debounced validation: every time the user pauses typing we ping
+  // /api/desktop/workspace-validate.
+  useEffect(() => {
+    if (!loaded) return;
+    if (dir.trim().length === 0) {
+      setValidation(null);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      try {
+        const r = await fetch('/api/desktop/workspace-validate', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ path: dir }),
+        });
+        const j = (await r.json()) as Validation;
+        setValidation(j);
+      } catch {
+        setValidation(null);
+      }
+    }, 350);
+    return () => clearTimeout(handle);
+  }, [dir, loaded]);
+
   const pickFolder = async () => {
     try {
       const result = (await invoke('plugin:dialog|open', {
@@ -46,6 +83,8 @@ export function StepWorkspace() {
       // user cancelled or plugin unavailable
     }
   };
+
+  const canSave = loaded && !saving && (validation === null || validation.ok);
 
   const onSave = async () => {
     setSaving(true);
@@ -89,17 +128,29 @@ export function StepWorkspace() {
             </button>
           )}
         </div>
-        <span className="pc-field__hint">
-          Use an absolute path or a path starting with <code>~/</code>. The directory will be created
-          if it doesn't exist.
-        </span>
+        {validation && validation.ok && validation.normalized && (
+          <span className="pc-field__hint pc-field__hint--ok">
+            ✓ {validation.exists ? 'Exists, writable' : 'Will be created'} ·{' '}
+            <code>{validation.normalized}</code>
+          </span>
+        )}
+        {validation && !validation.ok && (
+          <span className="pc-field__hint pc-field__hint--err">⚠ {validation.reason}</span>
+        )}
+        {!validation && (
+          <span className="pc-field__hint">
+            Use an absolute path or one starting with <code>~/</code>. Created if it doesn't exist.
+            Blank uses the default.
+          </span>
+        )}
       </label>
       <div className="pc-step__actions">
         <button
           type="button"
           className="pc-btn pc-btn--primary"
           onClick={() => void onSave()}
-          disabled={!loaded || saving}
+          disabled={!canSave}
+          title={validation && !validation.ok ? validation.reason : undefined}
         >
           {saving ? 'Saving…' : 'Save'}
         </button>

@@ -4,6 +4,10 @@ import { useEffect, useRef, useState } from 'react';
 
 type Permission = 'unknown' | 'granted' | 'denied' | 'prompt';
 
+interface HTMLAudioWithSinkId extends HTMLAudioElement {
+  setSinkId?: (id: string) => Promise<void>;
+}
+
 export function StepVoiceDevices() {
   const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
   const [outputs, setOutputs] = useState<MediaDeviceInfo[]>([]);
@@ -13,6 +17,8 @@ export function StepVoiceDevices() {
   const [level, setLevel] = useState(0);
   const [recordings, setRecordings] = useState<{ url: string; createdAt: number }[]>([]);
   const [recording, setRecording] = useState(false);
+  const [tonePlaying, setTonePlaying] = useState(false);
+  const [sinkIdSupported, setSinkIdSupported] = useState(true);
 
   const streamRef = useRef<MediaStream | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -20,6 +26,8 @@ export function StepVoiceDevices() {
   const rafRef = useRef<number | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
+  const toneCtxRef = useRef<AudioContext | null>(null);
+  const audioElsRef = useRef<HTMLAudioWithSinkId[]>([]);
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices) return;
@@ -29,10 +37,23 @@ export function StepVoiceDevices() {
       setInputs(ins);
       setOutputs(outs);
       setSelectedInput(ins[0]?.deviceId ?? '');
-      setSelectedOutput(outs[0]?.deviceId ?? '');
+      setSelectedOutput(outs[0]?.deviceId ?? 'default');
       setPermission(all.some((d) => d.label.length > 0) ? 'granted' : 'prompt');
     });
+    if (typeof HTMLAudioElement !== 'undefined') {
+      setSinkIdSupported(typeof (HTMLAudioElement.prototype as HTMLAudioWithSinkId).setSinkId === 'function');
+    }
   }, []);
+
+  // Apply sinkId to all rendered audio elements whenever output device changes.
+  useEffect(() => {
+    if (!sinkIdSupported || !selectedOutput) return;
+    audioElsRef.current.forEach((el) => {
+      if (el && typeof el.setSinkId === 'function') {
+        el.setSinkId(selectedOutput).catch(() => {/* device gone — ignore */});
+      }
+    });
+  }, [selectedOutput, sinkIdSupported, recordings]);
 
   const startMonitor = async (deviceId: string) => {
     stopMonitor();
@@ -63,7 +84,6 @@ export function StepVoiceDevices() {
         rafRef.current = requestAnimationFrame(tick);
       };
       rafRef.current = requestAnimationFrame(tick);
-      // Re-enumerate now that labels are revealed
       const all = await navigator.mediaDevices.enumerateDevices();
       setInputs(all.filter((d) => d.kind === 'audioinput'));
       setOutputs(all.filter((d) => d.kind === 'audiooutput'));
@@ -114,6 +134,45 @@ export function StepVoiceDevices() {
     recorderRef.current?.stop();
     recorderRef.current = null;
     setRecording(false);
+  };
+
+  // 1-second 440Hz tone using Web Audio, routed via an AudioElement
+  // so setSinkId controls which speaker it lands on.
+  const playTestTone = async () => {
+    if (tonePlaying) return;
+    setTonePlaying(true);
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx: AudioContext = new Ctx();
+      toneCtxRef.current = ctx;
+      const dest = ctx.createMediaStreamDestination();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 440;
+      gain.gain.value = 0.12;
+      osc.connect(gain).connect(dest);
+      osc.start();
+
+      const audio: HTMLAudioWithSinkId = new Audio();
+      audio.srcObject = dest.stream;
+      if (selectedOutput && typeof audio.setSinkId === 'function') {
+        try {
+          await audio.setSinkId(selectedOutput);
+        } catch {
+          // Fall back to default speaker if sink isn't reachable.
+        }
+      }
+      await audio.play();
+      setTimeout(() => {
+        osc.stop();
+        audio.pause();
+        audio.srcObject = null;
+        void ctx.close();
+        setTonePlaying(false);
+      }, 1000);
+    } catch {
+      setTonePlaying(false);
+    }
   };
 
   return (
@@ -190,9 +249,23 @@ export function StepVoiceDevices() {
                 </option>
               ))}
             </select>
+            {!sinkIdSupported && (
+              <span className="pc-field__hint">
+                This browser doesn't support per-element output routing — playback will use the
+                system default speaker regardless of selection.
+              </span>
+            )}
           </label>
 
           <div className="pc-step__actions">
+            <button
+              type="button"
+              className="pc-btn"
+              onClick={() => void playTestTone()}
+              disabled={tonePlaying}
+            >
+              {tonePlaying ? 'Playing…' : 'Test speaker (1 sec tone)'}
+            </button>
             {!recording && (
               <button type="button" className="pc-btn pc-btn--primary" onClick={startRecording}>
                 Record 5-second test
@@ -207,12 +280,14 @@ export function StepVoiceDevices() {
 
           {recordings.length > 0 && (
             <div className="pc-rec-list">
-              {recordings.map((r) => (
+              {recordings.map((r, i) => (
                 <audio
                   key={r.createdAt}
+                  ref={(el) => {
+                    if (el) audioElsRef.current[i] = el as HTMLAudioWithSinkId;
+                  }}
                   controls
                   src={r.url}
-                  data-output-device={selectedOutput}
                 />
               ))}
             </div>
