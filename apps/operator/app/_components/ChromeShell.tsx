@@ -6,7 +6,7 @@ import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
-import { OperatorButton, OperatorAutoScanToggle } from './OperatorPanel';
+import { OperatorButton, OperatorAutoScanToggle } from './OperatorChromeControls';
 import { ConsoleLauncherButton } from './ConsoleLauncherButton';
 import { OpsTargetMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
