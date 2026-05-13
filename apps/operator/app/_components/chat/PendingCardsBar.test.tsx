@@ -71,7 +71,7 @@ describe('PendingCardsBar', () => {
   });
 
   it('renders nothing when no cards', () => {
-    vi.mocked(useStateSnapshots).mockReturnValue({ cards: [], connected: true });
+    vi.mocked(useStateSnapshots).mockReturnValue({ cards: [], connected: true, byRun: new Map() });
     const { container } = render(
       <PendingCardsBar conversationId="c1" workspaceId="w1" />,
     );
@@ -82,6 +82,7 @@ describe('PendingCardsBar', () => {
     vi.mocked(useStateSnapshots).mockReturnValue({
       cards: [makeCard()],
       connected: true,
+      byRun: new Map(),
     });
     render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
     fireEvent.click(screen.getByRole('button', { name: /^Option A$/i }));
@@ -108,6 +109,7 @@ describe('PendingCardsBar', () => {
         }),
       ],
       connected: true,
+      byRun: new Map(),
     });
     render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
     fireEvent.click(screen.getByRole('button', { name: /^Skip$/ }));
@@ -128,6 +130,7 @@ describe('PendingCardsBar', () => {
         makeCard({ correlationId: 'c', runId: 'rC' }),
       ],
       connected: true,
+      byRun: new Map(),
     });
     render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
     expect(screen.getByText(/2 more cards after this/)).toBeTruthy();
@@ -140,24 +143,116 @@ describe('PendingCardsBar', () => {
         makeCard({ correlationId: 'b', runId: 'rB' }),
       ],
       connected: true,
+      byRun: new Map(),
     });
     render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
     expect(screen.getByText(/1 more card after this/)).toBeTruthy();
   });
 
-  it('unknown presentation: shows fallbackText not a renderer', () => {
+  it('text presentation: renders InputCard text and submits value', async () => {
     vi.mocked(useStateSnapshots).mockReturnValue({
       cards: [
         makeCard({
-          presentation: { kind: 'slider', min: 0, max: 10, step: 1 },
-          fallbackText: 'Type a number 0-10',
+          presentation: { kind: 'text', placeholder: 'type something' },
         }),
       ],
       connected: true,
+      byRun: new Map(),
     });
     render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
-    expect(screen.getByText('Type a number 0-10')).toBeTruthy();
-    // No interactive buttons rendered.
+    const input = screen.getByLabelText('response') as HTMLInputElement;
+    fireEvent.change(input, { target: { value: 'hello' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await Promise.resolve();
+    expect(postCardResponse).toHaveBeenCalledWith('c1', {
+      correlationId: 'cid-1',
+      workspaceId: 'w1',
+      action: 'submit',
+      payload: { value: 'hello' },
+    });
+  });
+
+  it('date presentation: renders InputCard date and submits ISO string', async () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [
+        makeCard({
+          presentation: { kind: 'date' },
+        }),
+      ],
+      connected: true,
+      byRun: new Map(),
+    });
+    const { container } = render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    const dateInput = container.querySelector('input[type="date"]') as HTMLInputElement;
+    fireEvent.change(dateInput, { target: { value: '2026-09-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await Promise.resolve();
+    expect(postCardResponse).toHaveBeenCalledWith('c1', {
+      correlationId: 'cid-1',
+      workspaceId: 'w1',
+      action: 'submit',
+      payload: { value: '2026-09-01' },
+    });
+  });
+
+  it('slider presentation: renders InputCard slider and submits numeric value', async () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [
+        makeCard({
+          presentation: { kind: 'slider', min: 0, max: 100, step: 10 },
+        }),
+      ],
+      connected: true,
+      byRun: new Map(),
+    });
+    render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    const range = screen.getByLabelText('value') as HTMLInputElement;
+    fireEvent.change(range, { target: { value: '70' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await Promise.resolve();
+    expect(postCardResponse).toHaveBeenCalledWith('c1', {
+      correlationId: 'cid-1',
+      workspaceId: 'w1',
+      action: 'submit',
+      payload: { value: 70 },
+    });
+  });
+
+  it('input Skip fires action:decline through to /card-response', async () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [
+        makeCard({
+          presentation: { kind: 'text' },
+        }),
+      ],
+      connected: true,
+      byRun: new Map(),
+    });
+    render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    fireEvent.click(screen.getByRole('button', { name: /^Skip$/ }));
+    await Promise.resolve();
+    expect(postCardResponse).toHaveBeenCalledWith('c1', {
+      correlationId: 'cid-1',
+      workspaceId: 'w1',
+      action: 'decline',
+      reason: undefined,
+    });
+  });
+
+  it('no-presentation: shows fallbackText (genuinely unknown)', () => {
+    vi.mocked(useStateSnapshots).mockReturnValue({
+      cards: [
+        makeCard({
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          presentation: undefined as any,
+          fallbackText: 'No renderer for this',
+        }),
+      ],
+      connected: true,
+      byRun: new Map(),
+    });
+    render(<PendingCardsBar conversationId="c1" workspaceId="w1" />);
+    expect(screen.getByText('No renderer for this')).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
   });
 
@@ -165,6 +260,7 @@ describe('PendingCardsBar', () => {
     vi.mocked(useStateSnapshots).mockReturnValue({
       cards: [makeCard()],
       connected: true,
+      byRun: new Map(),
     });
     vi.mocked(postCardResponse).mockResolvedValue({
       ok: false,
