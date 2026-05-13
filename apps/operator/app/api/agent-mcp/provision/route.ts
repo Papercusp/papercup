@@ -18,6 +18,7 @@ const ORACLE_CAPS = [
   'tasks:read',
   'goals:read',
   'harness:read',
+  'docs:read',
   'messages:read',
   'audit:read',
   'intel:read',
