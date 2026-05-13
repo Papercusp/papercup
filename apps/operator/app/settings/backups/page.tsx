@@ -6,6 +6,8 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { Checkbox } from '../../harness/Checkbox';
+import { Select } from '../../harness/Select';
 import type {
   BackupSettings,
   CadenceMode,
@@ -215,7 +217,7 @@ export default function BackupsSettingsPage() {
       <section className="pc-settings-section">
         <h2>Enable</h2>
         <label className="pc-settings-row">
-          <input type="checkbox" checked={settings.enabled} onChange={(e) => set('enabled', e.target.checked)} />
+          <Checkbox checked={settings.enabled} onChange={(v) => set('enabled', v)} />
           <span>Take snapshots for this workspace</span>
         </label>
       </section>
@@ -233,13 +235,18 @@ export default function BackupsSettingsPage() {
         {settings.cadenceMode !== 'event' && (
           <label className="pc-settings-row">
             <span>Every</span>
-            <select value={settings.cadenceMinutes} onChange={(e) => set('cadenceMinutes', Number(e.target.value))}>
-              <option value={1}>1 minute</option>
-              <option value={5}>5 minutes</option>
-              <option value={15}>15 minutes</option>
-              <option value={30}>30 minutes</option>
-              <option value={60}>60 minutes</option>
-            </select>
+            <Select
+              value={String(settings.cadenceMinutes)}
+              onChange={(v) => set('cadenceMinutes', Number(v))}
+              ariaLabel="Snapshot cadence (minutes)"
+              options={[
+                { value: '1', label: '1 minute' },
+                { value: '5', label: '5 minutes' },
+                { value: '15', label: '15 minutes' },
+                { value: '30', label: '30 minutes' },
+                { value: '60', label: '60 minutes' },
+              ]}
+            />
           </label>
         )}
         {settings.cadenceMode !== 'interval' && (
@@ -247,11 +254,10 @@ export default function BackupsSettingsPage() {
             <legend>Event triggers</legend>
             {TRIGGER_CHECKBOXES.map((t) => (
               <label key={t} className="pc-settings-row">
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={settings.eventTriggers.includes(t)}
-                  onChange={(e) => {
-                    const next = e.target.checked
+                  onChange={(checked) => {
+                    const next = checked
                       ? [...settings.eventTriggers, t]
                       : settings.eventTriggers.filter((x) => x !== t);
                     set('eventTriggers', next);

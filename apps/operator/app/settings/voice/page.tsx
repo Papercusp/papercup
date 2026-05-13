@@ -6,6 +6,9 @@ import RouteLink from '../../_components/RouteLink';
 import { toast } from 'sonner';
 import { LazyDetails } from '../../_components/LazyDetails';
 import { Checkbox } from '../../harness/Checkbox';
+import { Select } from '../../harness/Select';
+import { Modal } from '../../harness/Modal';
+import { useConfirmDialog } from '../../harness/useConfirmDialog';
 import {
   initVoiceMode,
   listAvailableVoices,
@@ -70,6 +73,7 @@ export default function VoiceSettingsPage() {
   const [spend, setSpend] = useState<TtsSpendState | null>(null);
   const [sttSpend, setSttSpend] = useState<SttSpendState | null>(null);
   const [showLeakWarning, setShowLeakWarning] = useState(false);
+  const { askConfirm, confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     initVoiceMode();
@@ -161,14 +165,19 @@ export default function VoiceSettingsPage() {
     speak('Voice mode is working.', 'system:operator', 'polite', { force: true });
   }, []);
 
-  const onTestAllRoles = useCallback(() => {
+  const onTestAllRoles = useCallback(async () => {
     if (prefs?.ttsEngine === 'elevenlabs') {
-      if (!confirm(`Test all ${KNOWN_ROLES.length} roles? This will send ~${KNOWN_ROLES.length} requests to ElevenLabs (≈${(KNOWN_ROLES.length * 0.04).toFixed(2)} estimated charges).`)) return;
+      const ok = await askConfirm({
+        title: `Test all ${KNOWN_ROLES.length} role voices?`,
+        body: `Will send ~${KNOWN_ROLES.length} requests to ElevenLabs (≈${(KNOWN_ROLES.length * 0.04).toFixed(2)} estimated charges).`,
+        confirmLabel: 'Test',
+      });
+      if (!ok) return;
     }
     KNOWN_ROLES.forEach((role, i) => {
       setTimeout(() => speak(`This is the ${role.replace(':', ' ')} voice.`, role, 'polite', { force: true }), i * 1500);
     });
-  }, [prefs?.ttsEngine]);
+  }, [prefs?.ttsEngine, askConfirm]);
 
   const onRedetect = useCallback(() => {
     // The chrome's voice-engines.ts caches detection; re-fetching prefs
@@ -217,7 +226,13 @@ export default function VoiceSettingsPage() {
   }, [keyDraft]);
 
   const onClearKey = useCallback(async () => {
-    if (!confirm('Clear the ElevenLabs API key?')) return;
+    const ok = await askConfirm({
+      title: 'Clear the ElevenLabs API key?',
+      body: 'Voice features that depend on ElevenLabs (Conv AI, Turbo v2.5, voices) will stop working until a new key is saved.',
+      confirmLabel: 'Clear',
+      destructive: true,
+    });
+    if (!ok) return;
     const r = await fetch('/api/agent-mcp/operator-credentials', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
@@ -228,7 +243,7 @@ export default function VoiceSettingsPage() {
       setConnTest(null);
       setElevenVoices([]);
     }
-  }, []);
+  }, [askConfirm]);
 
   const onTestConnection = useCallback(async () => {
     setTesting(true);
@@ -315,26 +330,31 @@ export default function VoiceSettingsPage() {
             <>
               <div style={{ marginBottom: 16 }}>
                 <label style={lbl}>Full-agent engine</label>
-                <select
+                <Select
                   value={prefs?.fullAgentEngine ?? 'off'}
-                  onChange={(e) => savePrefsPatch({ fullAgentEngine: e.target.value as VoicePrefs['fullAgentEngine'] })}
-                  style={sel}
+                  onChange={(v) => savePrefsPatch({ fullAgentEngine: v as VoicePrefs['fullAgentEngine'] })}
+                  ariaLabel="Full-agent engine"
                   disabled={savingPrefs}
-                >
-                  <option value="off">Off — use the STT + TTS pair below</option>
-                  <option value="openai-realtime" disabled={!allCreds?.openai?.configured}>
-                    OpenAI Realtime (gpt-4o-realtime){!allCreds?.openai?.configured ? ' — needs OpenAI key' : ''}
-                  </option>
-                  <option value="gemini-live" disabled={!allCreds?.google?.configured}>
-                    Google Gemini Live (multimodal){!allCreds?.google?.configured ? ' — needs Google AI key' : ''}
-                  </option>
-                  <option value="elevenlabs-conv" disabled={!allCreds?.elevenlabs?.configured}>
-                    ElevenLabs Conversational AI (Claude Haiku){!allCreds?.elevenlabs?.configured ? ' — needs ElevenLabs key' : ''}
-                  </option>
-                  <option value="elevenlabs-conversational" disabled style={{ display: 'none' }}>
-                    elevenlabs-conversational (legacy alias)
-                  </option>
-                </select>
+                  triggerStyle={sel as React.CSSProperties}
+                  options={[
+                    { value: 'off', label: 'Off — use the STT + TTS pair below' },
+                    {
+                      value: 'openai-realtime',
+                      label: `OpenAI Realtime (gpt-4o-realtime)${!allCreds?.openai?.configured ? ' — needs OpenAI key' : ''}`,
+                      disabled: !allCreds?.openai?.configured,
+                    },
+                    {
+                      value: 'gemini-live',
+                      label: `Google Gemini Live (multimodal)${!allCreds?.google?.configured ? ' — needs Google AI key' : ''}`,
+                      disabled: !allCreds?.google?.configured,
+                    },
+                    {
+                      value: 'elevenlabs-conv',
+                      label: `ElevenLabs Conversational AI (Claude Haiku)${!allCreds?.elevenlabs?.configured ? ' — needs ElevenLabs key' : ''}`,
+                      disabled: !allCreds?.elevenlabs?.configured,
+                    },
+                  ]}
+                />
                 <p style={hint}>
                   Full-agent mode replaces the STT + TTS pair with a single conversational session.
                   Recommended: ElevenLabs Conv AI with Claude Haiku underneath — best voice quality,
@@ -369,17 +389,19 @@ export default function VoiceSettingsPage() {
                    aria-disabled={fullAgentOn}>
                 <div>
                   <label style={lbl}>STT (speech → text){fullAgentOn ? ' — overridden by full-agent' : ''}</label>
-                  <select
+                  <Select
                     value={prefs?.sttEngine ?? 'voicemode'}
-                    onChange={(e) => setSttEngine(e.target.value as SttEngineKind)}
-                    style={sel}
+                    onChange={(v) => setSttEngine(v as SttEngineKind)}
+                    ariaLabel="STT engine"
                     disabled={sttTtsDisabled}
-                  >
-                    <option value="voicemode">Voicemode (Whisper, local)</option>
-                    <option value="webspeech">Web Speech (browser cloud)</option>
-                    <option value="deepgram">Deepgram Nova-2 (cloud, BYO key)</option>
-                    <option value="off">Off</option>
-                  </select>
+                    triggerStyle={sel as React.CSSProperties}
+                    options={[
+                      { value: 'voicemode', label: 'Voicemode (Whisper, local)' },
+                      { value: 'webspeech', label: 'Web Speech (browser cloud)' },
+                      { value: 'deepgram', label: 'Deepgram Nova-2 (cloud, BYO key)' },
+                      { value: 'off', label: 'Off' },
+                    ]}
+                  />
                   <p style={hint}>
                     Voicemode runs locally — audio never leaves your machine.
                     Start it via <code>mcp__voicemode__service whisper start</code>.
@@ -387,18 +409,20 @@ export default function VoiceSettingsPage() {
                 </div>
                 <div>
                   <label style={lbl}>TTS (text → speech){fullAgentOn ? ' — overridden by full-agent' : ''}</label>
-                  <select
+                  <Select
                     value={prefs?.ttsEngine ?? 'kokoro'}
-                    onChange={(e) => setTtsEngine(e.target.value as TtsEngineKind)}
-                    style={sel}
+                    onChange={(v) => setTtsEngine(v as TtsEngineKind)}
+                    ariaLabel="TTS engine"
                     disabled={sttTtsDisabled}
-                  >
-                    <option value="kokoro">Kokoro (Voicemode, local) — recommended</option>
-                    <option value="browser">Browser (OS voices)</option>
-                    <option value="elevenlabs">ElevenLabs Turbo v2.5 (cloud, BYO key)</option>
-                    <option value="openai">OpenAI tts-1 (cloud, BYO key)</option>
-                    <option value="cartesia">Cartesia Sonic-2 (cloud, BYO key)</option>
-                  </select>
+                    triggerStyle={sel as React.CSSProperties}
+                    options={[
+                      { value: 'kokoro', label: 'Kokoro (Voicemode, local) — recommended' },
+                      { value: 'browser', label: 'Browser (OS voices)' },
+                      { value: 'elevenlabs', label: 'ElevenLabs Turbo v2.5 (cloud, BYO key)' },
+                      { value: 'openai', label: 'OpenAI tts-1 (cloud, BYO key)' },
+                      { value: 'cartesia', label: 'Cartesia Sonic-2 (cloud, BYO key)' },
+                    ]}
+                  />
                   <EnginePreview engine={prefs?.ttsEngine ?? 'kokoro'} />
                   <p style={hint}>
                     Kokoro requires Voicemode (port 8880). Browser TTS works without setup but quality varies by OS.
@@ -476,17 +500,17 @@ export default function VoiceSettingsPage() {
           {credentials.configured && (
             <div style={{ marginBottom: 16 }}>
               <label style={lbl}>Default voice</label>
-              <select
+              <Select
                 value={prefs?.elevenlabsVoiceId ?? '21m00Tcm4TlvDq8ikWAM'}
-                onChange={(e) => savePrefsPatch({ elevenlabsVoiceId: e.target.value })}
-                style={sel}
-              >
-                <option value="21m00Tcm4TlvDq8ikWAM">Adam (default)</option>
-                {elevenVoices.map((v) => (
-                  <option key={v.id} value={v.id}>{v.name}</option>
-                ))}
-              </select>
-              <p style={hint}>Click "Test connection" above to populate the full voice list from your account.</p>
+                onChange={(v) => savePrefsPatch({ elevenlabsVoiceId: v })}
+                ariaLabel="Default ElevenLabs voice"
+                triggerStyle={sel as React.CSSProperties}
+                options={[
+                  { value: '21m00Tcm4TlvDq8ikWAM', label: 'Adam (default)' },
+                  ...elevenVoices.map((v) => ({ value: v.id, label: v.name })),
+                ]}
+              />
+              <p style={hint}>Click &quot;Test connection&quot; above to populate the full voice list from your account.</p>
             </div>
           )}
 
@@ -552,19 +576,17 @@ export default function VoiceSettingsPage() {
           <h2 style={{ fontSize: 16, marginBottom: 12 }}>Output behavior</h2>
           <div style={{ display: 'grid', gap: 12, fontSize: 13 }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={prefs.voicePanelAutoOpen ?? true}
-                onChange={(e) => savePrefsPatch({ voicePanelAutoOpen: e.target.checked })}
+                onChange={(v) => savePrefsPatch({ voicePanelAutoOpen: v })}
                 disabled={savingPrefs}
               />
               <span>Auto-open the Operator panel when voice delegates a complex task to Claude</span>
             </label>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={prefs.narrateLongOps ?? true}
-                onChange={(e) => savePrefsPatch({ narrateLongOps: e.target.checked })}
+                onChange={(v) => savePrefsPatch({ narrateLongOps: v })}
                 disabled={savingPrefs}
                 style={{ marginTop: 3 }}
               />
@@ -574,10 +596,9 @@ export default function VoiceSettingsPage() {
               </span>
             </label>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={prefs.operatorBackstoryEnabled ?? true}
-                onChange={(e) => savePrefsPatch({ operatorBackstoryEnabled: e.target.checked })}
+                onChange={(v) => savePrefsPatch({ operatorBackstoryEnabled: v })}
                 disabled={savingPrefs}
                 style={{ marginTop: 3 }}
               />
@@ -587,10 +608,9 @@ export default function VoiceSettingsPage() {
               </span>
             </label>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={prefs.operatorActiveOnStartup ?? true}
-                onChange={(e) => savePrefsPatch({ operatorActiveOnStartup: e.target.checked })}
+                onChange={(v) => savePrefsPatch({ operatorActiveOnStartup: v })}
                 disabled={savingPrefs}
                 style={{ marginTop: 3 }}
               />
@@ -691,15 +711,17 @@ export default function VoiceSettingsPage() {
             </div>
             <div>
               <label style={lbl}>Privacy mode for ElevenLabs / Realtime sessions</label>
-              <select
+              <Select
                 value={prefs.voicePrivacyMode ?? 'always-on'}
-                onChange={(e) => savePrefsPatch({ voicePrivacyMode: e.target.value as 'always-on' | 'wake-word-gated' })}
-                style={sel}
+                onChange={(v) => savePrefsPatch({ voicePrivacyMode: v as 'always-on' | 'wake-word-gated' })}
+                ariaLabel="Voice privacy mode"
                 disabled={savingPrefs}
-              >
-                <option value="always-on">Always-on — mic streams continuously to the provider</option>
-                <option value="wake-word-gated">Wake-word-gated — local wake word starts the session on demand</option>
-              </select>
+                triggerStyle={sel as React.CSSProperties}
+                options={[
+                  { value: 'always-on', label: 'Always-on — mic streams continuously to the provider' },
+                  { value: 'wake-word-gated', label: 'Wake-word-gated — local wake word starts the session on demand' },
+                ]}
+              />
               <p style={hint}>
                 <strong>always-on</strong>: lowest latency, audio leaves the box at all times the session is
                 connected. <strong>wake-word-gated</strong>: Porcupine / openWakeWord listens on-device;
@@ -710,27 +732,29 @@ export default function VoiceSettingsPage() {
             </div>
             <div>
               <label style={lbl}>Agent language</label>
-              <select
-                value={prefs.agentLanguage ?? 'en'}
-                onChange={(e) => savePrefsPatch({ agentLanguage: e.target.value })}
-                style={sel}
+              <Select
+                value={prefs.agentLanguage && prefs.agentLanguage !== '' ? prefs.agentLanguage : '_auto'}
+                onChange={(v) => savePrefsPatch({ agentLanguage: v === '_auto' ? '' : v })}
+                ariaLabel="Agent language"
                 disabled={savingPrefs}
-              >
-                <option value="en">English (en)</option>
-                <option value="es">Spanish (es)</option>
-                <option value="fr">French (fr)</option>
-                <option value="de">German (de)</option>
-                <option value="pt">Portuguese (pt)</option>
-                <option value="it">Italian (it)</option>
-                <option value="nl">Dutch (nl)</option>
-                <option value="pl">Polish (pl)</option>
-                <option value="ja">Japanese (ja)</option>
-                <option value="ko">Korean (ko)</option>
-                <option value="zh">Chinese (zh)</option>
-                <option value="hi">Hindi (hi)</option>
-                <option value="ar">Arabic (ar)</option>
-                <option value="">— Auto-detect (no pin)</option>
-              </select>
+                triggerStyle={sel as React.CSSProperties}
+                options={[
+                  { value: 'en', label: 'English (en)' },
+                  { value: 'es', label: 'Spanish (es)' },
+                  { value: 'fr', label: 'French (fr)' },
+                  { value: 'de', label: 'German (de)' },
+                  { value: 'pt', label: 'Portuguese (pt)' },
+                  { value: 'it', label: 'Italian (it)' },
+                  { value: 'nl', label: 'Dutch (nl)' },
+                  { value: 'pl', label: 'Polish (pl)' },
+                  { value: 'ja', label: 'Japanese (ja)' },
+                  { value: 'ko', label: 'Korean (ko)' },
+                  { value: 'zh', label: 'Chinese (zh)' },
+                  { value: 'hi', label: 'Hindi (hi)' },
+                  { value: 'ar', label: 'Arabic (ar)' },
+                  { value: '_auto', label: '— Auto-detect (no pin)' },
+                ]}
+              />
               <p style={hint}>
                 Pinning a language stops ElevenLabs&apos; speech-to-text auto-detect from flipping when
                 background music or ambient noise has speech-like timbre — the cause of the &quot;operator
@@ -838,18 +862,22 @@ export default function VoiceSettingsPage() {
         <div style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
           {/* Wake-word engine: single enum (engine + keyword are paired). */}
           <label style={lbl}>Wake-word engine</label>
-          <select
+          <Select
             value={prefs?.wakeWordEngine ?? 'off'}
-            onChange={(e) => savePrefsPatch({ wakeWordEngine: e.target.value as VoicePrefs['wakeWordEngine'] })}
-            style={{ ...sel, maxWidth: 360 }}
+            onChange={(v) => savePrefsPatch({ wakeWordEngine: v as VoicePrefs['wakeWordEngine'] })}
+            ariaLabel="Wake-word engine"
             disabled={savingPrefs}
-          >
-            <option value="off">Off — string-match wake word in transcript</option>
-            <option value="openwakeword">openWakeWord (Apache 2.0, no key)</option>
-            <option value="porcupine" disabled={!allCreds?.picovoice?.configured}>
-              Porcupine (Picovoice, BYO key{!allCreds?.picovoice?.configured ? ' — not configured' : ''})
-            </option>
-          </select>
+            triggerStyle={{ ...sel, maxWidth: 360 } as React.CSSProperties}
+            options={[
+              { value: 'off', label: 'Off — string-match wake word in transcript' },
+              { value: 'openwakeword', label: 'openWakeWord (Apache 2.0, no key)' },
+              {
+                value: 'porcupine',
+                label: `Porcupine (Picovoice, BYO key${!allCreds?.picovoice?.configured ? ' — not configured' : ''})`,
+                disabled: !allCreds?.picovoice?.configured,
+              },
+            ]}
+          />
           <p style={hint}>
             On-device neural wake-word. Whisper only spins up AFTER the wake fires —
             big idle-CPU win when always-on mode is enabled.{' '}
@@ -859,34 +887,30 @@ export default function VoiceSettingsPage() {
           {prefs?.wakeWordEngine === 'porcupine' && (
             <div style={{ marginTop: 8 }}>
               <label style={lbl}>Porcupine keyword (built-in)</label>
-              <select
+              <Select
                 value={prefs?.porcupineKeyword ?? 'Computer'}
-                onChange={(e) => savePrefsPatch({ porcupineKeyword: e.target.value as VoicePrefs['porcupineKeyword'] })}
-                style={{ ...sel, maxWidth: 240 }}
+                onChange={(v) => savePrefsPatch({ porcupineKeyword: v as VoicePrefs['porcupineKeyword'] })}
+                ariaLabel="Porcupine keyword"
                 disabled={savingPrefs}
-              >
-                {['Computer','Jarvis','Bumblebee','Picovoice','Porcupine','Alexa','Hey Google','Hey Siri','Okay Google','Terminator','Americano','Blueberry','Grapefruit','Grasshopper'].map((k) => (
-                  <option key={k} value={k}>{k}</option>
-                ))}
-              </select>
+                triggerStyle={{ ...sel, maxWidth: 240 } as React.CSSProperties}
+                options={['Computer','Jarvis','Bumblebee','Picovoice','Porcupine','Alexa','Hey Google','Hey Siri','Okay Google','Terminator','Americano','Blueberry','Grapefruit','Grasshopper'].map((k) => ({ value: k, label: k }))}
+              />
               <p style={hint}>Custom keywords need a .ppn file trained on Picovoice Console.</p>
             </div>
           )}
           {prefs?.wakeWordEngine === 'openwakeword' && (
             <div style={{ marginTop: 8 }}>
               <label style={lbl}>openWakeWord keyword (built-in)</label>
-              <select
+              <Select
                 value={prefs?.openwakewordKeyword ?? 'hey_jarvis'}
-                onChange={(e) => savePrefsPatch({ openwakewordKeyword: e.target.value as VoicePrefs['openwakewordKeyword'] })}
-                style={{ ...sel, maxWidth: 240 }}
+                onChange={(v) => savePrefsPatch({ openwakewordKeyword: v as VoicePrefs['openwakewordKeyword'] })}
+                ariaLabel="openWakeWord keyword"
                 disabled={savingPrefs}
-              >
-                {['alexa', 'hey_jarvis', 'hey_mycroft', 'hey_rhasspy', 'ok_nabu', 'weather', 'timer'].map((k) => (
-                  <option key={k} value={k}>{k.replace(/_/g, ' ')}</option>
-                ))}
-              </select>
+                triggerStyle={{ ...sel, maxWidth: 240 } as React.CSSProperties}
+                options={['alexa', 'hey_jarvis', 'hey_mycroft', 'hey_rhasspy', 'ok_nabu', 'weather', 'timer'].map((k) => ({ value: k, label: k.replace(/_/g, ' ') }))}
+              />
               <p style={hint}>
-                Custom "hey operator" needs an ONNX classifier trained via the openWakeWord
+                Custom &quot;hey operator&quot; needs an ONNX classifier trained via the openWakeWord
                 Colab/Kaggle tutorial (~30 min). Drop the .onnx into <code>/public/wake/</code>.
               </p>
             </div>
@@ -894,19 +918,23 @@ export default function VoiceSettingsPage() {
 
           {/* Noise suppression engine: single enum dropdown. */}
           <label style={{ ...lbl, marginTop: 16 }}>Noise suppression</label>
-          <select
+          <Select
             value={prefs?.noiseSuppressionEngine ?? 'browser'}
-            onChange={(e) => savePrefsPatch({ noiseSuppressionEngine: e.target.value as VoicePrefs['noiseSuppressionEngine'] })}
-            style={{ ...sel, maxWidth: 360 }}
+            onChange={(v) => savePrefsPatch({ noiseSuppressionEngine: v as VoicePrefs['noiseSuppressionEngine'] })}
+            ariaLabel="Noise suppression engine"
             disabled={savingPrefs}
-          >
-            <option value="off">Off — raw mic input</option>
-            <option value="browser">Browser native (WebRTC noiseSuppression)</option>
-            <option value="rnnoise">Jitsi RNNoise (BSD, stronger)</option>
-            <option value="koala" disabled={!allCreds?.picovoice?.configured}>
-              Picovoice Koala (BYO key{!allCreds?.picovoice?.configured ? ' — not configured' : ''})
-            </option>
-          </select>
+            triggerStyle={{ ...sel, maxWidth: 360 } as React.CSSProperties}
+            options={[
+              { value: 'off', label: 'Off — raw mic input' },
+              { value: 'browser', label: 'Browser native (WebRTC noiseSuppression)' },
+              { value: 'rnnoise', label: 'Jitsi RNNoise (BSD, stronger)' },
+              {
+                value: 'koala',
+                label: `Picovoice Koala (BYO key${!allCreds?.picovoice?.configured ? ' — not configured' : ''})`,
+                disabled: !allCreds?.picovoice?.configured,
+              },
+            ]}
+          />
           <p style={hint}>
             Removes fan / keyboard / HVAC from the mic input before STT.
             Reduces VAD false positives. <strong>Browser native</strong> is the default and
@@ -981,29 +1009,29 @@ all clear     on      on           running  true       leader      speaks
       </section>
 
       {/* ── WEB SPEECH LEAK WARNING MODAL ────────────────────────── */}
-      {showLeakWarning && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'grid', placeItems: 'center', zIndex: 1000,
-        }}>
-          <div style={{ maxWidth: 480, padding: 24, background: '#1a1a1a', borderRadius: 8, color: '#fff' }}>
-            <h3 style={{ margin: '0 0 12px' }}>⚠ Web Speech sends audio to the cloud</h3>
-            <p style={{ fontSize: 14, marginBottom: 16 }}>
-              Web Speech sends audio to your browser vendor's cloud (Google for Chrome,
-              Microsoft for Edge). Use only on machines where that's acceptable.
-            </p>
-            <p style={{ fontSize: 13, color: '#aaa', marginBottom: 16 }}>
-              Voicemode (Whisper, local) is the default — audio never leaves your machine.
-              You can re-enable Voicemode any time.
-            </p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setShowLeakWarning(false)} style={btn}>Cancel</button>
-              <button type="button" onClick={ackLeakWarning} style={{ ...btnPrimary, background: '#a04' }}>
-                I understand — use Web Speech
-              </button>
-            </div>
-          </div>
+      <Modal
+        open={showLeakWarning}
+        onOpenChange={(o) => { if (!o) setShowLeakWarning(false); }}
+        title="⚠ Web Speech sends audio to the cloud"
+        contentStyle={{ maxWidth: 480 }}
+      >
+        <h3 style={{ margin: '0 0 12px' }}>⚠ Web Speech sends audio to the cloud</h3>
+        <p style={{ fontSize: 14, marginBottom: 16 }}>
+          Web Speech sends audio to your browser vendor&apos;s cloud (Google for Chrome,
+          Microsoft for Edge). Use only on machines where that&apos;s acceptable.
+        </p>
+        <p style={{ fontSize: 13, color: 'var(--fg-mute)', marginBottom: 16 }}>
+          Voicemode (Whisper, local) is the default — audio never leaves your machine.
+          You can re-enable Voicemode any time.
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={() => setShowLeakWarning(false)} style={btn}>Cancel</button>
+          <button type="button" onClick={ackLeakWarning} style={{ ...btnPrimary, background: '#a04' }}>
+            I understand — use Web Speech
+          </button>
         </div>
-      )}
+      </Modal>
+      {confirmEl}
     </div>
   );
 }
