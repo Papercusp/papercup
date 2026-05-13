@@ -172,6 +172,10 @@ export const architectChat = defineTool({
   roles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
+  // Phase 4 T2.2 — opt into replay buffer. 5000 events is a
+  // generous soft cap; eviction warn-logs let us tune down once
+  // migration 066's event_count column has p99 data.
+  replayBufferSize: 5000,
   args: ArchitectArgsSchema,
   events: EVENTS,
   handler: architectHandler,
@@ -186,6 +190,10 @@ export const brainstormChat = defineTool({
   roles: ['operator'],
   timeoutSec: 600,
   idleTimeoutSec: 120,
+  // Phase 4 T2.2 — opt into replay buffer. 5000 events is a
+  // generous soft cap; eviction warn-logs let us tune down once
+  // migration 066's event_count column has p99 data.
+  replayBufferSize: 5000,
   args: BrainstormArgsSchema,
   events: EVENTS,
   handler: brainstormHandler,

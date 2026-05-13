@@ -108,8 +108,11 @@ export async function POST(req: NextRequest) {
         emit: () => { /* installed by dispatchProjectedToolStream */ },
         workspaceId,
         role: 'operator',
-        runId: `op-converse-${Date.now()}`,
-        spawnId: `op-converse-${Date.now()}`,
+        // Phase 4 T2.2: UUIDs eliminate the Date.now() collision risk
+        // that the v1 plan's reviewer flagged as concern #4. The /dev
+        // Sessions UI tolerates any string runId/spawnId.
+        runId: globalThis.crypto.randomUUID(),
+        spawnId: globalThis.crypto.randomUUID(),
         transport: 'in_process',
       };
 
