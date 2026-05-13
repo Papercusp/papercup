@@ -73,11 +73,13 @@ Every toggle round-trips through the operator's HTTP endpoints, which:
 - Re-init the flag backend if `testingFeatures` was just turned on
 - Publish a `flag_changed` event on the in-process SSE bus
 
-Other open tabs subscribed to `/api/flags/stream` reflect the change within ~10 seconds (the PostHog SDK's polling interval).
+Other open tabs subscribed to `/api/flags/stream` reflect the change **instantly** — the admin endpoint calls `publishFlagChange()` on the in-process SSE bus before responding, which fans out to every connected tab.
 
 ### Through the PostHog UI
 
-`https://flags.papercuspai.com` is the authoritative dashboard. Admins can flip flags, edit rollout percentages, target specific users/cohorts, view history. The operator's admin UI is a convenience layer over the PostHog API — anything you do in PostHog directly propagates back via the SDK polling.
+`https://flags.papercuspai.com` is the authoritative dashboard. Admins can flip flags, edit rollout percentages, target specific users/cohorts, view history. The operator's admin UI is a convenience layer over the PostHog API.
+
+**Propagation when flipped directly in PostHog UI**: the operator's `posthog-node` SDK polls flag definitions every 10 seconds (`featureFlagsPollingInterval: 10_000`), so flips made outside the admin UI take up to ~10s to reflect. There's no upstream webhook from PostHog → operator: PostHog's REST-hooks system is Zapier-locked + deprecated, and its Hog-functions system only fires on analytics events (flag updates are activity-log entries, not events). 10s polling is the documented behavior; if you need instant flips, use `/admin/features`.
 
 Use this when you need targeting (cohort A/B, gradual rollout) beyond the binary on/off the admin UI exposes.
 
@@ -246,6 +248,18 @@ All endpoints require `runtime: 'nodejs'` and `dynamic: 'force-dynamic'`. They r
 ```
 
 End-to-end: a flag flip typically reflects in the UI within 1–2 seconds for client-rendered components, and on next navigation for server-rendered pages.
+
+**If the flip came from PostHog UI directly** (not the admin UI), the operator skips steps 1–4 entirely and only learns about the change when its 10s SDK polling refreshes. The SSE fan-out is admin-UI-only.
+
+## Discovery-file auto-reload
+
+`apps/operator/lib/posthog-config.ts` installs an `fs.watch` on `~/.papercusp/`. Any write to `posthog.json` (manual edit, secret rotation, bin-helper script) invalidates the in-process config cache and triggers `reinitFlagBackend()`:
+
+- If `testingFeatures` flipped on → the PostHog SDK is initialized (or re-initialized with the new key)
+- If `testingFeatures` flipped off → the PostHog SDK is torn down; subsequent flag reads return `FLAG_DEFAULTS`
+- Either way, a `flag_changed` SSE event is broadcast so connected tabs refetch
+
+Net effect: edit the discovery file → operator picks it up within ~50ms, no restart needed.
 
 ## The admin UI architecture
 
