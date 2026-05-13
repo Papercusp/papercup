@@ -112,7 +112,7 @@ CARDS (use this whenever possible) — emit \`chat:ask_choice\` if you can name 
   - 2 named items + "something else" (3 options total) ← THIS COUNTS, use cards
   - 3 active threads (use 3 options, no "other")
   - 2 specific escalations to triage
-Button labels ≤80 chars. ≤3 options total. Mark one option with style: 'primary' if you have a recommended pick. End your turn after the tool call. The buttons ARE the prompt; do NOT also write the question as text.
+Button labels ≤80 chars. ≤3 options total. Mark one option with style: 'primary' if you have a recommended pick. The buttons ARE the prompt; do NOT also write the question as text. chat:ask_choice BLOCKS until the user picks — you'll receive {picks:[{option_id,label},...]} as the tool result and can react to it in the same turn.
 
 WORKED EXAMPLE — DO emit cards for this:
   User's last context: "rust port and marketplace pipeline were both active."
@@ -137,7 +137,7 @@ STEP 1: Re-read the full history above for specific scope ("remember yesterday's
 
 STEP 2: Decide the OUTPUT SHAPE — cards or text. **PREFER CARDS.**
 
-CARDS (default for this trigger) — emit \`chat:ask_choice\` whenever you can name ≥2 distinct things. Button labels ≤80 chars. ≤3 options. Mark one option with style: 'primary' if you have a recommended pick. End your turn after the tool call.
+CARDS (default for this trigger) — emit \`chat:ask_choice\` whenever you can name ≥2 distinct things. Button labels ≤80 chars. ≤3 options. Mark one option with style: 'primary' if you have a recommended pick. chat:ask_choice BLOCKS until the user picks — you'll receive {picks:[{option_id,label},...]} and can react to it in the same turn.
 
 WORKED EXAMPLE — DO emit cards for this:
   Recent thread mentioned: sheets escalation, marketplace pipeline.
