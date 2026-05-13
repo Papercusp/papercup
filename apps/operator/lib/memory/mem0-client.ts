@@ -190,8 +190,26 @@ async function readEmbedderPreference(): Promise<EmbedderMode> {
 
 async function buildLocalEmbedder(): Promise<(text: string) => Promise<number[]>> {
   let pipelinePromise: Promise<Pipeline> | null = null;
+  let workerDisabled = false;
 
   return async (text: string): Promise<number[]> => {
+    // Step B1 (Tier-3 follow-up arc): try the worker-thread isolated
+    // embedder first so ONNX inference doesn't block the main event
+    // loop. Falls back to inline when worker_threads is unavailable
+    // OR the worker fails to spawn (older Node, vitest environments
+    // that don't support worker_threads imports cleanly, etc).
+    if (!workerDisabled) {
+      try {
+        const { embedViaWorker } = await import('./local-embedder-worker');
+        return await embedViaWorker(text);
+      } catch {
+        // Worker spawn or embedding failed — disable for subsequent
+        // calls in this process and fall through to inline.
+        workerDisabled = true;
+      }
+    }
+
+    // Inline (main-thread) fallback path.
     if (!pipelinePromise) {
       const transformers = await dynamicImport<TransformersModule>(TRANSFORMERS_PACKAGE);
       pipelinePromise = transformers.pipeline('feature-extraction', LOCAL_EMBEDDER_MODEL);

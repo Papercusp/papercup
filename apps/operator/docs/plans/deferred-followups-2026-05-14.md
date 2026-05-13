@@ -100,15 +100,19 @@ The unified state-snapshot channel is per-workspace (`subscribeWorkspace(activeW
 
 ## Section B: Backend follow-ups
 
-### B1. Worker-thread isolation for local embedder
+### B1. Worker-thread isolation for local embedder — ✅ closed 2026-05-14
 
-**Status:** `engineering deferred`
+**Status:** `closed` (was `engineering deferred`)
 
-**Context.** `@huggingface/transformers` runs on the main event loop today. Only matters when `memoryEmbedderMode='local'`; default is `openai`. No user reports of event-loop blocking.
+**Context.** When `memoryEmbedderMode='local'`, the `@huggingface/transformers` BGE-small pipeline runs ONNX inference (100-500ms per call). Previously this ran on the Node.js main event loop, blocking every concurrent request during inference.
 
-**Trigger to revisit:** any user report of operator slowdowns coinciding with local-embedder usage.
+**Resolution (2026-05-14).** Shipped a worker-thread isolated embedder:
+- `apps/operator/lib/memory/local-embedder-worker.ts` — main-thread wrapper with lazy spawn + pending-promise registry + graceful failure handling
+- `apps/operator/lib/memory/local-embedder-worker.script.mjs` — worker script (plain ESM so `worker_threads` spawn works without TypeScript transform)
+- `apps/operator/lib/memory/mem0-client.ts:buildLocalEmbedder` tries the worker first, falls back to inline on spawn/load failure (preserves backward compat in environments where `worker_threads` is unavailable, e.g. some vitest setups)
+- 5 protocol-contract tests in `local-embedder-worker.test.ts` (soft-skipped when `@huggingface/transformers` isn't installed)
 
-**Estimated effort when revisited:** 2-3 hours. Move the `@huggingface/transformers` invocation into a Node worker thread; ESM worker file + message protocol + return promise.
+Main thread is now non-blocking during local-mode embedding. The worker holds the warm pipeline so subsequent calls are amortized.
 
 ---
 
