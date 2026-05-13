@@ -53,10 +53,32 @@ export type EventsSchema = Record<string, ZodTypeAny>;
  * errors (dual-mode; canonical example is runAgentChat's mid-stream
  * 'error' yields). See ToolContext.emit doc for the contract.
  */
-export type ReservedEventNames = 'done' | 'progress' | 'heartbeat' | 'result';
+export type ReservedEventNames = 'done' | 'heartbeat' | 'result' | 'chunk';
 
 /** Compile-time guard: a user-declared events schema cannot contain reserved names. */
 export type UserEvents<T extends EventsSchema> = T & { [K in ReservedEventNames]?: never };
+
+/**
+ * Runtime list of reserved event names. The compile-time `UserEvents<T>`
+ * guard rejects them in TS, but the projection registry also checks at
+ * register time so plugins (which can bypass the TS layer via JSON
+ * manifests) get a loud failure. Phase 4 T2.3.
+ */
+export const RESERVED_EVENT_NAMES: readonly ReservedEventNames[] = [
+  // Truly framework-only events. Tools MUST NOT redeclare them.
+  'done',       // dispatcher emits at successful completion with ToolResult.content
+  'heartbeat',  // transport pings to keep idle connections alive
+  'result',     // MCP-shaped result envelope on the wire
+  'chunk',      // framework-emitted binary-stream chunks for tools with largeOutput:true
+  // NOTE: 'error' and 'progress' are NOT reserved.
+  // 'progress' is documented as user-emittable via ctx.progress(pct, msg) sugar,
+  // which itself routes through ctx.emit('progress', ...). Tools declare a
+  // schema for it so the wire kind is inferred (dev:ipc_echo does this).
+  // 'error' is dispatcher auto-emit on uncaught handler throws AND tools
+  // actively emit it mid-stream for non-fatal errors (architect:chat,
+  // brainstorm:chat, operator:scan, operator:delegate all declare it).
+  // Reserving either would break production tools at register time.
+] as const;
 
 /**
  * How an event's payload is encoded on the SSE wire:
@@ -507,6 +529,21 @@ export function registerProjectedTool(tool: ProjectedTool): void {
     throw new ToolRegistrationError(
       `tool from plugin "${tool.pluginName}" must declare at least one of expose.http / expose.mcp`,
     );
+  }
+  // Reject reserved event names at register time. The compile-time
+  // UserEvents<T> guard catches them in TS, but plugins bypass TS
+  // by declaring `events` in their JSON manifest — this is the
+  // runtime backstop. Phase 4 T2.3.
+  if (tool.events) {
+    for (const name of Object.keys(tool.events)) {
+      if (RESERVED_EVENT_NAMES.includes(name as ReservedEventNames)) {
+        throw new ToolRegistrationError(
+          `tool "${tool.expose.mcp?.name ?? tool.expose.http?.path}" declared the reserved event name "${name}". ` +
+            `Reserved names (auto-emitted by the framework): ${RESERVED_EVENT_NAMES.join(', ')}.` +
+            (name === 'chunk' ? ' Declare `largeOutput: true` instead and return outputRef from the handler.' : ''),
+        );
+      }
+    }
   }
   // Pre-classify event wire kinds so emit-time is constant-cost.
   // Caller might set eventWireKinds explicitly (some tests do); only

@@ -170,11 +170,11 @@ describe('listMcpProjections', () => {
       expose: { mcp: { name: 's.bin' } },
       events: {
         delta: z.object({ text: z.string() }),
-        chunk: z.instanceof(Uint8Array),
+        bin: z.instanceof(Uint8Array),
       },
     }));
     const list = listMcpProjections();
-    expect(list[0]?.events?.chunk).toMatchObject({
+    expect(list[0]?.events?.bin).toMatchObject({
       type: 'string',
       contentEncoding: 'base64',
     });
@@ -222,7 +222,7 @@ describe('listMcpProjections', () => {
       events: {
         diff_patch: z.string().describe('application/xml'),
         log_line:   z.string().describe('text/plain'),
-        progress:   z.object({ pct: z.number() }).describe('Progress payload'),
+        pct_update: z.object({ pct: z.number() }).describe('Progress payload'),
       },
     }));
     const list = listMcpProjections();
@@ -234,7 +234,7 @@ describe('listMcpProjections', () => {
       type: 'string',
       description: 'text/plain',
     });
-    expect(list[0]?.events?.progress).toMatchObject({
+    expect(list[0]?.events?.pct_update).toMatchObject({
       type: 'object',
       description: 'Progress payload',
     });
@@ -357,13 +357,13 @@ describe('classifyEventWire', () => {
       capabilities: [],
       expose: { mcp: { name: 'bin.tool' } },
       events: {
-        chunk: z.instanceof(Uint8Array),
+        bin: z.instanceof(Uint8Array),
         meta:  z.object({ size: z.number() }),
       },
       fn: noop,
     });
     const t = lookupByMcpName('bin.tool')!;
-    expect(t.eventWireKinds?.chunk).toBe('binary');
+    expect(t.eventWireKinds?.bin).toBe('binary');
     expect(t.eventWireKinds?.meta).toBe('json');
   });
 });

@@ -347,16 +347,16 @@ describe('handleHttpToolRequestStreaming', () => {
     // IPC path stays raw via EVENT_BIN frames; same emit, different
     // wire per transport.
     registerProjectedTool(makeTool({
-      events: { chunk: z.instanceof(Uint8Array) },
-      eventWireKinds: { chunk: 'binary' },
+      events: { bin: z.instanceof(Uint8Array) },
+      eventWireKinds: { bin: 'binary' },
       fn: async (_input, ctx) => {
-        ctx.emit('chunk', new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
+        ctx.emit('bin', new Uint8Array([0xde, 0xad, 0xbe, 0xef]));
         return { content: [{ type: 'text', text: 'ok' }] };
       },
     }));
     const { sink, events } = recordingSink();
     await handleHttpToolRequestStreaming(MAKE_REQ(), MAKE_EXTRAS(), sink);
-    const bin = events.find((e) => e.event === 'chunk');
+    const bin = events.find((e) => e.event === 'bin');
     expect(bin).toBeDefined();
     // PR F unification (audit item 14): HTTP and MCP transports both
     // emit the same self-describing PapercuspBinaryEnvelope shape so
