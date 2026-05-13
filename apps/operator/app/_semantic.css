@@ -3,6 +3,15 @@
  */
 
 :root {
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-mid: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-normal: 200ms;
+  --dur-panel: 240ms;
+  --dur-slow: 360ms;
+  --card-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
+  --frost: linear-gradient(180deg, rgba(255,255,255,0.068), rgba(255,255,255,0.024)); /** Glass overlay gradient — semantically a gradient, but DTCG gradient type is awkward for this single-stop case */
   --bg: #07101d; /** Page background — slate-deeper than sky-950 */
   --bg-1: #0b1220;
   --bg-2: rgba(255, 255, 255, 0.045); /** Translucent surface tier 2 */

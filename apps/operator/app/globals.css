@@ -16,12 +16,10 @@
 
 :root {
   color-scheme: dark;
-  --card-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
-  --frost: linear-gradient(180deg, rgba(255,255,255,0.068), rgba(255,255,255,0.024));
-
-  /* ── Animation tokens ───────────────────────────────────────────────
-   * Use these everywhere instead of hardcoding `200ms ease-in-out`.
-   * Reference: /docs/design/performance#animation-rules
+  /*
+   * --card-shadow, --frost, --ease-*, --dur-* migrated to DTCG tokens.
+   * Source: design-tokens/desktop.motion.tokens.json. Generated to _semantic.css.
+   * Usage guidance:
    *   --ease-out  : default — snappy entry from rest
    *   --ease-in   : exits — quicker, less attention-stealing
    *   --ease-mid  : state cross-fades — symmetric in/out
@@ -29,13 +27,6 @@
    *   --dur-normal: modals / drawers / tab content swap
    *   --dur-slow  : multi-element choreography only
    */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in:  cubic-bezier(0.7, 0, 0.84, 0);
-  --ease-mid: cubic-bezier(0.65, 0, 0.35, 1);
-  --dur-fast: 120ms;
-  --dur-normal: 200ms;
-  --dur-panel: 240ms;
-  --dur-slow: 360ms;
 }
 
 /* ── Reusable Radix / shared motion primitives ────────────────────────

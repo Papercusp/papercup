@@ -1,7 +1,4 @@
 {
-  "_meta": {
-    "description": "Desktop semantic + ink tokens for apps/operator. Emits as CSS custom properties consumed by globals.css. Ink/surface scale is desktop-specific."
-  },
   "bg":              { "$value": "#07101D", "$type": "color", "$description": "Page background — slate-deeper than sky-950" },
   "bg-1":            { "$value": "#0B1220", "$type": "color" },
   "bg-2":            { "$value": "rgba(255, 255, 255, 0.045)", "$type": "color", "$description": "Translucent surface tier 2" },

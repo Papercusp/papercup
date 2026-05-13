@@ -8,7 +8,11 @@
 // Mobile mirrors primitives.tokens.json (see Phase 4); each platform's
 // semantic/component layers stay local.
 
+import { globSync } from "node:fs";
 import StyleDictionary from "style-dictionary";
+import { preflight } from "./_preflight.mjs";
+
+preflight(globSync("design-tokens/*.tokens.json"));
 
 // Hex normalizer: emit CSS hex with shortest form (3/6/8 digits preserved).
 StyleDictionary.registerTransform({
@@ -40,7 +44,9 @@ StyleDictionary.registerTransform({
 // Filter: primitives layer only (anything under `color.*`).
 const isPrimitive = (t) => t.path[0] === "color";
 
-// Filter: semantic layer only (anything NOT under `color.*` and not internal _meta).
+// Filter: semantic layer — top-level non-color, non-meta keys. Includes
+// motion tokens (ease/dur), elevation (card-shadow), and overlays (frost),
+// which share the desktop CSS-var namespace.
 const isSemantic = (t) => t.path[0] !== "color" && !t.path[0].startsWith("_");
 
 export default {

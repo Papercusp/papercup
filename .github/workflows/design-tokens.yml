@@ -1,0 +1,29 @@
+name: design-tokens
+
+on:
+  pull_request:
+    paths:
+      - 'design-tokens/**'
+      - 'apps/operator/app/_brand-primitives.css'
+      - 'apps/operator/app/_semantic.css'
+      - 'apps/operator/app/globals.css'
+      - '.github/workflows/design-tokens.yml'
+
+jobs:
+  tokens-drift:
+    name: tokens drift check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install (root only — tokens has no workspace deps)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Regen + verify clean
+        run: pnpm tokens:check
