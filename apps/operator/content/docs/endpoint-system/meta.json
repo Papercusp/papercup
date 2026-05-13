@@ -1,5 +1,5 @@
 {
   "title": "Endpoint System",
   "description": "How a single typed function becomes an HTTP route, an MCP tool, and an in-process call. Function-as-truth, projected to every transport.",
-  "pages": ["overview", "function-as-truth", "writing-a-tool", "transports", "voice-modality", "ask-user", "gating", "telemetry", "operations", "superuser-mode", "tool-catalog", "reference"]
+  "pages": ["overview", "function-as-truth", "writing-a-tool", "transports", "voice-modality", "ask-user", "state-tools", "gating", "telemetry", "operations", "superuser-mode", "tool-catalog", "reference"]
 }
