@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 export interface CommandSpec {
   id: string;
   label: string;
-  section: 'building' | 'running';
+  section: 'building' | 'running' | 'simulators';
   description?: string;
   command: string;
   cwd?: string;

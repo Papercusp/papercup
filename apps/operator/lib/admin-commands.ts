@@ -11,7 +11,7 @@ import 'server-only';
 export interface AdminCommand {
   id: string;
   label: string;
-  section: 'building' | 'running';
+  section: 'building' | 'running' | 'simulators';
   description?: string;
   command: string;
   cwd?: string;
@@ -99,6 +99,36 @@ export const ADMIN_COMMANDS: AdminCommand[] = [
     section: 'running',
     description: 'Prints a handful of env vars from your interactive shell config (NVM, BUN, COMPOSIO, HINDSIGHT_API_URL, CLOUDFLARE_API_TOKEN). Useful for diagnosing "command can\'t find X" issues.',
     command: 'echo "PATH=$PATH"; echo "NVM=$(type -t nvm 2>/dev/null)"; echo "NODE=$(which node)"; echo "BUN_INSTALL=$BUN_INSTALL"; echo "COMPOSIO_INSTALL_DIR=$COMPOSIO_INSTALL_DIR"; echo "HINDSIGHT_API_URL=$HINDSIGHT_API_URL"; echo "ELEVENLABS_API_KEY=$(test -n "$ELEVENLABS_API_KEY" && echo set || echo unset)"; echo "CLOUDFLARE_API_TOKEN=$(test -n "$CLOUDFLARE_API_TOKEN" && echo set || echo unset)"; echo "ANTHROPIC_API_KEY=$(test -n "$ANTHROPIC_API_KEY" && echo set || echo unset)"; echo "OPENAI_API_KEY=$(test -n "$OPENAI_API_KEY" && echo set || echo unset)"',
+  },
+
+  // ── Simulators ───────────────────────────────────────────
+  {
+    id: 'launch-android-emulator',
+    label: 'Launch Android emulator',
+    section: 'simulators',
+    description: 'Boots the papercusp-test AVD on this Linux host. Runs detached — survives Stop. After boot, `adb devices` shows emulator-5554.',
+    command: `setsid bash -c '$HOME/Android/Sdk/emulator/emulator -avd papercusp-test -no-snapshot-load -no-audio' </dev/null >/tmp/android-emulator.log 2>&1 & disown; echo "==> launched pid $!"; echo "==> avd=papercusp-test"; echo "==> tailing /tmp/android-emulator.log"; sleep 1; tail -n+1 -F /tmp/android-emulator.log`,
+  },
+  {
+    id: 'start-mac-vm',
+    label: 'Start macOS VM',
+    section: 'simulators',
+    description: 'Boots the macOS VM (QEMU + SPICE on :5930). ~60–120s to be SSH-ready. Skip if it\'s already up.',
+    command: `if pgrep -f "qemu.*mac_hdd_ng" >/dev/null; then echo "==> macOS VM already running (pid $(pgrep -f 'qemu.*mac_hdd_ng'))"; exit 0; fi; cd $HOME/macos-vm/OSX-KVM && nohup bash boot-sonoma.sh >/tmp/macvm-boot.log 2>&1 & disown; echo "==> boot pid $!"; echo "==> SPICE: remote-viewer spice://127.0.0.1:5930"; echo "==> tailing /tmp/macvm-boot.log (Stop when SSH is ready)"; sleep 2; tail -n+1 -F /tmp/macvm-boot.log`,
+  },
+  {
+    id: 'launch-ios-simulator',
+    label: 'Launch iOS simulator (iPhone 16)',
+    section: 'simulators',
+    description: 'SSH Mac VM → xcrun simctl boot "iPhone 16" + open Simulator.app. Requires the macOS VM running; view via `remote-viewer spice://127.0.0.1:5930`.',
+    command: `${SSH_MAC} 'bash -lc "set -e; DEVICE=\\"iPhone 16\\"; echo \\"==> booting $DEVICE\\"; xcrun simctl boot \\"$DEVICE\\" 2>&1 | grep -v \\"Booted\\" || true; echo \\"==> opening Simulator.app\\"; open -a Simulator; sleep 2; echo \\"==> booted devices:\\"; xcrun simctl list devices booted; echo \\"==> done — view via SPICE on :5930\\""' 2>&1`,
+  },
+  {
+    id: 'ios-simulator-list',
+    label: 'List iOS simulator devices',
+    section: 'simulators',
+    description: 'Shows all available iOS simulator devices on the Mac VM. Use device names from here in custom xcrun simctl boot runs.',
+    command: `${SSH_MAC} "xcrun simctl list devices available iOS" 2>&1`,
   },
 ];
 

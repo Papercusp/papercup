@@ -21,11 +21,12 @@ export default function AdminOps() {
     return () => { cancelled = true; };
   }, []);
 
-  const [building, running] = useMemo(() => {
-    if (!commands) return [[], []] as [CommandSpec[], CommandSpec[]];
+  const [building, running, simulators] = useMemo(() => {
+    if (!commands) return [[], [], []] as [CommandSpec[], CommandSpec[], CommandSpec[]];
     return [
       commands.filter((c) => c.section === 'building'),
       commands.filter((c) => c.section === 'running'),
+      commands.filter((c) => c.section === 'simulators'),
     ];
   }, [commands]);
 
@@ -50,6 +51,7 @@ export default function AdminOps() {
 
         <Section title="Building" entries={building} emptyHint="No building commands registered." loading={commands === null} />
         <Section title="Running" entries={running} emptyHint="No running commands registered." loading={commands === null} />
+        <Section title="Simulators" entries={simulators} emptyHint="No simulator commands registered." loading={commands === null} />
       </div>
     </div>
   );
