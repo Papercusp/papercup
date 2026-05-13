@@ -36,6 +36,44 @@ export function resetPosthogConfigForTest(): void {
   cached = null;
 }
 
+/**
+ * Watch the discovery file so config edits (e.g. flipping
+ * `testingFeatures` by hand, secret rotation) take effect without an
+ * operator restart. Idempotent — only the first call installs the
+ * watcher; subsequent calls are no-ops.
+ *
+ * Triggered as a side effect from flag-bus.ts on first import.
+ */
+let watcherInstalled = false;
+let onConfigChange: (() => void) | null = null;
+
+export function setOnConfigChange(fn: () => void): void {
+  onConfigChange = fn;
+}
+
+export function watchPosthogConfig(): void {
+  if (watcherInstalled) return;
+  watcherInstalled = true;
+  const discoveryPath = path.join(os.homedir(), '.papercusp', 'posthog.json');
+  const dir = path.dirname(discoveryPath);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.watch(dir, (_event, filename) => {
+      if (filename !== 'posthog.json') return;
+      cached = null;
+      if (onConfigChange) {
+        try {
+          onConfigChange();
+        } catch {
+          // never let the watcher die on a handler error
+        }
+      }
+    });
+  } catch {
+    // best-effort; missing dir or unsupported FS just disables auto-reload
+  }
+}
+
 function resolve(): Resolved {
   if (cached) return cached;
 

@@ -19,7 +19,12 @@ import {
 } from '@papercusp/flags/server';
 import type { FlagKey } from '@papercusp/flags';
 
-import { getPosthogConfig, isTestingFeaturesEnabled } from './posthog-config';
+import {
+  getPosthogConfig,
+  isTestingFeaturesEnabled,
+  setOnConfigChange,
+  watchPosthogConfig,
+} from './posthog-config';
 
 export type FlagChangeEnvelope = {
   type: 'flag_changed';
@@ -48,13 +53,27 @@ function bootIfNeeded(): void {
  * file (and after `resetPosthogConfigForTest()`) — otherwise the
  * one-shot `booted` latch keeps the original "no backend" state
  * regardless of subsequent testingFeatures toggles.
+ *
+ * Also called automatically by the discovery-file watcher when
+ * ~/.papercusp/posthog.json changes on disk.
  */
 export function reinitFlagBackend(): void {
-  if (!isBackendConfigured() && isTestingFeaturesEnabled()) {
+  if (isBackendConfigured() && !isTestingFeaturesEnabled()) {
+    // testingFeatures was just turned off — tear down the PostHog
+    // client so we stop polling and fall back to FLAG_DEFAULTS.
+    initFlagBackend(null);
+  } else if (!isBackendConfigured() && isTestingFeaturesEnabled()) {
     initFlagBackend(getPosthogConfig());
   }
   booted = true;
+  // Tell every connected client to refetch so they see the new state.
+  publishFlagChange(null);
 }
+
+// Install the discovery-file watcher on first import so config edits
+// take effect without an operator restart.
+setOnConfigChange(() => reinitFlagBackend());
+watchPosthogConfig();
 
 export function getFlagBus() {
   bootIfNeeded();
