@@ -355,6 +355,18 @@ export async function dispatchProjectedTool(
         },
       };
     }
+    // Phase 4 T2.3: when the handler declares outputRef, the
+    // framework auto-emits a `chunk` event on the typed-event
+    // channel so the consumer sees the resource link in-band with
+    // the rest of the stream. `chunk` is reserved (registry rejects
+    // tool-declared events: { chunk: ... }) so this only fires
+    // here in the framework path.
+    if (result.outputRef) {
+      wrappedEmit('chunk', {
+        ref: result.outputRef,
+        ...(typeof result.outputSize === 'number' ? { byteSize: result.outputSize } : {}),
+      });
+    }
     if (deps.recordInvocation && windowKey) {
       try {
         await deps.recordInvocation({

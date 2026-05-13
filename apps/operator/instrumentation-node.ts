@@ -75,6 +75,21 @@ export async function register(): Promise<void> {
     console.warn('[ensure-schema-prewarm] non-fatal failure:', err?.message ?? err);
   });
 
+  // Phase 4 T2.3: schedule the scratch-storage GC sweep so stale
+  // tool-output dirs get cleaned every 1h. Idempotent; safe across
+  // HMR reloads. Reads the workspace registry on each sweep so
+  // dead-workspace dirs get reaped.
+  try {
+    const { startScratchGcScheduler } = await import('@/lib/scratch-gc');
+    const { readRegistry } = await import('@/lib/workspace-registry');
+    startScratchGcScheduler({
+      getWorkspaceRegistry: () => readRegistry().workspaces.map((w) => w.id),
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn('[scratch-gc] scheduler init failed (non-fatal):', (err as Error).message);
+  }
+
   // One-shot grants backfill — Batch B3. After Migration 051 ships, every
   // existing (plugin, harness) pair in `enabled-plugins.json` needs a
   // grant row so the new Tier-2 check doesn't deny them all on first
