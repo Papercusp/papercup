@@ -87,7 +87,6 @@ export default function ChromeShell() {
   const snapshotsFlag = useFlag(FLAGS.SNAPSHOTS);
   const marketplaceFlag = useFlag(FLAGS.MARKETPLACE);
   const oracleFlag = useFlag(FLAGS.ORACLE);
-  const adminFlag = useFlag(FLAGS.ADMIN);
   const mainNavJumpGateProps = { 'data-route-transition-intent': 'jump-gate' as const };
   const navLinkProps = (href: string) => {
     const active = pathname === href || pathname.startsWith(`${href}/`);
@@ -182,9 +181,7 @@ export default function ChromeShell() {
           ) : null}
           <a href="/support" {...navLinkProps('/support')}>Support</a>
           <a href="/settings/operator" {...navLinkProps('/settings/operator')}>Settings</a>
-          {adminFlag ? (
-            <a href="/admin" {...navLinkProps('/admin')}>Admin</a>
-          ) : null}
+          {/* Admin link intentionally NOT rendered — reachable only by URL /admin */}
           {(() => {
             const p = navLinkProps('/dev');
             return <a href="/dev" {...p} className={`${p.className} is-dev`}>DEV</a>;

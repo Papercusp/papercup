@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Admin · Features · Papercusp' };
 
 export default async function AdminFeaturesPage() {
-  await requireFlag(FLAGS.ADMIN);
+  // Admin features page intentionally NOT flag-gated. Reachable by URL only.
   return (
     <AdminShell>
       <FeaturesAdmin />

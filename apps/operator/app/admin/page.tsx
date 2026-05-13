@@ -6,6 +6,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Admin · Papercusp' };
 
 export default async function AdminIndexPage() {
-  await requireFlag(FLAGS.ADMIN);
+  // Admin page intentionally NOT flag-gated. Reachable by URL only.
+  // (Nav link removed in ChromeShell so users won't discover it.)
   redirect('/admin/run');
 }

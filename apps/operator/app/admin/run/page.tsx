@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Admin · Run · Papercusp' };
 
 export default async function AdminRunPage() {
-  await requireFlag(FLAGS.ADMIN);
+  // Admin runs page intentionally NOT flag-gated. Reachable by URL only.
   return (
     <AdminShell>
       <AdminOps />
