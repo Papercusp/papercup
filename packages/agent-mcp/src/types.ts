@@ -226,6 +226,16 @@ export interface RoleToolDefinition<
   /** Typed event channel. See ProjectedTool.events. */
   events?: TEvents;
   /**
+   * State channel schema. Tools that publish snapshots via
+   * `ctx.publishState` declare the snapshot's Zod shape here; the
+   * dispatcher validates each snapshot against it and surfaces the
+   * schema on tools/list for clients. Tools without `state` get
+   * `ctx.publishState === undefined` and must use `ctx.emit` instead.
+   *
+   * See ProjectedTool.state.
+   */
+  state?: ZodTypeAny;
+  /**
    * Handler receives the unified context (no principal). May return either
    * a raw `ToolResult` (MCP shape) or a `ToolResponse` envelope; the
    * wrapper adapts both.
@@ -256,6 +266,8 @@ export interface RoleToolDefinitionInput<
   replayBufferSize?: number;
   /** See RoleToolDefinition.modality. */
   modality?: ReadonlyArray<'text' | 'voice'>;
+  /** See RoleToolDefinition.state. */
+  state?: ZodTypeAny;
   args: TArgs;
   /**
    * Typed event channel — Zod schemas keyed by event name. The

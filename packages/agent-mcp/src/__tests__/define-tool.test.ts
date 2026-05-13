@@ -163,6 +163,49 @@ describe('defineTool', () => {
     const names = getCatalog().map((t) => t.name).sort();
     expect(names).toEqual(['a:one', 'b:two']);
   });
+
+  it('role-gated tools forward `state` schema to the projection registry', async () => {
+    const StateSchema = z.object({
+      count: z.number().int().min(0),
+      phase: z.enum(['running', 'done']),
+    });
+    defineTool({
+      name: 'operator:state_probe',
+      description: 'state-shaped probe',
+      capability: 'tasks:read',
+      requirePrincipal: false,
+      roles: ['operator'],
+      state: StateSchema,
+      args: z.object({}),
+      async handler(_args, ctx) {
+        if (!ctx.publishState) {
+          return { content: [{ type: 'text', text: 'no_publishState' }], isError: true };
+        }
+        ctx.publishState({ count: 1, phase: 'done' });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    const tool = lookupByMcpName('operator:state_probe')!;
+    expect(tool.state).toBeDefined();
+    expect(tool.state).toBe(StateSchema);
+    const result = await dispatchProjectedTool(
+      tool,
+      'operator:state_probe',
+      {},
+      {
+        log: () => {},
+        signal: new AbortController().signal,
+        progress: () => {},
+        emit: () => {},
+        workspaceId: 'default',
+        role: 'operator',
+        runId: 'run_state_probe',
+      },
+      {},
+    );
+    expect(result.ok).toBe(true);
+    expect(result.result?.content[0]).toEqual({ type: 'text', text: 'ok' });
+  });
 });
 
 describe('tierFor', () => {

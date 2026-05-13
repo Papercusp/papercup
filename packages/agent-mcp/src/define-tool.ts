@@ -162,6 +162,7 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
     modality: input.modality,
     args: input.args,
     events: input.events,
+    state: input.state,
     handler: input.handler,
     guidance: input.guidance,
   };
@@ -368,6 +369,7 @@ function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
     replayBufferSize: def.replayBufferSize,
     modality: def.modality,
     events: def.events,
+    state: def.state,
     expose: {
       mcp: { name: def.name },
       http: { path: httpPath, methods: ['POST'] },
