@@ -1,0 +1,134 @@
+---
+title: VMs (Mac + Windows)
+description: SSH access, sudo credentials, port maps, disk-sizing notes, and the Windows-VM-crashes-routinely survival kit.
+---
+
+## Inventory
+
+| VM | Host process | SSH port | Display | Inside-VM repo path |
+|---|---|---|---|---|
+| **macOS Sonoma** (x86_64) | `qemu-system-x86_64 ... mac_hdd_ng.img` | `2222` | SPICE on `127.0.0.1:5930` | `~/papercupai/papercusp-desktop` |
+| **Windows 10** | `qemu-system-x86_64 ... win10.img` | `2223` | (no SPICE configured; consider RDP if needed) | `C:\Users\User\papercupai\papercusp-desktop` |
+
+Both VMs are required only for producing their platform's Tauri bundle. Day-to-day operator dev (`:3055`) and Linux builds work entirely on the host.
+
+## SSH commands
+
+```sh
+# Mac
+ssh -i ~/.ssh/papercup-vm-mac -p 2222 aviweiss@127.0.0.1
+# Windows
+ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1
+```
+
+Inside the Mac VM, `sudo` password is `aviweiss`. Windows VM has no sudo concept; `User` has admin rights.
+
+## Booting them
+
+### Mac VM
+
+```sh
+cd ~/macos-vm/OSX-KVM
+nohup bash boot-sonoma.sh > /tmp/macvm-boot.log 2>&1 &
+```
+
+Or click **Start macOS VM** in `/admin` (idempotent — exits 0 if already running). ~60–120s to SSH-ready.
+
+To view the desktop: `remote-viewer spice://127.0.0.1:5930`.
+
+### Windows VM
+
+```sh
+cd ~/win10-vm
+nohup bash boot.sh > /tmp/win-boot.log 2>&1 &
+```
+
+~90s to SSH-ready.
+
+## Resource specs (current; tunable in the boot scripts)
+
+| | macOS VM | Windows VM |
+|---|---|---|
+| RAM | 16 GB | 16 GB (was 8 GB pre-2026-05-12) |
+| vCPUs | 16 | 16 |
+| Disk | 120 GB qcow2 (grown from 80 on 2026-05-13) | 80 GB qcow2 |
+| Cache | writeback | writeback |
+| Net | e1000 | e1000 |
+| Storage | AHCI | AHCI |
+
+## Disk discipline
+
+Tauri builds are huge. A clean Mac build typically consumes:
+
+- ~5 GB Rust target dir (`papercusp-desktop/src-tauri/target/release/`)
+- ~3 GB npm cache (`~/Library/Caches/`)
+- ~1.5 GB built node_modules
+- ~500 MB intermediate `.dmg` staging
+- ~10 GB Xcode CoreSimulator runtimes (if you build iOS at all)
+
+**Pre-build check** the user reflexively runs: `df -h /` on each VM. If `<10 GB` free, clean up before kicking off a build — mid-build ENOSPC is a hard failure and leaves a broken-half state.
+
+The macOS VM has been on the verge of full multiple times. Safe deletes when desperate:
+
+```sh
+# iOS simulator runtimes (recreatable in Xcode → Settings → Platforms)
+rm -rf ~/Library/Developer/CoreSimulator/Devices/*    # device instances only
+# spm cache
+rm -rf ~/Library/Developer/Xcode/DerivedData/SourcePackages/
+# Rust target (forces clean rebuild but reclaims ~3-5 GB)
+rm -rf ~/papercupai/papercusp-desktop/src-tauri/target
+```
+
+The Linux host (~40-50 GB free typical) doesn't hit ENOSPC during builds but the Rust target dir there does grow to ~5 GB.
+
+## Node version pinning
+
+Both VMs run **nvm + Node 22.21.1**. The papercup workspace requires `node >=22.18.0 <23` via `package.json` `engines`. Node 20 hangs / errors during `npm install`.
+
+```sh
+# In either VM:
+nvm install 22       # one-time
+nvm use 22           # every shell
+```
+
+The `build-mac-prod` and `build-windows-prod` `/admin` commands source `nvm` and pin Node 22 explicitly. If you SSH in manually, don't forget `nvm use 22`.
+
+## npm `--legacy-peer-deps` is required
+
+The workspace's peer-dep tree has unresolvable conflicts that make `npm install` hang **silently with 0% CPU** in modern npm. **Always pass `--legacy-peer-deps`** for installs done in the build context. The /admin scripts do this; if you do manual installs in either VM, you must too.
+
+## Mac VM environment quirks
+
+- **Bundled-Node PATH**: GUI-launched apps on macOS inherit `$PATH = /usr/bin:/bin` — Homebrew Node, nvm Node, brew-installed `pg_dump` / `libpq` are all invisible. `main.rs:bundled_node()` returns the shipped Node binary's absolute path and ALL 5 sidecar spawns use it. **If you add a new sidecar**, ditto.
+- **Gatekeeper**: the DMG is unsigned. First launch will be blocked. The install-mac-dmg `/admin` command strips quarantine via `xattr -dr com.apple.quarantine /Applications/Papercusp.app`. If launching by hand, you'll need to do this too.
+
+## Windows VM crashes routinely
+
+The Windows VM crashed **6+ times during a single build session** (2026-05-13). Symptoms: SSH hangs indefinitely, `qemu-system-x86_64` process disappears, `/tmp/win-boot.log` last line is a kernel power error.
+
+**Recovery procedure** (this happens often enough it's worth automating; for now do it manually):
+
+```sh
+# Verify dead
+ps -ef | grep -v grep | grep "qemu.*win10\|qemu.*windows"   # → should be empty
+
+# Restart
+cd ~/win10-vm && nohup bash boot.sh > /tmp/win-boot.log 2>&1 &
+
+# Wait ~90s
+sleep 90 && ssh -i ~/.ssh/papercup-vm-win -p 2223 User@127.0.0.1 'echo ok'
+
+# Re-run the build (it'll resume from incremental Rust cache if not corrupted)
+```
+
+The Rust target dir in the Windows VM survives crashes — it's qcow2 + AHCI writeback so a few seconds of write-back data may be lost, but cargo's atomic incremental graph handles this gracefully.
+
+If a build was mid-`tauri build` when the VM crashed, you may need to delete and recreate `C:\Users\User\papercusp-desktop\src-tauri\binaries\embedded-postgres-server-x86_64-pc-windows-msvc.exe` — `tauri-bundler` doesn't always recover cleanly from in-place sidecar binary writes when the process disappears mid-write. Symptom: `failed to remove symlink ... os error 5`.
+
+## Why builds don't run in containers
+
+The Tauri team's MSI tooling (`wix`) requires Windows, and Apple's code-signing tooling requires macOS. We don't currently sign builds (the audit pipeline assumes unsigned binaries) but the Mac build does need to be a Darwin host for `cargo` to cross-compile to `x86_64-apple-darwin`. So the VMs aren't replaceable by Linux containers without a substantial cross-compile setup.
+
+## Build cancellation
+
+The `/admin` build commands run via `bash -lic`. Closing the SSE stream (Stop button or browser close) sends `SIGTERM` to the whole process group — which cleanly terminates the local `npm` and `tauri build` invocations on the host, but the SSH-driven Mac/Windows builds **continue running inside the VM** even after SIGTERM kills the SSH client. To actually cancel a Mac/Windows build mid-flight, SSH in separately and `pkill -f "tauri build\|cargo"`.

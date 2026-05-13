@@ -53,6 +53,8 @@ export default defineTool({
     when: 'You have one or more slugs from docs:outline and need the page contents. Use `heading` (single-slug only) when the outline showed a multi-heading page and you only need one section.',
     notWhen:
       'You do not yet know the slug — call docs:outline first. For the entire doc corpus in one shot, curl /llms-full.txt directly; no tool needed.',
+    chaining:
+      'docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads.',
   },
   capability: 'docs:read',
   requirePrincipal: false,

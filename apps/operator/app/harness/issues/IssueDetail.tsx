@@ -140,6 +140,7 @@ export function IssueDetail({
                 <span className="h-issue-linked"><ArrowUpRight size={11} /> {displayIssue.linkedFeatureId}</span>
               )}
             </div>
+            <Drawer.Description style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 }}>Issue details panel</Drawer.Description>
             <Drawer.Title style={{ fontSize: 17, fontWeight: 700, margin: '0 0 10px', color: 'var(--fg)', lineHeight: 1.35 }}>
               {displayIssue.title}
             </Drawer.Title>

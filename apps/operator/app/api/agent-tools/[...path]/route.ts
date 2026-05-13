@@ -26,6 +26,7 @@ import { getOrgPg } from '@restart/db-org';
 // import is side-effect: each tool calls defineTool() which auto-
 // registers into the unified projection registry consumed below.
 import '@/lib/agent-tools/index';
+import { PROJECTED_DEPS } from '@/lib/projected-tool-deps';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -50,86 +51,7 @@ const HOST_EXTRAS: HttpToolHostExtras = {
       tx: sql,
     };
   },
-  deps: {
-    readQuotaState: async (toolName, ctx, windowKey) => {
-      if (!ctx.workspaceId) return null;
-      try {
-        const { sql } = getOrgPg();
-        const rows = await sql.begin(async (tx) => {
-          await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [ctx.workspaceId]);
-          return await tx.unsafe(
-            `SELECT count(*)::int AS n FROM harness_shared.tool_invocations
-              WHERE workspace_id = $1
-                AND tool_name = $2
-                AND role = $3
-                AND window_key = $4
-                AND status = 'ok'`,
-            [ctx.workspaceId, toolName, ctx.role ?? '', windowKey],
-          );
-        });
-        const n = (rows as Array<{ n: number }>)[0]?.n ?? 0;
-        return { count: n };
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(`[agent-tool/http] readQuotaState failed: ${err instanceof Error ? err.message : String(err)}`);
-        return null;
-      }
-    },
-    recordInvocation: async (input) => {
-      if (!input.ctx.workspaceId) return;
-      try {
-        const { sql } = getOrgPg();
-        await sql.begin(async (tx) => {
-          await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [input.ctx.workspaceId]);
-          await tx.unsafe(
-            `INSERT INTO harness_shared.tool_invocations
-               (workspace_id, harness_slug, plugin_name, tool_name, role,
-                feature_id, chunk_id, run_id, spawn_id, parent_spawn_id,
-                window_key, duration_ms, status, output_ref, output_size,
-                error_message, args_json, transport, event_count, metadata_json)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
-                     $16,$17::jsonb,$18,$19,$20::jsonb)`,
-            [
-              input.ctx.workspaceId,
-              input.ctx.harnessSlug ?? '',
-              input.pluginName,
-              input.toolName,
-              input.ctx.role ?? '',
-              input.ctx.featureId ?? null,
-              input.ctx.chunkId ?? null,
-              input.ctx.runId ?? null,
-              input.ctx.spawnId ?? '',
-              input.ctx.parentSpawnId ?? null,
-              input.windowKey,
-              input.durationMs,
-              input.status,
-              input.outputRef ?? null,
-              input.outputSize ?? null,
-              input.errorMessage ?? null,
-              (() => {
-                if (input.args === undefined || input.args === null) return null;
-                try {
-                  const s = JSON.stringify(input.args);
-                  if (s.length > 32768) {
-                    return JSON.stringify({ _truncated: true, _size: s.length });
-                  }
-                  return s;
-                } catch {
-                  return null;
-                }
-              })(),
-              input.ctx.transport ?? null,
-              input.eventCount ?? null,
-              input.metadataJson ? JSON.stringify(input.metadataJson) : null,
-            ],
-          );
-        });
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(`[agent-tool/http] recordInvocation failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    },
-  },
+  deps: PROJECTED_DEPS,
   log: (line, ctx: UnifiedToolContext) => {
     // eslint-disable-next-line no-console
     console.log(`[agent-tool/http][${ctx.principal?.slug ?? '-'}/${ctx.role ?? '-'}] ${line}`);

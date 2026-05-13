@@ -59,6 +59,8 @@ export default defineTool({
     when: 'You have specific terminology in mind (a function name, concept, or component) and want to find which doc page covers it. Faster than scanning the outline when the section name is non-obvious.',
     notWhen:
       'You do not know what to search for — call docs:outline first to see the section taxonomy. For PG-stored prose recall (escalations, chats) use search:fulltext.',
+    chaining:
+      'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading).',
   },
   capability: 'docs:read',
   requirePrincipal: false,

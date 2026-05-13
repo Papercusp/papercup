@@ -35,6 +35,8 @@ export default defineTool({
     when: 'You need design context, architectural rationale, or "how does X work" answers and you have not yet called docs:outline this run.',
     notWhen:
       'You already called docs:outline this run — the cached result has the full TOC, no need to re-fetch. For per-harness specs use harness:markdown_index. For PG-stored prose recall use search:fulltext.',
+    chaining:
+      'docs:outline → docs:get { slugs: [...] }. Use { slug, heading } form when only one section of a long page is relevant.',
   },
   capability: 'docs:read',
   requirePrincipal: false,
