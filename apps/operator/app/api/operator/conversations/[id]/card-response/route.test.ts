@@ -18,7 +18,8 @@ import {
 } from '@papercusp/agent-mcp';
 import { _resetStateChannelForTests, openRun } from '@papercusp/agent-mcp';
 
-import { POST, _resetCardResponseRateLimitForTests } from './route';
+import { POST } from './route';
+import { _resetCardResponseRateLimitForTests } from '@/lib/card-response-rate-limit';
 
 const ws = 'workspace-T';
 const choiceSchema = z.object({ picks: z.array(z.string()).min(1) });
@@ -138,7 +139,7 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
     expect(res.status).toBe(404);
   });
 
-  it('429 after 30 RPS in the same workspace window (H3)', async () => {
+  it('429 after 30 RPS for the same session user (H3)', async () => {
     const responses: number[] = [];
     for (let i = 0; i < 32; i++) {
       const res = await POST(
@@ -152,8 +153,48 @@ describe('POST /api/operator/conversations/:id/card-response', () => {
       responses.push(res.status);
     }
     expect(responses.filter((s) => s === 429).length).toBeGreaterThan(0);
-    // First 30 should not be 429; 31+ should be.
     expect(responses[0]).not.toBe(429);
     expect(responses[31]).toBe(429);
+  });
+
+  it('audit: rate limit is per session user, NOT per caller-supplied workspaceId', async () => {
+    // Pre-fix bug: a caller could vary body.workspaceId to bypass the
+    // limit. With the per-user key, varying workspaceId is irrelevant.
+    const responses: number[] = [];
+    for (let i = 0; i < 32; i++) {
+      const res = await POST(
+        makeReq({
+          correlationId: 'x',
+          workspaceId: `attacker-ws-${i}`, // unique per request
+          action: 'cancel',
+        }),
+        { params: Promise.resolve({ id: 'c1' }) },
+      );
+      responses.push(res.status);
+    }
+    // Even with varying workspaceId, the per-user bucket fills.
+    expect(responses[31]).toBe(429);
+  });
+
+  it('audit: a different session user has its own bucket', async () => {
+    // First user: hit the limit.
+    for (let i = 0; i < 30; i++) {
+      await POST(
+        makeReq({ correlationId: 'x', workspaceId: 'w', action: 'cancel' }),
+        { params: Promise.resolve({ id: 'c1' }) },
+      );
+    }
+    // Switch to a different user via the mock — fresh bucket.
+    vi.mocked(getSessionUser).mockResolvedValue({
+      id: 'u2',
+      username: 'bob',
+      display_name: 'Bob',
+      has_password: true,
+    });
+    const res = await POST(
+      makeReq({ correlationId: 'x', workspaceId: 'w', action: 'cancel' }),
+      { params: Promise.resolve({ id: 'c1' }) },
+    );
+    expect(res.status).not.toBe(429);
   });
 });

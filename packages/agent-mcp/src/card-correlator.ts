@@ -109,6 +109,31 @@ function republishRunSnapshot(runId: string): void {
   setOpenCards(runId, cards);
 }
 
+/**
+ * Write a resolved card response to the idempotency cache synchronously
+ * at resolve time. Key may be undefined (no-op).
+ *
+ * Synchronous write closes the original race: previously we wrote via
+ * deferred.promise.then(), which runs as a microtask. A second
+ * registerCard with the same key arriving BETWEEN resolve and the
+ * microtask saw no cache hit and registered a duplicate card.
+ */
+function cacheIdempotency(
+  runId: string,
+  key: string | undefined,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  response: CardResponse<any>,
+): void {
+  if (!key) return;
+  const r = registry();
+  let cache = r.idempotency.get(runId);
+  if (!cache) {
+    cache = new Map();
+    r.idempotency.set(runId, cache);
+  }
+  cache.set(key, response);
+}
+
 function drop(correlationId: string): void {
   const r = registry();
   const card = r.pending.get(correlationId);
@@ -169,23 +194,16 @@ export function registerCard<TSchema extends ZodTypeAny>(opts: {
   }
   set.add(correlationId);
 
-  // Cache the response on resolve so idempotency hits stick.
-  if (opts.spec.idempotencyKey) {
-    const key = opts.spec.idempotencyKey;
-    void deferred.promise.then((res) => {
-      let cache = r.idempotency.get(opts.runId);
-      if (!cache) {
-        cache = new Map();
-        r.idempotency.set(opts.runId, cache);
-      }
-      cache.set(key, res);
-    });
-  }
-
   if (opts.spec.timeoutMs && opts.spec.timeoutMs > 0) {
     card.timeoutHandle = setTimeout(() => {
+      // Re-fetch by id — if a competing resolve already dropped the
+      // card, the timeout is a no-op. Setting timeoutHandle=undefined
+      // here matters only if we lose the race to another path that
+      // also calls clearTimeout; either way pending.has() is the gate.
       if (r.pending.has(correlationId)) {
-        deferred.resolve({ action: 'cancel' } as CardResponse<TSchema>);
+        const response = { action: 'cancel' } as CardResponse<TSchema>;
+        cacheIdempotency(opts.runId, opts.spec.idempotencyKey, response);
+        deferred.resolve(response);
         drop(correlationId);
       }
     }, opts.spec.timeoutMs);
@@ -222,6 +240,9 @@ export function resolveCardResponse(opts: {
     return { ok: false, status: 404, error: 'card not found' };
   }
 
+  // Compute the response shape BEFORE touching any timers / dropping —
+  // validation may fail, in which case we leave the card pending.
+  let response: CardResponse;
   if (opts.action === 'submit') {
     const parsed = card.spec.dataSchema.safeParse(opts.payload);
     if (!parsed.success) {
@@ -232,16 +253,27 @@ export function resolveCardResponse(opts: {
         details: parsed.error.issues,
       };
     }
-    card.deferred.resolve({ action: 'submit', payload: parsed.data });
+    response = { action: 'submit', payload: parsed.data };
   } else if (opts.action === 'decline') {
     if (card.spec.allowDecline === false) {
       return { ok: false, status: 400, error: 'this card does not allow decline' };
     }
-    card.deferred.resolve({ action: 'decline', reason: opts.reason });
+    response = { action: 'decline', reason: opts.reason };
   } else {
-    card.deferred.resolve({ action: 'cancel' });
+    response = { action: 'cancel' };
   }
 
+  // Close the timeout/resolve race: clear the timeout BEFORE deferred.resolve
+  // so a concurrent timeout firing finds pending.has() false (drop runs below)
+  // AND its setTimeout is already cancelled. Without this, the timeout could
+  // call deferred.resolve with cancel after we resolved with submit — caller
+  // gets 200 OK but the tool's await sees the cancel.
+  if (card.timeoutHandle) {
+    clearTimeout(card.timeoutHandle);
+    card.timeoutHandle = undefined;
+  }
+  cacheIdempotency(card.runId, card.spec.idempotencyKey, response);
+  card.deferred.resolve(response);
   drop(opts.correlationId);
   return { ok: true };
 }
