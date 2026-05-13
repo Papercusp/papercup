@@ -207,7 +207,7 @@ export default function ChromeShell() {
           The other heavy docks (OracleDock, ChatwootWidget, voice infra)
           ARE still skipped on /settings/* since the user isn't operating
           on a settings page — that perf win still applies. */}
-      <DeferredOperatorPanel />
+      <OperatorPanel />
       {/* Operator chat sidebar — fixed left, full-height, on every
           non-chromeless page. The sidebar shifts the rest of the app
           right via body.has-op-chat padding-left (set inside the
