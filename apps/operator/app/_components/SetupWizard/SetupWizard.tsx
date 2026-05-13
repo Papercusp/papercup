@@ -165,14 +165,18 @@ export function SetupWizard({ mode }: Props) {
   }
 
   return (
-    <div className="pc-setup-wizard" data-mode={mode}>
+    <div className="pc-setup-wizard" data-mode={mode} data-view={showWelcome ? 'welcome' : 'step'}>
       <aside className="pc-setup-wizard__sidebar">
-        <h2 className="pc-setup-wizard__title">Setup Wizard</h2>
-        <p className="pc-setup-wizard__subtitle">
-          {mode === 'first-run'
-            ? 'Welcome to Papercusp. Run through these steps to get set up.'
-            : 'Configure or revisit any step. Detection runs automatically.'}
-        </p>
+        {!showWelcome && (
+          <>
+            <h2 className="pc-setup-wizard__title">Setup Wizard</h2>
+            <p className="pc-setup-wizard__subtitle">
+              {mode === 'first-run'
+                ? 'Welcome to Papercusp. Run through these steps to get set up.'
+                : 'Configure or revisit any step. Detection runs automatically.'}
+            </p>
+          </>
+        )}
         <ol className="pc-setup-wizard__steps">
           {SETUP_STEPS.map((s, i) => {
             const status: StepStatus = statuses[s.id] ?? 'unknown';
@@ -200,16 +204,18 @@ export function SetupWizard({ mode }: Props) {
             );
           })}
         </ol>
-        <div className="pc-setup-wizard__sidebar-footer">
-          <div className="pc-setup-wizard__min" data-met={minimumMet ? 'true' : 'false'}>
-            <span className="pc-setup-wizard__min-dot" />
-            <span>
-              {minimumMet
-                ? 'Minimum setup complete — you can finish any time.'
-                : 'Required: ≥1 coding agent + local database ready.'}
-            </span>
+        {!showWelcome && (
+          <div className="pc-setup-wizard__sidebar-footer">
+            <div className="pc-setup-wizard__min" data-met={minimumMet ? 'true' : 'false'}>
+              <span className="pc-setup-wizard__min-dot" />
+              <span>
+                {minimumMet
+                  ? 'Minimum setup complete — you can finish any time.'
+                  : 'Required: ≥1 coding agent + local database ready.'}
+              </span>
+            </div>
           </div>
-        </div>
+        )}
       </aside>
 
       <main className="pc-setup-wizard__main">
