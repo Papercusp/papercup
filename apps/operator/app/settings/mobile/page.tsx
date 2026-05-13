@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface QrPayload {
   server: string;
@@ -35,6 +36,7 @@ export default function MobileSettingsPage() {
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [workspaceId, setWorkspaceId] = useState('default');
+  const { askConfirm, confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -96,7 +98,13 @@ export default function MobileSettingsPage() {
   };
 
   const revoke = async (deviceId: string) => {
-    if (!confirm('Revoke this device? It will need to re-pair to use Operator Mobile.')) return;
+    const ok = await askConfirm({
+      title: 'Revoke this device?',
+      description: 'It will need to re-pair to use Operator Mobile.',
+      confirmLabel: 'Revoke',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await fetch(`/api/mobile/desktop/devices/${encodeURIComponent(deviceId)}`, { method: 'DELETE' });
       toast.success('Device revoked');
@@ -111,6 +119,7 @@ export default function MobileSettingsPage() {
 
   return (
     <div className="space-y-8 p-6">
+      {confirmEl}
       <header>
         <h1 className="text-xl font-semibold">Mobile access</h1>
         <p className="mt-1 text-sm text-neutral-500">

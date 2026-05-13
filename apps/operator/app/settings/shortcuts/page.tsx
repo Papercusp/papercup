@@ -19,6 +19,7 @@ import {
   resetOverride,
   resetAllOverrides,
 } from '../../../lib/shortcut-registry';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 const CATEGORY_LABELS: Record<ShortcutCategory, string> = {
   global: 'Global',
@@ -40,6 +41,7 @@ export default function ShortcutsSettingsPage() {
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [recordedKeys, setRecordedKeys] = useState<string>('');
+  const { askConfirm, confirmEl } = useConfirmDialog();
 
   // Load on mount.
   useEffect(() => { setOverrides(loadOverrides()); }, []);
@@ -100,8 +102,14 @@ export default function ShortcutsSettingsPage() {
     refresh();
   }
 
-  function resetAll() {
-    if (!confirm('Reset all keyboard shortcuts to their defaults?')) return;
+  async function resetAll() {
+    const ok = await askConfirm({
+      title: 'Reset all keyboard shortcuts?',
+      description: 'All customized shortcuts will be restored to their defaults.',
+      confirmLabel: 'Reset all',
+      destructive: true,
+    });
+    if (!ok) return;
     resetAllOverrides();
     refresh();
   }
@@ -110,6 +118,7 @@ export default function ShortcutsSettingsPage() {
 
   return (
     <div className="kbd-settings">
+      {confirmEl}
       <header className="kbd-settings-head">
         <div>
           <h1 style={{ margin: 0 }}>Keyboard shortcuts</h1>

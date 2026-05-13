@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import RouteLink from '../../_components/RouteLink';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 
 interface InstalledPluginRecord {
   name: string;
@@ -41,6 +42,7 @@ export default function InstalledPluginsPage() {
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
+  const { askConfirm, confirmEl } = useConfirmDialog();
 
   // pluginEnables is in Zero already (pluginEnables.byWorkspace). The
   // /plugins/global side is still REST — it's a cross-workspace listing
@@ -100,11 +102,11 @@ export default function InstalledPluginsPage() {
     if (!u) return;
     if (u.capChange.added.length > 0) {
       const lines = u.capChange.added.map((c) => `  • ${c}`).join('\n');
-      const ok = confirm(
-        `${slug} v${u.installed} → v${u.available}\n\n` +
-        `New capabilities this version requests:\n${lines}\n\n` +
-        `Continue?`,
-      );
+      const ok = await askConfirm({
+        title: `${slug}: v${u.installed} → v${u.available}`,
+        description: `New capabilities this version requests:\n${lines}`,
+        confirmLabel: 'Continue update',
+      });
       if (!ok) return;
     }
     setBusy(slug);
@@ -133,7 +135,13 @@ export default function InstalledPluginsPage() {
   }
 
   async function uninstall(slug: string) {
-    if (!confirm(`Remove ${slug}? Plugin will be disabled in every harness it was enabled in.`)) return;
+    const ok = await askConfirm({
+      title: `Remove ${slug}?`,
+      description: 'Plugin will be disabled in every harness it was enabled in.',
+      confirmLabel: 'Remove',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(slug);
     try {
       const r = await fetch('/api/plugins/uninstall', {
@@ -155,6 +163,7 @@ export default function InstalledPluginsPage() {
 
   return (
     <div className="pc-shell pc-marketplace-shell">
+      {confirmEl}
       <section className="pc-marketplace-pagehead">
         <div>
           <p className="pc-eyebrow">Installed plugins</p>
