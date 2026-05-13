@@ -7,8 +7,10 @@ import {
   readBuffer,
   closeBuffer,
   clearAllBuffersForTests,
+  clearRingBuffersForWorkspaceSwitch,
   replayBufferStats,
 } from './replay-buffer';
+import { dispatchWorkspaceSwitch } from './workspace-lifecycle';
 
 beforeEach(() => {
   clearAllBuffersForTests();
@@ -118,6 +120,24 @@ describe('replay-buffer', () => {
     }
     const stats = replayBufferStats();
     expect(stats.totalEvicted).toBe(5);
+  });
+
+  it('clearRingBuffersForWorkspaceSwitch drops only the named workspace (H4)', () => {
+    const wA = openBuffer({ workspaceId: 'workspace-A', toolName: tool, runId: 'rA', capacity: 10 });
+    const wB = openBuffer({ workspaceId: 'workspace-B', toolName: tool, runId: 'rB', capacity: 10 });
+    wA.push({ id: 1, name: 'd', data: '' });
+    wB.push({ id: 1, name: 'd', data: '' });
+    clearRingBuffersForWorkspaceSwitch('workspace-A');
+    expect(readBuffer({ workspaceId: 'workspace-A', toolName: tool, runId: 'rA', sinceId: 0 })).toBeNull();
+    expect(readBuffer({ workspaceId: 'workspace-B', toolName: tool, runId: 'rB', sinceId: 0 })).not.toBeNull();
+  });
+
+  it('subscribes to onWorkspaceSwitch — dispatchWorkspaceSwitch clears workspace buffers (H4)', async () => {
+    const w = openBuffer({ workspaceId: 'workspace-A', toolName: tool, runId: 'r-evt', capacity: 10 });
+    w.push({ id: 1, name: 'd', data: '' });
+    expect(readBuffer({ workspaceId: 'workspace-A', toolName: tool, runId: 'r-evt', sinceId: 0 })).not.toBeNull();
+    await dispatchWorkspaceSwitch('workspace-A');
+    expect(readBuffer({ workspaceId: 'workspace-A', toolName: tool, runId: 'r-evt', sinceId: 0 })).toBeNull();
   });
 
   it('re-opens the same buffer when called twice with the same key (defensive idempotency)', () => {

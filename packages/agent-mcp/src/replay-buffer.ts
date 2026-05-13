@@ -22,6 +22,8 @@
  * Plan ref: phase-4-endpoint-system-2026-05-12.md § T2.2.
  */
 
+import { onWorkspaceSwitch } from './workspace-lifecycle';
+
 const BUFFER_TTL_MS = 5 * 60 * 1000;
 /**
  * Garbage-collection scan interval. Drops every buffer past its TTL.
@@ -63,14 +65,23 @@ function key(workspaceId: string, toolName: string, runId: string): BufferKey {
  */
 const __SYM = Symbol.for('papercusp.replayBufferRegistry');
 type RegistryGlobals = typeof globalThis & {
-  [__SYM]?: { buffers: Map<BufferKey, BufferEntry>; gcTimer: ReturnType<typeof setInterval> | null };
+  [__SYM]?: {
+    buffers: Map<BufferKey, BufferEntry>;
+    gcTimer: ReturnType<typeof setInterval> | null;
+    lifecycleSubscribed: boolean;
+  };
 };
 function registry() {
   const g = globalThis as RegistryGlobals;
   if (!g[__SYM]) {
-    g[__SYM] = { buffers: new Map(), gcTimer: null };
+    g[__SYM] = { buffers: new Map(), gcTimer: null, lifecycleSubscribed: false };
   }
-  return g[__SYM]!;
+  const r = g[__SYM]!;
+  if (!r.lifecycleSubscribed) {
+    onWorkspaceSwitch((wid) => clearRingBuffersForWorkspaceSwitch(wid));
+    r.lifecycleSubscribed = true;
+  }
+  return r;
 }
 
 function ensureGc(): void {
@@ -178,11 +189,22 @@ export function closeBuffer(opts: {
 }
 
 /**
- * Clear every buffer in every workspace. Called by the workspace-
- * registry change handler so a workspace switch can't see another
- * workspace's tail (workspaces use the same JS process; buffer keys
- * include workspaceId but a hostile reconnect with the right tuple
- * could try to read across — clearing on switch closes the seam).
+ * Clear every buffer scoped to a specific workspace. Subscribed via
+ * onWorkspaceSwitch so a workspace switch can't see the prior
+ * workspace's tail. Buffer keys are `${workspaceId}:${tool}:${runId}`
+ * so we match on the prefix.
+ */
+export function clearRingBuffersForWorkspaceSwitch(workspaceId: string): void {
+  const r = registry();
+  const prefix = `${workspaceId}:`;
+  for (const k of r.buffers.keys()) {
+    if (k.startsWith(prefix)) r.buffers.delete(k);
+  }
+}
+
+/**
+ * Test-only: clear every buffer in every workspace. Use
+ * `clearRingBuffersForWorkspaceSwitch(id)` from production code.
  */
 export function clearAllBuffersForTests(): void {
   const r = registry();
