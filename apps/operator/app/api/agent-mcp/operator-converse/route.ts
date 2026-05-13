@@ -102,19 +102,38 @@ export async function POST(req: NextRequest) {
     setup: async (sink) => {
       sink.onClose(() => ctrl.abort());
 
-      // Forward state-channel snapshots (ctx.askUser cards + ctx.publishState
-      // toolState) onto the same SSE stream as operator:converse's typed
-      // events. Voice consumers (askOperatorViaSse) read `state-snapshot`
-      // events to surface card fallbackText in the spoken response; the
-      // chat surface uses /api/operator/state-snapshot separately and
-      // doesn't need this fan-out.
+      // Forward state-channel snapshots (ctx.askUser cards) onto this
+      // SSE stream when (and only when) the turn is voice. The chat
+      // surface uses /api/operator/state-snapshot separately and does
+      // NOT need this fan-out.
       //
-      // Plan: bespoke-card-improvements-2026-05-13.md §4.8 + §6.3
-      const offStateChannel = subscribeWorkspace(workspaceId, (vs) => {
-        if (sink.closed) return;
-        sink.event('state-snapshot', vs);
-      });
-      sink.onClose(offStateChannel);
+      // Gating rationale (audit): subscribeWorkspace is workspace-scoped,
+      // so cards from a parallel conversation in the same workspace would
+      // otherwise leak into this stream and be spoken during this voice
+      // turn. Limiting to voice turns means: a user with one voice + one
+      // text conversation gets the right behavior (chat surface owns text
+      // cards via /state-snapshot; voice path only sees its own surface).
+      // True multi-voice cross-talk would still occur but is far rarer
+      // and resolves cleanly when a runId-propagation refactor lands.
+      //
+      // We additionally filter to cards with fallbackText set — that
+      // signals the tool author intended voice rendering. Pure state-
+      // shaped tools (ctx.publishState, no askUser) emit toolState
+      // without fallbackText and don't need to reach voice.
+      //
+      // Plan: bespoke-card-improvements-2026-05-13.md §6.3
+      let offStateChannel: (() => void) | null = null;
+      if (body.modality === 'voice') {
+        offStateChannel = subscribeWorkspace(workspaceId, (vs) => {
+          if (sink.closed) return;
+          const hasVoiceCard = vs.snapshot.openCards?.some(
+            (c) => typeof c.fallbackText === 'string' && c.fallbackText.length > 0,
+          );
+          if (!hasVoiceCard) return;
+          sink.event('state-snapshot', vs);
+        });
+        sink.onClose(offStateChannel);
+      }
 
       const ctxBase: UnifiedToolContext = {
         log: (msg) => { console.log(`[operator:converse][tool] ${msg}`); },
