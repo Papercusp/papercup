@@ -281,7 +281,14 @@ describe('dispatchProjectedTool', () => {
     expect(r.ok).toBe(true);
   }, 10_000);
 
-  it('routes ctx.progress() to the unified context (handler can call it)', async () => {
+  it('routes ctx.progress() through ctx.emit (D2 alias unified — Phase 4 T2.2)', async () => {
+    // Per D2 of the original plan, ctx.progress IS ctx.emit('progress', ...).
+    // The dispatcher's wrappedProgress (always installed post-T2.2) routes
+    // every progress() call through wrappedEmit so it also lands in the
+    // replay buffer + bumps the idle deadline. The transport-supplied
+    // `ctx.progress` callback is shadowed by this wrapper; only the emit
+    // path receives the call.
+    const emitCalls: Array<{ name: string; data: unknown }> = [];
     const progressCalls: Array<[number | undefined, string | undefined]> = [];
     const tool = makeTool({
       fn: async (_input, ctx) => {
@@ -292,10 +299,19 @@ describe('dispatchProjectedTool', () => {
       },
     });
     const ctx = MAKE_CTX({
+      emit: (name, data) => emitCalls.push({ name, data }),
       progress: (pct, msg) => progressCalls.push([pct, msg]),
     });
     await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
-    expect(progressCalls).toEqual([[0, 'starting'], [50, undefined], [100, 'done']]);
+    // progress() no longer reaches the transport-supplied callback —
+    // it's shadowed by wrappedProgress which goes through emit.
+    expect(progressCalls).toEqual([]);
+    // Instead, each progress() landed as a 'progress' event on the emit channel.
+    expect(emitCalls).toEqual([
+      { name: 'progress', data: { progress: 0, total: 100, message: 'starting' } },
+      { name: 'progress', data: { progress: 50, total: 100 } },
+      { name: 'progress', data: { progress: 100, total: 100, message: 'done' } },
+    ]);
   });
 });
 
@@ -348,5 +364,106 @@ describe('dispatchProjectedToolStream', () => {
       data: { progress: 50, total: 100, message: 'halfway' },
     });
     expect(events[1]?.kind).toBe('done');
+  });
+});
+
+describe('replay buffer (Phase 4 T2.2)', () => {
+  // Tests are colocated with dispatch-projected so they exercise the
+  // real wrappedEmit. The buffer's own unit tests live in
+  // replay-buffer.test.ts.
+
+  it('captures each emit into the per-call buffer when replayBufferSize > 0', async () => {
+    const { clearAllBuffersForTests, readBuffer } = await import('./replay-buffer');
+    clearAllBuffersForTests();
+
+    const tool = makeTool({
+      replayBufferSize: 100,
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'one' });
+        ctx.emit('delta', { text: 'two' });
+        ctx.emit('cost', { usd: 0.001 });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    const ctx = MAKE_CTX({ workspaceId: 'ws-buf', runId: 'run-buf-1' });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
+
+    const out = readBuffer({ workspaceId: 'ws-buf', toolName: 'fix.tool', runId: 'run-buf-1', sinceId: 0 });
+    expect(out).not.toBeNull();
+    expect(out!.map((e) => ({ id: e.id, name: e.name, data: e.data }))).toEqual([
+      { id: 1, name: 'delta', data: { text: 'one' } },
+      { id: 2, name: 'delta', data: { text: 'two' } },
+      { id: 3, name: 'cost', data: { usd: 0.001 } },
+    ]);
+  });
+
+  it('NO buffer is opened when replayBufferSize is 0/undefined', async () => {
+    const { clearAllBuffersForTests, readBuffer } = await import('./replay-buffer');
+    clearAllBuffersForTests();
+
+    const tool = makeTool({
+      // replayBufferSize omitted (default disabled)
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'one' });
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    const ctx = MAKE_CTX({ workspaceId: 'ws-nobuf', runId: 'run-nobuf-1' });
+    await dispatchProjectedTool(tool, 'fix.tool', {}, ctx, MAKE_DEPS());
+
+    expect(readBuffer({ workspaceId: 'ws-nobuf', toolName: 'fix.tool', runId: 'run-nobuf-1', sinceId: 0 })).toBeNull();
+  });
+
+  it('event_count is reported to recordInvocation on completion', async () => {
+    const tool = makeTool({
+      fn: async (_input, ctx) => {
+        ctx.emit('delta', { text: 'a' });
+        ctx.emit('delta', { text: 'b' });
+        ctx.progress(50, 'half');
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    });
+    let recordedEventCount: number | undefined;
+    await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX(), MAKE_DEPS({
+      recordInvocation: vi.fn(async (i) => { recordedEventCount = i.eventCount; }),
+    }));
+    // 2 emits + 1 progress (which goes through wrappedEmit per D2) = 3
+    expect(recordedEventCount).toBe(3);
+  });
+
+  it('eventCount = 0 on role-not-allowed gate-failure path', async () => {
+    const tool = makeTool({ roles: ['architect'] });
+    let recordedEventCount: number | undefined;
+    await dispatchProjectedTool(tool, 'fix.tool', {}, MAKE_CTX({ role: 'worker' }), MAKE_DEPS({
+      recordInvocation: vi.fn(async (i) => { recordedEventCount = i.eventCount; }),
+    }));
+    expect(recordedEventCount).toBe(0);
+  });
+
+  it('concurrent calls do not cross-contaminate buffers (reviewer concern #4)', async () => {
+    const { clearAllBuffersForTests, readBuffer } = await import('./replay-buffer');
+    clearAllBuffersForTests();
+
+    const tool = makeTool({
+      replayBufferSize: 100,
+      fn: async (input, ctx) => {
+        const label = (input as { label: string }).label;
+        ctx.emit('delta', { text: `from-${label}-1` });
+        ctx.emit('delta', { text: `from-${label}-2` });
+        return { content: [{ type: 'text', text: label }] };
+      },
+    });
+
+    // Two concurrent invocations with different runIds.
+    await Promise.all([
+      dispatchProjectedTool(tool, 'fix.tool', { label: 'A' }, MAKE_CTX({ runId: 'run-cc-A' }), MAKE_DEPS()),
+      dispatchProjectedTool(tool, 'fix.tool', { label: 'B' }, MAKE_CTX({ runId: 'run-cc-B' }), MAKE_DEPS()),
+    ]);
+
+    const outA = readBuffer({ workspaceId: 'default', toolName: 'fix.tool', runId: 'run-cc-A', sinceId: 0 })!;
+    const outB = readBuffer({ workspaceId: 'default', toolName: 'fix.tool', runId: 'run-cc-B', sinceId: 0 })!;
+
+    expect(outA.map((e) => e.data)).toEqual([{ text: 'from-A-1' }, { text: 'from-A-2' }]);
+    expect(outB.map((e) => e.data)).toEqual([{ text: 'from-B-1' }, { text: 'from-B-2' }]);
   });
 });

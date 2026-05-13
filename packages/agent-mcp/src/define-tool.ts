@@ -158,6 +158,7 @@ function defineRoleGatedTool<TArgs extends ZodTypeAny>(
     rolesQuota: input.rolesQuota,
     timeoutSec: input.timeoutSec,
     idleTimeoutSec: input.idleTimeoutSec,
+    replayBufferSize: input.replayBufferSize,
     args: input.args,
     events: input.events,
     handler: input.handler,
@@ -363,6 +364,7 @@ function registerRoleGatedAsProjected<TArgs extends ZodTypeAny>(
     rolesQuota: def.rolesQuota,
     timeoutSec: def.timeoutSec,
     idleTimeoutSec: def.idleTimeoutSec,
+    replayBufferSize: def.replayBufferSize,
     events: def.events,
     expose: {
       mcp: { name: def.name },

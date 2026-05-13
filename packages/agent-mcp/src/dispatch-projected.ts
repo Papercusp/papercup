@@ -19,6 +19,7 @@
 
 import type { AgentRole, ToolResult } from '@papercusp/plugin-sdk';
 import type { ProjectedTool, UnifiedToolContext } from './tool-projection';
+import { openBuffer as openReplayBuffer } from './replay-buffer';
 
 /* ─── Quota window keying ────────────────────────────────────────────── */
 
@@ -87,6 +88,14 @@ export interface DispatchProjectedDeps {
      * passes the parsed input verbatim.
      */
     args?: unknown;
+    /**
+     * Number of events the tool emitted via ctx.emit / ctx.progress
+     * before completion. Used to size replay buffers from empirical
+     * p99 (Phase 4 T2.2). 0 for non-streaming tools and tools that
+     * never emit. Hosts persist into harness_shared.tool_invocations
+     * .event_count (migration 066).
+     */
+    eventCount?: number;
   }): Promise<void>;
 }
 
@@ -100,6 +109,10 @@ export async function dispatchProjectedTool(
   deps: DispatchProjectedDeps,
 ): Promise<DispatchProjectedResult> {
   const startedAt = Date.now();
+  // T2.2 — events emitted via ctx.emit (declared here so gate-failure
+  // paths can record it as 0 without forward-referencing). The
+  // wrappedEmit defined later bumps it on every emit.
+  let eventCount = 0;
 
   // 1. Role allowlist (only when both sides are known).
   // Superuser bypass: shell-launched agents (loopback + bearer token,
@@ -117,6 +130,8 @@ export async function dispatchProjectedTool(
           status: 'role-not-allowed',
           errorMessage: `role "${ctx.role}" not in allowlist`,
           args: input,
+
+          eventCount,
         });
       } catch { /* best-effort */ }
     }
@@ -153,6 +168,8 @@ export async function dispatchProjectedTool(
               status: 'role-not-allowed',
               errorMessage: `principal "${ctx.principal.slug}" lacks capability "${cap}"`,
               args: input,
+
+              eventCount,
             });
           } catch { /* best-effort */ }
         }
@@ -189,6 +206,8 @@ export async function dispatchProjectedTool(
                 status: 'quota-exceeded',
                 errorMessage: `quota ${state.count}/${limit} for role "${role}" in window "${windowKey}"`,
                 args: input,
+
+                eventCount,
               });
             } catch { /* best-effort */ }
           }
@@ -241,30 +260,60 @@ export async function dispatchProjectedTool(
   if (ctx.signal && !ctx.signal.aborted) {
     ctx.signal.addEventListener('abort', () => abort.abort(), { once: true });
   }
-  // Wrap ctx.emit so each emit refreshes the idle deadline. The
-  // wrapper is installed only when idleTimeoutSec is on — non-streaming
-  // tools pay no overhead.
-  const wrappedEmit = idleSec > 0
-    ? (name: string, data: unknown) => {
-        lastEmitMs = Date.now();
-        ctx.emit(name, data);
-      }
-    : ctx.emit;
+
+  // Phase 4 T2.2 — replay ring buffer. When a tool declares
+  // `replayBufferSize > 0`, push every emit into a per-call buffer
+  // keyed on (workspaceId, toolName, runId) so a reconnecting client
+  // (with `Last-Event-ID` + `X-Papercusp-Run-Id` headers) can resume
+  // mid-stream. Disabled by default (0/undefined) — non-streaming
+  // tools and tools that don't care about resume pay no overhead.
+  //
+  // The dispatcher's monotonic counter mirrors the SSE sink's
+  // id-allocator: each ctx.emit increments BOTH (the sink's
+  // allocator runs in the wire layer; the dispatcher's runs here).
+  // They stay in lockstep because ctx.emit is the only producer of
+  // sink.event() calls during the stream — heartbeats and the
+  // framework's auto-`done` use their own paths. eventCount is
+  // declared at the top of this function so gate-failure paths
+  // record it as 0 without a forward reference.
+  const replayCap = tool.replayBufferSize ?? 0;
+  const bufferWriter =
+    replayCap > 0 && ctx.workspaceId && ctx.runId
+      ? openReplayBuffer({
+          workspaceId: ctx.workspaceId,
+          toolName,
+          runId: ctx.runId,
+          capacity: replayCap,
+          onEvict: (ev) => {
+            // eslint-disable-next-line no-console
+            console.warn(
+              `[replay-buffer] ${toolName}/${ctx.runId}: evicted event id=${ev.id} name=${ev.name} (capacity ${replayCap})`,
+            );
+          },
+        })
+      : null;
+
+  // Wrap ctx.emit so each emit refreshes the idle deadline (when on)
+  // AND pushes into the replay buffer (when on). The wrapper is always
+  // installed — both features are conditional inside.
+  const wrappedEmit = (name: string, data: unknown): void => {
+    if (idleSec > 0) lastEmitMs = Date.now();
+    eventCount += 1;
+    if (bufferWriter) bufferWriter.push({ id: eventCount, name, data });
+    ctx.emit(name, data);
+  };
   // Re-bind ctx.progress to the wrapped emit. The transport adapter's
   // progress is pre-built and closes over the UN-wrapped emit, which
   // means a tool calling ctx.progress exclusively (no direct ctx.emit)
-  // would never refresh lastEmitMs — and a slow-progress LLM call
-  // would trip the idle watchdog mid-stream. This wrapper makes
-  // progress an alias of wrappedEmit per D2 of the plan.
-  const wrappedProgress = idleSec > 0
-    ? (pct: number | undefined, msg?: string) => {
-        wrappedEmit('progress', {
-          progress: typeof pct === 'number' ? pct : 0,
-          total: 100,
-          ...(msg ? { message: msg } : {}),
-        });
-      }
-    : ctx.progress;
+  // would never refresh lastEmitMs OR land in the replay buffer.
+  // This wrapper makes progress an alias of wrappedEmit per D2.
+  const wrappedProgress = (pct: number | undefined, msg?: string): void => {
+    wrappedEmit('progress', {
+      progress: typeof pct === 'number' ? pct : 0,
+      total: 100,
+      ...(msg ? { message: msg } : {}),
+    });
+  };
   const handlerCtx: UnifiedToolContext = {
     ...ctx,
     signal: abort.signal,
@@ -293,6 +342,8 @@ export async function dispatchProjectedTool(
             status: 'timeout',
             errorMessage: `tool "${toolName}" aborted (idle or wall-clock timeout) but handler returned successfully`,
             args: input,
+
+            eventCount,
           });
         } catch { /* best-effort */ }
       }
@@ -319,6 +370,8 @@ export async function dispatchProjectedTool(
           outputSize: result.outputSize ?? JSON.stringify(result.content).length,
           ...(result.outputRef ? { outputRef: result.outputRef } : {}),
           args: input,
+
+          eventCount,
         });
       } catch { /* best-effort */ }
     }
@@ -337,6 +390,8 @@ export async function dispatchProjectedTool(
           status,
           errorMessage: err instanceof Error ? err.message : String(err),
           args: input,
+
+          eventCount,
         });
       } catch { /* best-effort */ }
     }

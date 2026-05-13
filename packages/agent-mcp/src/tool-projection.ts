@@ -400,6 +400,19 @@ export interface ProjectedTool {
    */
   idleTimeoutSec?: number;
   /**
+   * Per-call replay ring-buffer size. When > 0, the dispatcher keeps
+   * the last N emitted events keyed on (workspaceId, toolName, runId)
+   * for ~5 min past stream-end. A reconnecting client sending
+   * `Last-Event-ID` + `X-Papercusp-Run-Id` headers gets the buffered
+   * tail replayed before the cold sink continues. Eviction is FIFO
+   * with a one-line warn log per evicted event. Phase 4 T2.2.
+   *
+   * Disconnect semantics: tool ABORTS on disconnect; replay serves
+   * only the pre-disconnect buffer (model "(b)" in the plan). See
+   * phase-4-endpoint-system-2026-05-12.md § T2.2 for the rationale.
+   */
+  replayBufferSize?: number;
+  /**
    * Typed event channel — Zod schemas keyed by event name. Surfaced
    * via tools/list as JSON-Schema for client discovery. No runtime
    * validation of outgoing events (trusted code path). Undefined for
