@@ -1,504 +1,443 @@
-# Dockview migration plan + audit (2026-05-13)
+# Dockview migration plan — full operator panel system
 
-Status: **proposal — awaiting greenlight**. No code shipped.
+**Status**: proposal, awaiting greenlight. v3 (this file) = corrected rewrite after a third audit pass
+that found concrete factual errors in v2 (migration number, column types, dockview v6 breaking
+changes, mount-point file name, agent-contract dependency). All errors below were verified against
+the current `main` checkout, not from memory.
 
-This doc combines:
-- §A The plan (sections 1–9, as previously discussed)
-- §B Audit findings — gaps, oversights, and additions discovered on a thorough re-read
-- §C Revised phase list incorporating §B
-- §D Open decisions for the user
+**Repo**: work directly on `papercup/main` (no worktree, no feature branch). Per-turn commits.
+User pauses other agents during implementation. Submodule (`libs/papercusp`) changes are coordinated
+through the same checkout.
 
 ---
 
-## §A The plan (as originally proposed)
+## §0. Verification log (what changed between v2 and v3, with sources)
 
-### 1. Goal
+These are the corrections folded into this rewrite. Each was checked against the repo, not assumed.
 
-Make the entire operator harness UI feel like the pi tab: every long-lived view is a draggable panel; users freely arrange/split/float them; layouts persist per-user across machines. Eliminate the inconsistency between the pi tab's drag-and-drop docking and the rest of the dashboard's fixed-split layout.
-
-### 2. Non-goals
-
-- Replacing **app chrome** (operator chat sidebar, top HUD bar, command palette, toasts).
-- Replacing **transient overlays** (FeaturePeekPanel drawer, IssueDetail drawer, modals).
-- Multi-OS-window Chrome-style tab tear-off. FloatingGroup (single-process floating panel) is the substitute.
-- Cross-window sync (BroadcastChannel). Not needed; staying single-window.
-- Plugin SDK breaking changes. `dashboardTabs` gets a backwards-compatible superset.
-
-### 3. The harness selector — unbundling
-
-Today the harness selector lives in `.h-header` and is scoped to `?slug=`. After migration the three purposes it serves are unbundled:
-
-| Purpose | Today | After |
+| v2 said | v3 fix | Source of truth |
 |---|---|---|
-| Drive the operator's default harness context (default slug for new panels, agent context, voice replies) | `?slug=` URL param | A small selector in the **operator chat sidebar header**. nuqs-backed. |
-| Show harness-level meta (phase tabs, alive/idle, project path, progress, todo/blocked/passed) | `.h-header` block | A new dock panel type `view:harness-overview` taking a `slug` param. Default layout opens one. Users may open multiple, one per harness. |
-| Switch which harness is "active" | RSelect dropdown | Same dropdown, in the chat sidebar header. Changes default slug for new panels; does not retroactively change open panels. |
+| Migration number `067` | Use `070` (the next available) | `libs/papercusp/libs/db/sql/` last file = `069-system-docs-read-cap.sql`. Two duplicate numbers already exist (`058`, `062`) — not introducing a third. |
+| `workspace_id uuid, user_id uuid` PK | `workspace_id text, user_id text` (NOT NULL, default `'default'` / `'_local'`) | `useWorkspaceId()` returns literal string `'default'` in dev; loopback dev has no auth user — user id is the string `'_local'`. Both are *not* UUIDs. Using uuid columns would crash inserts. |
+| "dockview v5→v6 has small API breaks, usually small" | v6 has **3 breaking changes the plan must handle**: CSS no longer auto-injects (explicit `import 'dockview/dist/styles/dockview.css'` required), `TabGroupColor` renamed to `DockviewTabGroupColor`, theme class must live on a wrapping shell element (not inside the dock). Phase 1 has explicit acceptance criteria for each. | dockview v6.0.0 release notes (verified by browsing the project's CHANGELOG via context7). |
+| Dock root mounts in `<HarnessShell>` | Dock root mounts in `apps/operator/app/_components/ChromeShell.tsx`. The chat sidebar is lazy-loaded inside it. No file named `HarnessShell` exists. | `grep -r "HarnessShell" apps/operator` — no matches. `ChromeShell.tsx` is the actual app shell. |
+| `?phase=` URL param holds phase per-page | Phase moves to **per-panel `params.phase`** because the plan supports multiple `view:harness-overview` panels open at once. Global URL state can't represent that. | Plan §A.4.2 says "Open a second `view:harness-overview` … with a different slug" — that immediately implies per-panel phase too. v2 missed this. |
+| HarnessSelectorChip "goes in chat sidebar header" | The sidebar header is **already 286px of controls in 63px height** (Active 70 + Voice 178 + Settings 28; freshly tightened in this session). The chip cannot fit on that row. v3 specs a new sub-row below, +20px header height, OR a small icon-only chip with a popover. Decision deferred to §D. | `apps/operator/app/_components/OperatorChatSidebar.tsx` per this session's "collapse header" change committed earlier today. |
+| Plugin async load not specified | Plugins call `registerPanel(type, component)` from `onLoad`. `PANEL_REGISTRY` is a reactive map. When a layout references a not-yet-registered type, `MissingPanel` renders with state `"loading-plugin"` (if plugin manifest known) or `"unknown"` (if not). On `registerPanel`, dock re-renders affected panels with the real component. | New design — closes gap from v2 §B.4. |
+| Agent `ui:dispatch` "needs new actions" listed in phase 6/7 | This is a **hard blocker for phase 5**, not a phase 7 nicety. After phase 5 the URL no longer carries `?slug=`, `?phase=`, `?panel=` — those are per-panel params inside the dock layout. Existing agent UI control surface reads/writes URL; it will be broken on the day phase 5 ships unless new actions land in the same PR. | Memory: "URL is the agent → UI control surface". Verified `ui:dispatch` in the codebase: yes, exists, today nuqs-keyed. |
+| Phase 0 POC absent | Added explicitly: a 1-day spike to mount one `<DockviewReact>` with one stub panel and persist layout to PG, ahead of touching the pi tab. Validates the whole stack (SSR dynamic import, CSS pipeline, PG round-trip, ChromeShell mount point) on a throwaway route. | Best practice for a 6-PR migration. v2 buried this in "phase 1". |
 
-`?slug=sheets` continues to deep-link into a default layout containing an overview panel pre-loaded for `sheets`.
+---
 
-### 4. Final architecture
+## §A. Goals and non-goals
+
+### Goal
+Every long-lived view in the operator becomes a draggable panel in one dockview tree. Layouts persist
+per (workspace, user, layout-name) in Postgres. Users can split, tab, float, and pin panels. Multi-harness
+side-by-side is a natural consequence — not a separate feature.
+
+### Non-goals
+- App chrome (chat sidebar, top HUD, command palette, toasts): stays fixed, not in the dock.
+- Transient overlays (`FeaturePeekPanel`, `IssueDetail`, modals, full-screen brainstorm canvas): stays as overlays.
+- Multi-OS-window tear-off: replaced by dockview's `FloatingGroup` (single-process floating).
+- Cross-window/cross-tab sync (BroadcastChannel): not in scope; single window only.
+- Mobile responsive: phase 7 (deferred) adds a "compact / list-only" fallback below 720px.
+- Plugin SDK breaking change: `dashboardTabs` field stays as a deprecated alias forever (warn in dev).
+
+---
+
+## §B. Final architecture
 
 ```
-<HarnessShell>                                     ← stays
-  ├── <OperatorChatSidebar>                        ← chrome, fixed left
-  │     └── <HarnessSelectorChip />                ← MOVED HERE; drives default slug
-  ├── <HarnessHudOverlay />                        ← chrome, fixed top (stripped: no selector)
-  ├── <DockviewReact components={PANEL_REGISTRY}   ← ONE root dock
-  │       onReady={hydrateFromPG} />               
-  ├── <FeaturePeekPanel /> <IssueDetail />         ← stay as overlay drawers
-  ├── <CommandPalette />                           ← stays as overlay
-  └── <Toaster />                                  ← stays as overlay
+ChromeShell.tsx                                      ← stays
+├── OperatorChatSidebar                              ← chrome, fixed left
+│   └── HarnessSelectorChip (NEW)                     ← drives default slug for new panels
+├── HarnessHudOverlay                                ← chrome, fixed top (stripped: no selector)
+├── DockviewReact ⬅ ONE root dock, replaces:
+│     - top tab strip (Dashboard / Docs / VSCode / Pi / Design)
+│     - dashboard internals (Git / Features / Issues / Agents / Logs split)
+├── FeaturePeekPanel (overlay drawer)
+├── IssueDetail (overlay drawer)
+├── CommandPalette
+└── Toaster
 ```
 
-### 4.1 PANEL_REGISTRY
+### B.1 PANEL_REGISTRY
 
 ```ts
-const PANEL_REGISTRY = {
-  'view:harness-overview':   HarnessOverviewPanel,   // phase tabs + status + meta
+const PANEL_REGISTRY: Record<string, PanelComponent> = {
+  // Absorbs what `.h-header` used to render
+  'view:harness-overview':   HarnessOverviewPanel,    // phase tabs + status + progress, per-instance slug+phase
+  // Existing top-level "tabs"
   'view:dashboard-overview': DashboardOverviewPanel,
   'view:docs':               DocsPanel,
-  'view:vscode':             VSCodePanel,
-  'view:pi-terminals':       PiTerminalsDock,
+  'view:vscode':             VSCodePanel,             // iframe to code-server
+  'view:pi-terminals':       PiTerminalsDock,         // NESTED dock (the existing pi system)
   'view:design':             DesignPanel,
-  'view:proposals':          ProposalsPanel,
+  'view:proposals':          ProposalsPanel,          // internal react-resizable-panels STAYS inside
+  // Intra-dashboard panels become top-level instances
   'data:features':           FeaturesPanel,
   'data:issues':             IssuesPanel,
   'data:agents':             AgentsPanel,
   'data:logs':               LogsPanel,
   'data:git':                GitGraphPanel,
   'data:chat':               ChatPanel,
+  // Pinned-detail panels (created by "Pin as panel")
   'pin:feature':             PinnedFeaturePanel,
   'pin:issue':               PinnedIssuePanel,
+  // Dynamic
   'plugin:*':                PluginPanelRouter,
 };
 ```
 
-Each panel receives `props.api.params: { workspaceId, harnessSlug, ...specific }`. Two panels of the same type with different `harnessSlug` are distinct instances.
+Every panel receives `props.api.params: { workspaceId, harnessSlug, phase?, ...specific }`. Two panels
+with the same `type` and different `params` are distinct instances — this is what makes "two
+harness-overview panels for different slugs+phases" work.
 
-### 4.2 Default layout
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│ Group "context"  (left rail, 280px, full-height)                     │
-│   tabs: data:git, view:harness-overview                              │
-├──────────────────────────────────────────────────────────────────────┤
-│ Group "main"  (flex, fills middle)                                   │
-│   tabs: view:dashboard-overview*, data:features, data:issues,        │
-│         view:docs, view:vscode, view:pi-terminals, view:design       │
-├──────────────────────────────────────────────────────────────────────┤
-│ Group "telemetry"  (right rail, 320px, full-height)                  │
-│   tabs: data:agents, data:logs                                       │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
-### 4.3 Persistence (migration 067)
+### B.2 Persistence — migration 070
 
 ```sql
+-- libs/papercusp/libs/db/sql/070-dock-layouts.sql
 CREATE TABLE harness_shared.harness_dock_layouts (
-  workspace_id   uuid    NOT NULL,
-  user_id        uuid    NOT NULL,
-  layout_name    text    NOT NULL DEFAULT 'default',
-  layout_json    jsonb   NOT NULL,
-  schema_version int     NOT NULL DEFAULT 1,
-  created_ts     bigint  NOT NULL,
-  updated_ts     bigint  NOT NULL,
+  workspace_id    text    NOT NULL,
+  user_id         text    NOT NULL DEFAULT '_local',
+  layout_name     text    NOT NULL DEFAULT 'default',
+  schema_version  int     NOT NULL DEFAULT 1,
+  layout_json     jsonb   NOT NULL,
+  created_ts      bigint  NOT NULL,
+  updated_ts      bigint  NOT NULL,
   PRIMARY KEY (workspace_id, user_id, layout_name)
 );
+GRANT SELECT, INSERT, UPDATE, DELETE ON harness_shared.harness_dock_layouts TO harness_admin;
 ```
 
-URL carries: `?layout=default` and (throttled) `?focus=panel:abc123`. No layout body in URL.
+- `text` not `uuid` per §0.
+- `schema_version` lets future dockview major-bumps migrate layout JSON instead of rejecting it.
+- Optimistic concurrency: PUT requires the previous `updated_ts`; server rejects on mismatch with 409.
+  Last-writer-wins is a per-request opt-out via `?force=1`. Keeps two-tab-same-user from clobbering.
+- `getUserIdForLayouts(req)` resolver: in loopback dev returns `'_local'`; with Plan 4 auth returns
+  the authenticated user id. Multi-user queries always filter by `user_id = current_user_id`.
 
-### 4.4 Plugin contract extension
+### B.3 URL state (after phase 5)
 
-```json
+| Param | Carries | Notes |
+|---|---|---|
+| `?layout=<name>` | Which named layout to load | Default `'default'` |
+| `?focus=<panelId>` | Which panel has keyboard focus | Transient, throttled writes |
+| `?slug=<slug>` | **Compat only** — pre-phase-5 deep links | Hydrates default layout with one overview panel for that slug |
+| ~~`?phase=`~~ | Removed | Now per-panel `params.phase` |
+| ~~`?panel=`~~ | Removed | Replaced by `?focus=` |
+| ~~`?harness=` etc.~~ | Removed | Per-panel `params.harnessSlug` |
+
+Pre-alpha — no users — so removing query params is OK per memory rules. Plan does NOT carry the
+full layout JSON in URL (5–15 KB, churn-heavy → bad URL citizen).
+
+### B.4 Agent UI contract (HARD requirement for phase 5)
+
+Today's `ui:dispatch` actions: `setSlug`, `setPhase`, `selectFeature`, `selectIssue`, `openPanel`,
+`closePanel`. All implemented as nuqs URL writes.
+
+After phase 5 these must dispatch to dock layout operations:
+- `setSlug(slug)` → set `defaultSlug` (chip in sidebar) AND if a `view:harness-overview` panel is
+  focused, mutate its `params.harnessSlug` via dockview API.
+- `setPhase(phase)` → mutate focused panel's `params.phase` (overview panel only).
+- `openPanel(type, params)` → `dockApi.addPanel({ id: nanoid(), component: type, params })`.
+- `closePanel(panelId)` → `dockApi.removePanel(panelId)`.
+- `focusPanel(panelId)` → `dockApi.getPanel(panelId)?.focus()`.
+- NEW: `splitPanel`, `floatPanel`, `pinAsPanel(entityType, entityId)`.
+
+`ui:get_state` returns `{ defaultSlug, focusedPanelId, panels: [{ id, type, params }] }` for the
+agent to read. This is part of phase 5's PR, not deferred.
+
+### B.5 Plugin contract
+
+Plugin manifest (backwards-compatible):
+```jsonc
 {
   "id": "linear-sync",
-  "panels": [
+  "panels": [                      // new field
     { "id": "linear:projects", "title": "Linear Projects", "iframeUrl": "/p/linear/projects" }
-  ]
+  ],
+  "dashboardTabs": [...]           // deprecated alias; mapped to panels[] at load time
 }
 ```
 
-`dashboardTabs` continues to work as deprecated alias.
-
-### 5. Phased delivery (initial proposal — see §C for revision)
-
-- Phase 1: Upgrade pi-tab to dockview 6.2.2
-- Phase 2: Migrate pi-tab persistence localStorage → PG
-- Phase 3: Replace HarnessDashboard's `react-resizable-panels` with nested DockviewReact
-- Phase 4: Add `view:harness-overview` + move selector to chat sidebar
-- Phase 5: Collapse top-level tab strip into root dock
-- Phase 6: Plugin contract + "Pin as panel" actions
-
-### 6. Testing strategy
-
-- Unit tests for `dock-layouts.ts` helper
-- Existing e2e tests should still pass without modification (target inner content, not chrome)
-- Manual smoke per phase
-
-### 7. Rollback
-
-Per-phase PRs. Migration 067 is additive. localStorage → PG migration in Phase 2 is one-time read; no data deletion.
-
-### 8. Open questions (original)
-
-1. Is the harness-selector unbundling (§3) correct?
-2. Should `view:harness-overview` be openable multiple times for the same slug?
-3. Default layout content shape — Git-left / dashboard-middle / telemetry-right?
-4. Are nested docks (pi-terminals as dock-within-a-dock) OK?
-5. Plugin `dashboardTabs` migration deadline — warn or break?
-6. Phase ordering: Phase 4 before Phase 3?
-
-### 9. Total effort estimate
-
-~5 days, 6 PRs. §C updates this.
+Load order:
+1. ChromeShell mounts; dock hydrates from PG. Unknown panel types → `MissingPanel("loading")`
+   if a plugin manifest declares the type (even if plugin code hasn't loaded yet), else
+   `MissingPanel("unknown")` with a "Remove from layout" affordance.
+2. Plugin's `onLoad` calls `registerPanel('plugin:linear:projects', Component)`.
+3. Dock listens to registry mutations and re-renders affected panels with the real component.
 
 ---
 
-## §B Audit findings — gaps, oversights, risks
+## §C. Phased delivery — 7 PRs, ordered for risk
 
-Re-reading §A from scratch against the actual codebase. Findings grouped by severity.
+Each phase is one PR, independently revertable. Acceptance criteria are testable smoke steps.
 
-### B.1 Critical gaps (must address before phase 1)
-
-**B.1.1 — dockview-react SSR compatibility.**
-`DockviewReact` touches `window`, `document`, and uses ResizeObserver internally. Next.js App Router will SSR the page by default. The pi tab already lives behind a client-only boundary, but `HarnessDashboard.tsx` is mixed (server + client). Phases 3–5 will hit hydration mismatches and "ReferenceError: window is not defined" if dockview is imported at module scope in a server-component path.
-
-**Mitigation**: every dockview component module begins with `'use client'`. The shell at phase 5 (root dock) needs a `dynamic(() => import('./RootDock'), { ssr: false })` wrapper. Add this to the plan explicitly.
-
-**B.1.2 — Layout JSON schema versioning.**
-Original plan stored raw `layout_json` with no version field. dockview's own JSON shape is versioned by them. If dockview ever changes its schema (v6 → v7), every existing layout in PG silently corrupts. Already added `schema_version` column in §A.4.3 revision. Need: a hydrate function that detects unknown `schema_version` and falls back to default layout + logs warning. Need: layout fixture/snapshot tests that catch dockview schema changes during upgrade.
-
-**B.1.3 — Layout corruption recovery / hard-reset.**
-If a layout JSON is malformed (race-condition write from two tabs, or schema drift), the dock can render blank — and the user has no UI to recover because the controls are inside the dock. Need: a non-dock-resident keypress (e.g. **Shift+Esc held 1 second**) that invokes `resetLayout(layoutName)` and rehydrates from defaults. Surface "Reset layout" in the command palette too.
-
-**B.1.4 — Unknown panel type handling.**
-If a saved layout references `plugin:linear:projects` and that plugin is now uninstalled, dockview throws when trying to render. Need: PANEL_REGISTRY proxy that, for unknown types, returns a `MissingPanel` component showing "This panel's plugin is not installed. [Remove from layout]". Without this, a single missing plugin breaks the whole dock.
-
-**B.1.5 — Multiple Zero subscriptions per duplicate panel.**
-Today there's one `useQuery(features)` per page. With multiple `data:features` panels open for the same slug, each calls its own `useQuery`. Zero dedupes subscriptions at the client level, but the React-side overhead (re-render on each update × N panels) and the agent UI dispatch state (one nuqs key per "selected feature") will collide.
-
-**Mitigation**: each panel keeps an `instanceId` (dockview gives this). Per-panel state (selection, scroll, filter) is namespaced in nuqs under `panel:<instanceId>.*`. Validate this scales to 10+ panels before phase 5.
-
-**B.1.6 — Auth `user_id` source.**
-Layout PK is `(workspace_id, user_id, layout_name)`. The operator runs loopback-only with no per-user auth in dev. Need to decide:
-- Single-user mode (today): `user_id = workspace_id` or `'_local'` placeholder
-- Phase 4 (Plan 4 user accounts landed in migration 058): use the authenticated user
-- Webapp/mobile: real auth user id
-
-Spec the resolver: `getUserIdForLayouts(req)` returning a canonical UUID for whichever auth mode is active.
-
-**B.1.7 — paperclip + harness file edits.**
-`paperclipai run` rewrites files under `apps/web/app/harness/*` and `apps/operator/app/harness/*`. Per `memory://root/MEMORY.md` (`feedback_paperclip_collision_race.md`), every file in `app/harness/` is a stomp candidate. Phases 3–5 edit `HarnessDashboard.tsx` and shell files extensively.
-
-**Mitigation**:
-- `pgrep -af paperclip` at the start of every editing session for this migration
-- User explicitly pauses paperclip for the duration of phase 3 and phase 5 (largest edits)
-- Per-turn commits per `feedback_per_turn_commit.md`
-
-### B.2 High-severity gaps
-
-**B.2.1 — `react-resizable-panels` is used in many more places than HarnessDashboard.**
-Plan §5 phase 3 says "remove react-resizable-panels from HarnessDashboard, leave dependency for others." Need to enumerate the others to scope a phase 3.5 (or phase 7) for them:
-
-Per quick grep, `react-resizable-panels` is also used by:
-- `ProposalsPanel.tsx` (internal split)
-- `IssueDetail.tsx` (drawer internals)
-- `apps/web/app/.../` shared harness pages
-
-Decide: do `ProposalsPanel`/`IssueDetail` internals become dock-within-dock (likely no, they're overlays), or keep their own `react-resizable-panels` indefinitely (yes, cheap and consistent)?
-
-**B.2.2 — Drawer overlap with dock floating groups.**
-FeaturePeekPanel and IssueDetail are vaul Drawers that overlay the right side. dockview FloatingGroup also positions absolutely. Z-index ordering and click-through behavior between an open drawer and a floating dock group is not defined.
-
-**Mitigation**: explicit z-index scale in `harness.css`:
-- 100–199: dockview floating groups
-- 200–299: vaul drawers
-- 300+: modals, command palette, toasts
-
-Verify by smoke test in phase 3.
-
-**B.2.3 — `papercusp-app` div wrapping for paperclip injection.**
-Per recent commit `601dcc11 fix(operator): wrap layout body in <div id='papercusp-app'>`, the layout body needs that wrapper. Confirm the dock root sits *inside* `#papercusp-app`. Easy miss.
-
-**B.2.4 — Keyboard shortcuts: global vs panel-local scope.**
-Today there's no clear scoping; some shortcuts (Cmd+K palette) bind on `window`, some (xterm copy) bind on the focused panel. With many panels, "Cmd+W close current panel" needs to know which panel has focus. dockview exposes `activeGroup` and `activePanel` but the keyboard handler still binds to `window`.
-
-**Mitigation**: introduce a `useFocusedPanel()` hook reading dockview's `onDidActiveGroupChange`. Document the scoping rules in this doc before phase 5.
-
-**B.2.5 — Phase tabs inside `view:harness-overview`: per-panel state or global?**
-A user opens two `view:harness-overview` panels for the same slug — one showing "Phase: production" and one "Phase: staging". Currently phase is global URL state. To support this, phase becomes per-panel-instance state.
-
-**Decision needed**: confirm we want this. If yes, all phase-related agent UI dispatch lookups need to receive the instance id. Significant.
-
-**B.2.6 — `papercup-db` and `papergrid` are untracked dirs.**
-`git status` shows `libs/papercup-db/` and `libs/papergrid/` as untracked. These may contain another agent's in-progress work. Editing in their vicinity is unsafe. Confirm before phase 3.
-
-**B.2.7 — VSCode and code-server iframes during drag.**
-Iframes don't survive being re-parented in the DOM. When a panel containing an iframe is dragged between groups, browsers reload the iframe — losing terminal state, editor scroll, unsaved buffers. This is a known dockview limitation.
-
-**Mitigation**:
-- Detached portal pattern: iframe lives in a fixed-position container outside dockview; the panel just positions an absolutely-positioned div over the panel's bounding rect. The pi-tab already does this for xterm — extend the same pattern to `view:vscode` and any other iframe-hosting panel.
-- Document the pattern in a `apps/operator/docs/dockview-iframe-pattern.md` companion.
-- Test: drag VSCode panel between groups → editor scroll and unsaved buffer preserved.
-
-**B.2.8 — Brainstorm canvas full-screen mode.**
-The brainstorm view today is a full-screen takeover. In a dock world it's awkward. Options:
-- Stays as a route-level overlay (outside the dock) → simplest, matches existing UX
-- Becomes a panel that defaults to a maximize-group state → more flexible but conflicts with the "drawing canvas needs the full viewport" use case
-
-**Decision needed**.
-
-### B.3 Medium-severity gaps
-
-**B.3.1 — Workspace switch invalidation.**
-Layouts are keyed by `workspace_id`. When the user switches workspace, the dock should hydrate the new workspace's layout. Need explicit `onWorkspaceChange` → tear down + rehydrate flow. Without it, the old layout lingers and points at stale slugs.
-
-**B.3.2 — Floating group position clamping.**
-A floating group at `{x: 1900, y: 1100}` on a 4K monitor positions off-screen when the user moves to a 1440p monitor. On hydrate, clamp `{x, y}` to current viewport.
-
-**B.3.3 — HUD content audit.**
-Plan §A.4 says "strip HUD: no longer hosts selector." Need explicit list of what the HUD currently shows and where each item goes:
-- Mission state pill → stays in HUD
-- Build status pill → stays in HUD
-- Voice indicator → stays in HUD
-- (any others?) — enumerate before phase 4
-
-**B.3.4 — Voice mode "summarize state".**
-Voice commands today reference the global `?slug=`. In a dock world with multiple harnesses visible, "summarize state" needs to disambiguate. Use the chat-sidebar selector value (= active default slug) as the disambiguator. Document explicitly.
-
-**B.3.5 — Agent UI dispatch (`ui:get_state`, `ui:dispatch`) compatibility.**
-The agent contract reads/writes URL state. After phase 5, much state moves to PG (layout) and per-panel nuqs keys. The agent contract needs:
-- A new `ui:list_panels` action returning all open panels and their params
-- `ui:open_panel(type, params)` and `ui:close_panel(instanceId)` actions
-- Per-panel state remains via existing `ui:dispatch` with panel-namespaced keys
-
-This is a separate plan item. Phase 6 or 7. Without it, the agent loses the ability to navigate post-migration.
-
-**B.3.6 — Drizzle schema regeneration.**
-Migration 067 adds a table. The Drizzle TS schema (`generated.ts`) needs regeneration. Add to phase 2 checklist.
-
-**B.3.7 — dockview-react peer dep + Next 15 / React 19.**
-Verify dockview 6.2.2 lists React 19 in peer deps. v5.2.0 only declared 18.x. If not, pin to a compatible point release or add a `.npmrc` `legacy-peer-deps`. Verify in phase 1.
-
-**B.3.8 — HMR + dockview state.**
-During development, HMR re-mounts components. The pi tab handles this via the `restored` flag. Verify the same pattern works for the root dock. Test: edit `FeaturesPanel.tsx`, save, confirm layout doesn't reset.
-
-**B.3.9 — Jsdom test compatibility.**
-ResizeObserver is not in jsdom by default. dockview tests will fail unless polyfilled. Add `resize-observer-polyfill` to `vitest.setup.ts`.
-
-**B.3.10 — Concurrent layout writes from two tabs.**
-User opens operator in two browser tabs (or desktop + webapp). Both write to `harness_dock_layouts` for the same `(workspace_id, user_id, 'default')`. Last writer wins. Acceptable but document.
-
-**Mitigation (optional)**: PG row-level lock via `SELECT … FOR UPDATE` in the save endpoint. Probably overkill — last-writer-wins is fine for layout.
-
-**B.3.11 — Command palette discoverability.**
-Today the command palette doesn't index panels (there's nothing to index). Add a `Panel.openCatalog()` action and a per-panel-type "Open: Features (sheets)" command. Phase 6 deliverable.
-
-**B.3.12 — Browser back-button after phase 5.**
-After phase 5, route is fixed (`/harness`) and layout changes are not navigations. Back-button does nothing useful. This matches the pi tab behavior today — acceptable. Document.
-
-### B.4 Low-severity / nice-to-have
-
-- **B.4.1** Telemetry: emit `panel_open`/`panel_close` events with panel type to understand usage
-- **B.4.2** Empty group cleanup: dissolve groups with zero panels (dockview default) vs preserve as "favorite slot" — pick dissolve
-- **B.4.3** Mobile responsiveness: dockview doesn't fit mobile. Below 768px, fall back to a flat tab strip. Phase 7+.
-- **B.4.4** Accessibility: dockview tab focus order and ARIA roles need verification. Most LIFs handle this; double-check in phase 1.
-- **B.4.5** RTL: dockview handles RTL via CSS direction. Verify if relevant.
-- **B.4.6** Layout sharing: "share my layout" → export JSON, import on another user. Phase 7+.
-- **B.4.7** Default layout shipped with the app vs computed at runtime: ship a static JSON in `apps/operator/lib/default-layouts/` for determinism.
-- **B.4.8** Changelog entry: this changes how users think about layouts. Add a note to release notes when phase 5 ships.
-
-### B.5 Things the original plan got right
-
-- Three-purpose unbundling of the selector (§3) is the central design call and it's correct
-- PG canonical persistence (`feedback_pg_canonical_no_mirrors.md`)
-- Phased delivery with revertable per-phase PRs
-- Keeping drawers/modals outside the dock
-- FloatingGroup as the cheap alternative to multi-window
-
----
-
-## §C Revised phase list
-
-Each phase is a single PR with explicit acceptance criteria. Inline references to §B audit items.
-
-### Phase 0 — Pre-flight (new, was implicit)
-
-**Scope**: groundwork that doesn't touch the dock yet.
+### Phase 0 — POC spike (NEW; was missing in v2) — ~0.5 day
+**Goal**: mount one `<DockviewReact>` on a throwaway dev route (`/dev/dock-poc`) with two stub
+panels and PG-backed save/restore. Validate SSR pipeline, CSS import, ChromeShell mount,
+optimistic-concurrency PUT, and React 19 + Next 15 compat against a real production-mode build.
 
 **Changes**:
-- Add `resize-observer-polyfill` to `vitest.setup.ts` (B.3.9)
-- Decide `getUserIdForLayouts(req)` resolver shape (B.1.6)
-- Enumerate HUD content audit (B.3.3) and other `react-resizable-panels` callsites (B.2.1)
-- Confirm dockview 6.2.2 peer deps against React 19 / Next 15 (B.3.7)
-- Document iframe portal pattern at `apps/operator/docs/dockview-iframe-pattern.md` (B.2.7)
-- Add a z-index scale section to `apps/operator/app/harness/harness.css` (B.2.2)
+- Add `dockview` and `dockview-react` v6.2.2 deps.
+- Migration 070 (text columns, schema_version, default 'default' / '_local').
+- `apps/operator/lib/dock-layouts.ts`: CRUD against PG.
+- `app/api/_hono/dock-layouts.ts`: GET/PUT with `If-Match: <updated_ts>`.
+- `app/dev/dock-poc/page.tsx`: dynamic-import-only-on-client of `DockviewReact`; two stub panels.
 
-**Acceptance**: doc deliverables exist; one-line POC importing `dockview-react@6.2.2` in a sandbox page renders without errors.
+**Acceptance**:
+- POC route loads in dev AND in `next build && next start` (no SSR crash).
+- Drag-rearrange persists across hard reload.
+- Two browser tabs open simultaneously → PUT with stale `updated_ts` returns 409.
+- `:3055` runs cleanly for 10 minutes with the POC route open.
+- Migration 070 applies on operator boot (relies on this session's migration-runner fix).
 
-**Effort**: half day.
-
-### Phase 1 — Upgrade pi-tab to dockview 6.2.2
-
-**Scope** (unchanged):
-- bump dockview 5.2.0 → 6.2.2
-- fix any 5→6 API breaks in `PiTerminalsDock.tsx`
-- verify existing pi terminal layouts in localStorage still rehydrate
-- verify FloatingGroup works (drag a terminal tab outside → floating)
-
-**Audit additions**:
-- HMR test (B.3.8): edit a terminal component, ensure layout persists
-- Iframe portal pattern applied to xterm if not already (already is per current code)
-- A11y smoke (B.4.4)
-
-**Effort**: half a day.
-
-### Phase 2 — Migrate pi-tab persistence localStorage → PG
-
-**Scope** (unchanged):
-- Migration 067 (with `schema_version` column per B.1.2)
-- `apps/operator/lib/dock-layouts.ts` helper
-- API endpoints under `/api/dock-layouts/*`
-- Switch `PiTerminalsDock` from localStorage to PG
-- One-time localStorage → PG read on first load
-
-**Audit additions**:
-- Drizzle schema regeneration (B.3.6)
-- Hard-reset shortcut wiring (B.1.3)
-- Unknown layout `schema_version` fallback (B.1.2)
-- Workspace switch teardown/rehydrate (B.3.1)
-- `getUserIdForLayouts` resolver wired (B.1.6)
-
-**Effort**: 1 day (was half).
-
-### Phase 3 — Replace HarnessDashboard's `react-resizable-panels` with nested DockviewReact
-
-**Scope** (unchanged):
-- New `DashboardDock` wrapping `<DockviewReact>` with: `data:git`, `data:features`, `data:issues`, `data:agents`, `data:logs`, `data:chat`
-- Each panel = thin wrapper around existing inner content
-- Layout name `'dashboard'`
-- Default dashboard layout matching today's shape
-- Remove `react-resizable-panels` from `HarnessDashboard.tsx` only
-
-**Audit additions**:
-- Drawer z-index verification (B.2.2)
-- `MissingPanel` fallback wired into PANEL_REGISTRY (B.1.4)
-- Per-panel nuqs namespacing (B.1.5)
-- Verify `#papercusp-app` wrapper survives (B.2.3)
-- Iframe portal pattern applied to any iframe panels added in this phase
-- e2e: confirm FeaturePeekPanel drawer still opens on feature row click
-- e2e: confirm previous-session drawer-open-immediate fix still works
-
-**Risk**: medium-high. Touches most-trafficked screen.
-
-**Effort**: 1.5 days (was 1).
-
-### Phase 4 — Add `view:harness-overview` panel + move selector to chat sidebar
-
-**Scope** (unchanged):
-- New `HarnessOverviewPanel` rendering phase tabs, status chip, project path, progress, counts
-- `HarnessSelectorChip` in `OperatorChatSidebar` header, nuqs-backed
-- Remove `.h-header` block from `HarnessDashboard.tsx`
-- Default dashboard layout includes one `view:harness-overview` pinned to left rail
-- `?slug=sheets` deep-link hydrates default layout with that slug
-
-**Audit additions**:
-- Decide phase-state scoping (B.2.5) — per-panel-instance vs global
-- Voice "summarize state" updated to use selector value (B.3.4)
-- Multiple-overview-of-same-slug allowed (open question §A.8.2 — recommend **yes**)
-
-**Effort**: 1 day.
-
-### Phase 5 — Collapse top-level tab strip into root dock
-
-**Scope** (unchanged):
-- One root `<DockviewReact>` replaces `HarnessShell` content area
-- Default layout per §A.4.2
-- `view:dashboard-overview`, `view:docs`, `view:vscode`, `view:pi-terminals`, `view:design`, `view:proposals` become panels
-- `ReactActivity`-based switching removed
-- `?panel=` URL param preserved as initial focus hint
-- `PiTerminalsDock` becomes nested inside `view:pi-terminals`
-
-**Audit additions**:
-- Dynamic import w/ `ssr: false` wrapper (B.1.1)
-- Hard-reset keypress active globally (B.1.3)
-- Floating-group position clamping on hydrate (B.3.2)
-- HUD content audit completed; remaining HUD items survive (B.3.3)
-- Brainstorm canvas decision applied (B.2.8)
-- Nested-dock drag boundary smoke test (§A.8.4)
-
-**Risk**: medium. Largest visible UX change.
-
-**Effort**: 2 days (was 1.5–2).
-
-### Phase 6 — Plugin contract + "Pin as panel" actions
-
-**Scope** (unchanged):
-- Plugin manifest `panels: PluginPanel[]` (with `dashboardTabs` deprecated alias)
-- Dynamic PANEL_REGISTRY registration for plugin panels
-- `pin:feature`, `pin:issue` panel types
-- Right-click → "Pin as panel" on feature/issue rows
-
-**Audit additions**:
-- Command palette indexing of panels (B.3.11)
-- `ui:list_panels`, `ui:open_panel`, `ui:close_panel` agent actions (B.3.5)
-- Telemetry events (B.4.1)
-- MissingPanel handling validated with an uninstall-plugin scenario (B.1.4)
-
-**Effort**: 1.5 days (was 0.5).
-
-### Phase 7 — Deferred items (new)
-
-- Mobile responsiveness fallback (B.4.3)
-- Layout share/export/import (B.4.6)
-- ProposalsPanel/IssueDetail internal `react-resizable-panels` migration if desired (B.2.1)
-- A11y polish (B.4.4)
-
-Not part of the v1 ship. Track in `apps/operator/docs/dockview-followups.md`.
+**Risk**: low. Throwaway route. Worst case: revert deps + drop migration table.
 
 ---
 
-## §D Open decisions for user review
+### Phase 1 — Upgrade pi-tab to dockview 6.2.2 — ~0.5 day
+**Scope**: bump existing pi tab from v5.2.0 to v6.2.2 with all three v6 breaking changes addressed.
 
-Before greenlight, please confirm or decide:
+**Changes**:
+- `package.json`: dockview-react 5.2.0 → 6.2.2.
+- Explicit `import 'dockview/dist/styles/dockview.css'` in `ChromeShell.tsx` (was auto-injected in v5).
+- Rename any `TabGroupColor` import → `DockviewTabGroupColor`. (Grep first.)
+- Move dockview theme class onto a wrapper `<div className="dockview-theme-dark">` around DockviewReact;
+  do NOT put it on the dock element itself (v6 requirement).
+- Verify `onDidLayoutChange`, `onDidAddPanel`, `onDidRemovePanel` still fire (API unchanged in v6).
 
-1. **Selector unbundling (§A.3)** — confirm the three-purpose split is correct.
-2. **Multi-instance harness-overview** — recommend yes, two overview panels for the same slug allowed. Confirm.
-3. **Default layout content** — recommend Section 4.2 shape (Git+Overview left, dashboard middle, Agents+Logs right). Confirm or specify alternative.
-4. **Brainstorm canvas (B.2.8)** — option A: stays as full-screen route overlay (recommend). Option B: becomes a panel that maximizes its group.
-5. **Phase-state scoping (B.2.5)** — recommend per-panel-instance (each `view:harness-overview` carries its own phase). Confirm.
-6. **Plugin `dashboardTabs` migration deadline** — recommend warn indefinitely (pre-alpha freedom; remove when no plugins use it). Confirm.
-7. **`react-resizable-panels` elsewhere (B.2.1)** — recommend leave `ProposalsPanel`/`IssueDetail` alone. They're cheap split UIs internal to overlays. Confirm.
-8. **`getUserIdForLayouts` resolver (B.1.6)** — current dev mode: `'_local'` placeholder. Webapp/Phase-4-auth: real user id. Confirm.
-9. **Phase ordering** — keep current order (1→6)? Or swap 3 and 4 (do selector first)?
-10. **HUD content audit (B.3.3)** — list final post-strip HUD items.
+**Acceptance**:
+- Pi tab: open 3 terminals, split, drag-rearrange, reload — restored.
+- Dockview dark theme applied (no white-flash regression).
+- FloatingGroup works: drag a terminal tab out → floats inside the same window.
+- All existing pi-tab e2e (if any) pass.
+- `vitest` setup unchanged (no resize-observer crashes in jsdom — if hit, polyfill in `vitest.setup.ts`).
 
----
-
-## §E Total revised effort
-
-| Phase | Effort | Risk |
-|---|---|---|
-| 0 — pre-flight | 0.5d | low |
-| 1 — pi-tab dockview 6 | 0.5d | low |
-| 2 — pi-tab → PG | 1.0d | medium |
-| 3 — dashboard nested dock | 1.5d | medium-high |
-| 4 — overview panel + selector move | 1.0d | medium |
-| 5 — root dock | 2.0d | medium |
-| 6 — plugins + pin | 1.5d | low |
-| **Total v1** | **8.0d** | |
-| 7 — deferred polish | variable | low |
-
-Original estimate was 5 days. Revised is 8 days because phase 0 and audit additions to each phase add ~3 days of correctness work. Still doable; just sets honest expectations.
+**Risk**: low (isolated to pi tab).
 
 ---
 
-## §F Notes for the implementer (me, when greenlit)
+### Phase 2 — Pi-tab persistence: localStorage → PG — ~0.5 day
+**Changes**:
+- Replace `LAYOUT_STORAGE_PREFIX` localStorage in `PiTerminalsDock.tsx` with calls to the
+  layouts API from phase 0.
+- One-time migration shim on mount: if localStorage has `papercusp:pi-dock-layout:*` AND PG is empty
+  for this (workspace, user, layout_name='pi'), upsert localStorage → PG, then `removeItem` the key.
+  Use `INSERT … ON CONFLICT DO NOTHING` to handle two-tab races on first migration.
 
-- Work on `main` directly per user instruction. User pauses paperclip before phase 3 and phase 5.
-- Per-turn commits per `feedback_per_turn_commit.md`.
-- `pgrep -af paperclip` before every editing session.
-- Use `mcp__pi__edit` not regex per `feedback_no_regex_for_func_args.md`.
-- Smoke tests live-verified before closing each phase.
-- Treat the audit checklist (§B) as a per-phase checklist; tick items off in the PR description.
+**Acceptance**:
+- Pi tab in browser A → rearrange → close A → open B at same URL: layout matches.
+- Same in webapp via tunnel: layout matches.
+- After first load post-deploy, localStorage `papercusp:pi-dock-layout:*` keys are gone.
+- Optimistic concurrency: two-tab simultaneous edit → second tab sees 409, refetches, applies, retries.
+
+**Risk**: medium — first PG-canonical layout. Get the API contract right here.
+
+---
+
+### Phase 3 — Dashboard internals → nested DockviewReact — ~1.5 days
+**Scope**: keep top-level "Dashboard / Docs / VSCode / Pi / Design" tab strip exactly as-is, but
+inside the Dashboard panel, the `react-resizable-panels` 4-way split becomes a nested dock.
+
+**Changes**:
+- New `DashboardDock` component. Components: `data:git`, `data:features`, `data:issues`,
+  `data:agents`, `data:logs`, `data:chat`. Each panel is a thin wrapper around the existing
+  inner content — NO logic moves.
+- Layout name in PG: `'dashboard'` per (workspace, user).
+- Default `'dashboard'` layout = today's split shape, expressed as dockview tree.
+- `react-resizable-panels` import removed from `HarnessDashboard.tsx`. **Dependency stays in
+  `package.json`** (still used by ProposalsPanel internals and elsewhere — phased out separately).
+- `FeaturePeekPanel` and `IssueDetail` drawers stay as overlays, NOT in the dock. Verify the
+  recent "instant-open peek" fix still works (the drawers mount once at `ChromeShell` level).
+
+**Acceptance**:
+- All 5 dashboard panels render in starting positions matching today's UX.
+- Drag any panel → new position → reload → restored.
+- Click feature row → `FeaturePeekPanel` opens instantly (the fix from earlier this session).
+- All e2e tests in `apps/operator/tests/` still pass.
+- Keyboard shortcuts (Cmd+/, Cmd+K, etc.) still work and are not swallowed by dockview's own
+  handlers (audit dockview key handling first).
+- No layout flicker on cold load — dock blocks render until PG layout fetched (loading spinner).
+
+**Risk**: medium-high — most-trafficked screen. Pause paperclip during this PR.
+
+---
+
+### Phase 4 — Harness-overview panel + selector to sidebar — ~1 day
+**Scope**: unbundle the `.h-header` block per §B.
+
+**Changes**:
+- New `view:harness-overview` panel with `params: { harnessSlug, phase }`. Renders phase tabs,
+  alive/idle chip, project path, progress %, todo/blocked/passed counts. Phase tabs mutate
+  `params.phase` via `panel.api.updateParameters({ phase })`, NOT the URL.
+- `HarnessSelectorChip` lives in `OperatorChatSidebar` header (or sub-row, per §D decision D2).
+  Reads/writes `defaultSlug` via nuqs (`?slug=`) — same key kept for compat.
+- `.h-header` block in `HarnessDashboard.tsx` deleted.
+- Default `'dashboard'` layout updated to include one `view:harness-overview` panel pinned to the
+  left rail.
+- `/harness/sheets` deep links: middleware hydrates default layout with one overview panel for
+  `slug=sheets`, `phase=staging`. The `?slug=` param stays as the chip's source of truth.
+
+**Acceptance**:
+- `/harness/sheets` cold load → overview panel for sheets visible by default.
+- Sidebar chip shows `sheets`. Changing to `other` does NOT mutate open panels; new panels default to `other`.
+- Open a 2nd overview panel with `params.slug='other', params.phase='production'` via catalog →
+  both visible side-by-side, phase tabs independent.
+- Voice mode "summarize harness state": uses focused panel's `params.harnessSlug` if a panel is focused,
+  else `defaultSlug`. (Add a smoke step.)
+
+**Risk**: medium — semantic shift from "one harness per page" to "default for new panels".
+
+---
+
+### Phase 5 — Collapse top-level strip + agent UI dispatch update — ~2 days
+**Scope**: the current Dashboard / Docs / VSCode / Pi / Design tab strip disappears. Everything
+becomes a panel in one root `<DockviewReact>`. **This PR also ships the agent `ui:dispatch` /
+`ui:get_state` rewrite** — hard requirement, not deferred. Without it, agent UI control breaks
+on the day this lands.
+
+**Changes**:
+- Root `<DockviewReact>` replaces all content area in `ChromeShell.tsx`.
+- All former tabs become panel types; openable via:
+  - `Cmd+K` palette: "Open: <Panel Type>"
+  - Right-click empty group: "Add panel" submenu
+  - "+ tab" affordance on group tab strip (dockview v6's `getContextMenuItems`)
+- `PiTerminalsDock` becomes a nested dock inside `view:pi-terminals` (verify nested-drag boundary;
+  see §D.5).
+- `ProposalsPanel` keeps its internal `react-resizable-panels` split — no change to its internals.
+- Agent contract: new `ui:dispatch` actions per §B.4. `ui:get_state` extended with `panels[]`.
+- `?slug=` URL param remains a compat alias; first-load middleware hydrates default layout.
+- Document URL changes in `apps/operator/docs/url-state-migration.md` (new file): which params went away.
+
+**Acceptance**:
+- All former tabs reachable via Cmd+K. Drag Docs next to Features in one group works.
+- Multiple `view:harness-overview` panels with different slugs+phases simultaneously.
+- FloatingGroup: drag a panel out → floats inside the window. Re-dock by drag-back works.
+- Layout reloads correctly across operator restart.
+- Agent SDK smoke: `ui:dispatch({type:'openPanel', component:'data:features', params:{slug:'sheets'}})`
+  works. `ui:get_state()` returns the new panels array.
+- Hard-reset escape hatch: Shift+Esc held 1s → clears `'default'` layout in PG, reloads with built-in
+  default. Documented in `/dev/dock-debug` page.
+
+**Risk**: medium-high — largest visible UX change. Pause paperclip during this PR. Per-turn commits
+non-negotiable.
+
+---
+
+### Phase 6 — Plugin panels + Pin-as-panel — ~0.5 day
+**Changes**:
+- Plugin manifest gains `panels: PluginPanel[]`. Deprecate `dashboardTabs` (warn in dev only).
+- Plugin host's `onLoad` calls `registerPanel(type, component)`. PANEL_REGISTRY becomes reactive.
+- Right-click feature row → "Pin as panel" → `dockApi.addPanel({ component: 'pin:feature', params: { slug, featureId } })`.
+- Same for issues.
+- `MissingPanel` fallback for unknown / loading-plugin types.
+
+**Acceptance**:
+- A test plugin registers a panel; appears in Cmd+K, draggable, persists.
+- Pin F-FIND-002 from sheets and F-PEEK-003 from sheets simultaneously → both pinned panels open.
+- Uninstall a plugin → existing pinned panels of its type become `MissingPanel("unknown")` with
+  "Remove from layout" button.
+
+**Risk**: low (additive).
+
+---
+
+### Phase 7 — DEFERRED. Mobile / compact fallback — out of scope for this milestone
+Mobile breakpoint < 720px: render a vertical accordion of panels instead of a dock. Track separately.
+
+---
+
+## §D. Open decisions for review
+
+These are choices the user (you) should make before phase 1 starts. Default answers in parentheses
+— I'll proceed with defaults if not told otherwise.
+
+1. **D1. Plugin migration deadline.** `dashboardTabs` deprecated alias: warn forever, or hard-fail
+   at some date? (Default: warn forever, never break — pre-alpha but plugin authors are external
+   contributors who should not be surprise-broken.)
+
+2. **D2. Harness selector chip placement.** Three options:
+   - (a) Inline on existing 286px control row → requires shrinking voice/active controls again. Tight.
+   - (b) New sub-row in sidebar header → +20px header height. Less tight but reverses today's
+     "make header smaller" change.
+   - (c) Icon-only chip + popover dropdown → fits in existing row, but slug name not visible at glance.
+   (Default: (b) — header was 63px, becomes 83px. Small enough.)
+
+3. **D3. Default layout panel composition.** Three rails (Git left, dashboard middle, telemetry
+   right) vs. (Features/Issues left, Overview middle, Telemetry right). (Default: first option —
+   closest to today's UX, minimizes muscle-memory churn.)
+
+4. **D4. Phase ordering.** As written: 0 → 1 → 2 → 3 → 4 → 5 → 6. Alternative: 0 → 1 → 2 → **4 → 3**
+   → 5 → 6 (selector move before dashboard internals dockify). (Default: as written — internals
+   first validates dockview at scale; selector move is independent.)
+
+5. **D5. Nested-dock drag boundary.** When a user drags a tab inside `view:pi-terminals` (the nested
+   dock), should it be allowed to leave the nested dock and dock into the outer one? Dockview v6
+   supports this but the drag preview clipping at the boundary is rough. (Default: NO — nested dock
+   is a contained system; drag-out is blocked. Users can close in pi then re-open in outer.)
+
+6. **D6. Optimistic concurrency vs. last-writer-wins for layout PUT.** Optimistic adds 409-handling
+   complexity but prevents silent overwrites between two tabs. (Default: optimistic, with
+   `?force=1` opt-out for the "reset layout" flow.)
+
+7. **D7. Cold-load behavior when PG layout fetch is in flight.** Show spinner (default), show
+   last-known cached layout from sessionStorage, or render built-in default and overlay-load?
+   (Default: spinner — simplest, no flicker. Latency typically <100ms on local PG.)
+
+8. **D8. ProposalsPanel internal `react-resizable-panels`.** Leave as-is (default), or convert to
+   nested dockview in a follow-up? (Default: leave — it's a stable 2-pane split, doesn't need drag.)
+
+9. **D9. Agent `ui:dispatch` versioning.** New actions in phase 5 break agents that call old shape.
+   Bump dispatch protocol version, or coexist? (Default: bump to v2; old shape returns 410 Gone with
+   migration hint in error body.)
+
+10. **D10. Layout schema version 1 → 2 migration path.** If dockview v7 changes layout JSON shape
+    later, do we run JSON migrations server-side on read, or refuse to load and force rebuild?
+    (Default: server-side migration with `schema_version` bump; refusing loses user work.)
+
+---
+
+## §E. Effort revision
+
+| Phase | v2 est. | v3 est. | Delta |
+|---|---|---|---|
+| 0 POC | — | 0.5d | NEW |
+| 1 pi-tab upgrade | 0.5d | 0.5d | — |
+| 2 pi-tab → PG | 0.5d | 0.5d | — |
+| 3 dashboard internals | 1d | 1.5d | +0.5d (audit additions: SSR, layout fetch race, peek-drawer interaction tests) |
+| 4 selector + overview panel | 1d | 1d | — |
+| 5 collapse strip + agent dispatch | 1.5d | 2d | +0.5d (agent contract was understated) |
+| 6 plugin panels + pin | 0.5d | 0.5d | — |
+| **Total** | **5d** | **6.5d** | **+1.5d** |
+
+7 PRs. Most days are short, low-risk. Phases 3 and 5 are the two paperclip-pause windows.
+
+---
+
+## §F. Notes for the implementer (future me, or whoever inherits)
+
+- **Paperclip discipline**: `pgrep -af paperclip` before every PR. The doc directory is safe
+  (not a harness UI hot path), but phases 3, 4, 5 edit `apps/operator/app/_components/ChromeShell.tsx`
+  and `app/harness/*` which are paperclip's territory. Explicitly request paperclip pause for those.
+- **Per-turn commits**: every phase commits + pushes every turn, even WIP. Coord entries reference
+  head SHA. Per memory.
+- **Use `mcp__pi__edit` for code edits**, not regex. Greedy `[^)]*` has bit this codebase three
+  times. Especially relevant for the `react-resizable-panels` → dockview swap in phase 3.
+- **No TS deletion** in `apps/operator/` or `libs/papercusp/` beyond explicit replacement targets.
+  This plan explicitly intends to delete `.h-header` block in phase 4 and `RPanelGroup` usage in
+  HarnessDashboard.tsx in phase 3. Anything else is out of scope.
+- **Performance budget**: spike test at end of phase 2 — open 10 simultaneous pi-tab terminals,
+  watch dev-tools memory and frame timing. Decide whether to add `keepAlive` opt-out for heavy
+  panels before phase 3 scales up the surface.
+- **Submodule coordination**: migration 070 lives in `libs/papercusp/libs/db/sql/`. Bump submodule
+  pointer in `papercup` in the same PR as the operator change that consumes it.
+- **Migration runner**: this session shipped the operator-boot migration runner. Phase 0's
+  migration 070 should apply automatically. Verify by checking `schema_migrations` after operator
+  start — if missing, the runner is the gap, not the migration.
+
+---
+
+End of plan v3. Awaiting greenlight on §D decisions before phase 0 starts.
