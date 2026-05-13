@@ -230,7 +230,19 @@ async function resolveToolAndContext(
     if (!spawnCtx.workspaceId) spawnCtx.workspaceId = '*';
     if (!spawnCtx.harnessSlug) spawnCtx.harnessSlug = '*';
     if (!spawnCtx.role) spawnCtx.role = 'operator' as AgentRole;
-    if (!spawnCtx.runId) spawnCtx.runId = 'standalone';
+    // Per-request UUID rather than a shared 'standalone' sentinel.
+    // Audit5: when claude-code spawned via mcp-remote calls multiple
+    // tools concurrently from one subprocess, the URL is static — so
+    // all those calls share whatever runId is in the URL (or the
+    // default). Sub-tool A's dispatcher finally calling
+    // cancelPendingCardsForRun(runId) would wipe sub-tool B's still-
+    // pending askUser cards. Unique runIds per request fix that.
+    //
+    // Replay-buffer (T2.2) is keyed on (workspace, tool, runId); per-
+    // request UUIDs disable accidental cross-request replay coalescing.
+    // Clients explicitly resuming via X-Papercusp-Run header still get
+    // matched against the right buffer.
+    if (!spawnCtx.runId) spawnCtx.runId = globalThis.crypto.randomUUID();
     if (!spawnCtx.spawnId) {
       const buf = new Uint8Array(8);
       globalThis.crypto.getRandomValues(buf);

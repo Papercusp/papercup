@@ -438,6 +438,41 @@ describe('handleHttpToolRequestStreaming', () => {
     expect(delta?.data).toEqual({ text: 'fresh' });
   });
 
+  it('audit5: superuser path generates a UNIQUE runId per request (not shared "standalone" sentinel)', async () => {
+    // Pre-fix: http-projection defaulted runId to "standalone" when no
+    // ?run= param was provided. claude-code spawned via mcp-remote
+    // reuses ONE URL for many tool calls → all calls share runId →
+    // first-finishing tool's cancelPendingCardsForRun wipes others'
+    // pending askUser cards. Cross-cancellation hazard.
+    //
+    // Post-fix: per-request UUID. Each tool invocation under the same
+    // claude-code subprocess gets its own runId.
+    const seenRunIds: string[] = [];
+    registerProjectedTool(makeTool({
+      requirePrincipal: false,
+      fn: async (_input, ctx) => {
+        seenRunIds.push(ctx.runId ?? 'MISSING');
+        return { content: [{ type: 'text', text: 'ok' }] };
+      },
+    }));
+    const reqA = MAKE_REQ({
+      searchParams: new URLSearchParams('superuser=1'),
+    });
+    const reqB = MAKE_REQ({
+      searchParams: new URLSearchParams('superuser=1'),
+    });
+    const extras = MAKE_EXTRAS({ validateSuperuser: () => true });
+    await handleHttpToolRequest(reqA, extras);
+    await handleHttpToolRequest(reqB, extras);
+    expect(seenRunIds).toHaveLength(2);
+    // Both UUIDs, distinct.
+    expect(seenRunIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(seenRunIds[1]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(seenRunIds[0]).not.toBe(seenRunIds[1]);
+    // Confirm we're NOT defaulting to the old 'standalone' sentinel.
+    expect(seenRunIds).not.toContain('standalone');
+  });
+
   it('auto-error honors schema-inferred wire kind (raw text for z.string())', async () => {
     // Regression: tools declaring `error: z.string()` (architect/brainstorm)
     // expect raw text on the wire so the submodule consumer can do

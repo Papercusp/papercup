@@ -192,7 +192,9 @@ export default defineTool({
                     args: [
                       '-y',
                       'mcp-remote@latest',
-                      'http://127.0.0.1:3055/api/mcp?superuser=1',
+                      // workspace= required for state-channel scoping —
+                      // see operator/converse.ts audit4 comment.
+                      `http://127.0.0.1:3055/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}`,
                       '--header',
                       `Authorization:Bearer ${input.superuserToken}`,
                     ],

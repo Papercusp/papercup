@@ -153,7 +153,10 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         role: 'operator' as AgentRole,
         featureId: null,
         chunkId: null,
-        runId: 'standalone',
+        // Per-request UUID, not the 'standalone' sentinel — see
+        // http-projection.ts:~233 (audit5) for the cross-cancellation
+        // hazard that the shared sentinel created.
+        runId: globalThis.crypto.randomUUID(),
         spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
         parentSpawnId: null,
         uiClientId: clientParam.length > 0 ? clientParam : null,

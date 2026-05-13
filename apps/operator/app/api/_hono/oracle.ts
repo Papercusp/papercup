@@ -428,13 +428,17 @@ export function registerOracle(app: Hono) {
         // doesn't need an explicit client_id arg or a preceding
         // ui:list_clients call to drive the user's open Oracle tab.
         const clientParam = uiClientId ? `&client=${encodeURIComponent(uiClientId)}` : '';
+        // workspace= required for state-channel scoping —
+        // see operator/converse.ts audit4 comment.
+        const oracleWorkspaceId = activeWorkspaceId();
+        const workspaceParam = `&workspace=${encodeURIComponent(oracleWorkspaceId)}`;
         const mcpServers: Record<string, { command: string; args: string[]; env?: Record<string, string> }> = {
           agentmcp: {
             command: 'npx',
             args: [
               '-y',
               'mcp-remote@latest',
-              `${oracleBase}/api/mcp?superuser=1${clientParam}`,
+              `${oracleBase}/api/mcp?superuser=1${workspaceParam}${clientParam}`,
               '--header',
               `Authorization:Bearer ${superuserToken}`,
             ],

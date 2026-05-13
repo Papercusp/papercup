@@ -100,7 +100,7 @@ function readSuperuserToken(): string {
   }
 }
 
-function buildMcpConfig(): { mcpServers: Record<string, unknown> } {
+function buildMcpConfig(workspaceId: string): { mcpServers: Record<string, unknown> } {
   const superuserToken = readSuperuserToken();
   const opBase = process.env.PAPERCUSP_OPERATOR_BASE ?? 'http://127.0.0.1:3055';
   const servers: Record<string, unknown> = {
@@ -117,7 +117,9 @@ function buildMcpConfig(): { mcpServers: Record<string, unknown> } {
       args: [
         '-y',
         'mcp-remote@latest',
-        `${opBase}/api/mcp?superuser=1`,
+        // workspace= required for state-channel scoping —
+        // see operator/converse.ts audit4 comment.
+        `${opBase}/api/mcp?superuser=1&workspace=${encodeURIComponent(workspaceId)}`,
         '--header',
         `Authorization:Bearer ${superuserToken}`,
       ],
@@ -216,7 +218,7 @@ export default defineTool({
       ? [SYSTEM_PROMPT, memoryBlock, `User request: ${input.requestText}`].filter(Boolean).join('\n\n')
       : `User: ${input.requestText}`;
 
-    const mcpConfig = buildMcpConfig();
+    const mcpConfig = buildMcpConfig(workspaceId);
 
     let assistantText = '';
     let costUsd = 0;
