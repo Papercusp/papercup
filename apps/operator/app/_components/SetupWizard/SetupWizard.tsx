@@ -166,45 +166,41 @@ export function SetupWizard({ mode }: Props) {
 
   return (
     <div className="pc-setup-wizard" data-mode={mode} data-view={showWelcome ? 'welcome' : 'step'}>
-      <aside className="pc-setup-wizard__sidebar">
-        {!showWelcome && (
-          <>
-            <h2 className="pc-setup-wizard__title">Setup Wizard</h2>
-            <p className="pc-setup-wizard__subtitle">
-              {mode === 'first-run'
-                ? 'Welcome to Papercusp. Run through these steps to get set up.'
-                : 'Configure or revisit any step. Detection runs automatically.'}
-            </p>
-          </>
-        )}
-        <ol className="pc-setup-wizard__steps">
-          {SETUP_STEPS.map((s, i) => {
-            const status: StepStatus = statuses[s.id] ?? 'unknown';
-            const isActive = !showWelcome && s.id === active.id;
-            return (
-              <li
-                key={s.id}
-                className="pc-setup-wizard__step"
-                data-active={isActive ? 'true' : undefined}
-                data-status={status}
-              >
-                <button
-                  type="button"
-                  className="pc-setup-wizard__step-btn"
-                  onClick={() => setStepId(s.id)}
+      {!showWelcome && (
+        <aside className="pc-setup-wizard__sidebar">
+          <h2 className="pc-setup-wizard__title">Setup Wizard</h2>
+          <p className="pc-setup-wizard__subtitle">
+            {mode === 'first-run'
+              ? 'Welcome to Papercusp. Run through these steps to get set up.'
+              : 'Configure or revisit any step. Detection runs automatically.'}
+          </p>
+          <ol className="pc-setup-wizard__steps">
+            {SETUP_STEPS.map((s, i) => {
+              const status: StepStatus = statuses[s.id] ?? 'unknown';
+              const isActive = s.id === active.id;
+              return (
+                <li
+                  key={s.id}
+                  className="pc-setup-wizard__step"
+                  data-active={isActive ? 'true' : undefined}
+                  data-status={status}
                 >
-                  <span className="pc-setup-wizard__step-num">{i + 1}</span>
-                  <span className="pc-setup-wizard__step-text">
-                    <span className="pc-setup-wizard__step-title">{s.title}</span>
-                    <span className="pc-setup-wizard__step-summary">{s.summary}</span>
-                  </span>
-                  <StatusBadge status={status} required={s.required} />
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-        {!showWelcome && (
+                  <button
+                    type="button"
+                    className="pc-setup-wizard__step-btn"
+                    onClick={() => setStepId(s.id)}
+                  >
+                    <span className="pc-setup-wizard__step-num">{i + 1}</span>
+                    <span className="pc-setup-wizard__step-text">
+                      <span className="pc-setup-wizard__step-title">{s.title}</span>
+                      <span className="pc-setup-wizard__step-summary">{s.summary}</span>
+                    </span>
+                    <StatusBadge status={status} required={s.required} />
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
           <div className="pc-setup-wizard__sidebar-footer">
             <div className="pc-setup-wizard__min" data-met={minimumMet ? 'true' : 'false'}>
               <span className="pc-setup-wizard__min-dot" />
@@ -215,8 +211,8 @@ export function SetupWizard({ mode }: Props) {
               </span>
             </div>
           </div>
-        )}
-      </aside>
+        </aside>
+      )}
 
       <main className="pc-setup-wizard__main">
         {showWelcome ? (
