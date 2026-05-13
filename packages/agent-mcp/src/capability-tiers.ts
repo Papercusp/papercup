@@ -22,6 +22,7 @@ const EXACT: Record<string, CapabilityTier> = {
   'comments:read': 'low',
   'issues:read': 'low',
   'harness:read': 'low',
+  'docs:read': 'low',
   'messages:read': 'low',
   'pending_events:read': 'low',
   'routines:read': 'low',
