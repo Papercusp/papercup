@@ -10,9 +10,11 @@
  */
 import { NextResponse } from 'next/server';
 
-import { getAllFlags } from '@papercusp/flags/server';
+import { getAllFlags, isBackendConfigured } from '@papercusp/flags/server';
 
 import { resolveDistinctId } from '../../../../lib/flag-distinct-id';
+import { reinitFlagBackend } from '../../../../lib/flag-bus';
+import { isTestingFeaturesEnabled } from '../../../../lib/posthog-config';
 
 // Force this route to run on every request so we always reflect the live
 // PostHog state. The library caches flag definitions for several seconds
@@ -21,6 +23,13 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: Request) {
+  // Drift repair: if the discovery file says testingFeatures=true but
+  // the backend client is null (or vice versa), fs.watch missed the
+  // event somehow. Force a resync before answering. Cheap — both
+  // functions are pure reads.
+  if (isBackendConfigured() !== isTestingFeaturesEnabled()) {
+    reinitFlagBackend();
+  }
   const distinctId = resolveDistinctId(req);
   const payload = await getAllFlags(distinctId);
   return NextResponse.json(payload, {
