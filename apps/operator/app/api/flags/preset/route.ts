@@ -23,7 +23,7 @@ import { NextResponse } from 'next/server';
 
 import { ALL_FLAG_KEYS } from '@papercusp/flags';
 import { setFlag } from '@papercusp/flags/server';
-import { publishFlagChange } from '@/lib/flag-bus';
+import { publishFlagChange, reinitFlagBackend } from '@/lib/flag-bus';
 import { resetPosthogConfigForTest } from '@/lib/posthog-config';
 import '@/lib/flag-bus';
 
@@ -65,6 +65,7 @@ export async function POST(req: Request) {
     cfg.testingFeatures = false;
     writeConfig(cfg);
     resetPosthogConfigForTest();
+    reinitFlagBackend();
     publishFlagChange(null);
     return NextResponse.json({ ok: true, preset: 'production', testingFeatures: false });
   }
@@ -74,6 +75,7 @@ export async function POST(req: Request) {
   cfg.testingFeatures = true;
   writeConfig(cfg);
   resetPosthogConfigForTest();
+  reinitFlagBackend();
 
   const results: Record<string, boolean | string> = {};
   for (const key of ALL_FLAG_KEYS) {

@@ -37,8 +37,10 @@ export function initFlagBackend(cfg: PostHogConfig | null): void {
   if (!cfg) return;
   client = new PostHog(cfg.projectKey, {
     host: cfg.host,
+    personalApiKey: cfg.personalApiKey,
     flushAt: 1_000_000,
     flushInterval: 24 * 60 * 60 * 1000,
+    featureFlagsPollingInterval: 10_000,
     disableGeoip: true,
   });
 }
@@ -107,14 +109,21 @@ export async function setFlag(
     const list = (await listRes.json()) as { results?: Array<{ id: number; key: string; active: boolean }> };
     const hit = list.results?.find((f) => f.key === key);
     if (!hit) return { ok: false, reason: "flag-not-found-in-posthog" };
-    if (hit.active === enabled) return { ok: true };
+    // PostHog evaluates a flag as true only when both `active` is true
+    // AND the rollout matches the user. We want a binary on/off switch
+    // for all users, so we set rollout_percentage=100 when enabling and
+    // 0 when disabling, in addition to flipping `active`.
+    const rollout = enabled ? 100 : 0;
     const patchRes = await fetch(`${url}${hit.id}/`, {
       method: "PATCH",
       headers: {
         Authorization: `Bearer ${config.personalApiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ active: enabled }),
+      body: JSON.stringify({
+        active: enabled,
+        filters: { groups: [{ properties: [], rollout_percentage: rollout }] },
+      }),
     });
     if (!patchRes.ok) return { ok: false, reason: `patch:${patchRes.status}` };
     return { ok: true };

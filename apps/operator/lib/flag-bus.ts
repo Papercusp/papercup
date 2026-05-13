@@ -43,6 +43,19 @@ function bootIfNeeded(): void {
   }
 }
 
+/**
+ * Re-evaluate backend init state. Call after writing the discovery
+ * file (and after `resetPosthogConfigForTest()`) — otherwise the
+ * one-shot `booted` latch keeps the original "no backend" state
+ * regardless of subsequent testingFeatures toggles.
+ */
+export function reinitFlagBackend(): void {
+  if (!isBackendConfigured() && isTestingFeaturesEnabled()) {
+    initFlagBackend(getPosthogConfig());
+  }
+  booted = true;
+}
+
 export function getFlagBus() {
   bootIfNeeded();
   return getChannel<FlagChangeEnvelope>(CHANNEL, { ringSize: 64 });

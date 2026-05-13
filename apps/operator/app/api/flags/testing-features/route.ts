@@ -61,6 +61,11 @@ export async function POST(req: Request) {
 
   // bust the in-process config cache so the next request picks up the new value
   resetPosthogConfigForTest();
+  // and re-evaluate the flag-bus's backend init latch — without this,
+  // flipping testingFeatures to true after boot leaves the backend
+  // uninitialized for the lifetime of the process.
+  const { reinitFlagBackend } = await import('../../../../lib/flag-bus');
+  reinitFlagBackend();
 
   return NextResponse.json({ ok: true, testingFeatures: body.enabled });
 }
