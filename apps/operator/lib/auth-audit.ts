@@ -27,6 +27,7 @@ export type AuthAuditKind =
   | 'change_password_ok'
   | 'change_password_bad_old'
   | 'change_password_no_session'
+  | 'change_password_failed'
   | 'logout';
 
 export interface AuthAuditEvent {

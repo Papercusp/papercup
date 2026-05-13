@@ -18,13 +18,21 @@ export async function POST(req: Request) {
   const username = typeof body?.username === 'string' ? body.username.trim() : '';
   const password = typeof body?.password === 'string' ? body.password : null;
   const ttl_ms = typeof body?.ttl_ms === 'number' ? body.ttl_ms : DEFAULT_SESSION_TTL_MS;
-  if (!username) {
-    return NextResponse.json({ error: 'username required' }, { status: 400 });
-  }
-
   const h = await headers();
   const userAgent = h.get('user-agent') ?? undefined;
   const ip = h.get('x-forwarded-for') ?? '127.0.0.1';
+
+  if (!username) {
+    // Audit malformed attempts too — missing-username probes shouldn't
+    // be invisible just because they error early.
+    void recordAuthEvent({
+      kind: 'login_failed',
+      username: undefined,
+      ip, userAgent, ok: false,
+      errorCode: 'username_required',
+    });
+    return NextResponse.json({ error: 'username required' }, { status: 400 });
+  }
 
   // (1) Soft per-IP gate. Loopback-exempt so single-user desktop installs
   //     never lock themselves out via typos on their own machine.

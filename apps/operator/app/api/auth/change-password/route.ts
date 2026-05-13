@@ -51,7 +51,11 @@ export async function POST(req: Request) {
   } catch (e: unknown) {
     const code = (e as { code?: string }).code ?? 'failed';
     void recordAuthEvent({
-      kind: code === 'bad_password' ? 'change_password_bad_old' : 'change_password_no_session',
+      // bad_password is the "wrong current pw" case; everything else
+      // (invalid next, password too short, etc.) is a generic failure.
+      // Do NOT use change_password_no_session here — that's the
+      // pre-auth-check branch only.
+      kind: code === 'bad_password' ? 'change_password_bad_old' : 'change_password_failed',
       username: user.username, ip, userAgent, ok: false,
       errorCode: code,
     });
