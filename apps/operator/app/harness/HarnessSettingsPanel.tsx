@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@restart/sync';
 import { Checkbox } from './Checkbox';
+import { Select } from './Select';
 
 /**
  * Per-harness Settings panel — one tab inside the harness UI.
@@ -542,17 +543,17 @@ export default function HarnessSettingsPanel({
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ width: 110, fontSize: 11.5, color: 'var(--pc-muted, #9a9a9a)' }}>workers / feature</span>
-            <select
+            <Select
               value={parallel.workerCountMode}
-              onChange={(e) =>
-                setParallel((p) => ({ ...p, workerCountMode: e.target.value as WorkerCountMode }))
+              onValueChange={(v) =>
+                setParallel((p) => ({ ...p, workerCountMode: v as WorkerCountMode }))
               }
-              style={{ fontSize: 12.5, padding: '3px 6px' }}
-            >
-              <option value="one">one</option>
-              <option value="fixed">fixed N</option>
-              <option value="tiers">orchestrator picks</option>
-            </select>
+              options={[
+                { value: 'one', label: 'one' },
+                { value: 'fixed', label: 'fixed N' },
+                { value: 'tiers', label: 'orchestrator picks' },
+              ]}
+            />
           </div>
 
           {parallel.workerCountMode === 'fixed' && (
