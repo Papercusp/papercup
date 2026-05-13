@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryState, parseAsStringEnum, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Entry {
   tool_name: string;
@@ -119,53 +120,48 @@ export default function TelemetryTab({ workspaceIds, onRerun }: Props) {
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
       {!loading && !error && (
-        <table className="pc-dev-table">
-          <thead>
-            <tr>
-              <th>Tool</th>
-              <th>Calls</th>
-              <th>Errors</th>
-              <th>Err %</th>
-              <th>p50</th>
-              <th>p95</th>
-              <th>Workspaces</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => {
-              const errPct = e.call_count > 0 ? (e.error_count / e.call_count) * 100 : 0;
-              return (
-                <tr key={e.tool_name}>
-                  <td className="pc-dev-slug">{e.tool_name}</td>
-                  <td>{e.call_count}</td>
-                  <td className={e.error_count ? 'pc-dev-api-err' : ''}>{e.error_count}</td>
-                  <td className={errPct > 10 ? 'pc-dev-api-err' : 'pc-dev-muted'}>
-                    {errPct.toFixed(0)}%
-                  </td>
-                  <td className="pc-dev-muted">{e.p50_ms ?? '—'}ms</td>
-                  <td className="pc-dev-muted">{e.p95_ms ?? '—'}ms</td>
-                  <td className="pc-dev-muted">{e.workspaces.join(', ')}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="pc-dev-btn-mini"
-                      title="Open in API tab with this tool selected"
-                      onClick={() =>
-                        onRerun({
-                          toolName: e.tool_name,
-                          workspace: e.workspaces[0],
-                        })
-                      }
-                    >
-                      ↗
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div style={{ height: Math.min(640, 32 + entries.length * 28 + 4) }}>
+          <RichGrid<Entry>
+            columns={[
+              { key: 'tool', header: 'Tool', width: 2, toCopyText: (r) => r.tool_name, render: ({ row }) => <span className="pc-dev-slug">{row.tool_name}</span> },
+              { key: 'calls', header: 'Calls', width: 0.8, align: 'right', toCopyText: (r) => String(r.call_count), render: ({ row }) => <>{row.call_count}</> },
+              {
+                key: 'errors', header: 'Errors', width: 0.8, align: 'right',
+                toCopyText: (r) => String(r.error_count),
+                render: ({ row }) => <span className={row.error_count ? 'pc-dev-api-err' : ''}>{row.error_count}</span>,
+              },
+              {
+                key: 'errpct', header: 'Err %', width: 0.8, align: 'right',
+                toCopyText: (r) => {
+                  const p = r.call_count > 0 ? (r.error_count / r.call_count) * 100 : 0;
+                  return `${p.toFixed(0)}%`;
+                },
+                render: ({ row }) => {
+                  const errPct = row.call_count > 0 ? (row.error_count / row.call_count) * 100 : 0;
+                  return <span className={errPct > 10 ? 'pc-dev-api-err' : 'pc-dev-muted'}>{errPct.toFixed(0)}%</span>;
+                },
+              },
+              { key: 'p50', header: 'p50', width: 0.8, align: 'right', toCopyText: (r) => r.p50_ms != null ? `${r.p50_ms}ms` : '', render: ({ row }) => <span className="pc-dev-muted">{row.p50_ms ?? '—'}ms</span> },
+              { key: 'p95', header: 'p95', width: 0.8, align: 'right', toCopyText: (r) => r.p95_ms != null ? `${r.p95_ms}ms` : '', render: ({ row }) => <span className="pc-dev-muted">{row.p95_ms ?? '—'}ms</span> },
+              { key: 'ws', header: 'Workspaces', width: 2, toCopyText: (r) => r.workspaces.join(', '), render: ({ row }) => <span className="pc-dev-muted">{row.workspaces.join(', ')}</span> },
+              {
+                key: 'open', header: '', width: 0.5, align: 'center',
+                render: ({ row }) => (
+                  <button
+                    type="button"
+                    className="pc-dev-btn-mini"
+                    title="Open in API tab with this tool selected"
+                    onClick={() => onRerun({ toolName: row.tool_name, workspace: row.workspaces[0] })}
+                  >↗</button>
+                ),
+              },
+            ]}
+            rows={entries}
+            getRowId={(r) => r.tool_name}
+            rowMinHeight={28}
+            headerHeight={32}
+          />
+        </div>
       )}
     </div>
   );
