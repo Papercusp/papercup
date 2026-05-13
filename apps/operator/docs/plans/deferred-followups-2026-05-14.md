@@ -134,6 +134,28 @@ The unified state-snapshot channel is per-workspace (`subscribeWorkspace(activeW
 
 ---
 
+### B4. Full plugin lifecycle E2E (install / enable / disable / upgrade)
+
+**Status:** `engineering deferred`
+
+**Context.** Step G of the Tier-2 follow-up arc shipped a focused test on `plugin-grants.ts` — the unique-to-plugins capability-grant mechanics (`apps/operator/lib/plugin-grants.test.ts`, 7 tests, PG-soft-skipped). What's NOT covered yet:
+- Install: pluginHostInstall() side-effects (PG row, manifest parse, file-system state)
+- Enable/Disable: lookupByMcpName resolution after toggle
+- Upgrade: install v2 over v1; schema migration; manifest version pin
+- Permissions: capability-grant intersection with manifest at dispatch time
+
+Existing coverage that overlaps:
+- `apps/operator/lib/agent-tools/plugins/__tests__/plugins.test.ts` (the 3 plugin tools)
+- `packages/plugin-loader/src/capabilities.test.ts` (capability matching)
+- `packages/plugin-loader/src/api-factory.test.ts` (host API)
+- `packages/plugin-sdk/src/tier-table.test.ts` (capability tier table)
+
+**Trigger to revisit:** real plugins start shipping AND any user-reported lifecycle regression. The grant store is the unique-to-plugin surface; the rest is mostly shared with non-plugin tools and exercised by the existing test files. A full E2E test needs the WASM plugin fixture pipeline (esbuild + `packages/plugin-loader` integration) which is substantial unique infrastructure.
+
+**Estimated effort when revisited:** ~4-5 hours. Needs: (a) esbuild + WASM fixture compilation in beforeAll, (b) live PG plus the plugin-host-runtime, (c) test fixture for a tiny plugin that emits a known event. Out of scope for the Tier-2 arc.
+
+---
+
 ## Cross-cutting notes
 
 **On the "shim pattern" recognition (A1).** A1's conclusion — that thin-tool + per-route shim is correctly the right shape when shims do legit business logic — should propagate into the projection cookbook (if one exists) or the endpoint-system docs. Future authors of new chat-style surfaces shouldn't treat the shim as transitional debt. The Hono shim is the natural home for transport-specific pre/post work (auth lookups, cost caps, transcript persistence, feature locks).
