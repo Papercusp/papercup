@@ -3,13 +3,13 @@
 // (key MUST match the string literal exactly). Defaults are V1 ship-state (off).
 
 export const FLAGS = {
-  SNAPSHOTS: "papercusp.snapshots",
-  TEMPLATES: "papercusp.templates",
-  MARKETPLACE: "papercusp.marketplace",
-  CLOUDFLARE_PUBLISH: "papercusp.cloudflare-publish",
-  ORACLE: "papercusp.oracle",
-  RUST_PORT_UI: "papercusp.rust-port-ui",
-  HARNESS_PHASES: "papercusp.harness-phases",
+  SNAPSHOTS: "papercusp-snapshots",
+  TEMPLATES: "papercusp-templates",
+  MARKETPLACE: "papercusp-marketplace",
+  CLOUDFLARE_PUBLISH: "papercusp-cloudflare-publish",
+  ORACLE: "papercusp-oracle",
+  RUST_PORT_UI: "papercusp-rust-port-ui",
+  HARNESS_PHASES: "papercusp-harness-phases",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
