@@ -41,7 +41,7 @@ export default function ShortcutsSettingsPage() {
   const [overrides, setOverrides] = useState<Record<string, string>>({});
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [recordedKeys, setRecordedKeys] = useState<string>('');
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Load on mount.
   useEffect(() => { setOverrides(loadOverrides()); }, []);
@@ -105,7 +105,7 @@ export default function ShortcutsSettingsPage() {
   async function resetAll() {
     const ok = await askConfirm({
       title: 'Reset all keyboard shortcuts?',
-      description: 'All customized shortcuts will be restored to their defaults.',
+      body: 'All customized shortcuts will be restored to their defaults.',
       confirmLabel: 'Reset all',
       destructive: true,
     });

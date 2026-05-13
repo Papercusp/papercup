@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import RouteLink from '../../_components/RouteLink';
 import { Layers, ExternalLink, Loader2, Pencil, Trash2, Play } from 'lucide-react';
 import { toast } from 'sonner';
+import { useConfirmDialog } from '../../harness/useConfirmDialog';
+import { usePromptDialog } from '../../harness/usePromptDialog';
 
 interface PublishRecord {
   slug: string;
@@ -52,6 +54,8 @@ export default function InstalledTemplatesClient() {
   const [publishing, setPublishing] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [installing, setInstalling] = useState<string | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -68,7 +72,20 @@ export default function InstalledTemplatesClient() {
 
   const onDelete = async (row: TemplateRow) => {
     const key = `${row.slug}@${row.version}`;
-    if (!confirm(`Delete local template ${key}?\n\n${row.publishedSlugs.length > 0 ? 'Note: this will not retract the published version on the marketplace.\n\n' : ''}This removes ${row.path}.`)) return;
+    const ok = await askConfirm({
+      title: `Delete local template ${key}?`,
+      body: (
+        <div>
+          {row.publishedSlugs.length > 0 ? (
+            <p style={{ marginTop: 0 }}>Note: this will not retract the published version on the marketplace.</p>
+          ) : null}
+          <p style={{ marginBottom: 0 }}>This removes <code>{row.path}</code>.</p>
+        </div>
+      ),
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) return;
     setDeleting(key);
     try {
       const r = await fetch(
@@ -92,10 +109,13 @@ export default function InstalledTemplatesClient() {
   const onInstall = async (row: TemplateRow) => {
     const key = `${row.slug}@${row.version}`;
     const proposed = `${row.slug.replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '')}-test`;
-    const projectSlug = window.prompt(
-      `New harness slug?\n\nThis materialises ${row.slug}@${row.version} into a fresh harness so you can test the recipe locally before publishing.`,
-      proposed,
-    );
+    const projectSlug = await askPrompt({
+      title: 'Install template into a new harness',
+      body: `This materialises ${row.slug}@${row.version} into a fresh harness so you can test the recipe locally before publishing.`,
+      label: 'New harness slug',
+      defaultValue: proposed,
+      submitLabel: 'Install',
+    });
     if (!projectSlug) return;
     setInstalling(key);
     try {
@@ -166,6 +186,8 @@ export default function InstalledTemplatesClient() {
 
   return (
     <div className="pc-shell pc-marketplace-shell">
+      {confirmEl}
+      {promptEl}
       {/* Toaster mounted globally in app/layout.tsx. */}
       <section className="pc-marketplace-pagehead">
         <div>

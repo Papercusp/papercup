@@ -46,7 +46,7 @@ export default function OperatorSettingsPage() {
   const [loading, setLoading] = useState(true);
 
   const [statsOpen, setStatsOpen] = useQueryState('stats', parseAsBoolean.withDefault(false));
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const { control, submit, reset, isSubmitting } = useFormWith(ConfigSchema, {
     defaultValues: { prompt_user: '', preferences: '' },
   });

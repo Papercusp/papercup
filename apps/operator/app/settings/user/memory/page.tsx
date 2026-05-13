@@ -29,7 +29,7 @@ export default function MemoryPage() {
   const [rows, setRows] = useState<MemoryRow[]>([]);
   const [stats, setStats] = useState<FeedbackStats | null>(null);
   const [loading, setLoading] = useState(true);
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [reason, setReason] = useState<string | null>(null);
   const [filter, setFilter] = useState<string>('all');
 
@@ -89,7 +89,7 @@ export default function MemoryPage() {
   const onForgetAll = useCallback(async () => {
     const ok = await askConfirm({
       title: 'Delete ALL of your memories?',
-      description: 'Workspace-shared entries are not affected. Type FORGET to confirm.',
+      body: 'Workspace-shared entries are not affected. Type FORGET to confirm.',
       confirmLabel: 'Forget all',
       destructive: true,
       requireType: 'FORGET',

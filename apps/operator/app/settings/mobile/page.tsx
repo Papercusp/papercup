@@ -36,7 +36,7 @@ export default function MobileSettingsPage() {
   const [devices, setDevices] = useState<PairedDevice[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceOption[]>([]);
   const [workspaceId, setWorkspaceId] = useState('default');
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -100,7 +100,7 @@ export default function MobileSettingsPage() {
   const revoke = async (deviceId: string) => {
     const ok = await askConfirm({
       title: 'Revoke this device?',
-      description: 'It will need to re-pair to use Operator Mobile.',
+      body: 'It will need to re-pair to use Operator Mobile.',
       confirmLabel: 'Revoke',
       destructive: true,
     });

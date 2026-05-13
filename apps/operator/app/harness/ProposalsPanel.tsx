@@ -13,6 +13,7 @@ import { CollapsedInboxRail } from './CollapsedRails';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { Select } from './Select';
 import { Checkbox } from './Checkbox';
+import { useConfirmDialog } from './useConfirmDialog';
 
 interface Proposal {
   id: string;
@@ -305,6 +306,7 @@ function writeShortlist(slug: string, ids: Set<string>) {
 }
 
 function ProposalsPanelInner({ slug, architectInbox }: Props) {
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [inboxCollapsed, setInboxCollapsed] = useQueryState(
     'inboxCollapsed',
     parseAsBoolean.withDefault(true),
@@ -475,7 +477,12 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
   }, [slug, goalDraft]);
 
   const accept = useCallback(async (id: string) => {
-    if (!confirm(`Accept proposal ${id}? Its acceptance bullets will be appended to SPEC.md.`)) return;
+    const ok = await askConfirm({
+      title: `Accept proposal ${id}?`,
+      description: 'Its acceptance bullets will be appended to SPEC.md.',
+      confirmLabel: 'Accept',
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       const r = await fetch(`/api/harness/${slug}/proposals/${id}/accept`, { method: 'POST' });
@@ -493,7 +500,7 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, triggerSync, selected]);
+  }, [slug, triggerSync, selected, askConfirm]);
 
   const reject = useCallback(async (id: string) => {
     setBusy(true);
@@ -695,7 +702,12 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
 
   const bulkAccept = useCallback(async () => {
     if (checkedPending.length === 0) return;
-    if (!confirm(`Accept ${checkedPending.length} proposal(s)? Each one's acceptance bullets will be appended to SPEC.md in order.`)) return;
+    const ok = await askConfirm({
+      title: `Accept ${checkedPending.length} proposal(s)?`,
+      description: "Each one's acceptance bullets will be appended to SPEC.md in order.",
+      confirmLabel: 'Accept all',
+    });
+    if (!ok) return;
     setBusy(true);
     let totalBullets = 0;
     let errors = 0;
@@ -718,11 +730,16 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 3500);
     }
-  }, [slug, checkedPending, triggerSync]);
+  }, [slug, checkedPending, triggerSync, askConfirm]);
 
   const bulkReject = useCallback(async () => {
     if (checkedPending.length === 0) return;
-    if (!confirm(`Reject ${checkedPending.length} proposal(s)?`)) return;
+    const ok = await askConfirm({
+      title: `Reject ${checkedPending.length} proposal(s)?`,
+      confirmLabel: 'Reject all',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       for (const id of checkedPending) {
@@ -735,10 +752,16 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 2500);
     }
-  }, [slug, checkedPending, triggerSync]);
+  }, [slug, checkedPending, triggerSync, askConfirm]);
 
   const replanNow = useCallback(async () => {
-    if (!confirm('Run /replan now? Existing features (harness_features) + validation-contract.md are backed up and replaced.')) return;
+    const ok = await askConfirm({
+      title: 'Run /replan now?',
+      body: 'Existing features (harness_features) + validation-contract.md are backed up and replaced.',
+      confirmLabel: 'Replan',
+      destructive: true,
+    });
+    if (!ok) return;
     setBusy(true);
     setToast('Re-planning… (may take a few minutes)');
     try {
@@ -760,7 +783,7 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       setBusy(false);
       setTimeout(() => setToast(null), 4000);
     }
-  }, [slug]);
+  }, [slug, askConfirm]);
 
   const toggleVisiblePending = () => {
     setChecked((prev) => {
@@ -1110,6 +1133,7 @@ function ProposalsPanelInner({ slug, architectInbox }: Props) {
       className="h-proposals-with-inbox"
       style={{ display: 'flex', gap: 6, height: '100%', minHeight: 0, flex: 1 }}
     >
+      {confirmEl}
       <CollapsedInboxRail slug={slug} onExpand={() => setInboxCollapsed((c) => !c)} />
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         {!inboxCollapsed ? (

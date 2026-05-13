@@ -42,7 +42,7 @@ export default function InstalledPluginsPage() {
   const [loading, setLoading] = useState(true);
   const [reloadKey, setReloadKey] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // pluginEnables is in Zero already (pluginEnables.byWorkspace). The
   // /plugins/global side is still REST — it's a cross-workspace listing

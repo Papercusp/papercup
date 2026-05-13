@@ -6,6 +6,9 @@ import * as Collapsible from '@radix-ui/react-collapsible';
 import { useSyncQuery } from '@restart/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { MarkdownEditor, MarkdownPreview } from '../_components/MarkdownEditor';
+import { Modal } from './Modal';
+import { Select } from './Select';
+import { useConfirmDialog } from './useConfirmDialog';
 
 interface ExpertSummary {
   id: string;
@@ -293,13 +296,24 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
     return () => { cancelled = true; };
   }, [harnessSlug, expertId, expertRows]);
 
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const onCancel = async () => {
-    if (!confirm(`Cancel ${expertId}?`)) return;
+    const ok = await askConfirm({
+      title: `Cancel ${expertId}?`,
+      confirmLabel: 'Cancel expert',
+      destructive: true,
+    });
+    if (!ok) return;
     await fetch(`/api/harness/${harnessSlug}/experts/${expertId}/cancel`, { method: 'POST' });
     onChange();
   };
   const onFork = async () => {
-    if (!confirm(`Fork ${expertId}? SPEC.md is copied; current expert becomes superseded.`)) return;
+    const ok = await askConfirm({
+      title: `Fork ${expertId}?`,
+      description: 'SPEC.md is copied; current expert becomes superseded.',
+      confirmLabel: 'Fork',
+    });
+    if (!ok) return;
     await fetch(`/api/harness/${harnessSlug}/experts/${expertId}/fork`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
     });
@@ -313,6 +327,7 @@ function ExpertDetailView({ harnessSlug, expertId, onChange }: { harnessSlug: st
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', flex: 1, minWidth: 0 }}>
+      {confirmEl}
       <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', background: 'rgba(6, 13, 24, 0.42)' }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
           <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: 'var(--fg-mute)' }}>{detail.id}</span>
@@ -620,15 +635,13 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
   };
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, background: 'rgba(2, 6, 12, 0.64)',
-      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, backdropFilter: 'blur(6px)',
-    }}>
-      <div style={{
-        background: 'linear-gradient(180deg, rgba(11,18,32,0.98), rgba(4,10,20,0.98))', borderRadius: 14, width: 520, maxWidth: '90vw', maxHeight: '90vh',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden', border: '1px solid var(--border)', boxShadow: '0 24px 70px rgba(0,0,0,0.42)', color: 'var(--fg)',
-      }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontWeight: 700, background: 'rgba(255,255,255,0.035)' }}>Spawn expert</div>
+    <Modal
+      open
+      onOpenChange={(o) => { if (!o) onClose(); }}
+      title="Spawn expert"
+      contentStyle={{ width: 520, maxWidth: '90vw', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12, overflow: 'auto' }}>
           <label style={{ fontSize: 12, fontWeight: 500 }}>
             Title
@@ -664,20 +677,22 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
             </label>
             <label style={{ fontSize: 12, fontWeight: 500, flex: 1 }}>
               Size
-              <select
-                value={featureSize}
-                onChange={(e) => setFeatureSize(e.target.value as 'small' | 'standard' | 'large')}
-                style={inputStyle}
-              >
-                <option value="small">small (2 agents × 1 round)</option>
-                <option value="standard">standard (4 agents × 3 rounds)</option>
-                <option value="large">large (10 agents × 5 rounds)</option>
-              </select>
+              <div style={{ marginTop: 4 }}>
+                <Select
+                  value={featureSize}
+                  onValueChange={(v) => setFeatureSize(v as 'small' | 'standard' | 'large')}
+                  options={[
+                    { value: 'small', label: 'small (2 agents × 1 round)' },
+                    { value: 'standard', label: 'standard (4 agents × 3 rounds)' },
+                    { value: 'large', label: 'large (10 agents × 5 rounds)' },
+                  ]}
+                />
+              </div>
             </label>
           </div>
           {error && <div style={{ color: '#dc2626', fontSize: 12 }}>{error}</div>}
         </div>
-        <div style={{ padding: '10px 16px', borderTop: '1px solid #e5e7eb', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ padding: '10px 16px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <button onClick={onClose} style={btnSecondary}>cancel</button>
           <button
             onClick={submit}
@@ -688,7 +703,7 @@ function SpawnModal({ harnessSlug, onClose, onSpawned }: {
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -701,6 +716,7 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
   const [streamText, setStreamText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   // Eager via Zero — agentChats.byHarness mirrors the /agent-chats list
   // endpoint. Find the most recent non-archived expert chat for this id
@@ -752,10 +768,15 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
   };
 
   const archiveChat = async () => {
-    if (chat && chat !== 'none' && confirm('Close this chat? The expert will resume autonomous work.')) {
-      await fetch(`/api/harness/${harnessSlug}/agent-chats/${chat.id}`, { method: 'DELETE' });
-      setChat('none');
-    }
+    if (!chat || chat === 'none') return;
+    const ok = await askConfirm({
+      title: 'Close this chat?',
+      body: 'The expert will resume autonomous work.',
+      confirmLabel: 'Close chat',
+    });
+    if (!ok) return;
+    await fetch(`/api/harness/${harnessSlug}/agent-chats/${chat.id}`, { method: 'DELETE' });
+    setChat('none');
   };
 
   const send = async () => {
@@ -837,6 +858,7 @@ function ExpertChat({ harnessSlug, expertId }: { harnessSlug: string; expertId: 
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+      {confirmEl}
       <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--warn-border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'var(--warn-bg)' }}>
         <div style={{ fontSize: 11, color: 'var(--warn)' }}>
           ⏸ Autonomous loop paused while this chat is open.

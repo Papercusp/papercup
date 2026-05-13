@@ -229,7 +229,7 @@ function VoiceKeyRow({
 }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   const save = async () => {
     if (!draft.trim()) return;

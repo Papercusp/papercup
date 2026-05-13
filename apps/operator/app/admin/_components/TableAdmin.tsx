@@ -68,7 +68,7 @@ export default function TableAdmin() {
   const [offset, setOffset] = useState(0);
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState<{ mode: 'create' } | { mode: 'edit'; row: Record<string, unknown> } | null>(null);
-  const { askConfirm, confirmEl } = useConfirmDialog();
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
 
   useEffect(() => {
     void fetch('/api/admin/tables')
@@ -114,7 +114,7 @@ export default function TableAdmin() {
       for (const k of detail.primaryKey) pk[k] = row[k];
       const ok = await askConfirm({
         title: 'Delete row?',
-        description: Object.entries(pk).map(([k, v]) => `${k}=${String(v)}`).join(', '),
+        body: Object.entries(pk).map(([k, v]) => `${k}=${String(v)}`).join(', '),
         confirmLabel: 'Delete',
         destructive: true,
       });

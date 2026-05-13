@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { useConfirmDialog } from './useConfirmDialog';
+import { usePromptDialog } from './usePromptDialog';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Tooltip } from './Tooltip';
 import Editor from '@monaco-editor/react';
@@ -57,6 +58,7 @@ export function CollectionTab({
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+  const { prompt: askPrompt, element: promptEl } = usePromptDialog();
 
   // Default to first item
   useEffect(() => {
@@ -143,14 +145,19 @@ export function CollectionTab({
   }, [selectedId, itemUrl, items, reloadItems, collection, askConfirm]);
 
   const createNew = useCallback(async () => {
-    const name = prompt(`New ${collection === 'skills' ? 'skill' : 'override'} name (lowercase-dash, no extension):`);
+    const name = await askPrompt({
+      title: `New ${collection === 'skills' ? 'skill' : 'override'}`,
+      label: 'Name',
+      placeholder: 'lowercase-dash, no extension',
+      validate: (v) => /^[a-z0-9_.-]+$/.test(v) ? null : 'Use lowercase letters, digits, _ . - only',
+    });
     if (!name) return;
     const cleaned = name.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '-');
     if (!cleaned) return toast.error('invalid name');
     setSelectedId(cleaned);
     setDraft('');
     setOriginal('');
-  }, [collection]);
+  }, [collection, askPrompt]);
 
   // ⌘S to save
   useEffect(() => {
@@ -170,6 +177,7 @@ export function CollectionTab({
   return (
     <div style={{ display: 'flex', height: '100%', minHeight: 0 }}>
       {confirmEl}
+      {promptEl}
       {/* Sidebar */}
       <div style={{
         width: 220, flexShrink: 0,
