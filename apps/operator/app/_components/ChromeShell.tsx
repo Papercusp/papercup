@@ -6,7 +6,7 @@ import gsap from 'gsap';
 import { useGSAP } from '@gsap/react';
 import { useReducedMotion } from 'motion/react';
 import { useFancyEffectsEnabled } from '@/lib/visual-effects';
-import { OperatorButton, OperatorAutoScanToggle, OperatorPanel } from './OperatorPanel';
+import { OperatorButton, OperatorAutoScanToggle } from './OperatorPanel';
 import { ConsoleLauncherButton } from './ConsoleLauncherButton';
 import { OpsTargetMark } from './ChromeNavMarks';
 import { AriaLiveRegions } from './voice/AriaLiveRegions';
@@ -25,6 +25,7 @@ import { useFlag } from '@/lib/flag-hooks';
 // Heavy dock components — they run polling, subscriptions, and large
 // useEffects on mount. Not needed for first paint of any page; defer to
 // idle so the page becomes interactive faster.
+const OperatorPanel = lazy(() => import('./OperatorPanel').then(m => ({ default: m.OperatorPanel })));
 const OperatorChatSidebar = lazy(() => import('./OperatorChatSidebar').then(m => ({ default: m.OperatorChatSidebar })));
 const OracleDock = lazy(() => import('./OracleDock').then(m => ({ default: m.OracleDock })));
 const OperatorBackgroundScanner = lazy(() => import('./OperatorBackgroundScanner').then(m => ({ default: m.OperatorBackgroundScanner })));
@@ -207,7 +208,7 @@ export default function ChromeShell() {
           The other heavy docks (OracleDock, ChatwootWidget, voice infra)
           ARE still skipped on /settings/* since the user isn't operating
           on a settings page — that perf win still applies. */}
-      <OperatorPanel />
+      <DeferredOperatorPanel />
       {/* Operator chat sidebar — fixed left, full-height, on every
           non-chromeless page. The sidebar shifts the rest of the app
           right via body.has-op-chat padding-left (set inside the
