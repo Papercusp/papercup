@@ -14,6 +14,8 @@ import RouteTransitionProvider from './_components/RouteTransitionProvider';
 import { ToasterSelectionFix } from './_components/ToasterSelectionFix';
 import { ToastHistoryRecorder } from './_components/ToastHistoryRecorder';
 import { UiPresenceProvider } from './_components/UiPresenceProvider';
+import { getAllFlags } from '@papercusp/flags/server';
+import '@/lib/flag-bus';
 import './globals.css';
 
 const visualEffectsBootstrapScript = `
@@ -77,7 +79,14 @@ export const metadata: Metadata = {
   description: 'Open-source autonomous-harness framework. Build, share, and run multi-agent missions.',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // SSR-resolve the flag payload so first paint matches final state — no
+  // flash of a cut feature briefly rendering before the client cache
+  // hydrates. We pass distinctId='ssr-bootstrap' which is fine because
+  // none of our flags are user-targeted; they're binary across the
+  // whole operator instance.
+  const flagPayload = await getAllFlags('ssr-bootstrap');
+  const flagBootstrapScript = `window.__PAPERCUSP_FLAGS__=${JSON.stringify(flagPayload)};`;
   return (
     <html lang="en" suppressHydrationWarning>
       {/* suppressHydrationWarning on <body>: the operator-chat
@@ -89,6 +98,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           purely visual scaffolding — no React state depends on
           it — so suppression is safe. */}
       <body suppressHydrationWarning>
+        <script dangerouslySetInnerHTML={{ __html: flagBootstrapScript }} />
         <script dangerouslySetInnerHTML={{ __html: visualEffectsBootstrapScript }} />
         <script dangerouslySetInnerHTML={{ __html: operatorChatBootstrapScript }} />
         <div id="papercusp-app">

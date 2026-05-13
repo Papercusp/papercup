@@ -241,6 +241,30 @@ ask whether you can put it in PG instead. The answer is almost always
 yes. See `apps/operator/content/docs/system/storage-policy.mdx` for the
 full guide and the historical migration arc.
 
+## Feature flags + PostHog
+
+V1 ships with a feature-flag system that gates the 9 cut-for-V1 surfaces
+(snapshots, templates, marketplace, cloudflare-publish, oracle, harness
+phases, design, rust-port-ui, admin). Single source of truth for keys
+and defaults is `libs/flags/src/types.ts`. Self-hosted PostHog runs at
+`https://flags.papercuspai.com` for live evaluation; the operator falls
+back to bundled `FLAG_DEFAULTS` (all `false` = V1 ship state) when the
+discovery file (`~/.papercusp/posthog.json`) is missing or
+`testingFeatures: false`.
+
+**Flip flags via the in-app `/admin/features` page**, not by editing
+JSON or hitting PostHog directly. The admin UI calls
+`POST /api/flags/set` and `POST /api/flags/preset` which round-trip
+through PostHog + the SSE flag-bus.
+
+**When adding a feature you'll later want to cut**, gate it from day one:
+add the flag to `libs/flags/src/types.ts`, create the matching definition
+in PostHog (active=false, rollout 0), then guard pages with `requireFlag`,
+nav with `useFlag`, API routes with `gateApiRoute`, Hono routes with a
+`use('/path/*', …)` middleware, and MCP tools at registration.
+
+Full reference: `/docs/posthog` and `/docs/posthog/feature-flags`.
+
 ## Tests after editing
 
 After completing any file edit, run the affected tests **before** declaring
