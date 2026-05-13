@@ -44,6 +44,11 @@ export interface ConfirmOptions {
 export function useConfirmDialog() {
   const [opts, setOpts] = useState<ConfirmOptions | null>(null);
   const resolverRef = useRef<((v: boolean) => void) | null>(null);
+  // Captured at open-time so we can restore focus to whichever element
+  // the user was on when they triggered the dialog. Radix's built-in
+  // focus restoration only works when the dialog is wired via <Trigger>;
+  // imperative opens (this hook) bypass that path.
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   const confirm = useCallback((options: ConfirmOptions): Promise<boolean> => {
     return new Promise<boolean>((resolve) => {
@@ -52,6 +57,8 @@ export function useConfirmDialog() {
       // promise.
       if (resolverRef.current) resolverRef.current(false);
       resolverRef.current = resolve;
+      const active = typeof document !== 'undefined' ? document.activeElement : null;
+      triggerRef.current = active instanceof HTMLElement ? active : null;
       setOpts(options);
     });
   }, []);
@@ -61,6 +68,15 @@ export function useConfirmDialog() {
     resolverRef.current = null;
     setOpts(null);
     r?.(result);
+    // Restore focus after Radix's own focus-management has torn down.
+    // requestAnimationFrame is enough — Radix uses a microtask cleanup.
+    const trigger = triggerRef.current;
+    triggerRef.current = null;
+    if (trigger && typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(() => {
+        if (document.contains(trigger)) trigger.focus({ preventScroll: true });
+      });
+    }
   }, []);
 
   const element = opts ? (

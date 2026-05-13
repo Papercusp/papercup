@@ -42,11 +42,16 @@ export interface PromptOptions {
 export function usePromptDialog() {
   const [opts, setOpts] = useState<PromptOptions | null>(null);
   const resolverRef = useRef<((v: string | null) => void) | null>(null);
+  // Captured at open-time to restore focus after close. Radix's own
+  // focus-restoration only fires when the dialog is wired via <Trigger>.
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   const prompt = useCallback((options: PromptOptions): Promise<string | null> => {
     return new Promise<string | null>((resolve) => {
       if (resolverRef.current) resolverRef.current(null);
       resolverRef.current = resolve;
+      const active = typeof document !== 'undefined' ? document.activeElement : null;
+      triggerRef.current = active instanceof HTMLElement ? active : null;
       setOpts(options);
     });
   }, []);
@@ -56,6 +61,13 @@ export function usePromptDialog() {
     resolverRef.current = null;
     setOpts(null);
     r?.(result);
+    const trigger = triggerRef.current;
+    triggerRef.current = null;
+    if (trigger && typeof requestAnimationFrame !== 'undefined') {
+      requestAnimationFrame(() => {
+        if (document.contains(trigger)) trigger.focus({ preventScroll: true });
+      });
+    }
   }, []);
 
   const element = opts ? (
