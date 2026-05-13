@@ -91,15 +91,22 @@ Add the Papercusp typed-events extension to the server's declared capabilities:
 
 **Risk:** medium. Mitigations: pre-flight grep, atomic consumer+server commit, drift test on the legacy URL pattern.
 
-### T1.3 — Wire Specta codegen for IPC
+### T1.3 — Wire Specta codegen for IPC — **deferred 2026-05-13**
 
-**Files:**
-- `papercusp-desktop/src-tauri/src/main.rs` — instantiate `tauri_specta::Builder` for `endpoint_invoke` and `endpoint_cancel` commands; emit TypeScript at build to `apps/operator/lib/transport-adapters/ipc-types.generated.ts`
-- `apps/operator/lib/transport-adapters/ipc-stream.ts` — replace hand-typed `RustEndpointEvent` interface (lines 21-26) with the generated type
+**Status:** **deferred** during Tier 1 kickoff. The original audit found that Specta bindings were already generated at `apps/operator/lib/tauri-bindings.ts` and assumed wiring `ipc-stream.ts` to use the generated `EndpointEvent` + `commands.endpointInvoke` would be mechanical. That assumption missed a blocker.
 
-**Test:** existing `transport-adapters.test.ts` continues to pass. Add a `npm run check-generated-ipc` script that errors if the committed `.generated.ts` drifts from a fresh codegen — runs in CI.
+**Real blocker:** `specta v2.0.0-rc.24`'s `Type` impl for `serde_json::Value` at `~/.cargo/registry/.../specta-2.0.0-rc.24/src/type/legacy_impls.rs:82` produces an **externally-tagged enum** (`{"Null"} | {"Bool": ...} | {"String": ...} | …`). That's a structurally valid representation of `Value` as a Rust type, but it does **not** match the runtime wire shape — `serde_json::Value` serializes inline (no tag), so `EndpointEvent.data` over the channel is a raw JSON value, not an externally-tagged one. Substituting the generated `EndpointEvent` for the hand-typed `RustEndpointEvent` would produce TS types that are strictly **less correct** than the hand-typed version.
 
-**Risk:** low. Wire format is fixed; the generated type is a refactor of the consumer side.
+**Specta v2.0.0-rc.24 has no `DataType::Any` or `Unknown` variant**, so the usual escape hatch (declare a type as opaque-unknown for TS output) doesn't exist in this version.
+
+**Fix paths (each is its own follow-up, not Tier 1):**
+1. Upgrade Specta to a version with `DataType::Any` (if it exists upstream) and add `#[specta(type = unknown)]` overrides on the `data: serde_json::Value` and `input: serde_json::Value` fields.
+2. Hand-roll a TS post-processing step on the generated file that replaces the Value union expansion with `unknown`.
+3. Stop using `serde_json::Value` on the IPC wire: change `data` to `String`-carrying-JSON, decode on the consumer. (Changes the wire format; bigger blast radius.)
+
+Recommendation: option (1) first — if Specta has a newer rc with Any support, it's a small bump.
+
+**Current state:** the hand-typed `RustEndpointEvent` in `ipc-stream.ts:21` is **correct** for runtime, and the rest of the Tauri command surface (workspaces, pty, wsl, etc.) is already using generated bindings. The cleanup gap is only the IPC commands. Acceptable to leave until the Specta upgrade.
 
 ---
 
