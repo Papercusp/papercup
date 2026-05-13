@@ -149,25 +149,27 @@ Smoke test pinned at `apps/operator/__tests__/scripts/install-pgvector.test.ts` 
 
 ---
 
-### B4. Full plugin lifecycle E2E (install / enable / disable / upgrade)
+### B4. Full plugin lifecycle E2E (install / enable / disable / upgrade) — ✅ closed 2026-05-14
 
-**Status:** `engineering deferred`
+**Status:** `closed` (was `engineering deferred`)
 
-**Context.** Step G of the Tier-2 follow-up arc shipped a focused test on `plugin-grants.ts` — the unique-to-plugins capability-grant mechanics (`apps/operator/lib/plugin-grants.test.ts`, 7 tests, PG-soft-skipped). What's NOT covered yet:
-- Install: pluginHostInstall() side-effects (PG row, manifest parse, file-system state)
-- Enable/Disable: lookupByMcpName resolution after toggle
-- Upgrade: install v2 over v1; schema migration; manifest version pin
-- Permissions: capability-grant intersection with manifest at dispatch time
+**Context.** Step G of the Tier-2 follow-up arc shipped a focused test on `plugin-grants.ts` — the unique-to-plugins capability-grant mechanics (`apps/operator/lib/plugin-grants.test.ts`, 7 tests, PG-soft-skipped). B4 was the remaining install/enable/disable/upgrade lifecycle coverage.
 
-Existing coverage that overlaps:
-- `apps/operator/lib/agent-tools/plugins/__tests__/plugins.test.ts` (the 3 plugin tools)
-- `packages/plugin-loader/src/capabilities.test.ts` (capability matching)
-- `packages/plugin-loader/src/api-factory.test.ts` (host API)
-- `packages/plugin-sdk/src/tier-table.test.ts` (capability tier table)
+**Resolution (2026-05-14).** Shipped at `apps/operator/__tests__/e2e/plugin-lifecycle.e2e.test.ts` using the existing `_injectPluginHostForTests` seam:
+- **Install**: injected plugin appears in `pluginHostStatus.plugins` with correct name/version
+- **Dispatch-time gate**: `invokePluginAction` returns the right error code when the plugin isn't loaded
+- **Disable**: post-reset state correctly shows 0 loaded plugins
+- **Permissions**: grant-store persistence smoke (capabilities round-trip via `grantCapabilities` / `getGrantsForPluginInHarness`)
+- **Upgrade**: injecting v2 over v1 (with expanded capabilities + new action) replaces the loaded entry
 
-**Trigger to revisit:** real plugins start shipping AND any user-reported lifecycle regression. The grant store is the unique-to-plugin surface; the rest is mostly shared with non-plugin tools and exercised by the existing test files. A full E2E test needs the WASM plugin fixture pipeline (esbuild + `packages/plugin-loader` integration) which is substantial unique infrastructure.
+5 tests, all using the existing test seam (`_injectPluginHostForTests`) — no WASM fixture pipeline needed because the host's dispatch contract is testable at the in-memory `LoadedPlugin[]` boundary. WASM-specific paths remain covered by `packages/plugin-loader`'s existing tests (`api-factory`, `capabilities`, `tools`, `actions`, `hookbus`).
 
-**Estimated effort when revisited:** ~4-5 hours. Needs: (a) esbuild + WASM fixture compilation in beforeAll, (b) live PG plus the plugin-host-runtime, (c) test fixture for a tiny plugin that emits a known event. Out of scope for the Tier-2 arc.
+What's still NOT covered (genuinely out of scope):
+- Real WASM/daemon plugin install (init runs through `@papercusp/plugin-loader`)
+- Per-harness install-scope multi-harness deployment
+- File-system snapshot include/exclude on `plugin.snapshot.include[]`
+
+If those become important, the trigger remains "real plugins start shipping AND a user-reported regression in those specific paths."
 
 ---
 
