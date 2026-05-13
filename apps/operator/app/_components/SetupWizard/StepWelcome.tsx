@@ -1,46 +1,44 @@
 'use client';
 
-/**
- * Welcome card rendered on first visit to the wizard (no `?step=`
- * query param). Calls `onStart` to advance to the first real step;
- * does not mutate any persisted state.
- */
 export function StepWelcome({ onStart }: { onStart: () => void }) {
   return (
     <div className="pc-welcome">
-      <h2 className="pc-welcome__hello">Set up Papercusp in a few minutes.</h2>
+      <h2 className="pc-welcome__hello">Set up Papercusp.</h2>
       <p className="pc-welcome__lead">
-        We’ll check the essentials, save where projects live, and make sure at least one coding
-        agent can run. Everything else is optional and can be revisited later.
+        Start with the three things Papercusp needs to build locally: a database, a
+        project folder, and one coding agent. Optional accounts, voice, backups,
+        and telemetry can wait.
       </p>
 
-      <div className="pc-welcome__panel">
-        <h3>Required to start building</h3>
-        <ul className="pc-welcome__essentials">
-          <li>
+      <ul className="pc-welcome__checklist" aria-label="Setup essentials">
+        <li>
+          <span className="pc-welcome__step">1</span>
+          <span>
             <strong>Local database</strong>
-            <span>Wait for bundled Postgres to be ready.</span>
-          </li>
-          <li>
+            <small>Bundled Postgres</small>
+          </span>
+        </li>
+        <li>
+          <span className="pc-welcome__step">2</span>
+          <span>
             <strong>Workspace folder</strong>
-            <span>Choose where Papercusp creates projects.</span>
-          </li>
-          <li>
+            <small>Where projects live</small>
+          </span>
+        </li>
+        <li>
+          <span className="pc-welcome__step">3</span>
+          <span>
             <strong>Coding agent</strong>
-            <span>Install or detect Claude Code / oh-my-pi.</span>
-          </li>
-        </ul>
-      </div>
-
-      <p className="pc-welcome__fineprint">
-        Optional steps cover accounts, API keys, voice, mobile pairing, backups, updates, and
-        telemetry. Skip anything you don’t need right now.
-      </p>
+            <small>Claude Code or oh-my-pi</small>
+          </span>
+        </li>
+      </ul>
 
       <div className="pc-welcome__actions">
         <button type="button" className="pc-btn pc-btn--primary pc-btn--large" onClick={onStart}>
           Start setup →
         </button>
+        <span className="pc-welcome__action-note">Takes a few minutes. Skip optional steps anytime.</span>
       </div>
     </div>
   );
