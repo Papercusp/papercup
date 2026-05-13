@@ -9,6 +9,7 @@ import { Checkbox } from '../../harness/Checkbox';
 import { Select } from '../../harness/Select';
 import { Modal } from '../../harness/Modal';
 import { useConfirmDialog } from '../../harness/useConfirmDialog';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 import {
   initVoiceMode,
   listAvailableVoices,
@@ -1061,10 +1062,46 @@ function PerSlugVoiceTable({
   const overrides = Object.keys(config.roleVoices).filter((k) => k.includes('@'));
   const [addRole, setAddRole] = useState('worker');
   const [addSlug, setAddSlug] = useState('');
-  const sharedVoiceOptions = React.useMemo(
-    () => voices.map((v) => <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>),
+  const voiceOptions = React.useMemo(
+    () => [
+      { value: '_removed', label: '(removed)' },
+      ...voices.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
+    ],
     [voices],
   );
+  const overrideRows = React.useMemo(
+    () => overrides.map((key) => ({ key, voice: config.roleVoices[key] ?? '' })),
+    [overrides, config.roleVoices],
+  );
+  const overrideColumns: ColumnDef<{ key: string; voice: string }>[] = [
+    {
+      key: 'rolekey', header: 'Role @ Slug', width: 2,
+      toCopyText: (r) => r.key,
+      render: ({ row }) => <span style={{ fontSize: 12, fontFamily: 'monospace' }}>{row.key}</span>,
+    },
+    {
+      key: 'voice', header: 'Voice', width: 3,
+      toCopyText: (r) => r.voice,
+      render: ({ row }) => (
+        <Select
+          value={row.voice !== '' ? row.voice : '_removed'}
+          onChange={(v) => onAssign(row.key, v === '_removed' ? '' : v)}
+          ariaLabel={`Voice for ${row.key}`}
+          options={voiceOptions}
+          triggerStyle={{ padding: '4px 8px', fontSize: 12, minWidth: 220 } as React.CSSProperties}
+        />
+      ),
+    },
+    {
+      key: 'actions', header: 'Test / Remove', width: 1.5,
+      render: ({ row }) => (
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button type="button" onClick={() => onTest(row.key)} style={{ padding: '4px 8px', fontSize: 11 }}>Test</button>
+          <button type="button" onClick={() => onAssign(row.key, '')} style={{ padding: '4px 8px', fontSize: 11, color: '#fca5a5' }}>×</button>
+        </div>
+      ),
+    },
+  ];
   return (
     <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid var(--border)' }}>
       <h3 style={{ fontSize: 14, marginBottom: 6 }}>Per-slug voice overrides</h3>
@@ -1074,36 +1111,15 @@ function PerSlugVoiceTable({
         and want to distinguish them by ear.
       </p>
       {overrides.length > 0 && (
-        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8, marginBottom: 12 }}>
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-              <th style={{ padding: '6px 4px', fontSize: 12 }}>Role @ Slug</th>
-              <th style={{ padding: '6px 4px', fontSize: 12 }}>Voice</th>
-              <th style={{ padding: '6px 4px', fontSize: 12 }}>Test / Remove</th>
-            </tr>
-          </thead>
-          <tbody>
-            {overrides.map((key) => (
-              <tr key={key} style={{ borderBottom: '1px solid var(--border)' }}>
-                <td style={{ padding: '6px 4px', fontSize: 12, fontFamily: 'monospace' }}>{key}</td>
-                <td style={{ padding: '6px 4px' }}>
-                  <select
-                    value={config.roleVoices[key] ?? ''}
-                    onChange={(e) => onAssign(key, e.target.value)}
-                    style={{ padding: '4px 8px', fontSize: 12, minWidth: 220 }}
-                  >
-                    <option value="">(removed)</option>
-                    {sharedVoiceOptions}
-                  </select>
-                </td>
-                <td style={{ padding: '6px 4px', display: 'flex', gap: 4 }}>
-                  <button type="button" onClick={() => onTest(key)} style={{ padding: '4px 8px', fontSize: 11 }}>Test</button>
-                  <button type="button" onClick={() => onAssign(key, '')} style={{ padding: '4px 8px', fontSize: 11, color: '#fca5a5' }}>×</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={{ height: Math.min(360, 36 + overrideRows.length * 40 + 4), marginTop: 8, marginBottom: 12 }}>
+          <RichGrid<{ key: string; voice: string }>
+            columns={overrideColumns}
+            rows={overrideRows}
+            getRowId={(r) => r.key}
+            rowMinHeight={40}
+            headerHeight={32}
+          />
+        </div>
       )}
       <div style={{ display: 'flex', gap: 8, alignItems: 'flex-end', marginTop: 8 }}>
         <div>
@@ -1156,76 +1172,58 @@ const RoleVoicesTable = React.memo(function RoleVoicesTable({
   onAssign,
   onTest,
 }: RoleVoicesTableProps) {
-  // Render the option list ONCE per voices change. The previous code
-  // iterated voices for each of 21 roles → on Chrome with ~100 system
-  // voices that's 2100 React elements per page render. Now we render
-  // 100 once and reuse via a `<datalist>`-style shared options block.
-  const options = React.useMemo(() => {
-    if (!voices.length) return null;
-    return voices.map((v) => (
-      <option key={v.name} value={v.name}>{v.name} ({v.lang})</option>
-    ));
-  }, [voices]);
+  const voiceOptions = React.useMemo(
+    () => [
+      { value: '_auto', label: '(auto)' },
+      ...voices.map((v) => ({ value: v.name, label: `${v.name} (${v.lang})` })),
+    ],
+    [voices],
+  );
+  const rows = React.useMemo(
+    () => KNOWN_ROLES.map((role) => ({ role, current: roleVoices[role] ?? '' })),
+    [roleVoices],
+  );
+  const columns: ColumnDef<{ role: string; current: string }>[] = [
+    {
+      key: 'role', header: 'Role', width: 2,
+      toCopyText: (r) => r.role,
+      render: ({ row }) => <span style={{ fontSize: 13, fontFamily: 'monospace' }}>{row.role}</span>,
+    },
+    {
+      key: 'voice', header: 'Voice', width: 4,
+      toCopyText: (r) => r.current,
+      render: ({ row }) => (
+        <Select
+          value={row.current !== '' ? row.current : '_auto'}
+          onChange={(v) => onAssign(row.role, v === '_auto' ? '' : v)}
+          ariaLabel={`Voice for ${row.role}`}
+          options={voiceOptions}
+          triggerStyle={{ padding: '4px 8px', fontSize: 13, minWidth: 240 } as React.CSSProperties}
+        />
+      ),
+    },
+    {
+      key: 'test', header: 'Test', width: 1,
+      render: ({ row }) => (
+        <button type="button" onClick={() => onTest(row.role)} style={{ padding: '4px 8px', fontSize: 12 }}>Test</button>
+      ),
+    },
+  ];
 
   if (voices.length === 0) {
     return <p style={{ fontSize: 13, opacity: 0.7 }}>No voices loaded yet.</p>;
   }
 
   return (
-    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-      <thead>
-        <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left' }}>
-          <th style={{ padding: '8px 4px', fontSize: 12 }}>Role</th>
-          <th style={{ padding: '8px 4px', fontSize: 12 }}>Voice</th>
-          <th style={{ padding: '8px 4px', fontSize: 12 }}>Test</th>
-        </tr>
-      </thead>
-      <tbody>
-        {KNOWN_ROLES.map((role) => (
-          <RoleVoiceRow
-            key={role}
-            role={role}
-            current={roleVoices[role] ?? ''}
-            options={options}
-            onAssign={onAssign}
-            onTest={onTest}
-          />
-        ))}
-      </tbody>
-    </table>
-  );
-});
-
-const RoleVoiceRow = React.memo(function RoleVoiceRow({
-  role,
-  current,
-  options,
-  onAssign,
-  onTest,
-}: {
-  role: string;
-  current: string;
-  options: React.ReactNode;
-  onAssign: (role: string, voiceName: string) => void;
-  onTest: (role: string) => void;
-}) {
-  return (
-    <tr style={{ borderBottom: '1px solid var(--border)' }}>
-      <td style={{ padding: '8px 4px', fontSize: 13, fontFamily: 'monospace' }}>{role}</td>
-      <td style={{ padding: '8px 4px' }}>
-        <select
-          value={current}
-          onChange={(e) => onAssign(role, e.target.value)}
-          style={{ padding: '4px 8px', fontSize: 13, minWidth: 240 }}
-        >
-          <option value="">(auto)</option>
-          {options}
-        </select>
-      </td>
-      <td style={{ padding: '8px 4px' }}>
-        <button type="button" onClick={() => onTest(role)} style={{ padding: '4px 8px', fontSize: 12 }}>Test</button>
-      </td>
-    </tr>
+    <div style={{ height: Math.min(640, 32 + rows.length * 40 + 4) }}>
+      <RichGrid<{ role: string; current: string }>
+        columns={columns}
+        rows={rows}
+        getRowId={(r) => r.role}
+        rowMinHeight={40}
+        headerHeight={32}
+      />
+    </div>
   );
 });
 
