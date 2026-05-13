@@ -68,7 +68,13 @@ export async function buildOperatorPrompt(
       operatorToolNames.push(stripped.replace(/_/g, '.'));
     }
   }
-  const catalog = renderToolsCatalog('operator', operatorToolNames);
+  // Phase 4 T3.1: pass modality so the catalog filters out tools
+  // that don't declare 'voice' support when this turn is voice-side.
+  // Today chat:ask_choice is the load-bearing example — buttons are
+  // invisible to a voice user, so the tool declares modality:['text']
+  // and gets dropped from the voice catalog automatically (replaces
+  // the manual NOTE in the trigger sections below).
+  const catalog = renderToolsCatalog('operator', operatorToolNames, modality);
   if (catalog) sections.push(catalog);
 
   const playbook = loadRoleToolsMd('operator');

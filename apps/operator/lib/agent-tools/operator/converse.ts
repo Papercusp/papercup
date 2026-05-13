@@ -105,6 +105,11 @@ export default defineTool({
   // generous soft cap; eviction warn-logs let us tune down once
   // migration 066's event_count column has p99 data.
   replayBufferSize: 5000,
+  // Phase 4 T3.1 — operator:converse is the brain for BOTH text
+  // chat AND voice (the EL Conv AI integration POSTs to this same
+  // tool's HTTP shim). Declaring both modalities means it shows up
+  // in both surface catalogs.
+  modality: ['text', 'voice'],
   args: ArgsSchema,
   events: {
     delta: z.object({ text: z.string() }),
