@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useTransitionRouter } from 'next-transition-router';
 import RouteLink from '../_components/RouteLink';
@@ -80,6 +80,38 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const pathname = usePathname() ?? '';
   const router = useTransitionRouter();
   const [query, setQuery] = useState('');
+  const [wizardProgress, setWizardProgress] = useState<{
+    finishedAt: string | null;
+    completed: number;
+    total: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
+        if (!r.ok) return;
+        const j = (await r.json()) as {
+          finished_at?: string;
+          step_status?: Record<string, 'completed' | 'dismissed'>;
+        };
+        if (cancelled) return;
+        const TOTAL = 12;
+        const completed = Object.values(j.step_status ?? {}).filter(
+          (s) => s === 'completed' || s === 'dismissed',
+        ).length;
+        setWizardProgress({
+          finishedAt: j.finished_at ?? null,
+          completed: Math.min(completed, TOTAL),
+          total: TOTAL,
+        });
+      } catch { /* leave null */ }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const publishingEnabled = useFlag(FLAGS.CLOUDFLARE_PUBLISH);
   const oracleEnabled = useFlag(FLAGS.ORACLE);
@@ -177,6 +209,16 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                     >
                       <span className="pc-settings-nav-link-label">{link.label}</span>
                       {link.advanced && <span className="pc-settings-nav-chip">Advanced</span>}
+                      {link.href === '/settings/setup-wizard' && wizardProgress && (
+                        <span
+                          className="pc-settings-nav-chip pc-settings-nav-chip--progress"
+                          data-finished={wizardProgress.finishedAt ? 'true' : 'false'}
+                        >
+                          {wizardProgress.finishedAt
+                            ? '✓'
+                            : `${wizardProgress.completed}/${wizardProgress.total}`}
+                        </span>
+                      )}
                     </RouteLink>
                   );
                 })}

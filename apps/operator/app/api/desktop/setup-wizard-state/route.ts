@@ -34,6 +34,11 @@ export interface SetupWizardState {
    *  Used as the PostHog distinct id so each installation is one
    *  "person" in PostHog regardless of workspace creation/deletion. */
   install_id?: string;
+  /** User explicitly intends to use voice in this install — set from
+   *  StepKeys' "I plan to use voice" checkbox. Used by Step 8 voice-
+   *  devices gating: the wizard walks the voice step when this OR
+   *  the ElevenLabs key is set. */
+  voice_intent?: boolean;
   updated_at?: string;
 }
 
@@ -76,6 +81,9 @@ export async function PATCH(req: NextRequest) {
   }
   if (typeof body.telemetry_enabled === 'boolean') {
     next.telemetry_enabled = body.telemetry_enabled;
+  }
+  if (typeof body.voice_intent === 'boolean') {
+    next.voice_intent = body.voice_intent;
   }
   // telemetry_host + telemetry_project_key are gone — PostHog config now
   // comes exclusively from the shared resolver (env or

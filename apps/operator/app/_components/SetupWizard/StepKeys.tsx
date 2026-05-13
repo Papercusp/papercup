@@ -1,8 +1,35 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import RouteLink from '../RouteLink';
 
 export function StepKeys() {
+  const [voiceIntent, setVoiceIntent] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await fetch('/api/desktop/setup-wizard-state', { cache: 'no-store' });
+        if (r.ok) {
+          const j = (await r.json()) as { voice_intent?: boolean };
+          setVoiceIntent(Boolean(j.voice_intent));
+        }
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  const updateVoiceIntent = async (next: boolean) => {
+    setVoiceIntent(next);
+    await fetch('/api/desktop/setup-wizard-state', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ voice_intent: next }),
+    });
+  };
+
   return (
     <div className="pc-step">
       <div className="pc-warn-banner">
@@ -37,6 +64,19 @@ export function StepKeys() {
           </>
         }
       />
+
+      <label className="pc-consent__toggle" style={{ marginTop: 16 }}>
+        <input
+          type="checkbox"
+          checked={voiceIntent}
+          disabled={!loaded}
+          onChange={(e) => void updateVoiceIntent(e.target.checked)}
+        />
+        <span>
+          I plan to use voice. <em style={{ opacity: 0.7 }}>(Adds the Voice devices step to your setup
+          path — even if you haven't pasted the ElevenLabs key yet.)</em>
+        </span>
+      </label>
 
       <KeyCard
         title="ElevenLabs — voice (optional)"
