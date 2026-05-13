@@ -58,6 +58,7 @@ function isValidSnapshotEnvelope(data: unknown): data is SnapshotEnvelope {
 export function useStateSnapshots(): {
   cards: OpenCardWithRun[];
   connected: boolean;
+  byRun: Map<string, SnapshotEnvelope>;
 } {
   const [byRun, setByRun] = useState<Map<string, SnapshotEnvelope>>(() => new Map());
   const [connected, setConnected] = useState(false);
