@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { useQueryState, parseAsString } from 'nuqs';
+import { Select } from '@/app/harness/Select';
 import type { RepoStats, SnapshotInfo } from '@/lib/backup';
 
 interface ServerInfo { workspaceId: string; port: number; url: string; startedAt: string; }
@@ -266,14 +267,18 @@ export default function BackupsTab() {
 
       <section className="pc-dev-backups-restore">
         <h3>Restore (to clone, never overwrites)</h3>
-        <select value={restorePick} onChange={(e) => setRestorePick(e.target.value)}>
-          <option value="">— pick a snapshot —</option>
-          {restoreOptions.map((s) => (
-            <option key={s.id} value={s.kopiaSnapshotId ?? ''}>
-              {s.startedAt.replace('T', ' ').slice(0, 19)} · {s.triggerReason} · {fmtBytes(s.bytesAdded ?? 0)}
-            </option>
-          ))}
-        </select>
+        <Select
+          value={restorePick === '' ? '_unset' : restorePick}
+          onChange={(v) => setRestorePick(v === '_unset' ? '' : v)}
+          ariaLabel="Snapshot to restore from"
+          options={[
+            { value: '_unset', label: '— pick a snapshot —' },
+            ...restoreOptions.map((s) => ({
+              value: s.kopiaSnapshotId ?? '',
+              label: `${s.startedAt.replace('T', ' ').slice(0, 19)} · ${s.triggerReason} · ${fmtBytes(s.bytesAdded ?? 0)}`,
+            })),
+          ]}
+        />
         <div className="pc-dev-backups-actions">
           <button type="button" disabled={!restorePick || busy === 'restore'} onClick={doRestore}>
             {busy === 'restore' ? 'Restoring…' : 'Restore to clone'}

@@ -7,6 +7,8 @@
  * JSON textarea — escape hatch for complex shapes.
  */
 
+import { Checkbox } from '@/app/harness/Checkbox';
+
 interface Schema {
   type?: string;
   properties?: Record<string, Schema>;
@@ -100,13 +102,7 @@ function renderField(
     );
   }
   if (schema.type === 'boolean') {
-    return (
-      <input
-        type="checkbox"
-        checked={!!value}
-        onChange={(e) => setValue(e.target.checked)}
-      />
-    );
+    return <Checkbox checked={!!value} onChange={setValue} />;
   }
   if (schema.type === 'integer' || schema.type === 'number') {
     return (
