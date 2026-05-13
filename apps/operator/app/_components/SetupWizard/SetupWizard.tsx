@@ -41,11 +41,10 @@ export function SetupWizard({ mode }: Props) {
     if (stepId) void setLastVisitedStep(stepId);
   }, [stepId, setLastVisitedStep]);
 
-  // In first-run mode with no ?step= and no prior visit, show the
-  // welcome card. In settings mode, jump straight to the first step
-  // (the welcome card is meant for the un-onboarded user, not someone
-  // dipping in from Settings).
-  const showWelcome = mode === 'first-run' && !stepId && !persisted.last_visited_step;
+  // First-run mode owns the landing screen. A direct `/setup` visit should
+  // show it every time; deep links (`?step=...`) still jump into a step.
+  // Settings mode starts directly on the first/last visited step.
+  const showWelcome = mode === 'first-run' && !stepId;
   const active = useMemo(
     () => findStep(stepId) ?? findStep(persisted.last_visited_step) ?? SETUP_STEPS[0],
     [stepId, persisted.last_visited_step],
