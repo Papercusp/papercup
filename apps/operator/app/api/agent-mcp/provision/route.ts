@@ -32,6 +32,12 @@ const OPERATOR_CAPS = [
   'proposals:write',
   'goals:write',
   'routines:write',
+  // chat:write needed for `chat:ask_choice` — the bespoke-card flow's
+  // primary entry point (PR #80, 2026-05-13). Without it, the operator
+  // agent gets 403 missing_capability when trying to render a
+  // structured ask in its own chat sidebar. Migration 067 backfills
+  // existing workspaces; this entry covers new provisions.
+  'chat:write',
 ];
 
 export async function POST(req: NextRequest) {

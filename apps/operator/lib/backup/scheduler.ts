@@ -82,8 +82,14 @@ async function tick(): Promise<void> {
     // Join settings with most-recent snapshot start time so we use a
     // persistent floor for cadence — restarting the operator doesn't
     // re-fire snapshots that just ran in the previous process.
+    // postgres.js usually returns timestamptz as Date instances, but
+    // under some runtime configs (Turbopack prod build observed in
+    // operator's :3070 server) the column comes back as an ISO string.
+    // Type widened + `new Date()` coercion below mirrors the pattern
+    // used across operator/lib (omp-sessions, operator-scan-lock,
+    // spawn-signing, autoloop, cross-harness-data, etc.).
     const rows = await sql<{
-      workspace_id: string; cadence_minutes: number; last_started_at: Date | null;
+      workspace_id: string; cadence_minutes: number; last_started_at: Date | string | null;
     }[]>`
       SELECT s.workspace_id,
              s.cadence_minutes,
@@ -100,7 +106,7 @@ async function tick(): Promise<void> {
       // Use the larger of in-memory and PG — in-memory wins after a
       // local fire (avoids extra PG round-trip), PG wins after a process
       // restart.
-      const pgFloor = r.last_started_at ? r.last_started_at.getTime() : 0;
+      const pgFloor = r.last_started_at ? new Date(r.last_started_at).getTime() : 0;
       const lastFiredAt = Math.max(mem.lastFiredAt, pgFloor);
       const dueAt = lastFiredAt + r.cadence_minutes * 60_000;
       if (mem.inFlight) continue;

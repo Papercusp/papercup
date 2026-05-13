@@ -98,13 +98,16 @@ export async function acquireClaim(
       pid: number;
       run_id: string;
       script_hash: string;
-      claimed_at: Date;
-      expires_at: Date;
+      claimed_at: Date | string;
+      expires_at: Date | string;
     }>;
     const now = Date.now();
     if (existing.length > 0) {
       const e = existing[0];
-      const expiresMs = e.expires_at.getTime();
+      // Coerce via `new Date(...)` because postgres.js may return
+      // timestamptz columns as ISO strings under some runtime configs
+      // (see comment in backup/scheduler.ts).
+      const expiresMs = new Date(e.expires_at).getTime();
       const expired = expiresMs <= now;
       if (!expired) {
         return {
