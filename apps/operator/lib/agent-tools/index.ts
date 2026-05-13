@@ -123,6 +123,7 @@ import './dev/pg_table_sizes';
 import './dev/build_status';
 import './dev/ipc_echo';
 import './dev/state_counter';
+import './dev/event_emitter';
 import './dev/processes';
 import './dev/session_detail';
 import './processes/kill';
