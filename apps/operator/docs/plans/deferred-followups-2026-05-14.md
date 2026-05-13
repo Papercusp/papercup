@@ -124,13 +124,18 @@ The unified state-snapshot channel is per-workspace (`subscribeWorkspace(activeW
 
 ---
 
-### B3. pgvector wizard live re-verify (round-13 bug #29)
+### B3. pgvector wizard live re-verify (round-13 bug #29) — ✅ closed 2026-05-14
 
-**Status:** `code-verified deferred`
+**Status:** `closed` (was `code-verified deferred`)
 
-**Context.** Fix verified in code at `27082a3e`. The install-pgvector wizard script accepts the runtime arg correctly; the bug was that one call site wasn't passing it. Live re-run against a wizard worktree pending a desktop-build CI run.
+**Context.** Fix verified in code at `27082a3e`. The install-pgvector wizard script accepts the runtime arg correctly; the bug was that one call site wasn't passing it.
 
-**Trigger to revisit:** first desktop-release PR that builds the wizard. Verify the script accepts the arg in the built binary on the next desktop-release CI run; will surface naturally without needing scheduled action.
+**Resolution (2026-05-14).** Live-verified end-to-end against this checkout:
+- Default arg (no arg → repo-relative default): copies vector.so + control + sql to `node_modules/@embedded-postgres/linux-x64/native/`. ✓
+- Explicit alternate dir: copies into the named `native/` dir. ✓
+- Nonexistent target: exits 1 with clear error. ✓
+
+Smoke test pinned at `apps/operator/__tests__/scripts/install-pgvector.test.ts` (3 tests, soft-skipped on non-Linux or when system pgvector isn't installed). Note: desktop sidecar build (`papercusp-desktop/bin/build-desktop-sidecar.sh:208`) has its own inlined pgvector-bundling path — they're parallel surfaces. Both work; B3 was specifically about the dev-machine script.
 
 ---
 
