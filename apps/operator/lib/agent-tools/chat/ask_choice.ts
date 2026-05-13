@@ -1,28 +1,21 @@
 /**
  * chat:ask_choice — present the user with a structured set of clickable
- * choices in chat instead of asking the question as free-text.
+ * choices and BLOCK until they pick (or decline / cancel).
  *
- * Fire-and-forget render hint: the handler echoes back the validated
- * args (for audit_log capture); the actual rendering happens client-side
- * when the chat surface emits the tool_call SSE event to the dock. The
- * dock renders an AskChoiceCard with the question + button list. On
- * click, the dock POSTs to the surface-specific turn-answer endpoint
- * AND sends the option's label as a new user message — same path as
- * Scout's suggestion chips, just model-driven.
+ * Implementation (post bespoke-card-improvements):
+ *   Thin wrapper over ctx.askUser. The card lives on the state channel
+ *   from the moment the handler awaits; the user's pick arrives as the
+ *   tool's RETURN value, not as a separate user turn. The chat surface
+ *   renders the AskChoiceCard from the state-snapshot, not from a
+ *   tool-call SSE event.
  *
- * After calling this tool, the model should END ITS TURN. The user's
- * click arrives as the next user message; the buttons ARE the prompt.
+ * UX consequence vs the legacy fire-and-forget design:
+ *   - Model now waits *inside* the tool call; SSE stream stays open.
+ *   - The model can react to the choice without ending its turn.
+ *   - If the user ignores the buttons, ctx.askUser eventually resolves
+ *     {action:'cancel'} (run abort / workspace switch / timeout).
  *
- * Why fire-and-forget instead of wait-for-result: holding an SSE turn
- * open while waiting for a click would tie up tokens, show "thinking"
- * UI for minutes, and break gracefully-cancellable UX (user can ignore
- * the buttons and type something else).
- *
- * Why in the `chat:*` namespace and not `ui:*`: the existing ui:* tools
- * (list_clients/get_state/dispatch) all operate on the browser tab via
- * the ui_intents PG queue. ask_choice renders into the chat transcript,
- * a different concern. Future chat-render tools (show_progress,
- * show_diff) go here too.
+ * Plan: apps/operator/docs/plans/bespoke-card-improvements-2026-05-13.md §4.6
  */
 
 import { z } from 'zod';
@@ -40,8 +33,6 @@ const ALL_ROLES = [
   'curator',
 ] as const;
 
-// Hard caps. The model should usually use 2-3 options; 6 is the
-// absolute maximum (chat UI gets crowded past 4).
 const MAX_OPTIONS = 6;
 const MAX_QUESTION_LEN = 500;
 const MAX_LABEL_LEN = 80;
@@ -63,39 +54,27 @@ const optionSchema = z.object({
 const argsSchema = z.object({
   question: z.string().min(1).max(MAX_QUESTION_LEN),
   options: z.array(optionSchema).min(1).max(MAX_OPTIONS),
-  /**
-   * Multi-select mode: when true, the user picks one OR MORE options
-   * and confirms with a "Submit" button. The user-turn text becomes
-   * the joined labels (" · "). Default false (radio behavior: one
-   * click commits the choice).
-   *
-   * Use for "select all that apply" questions. Single-pick yes/no /
-   * accept/reject / pick-one-of should use multi: false (default).
-   */
+  /** Multi-select. Default false (radio: one pick commits). */
   multi: z.boolean().optional(),
+  /** Show Skip affordance. Default true. */
+  allowDecline: z.boolean().optional(),
 });
 
 export default defineTool({
   name: 'chat:ask_choice',
   description:
-    'Present the user with a structured set of clickable choices (e.g. "Do you want me to go into passive mode?" → [Yes, go passive] [No, stay active]). The chat dock renders the question + buttons; the user clicks one (or more, if multi:true) and their pick(s) become the next user message. After calling this tool, end your turn — do not also write the question as text. Use for yes/no, accept/reject, or pick-one-of questions with up to 6 options. Set multi:true for "select all that apply" — adds a Submit button. For open-ended prompts ("describe what you want", "paste the error"), keep using plain text.',
+    'Present the user with a structured set of clickable choices and BLOCK until they pick. The tool returns the chosen option(s) (or {declined:true} if the user skipped). Use for yes/no, accept/reject, or pick-one-of questions with up to 6 options. Set multi:true for "select all that apply".',
   capability: 'chat:write',
   guidance: {
-    when: 'You would otherwise end a turn with a yes/no, accept/reject, or pick-one-of question. Renders clickable buttons in the chat; the user clicks one and their choice becomes the next user message. End your turn after the tool call — do NOT follow up with "let me know!", the buttons ARE the prompt.',
-    notWhen: 'For OPEN-ENDED questions ("describe what you want", "paste the error"), keep using plain text. Use 2-3 options; 4+ only when genuinely distinct (6 hard max). Mark one as `style: "primary"` if you have a recommended pick; `style: "danger"` for irreversible.',
+    when: 'You need a yes/no, accept/reject, or pick-one-of decision from the user before continuing. Renders clickable buttons in the chat; the tool returns the choice as its result. You can keep working in the same turn after the result lands.',
+    notWhen: 'For OPEN-ENDED questions ("describe what you want", "paste the error"), keep using plain text. Use 2-3 options; 4+ only when genuinely distinct (6 hard max).',
   },
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
-  // Phase 4 T3.1: buttons are invisible to a voice user — the
-  // catalog renderer filters this tool out of voice surfaces.
-  // Replaces the manual NOTE in operator-converse-prompt.ts trigger
-  // sections that said "do NOT call chat:ask_choice when voice".
   modality: ['text'],
   args: argsSchema,
-  async handler(args) {
-    // Hard back-stop against runaway content (Zod size caps are
-    // per-field, not aggregate).
+  async handler(args, ctx) {
     const serialized = JSON.stringify(args);
     if (serialized.length > MAX_ARGS_BYTES) {
       return {
@@ -109,32 +88,74 @@ export default defineTool({
       };
     }
 
-    // Normalize ids to lowercase so the model can write "Yes" and the
-    // server stores "yes" consistently (matches the regex but case-
-    // insensitive for the model's convenience).
+    if (!ctx.askUser) {
+      // Out-of-chat caller (no runId in ctx). chat:ask_choice only
+      // makes sense from a surface that can render the card.
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            error: 'no_chat_surface: chat:ask_choice requires a runId-bearing context (chat or oracle)',
+          }),
+        }],
+        isError: true,
+      };
+    }
+
     const normalized = {
       ...args,
       options: args.options.map((o) => ({ ...o, id: o.id.toLowerCase() })),
     };
+    const knownIds = normalized.options.map((o) => o.id) as [string, ...string[]];
+    const idSchema = z.enum(knownIds);
+    const responseSchema = normalized.multi
+      ? z.object({ picks: z.array(idSchema).min(1) })
+      : z.object({ picks: z.tuple([idSchema]) });
 
-    // Warn (don't reject) on style anti-patterns. These show up in
-    // audit_log if/when we look back at "what did the model ask?"
-    const primaries = normalized.options.filter((o) => o.style === 'primary').length;
-    const dangers = normalized.options.filter((o) => o.style === 'danger').length;
-    const warnings: string[] = [];
-    if (primaries > 1) warnings.push(`multiple_primary: ${primaries} options marked primary`);
-    if (dangers > 1) warnings.push(`multiple_danger: ${dangers} options marked danger`);
+    const fallbackText =
+      `${normalized.question}\n\nOptions:\n` +
+      normalized.options.map((o, i) => `  ${i + 1}. ${o.label}${o.hint ? ` — ${o.hint}` : ''}`).join('\n');
+
+    const response = await ctx.askUser({
+      prompt: normalized.question,
+      dataSchema: responseSchema,
+      presentation: {
+        kind: normalized.multi ? 'checkbox' : 'radio',
+        options: normalized.options,
+      },
+      fallbackText,
+      allowDecline: normalized.allowDecline ?? true,
+    });
+
+    if (response.action === 'decline') {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ declined: true, reason: response.reason }),
+        }],
+      };
+    }
+    if (response.action === 'cancel') {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({ cancelled: true }),
+        }],
+      };
+    }
+
+    const picks = response.payload.picks.map((id) => {
+      const opt = normalized.options.find((o) => o.id === id)!;
+      return { option_id: opt.id, label: opt.label };
+    });
 
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           ok: true,
-          rendered: true,
-          question: normalized.question,
-          options: normalized.options,
+          picks,
           multi: normalized.multi ?? false,
-          ...(warnings.length > 0 ? { warnings } : {}),
         }),
       }],
     };
