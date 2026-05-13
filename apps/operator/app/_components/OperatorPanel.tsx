@@ -1729,7 +1729,6 @@ export function OperatorPanel(): ReactElement | null {
           />
           <header className="operator-panel__header pc-animate-in pc-animate-in--down pc-animate-in--fast">
             <div className="operator-panel__titleblock">
-              <OperatorReactorCore state={effectiveIconState} reducedMotion={calmMotion} />
               <div className="operator-panel__titlecopy">
                 <div className="operator-panel__title-overline" aria-hidden="true" />
                 <div className="operator-panel__titleline">
