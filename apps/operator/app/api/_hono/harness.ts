@@ -4085,15 +4085,24 @@ harness.post('/:slug/archive', async (c) => {
       }
       let resetRemoved: string[] = [];
       if (body.reset) {
-        // Remove features.json, validation-contract.md, issues.md, worker-log.md,
+        // Remove validation-contract.md, issues.md, worker-log.md,
         // escalation.md, supervisor-notes.md, lanes.json, prs.json, logs/*, snapshots/*,
         // screenshots/*. Keep config.json, hooks/, knowledge.md, archives/.
+        // features.json is in the list for legacy harnesses but features
+        // moved to PG in 2026-04-26; we also DELETE from harness_features below.
         for (const f of STATE_FILES_FOR_RESET) {
           try { await unlink(join(dir, f)); resetRemoved.push(f); } catch {}
         }
         const { rm } = await import('node:fs/promises');
         for (const d of ['logs', 'snapshots', 'screenshots']) {
           try { await rm(join(dir, d), { recursive: true, force: true }); resetRemoved.push(`${d}/`); } catch {}
+        }
+        try {
+          const dbc = dbcFor(project.slug);
+          await dbc.prepare('DELETE FROM harness_features WHERE harness_slug = ?').run(project.slug);
+          resetRemoved.push('harness_features (PG)');
+        } catch (e: any) {
+          console.warn('[archive-reset] PG features clear failed:', e?.message ?? e);
         }
       }
       let sizeBytes = 0;
@@ -5652,20 +5661,14 @@ harness.post('/:slug/reviews/:id/resolve', async (c) => {
     await writeFile(path, JSON.stringify(review, null, 2), 'utf8');
   }
 
-  // Unblock the feature in features.json so the orchestrator can pick it up again.
+  // Unblock the feature in PG so the orchestrator can pick it up again.
   if (review.featureId) {
     try {
-      const fp = join(harnessDir(project), 'features.json');
-      const rawF = safeRead(fp);
-      if (rawF) {
-        const parsed = JSON.parse(rawF);
-        const feats = parsed.features ?? [];
-        const feat = feats.find((f: any) => f.id === review.featureId);
-        if (feat && feat.status === 'blocked') {
-          feat.status = 'todo';
-        }
-        await writeFile(fp, JSON.stringify(parsed, null, 2), 'utf8');
-      }
+      const dbc = dbcFor(project.slug);
+      await dbc.prepare(
+        `UPDATE harness_features SET status = 'todo', updated_ts = ?
+          WHERE harness_slug = ? AND feature_id = ? AND status = 'blocked'`,
+      ).run(Date.now(), project.slug, review.featureId);
     } catch {}
   }
 

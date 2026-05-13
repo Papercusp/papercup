@@ -71,7 +71,12 @@ export async function register(): Promise<void> {
   // startup — the route would surface the real error anyway.
   void (async () => {
     try {
-      const { applyPendingMigrations } = await import('@restart/embedded-postgres-server');
+      // Subpath import — the package's main entry re-exports
+      // applyPendingMigrations on tip of libs/papercusp, but the
+      // submodule pointer on papercup main may lag that export. The
+      // src/migration-runner.js file has been stable since the runner
+      // was added, so importing it directly is robust to submodule drift.
+      const { applyPendingMigrations } = await import('@restart/embedded-postgres-server/src/migration-runner.js');
       const { getHarnessAdminUrlWithSource } = await import('@/lib/embedded-pg-discovery');
       const postgres = (await import('postgres')).default;
       const { createRequire } = await import('node:module');
