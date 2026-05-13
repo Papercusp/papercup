@@ -61,6 +61,26 @@ function makeNonStreamingTool(): ProjectedTool {
   };
 }
 
+function makeStateShapedTool(): ProjectedTool {
+  return {
+    pluginName: 'fixture',
+    description: 'state-shaped fixture',
+    inputSchema: { type: 'object' },
+    capabilities: [],
+    requiresPrincipal: false,
+    args: z.object({}),
+    state: z.object({ n: z.number() }),
+    expose: {
+      http: { path: '/api/agent-tools/fix/state_only', methods: ['POST'] },
+      mcp: { name: 'fix:state_only' },
+    },
+    fn: async (_input, ctx) => {
+      ctx.publishState?.({ n: 1 });
+      return { content: [{ type: 'text', text: 'done' }] };
+    },
+  };
+}
+
 beforeEach(() => {
   _resetProjectionRegistryForTests();
 });
@@ -119,6 +139,22 @@ describe('catch-all route strict-streamable behavior', () => {
     const res = await POST(req);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
+  });
+
+  it('accepts SSE on state-shaped tools (no events declared, only state)', async () => {
+    registerProjectedTool(makeStateShapedTool());
+    const req = new Request('http://x.test/api/agent-tools/fix/state_only', {
+      method: 'POST',
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const res = await POST(req);
+    // Pre-fix: 406 not_acceptable (state schema not recognized as streamable).
+    // Post-fix: 200 SSE; the SSE branch provides the runId ctx.publishState needs.
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+    expect(res.headers.get('X-Papercusp-Run-Id')).toBeTruthy();
+    await res.body?.cancel().catch(() => { /* drain */ });
   });
 
   it('GET also dispatches (legacy compat)', async () => {

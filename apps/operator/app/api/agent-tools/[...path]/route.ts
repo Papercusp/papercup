@@ -163,14 +163,20 @@ async function dispatchHttp(req: Request): Promise<Response> {
 
   if (wantsStream) {
     // Strict-streamable: only honor SSE when the resolved tool declares
-    // typed events OR opts in via expose.mcp.streaming. Prevents clients
-    // from opening an SSE connection against a tool that will only emit
-    // a single 'done' event — wastes a TCP connection on data the JSON
-    // path would have returned in one round-trip.
+    // typed events OR a state schema OR opts in via expose.mcp.streaming.
+    // Prevents clients from opening an SSE connection against a tool that
+    // will only emit a single 'done' event — wastes a TCP connection on
+    // data the JSON path would have returned in one round-trip.
+    //
+    // State-shaped tools (`tool.state`) qualify because their handler
+    // needs a runId-bearing ctx (installed by the SSE branch via
+    // searchParams.set('run', runId) below) so `ctx.publishState` can
+    // push snapshots to the state-channel side-channel.
     const tool = lookupByHttpPath(url.pathname);
     const streamable =
       !!tool &&
       ((tool.events && Object.keys(tool.events).length > 0) ||
+        !!tool.state ||
         tool.expose.mcp?.streaming === true);
     if (!streamable) {
       return new Response(
