@@ -56,7 +56,9 @@ export {
   resolveCardResponse,
   cancelPendingCardsForRun,
   cancelPendingCardsForWorkspaceSwitch,
+  _resetCardCorrelatorForTests,
 } from './card-correlator';
+export { _resetStateChannelForTests } from './state-channel';
 export { tierFor } from './capability-tiers';
 
 // Per-spawn URL-param parser — used by both projected-tool transports
