@@ -16,7 +16,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { __buildMcpToolContext_forTests, type BuiltSpawnContext } from './route';
+import {
+  __buildMcpToolContext_forTests,
+  MCP_SERVER_CAPABILITIES,
+  type BuiltSpawnContext,
+} from './route';
 
 const fakeSpawn: BuiltSpawnContext = {
   workspaceId: 'default',
@@ -112,6 +116,22 @@ describe('MCP emit → notifications', () => {
     const ctx = await __buildMcpToolContext_forTests(fakeSpawn, 'tok-no-sender', undefined);
     // Just verify it doesn't throw.
     expect(() => ctx.emit('delta', { text: 'silent' })).not.toThrow();
+  });
+
+  it('MCP_SERVER_CAPABILITIES declares the Papercusp typed-events extension (P4.8)', () => {
+    // Third-party MCP clients read `initialize` response to discover
+    // server capabilities. The Papercusp extension capability tells
+    // them this server emits notifications/papercusp/event frames
+    // carrying typed event payloads (the wire surfaced by tools/list).
+    // Plan ref: phase-4-endpoint-system-2026-05-12.md T1.1.
+    expect(MCP_SERVER_CAPABILITIES).toMatchObject({
+      tools: {},
+      resources: {},
+      prompts: {},
+      experimental: {
+        'papercusp/typedEvents': { version: '1' },
+      },
+    });
   });
 
   it('ctx.progress(pct, msg) routes through emit("progress", …) — alias parity', async () => {

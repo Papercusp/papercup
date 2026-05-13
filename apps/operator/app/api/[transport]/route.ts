@@ -398,6 +398,25 @@ async function buildMcpToolContext(
 
 /* ─── MCP handler ────────────────────────────────────────────────────── */
 
+/**
+ * Server capabilities declared in the MCP `initialize` response. Includes
+ * the Papercusp typed-events extension so third-party MCP clients can
+ * discover that this server emits `notifications/papercusp/event` frames
+ * outside the JSON-RPC core spec.
+ *
+ * Exported for the regression test in `mcp-notifications.test.ts` —
+ * inlining the object made the capability a string-grep target instead
+ * of a unit-testable contract.
+ */
+export const MCP_SERVER_CAPABILITIES = {
+  tools: {},
+  resources: {},
+  prompts: {},
+  experimental: {
+    'papercusp/typedEvents': { version: '1' },
+  },
+} as const;
+
 const handler = createMcpHandler(
   (server) => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -626,7 +645,7 @@ const handler = createMcpHandler(
 
     void getResourceCatalog;
   },
-  { capabilities: { tools: {}, resources: {}, prompts: {} } },
+  { capabilities: MCP_SERVER_CAPABILITIES },
   {
     basePath: '/api',
     maxDuration: 60,
