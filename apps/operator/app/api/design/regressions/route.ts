@@ -16,6 +16,8 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -43,7 +45,9 @@ async function listDir(absDir: string) {
   }
 }
 
-export async function GET() {
+export async function GET(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.DESIGN);
+  if (blocked) return blocked;
   const cwd = process.cwd();
   const buckets: Record<Bucket, Awaited<ReturnType<typeof listDir>>> = {
     baseline: await listDir(join(cwd, ROOTS.baseline)),

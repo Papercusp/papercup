@@ -2397,6 +2397,7 @@ export default function HarnessDashboard() {
   const snapshotsEnabled = useFlag(FLAGS.SNAPSHOTS);
   const templatesEnabled = useFlag(FLAGS.TEMPLATES);
   const harnessPhasesEnabled = useFlag(FLAGS.HARNESS_PHASES);
+  const designEnabled = useFlag(FLAGS.DESIGN);
   const visualEffectsEnabled = useFancyEffectsEnabled();
   const fancyEffectsEnabled = visualEffectsEnabled && !reducedMotion;
   const [projects, setProjects] = useState<ProjectEntry[]>([]);
@@ -4129,11 +4130,13 @@ export default function HarnessDashboard() {
               <LayoutDashboard size={13} /> dashboard
             </Tabs.Trigger>
           </Tooltip>
+          {designEnabled && (
           <Tooltip label={activeSlug ? 'Design — IR specs, registry, tokens, sketches, regressions' : 'Select a project to enter the design tab'}>
             <Tabs.Trigger value="design" className="h-tab h-tab--design" disabled={!activeSlug}>
               <Palette size={13} /> design
             </Tabs.Trigger>
           </Tooltip>
+          )}
           <Tooltip label={activeSlug ? 'Project summary — high-level changelog of what has been built' : 'Select a project to view summary'}>
             <Tabs.Trigger value="summary" className="h-tab h-tab--summary" disabled={!activeSlug}>
               <FileText size={13} /> summary
@@ -4239,8 +4242,8 @@ export default function HarnessDashboard() {
             />
           )}
         </ReactActivity>
-        <ReactActivity mode={resolvedPanel === 'design' ? 'visible' : 'hidden'}>
-          {activeSlug && <DesignDashboard slug={activeSlug} />}
+        <ReactActivity mode={resolvedPanel === 'design' && designEnabled ? 'visible' : 'hidden'}>
+          {activeSlug && designEnabled && <DesignDashboard slug={activeSlug} />}
         </ReactActivity>
         {/* Plugin-mounted tabs: pick whichever plugin matches the active panel
             via the plugin:<id> prefix. iframeUrl is null when the plugin's

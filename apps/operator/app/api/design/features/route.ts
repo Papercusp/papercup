@@ -12,11 +12,15 @@
  */
 import { NextResponse } from 'next/server';
 import { getOrgPg } from '@restart/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function GET(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.DESIGN);
+  if (blocked) return blocked;
   const url = new URL(req.url);
   const slug = url.searchParams.get('harness') ?? '';
   const workspace = url.searchParams.get('workspace') ?? 'default';

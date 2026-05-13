@@ -10,6 +10,8 @@
 import { NextResponse } from 'next/server';
 import { promises as fs } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -26,9 +28,11 @@ const ROOTS: Record<string, string> = {
 const FILENAME_RE = /^[a-z0-9][a-z0-9-]*\.png$/i;
 
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ bucket: string; file: string }> },
 ) {
+  const blocked = await gateApiRoute(req, FLAGS.DESIGN);
+  if (blocked) return blocked;
   const { bucket, file } = await params;
   const rel = ROOTS[bucket];
   if (!rel) {
