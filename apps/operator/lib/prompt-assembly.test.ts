@@ -125,6 +125,72 @@ describe('renderToolsCatalog', () => {
     expect(out).toBe('');
   });
 
+  describe('modality filter (Phase 4 T3.1)', () => {
+    it('defaults to text-only when modality arg is omitted', async () => {
+      mockTools.push({
+        expose: { mcp: { name: 'text:only' } },
+        description: 'A text-only tool.',
+        capabilities: [],
+        modality: ['text'],
+      });
+      mockTools.push({
+        expose: { mcp: { name: 'voice:only' } },
+        description: 'A voice-only tool.',
+        capabilities: [],
+        modality: ['voice'],
+      });
+      const { renderToolsCatalog } = await import('./prompt-assembly');
+      const out = renderToolsCatalog('operator', ['text:only', 'voice:only']);
+      expect(out).toContain('`text:only`');
+      expect(out).not.toContain('`voice:only`');
+    });
+
+    it('voice modality drops tools that declare modality:["text"]', async () => {
+      mockTools.push({
+        expose: { mcp: { name: 'chat:ask_choice' } },
+        description: 'Buttons for clicking.',
+        capabilities: [],
+        modality: ['text'],
+      });
+      mockTools.push({
+        expose: { mcp: { name: 'operator:converse' } },
+        description: 'Both surfaces.',
+        capabilities: [],
+        modality: ['text', 'voice'],
+      });
+      const { renderToolsCatalog } = await import('./prompt-assembly');
+      const voiceOut = renderToolsCatalog('operator', ['chat:ask_choice', 'operator:converse'], 'voice');
+      expect(voiceOut).not.toContain('chat:ask_choice');
+      expect(voiceOut).toContain('operator:converse');
+    });
+
+    it('tools without declared modality default to text-only (filtered out of voice catalog)', async () => {
+      mockTools.push({
+        expose: { mcp: { name: 'legacy:tool' } },
+        description: 'Has no modality field.',
+        capabilities: [],
+        // modality intentionally absent
+      });
+      const { renderToolsCatalog } = await import('./prompt-assembly');
+      const voiceOut = renderToolsCatalog('operator', ['legacy:tool'], 'voice');
+      expect(voiceOut).toBe('');
+      const textOut = renderToolsCatalog('operator', ['legacy:tool'], 'text');
+      expect(textOut).toContain('legacy:tool');
+    });
+
+    it('a tool declaring both modalities appears in both catalogs', async () => {
+      mockTools.push({
+        expose: { mcp: { name: 'both:surfaces' } },
+        description: 'Works everywhere.',
+        capabilities: [],
+        modality: ['text', 'voice'],
+      });
+      const { renderToolsCatalog } = await import('./prompt-assembly');
+      expect(renderToolsCatalog('operator', ['both:surfaces'], 'text')).toContain('both:surfaces');
+      expect(renderToolsCatalog('operator', ['both:surfaces'], 'voice')).toContain('both:surfaces');
+    });
+  });
+
   it('deduplicates and sorts tool names alphabetically', async () => {
     mockTools.push({
       expose: { mcp: { name: 'b:tool' } },

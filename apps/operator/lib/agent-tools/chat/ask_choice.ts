@@ -87,6 +87,11 @@ export default defineTool({
   requirePrincipal: false,
   roles: [...ALL_ROLES],
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
+  // Phase 4 T3.1: buttons are invisible to a voice user — the
+  // catalog renderer filters this tool out of voice surfaces.
+  // Replaces the manual NOTE in operator-converse-prompt.ts trigger
+  // sections that said "do NOT call chat:ask_choice when voice".
+  modality: ['text'],
   args: argsSchema,
   async handler(args) {
     // Hard back-stop against runaway content (Zod size caps are

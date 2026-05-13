@@ -303,7 +303,11 @@ Medium. Path traversal is the security-sensitive area; comprehensive test covera
 
 ## Tier 3 — Substantial scope (~3-4 weeks)
 
-### T3.1 — Voice modality projection (P4.6)
+### T3.1 — Voice modality projection (P4.6) — **shipped 2026-05-13 (re-scoped)**
+
+**Status:** ✅ Implemented as **metadata + prompt-assembly filter**, not the original framework-migration design. See `apps/operator/docs/plans/voice-modality-spike-2026-05-13.md` for why the framework-level `ctx.narrate` design didn't fit the EL Conv AI integration. Implementation: `RoleToolDefinition.modality?: ('text'|'voice')[]`, plumbed through `defineTool` → `ProjectedTool` → `tools/list`; `renderToolsCatalog(role, names, modality)` filters; `chat:ask_choice` → `['text']`; `operator:converse` → `['text','voice']`; sanitizer warn-log added in `askOperatorViaSse`; user docs at `content/docs/endpoint-system/voice-modality.mdx`.
+
+
 
 **Goal:** tools declare `modality: ['text', 'voice']`; framework auto-narrates progress/done for voice surfaces.
 

@@ -665,6 +665,12 @@ export interface McpToolListing {
   inputSchema: Record<string, unknown>;
   /** Map of event-name → JSON-Schema. Absent when the tool declares no events. */
   events?: Record<string, Record<string, unknown>>;
+  /**
+   * Surfaces this tool is meaningful from. Absent → defaults to
+   * `['text']`. Phase 4 T3.1; clients can filter by their caller
+   * modality.
+   */
+  modality?: ReadonlyArray<'text' | 'voice'>;
 }
 
 /**
@@ -727,6 +733,9 @@ export function listMcpProjections(role?: AgentRole): McpToolListing[] {
       // Plugin tools (T3.2): the JSON-Schema is the source of truth;
       // no conversion needed.
       listing.events = tool.eventsJsonSchema;
+    }
+    if (tool.modality && tool.modality.length > 0) {
+      listing.modality = tool.modality;
     }
     out.push(listing);
   }

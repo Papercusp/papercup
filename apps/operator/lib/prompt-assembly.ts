@@ -180,8 +180,17 @@ export function loadRoleConverse(role: Role): string {
  *
  * Sorted alphabetically by tool name so the prompt is stable across
  * runs (helpful for prompt-diffing in audits).
+ *
+ * `modality` (Phase 4 T3.1) filters the catalog by surface: when set
+ * to 'voice', tools whose declared `modality` excludes 'voice' are
+ * dropped. Tools without a declared modality default to text-only and
+ * are filtered out of voice catalogs.
  */
-export function renderToolsCatalog(role: Role, toolNames: string[]): string {
+export function renderToolsCatalog(
+  role: Role,
+  toolNames: string[],
+  modality: 'text' | 'voice' = 'text',
+): string {
   if (toolNames.length === 0) return '';
 
   const byMcpName = new Map<string, ProjectedTool>();
@@ -195,6 +204,11 @@ export function renderToolsCatalog(role: Role, toolNames: string[]): string {
   for (const name of sorted) {
     const tool = byMcpName.get(name);
     if (!tool) continue; // silently skip — caller's list may include legacy or transient names
+    // Modality filter: a tool's `modality: readonly ('text'|'voice')[]`
+    // declares which surfaces it makes sense from. Default ['text']
+    // when absent — voice catalogs drop tools that don't opt in.
+    const toolModality = tool.modality ?? ['text'];
+    if (!toolModality.includes(modality)) continue;
     rendered += 1;
     lines.push(`- \`${name}\``);
     lines.push(`  ${tool.description}`);

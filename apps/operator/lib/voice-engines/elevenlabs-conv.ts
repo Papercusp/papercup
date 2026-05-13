@@ -575,6 +575,18 @@ async function askOperatorViaSse(params: { text?: string; trigger?: string }): P
       }
     }
     const sayMatch = assembled.match(/<say(?:\s[^>]*)?>([\s\S]*?)<\/say>/i);
+    // Phase 4 T3.1 sanitizer: when the brain returns a non-empty
+    // assembled but NO `<say>` tag, the consumer's TTS speaks the
+    // raw text including any `<set_mode>` / `<spawn>` / `<sleep>`
+    // tags literally. Warn-log so this regression class doesn't
+    // ship silently — the brain's voice-mode prompt should ALWAYS
+    // wrap voice turns in `<say>…</say>` per the persona contract.
+    if (!sayMatch && assembled.trim().length > 0) {
+      console.warn(
+        '[el-conv:ask_operator] voice turn returned without <say> tag; the raw body will be spoken via TTS:',
+        assembled.trim().slice(0, 200),
+      );
+    }
     const out = (sayMatch ? sayMatch[1] : assembled).trim();
     return out || '...';
   } catch (err) {
