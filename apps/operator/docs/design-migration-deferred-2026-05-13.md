@@ -409,3 +409,37 @@ Next batches are either **design-judgment redesigns** or **blocked on user decis
 - `WslOnboardingGate` alerts (needs z-index pre-work)
 
 Do not start `/settings/voice` rewrite without resolving D6 first. Do not migrate `/dev/*` without resolving D1 first. Do not migrate the `WslOnboardingGate` alerts without first reducing the gate's z-index (or raising `<ConfirmModal>`'s portal z above 999999).
+
+---
+
+## Drain pass — 2026-05-14 (Phases 1–7 from `design-migration-deferred-2026-05-13.md`)
+
+D1, D4, D6, WslOnboarding all resolved. Sequencing followed the dependency-graph plan; commits on `main`.
+
+**Phase 1 — Spec revision (`b5ccab51`).** HR7 rewritten around the form-pattern decision tree (single-submit / per-field-auto-save / wizard) — none of D6 needed an RHF migration. New gotcha section + libraries section + decision-matrix row added.
+
+**Phase 2 — `useDebouncedSave` (`f2ef034a`).** Canonical per-field auto-save hook in `app/harness/useDebouncedSave.tsx`. 8 vitest cases (skipFirst, coalescing, flush, lastSavedAt, onError, cancel-on-unmount, skipFirst:false). 300ms default debounce; `flush()` for Test-button-before-save flows.
+
+**Phase 3 — RichGrid print + copy (`f144bb4` in `libs/papergrid`; `5fc76e00` operator).** `<table data-rg-print-mirror>` injected next to the virtualized grid, `@media print` swaps display. Ctrl+C handler writes `text/plain` (TSV) + `text/html` (`<table>`); Ctrl+A selects all rows. Helpers extracted to `copy-payloads.ts` (16 unit tests). Inline mode opted out (consumer owns the wrapper). New `ColumnDef` fields: `toCopyText`, `headerText`. New `RichGridProps`: `disablePrintMirror`, `printRows`, `disableCopySupport`.
+
+**Phase 4 — D6 settings/voice + settings/backups (`d70ff463`).** Control-wrapper swaps only; state management untouched. Voice: HR1 leak-warning modal → `<Modal>`; HR2 ×4 output-behavior cb → `<Checkbox>`; HR3 ×10 → `<Select>` (engine, STT, TTS, ElevenLabs voice, privacy mode, agent language with `_auto` sentinel, wake-word engine, porcupine/openwakeword keywords, noise-suppression); HR5 ×2 → `useConfirmDialog`. Backups: 5 cb → `<Checkbox>`, cadence-minutes → `<Select>`. Radios kept native (no HR rule covers radios).
+
+**Phase 5 — HR8 raw <table> → RichGrid.** Migrated (cumulative):
+- `5b030bd1` Group A (3): PromptBudgetView, HarnessSettingsPanel telemetry, installed/plugins runtime status.
+- `2b41e2a6` /settings/plugin-runtime ×3 (loaded plugins, registered actions, hook subscriptions) — `getRowBg` keeps the incomplete-action highlight.
+- `ad289388` /admin TableAdmin (dynamic columns + Actions column).
+- `3b732cff` /installed/plugins/<slug>/permissions matrix (capability × harness; per-harness `toCopyText` emits ✓/empty).
+- `6755d437` /settings/voice ×2 (PerSlugVoiceTable + RoleVoicesTable; both with sentinel-mapped Select inside).
+- `d543e530` IntelPanel ×4 (SpawnsTab + ArtifactsTab → RichGrid; GraphTab per-process symbols + definitions → CSS-grid div with `display:contents`, `role="list/listitem"`).
+
+**Phase 7 — WslOnboardingGate (`f6a3406c`).** Gate `z-index` lowered 999999 → 60 (covers viewport via `position:fixed inset:0`; nothing else competes for the layer). Modal renders at z:100, toast at z:150. 2 `confirm()` + 3 `alert()` migrated: reset-runtime destructive, needs-elevation primary; finalize-failure + re-launch-failure + install-failure → `toast.error`. `Step` sub-component receives `askConfirm` as a prop (hook lives in the outer gate).
+
+**Phase 6 — /dev controls.**
+- `a4ea4756` 5 tabs (ApiTab, TelemetryTab, ProcessesTab, IpcTab, SessionsTab) — 6 raw checkboxes → `<Checkbox>`.
+- `f317ad0b` SqlTab role select, BackupsTab snapshot-pick select, SchemaForm boolean checkbox.
+
+**Still open (next-session work).**
+- `/dev` HR8 raw `<table>` migrations — 12 tables across AuditTab, BackupsTab, HarnessesTab, PgTab×2, ProcessesTab, SessionsTab×3, SqlTab, TablesTab×2, TelemetryTab. Each is straightforward (consistent `pc-dev-table` CSS shape) but bespoke columns per tab. Suggested cadence: one commit per file. SqlTab is the trickiest — dynamic column shape per query — may need a "infer columns from first row" pass.
+- `/dev/TablesTab` HR3 ×2 selects + HR6 ×2 `<details>` — bundled with that file's HR8 migration since the row-expansion `<details>` is structurally fused with the table.
+- Two design-judgment redesigns (out-of-scope per user direction): `/installed/harnesses` C1–C10, `/marketplace` C2–C9.
+- StepAutoUpdate release-notes `<details>` — kept as content-disclosure carve-out per spec (`gotchas.mdx`).
