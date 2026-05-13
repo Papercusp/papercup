@@ -21,7 +21,7 @@
 import { useCallback, useState, type ReactNode } from 'react';
 import { Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
-import { AskChoiceCard, type AskChoiceArgs } from './chat/AskChoiceCard';
+import { renderCard } from '@/lib/chat-cards';
 import { OperatorLogoMark } from './OperatorLogoMark';
 
 interface Props {
@@ -70,37 +70,33 @@ export function OperatorChat({
     onSend(text);
   }, [input, onSend]);
 
-  // chat:ask_choice → AskChoiceCard. Returns null for any other tool
-  // (those fall through to renderToolChip above).
+  // Tool-card dispatch via the chat-cards registry (phase-4 T2.1).
+  // The registry maps tool names → renderers; we supply only the
+  // onAnswer callback because the live-tail dispatch is consumer-
+  // specific (Oracle handles it differently).
   const renderToolCard = useCallback(
     (t: ChatToolCall, msg: ChatMessage, ti: number): ReactNode | null => {
-      if (t.name !== 'chat:ask_choice') return null;
-      const args = (t.input ?? {}) as Partial<AskChoiceArgs>;
-      if (!args.question || !Array.isArray(args.options) || args.options.length === 0) {
-        return null; // bad payload — fall through to chip
-      }
-      return (
-        <AskChoiceCard
-          args={args as AskChoiceArgs}
-          answered={t.answered}
-          onAnswer={({ picks }) => {
-            if (typeof msg.seq !== 'number' || !onAnswerChoice) return;
-            // Fire-and-forget — server-side atomicity guarantees the
-            // assistant-answered + user-turn rows land together. The
-            // live-tail picks them up; we don't optimistically dispatch.
-            void Promise.resolve(
-              onAnswerChoice({
-                assistantSeq: msg.seq,
-                toolIndex: ti,
-                picks,
-              }),
-            ).catch((err) => {
-              // eslint-disable-next-line no-console
-              console.warn('[operator-chat] answerChoice failed:', err);
-            });
-          }}
-        />
-      );
+      return renderCard(t.name, {
+        args: t.input ?? {},
+        answered: t.answered,
+        onAnswer: (payload) => {
+          if (typeof msg.seq !== 'number' || !onAnswerChoice) return;
+          const { picks } = payload as { picks: Array<{ option_id: string; label: string }> };
+          // Fire-and-forget — server-side atomicity guarantees the
+          // assistant-answered + user-turn rows land together. The
+          // live-tail picks them up; we don't optimistically dispatch.
+          void Promise.resolve(
+            onAnswerChoice({
+              assistantSeq: msg.seq,
+              toolIndex: ti,
+              picks,
+            }),
+          ).catch((err) => {
+            // eslint-disable-next-line no-console
+            console.warn('[operator-chat] answerChoice failed:', err);
+          });
+        },
+      });
     },
     [onAnswerChoice],
   );
