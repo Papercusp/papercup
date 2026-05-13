@@ -1,32 +1,21 @@
-/* Papercusp blue-frost theme — slate-navy base, sky-cyan accents, glassy surfaces. */
+/* Papercusp blue-frost theme — slate-navy base, sky-cyan accents, glassy surfaces.
+ *
+ * Brand palette (--sky-400, --emerald-400, etc.) and core semantic vars
+ * (--bg, --accent, --good, --warn, --bad, etc.) live in DTCG tokens at
+ * design-tokens/ and are generated into _brand-primitives.css + _semantic.css.
+ * To retune any of those: edit the token JSON, then `pnpm tokens`.
+ *
+ * --bg-popover is one such generated var: solid elevated surface for floating
+ * surfaces (HoverCard / Popover / menus that portal out of the layout). The
+ * --bg-2/3/4 alpha overlays show through arbitrary panel content, making text
+ * unreadable; reach for --bg-popover for tooltips/popovers.
+ *
+ * Component-scoped vars (h-tab, h-button, etc.) remain inline below. */
+@import './_brand-primitives.css';
+@import './_semantic.css';
+
 :root {
   color-scheme: dark;
-  --bg: #07101d;
-  --bg-1: #0b1220;
-  --bg-2: rgba(255, 255, 255, 0.045);
-  --bg-3: rgba(255, 255, 255, 0.075);
-  --bg-4: rgba(255, 255, 255, 0.12);
-  /* Solid surface for floating popovers / hovercards / menus that portal
-   * out of the layout. --bg-2/3/4 are intentionally translucent overlays
-   * meant to layer on top of --bg; they show through when a popover sits
-   * over arbitrary panel content (text becomes unreadable). Reach for
-   * --bg-popover for any HoverCard / Popover / floating tooltip surface.
-   * Matches the elevated-surface tone used by .h-phase-action-menu. */
-  --bg-popover: #0d1829;
-  --fg: #e7f7ff;
-  --fg-dim: #b9d4e8;
-  --fg-mute: #7f9bb4;
-  --border: rgba(125, 211, 252, 0.15);
-  --border-strong: rgba(125, 211, 252, 0.32);
-  --accent: #38bdf8;
-  --accent-strong: #7dd3fc;
-  --accent-cool: #d7f3ff;
-  --accent-ink: #051827;
-  --good: #34d399;
-  --warn: #fbbf24;
-  --bad: #fb7185;
-  --warn-bg: rgba(251, 191, 36, 0.10);
-  --warn-border: rgba(251, 191, 36, 0.35);
   --card-shadow: 0 24px 70px rgba(0, 0, 0, 0.32);
   --frost: linear-gradient(180deg, rgba(255,255,255,0.068), rgba(255,255,255,0.024));
 
