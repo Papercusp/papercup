@@ -5,6 +5,8 @@ import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { papercuspPath } from '@/lib/papercusp-root';
+import { FLAGS } from '@papercusp/flags';
+import { gateApiRoute } from '@/lib/require-flag';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
@@ -190,6 +192,8 @@ async function installSubagentPack(
 }
 
 export async function POST(req: Request) {
+  const blocked = await gateApiRoute(req, FLAGS.MARKETPLACE);
+  if (blocked) return blocked;
   const cors = corsHeaders(req.headers.get('origin'));
   const json = (data: unknown, init?: { status?: number }) =>
     NextResponse.json(data, { status: init?.status ?? 200, headers: cors });

@@ -7014,6 +7014,23 @@ async function writeTests(project: ProjectEntry, phase: Phase, tests: TestItem[]
   await rename(tmp, f);
 }
 
+// V1 ship-state gate: tests tab is phase-coupled (per harness-phases plan),
+// so the /tests endpoints return 404 when FLAGS.HARNESS_PHASES is off.
+harness.use('/:slug/tests/*', async (c, next) => {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const enabled = await getFlag(FLAGS.HARNESS_PHASES, 'system');
+  if (!enabled) return c.notFound();
+  return next();
+});
+harness.use('/:slug/tests', async (c, next) => {
+  const { getFlag } = await import('@papercusp/flags/server');
+  const { FLAGS } = await import('@papercusp/flags');
+  const enabled = await getFlag(FLAGS.HARNESS_PHASES, 'system');
+  if (!enabled) return c.notFound();
+  return next();
+});
+
 harness.get('/:slug/tests', async (c) => {
   const project = await resolvePhasedProject(c.req.param('slug'), phasePhaseLabel(c.req.query('phase')));
   if (!project) return c.json({ error: 'unknown project' }, 404);

@@ -3600,7 +3600,7 @@ export default function HarnessDashboard() {
       cs.push({ id: 'hooks', section: 'Control', title: 'Hooks — edit pre/post lifecycle scripts', icon: '⚡', keywords: 'hook script pre post worker validator escalate', perform: () => setShowHooks(true) });
       cs.push({ id: 'intervene', section: 'Control', title: 'Intervene — send note to orchestrator', icon: '💬', keywords: 'note supervisor guidance', perform: () => setShowIntervention(true) });
       cs.push({ id: 'usage', section: 'Control', title: 'Usage — per-role cost breakdown', icon: '💵', keywords: 'cost tokens money spend', perform: () => setShowUsage(true) });
-      cs.push({ id: 'snapshots', section: 'Control', title: 'Snapshots — rollback mission state', icon: '⟲', keywords: 'checkpoint rollback history restore', perform: () => setShowSnapshots(true) });
+      if (snapshotsEnabled) cs.push({ id: 'snapshots', section: 'Control', title: 'Snapshots — rollback mission state', icon: '⟲', keywords: 'checkpoint rollback history restore', perform: () => setShowSnapshots(true) });
       cs.push({ id: 'decisions', section: 'Control', title: 'Decisions — orchestrator verb timeline', icon: '🧠', keywords: 'decision orchestrator verb ghost parser', perform: () => setShowDecisions(true) });
       cs.push({ id: 'smoke', section: 'Control', title: 'Smoke test — service gate (claudecode-orchestrator)', icon: '💨', keywords: 'smoke test gate service url check', perform: () => setShowSmokeTest(true) });
       cs.push({ id: 'identity', section: 'Control', title: 'Identity — cross-mission role memory (Agent-Swarm)', icon: '🧬', keywords: 'identity role memory cross mission learned patterns', perform: () => setShowIdentity(true) });
@@ -3628,7 +3628,7 @@ export default function HarnessDashboard() {
       });
       cs.push({ id: 'screenshots', section: 'Control', title: 'Screenshots — visual history', icon: '📸', keywords: 'screenshot image visual capture', perform: () => setShowScreenshots(true) });
       cs.push({ id: 'newfeat', section: 'Control', title: 'Create new feature', icon: '＋', keywords: 'add feature', perform: () => setEditingFeature('new') });
-      cs.push({ id: 'templates', section: 'Control', title: 'Start from template — seed SPEC.md + AGENTS.md', icon: '📋', keywords: 'template starter bootstrap spec', perform: () => setShowTemplates(true) });
+      if (templatesEnabled) cs.push({ id: 'templates', section: 'Control', title: 'Start from template — seed SPEC.md + AGENTS.md', icon: '📋', keywords: 'template starter bootstrap spec', perform: () => setShowTemplates(true) });
       cs.push({ id: 'archives', section: 'Control', title: 'Archives — snapshot / restore mission state', icon: '📦', keywords: 'archive restore backup reset', perform: () => setShowArchives(true) });
       cs.push({ id: 'intel', section: 'Control', title: 'Intel — tool-invocation telemetry', icon: '🔭', keywords: 'intel telemetry spawn tool invocation gitnexus repomix code2prompt diff pack', perform: () => setShowIntel(true) });
       cs.push({
@@ -4624,7 +4624,7 @@ export default function HarnessDashboard() {
       )}
 
       {/* ── Snapshots panel ───────────────────────────────── */}
-      {showSnapshots && activeSlug && (
+      {showSnapshots && activeSlug && snapshotsEnabled && (
         <div data-harness-modal="true">
           <SnapshotsPanel
             slug={activeSlug}
@@ -4708,7 +4708,7 @@ export default function HarnessDashboard() {
       )}
 
       {/* ── Templates modal ───────────────────────────────── */}
-      {showTemplates && activeSlug && (
+      {showTemplates && activeSlug && templatesEnabled && (
         <div data-harness-modal="true">
           <TemplatesModal
             slug={activeSlug}
