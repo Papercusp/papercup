@@ -75,10 +75,10 @@ Reference implementation of the [CLI pluggability](/docs/spec/cli-pluggability) 
 |---|---|---|
 | **Cutover:** flip `PAPERCUSP_USE_TS_ORCHESTRATOR=1` default-on | ~½ day | Edit `apps/papercusp-desktop/src-tauri/src/main.rs` spawn env. Requires end-to-end run validation against papercup/sheets-clone first (sequential, parallel-lane, and competition modes). |
 | SQL feature import on TS path | ~1 day | The `features.json` → Postgres `harness_<slug>.harness_features` import. Bash currently does it via psql + python heredoc; observability layer only, doesn't gate cutover. |
-| Tag `desktop-v0.0.2` | ~½ day | Validates the new ARM64 + AppImage CI matrix end-to-end (added in this session but not yet exercised). Updated bundle includes the full TS orchestrator. |
-| macOS code signing | ~1 day my work + your $99/yr Apple cert | Adds 6 lines to `.github/workflows/desktop-release.yml` + 5 GitHub secrets. Eliminates Gatekeeper warning on first launch. |
-| Windows code signing | ~½ day my work + your $200-500/yr OV cert | Adds 4 lines + 2 secrets. Eliminates SmartScreen warning (~1-2wk reputation curve). |
-| Auto-updater wiring (Tauri) | ~2 hours | Depends on both signings. Adds `tauri-plugin-updater` Rust dep + `[plugins.updater]` config + a Tauri-managed signing keypair. Updates land via GitHub Releases JSON. |
+| Tag `desktop-v0.0.2` | ~½ day | Run `bin/release-local.sh 0.0.2 alpha` in the desktop checkout. Local Linux x86_64 build → signed → GitHub Release. No CI involved. |
+| macOS code signing | ~1 day my work + your $99/yr Apple cert | Requires a real Mac to build + notarize on; alpha skips macOS. |
+| Windows code signing | ~½ day my work + your $200-500/yr OV cert | Local cross-build via `WITH_WINDOWS=1`; signing is a separate step against the OV cert. Eliminates SmartScreen warning (~1-2wk reputation curve). |
+| Auto-updater wiring (Tauri) | ✅ shipped | Runtime endpoint resolution + channel-aware manifest (`/api/updates/manifest`) + signed releases via local builds (see desktop `SHIPPING.md`). |
 | Embedded-Postgres on desktop (drop Postgres prereq) | ✅ shipped | Desktop sidecar bundles `embedded-postgres` (real PG binary with logical replication) and spawns it per-workspace on a TCP port. Default ON via `PAPERCUSP_USE_EMBEDDED_PG=1`; pglite-server remains as a legacy fallback. Zero WS works on desktop in this mode (same as browser). See `libs/papercusp/packages/embedded-postgres-server/`. |
 | Real branded icons | ~½ day | Replace placeholder paper-cup glyph with designed icons. Pure aesthetics; doesn't gate anything. |
 
