@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
 import { Checkbox } from '@/app/harness/Checkbox';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Process {
   pid: number;
@@ -139,74 +140,61 @@ export default function ProcessesTab() {
 
       {loading && <div className="pc-dev-muted">loading…</div>}
       {error && <div className="pc-dev-api-err">{error}</div>}
-      {!loading && !error && (
-        <table className="pc-dev-table">
-          <thead>
-            <tr>
-              <th>PID</th>
-              <th>Kind</th>
-              <th>Age</th>
-              <th>Harness</th>
-              <th>Workspace</th>
-              <th>CWD</th>
-              <th>Cmdline</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {[...filtered]
-              .sort(
-                (a, b) =>
-                  (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99) ||
-                  a.started_seconds_ago - b.started_seconds_ago,
-              )
-              .map((p) => {
-                const killable = KILLABLE_KINDS.has(p.kind);
-                const protectedReason = !killable
-                  ? PROTECTED_REASONS[p.kind] ?? 'kind not in killable allowlist'
-                  : null;
-                return (
-                  <tr key={p.pid}>
-                    <td className="pc-dev-muted">{p.pid}</td>
-                    <td className="pc-dev-slug">{p.kind}</td>
-                    <td className="pc-dev-muted">{fmtAge(p.started_seconds_ago)}</td>
-                    <td>{p.harness_slug ?? '—'}</td>
-                    <td className="pc-dev-muted">{p.workspace_id ?? '—'}</td>
-                    <td className="pc-dev-muted pc-dev-details" title={p.cwd ?? ''}>
-                      {p.cwd ?? '—'}
-                    </td>
-                    <td className="pc-dev-query" title={p.cmdline}>
-                      {p.cmdline}
-                    </td>
-                    <td>
-                      <button
-                        type="button"
-                        className="pc-dev-btn-mini pc-dev-btn-danger"
-                        disabled={!killable}
-                        title={
-                          killable
-                            ? `Send SIGTERM to pid ${p.pid}`
-                            : `Protected: ${protectedReason}`
-                        }
-                        onClick={() =>
-                          setKillModal({
-                            process: p,
-                            confirmText: '',
-                            signal: 'SIGTERM',
-                            busy: false,
-                            result: null,
-                          })
-                        }
-                      >
-                        kill
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-          </tbody>
-        </table>
-      )}
+      {!loading && !error && (() => {
+        const sortedRows = [...filtered].sort(
+          (a, b) =>
+            (KIND_ORDER[a.kind] ?? 99) - (KIND_ORDER[b.kind] ?? 99) ||
+            a.started_seconds_ago - b.started_seconds_ago,
+        );
+        const columns: ColumnDef<Process>[] = [
+          { key: 'pid', header: 'PID', width: 0.8, align: 'right', toCopyText: (r) => String(r.pid), render: ({ row }) => <span className="pc-dev-muted">{row.pid}</span> },
+          { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.kind, render: ({ row }) => <span className="pc-dev-slug">{row.kind}</span> },
+          { key: 'age', header: 'Age', width: 0.7, align: 'right', toCopyText: (r) => fmtAge(r.started_seconds_ago), render: ({ row }) => <span className="pc-dev-muted">{fmtAge(row.started_seconds_ago)}</span> },
+          { key: 'harness', header: 'Harness', width: 1.5, toCopyText: (r) => r.harness_slug ?? '', render: ({ row }) => <>{row.harness_slug ?? '—'}</> },
+          { key: 'ws', header: 'Workspace', width: 1.2, toCopyText: (r) => r.workspace_id ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.workspace_id ?? '—'}</span> },
+          {
+            key: 'cwd', header: 'CWD', width: 2,
+            toCopyText: (r) => r.cwd ?? '',
+            render: ({ row }) => <span className="pc-dev-muted pc-dev-details" title={row.cwd ?? ''}>{row.cwd ?? '—'}</span>,
+          },
+          {
+            key: 'cmd', header: 'Cmdline', width: 3,
+            toCopyText: (r) => r.cmdline,
+            render: ({ row }) => <span className="pc-dev-query" title={row.cmdline}>{row.cmdline}</span>,
+          },
+          {
+            key: 'kill', header: '', width: 0.6, align: 'center',
+            render: ({ row }) => {
+              const killable = KILLABLE_KINDS.has(row.kind);
+              const protectedReason = !killable
+                ? PROTECTED_REASONS[row.kind] ?? 'kind not in killable allowlist'
+                : null;
+              return (
+                <button
+                  type="button"
+                  className="pc-dev-btn-mini pc-dev-btn-danger"
+                  disabled={!killable}
+                  title={killable ? `Send SIGTERM to pid ${row.pid}` : `Protected: ${protectedReason}`}
+                  onClick={() =>
+                    setKillModal({ process: row, confirmText: '', signal: 'SIGTERM', busy: false, result: null })
+                  }
+                >kill</button>
+              );
+            },
+          },
+        ];
+        return (
+          <div style={{ height: Math.min(640, 32 + sortedRows.length * 28 + 4) }}>
+            <RichGrid<Process>
+              columns={columns}
+              rows={sortedRows}
+              getRowId={(r) => String(r.pid)}
+              rowMinHeight={28}
+              headerHeight={32}
+            />
+          </div>
+        );
+      })()}
       {killModal && <KillModal state={killModal} setState={setKillModal} />}
     </div>
   );
