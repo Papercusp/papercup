@@ -41,6 +41,14 @@ The architect role can spawn reviewers AND can approve their output.
 3. If approving: `operator_approve_pending` (or equivalent for your role).
 4. If rejecting: `messages:feature_send` with the specific objection.
 
+### Find architectural context
+
+1. `docs:outline` — see what the project documents (cached per run; cheap).
+2. `docs:get { slugs: ['<picked>'] }` — fetch one or several pages.
+3. If a page is long and only one section is relevant: `docs:get { slugs: ['<slug>'], heading: '<anchor-id>' }`.
+4. Cite the slug URLs in any artifact you save.
+
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'architect' }`.

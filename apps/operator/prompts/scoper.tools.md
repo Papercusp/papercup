@@ -38,6 +38,14 @@ After scoping, you may delegate validation:
 2. `orchestrator.poll { spawnId }` — fire-and-forget, but you can poll.
 3. Result lands in the validator's output stream.
 
+### Find architectural context
+
+1. `docs:outline` — see what the project documents (cached per run; cheap).
+2. `docs:get { slugs: ['<picked>'] }` — fetch one or several pages.
+3. If a page is long and only one section is relevant: `docs:get { slugs: ['<slug>'], heading: '<anchor-id>' }`.
+4. Cite the slug URLs in any artifact you save.
+
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'scoper' }`.

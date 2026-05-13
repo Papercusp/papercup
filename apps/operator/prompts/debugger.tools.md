@@ -46,6 +46,14 @@ The validator already explained what failed. Your job is WHY.
 4. `messages:feature_send` with the analysis. If the spec is wrong,
    escalate to architect; if the implementation is wrong, send to worker.
 
+### Find architectural context
+
+1. `docs:outline` — see what the project documents (cached per run; cheap).
+2. `docs:get { slugs: ['<picked>'] }` — fetch one or several pages.
+3. If a page is long and only one section is relevant: `docs:get { slugs: ['<slug>'], heading: '<anchor-id>' }`.
+4. Cite the slug URLs in any artifact you save.
+
+
 ## Discovery
 
 Tools not described above: `agent_tools:list { asRole: 'debugger' }`.
