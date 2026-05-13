@@ -24930,9 +24930,6 @@ body:has(.operator-panel) {
   max-width: 1200px;
   margin: 0 auto;
 }
-.pc-setup-wizard[data-mode="first-run"] {
-  min-height: 100vh;
-}
 .pc-setup-wizard__sidebar {
   background: var(--frost);
   border: 1px solid var(--border);
@@ -25423,22 +25420,23 @@ body:has(.operator-panel) {
 .pc-setup-wizard__min[data-met="true"] .pc-setup-wizard__min-dot { background: var(--good); }
 .pc-setup-wizard__min[data-met="true"] { color: var(--fg-dim); }
 
-/* Setup wizard simplicity/usability pass: compact settings-mode picker. */
-.pc-setup-wizard[data-mode="settings"] {
+/* Shared setup wizard simplicity/usability pass for /setup and /settings/setup-wizard. */
+.pc-setup-wizard:not(.pc-setup-wizard--recap) {
   grid-template-columns: minmax(0, 1fr);
   gap: 14px;
   max-width: min(100%, 860px);
+  min-height: auto;
   padding: 0;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__sidebar {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__sidebar {
   position: relative;
   top: auto;
   border-radius: 14px;
   padding: 16px;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__steps {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__steps {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
   gap: 6px;
@@ -25446,7 +25444,7 @@ body:has(.operator-panel) {
   padding: 0;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step-btn {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__step-btn {
   min-height: 44px;
   grid-template-columns: 20px minmax(0, 1fr) 18px;
   gap: 8px;
@@ -25456,19 +25454,19 @@ body:has(.operator-panel) {
   box-shadow: none;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step-summary {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__step-summary {
   display: none;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step-num,
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__status {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__step-num,
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__status {
   width: 18px;
   height: 18px;
   font-size: 10px;
   line-height: 18px;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__step[data-active="true"] .pc-setup-wizard__step-btn {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__step[data-active="true"] .pc-setup-wizard__step-btn {
   background: rgba(30, 41, 59, 0.52);
   border-color: rgba(125, 211, 252, 0.46);
   box-shadow: none;
@@ -25510,25 +25508,25 @@ body:has(.operator-panel) {
   background: linear-gradient(90deg, var(--accent), var(--good));
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__main {
   border-radius: 16px;
   padding: 24px 24px 28px;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main-header {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__main-header {
   margin: 0 0 18px;
   padding: 0 0 16px;
   border-bottom: 1px solid var(--border);
   background: transparent;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main-header h1 {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__main-header h1 {
   font-size: clamp(26px, 3.2vw, 36px);
   line-height: 1.02;
   letter-spacing: -0.025em;
 }
 
-.pc-setup-wizard[data-mode="settings"] .pc-setup-wizard__main-footer {
+.pc-setup-wizard:not(.pc-setup-wizard--recap) .pc-setup-wizard__main-footer {
   margin: 22px 0 0;
   padding: 16px 0 0;
   background: transparent;

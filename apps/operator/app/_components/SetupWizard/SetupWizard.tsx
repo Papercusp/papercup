@@ -258,19 +258,15 @@ export function SetupWizard({ mode }: Props) {
                     </button>
                   </span>
                 )}
-                {!active.required &&
-                  !isCompleted &&
-                  active.id !== 'embedded-pg' &&
-                  active.id !== 'agents' &&
-                  active.id !== 'telemetry' && (
-                    <button
-                      type="button"
-                      className="pc-btn"
-                      onClick={() => void setStepPersistedStatus(active.id, 'completed')}
-                    >
-                      Mark as done
-                    </button>
-                  )}
+                {!active.required && !isCompleted && active.id !== 'telemetry' && (
+                  <button
+                    type="button"
+                    className="pc-btn"
+                    onClick={() => void setStepPersistedStatus(active.id, 'completed')}
+                  >
+                    Mark as done
+                  </button>
+                )}
                 {isCompleted && (
                   <span className="pc-setup-wizard__skip-note">
                     Done.{' '}
@@ -349,6 +345,8 @@ function renderStep(id: string) {
 }
 
 function StatusBadge({ status, required }: { status: StepStatus; required?: boolean }) {
+  if (status === 'unknown') return null;
+
   const label = {
     ok: '✓',
     'needs-attention': '!',
