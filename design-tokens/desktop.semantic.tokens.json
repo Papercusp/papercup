@@ -1,0 +1,25 @@
+{
+  "_meta": {
+    "description": "Desktop semantic + ink tokens for apps/operator. Emits as CSS custom properties consumed by globals.css. Ink/surface scale is desktop-specific."
+  },
+  "bg":              { "$value": "#07101D", "$type": "color", "$description": "Page background — slate-deeper than sky-950" },
+  "bg-1":            { "$value": "#0B1220", "$type": "color" },
+  "bg-2":            { "$value": "rgba(255, 255, 255, 0.045)", "$type": "color", "$description": "Translucent surface tier 2" },
+  "bg-3":            { "$value": "rgba(255, 255, 255, 0.075)", "$type": "color", "$description": "Translucent surface tier 3" },
+  "bg-4":            { "$value": "rgba(255, 255, 255, 0.12)",  "$type": "color", "$description": "Translucent surface tier 4" },
+  "bg-popover":      { "$value": "#0D1829", "$type": "color", "$description": "Solid elevated surface for HoverCard/Popover/floating menus" },
+  "fg":              { "$value": "#E7F7FF", "$type": "color" },
+  "fg-dim":          { "$value": "#B9D4E8", "$type": "color" },
+  "fg-mute":         { "$value": "#7F9BB4", "$type": "color" },
+  "border":          { "$value": "rgba(125, 211, 252, 0.15)", "$type": "color", "$description": "{color.sky.300} @ 0.15" },
+  "border-strong":   { "$value": "rgba(125, 211, 252, 0.32)", "$type": "color", "$description": "{color.sky.300} @ 0.32" },
+  "accent":          { "$value": "{color.sky.400}",  "$type": "color" },
+  "accent-strong":   { "$value": "{color.sky.300}",  "$type": "color" },
+  "accent-cool":     { "$value": "{color.sky-cool}", "$type": "color" },
+  "accent-ink":      { "$value": "#051827", "$type": "color", "$description": "Text color on accent backgrounds" },
+  "good":            { "$value": "{color.emerald.400}", "$type": "color" },
+  "warn":            { "$value": "{color.amber.400}",   "$type": "color" },
+  "bad":             { "$value": "{color.rose.400}",    "$type": "color" },
+  "warn-bg":         { "$value": "rgba(251, 191, 36, 0.10)", "$type": "color", "$description": "{color.amber.400} @ 0.10" },
+  "warn-border":     { "$value": "rgba(251, 191, 36, 0.35)", "$type": "color", "$description": "{color.amber.400} @ 0.35" }
+}

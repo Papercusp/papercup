@@ -26,6 +26,7 @@
     "libs/papergrid/bloom-grid"
   ],
   "scripts": {
+    "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",
     "dev:papercup": "npm --workspace @papercup/web run dev",
     "dev:operator": "npm --workspace @papercusp/web run dev",
     "build:papercup": "npm --workspace @papercup/web run build",
@@ -191,6 +192,7 @@
     "puppeteer-core": "^24.41.0",
     "stream-chain": "^3.6.1",
     "stream-json": "^2.1.0",
+    "style-dictionary": "^4.4.0",
     "testcontainers": "^11.14.0",
     "tsx": "^4.21.0",
     "typescript": "~6.0.0",
