@@ -1,5 +1,7 @@
 # Endpoint system — Phase 4+ implementation
 
+> **Status update 2026-05-13:** **T4.1 and T4.3 superseded by [bespoke-card-improvements-2026-05-13.md](./bespoke-card-improvements-2026-05-13.md).** PR 1 (`c0876b74`) shipped `ctx.askUser` in place of T4.1's bidirectional `ctx.awaitResponse`; PR 2 (`9d10fa4c`) shipped `ctx.publishState` v1, which subsumes T4.3 (state-shaped tools survive disconnect by construction — see §11 "What collapses out of the Phase 4 plan"). T4.2 (shared-memory IPC) remains deferred. T1.1, T1.2, T2.1, T2.2, T2.3, T3.1, T3.2 all shipped earlier in this arc.
+
 **Status:** **draft v2 — reviewer feedback incorporated 2026-05-12** — Tier 1 ready for kickoff; Tier 2 ready pending the one empirical measurement (buffer sizes); Tier 3 gated on T3.1 spike outcome.
 
 Sequences the eight Phase 4+ items previously deferred from the SSE typed-events plan, plus the IPC Specta-codegen follow-up. Items are revised against current code, not the version of the codebase the original plan assumed — three items are now substantially smaller than originally scoped because incremental infrastructure landed during Phase 3 implementation.
