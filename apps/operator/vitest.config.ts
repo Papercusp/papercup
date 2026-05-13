@@ -8,7 +8,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export default mergeConfig(
   defineVitestConfig({
     layer: 'unit',
-    exclude: ['**/test/**', '**/node_modules/**', '**/.next/**'],
+    exclude: ['**/test/**', '**/node_modules/**', '**/.next/**', '**/.next-prod/**'],
   }),
   {
     resolve: {
