@@ -24916,3 +24916,291 @@ body:has(.operator-panel) {
 .oracle-link-icon {
   filter: drop-shadow(0 0 7px rgba(125, 211, 252, 0.18));
 }
+
+/* ── Operator chat card usability/readability pass ───────────────────
+ * The ask_choice card fixtures intentionally stress every state. Keep these
+ * cards compact enough for the 360px sidebar, make multi-select controls read
+ * like checkboxes, and never allow the transcript/composer to create horizontal
+ * scroll. */
+.op-chat-sidebar,
+.op-chat-sidebar * {
+  box-sizing: border-box;
+}
+
+.op-chat-sidebar .oracle-body {
+  overflow-x: hidden !important;
+  padding: 9px 8px 10px !important;
+  gap: 8px !important;
+}
+
+.op-chat-sidebar .oracle-virtual-container,
+.op-chat-sidebar .oracle-msg,
+.op-chat-sidebar .oracle-msg-stack,
+.op-chat-sidebar .oracle-msg-content,
+.op-chat-sidebar .ask-choice-card,
+.op-chat-sidebar .oracle-form,
+.op-chat-sidebar .oracle-input-shell {
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+
+.op-chat-sidebar .oracle-virtual-container {
+  overflow: visible !important;
+}
+
+.op-chat-sidebar .oracle-msg {
+  overflow: visible !important;
+  padding-inline: 0 !important;
+}
+
+.op-chat-sidebar .oracle-msg-stack {
+  width: calc(100% - 34px);
+}
+
+.op-chat-sidebar .oracle-msg-user .oracle-msg-stack {
+  width: min(86%, 294px);
+}
+
+.op-chat-sidebar .oracle-msg-role,
+.op-chat-sidebar .oracle-msg-user .oracle-msg-role {
+  display: none !important;
+}
+
+.op-chat-sidebar .oracle-msg-content {
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-card {
+  width: 100% !important;
+  gap: 7px !important;
+  margin-top: 6px !important;
+  padding: 9px !important;
+  border-radius: 13px !important;
+  border-color: rgba(125, 211, 252, 0.14) !important;
+  background: rgba(5, 12, 22, 0.96) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.035),
+    0 8px 18px rgba(0,0,0,0.18) !important;
+}
+
+.op-chat-sidebar .ask-choice-card::before,
+.op-chat-sidebar .ask-choice-option::before {
+  display: none !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-answered="true"] {
+  border-color: rgba(125, 211, 252, 0.18) !important;
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.035),
+    0 7px 16px rgba(0,0,0,0.16) !important;
+}
+
+.op-chat-sidebar .ask-choice-head {
+  gap: 4px;
+}
+
+.op-chat-sidebar .ask-choice-question {
+  color: #f3f8ff;
+  font-size: 12.5px;
+  font-weight: 700;
+  line-height: 1.34;
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-picked {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: baseline;
+  margin-top: 1px;
+  color: rgba(186, 230, 253, 0.72);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+}
+
+.op-chat-sidebar .ask-choice-picked span {
+  max-width: 100%;
+  color: #e8f7ff;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-options {
+  gap: 5px !important;
+}
+
+.op-chat-sidebar .ask-choice-option {
+  min-height: 38px;
+  gap: 8px !important;
+  padding: 7px 8px !important;
+  border-radius: 11px !important;
+  background: rgba(255,255,255,0.018) !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.op-chat-sidebar .ask-choice-option:hover:not([data-disabled="true"]) {
+  background: rgba(125, 211, 252, 0.07) !important;
+  transform: none !important;
+}
+
+.op-chat-sidebar .ask-choice-option[data-picked="true"] {
+  background: rgba(56, 189, 248, 0.09) !important;
+  border-color: rgba(56, 189, 248, 0.26) !important;
+}
+
+.op-chat-sidebar .ask-choice-option[data-style="primary"][data-picked="true"] {
+  background: rgba(56, 189, 248, 0.12) !important;
+}
+
+.op-chat-sidebar .ask-choice-option[data-style="danger"][data-picked="true"] {
+  background: rgba(248, 113, 113, 0.10) !important;
+}
+
+.op-chat-sidebar .ask-choice-option-icon {
+  width: 24px !important;
+  height: 24px !important;
+  flex-basis: 24px !important;
+  border-radius: 8px !important;
+  background: rgba(255,255,255,0.025) !important;
+  color: rgba(186, 230, 253, 0.86);
+  box-shadow: none !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option-icon {
+  width: 18px !important;
+  height: 18px !important;
+  flex-basis: 18px !important;
+  border-radius: 5px !important;
+  background: rgba(2, 8, 16, 0.42) !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option[data-picked="true"] .ask-choice-option-icon {
+  background: rgba(56, 189, 248, 0.18) !important;
+  border-color: rgba(125, 211, 252, 0.48) !important;
+}
+
+.op-chat-sidebar .ask-choice-icon {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-icon {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.op-chat-sidebar .ask-choice-option-label {
+  color: #f2f8ff;
+  font-size: 12px !important;
+  font-weight: 650;
+  line-height: 1.24;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-option-hint {
+  color: rgba(148, 163, 184, 0.82);
+  font-size: 10.5px !important;
+  line-height: 1.28;
+  white-space: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+  overflow-wrap: anywhere;
+}
+
+.op-chat-sidebar .ask-choice-option-chevron {
+  width: 13px !important;
+  height: 13px !important;
+  flex-basis: 13px !important;
+}
+
+.op-chat-sidebar .ask-choice-submit-row {
+  position: sticky;
+  bottom: 0;
+  margin: 1px -2px -2px;
+  padding-top: 6px;
+  gap: 6px;
+  background: linear-gradient(180deg, rgba(5, 12, 22, 0), rgba(5, 12, 22, 0.98) 45%);
+}
+
+.op-chat-sidebar .ask-choice-submit-hint {
+  min-width: 0;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.op-chat-sidebar .ask-choice-submit {
+  min-height: 30px;
+  padding-inline: 10px;
+  border-radius: 9px;
+  font-size: 11px;
+}
+
+.op-chat-sidebar .oracle-form {
+  overflow-x: hidden !important;
+  padding: 10px 8px !important;
+  gap: 7px !important;
+}
+
+.op-chat-sidebar .oracle-input-shell {
+  flex: 1 1 min(0, 100%);
+  min-width: 0 !important;
+  min-height: 40px !important;
+}
+
+.op-chat-sidebar .oracle-input-shell input {
+  min-width: 0 !important;
+}
+
+.op-chat-sidebar .oracle-send-button {
+  flex: 0 0 auto;
+  min-width: 52px !important;
+  min-height: 40px !important;
+  padding-inline: 10px !important;
+}
+
+/* Compact follow-up: preserve readability without letting long fixture labels
+   turn a single chat decision into a full-screen card. */
+.op-chat-sidebar .ask-choice-question {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+.op-chat-sidebar .ask-choice-option-label,
+.op-chat-sidebar .ask-choice-option-hint {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.op-chat-sidebar .ask-choice-option-label {
+  -webkit-line-clamp: 2;
+}
+
+.op-chat-sidebar .ask-choice-option-hint {
+  -webkit-line-clamp: 1;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option-icon {
+  width: 16px !important;
+  height: 16px !important;
+  flex-basis: 16px !important;
+  border-width: 1.5px;
+  border-radius: 4px !important;
+  color: #e8f7ff;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option:not([data-picked="true"]) .ask-choice-icon {
+  display: none;
+}
+
+.op-chat-sidebar .ask-choice-card[data-multi="true"] .ask-choice-option[data-picked="true"] .ask-choice-icon {
+  display: block;
+}
