@@ -21,6 +21,13 @@
  * Modeled on `mobile-sync-sse.ts` — same dedicated-client pattern, same
  * ring-buffer, same `Last-Event-ID` resume semantics.
  */
+// Guardrail: this module opens a long-lived PG LISTEN connection and
+// must never reach the browser bundle. If a client import path ever
+// drags it in, Next/Turbopack errors at compile time instead of
+// silently shipping `postgres` (which can't resolve `fs`/`net`/`tls`)
+// into a client chunk and crashing every dev render.
+// Removing this requires the consumer chain to provably be server-only.
+import 'server-only';
 import postgres from 'postgres';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@restart/db-org';
