@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { RichGrid, type ColumnDef } from '@restart/grid-core';
 
 interface Health {
   version: string;
@@ -126,62 +127,59 @@ export default function PgTab() {
       {!loading && !error && (
         <section className="pc-dev-pg-section">
           <h3 className="pc-dev-rail-h">Active queries ({queries.length})</h3>
-          <table className="pc-dev-table">
-            <thead>
-              <tr>
-                <th>PID</th>
-                <th>State</th>
-                <th>Duration</th>
-                <th>App</th>
-                <th>Query</th>
-              </tr>
-            </thead>
-            <tbody>
-              {queries.map((q) => (
-                <tr key={q.pid}>
-                  <td className="pc-dev-muted">{q.pid}</td>
-                  <td className={q.state === 'active' ? 'pc-dev-ok' : 'pc-dev-muted'}>
-                    {q.state}
-                  </td>
-                  <td className="pc-dev-muted">{fmtDuration(q.duration_seconds)}</td>
-                  <td className="pc-dev-muted">{q.application_name || '—'}</td>
-                  <td className="pc-dev-query" title={q.query}>
-                    {q.query.replace(/\s+/g, ' ').slice(0, 120)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(360, 32 + queries.length * 28 + 4) }}>
+            <RichGrid<Query>
+              columns={QUERY_COLUMNS}
+              rows={queries}
+              getRowId={(r) => String(r.pid)}
+              rowMinHeight={28}
+              headerHeight={32}
+            />
+          </div>
         </section>
       )}
 
       {!loading && !error && (
         <section className="pc-dev-pg-section">
           <h3 className="pc-dev-rail-h">Largest tables (harness_shared)</h3>
-          <table className="pc-dev-table">
-            <thead>
-              <tr>
-                <th>Table</th>
-                <th>Total</th>
-                <th>Indexes</th>
-                <th>Rows (est.)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tables.map((t) => (
-                <tr key={`${t.schema}.${t.table}`}>
-                  <td className="pc-dev-slug">{t.table}</td>
-                  <td>{fmtBytes(t.total_bytes)}</td>
-                  <td className="pc-dev-muted">{fmtBytes(t.index_bytes)}</td>
-                  <td className="pc-dev-muted">
-                    {t.rows_estimate?.toLocaleString() ?? '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div style={{ height: Math.min(480, 32 + tables.length * 28 + 4) }}>
+            <RichGrid<Table>
+              columns={TABLE_COLUMNS}
+              rows={tables}
+              getRowId={(r) => `${r.schema}.${r.table}`}
+              rowMinHeight={28}
+              headerHeight={32}
+            />
+          </div>
         </section>
       )}
     </div>
   );
 }
+
+const QUERY_COLUMNS: ColumnDef<Query>[] = [
+  { key: 'pid', header: 'PID', width: 0.8, align: 'right', toCopyText: (r) => String(r.pid), render: ({ row }) => <span className="pc-dev-muted">{row.pid}</span> },
+  {
+    key: 'state', header: 'State', width: 1,
+    toCopyText: (r) => r.state ?? '',
+    render: ({ row }) => <span className={row.state === 'active' ? 'pc-dev-ok' : 'pc-dev-muted'}>{row.state}</span>,
+  },
+  { key: 'dur', header: 'Duration', width: 1, align: 'right', toCopyText: (r) => fmtDuration(r.duration_seconds), render: ({ row }) => <span className="pc-dev-muted">{fmtDuration(row.duration_seconds)}</span> },
+  { key: 'app', header: 'App', width: 1.5, toCopyText: (r) => r.application_name ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.application_name || '—'}</span> },
+  {
+    key: 'query', header: 'Query', width: 4,
+    toCopyText: (r) => r.query.replace(/\s+/g, ' '),
+    render: ({ row }) => <span className="pc-dev-query" title={row.query}>{row.query.replace(/\s+/g, ' ').slice(0, 120)}</span>,
+  },
+];
+
+const TABLE_COLUMNS: ColumnDef<Table>[] = [
+  { key: 'name', header: 'Table', width: 2, toCopyText: (r) => `${r.schema}.${r.table}`, render: ({ row }) => <span className="pc-dev-slug">{row.table}</span> },
+  { key: 'total', header: 'Total', width: 1, align: 'right', toCopyText: (r) => fmtBytes(r.total_bytes), render: ({ row }) => <>{fmtBytes(row.total_bytes)}</> },
+  { key: 'idx', header: 'Indexes', width: 1, align: 'right', toCopyText: (r) => fmtBytes(r.index_bytes), render: ({ row }) => <span className="pc-dev-muted">{fmtBytes(row.index_bytes)}</span> },
+  {
+    key: 'rows', header: 'Rows (est.)', width: 1.2, align: 'right',
+    toCopyText: (r) => r.rows_estimate?.toLocaleString() ?? '',
+    render: ({ row }) => <span className="pc-dev-muted">{row.rows_estimate?.toLocaleString() ?? '—'}</span>,
+  },
+];
