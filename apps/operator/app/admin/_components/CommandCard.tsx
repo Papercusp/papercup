@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createResilientEventSource } from '@restart/sse';
+import { Checkbox } from '@/app/harness/Checkbox';
 
 export interface CommandSpec {
   id: string;
@@ -152,7 +153,7 @@ export default function CommandCard({ spec }: { spec: CommandSpec }) {
         <div className="pc-ops-log-wrap">
           <div className="pc-ops-log-controls">
             <label className="pc-ops-checkbox">
-              <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} />
+              <Checkbox checked={autoScroll} onChange={setAutoScroll} />
               <span>auto-scroll</span>
             </label>
             <span className="pc-ops-meta">{lines.length} lines</span>

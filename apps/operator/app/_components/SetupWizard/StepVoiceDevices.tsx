@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { Select } from '@/app/harness/Select';
 
 type Permission = 'unknown' | 'granted' | 'denied' | 'prompt';
 
@@ -206,17 +207,15 @@ export function StepVoiceDevices() {
         <>
           <label className="pc-field">
             <span className="pc-field__label">Input (microphone)</span>
-            <select
-              className="pc-input"
+            <Select
               value={selectedInput}
-              onChange={(e) => setSelectedInput(e.target.value)}
-            >
-              {inputs.map((d) => (
-                <option key={d.deviceId} value={d.deviceId}>
-                  {d.label || `Microphone (${d.deviceId.slice(0, 6)}…)`}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedInput}
+              options={inputs.map((d) => ({
+                value: d.deviceId,
+                label: d.label || `Microphone (${d.deviceId.slice(0, 6)}…)`,
+              }))}
+              ariaLabel="Input microphone"
+            />
           </label>
 
           <div className="pc-vu">
@@ -238,17 +237,15 @@ export function StepVoiceDevices() {
 
           <label className="pc-field">
             <span className="pc-field__label">Output (speaker)</span>
-            <select
-              className="pc-input"
+            <Select
               value={selectedOutput}
-              onChange={(e) => setSelectedOutput(e.target.value)}
-            >
-              {outputs.map((d) => (
-                <option key={d.deviceId} value={d.deviceId}>
-                  {d.label || `Speaker (${d.deviceId.slice(0, 6)}…)`}
-                </option>
-              ))}
-            </select>
+              onChange={setSelectedOutput}
+              options={outputs.map((d) => ({
+                value: d.deviceId,
+                label: d.label || `Speaker (${d.deviceId.slice(0, 6)}…)`,
+              }))}
+              ariaLabel="Output speaker"
+            />
             {!sinkIdSupported && (
               <span className="pc-field__hint">
                 This browser doesn't support per-element output routing — playback will use the

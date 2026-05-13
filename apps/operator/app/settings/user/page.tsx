@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { Checkbox } from '../../harness/Checkbox';
+import { Select } from '../../harness/Select';
 
 interface User {
   id: string;
@@ -358,16 +359,15 @@ function OverrideInput({ spec, value, onChange }: {
   }
   if (spec.kind === 'enum') {
     return (
-      <select
-        value={(value as string) ?? ''}
-        onChange={(e) => onChange(e.target.value)}
-        style={{ padding: 6, border: '1px solid var(--border)', borderRadius: 4, minWidth: 200 }}
-      >
-        <option value="">(use workspace default)</option>
-        {spec.options.map((o) => (
-          <option key={o.value} value={o.value}>{o.label}</option>
-        ))}
-      </select>
+      <Select
+        value={((value as string) ?? '') || '_default'}
+        onChange={(v) => onChange(v === '_default' ? '' : v)}
+        options={[
+          { value: '_default', label: '(use workspace default)' },
+          ...spec.options.map((o) => ({ value: o.value, label: o.label })),
+        ]}
+        ariaLabel={spec.label}
+      />
     );
   }
   if (spec.kind === 'number') {

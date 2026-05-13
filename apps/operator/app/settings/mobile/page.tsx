@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
+import { Select } from '@/app/harness/Select';
 
 interface QrPayload {
   server: string;
@@ -132,19 +133,16 @@ export default function MobileSettingsPage() {
 
         {!qr && (
           <div className="mt-4 flex items-center gap-3">
-            <select
+            <Select
               value={workspaceId}
-              onChange={(e) => setWorkspaceId(e.target.value)}
-              className="rounded-md border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm"
-            >
-              {workspaces.length === 0 ? (
-                <option value={workspaceId}>{workspaceId}</option>
-              ) : (
-                workspaces.map((w) => (
-                  <option key={w.id} value={w.id}>{w.name} ({w.id})</option>
-                ))
-              )}
-            </select>
+              onChange={setWorkspaceId}
+              options={
+                workspaces.length === 0
+                  ? [{ value: workspaceId, label: workspaceId }]
+                  : workspaces.map((w) => ({ value: w.id, label: `${w.name} (${w.id})` }))
+              }
+              ariaLabel="Workspace"
+            />
             <button
               onClick={mint}
               disabled={busy}

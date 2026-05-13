@@ -16,6 +16,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Checkbox } from '../../harness/Checkbox';
+import { Select } from '../../harness/Select';
 
 interface OmpSetting {
   key: string;
@@ -270,16 +271,15 @@ function ValueControl({ setting, onSave }: { setting: OmpSetting; onSave: (v: un
   }
   if (typeof setting.type === 'object' && setting.type.kind === 'enum') {
     return (
-      <select
-        value={setting.isUnset ? '' : String(setting.parsed)}
-        onChange={(e) => onSave(e.target.value)}
-        style={S.select}
-      >
-        {setting.isUnset && <option value="">(not set)</option>}
-        {setting.type.choices.map((c) => (
-          <option key={c} value={c}>{c}</option>
-        ))}
-      </select>
+      <Select
+        value={setting.isUnset ? '_unset' : String(setting.parsed)}
+        onChange={(v) => onSave(v === '_unset' ? '' : v)}
+        options={[
+          ...(setting.isUnset ? [{ value: '_unset', label: '(not set)' }] : []),
+          ...setting.type.choices.map((c) => ({ value: c, label: c })),
+        ]}
+        ariaLabel={setting.key}
+      />
     );
   }
   if (setting.type === 'number') {

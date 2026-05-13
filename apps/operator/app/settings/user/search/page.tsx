@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useCallback, FormEvent } from 'react';
+import { Select } from '@/app/harness/Select';
+import { Tooltip } from '@/app/harness/Tooltip';
 
 interface MemoryHit {
   id: string;
@@ -67,15 +69,19 @@ export default function SearchPage() {
           autoFocus
           style={{ flex: 1, minWidth: 240, padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
         />
-        <select
-          value={mode}
-          onChange={(e) => setMode(e.target.value as 'bm25' | 'hybrid')}
-          title="bm25: keyword-only (fast, deterministic). hybrid: combines keyword + semantic via RRF (needs embedder)."
-          style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: 14 }}
-        >
-          <option value="bm25">bm25</option>
-          <option value="hybrid">hybrid</option>
-        </select>
+        <Tooltip label="bm25: keyword-only (fast, deterministic). hybrid: combines keyword + semantic via RRF (needs embedder).">
+          <span>
+            <Select
+              value={mode}
+              onChange={(v) => setMode(v as 'bm25' | 'hybrid')}
+              options={[
+                { value: 'bm25', label: 'bm25' },
+                { value: 'hybrid', label: 'hybrid' },
+              ]}
+              ariaLabel="Search mode"
+            />
+          </span>
+        </Tooltip>
         <button type="submit" disabled={loading || !q.trim()} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--surface-hover)', cursor: 'pointer', fontSize: 14, opacity: loading ? 0.6 : 1 }}>
           {loading ? 'Searching…' : 'Search'}
         </button>

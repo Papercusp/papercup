@@ -5,6 +5,7 @@ import { useConfirmDialog } from './useConfirmDialog';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { Modal } from './Modal';
 import { Select } from './Select';
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { useSyncQuery } from '@restart/sync';
 
 const VALID_STATUSES = ['todo', 'in_progress', 'validating', 'failing', 'passed', 'blocked', 'deprecated'] as const;
@@ -323,15 +324,17 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
           )}
 
           {!isCreate && (
-            <details
+            <Collapsible.Root
               open={historyOpen}
-              onToggle={(e) => setHistoryOpen((e.target as HTMLDetailsElement).open)}
+              onOpenChange={setHistoryOpen}
               style={{ marginTop: '0.5rem', borderTop: '1px solid #1f2937', paddingTop: '0.6rem' }}
             >
-              <summary style={{ cursor: 'pointer', fontSize: '0.8rem', color: '#9ca3af', userSelect: 'none' }}>
-                History {historyRows ? `(${historyRows.length})` : ''}
-              </summary>
-              <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', maxHeight: 240, overflowY: 'auto' }}>
+              <Collapsible.Trigger asChild>
+                <button type="button" style={{ cursor: 'pointer', fontSize: '0.8rem', color: '#9ca3af', userSelect: 'none', background: 'none', border: 'none', padding: 0, textAlign: 'left' }}>
+                  History {historyRows ? `(${historyRows.length})` : ''}
+                </button>
+              </Collapsible.Trigger>
+              <Collapsible.Content style={{ marginTop: '0.5rem', fontSize: '0.75rem', maxHeight: 240, overflowY: 'auto' }}>
                 {historyError && <div style={{ color: '#f87171' }}>Failed to load: {historyError}</div>}
                 {!historyError && historyRows === null && historyOpen && (
                   <div style={{ color: '#9ca3af' }}>Loading…</div>
@@ -365,8 +368,8 @@ export default function FeatureEditor({ slug, feature, onClose, onSaved }: Props
                     })}
                   </div>
                 )}
-              </div>
-            </details>
+              </Collapsible.Content>
+            </Collapsible.Root>
           )}
         </div>
       </Modal>

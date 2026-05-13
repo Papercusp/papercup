@@ -1,5 +1,6 @@
 'use client';
 
+import * as Collapsible from '@radix-ui/react-collapsible';
 import { useEffect, useState } from 'react';
 import { commands } from '@/lib/tauri-bindings';
 import { isTauri } from './tauri-detect';
@@ -273,8 +274,11 @@ export function StepTelemetry() {
         for the full architecture.
       </p>
 
-      <details className="pc-consent__details">
-        <summary>Diagnostics</summary>
+      <Collapsible.Root className="pc-consent__details">
+        <Collapsible.Trigger asChild>
+          <button type="button" className="pc-consent__summary">Diagnostics</button>
+        </Collapsible.Trigger>
+        <Collapsible.Content>
         <div className="pc-step__actions">
           <button type="button" className="pc-btn" onClick={() => void sendTest()} disabled={testing}>
             {testing ? 'Sending…' : 'Send test report'}
@@ -312,7 +316,8 @@ export function StepTelemetry() {
             </div>
           </div>
         )}
-      </details>
+        </Collapsible.Content>
+      </Collapsible.Root>
 
       <p className="pc-step__hint">
         Reports are also archived locally in <code>harness_shared.telemetry_reports_archive</code>{' '}
