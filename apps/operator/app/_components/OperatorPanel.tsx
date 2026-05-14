@@ -1623,8 +1623,8 @@ export function OperatorPanel(): ReactElement | null {
                   </button>
                 ))}
               </div>
-              <div className="operator-feed-head">
-                {mainView !== 'scan-history' && (
+              {mainView !== 'scan-history' && (hasCardEntries || filterActive) && (
+                <div className="operator-feed-head">
                   <div className="operator-feed-tools">
                     <div className={`operator-feed-search${textFilterActive ? ' has-value' : ''}`}>
                       <span className="operator-feed-search__icon" aria-hidden="true"><Search size={14} /></span>
@@ -1658,8 +1658,8 @@ export function OperatorPanel(): ReactElement | null {
                       />
                     </div>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
               {mainView !== 'scan-history' && filterActive && (
                 <div className="operator-feed-active-filters" aria-label="Active filters">
                   <span>Filtered</span>
