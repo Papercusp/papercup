@@ -280,6 +280,41 @@ roundtrip. Today's catalog has zero such tools.
 
 ---
 
+## D-013 — S08 silence-nudge: framework can't exercise it end-to-end
+
+**Date:** 2026-05-14
+
+**Choice:** Leave S08 (`op-S08-silence-nudge-ready`) declaring
+`triggers: [{ on: 'silence', fire: 'silence_nudge', param: 30 }]` and
+let it fire on turn 0 (per the runner's silence/at_secs simulator
+approximation). Accept that it cannot exercise B9 (silence-nudge ready
+card) end-to-end as written.
+
+**Why it can't fire end-to-end:**
+1. The operator-converse route's `ConverseRequestBody.trigger` enum
+   is `'user_message' | 'quiet_wait_resume' | 'open_canvas' |
+   'user_says_ready' | 'user_welcomed' | 'continue'`. It does NOT
+   accept `'silence_nudge'`.
+2. The actual production B9 path goes through a separate route
+   `/api/operator/conversations/[id]/silence-nudge` (plan §10.1
+   reference), not `operator-converse`. That route emits the ready
+   card via a different surface.
+
+**Considered:**
+- Extend the converse route's `trigger` enum to accept `'silence_nudge'`.
+  Touches the production hot path; the brain has no logic for that
+  trigger today.
+- Drive the silence-nudge route from `OperatorTarget` instead of /
+  alongside the converse route. Real route surgery; out of scope.
+- Drop S08 entirely. Loses behavioral coverage even imperfect signal
+  has value.
+- Document + leave. ← chosen.
+
+**Follow-up:** if the operator team unifies silence-nudge into the
+converse trigger path, S08 starts working without code changes.
+
+---
+
 ## D-008 — Migration runner stays opt-out at the per-migration level
 
 **Date:** 2026-05-14

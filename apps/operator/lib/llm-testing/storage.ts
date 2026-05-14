@@ -76,7 +76,7 @@ async function persistSingleRun(
       ${transcriptRawBytes}, ${sql.json(normalizeTurns(s.turns))},
       ${sql.json({ toolInvocations: s.toolInvocations, continueChainRows: s.continueChainRows })},
       ${sql.json({ asserts: 'see-scenario', violations: r.violations })},
-      ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert })}
+      ${sql.json({ scores: r.judge.scores, findings: r.judge.findings, notes: r.judge.notes, judgeOverruledAssert: r.judge.judgeOverruledAssert, costUsd: r.judge.costUsd })}
     )
   `;
 
