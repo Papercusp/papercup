@@ -192,19 +192,60 @@ function dynamicWithRetry(
         await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
       }
     }
-    // Give up — render a compact failure chip so optional panels don't blow up
-    // the dashboard layout while still giving the operator an escape hatch.
-    const Fallback = () => (
-      <div className="h-dynamic-fallback" role="status">
-        <span>Could not load <strong>{label}</strong>.</span>
-        <span className="h-dynamic-fallback-detail">
-          {String((lastErr as any)?.message ?? lastErr).slice(0, 120)}
-        </span>
-        <Tooltip label="Reload the page">
-          <button type="button" onClick={() => location.reload()}>reload</button>
-        </Tooltip>
-      </div>
-    );
+    // Give up on the first run, but keep retrying in the background on a
+    // 5s cadence. Turbopack dev compiles can genuinely take 30s+ when a
+    // sibling file is hot-saving (paperclip agents), so the import that
+    // failed three times in a row will usually succeed a few seconds
+    // later once the compile queue drains. On success the fallback chip
+    // swaps itself for the real component without a page reload.
+    const detail = String((lastErr as any)?.message ?? lastErr).slice(0, 120);
+    function Fallback(props: any) {
+      const [loaded, setLoaded] = useState<React.ComponentType<any> | null>(null);
+      const [retrying, setRetrying] = useState(false);
+      const [tries, setTries] = useState(0);
+      const cancelledRef = useRef(false);
+      const attempt = useCallback(async () => {
+        if (cancelledRef.current) return;
+        setRetrying(true);
+        try {
+          const mod = await Promise.race([
+            loader(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('import timeout')), 30000)),
+          ]);
+          if (cancelledRef.current) return;
+          const Resolved = pickComponent ? pickComponent(mod) : ((mod as any).default ?? mod);
+          setLoaded(() => Resolved);
+        } catch {
+          if (cancelledRef.current) return;
+          setTries((n) => n + 1);
+        } finally {
+          if (!cancelledRef.current) setRetrying(false);
+        }
+      }, []);
+      useEffect(() => {
+        cancelledRef.current = false;
+        const id = window.setInterval(() => { void attempt(); }, 5000);
+        return () => { cancelledRef.current = true; window.clearInterval(id); };
+      }, [attempt]);
+      if (loaded) {
+        const Resolved = loaded;
+        return <Resolved {...props} />;
+      }
+      return (
+        <div className="h-dynamic-fallback" role="status">
+          <span>Could not load <strong>{label}</strong>.</span>
+          <span className="h-dynamic-fallback-detail">
+            {retrying ? `retrying${tries > 0 ? ` (attempt ${tries + 1})` : ''}…` : detail}
+          </span>
+          <Tooltip label="Retry the import now">
+            <button type="button" disabled={retrying} onClick={() => { void attempt(); }}>retry</button>
+          </Tooltip>
+          <Tooltip label="Reload the page">
+            <button type="button" onClick={() => location.reload()}>reload</button>
+          </Tooltip>
+        </div>
+      );
+    }
     return Fallback as any;
   };
   // Pre-warm: kick off the import immediately so Turbopack compiles the chunk
