@@ -149,7 +149,7 @@ async function main(): Promise<void> {
       console.error('replay requires --fixture <id|path> or --re-evaluate <run-uuid>.');
       process.exit(2);
     }
-    if (!isLlmAvailable()) {
+    if (!(await isLlmAvailable())) {
       console.error('ANTHROPIC_API_KEY required (replay still calls the judge).');
       process.exit(1);
     }
@@ -184,8 +184,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (!isLlmAvailable()) {
-    console.error('ANTHROPIC_API_KEY is not set. Export it before running.');
+  if (!(await isLlmAvailable())) {
+    console.error('ANTHROPIC_API_KEY is not set (env or harness_shared.operator_credentials).');
     process.exit(1);
   }
 
