@@ -18,19 +18,20 @@ mispositioned, focus stolen). If you only test the API layer you'll
 miss them.
 </Callout>
 
-<Callout type="warn" title="Run these tests against the prod build at :3070">
-The target of this playbook is the **prod operator build** at
-`http://localhost:3070`. Do **not** test against the dev server at
-`:3055` — Turbopack cold-compiles disrupt timing-sensitive checks and
-the dev tree is concurrently edited by other agents, so bugs you find
-may be transient.
+<Callout type="warn" title="Drive the running Tauri dev shell — there is no standalone webapp">
+The webapp at `:3055` / `:3070` was retired on 2026-05-14. The Next
+sidecar still binds a port (so `localhost:3055` may render a page) but
+it is **only meant to be reached through the Tauri shell** — auth,
+workspace switching, embedded-PG discovery, and the IPC bridge all
+assume the Tauri host. Driving the bare Next port skips that wiring
+and the bugs you'll find won't reproduce for users.
 
-**Always do a fresh build before starting.** From
-`papercupai-workspace/papercup`, run `bin/prod` (or whatever rebuild
-script the repo uses) and wait until `curl -s -o /dev/null -w "%{http_code}" http://localhost:3070/` returns `200`. Stale
-bundles silently mask bugs (deleted endpoints still appear to work,
-new routes 404, etc.) — never test against a build that predates your
-last code change.
+Start the shell with `cd papercusp-desktop && npm run dev` (or attach
+to an already-running one — see §1) and drive that webview via the
+**`tauri-agent-tools`** CLI documented below. It speaks to a debug-only
+Rust bridge inside the webview, so DOM queries, `eval`, `click`,
+`type`, IPC monitoring, and DOM-targeted screenshots all work without
+focus-stealing or OCR.
 
 Marketing/website surfaces (`/`, `/marketplace`, `/support`, `/docs`,
 auth pages) deliberately omit some app-side affordances (e.g. the
@@ -40,40 +41,111 @@ which surfaces each feature should appear on.
 
 ## 0. Tools
 
-- **`verdict`** — primary browser driver. Token-efficient persistent
-  daemon, ARIA snapshots. Use this for every click, fill, navigate,
-  snapshot, screenshot, console-message read, network inspection.
-- **`curl`** — only for **corroboration** of backend state after a UI
-  action. Never as a primary verification.
+Primary stack — drives the operator UI inside the Tauri shell:
+
+- **`tauri-agent-tools`** (`npm i -g tauri-agent-tools`, currently 0.7.0)
+  — CLI that talks to a debug-only Rust dev-bridge inside
+  `papercusp-desktop`. Real DOM access, `eval`, `click`, `type`, IPC
+  monitor, console capture, Rust logs, DOM-targeted screenshots, and
+  `check`-style assertions. **This is the primary driver for every
+  operator-side test.** Source + full reference:
+  [github.com/cesarandreslopez/tauri-agent-tools](https://github.com/cesarandreslopez/tauri-agent-tools).
+- **`curl`** — corroborate backend state (PG row written, sidecar log
+  line, `/api/...` returns expected JSON) after a UI action. Never as
+  a primary verification — many bugs are UI-only and the API would
+  pass.
+- **Operator log tail** — `tail -200 /tmp/tauri-dev.log` (or whichever
+  log the dev shell prints to; `bin/dev` and `npm run dev` both write
+  here by convention) for sidecar-side errors after a failure.
+
+Other tools and when:
+
+- **`verdict`** — only for **arbitrary public web pages** (docs site
+  on the marketing domain, third-party links, render checks for the
+  `/docs` MDX renderer hitting an external URL). Do **not** drive the
+  operator with verdict; the operator only renders correctly inside
+  Tauri.
+- **Xvfb + `xdotool` + `import` + `tesseract`** — fallback for
+  scenarios where the bridge can't help: macOS dev builds without
+  the bridge compiled in, production AppImages (the bridge is
+  `#[cfg(debug_assertions)]` only), forensics on a crashed app, or
+  visual checks (animation timing, font rendering) that the DOM
+  can't express. See §15.4 for the cookbook.
 
 Forbidden:
 
-- Playwright MCP / `proxy_mcp_playwright_*` tools.
-- Driving the user's actual chromium tab when they're using it
-  (verdict shares the browser; coordinate first or use a fresh
-  newtab).
+- Playwright MCP / `proxy_mcp_playwright_*` tools — superseded by
+  `tauri-agent-tools` for operator work and by the official
+  `tauri-driver` CLI for the automated suite.
+- Driving the user's live `:0` Tauri window with `xdotool` while they
+  are working — focus-stealing is unacceptable. Use the bridge (no
+  focus changes) or a second Tauri instance under Xvfb.
 
 ## 1. Pre-flight
 
-1. **Fresh prod build.** Always rebuild before testing — stale bundles
-   mask real bugs. From `papercupai-workspace/papercup` run `bin/prod`
-   (or the repo's documented rebuild path) and wait for it to come up
-   on :3070.
-2. **Prod operator is up.** `curl -s -o /dev/null -w "%{http_code}"
-   http://localhost:3070/` returns `200`. Then verify
-   `/api/oracle/config` returns `200` (proves Hono routes mounted).
-   Do **not** fall back to `:3055` (the dev server) — see the warning
-   callout at the top of this page for why.
-3. **Stale Next build cache.** If you see a JSX parse error in logs
-   while the on-disk file is correct, the parse error is cached —
-   `rm -rf .next/cache` and rebuild.
-3. **Browser sharing.** `verdict status` → if `Refs:` is high or URL
-   keeps mutating between calls, the human user is browsing. Pause
-   or use `verdict newtab` for an isolated tab.
-4. **Clear stored state for first-run paths.** Each run that
-   exercises onboarding must start with
-   `verdict js "localStorage.clear(); sessionStorage.clear();"`
-   followed by a reload.
+### 1.1 Tauri dev shell is running
+
+```sh
+pgrep -af papercusp-desktop | head -3
+ls /tmp/tauri-dev-bridge-*.token 2>/dev/null
+```
+
+If neither shows a process, start it from
+`papercupai-workspace/papercusp-desktop`:
+
+```sh
+cd papercupai-workspace/papercusp-desktop
+npm run dev    # foregrounds 'tauri dev'; cargo build first run is ~2 min
+```
+
+The first launch compiles the Rust shell; subsequent launches hot-load
+the Next sidecar. Wait for `dev bridge listening` to appear in the log
+before driving.
+
+### 1.2 Bridge probe
+
+```sh
+tauri-agent-tools probe
+```
+
+Expected output:
+
+```
+Running bridges:  1
+  PID <pid>  port <port>
+Bridge alive:     yes
+Bridge version:   0.7.0
+Endpoints:        /eval, /logs, /describe, /version, /process, /capabilities, /devtools, /health
+Windows:          main
+Page:
+  URL:      http://127.0.0.1:<port>/harness?slug=<slug>&ws=<ws>
+  Title:    Papercusp
+  Viewport: 1280x800   # or whatever the user has resized to
+```
+
+If multiple bridges show up, several Tauri dev instances are running
+(stale token files do **not** mean stale bridges — `kill -0 <pid>`
+each one). Pass `--pid <pid>` to subsequent commands to disambiguate.
+
+### 1.3 Stale Next cache
+
+If the Tauri sidecar log shows a JSX parse error referencing a line
+that doesn't match the on-disk file, the Next/Turbopack cache is
+stale — `rm -rf apps/operator/.next/cache` from the workspace root
+and restart the Tauri dev shell.
+
+### 1.4 First-run paths — clear stored state
+
+Onboarding tests need a clean slate:
+
+```sh
+tauri-agent-tools eval "localStorage.clear(); sessionStorage.clear(); 'cleared'"
+tauri-agent-tools eval "location.reload()"
+```
+
+`localStorage.clear()` works because the bridge runs inside the
+webview — unlike pure-Rust IPC, it has full DOM access including
+storage APIs.
 
 ## 2. Reporting format
 
@@ -81,16 +153,61 @@ Forbidden:
 [<route>] <feature>: PASS | FAIL | INCONCLUSIVE — <one sentence of evidence>
 ```
 
-On `FAIL`, capture:
+On `FAIL`, capture (one bundle command does most of this):
 
-- `verdict screenshot <path>`
-- The `verdict js` snapshot of relevant DOM state
-- `verdict console error`
-- Operator log tail (`tail -200 /tmp/operator-3070.log`)
+```sh
+tauri-agent-tools capture -o /tmp/fail-<route>-<feature>
+```
+
+That writes screenshot + DOM snapshot + storage + console errors +
+recent Rust logs to one directory. For the report, include:
+
+- The capture-bundle path (or the `screenshot --selector` PNG if
+  zooming on one element).
+- The relevant DOM excerpt (`tauri-agent-tools dom <selector>` or the
+  `dom.json` file from the capture bundle).
+- Console errors (`tauri-agent-tools console-monitor --duration 100`
+  during the failing action).
+- Sidecar log tail (`tail -200 /tmp/tauri-dev.log`).
 
 `PASS` requires positive evidence. **Silence is not success.** A test
 that "looks fine" without a DOM/screenshot/log assertion is
 `INCONCLUSIVE`.
+
+For CI-style assertions inline in a script, prefer `check` — it
+exits 0/1 and prints a structured failure:
+
+```sh
+tauri-agent-tools check \
+  --selector 'aside.op-chat-sidebar [data-message]' \
+  --text 'Generate Ideas' \
+  --no-errors    # console must be clean
+```
+
+## 2.5 Verdict → tauri-agent-tools cheatsheet
+
+The §3–§13 route tests below were written for verdict; the same
+intent maps 1:1 to tauri-agent-tools. When you read `verdict <verb>`,
+substitute the right column.
+
+| Verdict (legacy) | tauri-agent-tools | Notes |
+|---|---|---|
+| `verdict snapshot` | `tauri-agent-tools dom --depth 4` | Returns DOM tree, not ARIA. Add `--text "..."` to filter. |
+| `verdict js "<expr>"` | `tauri-agent-tools eval "<expr>"` | Returns JSON. Wrap in `JSON.stringify(...)` if the value is an object. |
+| `verdict click <selector>` | `tauri-agent-tools click <selector>` | Real synthetic event inside the webview; no focus-steal. |
+| `verdict type <sel> <text>` | `tauri-agent-tools type <sel> <text>` | Sets value + dispatches `input` event. |
+| `verdict press <sel> <key>` | `tauri-agent-tools press <sel> <key>` | e.g. `press input Enter`. |
+| `verdict screenshot <path>` | `tauri-agent-tools screenshot --title Papercusp -o <path>` | Full window. `--selector` crop is currently flaky on this build (returns 1×1 PNG occasionally — fall back to full + crop in ImageMagick if it bites you). |
+| `verdict console error` | `tauri-agent-tools console-monitor --duration 200` | Window must be in scope; pass `--pid` if multiple bridges. |
+| `verdict reload` | `tauri-agent-tools eval "location.reload()"` | No dedicated `reload` verb. |
+| `verdict newtab` | (not applicable) | Tauri has one webview. For isolation, launch a second `tauri dev` against a different `PAPERCUSP_WORKSPACE_ROOT`. |
+| `verdict status` | `tauri-agent-tools probe` | Lists running bridges + page state. |
+| `localStorage.clear()` via JS | `tauri-agent-tools eval "localStorage.clear()"` | Works only because bridge is in-webview (Tauri's IPC alone can't). |
+| (n/a) | `tauri-agent-tools storage --json` | Dump localStorage / sessionStorage / cookies. |
+| (n/a) | `tauri-agent-tools ipc-monitor --duration 5000` | Capture every `__TAURI__.core.invoke` call — uniquely useful for debugging plugin/host wiring. |
+| (n/a) | `tauri-agent-tools rust-logs --tail 200` | Sidecar Rust log without rooting through `/tmp`. |
+| (n/a) | `tauri-agent-tools check --selector ... --text ... --eval ... --no-errors` | One-shot CI assertion; exits 0/1. |
+| (n/a) | `tauri-agent-tools capture -o <dir>` | Bundle: screenshot + DOM + storage + console + Rust logs. Use on every FAIL. |
 
 ## 3. Global elements (every page except auth)
 
@@ -1135,3 +1252,57 @@ positive evidence — silence is not success.
   `rm -rf .next/cache` and restart.
 - **Harness tab nav uses `?panel=`.** `panel=plugin:<id>` selects a
   plugin-contributed tab. Test these the same way as built-in tabs.
+- **`tauri-agent-tools screenshot --selector` is flaky on tiny
+  elements.** A short input (e.g. the operator composer at ~187×42
+  px) sometimes returns a 1×1 PNG. Workaround: `screenshot
+  --title Papercusp -o full.png` then crop in ImageMagick using the
+  rect from `eval "JSON.stringify($('input').getBoundingClientRect())"`.
+- **`ipc-monitor` is silent for the operator chat.** The composer
+  sends via HTTP/SSE to `/api/agent-mcp/operator-converse`, not via
+  Tauri IPC. Use `console-monitor`, `rust-logs`, or
+  `curl /api/operator/conversations/<id>` to corroborate.
+  `ipc-monitor` *is* the right tool for plugin/host wiring,
+  workspace switching, and shell-sidecar calls.
+- **Bridge port is per-process.** `tauri-agent-tools probe` reports
+  the live port (e.g. `34875`); restart the dev shell and the port
+  changes. Always `probe` before scripting a sequence.
+
+### 15.4 Xvfb / xdotool / OCR fallback cookbook
+
+The bridge covers 99% of cases. Reach for this stack only when:
+
+- You're on a **release build** (the bridge is `#[cfg(debug_assertions)]`).
+- You're on **macOS** and the bridge isn't compiled in for that
+  target yet.
+- You need to verify **visual** behavior the DOM can't express
+  (animation timing, font rendering, paint-order glitches).
+- The Tauri process **crashed** and you need forensics on the dead
+  window (use `tauri-agent-tools diagnose` first; this is a deeper
+  fallback).
+
+Recipe — isolated second instance under Xvfb (no focus-steal):
+
+```sh
+Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &  echo $! > /tmp/xvfb99.pid
+DISPLAY=:99 openbox &                            echo $! > /tmp/openbox99.pid
+DISPLAY=:99 \
+  PAPERCUSP_BRIDGE_PORT=9230 \
+  cd papercusp-desktop && DISPLAY=:99 npm run dev > /tmp/tauri-xvfb.log 2>&1 &
+# wait for window
+until DISPLAY=:99 xdotool search --name Papercusp > /dev/null 2>&1; do sleep 1; done
+WID=$(DISPLAY=:99 xdotool search --name Papercusp | head -1)
+# input + screenshot
+DISPLAY=:99 xdotool type --window $WID "hello"
+DISPLAY=:99 xdotool key --window $WID Return
+DISPLAY=:99 import -window $WID /tmp/shot.png
+# OCR a horizontal band
+convert /tmp/shot.png -crop 1280x80+0+460 /tmp/band.png
+tesseract /tmp/band.png - 2>/dev/null
+```
+
+Cleanup: `kill $(cat /tmp/tauri-xvfb.pid /tmp/openbox99.pid /tmp/xvfb99.pid) 2>/dev/null`.
+
+Even on the second Xvfb instance the bridge is still up — `probe`
+will find it on the configured `PAPERCUSP_BRIDGE_PORT`. So in
+practice this fallback is for the rare case where the bridge itself
+is what you're trying to bypass (release build, crash forensics).
