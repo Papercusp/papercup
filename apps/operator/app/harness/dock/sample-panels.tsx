@@ -16,6 +16,7 @@ import { useEffect } from 'react';
 import { panelRegistry, type PanelComponentProps } from './panel-registry';
 import { useNavHistory } from './useNavHistory';
 import { NavChevrons } from './NavChevrons';
+import { RealFeaturesPanel } from './RealFeaturesPanel';
 
 function SamplePanel({ panelType, params }: PanelComponentProps) {
   return (
@@ -135,7 +136,6 @@ export function registerSamplePanels(): void {
   for (const t of [
     'view:dashboard-overview',
     'view:harness-overview',
-    'data:features',
     'data:issues',
     'data:agents',
     'data:logs',
@@ -143,6 +143,8 @@ export function registerSamplePanels(): void {
   ]) {
     panelRegistry.register(t, SamplePanel);
   }
+  // Real implementation for features — fetches live data per slug.
+  panelRegistry.register('data:features', RealFeaturesPanel);
   panelRegistry.register('view:docs', DocsSamplePanel, { keepAlive: true });
 }
 

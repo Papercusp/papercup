@@ -19,11 +19,14 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useParams } from 'next/navigation';
 import { HarnessDock } from '../../dock/HarnessDock';
 import { registerSamplePanels } from '../../dock/sample-panels';
-import { openPanel, listPanels, getLayoutSnapshot, onDockApiBind } from '../../dock/dock-actions';
+import { openPanel, listPanels, getLayoutSnapshot, onDockApiBind, setPanelParams } from '../../dock/dock-actions';
 
 export default function DockPreviewPage() {
+  const routeParams = useParams<{ slug: string }>();
+  const routeSlug = routeParams?.slug ?? 'sheets';
   const [ready, setReady] = useState(false);
   const [panelCount, setPanelCount] = useState(0);
 
@@ -34,20 +37,32 @@ export default function DockPreviewPage() {
   useEffect(() => {
     return onDockApiBind((api) => {
       setReady(api !== null);
-      if (api) {
-        const refresh = () => {
-          try {
-            setPanelCount(listPanels().length);
-          } catch {
-            setPanelCount(0);
+      if (!api) return;
+      const refresh = () => {
+        try {
+          setPanelCount(listPanels().length);
+        } catch {
+          setPanelCount(0);
+        }
+      };
+      refresh();
+      api.onDidAddPanel(refresh);
+      api.onDidRemovePanel(refresh);
+
+      // Patch the seed: default layout has empty harnessSlug. Fill in
+      // the route's slug for panels missing it. One-shot.
+      try {
+        for (const p of listPanels()) {
+          const hs = p.params?.harnessSlug;
+          if (!hs || hs === '') {
+            setPanelParams(p.id, { ...p.params, harnessSlug: routeSlug });
           }
-        };
-        refresh();
-        api.onDidAddPanel(refresh);
-        api.onDidRemovePanel(refresh);
+        }
+      } catch {
+        // Layout not yet hydrated — handled by useEffect re-fire on api change.
       }
     });
-  }, []);
+  }, [routeSlug]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
@@ -74,20 +89,20 @@ export default function DockPreviewPage() {
           onClick={() =>
             openPanel({
               type: 'data:features',
-              params: { harnessSlug: 'sample' },
-              title: 'Features',
+              params: { harnessSlug: routeSlug },
+              title: `Features: ${routeSlug}`,
             })
           }
           style={previewBtn}
         >
-          + Features
+          + Features ({routeSlug})
         </button>
         <button
           type="button"
           onClick={() =>
             openPanel({
               type: 'data:issues',
-              params: { harnessSlug: 'sample' },
+              params: { harnessSlug: routeSlug },
               title: 'Issues',
             })
           }
@@ -112,8 +127,8 @@ export default function DockPreviewPage() {
           onClick={() =>
             openPanel({
               type: 'data:features',
-              params: { harnessSlug: 'sample', view: 'compact' },
-              title: 'Features (floating)',
+              params: { harnessSlug: routeSlug, view: 'compact' },
+              title: `Features: ${routeSlug} (floating)`,
               floating: { width: 480, height: 320 },
             })
           }
