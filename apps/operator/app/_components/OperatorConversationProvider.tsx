@@ -464,7 +464,8 @@ export interface GenerationRequest {
     | 'quiet_wait_resume'
     | 'open_canvas'
     | 'user_says_ready'
-    | 'user_welcomed';
+    | 'user_welcomed'
+    | 'continue';
   /** True when we're allowed to ask "want active?" this turn. */
   mayAskActive: boolean;
   /** Display name set on `user_welcomed` so brain greets by name. */
@@ -606,6 +607,15 @@ interface OperatorConversationContextValue {
   /** User-initiated send. Always allowed; restarts silence timer. */
   sendUserMessage: (text: string) => void;
 
+  /**
+   * Explicit "I want suggestions now" trigger — fires the same path as
+   * the user typing "ready" or the active-mode terminal-turn auto-fire.
+   * Works in active and passive mode (passive users can opt in
+   * manually). Wired to the "Generate ideas" button in the composer.
+   * Plan: active-mode-proactive-ticks-2026-05-14.md §C.9.
+   */
+  generateIdeas: () => void;
+
   /** Imperative mode flip from the navbar toggle / set_mode tag. */
   flipMode: (mode: OperatorMode) => void;
 
@@ -723,6 +733,21 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       clearTimeout(nudgeGraceTimerRef.current);
       nudgeGraceTimerRef.current = null;
     }
+  }, []);
+
+  // ── Active-mode proactive responses (plan: active-mode-proactive-ticks) ──
+  //
+  // Chain tracking for `<continue/>`: capped to prevent runaway. Reset
+  // whenever the user provides input (text or voice transcript).
+  const continueChainCountRef = useRef<number>(0);
+  const continueChainStartedAtMsRef = useRef<number>(0);
+  // Cool-off after silence-nudge teardown — suppresses terminal-turn
+  // auto-fire for ~5 min so we don't immediately bombard the user
+  // after they just got the "say wake word when ready" prompt.
+  const lastELTeardownMsRef = useRef<number>(0);
+  const resetContinueChain = useCallback(() => {
+    continueChainCountRef.current = 0;
+    continueChainStartedAtMsRef.current = 0;
   }, []);
 
   // PG-backed conversation identity. Loaded on mount; survives refresh
@@ -1130,6 +1155,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // User spoke (whatever they said) — they're engaged, cancel
       // any pending silence-nudge grace timer so EL stays up.
       cancelNudgeGraceTimer();
+      // Voice input ends any active `<continue/>` chain too.
+      resetContinueChain();
       // E1: bridge text-path's server-side dismissal enforcement into
       // the voice path. The voice tag observer reads this stamp on the
       // next assistant flush and force-flips to passive if the brain
@@ -1180,6 +1207,13 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       opts?: {
         messagesOverride?: ChatMessage[];
         welcomedUser?: { displayName: string };
+        /**
+         * True when this turn was dispatched by the runtime itself
+         * (terminal-turn auto-fire in active mode). Prevents an
+         * infinite loop where a terminal user_says_ready turn auto-
+         * fires another user_says_ready. Plan §C.5 / §D.4.
+         */
+        isAutoFire?: boolean;
       },
     ) => {
       // Abort any in-flight generation first (e.g. user sent a new message
@@ -1327,6 +1361,79 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
           endSub = 'ready';
         }
         dispatch({ type: 'set_sub', sub: endSub });
+
+        // ── Active-mode proactive responses ────────────────────────
+        // Three end-of-turn outcomes (plan §C.1):
+        //   1. <continue/> + no <sleep>: auto-fire 'continue' trigger
+        //      to chain the next step. Capped by maxConsecutiveContinues
+        //      and maxContinueChainSecs to prevent runaway.
+        //   2. terminal (no continue, no sleep, not awaiting_reply,
+        //      active mode, voice off, ticks enabled, no EL cool-off,
+        //      not itself an auto-fire): auto-fire 'user_says_ready'
+        //      to scan and surface suggestions.
+        //   3. <sleep> or awaiting_reply or passive: no auto-fire.
+        const prefs = loadVoicePrefsClient();
+        if (parsed.continue && !parsed.sleep) {
+          // Continue chain.
+          const nowMs = Date.now();
+          if (continueChainCountRef.current === 0) {
+            continueChainStartedAtMsRef.current = nowMs;
+          }
+          continueChainCountRef.current += 1;
+          const maxCount = Math.max(1, Math.min(20, prefs.maxConsecutiveContinues ?? 5));
+          const maxSecs = Math.max(30, Math.min(1800, prefs.maxContinueChainSecs ?? 300));
+          const elapsedSecs = (nowMs - continueChainStartedAtMsRef.current) / 1000;
+          if (continueChainCountRef.current <= maxCount && elapsedSecs <= maxSecs) {
+            // Fire the chained turn with the latest history.
+            const nextHistory = stateRef.current.messages;
+            void runGeneration('continue', { messagesOverride: nextHistory });
+            return; // do NOT also fire terminal auto-fire below
+          }
+          // Cap hit — drop the chain, wait for user.
+          // eslint-disable-next-line no-console
+          console.warn('[operator] <continue/> chain capped', {
+            count: continueChainCountRef.current,
+            elapsedSecs,
+            maxCount,
+            maxSecs,
+          });
+          resetContinueChain();
+        }
+
+        // Terminal auto-fire: only in active mode, voice off, with the
+        // ticks pref on, no EL cool-off active, and NOT itself an
+        // auto-fire (anti-loop guard).
+        const isTerminal =
+          !parsed.continue
+          && !parsed.sleep
+          && !awaitingReply
+          && stateRef.current.mode === 'active'
+          && !voiceActiveRef.current
+          && prefs.proactiveTicksEnabled !== false
+          && !opts?.isAutoFire;
+        if (isTerminal) {
+          const ELCoolOffMs = 5 * 60 * 1000;
+          const sinceTeardown = Date.now() - lastELTeardownMsRef.current;
+          if (lastELTeardownMsRef.current === 0 || sinceTeardown > ELCoolOffMs) {
+            // Reset the continue chain — this is a terminal turn,
+            // chain is over.
+            resetContinueChain();
+            const nextHistory = stateRef.current.messages;
+            void runGeneration('user_says_ready', {
+              messagesOverride: nextHistory,
+              isAutoFire: true,
+            });
+            return;
+          }
+        }
+
+        // User-input reaching the brain — reset the chain so the next
+        // continue starts fresh. (Continues we just fired above
+        // already returned early; we only get here for non-continue
+        // outcomes.)
+        if (!parsed.continue) {
+          resetContinueChain();
+        }
       } catch (err) {
         if (ctrl.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
@@ -1533,6 +1640,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     }
   }, [focusedCard, cancelNudgeGraceTimer]);
 
+  // Track EL teardowns for the proactive-tick cool-off (plan §C.8).
+  // When the silence-nudge grace timer tears down EL, we don't want
+  // a terminal turn auto-fire to immediately bombard the user.
+  useEffect(() => {
+    const onTeardown = () => {
+      lastELTeardownMsRef.current = Date.now();
+    };
+    window.addEventListener('papercusp:voiceSilenceTeardown', onTeardown as EventListener);
+    return () => {
+      window.removeEventListener('papercusp:voiceSilenceTeardown', onTeardown as EventListener);
+    };
+  }, []);
+
   // Live voice-prefs subscription. Tears down the active router ref
   // when cardAnsweringEnabled flips OFF mid-session (plan §C.10 +
   // audit gap #2). Hydration also calls the listener so the initial
@@ -1706,6 +1826,8 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       // User typed — they're engaged, no need to tear EL down. Cancel
       // any pending silence-nudge grace timer.
       cancelNudgeGraceTimer();
+      // User input ends any active `<continue/>` chain.
+      resetContinueChain();
       // Decline detection: if the operator just asked "want active?"
       // (within the last 60s) AND the user's reply reads as a "no",
       // record the decline so mayAskActiveNow() applies the cooldown.
@@ -1739,8 +1861,19 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       const nextHistory = [...stateRef.current.messages, userMsg];
       void runGeneration(trigger, { messagesOverride: nextHistory });
     },
-    [runGeneration, persistTurn, cancelNudgeGraceTimer],
+    [runGeneration, persistTurn, cancelNudgeGraceTimer, resetContinueChain],
   );
+
+  const generateIdeas = useCallback(() => {
+    // Explicit user request — reset the chain (it's a new ask) and
+    // dispatch user_says_ready. Works in both active and passive
+    // modes because it's user-initiated. NOT marked as isAutoFire
+    // (so if its terminal output triggers the terminal-auto-fire
+    // path, that's fine — the user asked).
+    resetContinueChain();
+    cancelNudgeGraceTimer();
+    void runGeneration('user_says_ready');
+  }, [runGeneration, resetContinueChain, cancelNudgeGraceTimer]);
 
   const flipMode = useCallback((mode: OperatorMode) => {
     writeOperatorModeToSession(mode);
@@ -1844,6 +1977,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
       error: state.error,
       busy: state.sub === 'generating',
       sendUserMessage,
+      generateIdeas,
       flipMode,
       bannerText,
       hasMoreEarlier,
@@ -1854,7 +1988,7 @@ export function OperatorConversationProvider({ children, generationFn = defaultG
     }),
     [
       state.mode, state.sub, state.messages, state.error,
-      sendUserMessage, flipMode, bannerText,
+      sendUserMessage, generateIdeas, flipMode, bannerText,
       hasMoreEarlier, loadingEarlier, loadEarlier, answerChoice,
       convId,
     ],

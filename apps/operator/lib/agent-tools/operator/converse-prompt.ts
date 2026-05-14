@@ -27,7 +27,7 @@ import { activeWorkspaceId } from '@/lib/workspace-registry';
 
 export interface ConverseInput {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
-  trigger?: 'user_message' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready' | 'user_welcomed';
+  trigger?: 'user_message' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready' | 'user_welcomed' | 'continue';
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
@@ -101,6 +101,11 @@ export async function buildOperatorPrompt(
   const triggerLines: Record<NonNullable<ConverseInput['trigger']>, string> = {
     user_message: 'Trigger: user_message — the user just said something. React per the ladder.',
     quiet_wait_resume: 'Trigger: quiet_wait_resume — the user just re-engaged after a long silence. Reference where you left off in your first sentence, then continue the thread.',
+    continue: `Trigger: continue — you emitted \`<continue/>\` on the prior turn, signaling more user-visible progress. Pick up where you left off.
+
+You may emit another \`<continue/>\` if the multi-step work isn't done yet — narrate progress in a \`<say>\` before the tag. When the task is finished, end naturally (no \`<continue/>\` on the last turn) and the runtime will auto-scan in active mode.
+
+If you realize the work is actually complete and there's nothing more to narrate, end with a brief terminal \`<say>\` summarizing what's done. Do not loop on no-op continues.`,
     open_canvas: `Trigger: open_canvas — fresh chat with no prior history.
 
 STEP 1: Use MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews / audit:list) AND/OR your full conversation history above to find what's actionable.
@@ -130,27 +135,31 @@ FORBIDDEN: generic greetings like "Hi, what can I help with" / "How can I help y
 
 NOTE: chat:ask_choice works in both text and voice. Voice users hear fallbackText (the question + options) and click on the chat surface. For voice-answerable cards (the silence-nudge Ready card sets voiceAnswerable:true), the user can also speak their pick.`,
 
-    user_says_ready: `Trigger: user_says_ready — the user signaled they want suggestions ("ready", "next", "what now?", "go").
+    user_says_ready: `Trigger: user_says_ready — the user is open to suggestions. Fires from THREE entry points:
+  (a) the user typed "ready" / "next" / "what now?" / "go"
+  (b) the user clicked "Generate ideas" in the chat composer
+  (c) you just finished a task in active mode and the runtime auto-fired this trigger to check what's actionable next
 
-STEP 1: Re-read the full history above for specific scope ("remember yesterday's X", "continue with Y"). If no specific reference, use MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews).
+ALL THREE entry points expect the same behavior: do investigation in THIS ONE TURN (multi-tool MCP calls within a single turn are fine and expected — no need to chain), and produce one of:
 
-STEP 2: Decide the OUTPUT SHAPE — cards or text. **PREFER CARDS.**
+  - \`chat:ask_choice\` with 2-3 specific options the user could pick next
+  - \`<sleep duration_minutes="N"/>\` if there is genuinely nothing worth surfacing right now (entry point (c) only — for (a) and (b) the user explicitly asked, so always produce a card or short concrete answer)
 
-CARDS (default for this trigger) — emit \`chat:ask_choice\` whenever you can name ≥2 distinct things. Button labels ≤80 chars. ≤3 options. Mark one option with style: 'primary' if you have a recommended pick. chat:ask_choice BLOCKS until the user picks — you'll receive {picks:[{option_id,label},...]} and can react to it in the same turn.
+**Do NOT emit \`<continue/>\` from this trigger.** Idle-scan work is one turn. Do not auto-execute side-effecting actions from this trigger — surface the suggestion as a card and let the user approve.
 
-WORKED EXAMPLE — DO emit cards for this:
+**Do NOT emit a terminal \`<say>\` without a card AND without a \`<sleep>\`.** That would loop back into another auto-fire. Either emit a card OR a sleep — never bare text from an entry-point-(c) auto-fire.
+
+STEP 1: Re-read the full history above for specific scope ("remember yesterday's X", "continue with Y"). If no specific reference, use MCP tools (harness:list / harness:status / issues:list / harness:escalation / harness:pending_reviews) to find what's actionable. All within this turn.
+
+STEP 2: Emit a card. **PREFER CARDS for this trigger** — when you have 2-3 distinct things to surface, the card is the right output. Button labels ≤80 chars. ≤3 options. Mark one option with style: 'primary' if you have a recommended pick.
+
+WORKED EXAMPLE:
   Recent thread mentioned: sheets escalation, marketplace pipeline.
   ✅ chat:ask_choice({ question: "What's the priority?", options: [
        { id: "sheets", label: "Look at sheets escalation", style: "primary" },
        { id: "market", label: "Resume marketplace pipeline" },
        { id: "wiki", label: "Decide what to do with wiki" }] })
   ❌ <say>"Want to look at sheets, or maybe the marketplace?"</say>   ← USE CARDS
-
-TEXT (fallback) — use plain <say> ONLY when:
-  - There's exactly 1 obvious next step (just suggest it)
-  - The situation is genuinely open-ended ("what do you think about pricing?")
-
-Either way: NO generic greeting, NO open trailing question, NO "let me know what you need" — deliver substance.
 
 NOTE: chat:ask_choice works in both text and voice. Voice users hear the question + option labels as a spoken list and click on screen.`,
 

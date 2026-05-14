@@ -136,6 +136,38 @@ describe('parseOperatorTurn', () => {
     expect(r.say).toBeNull();
     expect(r.sleep).toEqual({ durationMinutes: 15, reason: 'ok' });
   });
+
+  // ── <continue/> tag (plan: active-mode-proactive-ticks §C.2) ────
+  it('parses <continue/> alongside a <say>', () => {
+    const r = parseOperatorTurn('<say>Now dispatching the architect.</say><continue/>');
+    expect(r.say).toBe('Now dispatching the architect.');
+    expect(r.continue).toBe(true);
+  });
+  it('accepts <continue /> with whitespace before the slash', () => {
+    const r = parseOperatorTurn('<say>Working.</say><continue />');
+    expect(r.continue).toBe(true);
+  });
+  it('continue defaults to false when no tag present', () => {
+    const r = parseOperatorTurn('<say>Done.</say>');
+    expect(r.continue).toBe(false);
+  });
+  it('continue alone (no say) does not produce visible prose', () => {
+    // Defensive: brain shouldn't emit this, but if it does, the bare-
+    // prose fallback strips the tag so the user doesn't see literal
+    // '<continue/>' in chat.
+    const r = parseOperatorTurn('<continue/>');
+    expect(r.say).toBeNull();
+    expect(r.continue).toBe(true);
+  });
+  it('continue + sleep (no say) — both parsed; runtime layer decides which wins', () => {
+    // Brain shouldn't normally pair these but if it does, the parser
+    // doesn't suppress either. Runtime treats sleep as authoritative
+    // (skip auto-fire); continue:true just rides along for logs.
+    const r = parseOperatorTurn('<continue/><sleep duration_minutes="5">');
+    expect(r.continue).toBe(true);
+    expect(r.sleep?.durationMinutes).toBe(5);
+    expect(r.say).toBeNull();
+  });
 });
 
 describe('sleepTagToEpochMs', () => {

@@ -44,6 +44,15 @@ export interface ParsedOperatorTurn {
   sleep: { durationMinutes: number; reason: string } | null;
   /** Spawn requests emitted this turn. Empty array when none. */
   spawns: SpawnRequest[];
+  /**
+   * True when the brain emitted `<continue/>` — it has more user-visible
+   * progress to make in the same conversation thread, no user input
+   * required. The runtime auto-fires another turn with trigger='continue'.
+   *
+   * Plan: active-mode-proactive-ticks-2026-05-14.md §C.2. Must be paired
+   * with a `<say>` narrating what's about to happen (prompt rule).
+   */
+  continue: boolean;
   /** Raw input, kept for debug/telemetry. Do NOT render this directly. */
   raw: string;
 }
@@ -54,6 +63,11 @@ const SET_MODE_RE = /<set_mode>\s*(active|passive)\s*<\/set_mode>/i;
 // match the opening tag and ignore any trailing content. `reason` is
 // optional. Both attributes accept double or single quotes.
 const SLEEP_RE = /<sleep\s+([^>]+?)\s*\/?>/i;
+// <continue/> — self-closing, no attributes. Signals "I have more
+// user-visible progress to make; auto-fire another turn." See
+// active-mode-proactive-ticks-2026-05-14.md §C.2. Accept either
+// `<continue/>` or `<continue />` (with or without space).
+const CONTINUE_RE = /<continue\s*\/?>/i;
 // <spawn role="…" feature="…" chunk="…" extras="K=V,K2=V2"> — self-closing.
 // role required; feature/chunk/extras optional. Multiple <spawn> tags per
 // turn are allowed (parallel fan-out: "review these three plans").
@@ -120,8 +134,12 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     setMode: null,
     sleep: null,
     spawns: [],
+    continue: false,
     raw,
   };
+  if (CONTINUE_RE.test(raw)) {
+    result.continue = true;
+  }
 
   const sayMatch = SAY_RE.exec(raw);
   if (sayMatch) {
@@ -136,6 +154,7 @@ export function parseOperatorTurn(raw: string): ParsedOperatorTurn {
     // around the sleep tag is model debug noise we should drop.
     const stripped = raw
       .replace(/<set_mode>[^<]*<\/set_mode>/gi, '')
+      .replace(CONTINUE_RE, '')
       .trim();
     if (stripped.length > 0) {
       result.say = clampSay(stripped);

@@ -132,7 +132,7 @@ export function OperatorChatSidebar() {
   }
 
   return (
-    <aside className="op-chat-sidebar" style={sidebarStyle} aria-label="Operator chat">
+    <aside className="op-chat-sidebar" style={sidebarStyle} aria-label="Papercup chat">
       <style>{OP_CHAT_SIDEBAR_CSS}</style>
       <div className="op-chat-header">
         <div className="op-chat-header-main">
@@ -148,7 +148,7 @@ export function OperatorChatSidebar() {
                 subtitle=""
               />
             </div>
-            <div className="op-chat-controls" role="group" aria-label={`Operator voice controls — ${statusText}`}>
+            <div className="op-chat-controls" role="group" aria-label={`Papercup voice controls — ${statusText}`}>
               <OperatorActiveToggle />
               <VoiceButton />
             </div>
@@ -160,6 +160,7 @@ export function OperatorChatSidebar() {
         busy={conv.busy}
         passive={conv.mode === 'passive'}
         onSend={conv.sendUserMessage}
+        onGenerateIdeas={conv.generateIdeas}
         banner={conv.bannerText ? <div className="op-chat-banner">{conv.bannerText}</div> : null}
         error={conv.error}
         onLoadEarlier={conv.loadEarlier}
@@ -179,7 +180,7 @@ export function OperatorChatSidebar() {
         className="op-chat-resize-handle"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize operator chat"
+        aria-label="Resize Papercup chat"
         onPointerDown={onHandleDown}
         onPointerMove={onHandleMove}
         onPointerUp={onHandleUp}
@@ -1281,5 +1282,16 @@ body.has-op-chat .h-header {
   background: rgba(56, 189, 248, 0.16) !important;
   color: #ddf6ff !important;
   opacity: 1 !important;
+}
+
+.op-chat-sidebar .oracle-thinking-row {
+  flex-shrink: 0 !important;
+  max-width: calc(100% - 38px) !important;
+  margin: 4px 8px 12px 30px !important;
+  border-color: rgba(103, 232, 249, 0.34) !important;
+  border-radius: 13px !important;
+  background: rgba(10, 20, 33, 0.98) !important;
+  color: #dff6ff !important;
+  overflow: visible !important;
 }
 `;

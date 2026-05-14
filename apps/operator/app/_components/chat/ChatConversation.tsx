@@ -139,6 +139,12 @@ export interface ChatConversationProps {
   /** Label for the "is thinking" row. Defaults to emptyState.title. */
   thinkingLabel?: string;
 
+  /**
+   * Optional element rendered inside the composer form, before the
+   * Send button. Used by OperatorChat to surface a "Generate ideas"
+   * button. Omit to hide.
+   */
+  composerExtra?: React.ReactNode;
   /** Hide the input form entirely (e.g. OracleDock's chatwoot tab swaps it out). */
   hideInput?: boolean;
 
@@ -179,6 +185,7 @@ export function ChatConversation(props: ChatConversationProps) {
     inputIcon,
     sendLabel = 'Send',
     busyLabel = '…',
+    composerExtra,
     banner,
     thinkingLabel,
     hideInput,
@@ -450,6 +457,7 @@ export function ChatConversation(props: ChatConversationProps) {
               {busy ? 'busy' : 'enter'}
             </span>
           </div>
+          {composerExtra}
           <button
             type="submit"
             disabled={busy || !inputValue.trim()}

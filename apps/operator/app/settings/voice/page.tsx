@@ -588,7 +588,7 @@ export default function VoiceSettingsPage() {
                 onChange={(v) => savePrefsPatch({ voicePanelAutoOpen: v })}
                 disabled={savingPrefs}
               />
-              <span>Auto-open the Operator panel when voice delegates a complex task to Claude</span>
+              <span>Auto-open the Papercup panel when voice delegates a complex task to Claude</span>
             </label>
             <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
               <Checkbox
@@ -598,7 +598,7 @@ export default function VoiceSettingsPage() {
                 style={{ marginTop: 3 }}
               />
               <span>
-                <strong>Operator narrates long operations</strong>
+                <strong>Papercup narrates long operations</strong>
                 <span style={hint}> — replan, supervisor, cleanup, provisioning. Side-channel TTS, doesn&apos;t use ElevenLabs Conv AI minutes.</span>
               </span>
             </label>
@@ -610,7 +610,7 @@ export default function VoiceSettingsPage() {
                 style={{ marginTop: 3 }}
               />
               <span>
-                <strong>Operator references past experience</strong>
+                <strong>Papercup references past experience</strong>
                 <span style={hint}> — when relevant, may share short anecdotes from prior work. Limited to a few times per session.</span>
               </span>
             </label>
@@ -623,7 +623,7 @@ export default function VoiceSettingsPage() {
               />
               <span>
                 <strong>Active mode on startup</strong>
-                <span style={hint}> — every fresh app load starts the Operator in active mode (continuous turn-taking, draws ideas out of you). Off → starts passive (Operator only responds when spoken to). Mid-session toggling via the navbar still works either way; the toggle resets on refresh per this setting.</span>
+                <span style={hint}> — every fresh app load starts Papercup in active mode (continuous turn-taking, draws ideas out of you). Off → starts passive (Papercup only responds when spoken to). Mid-session toggling via the navbar still works either way; the toggle resets on refresh per this setting.</span>
               </span>
             </label>
             <div>
@@ -717,7 +717,51 @@ export default function VoiceSettingsPage() {
             </div>
             <div>
               <label style={lbl}>
-                Operator history budget (tokens)
+                Max `&lt;continue/&gt;` chain depth
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={20}
+                value={prefs.maxConsecutiveContinues ?? 5}
+                onChange={(e) => {
+                  const v = Math.max(1, Math.min(20, parseInt(e.target.value, 10) || 5));
+                  savePrefsPatch({ maxConsecutiveContinues: v });
+                }}
+                style={{ ...sel, width: 120 }}
+                disabled={savingPrefs}
+              />
+              <p style={hint}>
+                Default <strong>5</strong>. When the brain narrates user-visible multi-step work
+                (&quot;Did X, now doing Y&quot;), each `&lt;continue/&gt;` triggers another turn.
+                Capped to prevent runaway chains. After this many in a row without user input,
+                the runtime force-waits.
+              </p>
+            </div>
+            <div>
+              <label style={lbl}>
+                Max `&lt;continue/&gt;` chain duration (seconds)
+              </label>
+              <input
+                type="number"
+                min={30}
+                max={1800}
+                value={prefs.maxContinueChainSecs ?? 300}
+                onChange={(e) => {
+                  const v = Math.max(30, Math.min(1800, parseInt(e.target.value, 10) || 300));
+                  savePrefsPatch({ maxContinueChainSecs: v });
+                }}
+                style={{ ...sel, width: 120 }}
+                disabled={savingPrefs}
+              />
+              <p style={hint}>
+                Default <strong>300</strong> (5 min). Hard wall-clock cap on a single chain.
+                Forces a wait once exceeded, regardless of how many chained turns ran. Range 30-1800.
+              </p>
+            </div>
+            <div>
+              <label style={lbl}>
+                Papercup history budget (tokens)
               </label>
               <input
                 type="number"
@@ -862,6 +906,7 @@ export default function VoiceSettingsPage() {
               ['speakOpenCards',         'Speak open card prompts aloud when voice is on'],
               ['cardAnsweringEnabled',   'Resolve voice-answerable cards from spoken answers'],
               ['speakSessionHandoff',    'Speak a cue when voice idles back to wake-word listening'],
+              ['proactiveTicksEnabled',  'Active mode auto-suggests next steps when conversation idles'],
             ] as const).map(([key, label]) => (
               <label key={key} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
                 <Checkbox
@@ -1342,12 +1387,12 @@ function WakeWordTestButton({ wakeWord }: { wakeWord: string }) {
       </Button>
       {stage === 'prompting' && (
         <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%' }}>
-          Say <strong>"{phrase}"</strong> now. We'll wait up to 15 seconds. The Operator panel should open if the pipeline is healthy.
+          Say <strong>"{phrase}"</strong> now. We'll wait up to 15 seconds. The Papercup panel should open if the pipeline is healthy.
         </span>
       )}
       {stage === 'heard-correct' && (
         <span style={{ ...hint, marginTop: 0, marginLeft: 4, flexBasis: '100%', color: 'var(--good)' }}>
-          Heard: <em>"{transcript}"</em> — the Operator panel should have opened.
+          Heard: <em>"{transcript}"</em> — the Papercup panel should have opened.
         </span>
       )}
       {stage === 'heard-other' && transcript && (

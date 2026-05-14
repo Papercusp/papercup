@@ -69,6 +69,7 @@ const ArgsSchema = z.object({
       z.literal('open_canvas'),
       z.literal('user_says_ready'),
       z.literal('user_welcomed'),
+      z.literal('continue'),
     ])
     .optional(),
   welcomedUser: z.object({ display_name: z.string().optional() }).optional(),
@@ -138,7 +139,7 @@ export default defineTool({
     const budget = await checkBudget();
     if (budget.state && budget.exceeded) {
       throw new Error(
-        `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
+        `Papercup daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
       );
     }
 

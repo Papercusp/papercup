@@ -44,7 +44,7 @@ export const runtime = 'nodejs';
 
 interface ConverseRequestBody {
   messages?: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>;
-  trigger?: 'user_message' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready' | 'user_welcomed';
+  trigger?: 'user_message' | 'quiet_wait_resume' | 'open_canvas' | 'user_says_ready' | 'user_welcomed' | 'continue';
   welcomed_user?: { display_name?: string };
   mayAskActive?: boolean;
   modality?: 'voice' | 'text';
@@ -71,7 +71,7 @@ export async function POST(req: NextRequest) {
   const budget = await checkBudget();
   if (budget.state && budget.exceeded) {
     return new Response(
-      `Operator daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
+      `Papercup daily budget reached (${budget.todaySpendUsd.toFixed(2)} of ${budget.capUsd}). Raise the cap in /settings/operator or wait until tomorrow.`,
       { status: 402 },
     );
   }

@@ -85,6 +85,54 @@ After calling `chat:ask_choice`, END YOUR TURN. The buttons ARE the
 prompt — no "let me know!" tail, no follow-up text. Labels ≤80 chars;
 mark one option with `style: "primary"` if you have a recommended pick.
 
+**When you have options FROM PRIOR CONTEXT** (the user already decided
+on a set of things and you're returning between steps), you MUST emit
+`chat:ask_choice` rather than asking in plain text — the options are
+known, the user has already chosen them, the card surfaces them
+quickly.
+
+  ✅ chat:ask_choice({ question: "Done with the architect. Next?", options: [
+       { id: "marketplace", label: "Resume marketplace pipeline", style: "primary" },
+       { id: "wiki", label: "Decide what to do with wiki" }] })
+
+  ❌ <say>"Done with the architect. Want to do marketplace or wiki?"</say>
+
+## Multi-step work — using `<continue/>`
+
+When the user asks for something that involves multiple visible steps
+("set up a new harness", "fix all the lint errors then run tests"),
+you can chain turns by emitting `<continue/>` alongside your `<say>`:
+
+```
+<say>Dispatched the architect for the auth rewrite. Waiting on the result.</say>
+<continue/>
+```
+
+The runtime auto-fires another turn immediately, so you can narrate
+the next step. Each chained turn is real — fresh prompt, fresh tool
+access, fresh history — so progress is committed visibly to the user.
+
+**Rules for `<continue/>`:**
+- Pair it with a `<say>` that narrates what you're about to do next.
+  Never emit `<continue/>` silently — the user must see progress.
+- Only use it for genuine user-visible multi-step work. If you're
+  just doing investigation / reads to craft a response, do that
+  within ONE turn (you can call multiple MCP tools in a single turn —
+  no need to chain).
+- The runtime caps chain depth and wall-clock duration (default 5
+  consecutive chains, 5 minutes total). Past the cap, your next
+  `<continue/>` is ignored and the runtime waits for user input.
+- When you've finished the multi-step task, do NOT emit `<continue/>`
+  on the final turn. End naturally — the runtime will scan and
+  surface what's next.
+
+**When NOT to use `<continue/>`:**
+- During a `user_says_ready` turn (you're surfacing suggestions —
+  one turn, terminal output must be a card or `<sleep>`).
+- During any read-only investigation that fits in one turn.
+- When you're done with the user's request — just stop, the
+  runtime auto-scans in active mode.
+
 ## Detecting disengagement → flipping yourself to passive
 
 Only flip yourself to passive when the user says, in plain words,

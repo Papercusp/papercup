@@ -58,6 +58,26 @@ export interface VoicePrefs {
    */
   speakSessionHandoff: boolean;     // ON
 
+  // ── Operator behavior (active-mode proactive responses) ──────────
+  /**
+   * Master toggle for active-mode auto-fire on terminal turns. When
+   * false, terminal turns just terminate (passive behavior in active
+   * mode too — manual "Generate ideas" button still works).
+   * Plan: active-mode-proactive-ticks-2026-05-14.md §C.4.
+   */
+  proactiveTicksEnabled: boolean;   // ON
+  /**
+   * Maximum number of `<continue/>` chains the brain can run before
+   * the runtime force-waits for user input. Prevents runaway chains.
+   */
+  maxConsecutiveContinues: number;  // 5
+  /**
+   * Maximum wall-clock duration (seconds) of a single `<continue/>`
+   * chain. Forces a wait once exceeded, even if `maxConsecutiveContinues`
+   * hasn't been hit.
+   */
+  maxContinueChainSecs: number;     // 300
+
   // Engine selection
   sttEngine: SttEngineKind;
   ttsEngine: TtsEngineKind;
@@ -249,6 +269,9 @@ export const DEFAULT_VOICE_PREFS: VoicePrefs = {
   cardAnsweringEnabled: true,
   silenceNudgeGraceSecs: 30,
   speakSessionHandoff: true,
+  proactiveTicksEnabled: true,
+  maxConsecutiveContinues: 5,
+  maxContinueChainSecs: 300,
   sttEngine: 'voicemode',
   ttsEngine: 'kokoro',
   fullAgentEngine: 'off',

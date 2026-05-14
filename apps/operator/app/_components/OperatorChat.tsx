@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useState, type ReactNode } from 'react';
-import { Wrench } from 'lucide-react';
+import { Lightbulb, Wrench } from 'lucide-react';
 import { ChatConversation, type ChatMessage, type ChatToolCall } from './chat/ChatConversation';
 import { PendingCardsBar } from './chat/PendingCardsBar';
 import { renderCard } from '@/lib/chat-cards';
@@ -35,6 +35,13 @@ interface Props {
   passive: boolean;
   /** Called with the user's message when they submit. */
   onSend: (content: string) => void;
+  /**
+   * Optional callback for the "Generate ideas" button next to Send.
+   * Fires user_says_ready under the hood; works in both active and
+   * passive mode. Omit to hide the button.
+   * Plan: active-mode-proactive-ticks-2026-05-14.md §C.9.
+   */
+  onGenerateIdeas?: () => void;
   /** Optional banner above the transcript (e.g. silence-check status). */
   banner?: React.ReactNode;
   /** Optional error string to render in the .oracle-error row. */
@@ -87,7 +94,7 @@ const STARTING_PROMPTS = [
 ] as const;
 
 export function OperatorChat({
-  messages, busy, passive, onSend, banner, error,
+  messages, busy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, onAnswerChoice,
   conversationId, workspaceId,
 }: Props) {
@@ -179,6 +186,21 @@ export function OperatorChat({
       inputValue={input}
       onInputChange={setInput}
       onSubmit={submit}
+      composerExtra={
+        onGenerateIdeas ? (
+          <Tooltip label="Generate ideas" side="top" align="center">
+            <button
+              type="button"
+              aria-label="Generate ideas"
+              onClick={onGenerateIdeas}
+              disabled={busy}
+              className="pc-button oracle-send-button op-chat-ideas-button"
+            >
+              <Lightbulb aria-hidden="true" className="oracle-send-icon" />
+            </button>
+          </Tooltip>
+        ) : undefined
+      }
       renderToolChip={renderOperatorToolChip}
       renderToolCard={renderToolCard}
       onLoadEarlier={onLoadEarlier}
