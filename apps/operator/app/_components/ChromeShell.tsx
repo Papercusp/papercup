@@ -277,16 +277,10 @@ function DeferredDocks() {
 }
 
 // OperatorPanel is split out of DeferredDocks so it can mount on every
-// page including /settings/*. Use a short guaranteed timer instead of a
-// pure requestIdleCallback: editor-heavy settings pages can starve idle
-// work long enough that the chrome Deck button appears dead.
+// page including /settings/*. It renders null while closed, but keeping
+// the lazy component mounted lets it subscribe to the shared Deck state
+// before the chrome button is pressed.
 function DeferredOperatorPanel() {
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const id = window.setTimeout(() => setReady(true), 200);
-    return () => window.clearTimeout(id);
-  }, []);
-  if (!ready) return null;
   return (
     <Suspense fallback={null}>
       <OperatorPanel />
